@@ -1,353 +1,119 @@
 # PLAN_TO_CREATE_FRANKENTUI__CODEX.md
 
-## Executive Summary
-FrankenTUI (ftui) is a deliberately minimal, high-performance terminal UI kernel that fuses
-three Rust stacks into one coherent system:
-- rich_rust: segment pipeline, theming, layout measurement, export
-- charmed_rust: Bubbletea runtime, Lipgloss ergonomics, widgets
-- opentui_rust: diff renderer, optimized buffers, input parser
+## FrankenTUI (ftui): The Optimal Terminal UI Kernel
+Version 6.3 — Kernel-First, Math-Informed, Practice-Proven Architecture
 
-This is not a port. It is a new, optimal kernel that is:
-- flicker-free by construction
-- inline-first (native scrollback by default)
-- safe-only (no unsafe in ftui crates)
-- deterministic and testable
-- fast under real loads
+Note: Code blocks in this plan are design sketches for API shape and invariants.
+They are intentionally close to Rust, but not guaranteed to compile verbatim.
+The correctness contract lives in invariants, tests, and ADRs.
 
-This document is the authoritative blueprint: architecture, invariants, APIs,
-algorithms, performance budgets, migration strategy, and decision gates.
+---
 
-## Mission and Non-Goals
-### Mission
-- A tiny kernel that powers both classic TUIs and agent harness UIs.
-- A stable, minimal API surface that is easy to reason about.
-- A rendering engine that is always diffed, buffered, and cursor-correct.
+# PART 0: EXECUTIVE BLUEPRINT
 
-### Non-Goals
-- Backwards compatibility with upstream libraries.
-- A monolithic crate with every widget and integration bundled.
-- Any unsafe code in ftui crates.
+## 0.1 Executive Summary
+FrankenTUI (ftui) fuses rich_rust, charmed_rust, and opentui_rust into a single
+coherent kernel. This is not a port. It is a new kernel optimized for:
+- scrollback-native inline mode
+- flicker-free output by construction
+- deterministic rendering and testing
+- performance via cache-local buffers and pooled graphemes
 
-## Deep Source Synthesis (what survives)
-### rich_rust (concrete takeaways)
-- Renderables output `Segment` streams; optional control codes are embedded in segments.
-- `Text` uses Span ranges with overlap precedence.
-- ThemeStack is a push/pop stack with optional inheritance.
-- Console hooks exist (Live uses a RenderHook to intercept segments).
-- Measurement trait produces min/max width for layout.
-- Style uses explicit attribute masks for deterministic merges.
+## 0.2 Primary Targets
+- Agent harness UIs: log stream + stable UI chrome, native scrollback, no flicker.
+- Classic TUIs: dashboards, pickers, editors, forms.
+- Export/replay: capture frames or segments for HTML/SVG/text and tests.
 
-### charmed_rust (concrete takeaways)
-- Bubbletea Program handles raw mode + alt screen + event loop.
-- Model is `init -> update -> view` with view returning String.
-- Message type is type-erased, with built-in system messages.
-- Program supports custom IO (SSH/remote input injection).
-- Lipgloss Style is fluent and also carries layout (padding/margin/border).
-- Theme uses semantic slots (primary, background, text, etc).
+## 0.3 Non-Negotiables (Engineering Contract)
+- One writer owns the terminal. All terminal-mutating bytes go through ftui.
+- Diffed + buffered UI only (no ad-hoc println in render path).
+- Inline-first is real; AltScreen is explicit opt-in.
+- Safe-by-default: forbid unsafe in core crates.
+- Deterministic rendering: same state + size + theme == same frame.
+- Cleanup is guaranteed even on panic (raw mode, cursor, alt screen, paste, mouse).
 
-### opentui_rust (concrete takeaways)
-- Renderer uses double buffer with diff + cached scratch buffers.
-- `Cell` stores `CellContent` + Style; GraphemeId encodes width in bits.
-- Buffer supports scissor + opacity stacks and alpha blending.
-- AnsiWriter tracks cursor, fg/bg, attrs to minimize output.
-- Input parser supports CSI sequences, bracketed paste, size limits.
-- HitGrid provides fast mouse hit testing.
+## 0.4 Non-Goals
+- Backwards compatibility with upstream APIs.
+- A monolithic crate that bundles everything.
+- Proving global minimal ANSI output for all cases; we target correctness + near-minimal.
 
-## System Model (mental model)
-Three rings:
-1) Kernel: Renderer + Buffer + Style + Text + Runtime + Event.
-2) Widgets: reusable components built on the kernel.
+## 0.5 Three-Ring Architecture
+1) Kernel (sacred): frame/buffer/cell, diff, presenter, input, modes.
+2) Widgets: reusable components on kernel primitives.
 3) Extras: markdown, syntax, forms, SSH, export.
 
-Kernel is sacred: tiny, stable, deterministic.
+## 0.6 Workspace Layout (Crates)
+0) ftui (facade)
+   - stable public API re-exports (App, Event, Frame, Style, ScreenMode)
+   - prelude and defaults
 
-## Kernel Architecture (workspace layout)
 1) ftui-core
-   - terminal IO, raw mode lifecycle, capability detection
-   - input parsing into canonical Event
-   - timing utilities and signals
+   - terminal lifecycle (RAII guards)
+   - capability detection
+   - input parsing into Event
+   - screen mode policies
 
 2) ftui-render
-   - Buffer/Frame, Cell, GraphemePool, LinkPool, HitGrid
-   - diff engine + Renderer::present
+   - Cell/Buffer/Frame
+   - GraphemePool, LinkRegistry, HitGrid
+   - diff engine + Presenter
    - optional threaded renderer
 
 3) ftui-style
-   - Style/Color/Theme, ANSI encoding, color downgrade
-   - theme stack + semantic style resolution
-   - style -> ANSI caching
+   - Style/Theme
+   - color downgrade
+   - deterministic style merge
 
 4) ftui-text
-   - Text/Span/Segment, wrapping, truncation, alignment
-   - accurate width measurement
+   - Text/Span/Segment
+   - wrapping/truncation/alignment
+   - width caches
 
 5) ftui-layout
-   - Rect, constraints, layout engine (row/column/grid)
-   - measurement protocol (min/max width)
+   - Rect, constraints, row/col/grid
+   - min/max measurement protocol
 
 6) ftui-runtime
-   - Program + Model + Message + Cmd + scheduler
+   - Program, Model, Cmd, scheduler/ticks
    - deterministic simulator
 
-7) ftui-widgets (feature-gated)
-   - ported widgets and new components
+7) ftui-widgets (feature gated)
+8) ftui-extras (feature gated)
+9) ftui-harness (examples)
+10) ftui-simd (optional, unsafe isolated)
+11) ftui-pty (test-only helpers)
 
-8) ftui-extras (feature-gated)
-   - markdown, syntax, forms, SSH, export
-
-## Kernel Invariants (must always hold)
-- All output is diffed and buffered (no raw full-screen writes).
+## 0.7 Kernel Invariants (Must Always Hold)
+- All UI rendering is diffed and buffered.
 - Inline mode never clears the full screen.
-- Grapheme width accounting is correct for all drawn glyphs.
-- Style resolution is deterministic and order-preserving.
-- Event parsing is lossless for supported sequences.
-- No unsafe blocks in ftui crates.
+- Cursor restored after each present per policy.
+- Style/link state never left dangling after present/exit.
+- Grapheme width is correct for all glyphs (ZWJ, emoji, combining marks).
+- Input parsing is lossless for supported sequences and bounded for malformed input.
+- Cleanup guaranteed on normal exit and panic.
+- Single-writer rule is enforced (inline correctness depends on it).
+- Unsafe is isolated in ftui-simd only.
 
-## Key Design Decisions (resolve and lock early)
-1) **Frame is the canonical render target**.
-   - Segment pipeline is a text/layout intermediate, not the final target.
-   - All rendering converges on `Frame` to enable diff.
+## 0.8 ADRs to Lock Early (Decision Records)
+1) Frame is the canonical render target.
+2) Inline-first; AltScreen explicit opt-in.
+3) Presenter emits row-major runs (not per-cell moves).
+4) Style split: CellStyle (renderer-facing) vs Theme/semantic (higher-level).
+5) Terminal backend choice for v1 (cross-platform).
+6) Inline mode implementation strategy (scroll region vs overlay redraw vs hybrid).
+7) Output/concurrency model (single-thread or optional render thread).
+8) Span precedence rules (later wins, masks override).
+9) Presenter style emission (full reset vs incremental SGR).
+10) Windows support scope for v1.
 
-2) **Style is purely visual**.
-   - Layout concerns (padding/margin/border) live in widgets/layout layer.
-   - This avoids conflating text styling with box layout.
-
-3) **Message is typed, system events are always injectable**.
-   - `type Message: From<Event> + Send + 'static`.
-   - Keeps ergonomics while preserving runtime control.
-
-4) **Inline mode is default**.
-   - AltScreen is optional and explicit.
-   - Inline mode has a strict cursor policy.
-
-5) **Unsafe is forbidden**.
-   - If raw mode needs unsafe, wrap it in a non-ftui helper crate.
-
-## Canonical Type Definitions (Rust-ish spec)
-### Input events
-```
-pub enum Event {
-    Key(KeyEvent),
-    Mouse(MouseEvent),
-    Resize { width: u16, height: u16 },
-    Paste(PasteEvent),
-    Focus(bool),
-    Clipboard(ClipboardEvent),
-}
-
-pub struct KeyEvent {
-    pub code: KeyCode,
-    pub modifiers: KeyModifiers,
-    pub kind: KeyEventKind,
-}
-
-pub enum KeyCode {
-    Char(char),
-    Enter, Esc, Tab, Backspace,
-    Up, Down, Left, Right,
-    Home, End, PageUp, PageDown,
-    Insert, Delete,
-    F(u8),
-}
-
-bitflags! { pub struct KeyModifiers: u8 { SHIFT | ALT | CTRL | SUPER } }
-
-pub struct MouseEvent {
-    pub kind: MouseEventKind,
-    pub button: MouseButton,
-    pub modifiers: KeyModifiers,
-    pub x: u16,
-    pub y: u16,
-}
-```
-
-### Rendering types
-```
-pub struct Frame {
-    buffer: Buffer,
-    hit_grid: Option<HitGrid>,
-}
-
-pub struct Cell {
-    pub content: CellContent,
-    pub style: Style,
-}
-
-pub enum CellContent {
-    Char(char),
-    Grapheme(GraphemeId),
-    Empty,
-    Continuation,
-}
-
-pub struct Renderer {
-    front: Buffer,
-    back: Buffer,
-    ansi: AnsiWriter,
-    link_pool: LinkPool,
-    grapheme_pool: GraphemePool,
-}
-```
-
-### Styling types
-```
-pub struct Style {
-    pub fg: Option<Color>,
-    pub bg: Option<Color>,
-    pub attrs: Attrs,
-    pub mask: Attrs,
-    pub link_id: Option<u32>,
-    pub meta: Option<Vec<u8>>,
-}
-
-pub struct ThemeStack { ... }
-```
-
-### Text types
-```
-pub struct Text { plain: String, spans: Vec<Span>, ... }
-
-pub struct Span { start: usize, end: usize, style: Style }
-
-pub struct Segment { text: Cow<'a, str>, style: Option<Style> }
-```
-
-## Data Flow (end-to-end)
-Input:
-```
-stdin bytes -> InputParser -> Event -> Program -> Model::update -> Cmd -> Message -> ...
-```
-Output:
-```
-Model::view -> Frame -> Renderer::present (diff) -> ANSI -> stdout
-```
-Text:
-```
-Text/Span -> Segment stream -> Frame draw -> Renderer diff -> stdout
-```
-
-## Rendering Engine (deep design)
-### Buffer Model
-- Flat Vec<Cell> for cache locality.
-- GraphemePool with cached width (hot path avoids string lookups).
-- Scissor + opacity stacks for compositing.
-- Alpha blending option for overlays (opt-in).
-
-### GraphemeId Encoding (from opentui)
-- 24 bits for pool id, 7 bits for width, 1 reserved bit.
-- Width cached in id to avoid pool lookup during render.
-
-### Diff Engine
-- Compare front/back buffers with bits_eq (fast integer comparison).
-- Reuse scratch buffers and pre-allocated vectors.
-- Optional dirty-region tracking for sub-rect diff.
-- Emit updates grouped by rows and style runs to minimize ANSI churn.
-
-### Output Strategy
-- Buffer ANSI into a single write per frame.
-- Track cursor state to avoid redundant moves.
-- Explicit handling for hyperlink open/close (OSC 8).
-- Separate cursor moves from cell writes for speed.
-
-### Threaded Renderer (feature-gated)
-- Main thread builds buffers.
-- Render thread performs diff + output.
-- Channel-based buffer swap.
-- Shutdown barrier ensures terminal cleanup.
-
-## Input System
-- Parse bytes into Event (Key/Mouse/Resize/Paste/Focus).
-- Key normalization: stable Key + modifiers, CSI mapping.
-- Hard bounds on sequence length to avoid DoS.
-- Coalesce noisy streams (mouse move, resize) optionally.
-- Explicit event injection for tests and remote IO.
-
-## Style System (merged semantics)
-### Requirements
-- Lipgloss-style fluent builder ergonomics.
-- rich_rust-style explicit attribute masks for deterministic merges.
-- ThemeStack for semantic styles.
-- Color profiles with downgrade.
-- Hyperlinks (OSC 8) supported via link IDs.
-
-### Proposed Style structure
-- `fg: Option<Color>`, `bg: Option<Color>`
-- `attrs: Attrs`, `mask: Attrs` (explicit set mask)
-- `link_id: Option<u32>`
-- `meta: Option<Vec<u8>>`
-
-### Style merge algorithm
-- If `rhs.mask` includes attr bit, it overrides `lhs.attrs`.
-- Colors override only when Some(...).
-- link_id overrides only when Some(...).
-
-### Theme system
-- ThemeStack push/pop with optional inheritance.
-- Semantic slots (primary, accent, muted, error, surface, text).
-- Named styles mapped to slots and widget defaults.
-
-## Text + Layout
-### Text Pipeline
-- Text contains plain string + spans.
-- Overlapping spans resolved deterministically (later wins).
-- Segment stream is boundary between text and renderer.
-- Wrapping/truncation uses accurate grapheme width.
-
-### Layout
-- Measurement protocol: min/max width in cells.
-- Constraints: fixed, percentage, expand.
-- Row/column/grid layouts.
-- Widgets implement measure() and render(rect, frame).
-
-## Runtime Model (Bubbletea lineage)
-### Model contract
-```
-trait Model {
-    type Message: From<Event> + Send + 'static;
-    fn init(&self) -> Option<Cmd<Self::Message>> { None }
-    fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message>;
-    fn view(&self, frame: &mut Frame);
-}
-```
-
-### Commands
-- Cmd::none, Cmd::quit, Cmd::batch, Cmd::sequence
-- Async commands feature-gated (thread pool or tokio)
-- Tick commands for animation
-
-### Scheduler
-- Frame-rate cap (fps).
-- Render on event or when dirty.
-- Option to force render on tick.
-
-### Simulator
-- Deterministic ProgramSimulator with injected events and captured frames.
-
-## Inline Mode (native scrollback) vs AltScreen
-### Screen modes
-- Inline (default): preserves scrollback.
-- AltScreen: full-screen mode.
-
-### Inline policy
-- UI rendered into bounded region (top or bottom anchored).
-- Cursor restored after render.
-- Distinguish "log area" (append-only) vs "UI area".
-
-Inline render sequence:
-1) Save cursor
-2) Move to UI region anchor
-3) Clear UI region lines
-4) Render UI frame
-5) Restore cursor
-
-## API Ergonomics (target surface)
-### Minimal example
+## 0.9 Public API Surface (Target)
+### Canonical entrypoint
 ```rust
-use ftui::{App, Cmd, Event, Frame, Model, Style, Text};
+use ftui::{App, Cmd, Event, Frame, Model, ScreenMode, Result};
 
-struct AppState { count: u64 }
+struct State { count: u64 }
 
-impl Model for AppState {
+impl Model for State {
     type Message = Event;
 
     fn update(&mut self, msg: Event) -> Cmd<Event> {
@@ -359,264 +125,378 @@ impl Model for AppState {
     }
 
     fn view(&self, frame: &mut Frame) {
-        let t = Text::new(format!("count: {}", self.count))
-            .style(Style::new().bold());
-        frame.draw_text(0, 0, &t);
+        // draw into frame
     }
 }
 
-fn main() -> ftui::Result<()> {
-    App::new(AppState { count: 0 })
-        .screen_mode(ftui::ScreenMode::Inline)
+fn main() -> Result<()> {
+    App::new(State { count: 0 })
+        .screen_mode(ScreenMode::Inline { ui_height: 6 })
         .run()
 }
 ```
 
-### Optional string adapter
-For trivial apps:
+### Easy adapter
+- `view_string()` routes String -> Text -> Frame -> Diff -> Presenter.
+
+### Agent harness primitives
+- `write_log(text)` (scrollback-native)
+- `present_ui(frame)` (atomic, flicker-resistant)
+- optional modal AltScreen
+- PTY capture for child processes (feature gated)
+
+## 0.10 Output + Concurrency Architecture
+### One-Writer Rule
+All terminal-mutating bytes are serialized through a single owner.
+
+### Supported modes
+- Mode A (default): single-threaded writer.
+- Mode B (optional): dedicated render/output thread.
+
+### Atomic present contract
+Presenter emits diff as a single buffered write with optional sync output.
+
+### Output mux/capture (harness realism)
+- PTY capture for subprocess output
+- LogSink / Writer API to avoid raw println
+
+## 0.11 Definition of Done (v1)
+- Inline mode stable with streaming logs + UI chrome.
+- Diff/presenter correctness validated by terminal-model tests.
+- Unicode width correctness proven by corpus tests.
+- Style merge semantics deterministic and documented.
+- Runtime supports update/view, ticks, batch/sequence, simulator.
+- Core harness widgets: viewport/log viewer, status line, input, spinner.
+- Docs: harness tutorial, inline vs alt screen, IO ownership guidance.
+
+---
+
+# PART I: FOUNDATIONS
+
+## 1) First Principles
+A terminal is a state machine; rendering is the inverse function.
+Practical optimality comes from:
+- cell-level diffing
+- state tracking (cursor/style/link)
+- cache-local data structures
+- pooled complex content (graphemes/links)
+
+## 2) Canonical Type Definitions (Rust-ish spec)
+### Event
 ```
-fn view_string(&self) -> String
-```
-Internally becomes Text -> Segment -> Frame render.
-
-## Widget Priorities (v1)
-- Viewport
-- List
-- Table
-- Panel/Box
-- TextInput
-- TextArea
-- Progress
-- Spinner
-- Tabs
-- Tree
-
-## Export/Extras
-- HTML/SVG export via segment pipeline.
-- Markdown renderer (glamour).
-- Syntax highlighting (feature-gated).
-- Forms (huh).
-- SSH integration (wish).
-
-## Performance Budgets (explicit)
-- 120x40 diff present: < 1 ms.
-- Input parse + dispatch: < 100 us/event.
-- Wrap 200 lines: < 2 ms.
-- Buffer allocation: amortized zero.
-
-## Testing Strategy
-- Unit tests: diff engine, grapheme width, style rendering.
-- Property tests: diff correctness, wrap invariants.
-- Snapshot tests: widgets, markdown, theme output.
-- PTY tests: raw mode, input parsing, cursor control.
-- Simulator tests: deterministic update/view cycles.
-- Perf tests: diff + render budgets.
-
-## Migration Map (source -> ftui)
-### rich_rust -> ftui
-- Text/Span/Segment -> ftui-text
-- ThemeStack -> ftui-style
-- Renderables -> ftui-widgets
-- Export -> ftui-extras
-
-### charmed_rust -> ftui
-- Program/Model/Cmd -> ftui-runtime
-- Lipgloss Style -> ftui-style (merged semantics)
-- Bubbles -> ftui-widgets
-- Glamour -> ftui-extras
-- ProgramSimulator -> ftui-runtime
-
-### opentui_rust -> ftui
-- Renderer/Buffer/Cell/GraphemePool -> ftui-render
-- Input parser + caps -> ftui-core
-- HitGrid -> ftui-render
-- Threaded renderer -> ftui-render (feature)
-
-## Phased Implementation Plan (detailed)
-### Phase 0 - Contracts
-- Decide workspace layout.
-- Define public API contracts for core types.
-- Add README + API overview.
-
-### Phase 1 - Render Kernel
-- Port Buffer/Cell/GraphemePool.
-- Implement diff engine + Renderer::present.
-- Add ScreenMode and Inline policy.
-- Minimal ANSI writer + output buffering.
-
-Exit criteria:
-- Render a static Frame without flicker.
-- Inline mode preserves scrollback.
-
-### Phase 2 - Input + Terminal
-- Port input parser and capability detection.
-- Implement raw mode lifecycle (safe crates).
-- Unify Event type.
-
-Exit criteria:
-- Key/mouse/resize events flow into Program.
-
-### Phase 3 - Style + Text
-- Implement Style/Color/Theme stack.
-- Add Text/Span/Segment pipeline.
-- Measurement helpers (width/height).
-
-Exit criteria:
-- Styled text renders correctly with wrapping and alignment.
-
-### Phase 4 - Runtime
-- Implement Program + Model + Cmd.
-- Add scheduler for async/tick commands.
-- Implement ProgramSimulator.
-
-Exit criteria:
-- Deterministic update/view loop with snapshot tests.
-
-### Phase 5 - Layout + Widgets
-- Implement layout primitives.
-- Port core widgets (viewport/list/table/input/textarea).
-- Add hit testing (optional).
-
-Exit criteria:
-- Widgets render correctly and pass snapshot tests.
-
-### Phase 6 - Extras + Export
-- Markdown renderer, syntax highlighting, forms.
-- Export to HTML/SVG via segment pipeline.
-
-Exit criteria:
-- Export produces stable outputs suitable for docs/tests.
-
-### Phase 7 - Stabilization
-- Performance baselines + CI enforcement.
-- Reference demos (agent harness, markdown pager, mini editor).
-
-## Open Questions (resolve early)
-- Inline mode: exact cursor restore policy and safe region anchoring.
-- Style model: precise rule order when spans overlap.
-- Raw mode crate choice: crossterm vs termion vs custom safe wrapper.
-- Async commands: thread pool vs tokio feature split.
-
-## Definition of Done (v1)
-- Inline mode default and stable.
-- Flicker-free diff renderer with minimal output.
-- Unified Style/Text/Theme.
-- Bubbletea runtime integrated with Frame rendering.
-- Core widgets shipped and tested.
-- Performance budgets enforced.
-
-## Immediate Next Steps
-1) Decide crate layout (single crate vs workspace)
-2) Create stub modules with public contracts
-3) Port Buffer/Cell/GraphemePool into ftui-render
-4) Build minimal Renderer::present output to stdout
-5) Prove Inline mode with a simple demo (box + text) without flicker
-
-## Essence of the Kernel (what must be perfect)
-The kernel is the intersection of three pipelines:
-1) **Input -> Event -> Update** (runtime discipline)
-2) **State -> Frame** (rendering discipline)
-3) **Frame -> Diff -> Output** (performance discipline)
-
-If these three are perfect, everything else is optional.
-
-## Agent Harness Considerations (first-class target)
-- Inline mode must never destroy scrollback.
-- Output must never flicker even when partial updates occur.
-- A log stream and a UI stream must coexist without corruption.
-- External tools (SSH, PTY) must be able to inject events.
-
-## Detailed Algorithms (appendix)
-### Diff algorithm (conceptual)
-```
-fn compute_diff(old: &Buffer, new: &Buffer) -> Diff {
-    assert_eq!(old.size, new.size);
-    for each cell in grid:
-        if !old[cell].bits_eq(new[cell]):
-            record changed cell
-    merge changed cells into row regions
-    return diff
+pub enum Event {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+    Resize { width: u16, height: u16 },
+    Paste(PasteEvent),
+    Focus(bool),
+    Clipboard(ClipboardEvent),
 }
 ```
 
-### Inline rendering algorithm
+### Frame/Cell
 ```
-fn render_inline(ui_frame: &Frame, ui_height_prev: u16) {
-    save_cursor();
-    move_cursor_up(ui_height_prev);
-    clear_lines(ui_height_prev);
-    draw_ui_frame(ui_frame);
-    restore_cursor();
+#[repr(C, align(16))]
+pub struct Cell {
+    content: CellContent,  // 4 bytes
+    fg: PackedRgba,        // 4 bytes
+    bg: PackedRgba,        // 4 bytes
+    attrs: CellAttrs,      // 4 bytes
 }
 ```
-
-### Span resolution algorithm
-```
-fn resolve_spans(spans: &[Span]) -> Vec<StyledRun> {
-    sort spans by start asc, then by priority
-    for each char index:
-        apply latest span that covers index
-    coalesce adjacent runs with same style
-}
-```
-
-### Layout distribution (min/max protocol)
-```
-fn distribute(columns, width) {
-    // 1) sum mins, sum maxes
-    // 2) if width < sum_min -> shrink proportionally
-    // 3) if width > sum_max -> expand proportionally
-    // 4) clamp within min/max
-}
-```
-
-## API Surface (expanded sketch)
-### Renderer
-- `Renderer::new(width, height, options)`
-- `Renderer::present()`
-- `Renderer::buffer()`
-- `Renderer::clear(color)`
-- `Renderer::stats()`
-- `Renderer::set_screen_mode(ScreenMode)`
-
-### Frame
-- `draw_text(x, y, &Text)`
-- `fill_rect(x, y, w, h, style)`
-- `draw_box(rect, BoxStyle)`
-- `push_scissor(rect)` / `pop_scissor()`
-- `push_opacity(alpha)` / `pop_opacity()`
-
-### Text
-- `Text::new(str)`
-- `Text::styled(str, Style)`
-- `Text::append(str)`
-- `Text::append_styled(str, Style)`
-- `Text::wrap(width)`
 
 ### Style
-- `Style::new()`
-- `Style::fg(Color)` / `Style::bg(Color)`
-- `Style::bold()` / `Style::italic()` / `Style::underline()`
-- `Style::link(url)`
+```
+pub struct Style {
+    fg: Option<Color>,
+    bg: Option<Color>,
+    attrs: Attrs,
+    mask: Attrs,
+    link_id: Option<u32>,
+    meta: Option<Vec<u8>>,
+}
+```
 
-### Program
-- `Program::new(model)`
-- `Program::run()`
-- `Program::with_custom_io()`
-- `Program::with_alt_screen()`
-- `Program::with_fps(n)`
+### Text
+```
+pub struct Text { plain: String, spans: Vec<Span>, ... }
+```
 
-## Testing Depth (what we enforce)
-- Diff correctness with randomized buffers (property tests)
-- Cursor correctness in Inline mode (PTY tests)
-- Grapheme width handling for emoji and ZWJ sequences
-- Style merge precedence tests
-- Renderer output length benchmarks
-- Widget snapshots across themes
+## 3) Cache and Memory Layout
+- 16-byte cell layout for cache efficiency.
+- 4 cells per 64-byte cache line.
+- 80x24 grid fits in L1 cache.
+- Row-major scans for diff.
 
-## Decision Gates (explicit)
-- **Gate 1:** Frame + diff renderer produces stable output in Inline mode.
-- **Gate 2:** Event parser handles bracketed paste + mouse + resize robustly.
-- **Gate 3:** Style/Theme system demonstrates deterministic merges.
-- **Gate 4:** ProgramSimulator produces stable snapshots across runs.
+## 4) Rendering Engine
+### Diff
+- bits_eq cell comparison
+- row-major run grouping
+- scratch buffer reuse
+
+### Presenter
+- tracks cursor/style/link state
+- buffered single write per frame
+- sync output if supported (DEC 2026)
+
+## 5) Input System
+- bounded CSI/DCS lengths
+- bracketed paste with max size
+- optional coalescing of noisy events
+
+## 6) Terminal Capabilities + Lifecycle
+- detect truecolor, 256, sync output, OSC 8, focus, paste
+- RAII guard ensures cleanup on panic
+
+## 7) Style System
+- deterministic merges via explicit masks
+- theme stack with semantic slots
+- colors downgraded by capability
+
+## 8) Text + Layout
+- spans resolved deterministically (later wins)
+- measurement protocol (min/max)
+- layout: row/col/grid
+
+## 9) Runtime Model
+```
+trait Model {
+    type Message: From<Event> + Send + 'static;
+    fn init(&self) -> Option<Cmd<Self::Message>> { None }
+    fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message>;
+    fn view(&self, frame: &mut Frame);
+}
+```
+
+## 10) Inline Mode vs AltScreen
+- Inline default with bounded UI region and cursor restore.
+- AltScreen opt-in for full-screen apps.
+
+---
+
+# PART II: DECISIONS EXPANDED (REQUESTED)
+
+## 11) Inline Mode Strategy ADR (scroll region vs overlay redraw vs hybrid)
+
+### 11.1 The problem
+We need stable UI chrome + scrollback-native logs. Inline mode must preserve
+scrollback while keeping the UI region stable and flicker-free.
+
+### 11.2 Options
+A) Scroll-region anchoring (DECSTBM)
+- Set a scroll region for logs; UI pinned outside scroll region.
+- Pros: true pinned UI without redraw; smooth logs.
+- Cons: terminal support is uneven; scroll region interaction with cursor save/restore is tricky.
+
+B) Overlay redraw (save/restore cursor)
+- Logs append normally; UI is redrawn over a bounded region on each frame.
+- Pros: simple, portable; no dependency on scroll region support.
+- Cons: must clear UI region each frame; risk of flicker if not buffered.
+
+C) Hybrid
+- Use scroll-region if supported; fallback to overlay redraw otherwise.
+- Pros: best of both worlds.
+- Cons: more complexity and testing.
+
+### 11.3 Decision (proposed)
+- Use Hybrid: overlay redraw as baseline, scroll-region as optional optimization.
+- Adopt capability flag `caps.scroll_region` to enable DECSTBM path.
+- Ensure the API does not expose this complexity; it is an internal policy.
+
+### 11.4 Inline mode policy (baseline overlay redraw)
+- UI region anchored at bottom by default (configurable top).
+- Render sequence:
+  1) Save cursor
+  2) Move to UI anchor
+  3) Clear UI region lines
+  4) Present UI frame
+  5) Restore cursor
+
+### 11.5 Tests
+- PTY test: log streaming + UI refresh does not corrupt scrollback.
+- Cursor policy test: cursor restored after every present.
+
+## 12) Presenter Emission Strategy ADR (SGR reset vs incremental)
+
+### 12.1 Options
+A) Always reset (SGR 0) before applying style
+- Pros: simplest, correctness guaranteed.
+- Cons: more bytes.
+
+B) Incremental SGR diffs
+- Pros: fewer bytes, more efficient.
+- Cons: complexity; must carefully track attr state.
+
+C) Hybrid
+- Reset when style diff is complex; incremental when diff is small.
+- Pros: balances simplicity and output size.
+- Cons: more code, needs benchmarks.
+
+### 12.2 Decision (proposed)
+- Start with A (reset + apply) for correctness and simplicity.
+- Add incremental path behind `presenter.incremental_sgr` feature.
+- Benchmark real workloads (harness logs + UI chrome) to justify switch.
+
+### 12.3 Benchmarks to run
+- 80x24, 120x40, 200x60 UI with logs
+- measure total bytes emitted and frame latency
+
+## 13) Terminal Backend Selection + Windows v1 Scope ADR
+
+### 13.1 Backend options
+- Crossterm: widely used, cross-platform, robust.
+- Termion: Unix-only, lighter but no Windows.
+- Custom termios: more control, but requires unsafe.
+
+### 13.2 Decision (proposed)
+- Use Crossterm as v1 backend (cross-platform).
+- Expose backend trait later if needed, but do not over-abstract in v1.
+
+### 13.3 Windows v1 scope
+- Supported: raw mode, key input, basic mouse, 16/256/truecolor where available.
+- Best-effort: OSC 8 hyperlinks, sync output, bracketed paste.
+- Document gaps clearly.
+
+---
+
+# PART III: EXECUTION PLAN
+
+## 14) Performance Budgets
+- 120x40 diff present < 1 ms
+- input parse + dispatch < 100 us/event
+- wrap 200 lines < 2 ms
+
+## 15) Testing Strategy
+- unit tests for diff/width/style
+- property tests for diff correctness
+- snapshot tests for widgets/themes
+- PTY tests for cleanup and cursor correctness
+- perf tests for budgets
+
+## 16) Quality Gates (Stop-Ship)
+- Gate 1: Inline mode stability
+- Gate 2: Diff/presenter correctness (terminal-model)
+- Gate 3: Unicode width correctness
+- Gate 4: Cleanup correctness on panic
+
+## 17) Migration Map
+- rich_rust -> ftui-text/ftui-style/ftui-widgets
+- charmed_rust -> ftui-runtime/ftui-style/ftui-widgets
+- opentui_rust -> ftui-render/ftui-core
+
+## 18) Phased Implementation Plan
+Phase 0: contracts + facade
+Phase 1: render kernel
+Phase 2: input + terminal
+Phase 3: style + text
+Phase 4: runtime + simulator
+Phase 5: layout + widgets
+Phase 6: extras + export
+Phase 7: stabilization
+
+---
+
+# PART IV: SUPER DETAILED TODO LIST
+
+The list below is the full task inventory. Do not delete items; check off when done.
+
+## A) ADRs + Decisions
+- [ ] ADR-001: Inline mode strategy (hybrid scroll-region + overlay redraw)
+  - [ ] Define detection logic for scroll-region capability
+  - [ ] Specify fallback rules
+  - [ ] Document cursor policy
+- [ ] ADR-002: Presenter style emission (reset vs incremental vs hybrid)
+  - [ ] Define baseline (reset + apply)
+  - [ ] Define incremental feature flag
+  - [ ] Benchmark thresholds to enable incremental by default
+- [ ] ADR-003: Terminal backend choice (Crossterm v1)
+  - [ ] Document rationale
+  - [ ] Document future backend trait possibility
+- [ ] ADR-004: Windows v1 scope
+  - [ ] Enumerate supported/unsupported terminal features
+  - [ ] Add doc section for known gaps
+- [ ] ADR-005: One-writer rule enforcement
+  - [ ] API design to route logs through ftui
+  - [ ] Document undefined behavior if violated
+
+## B) Core Types + Contracts
+- [ ] Define Cell layout + PackedRgba + CellAttrs
+- [ ] Define GraphemeId encoding and GraphemePool API
+- [ ] Define LinkRegistry
+- [ ] Define Frame + Buffer + HitGrid interfaces
+- [ ] Define Event/Key/Mouse types (canonical)
+- [ ] Define Style + Theme + ThemeStack
+- [ ] Define Text + Span + Segment
+- [ ] Define Model + Cmd + Program
+
+## C) Rendering Engine
+- [ ] Implement Buffer (flat Vec, scissor, opacity)
+  - [ ] Set/get cell with bounds check
+  - [ ] Continuation cell handling for wide glyphs
+- [ ] Implement diff engine
+  - [ ] bits_eq cell compare
+  - [ ] row-major scan
+  - [ ] run grouping
+- [ ] Implement Presenter
+  - [ ] cursor tracking
+  - [ ] style tracking
+  - [ ] link tracking
+  - [ ] buffered write
+  - [ ] sync output support
+
+## D) Inline Mode
+- [ ] Implement overlay redraw policy
+  - [ ] cursor save/restore
+  - [ ] clear UI region lines
+  - [ ] bounded anchor
+- [ ] Implement scroll-region path (optional)
+  - [ ] DECSTBM setup
+  - [ ] compatibility fallbacks
+- [ ] Tests for inline correctness
+
+## E) Input + Terminal
+- [ ] Input parser with bounded CSI/DCS
+- [ ] Bracketed paste support
+- [ ] Focus + resize events
+- [ ] Capability detection (TERM/COLORTERM/TERM_PROGRAM)
+- [ ] Terminal RAII guard with panic hook
+
+## F) Style + Text
+- [ ] Style merge algorithm with explicit masks
+- [ ] Color downgrade (truecolor -> 256 -> 16 -> mono)
+- [ ] Theme stack + semantic slots
+- [ ] Span overlap resolution
+- [ ] Text wrapping + truncation
+
+## G) Runtime + Scheduler
+- [ ] Model/Program loop
+- [ ] Cmd batch + sequence
+- [ ] Tick scheduling
+- [ ] Deterministic simulator
+
+## H) Widgets (v1)
+- [ ] Viewport/log viewer
+- [ ] Status line / panel
+- [ ] Text input
+- [ ] Progress + spinner
+- [ ] Table and list
+
+## I) Extras
+- [ ] Markdown renderer
+- [ ] Syntax highlighting
+- [ ] Forms
+- [ ] Export (HTML/SVG)
+
+## J) Testing + QA
+- [ ] Diff property tests
+- [ ] Unicode width corpus tests
+- [ ] Snapshot tests for widgets
+- [ ] PTY cleanup tests
+- [ ] Perf benchmarks with budgets
+
+## K) Docs
+- [ ] Agent harness tutorial
+- [ ] Inline vs alt-screen explanation
+- [ ] One-writer rule guidance
+- [ ] Windows v1 limitations
 

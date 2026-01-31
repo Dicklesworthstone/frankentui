@@ -2,7 +2,7 @@
 
 ## FrankenTUI (ftui): The Optimal Terminal UI Kernel
 
-**Version 6.1 — Kernel-First, Math-Informed, Practice-Proven Architecture (Ultimate Hybrid Plan)**
+**Version 6.4 — Kernel-First, Decision-Driven, Math-Informed, Practice-Proven Architecture (Ultimate Hybrid Plan)**
 
 > Design goal: **scrollback-native, zero-flicker, agent-ergonomic, and high-performance** Rust terminal apps
 > (agent harnesses, REPLs, dashboards, pagers) built on a *tiny sacred kernel* plus feature-gated layers.
@@ -11,6 +11,12 @@
 > Code blocks in this plan are **design sketches** for API shape, invariants, and responsibilities.
 > They are intentionally "close to Rust," but not guaranteed to compile verbatim.
 > The correctness contract lives in the invariants, tests, and ADRs—not in pseudo-code syntax.
+
+> **How to use this plan (practical):**
+> 1) Read **PART 0** once end-to-end: contracts, invariants, quality gates, and public API intent.
+> 2) Lock the "churn-magnets" via ADRs (inline mode strategy, presenter emission strategy, backend choice, Windows scope).
+> 3) Implement by phases, but **track work via the Master TODO Inventory** (added at the end of this document).
+> 4) Treat the **PTY + terminal-model + fuzz** suite as a product requirement, not "nice to have."
 
 > **Core promise:** ftui is designed so you can build a Claude Code / Codex-class agent harness UI
 > without flicker, without cursor corruption, and without sacrificing native scrollback.
@@ -47,6 +53,12 @@ These are not aspirations; they are the **contract**. If any are violated, ftui 
 - **One writer owns the terminal**
   - All bytes that affect terminal state (cursor, modes, clears, SGR, OSC, etc.) are serialized through a single owner.
   - This is required for inline mode + streaming logs to be robust.
+
+- **Untrusted bytes are never executed**
+  - Any text intended for display (logs, tool output, markdown, LLM streams) is treated as **data**.
+  - By default, ftui must **sanitize** control sequences (ESC/CSI/OSC/DCS/APC/etc.) so the renderer and terminal
+    cannot be manipulated by untrusted content.
+  - Raw passthrough (allowing ANSI/OSC to take effect) is an explicit opt-in API with loud documentation.
 
 - **Diffed + buffered UI only**
   - No ad-hoc "println in the middle of render" patterns inside the UI path.
@@ -217,14 +229,19 @@ Use a workspace (recommended) to enforce layering boundaries:
 
 7) **Terminal backend strategy**
    - Choose a default backend (cross-platform) for raw mode + input + resize.
+   - **Decision (v1 default): Crossterm.**
+     - Rationale: widely used, cross-platform, avoids bespoke termios/Windows plumbing in the kernel.
    - Allow swapping backends via feature flags if needed (but do not over-abstract prematurely).
-   - The plan must explicitly decide: "what do we ship first" vs "what stays optional."
+   - Ship one backend "batteries included" in v1; treat alternative backends as experimental.
 
 8) **Inline-mode implementation strategy**
    - Decide whether the primary mechanism is:
-     - scroll-region margins (DECSTBM) to keep UI pinned while logs scroll, or
+     - scroll-region anchoring (DECSTBM) to keep UI pinned while logs scroll, or
      - save/restore overlay redraw, or
-     - hybrid with capability-based selection.
+     - **hybrid with capability-based selection.**
+   - **Decision (proposed default): hybrid.**
+     - Overlay redraw is the correctness baseline everywhere.
+     - Scroll-region anchoring is an optimization path where it's proven safe.
    - This decision gets an ADR because it drives nearly every "agent harness" behavior.
 
 9) **Concurrency and IO model**
@@ -376,12 +393,14 @@ if not resolved early.
 1) **Inline mode anchoring and scroll behavior**
    - Bottom-anchored UI region is preferred for harness UIs, but the exact scroll strategy matters.
    - Decide primary strategy: scroll-region vs overlay redraw vs hybrid.
+   - **Proposed default:** hybrid (overlay baseline + scroll-region optimization).
 
 2) **Terminal backend choice**
    - Which library is responsible for raw mode, resize detection, and reading input on:
      - Unix terminals
      - Windows terminal
    - Prefer a backend that is stable and widely used.
+   - **Proposed default:** Crossterm for v1, with optional alternative backends behind features.
 
 3) **Async commands model**
    - Feature-gated:
@@ -398,10 +417,13 @@ if not resolved early.
    - Full reset (`SGR 0`) then apply is simple and correct but may bloat output.
    - Incremental SGR emission reduces bytes but increases complexity.
    - Decide and benchmark with real workloads (harness logs + UI chrome).
+   - **Proposed default:** reset+apply for v1 correctness; incremental/hybrid behind a feature until justified.
 
 6) **Windows support scope (v1)**
    - Decide what is supported in v1 and what is "best effort."
    - Document feature gaps (OSC 8, sync output, mouse reporting differences).
+   - **Proposed default:** raw mode + key input + resize + basic mouse + color where available;
+     best-effort for OSC 8 / sync output / bracketed paste / kitty keyboard.
 
 ## 0.11 Definition of Done (v1)
 
@@ -429,6 +451,194 @@ ftui "v1" is done when these are true:
   - "build an agent harness UI" tutorial
   - inline vs alt-screen explanation
   - IO ownership and one-writer rule guidance
+
+## 0.12 Performance Budgets (v1) and How We Measure Them
+
+Opus-level micro-optimizations are only useful if they cash out into "felt" performance under real harness workloads.
+Define budgets now so we can avoid accidental slow paths.
+
+### 0.12.1 Budgets (go/no-go thresholds)
+
+These budgets are for the **default safe scalar build** (no SIMD). SIMD may improve them; it must not be required.
+
+- **Present (diff + emit)**
+  - 80×24, 5% changed cells: **p50 < 1.0ms**, **p99 < 3.0ms**
+  - 120×40, 5% changed cells: **p50 < 2.0ms**, **p99 < 6.0ms**
+  - 200×60, 5% changed cells: **p50 < 6.0ms**, **p99 < 18.0ms**
+
+- **Bytes emitted (present)**
+  - For "small change" frames, emitted bytes should be **O(changes)**, not O(screen).
+  - Track and regress-test: bytes/frame for representative harness scenes (status-only updates, cursor blink, spinner tick).
+
+- **Input parse + dispatch**
+  - Typical key/mouse events: **< 100µs/event** (including decode and canonicalization)
+  - Paste decode: linear in size with hard caps; no quadratic behavior.
+
+- **Text shaping / width**
+  - ASCII fast-path must remain allocation-free and dominate common workloads.
+  - Unicode/ZWJ path correctness is non-negotiable even if slower.
+
+### 0.12.2 Measurement harness
+
+Add benches that simulate real usage:
+- "Harness baseline": log spam + stable UI chrome (spinner, status, prompt).
+- "Worst-case UI": full-screen redraw + styled text + links + wide graphemes.
+- "Input storm": mouse move coalescing and resize storms.
+
+And always collect:
+- time per stage (layout → draw → diff → emit)
+- bytes emitted per frame
+- allocations per frame (with feature-gated allocator instrumentation)
+
+## 0.13 ADR Expansions (Lock Churn-Magnets Early)
+
+This section expands the most dangerous decisions into "Options → Decision → Consequences → Tests."
+These ADRs should be moved into `/docs/adr/ADR-###.md` as they are finalized.
+
+### 0.13.1 ADR-001: Inline Mode Strategy (Hybrid Anchoring)
+
+#### Problem
+We need stable UI chrome + scrollback-native logs, with no flicker or cursor corruption, across terminals and multiplexers.
+
+#### Options
+A) **Scroll-region anchoring (DECSTBM)**
+- Pros: UI can be "truly pinned" while logs scroll naturally.
+- Cons: tricky interactions (cursor save/restore, origin mode), mux quirks, requires serious PTY coverage.
+
+B) **Overlay redraw (save/restore cursor + redraw bounded UI region)**
+- Pros: portable baseline; correctness-first; simplest mental model.
+- Cons: needs careful "clear only UI region" and buffered output to avoid flicker.
+
+C) **Hybrid (baseline overlay + scroll-region optimization)**
+- Pros: best of both; baseline works everywhere, optimization where safe.
+- Cons: complexity; requires capability policy and more tests.
+
+#### Decision
+- **Hybrid**:
+  - Overlay redraw is always available and is the correctness baseline.
+  - Scroll-region anchoring is an internal optimization enabled only when it's proven safe for the environment.
+  - The public API exposes *policy*, not mechanism.
+
+#### Implementation notes (baseline overlay redraw)
+- UI region is bounded and anchored (default bottom).
+- Present sequence:
+  1) Begin synchronized output if supported.
+  2) Save cursor position.
+  3) Move cursor to UI anchor.
+  4) Clear only the UI region (localized EL/ED operations).
+  5) Present diffed UI frame.
+  6) Restore cursor position.
+  7) End synchronized output; flush.
+
+#### Implementation notes (scroll-region optimization)
+- When enabled:
+  - Set scroll region to log area (top..(h-ui_height)).
+  - Ensure UI writes land outside the scroll region.
+  - Restore scroll region on exit and on mode switches.
+- Must be compatible with:
+  - tmux/screen passthrough (or disabled by default there)
+  - alternate screen and modal transitions
+
+#### Tests (stop-ship)
+- PTY test: log spam + UI tick does not corrupt scrollback, does not drift cursor.
+- Cursor contract test: cursor restored after every UI present.
+- Resize test: changing ui_height and terminal height re-anchors correctly.
+
+### 0.13.2 ADR-002: Presenter Emission Strategy (Correct First, Optimize Second)
+
+#### Problem
+SGR and link state tracking can either be simple and correct or minimal-bytes and complex.
+
+#### Options
+A) **Reset+apply style always** (emit `SGR 0` then re-apply)
+- Pros: simplest; correctness is easy.
+- Cons: more bytes.
+
+B) **Incremental SGR diffs**
+- Pros: fewer bytes; can be faster on slow terminals.
+- Cons: complexity; risk of "dangling attributes" bugs.
+
+C) **Hybrid**
+- Pros: best of both (reset on hard cases; incremental on small diffs).
+- Cons: needs heuristics and benchmarks.
+
+#### Decision
+- v1 default: **Reset+apply** for correctness.
+- Add **incremental/hybrid** behind a feature flag until benchmarks + PTY coverage justify turning it on.
+
+#### Tests
+- Terminal-model tests: style state cannot "leak" across runs.
+- PTY tests: links (OSC 8) cannot remain open after present/exit.
+
+### 0.13.3 ADR-003: Terminal Backend Selection (v1)
+
+#### Problem
+We must support raw mode, key/mouse input, resize, and reliable cleanup on Unix and Windows.
+
+#### Decision
+- v1 default backend: **Crossterm** for lifecycle + input + resize.
+- Kernel remains backend-agnostic at the conceptual level, but v1 does **not** over-abstract.
+- If alternative backends exist later, they are feature-gated and must pass the same PTY/terminal-model suite.
+
+### 0.13.4 ADR-004: Windows v1 Scope
+
+#### Supported in v1
+- Raw mode enter/exit and cleanup on panic.
+- Key input and resize events.
+- Basic mouse (where Crossterm supports it).
+- Color where available (16/256/truecolor when exposed by the platform/terminal).
+
+#### Best-effort / may be missing in v1
+- DEC synchronized output (2026).
+- OSC 8 hyperlinks.
+- Bracketed paste and focus events differences across terminals.
+- Kitty keyboard protocol.
+
+#### Documentation requirement
+- A "Windows limitations" section must exist and be honest.
+
+### 0.13.5 ADR-005: Enforcing the One-Writer Rule in Real Apps
+
+#### Problem
+Inline mode guarantees break if other code writes to stdout/stderr concurrently.
+
+#### Decision
+- Provide a concrete, ergonomic routing strategy:
+  - `TerminalOwner` / `TerminalSession` owns raw mode and the output handle.
+  - `TerminalWriter` is the only way to write logs and present UI.
+  - Offer capture/mux helpers so subprocess and in-process logs flow through ftui.
+
+#### Practical enforcement levers
+- Provide a `LogSink: Write` that libraries can use.
+- Provide PTY capture for subprocess output (feature-gated).
+- Provide optional "stdio capture" helper (pipe + reader thread) that forwards through ftui with sanitization.
+
+#### Tests
+- PTY tests that intentionally interleave log writes + presents (via the supported mux path) and assert stability.
+
+### 0.13.6 ADR-006: Untrusted Output Policy (Sanitize-by-Default)
+
+#### Problem
+Agent harnesses display tool output, LLM streams, and logs. Malicious or buggy content can smuggle ANSI/OSC sequences that manipulate terminal state or deceive users.
+
+#### Decision
+- **Sanitize by default**: Any text flowing through `write_log()` or rendered as user-provided content has control sequences stripped or escaped.
+- **Explicit opt-in for raw passthrough**: An API like `write_raw()` or `Text::raw()` allows trusted content to include ANSI.
+- Document the security implications clearly.
+
+#### What gets sanitized
+- ESC (0x1B) and CSI/OSC/DCS/APC sequences
+- C0 controls except tab, newline, carriage return (optionally configurable)
+- Option to allow a subset (e.g., SGR styling) in "semi-trusted" mode
+
+#### Tests
+- PTY tests that feed adversarial escape sequences into logs and assert terminal invariants remain intact.
+- Fuzz tests with random byte streams in log paths.
+
+## 0.14 Execution Tracker
+
+This plan is intentionally detailed, but shipping requires an execution board.
+The **Master TODO Inventory** lives at the end of this document and is designed to be checked off.
 
 ---
 
@@ -774,7 +984,7 @@ fn compare_cells_scalar(old: &Cell, new: &Cell) -> bool {
 
 **NOTE ON UNSAFE POLICY:**
 The plan originally used `unsafe` transmute/read for bitwise comparisons.
-In ftui v5, we require:
+In ftui v6, we require:
 - a safe default implementation (compiler can vectorize 4×u32 compares)
 - optional `simd` feature uses isolated unsafe for AVX/SSE paths
 
@@ -1771,6 +1981,12 @@ pub struct TerminalCapabilities {
     pub colors_256: bool,
     pub sync_output: bool,        // DEC mode 2026
     pub osc8_hyperlinks: bool,
+    pub scroll_region: bool,      // DECSTBM anchoring optimization
+    pub osc52_clipboard: bool,    // OSC 52 clipboard (output feature; best-effort)
+    // Multiplexer detection (impacts passthrough policies)
+    pub in_tmux: bool,            // TMUX env var
+    pub in_screen: bool,          // STY env var
+    pub in_zellij: bool,          // ZELLIJ env var
     pub kitty_keyboard: bool,
     pub focus_events: bool,
     pub bracketed_paste: bool,
@@ -1788,6 +2004,15 @@ impl TerminalCapabilities {
         let colorterm = std::env::var("COLORTERM").unwrap_or_default();
         let term = std::env::var("TERM").unwrap_or_default();
         let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+
+        // Multiplexer detection
+        // Note: We detect *external* muxes (tmux, screen, zellij) that sit between us and the terminal.
+        // WezTerm's built-in mux doesn't need detection here because it's integrated into the terminal
+        // emulator and passes through escape sequences correctly. Same for Kitty's multiplexing.
+        let in_tmux = std::env::var("TMUX").is_ok();
+        let in_screen = std::env::var("STY").is_ok();
+        let in_zellij = std::env::var("ZELLIJ").is_ok();
+        let in_any_mux = in_tmux || in_screen || in_zellij;
 
         let true_color = !no_color && (colorterm.contains("truecolor")
             || colorterm.contains("24bit")
@@ -1810,11 +2035,25 @@ impl TerminalCapabilities {
             || term.contains("kitty")
         );
 
+        // Scroll region (DECSTBM): broadly supported on xterm-like terminals, but keep conservative defaults.
+        // NOTE: inline correctness must not depend on this being true.
+        let scroll_region = term != "dumb";
+
+        // OSC 52 clipboard: best-effort; some environments restrict it (including most multiplexers).
+        // This is treated as an OUTPUT feature and should be opt-in at the API level.
+        // Note: Zellij has better OSC 52 support than tmux/screen, but we stay conservative.
+        let osc52_clipboard = !in_any_mux && term != "dumb";
+
         Self {
             true_color,
             colors_256,
             sync_output,
             osc8_hyperlinks,
+            scroll_region,
+            osc52_clipboard,
+            in_tmux,
+            in_screen,
+            in_zellij,
             kitty_keyboard: term.contains("kitty") || std::env::var("KITTY_WINDOW_ID").is_ok(),
             focus_events: true, // Widely supported
             bracketed_paste: true, // Widely supported
@@ -1832,6 +2071,12 @@ impl TerminalCapabilities {
     ///
     /// This must never block app startup indefinitely; probes must be bounded and skippable.
 
+    /// Returns true if running inside any known terminal multiplexer
+    #[inline]
+    pub fn in_any_mux(&self) -> bool {
+        self.in_tmux || self.in_screen || self.in_zellij
+    }
+
     /// Minimal fallback (no advanced features)
     pub fn basic() -> Self {
         Self {
@@ -1839,6 +2084,11 @@ impl TerminalCapabilities {
             colors_256: true,
             sync_output: false,
             osc8_hyperlinks: false,
+            scroll_region: false,
+            osc52_clipboard: false,
+            in_tmux: false,
+            in_screen: false,
+            in_zellij: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: false,
@@ -2060,6 +2310,24 @@ Practical API implication:
   - `present_ui(frame)`
 so UI+log cannot interleave uncontrolled.
 
+#### Scroll-region anchoring (DECSTBM) optimization (optional)
+
+This is an internal optimization path, not required for correctness.
+
+When enabled, the core idea is:
+- Define the log region as a scrolling region (top..bottom_log).
+- Keep the UI region outside the scroll region.
+- Let the terminal do what it is good at: scrolling logs without forcing us to redraw UI constantly.
+
+Rules:
+1) Never assume DECSTBM works everywhere; always have the overlay redraw fallback.
+2) Restore the scroll region on exit and when changing modes.
+3) Be conservative in mux environments unless proven stable.
+
+Policy:
+- Default: overlay redraw baseline (always).
+- If `caps.scroll_region` and policy allows (and tests say it's safe), enable scroll-region anchoring.
+
 #### AltScreen mode (opt-in)
 Goals:
 - classic full-screen TUI experience
@@ -2215,6 +2483,7 @@ pub struct InputParser {
     // DoS protection
     max_csi_len: usize,
     max_osc_len: usize,
+    max_dcs_len: usize,
     max_paste_len: usize,
 }
 
@@ -2225,6 +2494,7 @@ enum ParserState {
     Csi,
     CsiParam,
     Osc,
+    Dcs,
     Ss3,
 }
 
@@ -2237,6 +2507,7 @@ impl InputParser {
             in_paste: false,
             max_csi_len: 256,
             max_osc_len: 4096,
+            max_dcs_len: 4096,
             max_paste_len: 1024 * 1024, // 1MB
         }
     }
@@ -2572,8 +2843,12 @@ The kernel input parser must remain small and robust. Additional capabilities ca
 
 Testing requirements:
 - fuzz input parser with random byte streams
-- hard bounds on CSI/OSC lengths are enforced
+- hard bounds on CSI/OSC/DCS lengths are enforced
 - no panics on malformed sequences
+
+Additionally recommended:
+- event coalescing (mouse move floods, resize storms)
+- explicit tests for DCS/OSC termination handling (BEL vs ST)
 
 ---
 
@@ -3657,6 +3932,12 @@ Concrete checklist:
 1) **Inline mode cursor corruption**
    - Mitigation: PTY tests + strict cursor policy + centralized writer API for logs/UI.
 
+1b) **ANSI / OSC injection via untrusted log content**
+   - Mitigation:
+     - sanitize-by-default for any untrusted output path
+     - explicit opt-in "raw passthrough" API with loud documentation
+     - PTY tests that feed adversarial escape sequences into logs and assert terminal invariants remain intact
+
 2) **Unicode width bugs**
    - Mitigation: curated test corpus + snapshot tests + avoid "byte length == width" except proven ASCII fast path.
 
@@ -4365,9 +4646,136 @@ mod benchmarks {
 
 ---
 
+# PART X: MASTER TODO INVENTORY (DO NOT DELETE; CHECK OFF)
+
+The list below is the full task inventory designed to be checked off over time.
+Treat it as the execution board that connects ADRs → phases → shipped v1.
+
+## A) ADRs + Decisions
+- [ ] ADR-001: Inline mode strategy (hybrid scroll-region + overlay redraw)
+  - [ ] Define capability/policy gating (`caps.scroll_region`, mux policy)
+  - [ ] Specify fallback rules and mode switching behavior
+  - [ ] Document cursor contract and UI anchor behavior
+- [ ] ADR-002: Presenter style emission (reset vs incremental vs hybrid)
+  - [ ] Baseline (reset + apply) correctness proof + tests
+  - [ ] Incremental/hybrid feature flag spec
+  - [ ] Benchmarks and thresholds for enabling incremental by default
+- [ ] ADR-003: Terminal backend choice (Crossterm v1)
+  - [ ] Document rationale and constraints
+  - [ ] Document extension points without over-abstracting
+- [ ] ADR-004: Windows v1 scope
+  - [ ] Enumerate supported features
+  - [ ] Enumerate best-effort features and gaps
+  - [ ] Add docs section for limitations
+- [ ] ADR-005: One-writer rule enforcement
+  - [ ] Type-level ownership model (`TerminalOwner`/`TerminalWriter`)
+  - [ ] Document undefined behavior if violated
+  - [ ] Provide supported routing patterns (LogSink, PTY capture, stdio capture)
+- [ ] ADR-006: Untrusted output policy (sanitize-by-default)
+  - [ ] Define what is sanitized (ESC/CSI/OSC/DCS/APC)
+  - [ ] Define explicit opt-in raw passthrough API
+  - [ ] Add adversarial PTY tests
+
+## B) Core Types + Contracts
+- [ ] Define Cell layout + PackedRgba + CellAttrs invariants
+- [ ] Define GraphemeId encoding and GraphemePool API (refcount + reuse)
+- [ ] Define LinkRegistry + OSC 8 policy (open/close correctness)
+- [ ] Define Frame + Buffer + HitGrid interfaces (kernel boundary)
+- [ ] Define Event/Key/Mouse types (canonical)
+- [ ] Define TerminalCapabilities (including `scroll_region`, `in_tmux`/`in_screen`/`in_zellij` mux flags)
+- [ ] Define TerminalSession / lifecycle guard contracts (panic cleanup)
+
+## C) Rendering Engine
+- [ ] Implement Buffer (flat Vec, scissor, opacity)
+  - [ ] get/set w/ bounds check; unchecked APIs only where justified
+  - [ ] continuation cell handling for wide glyphs
+  - [ ] clear semantics (full vs region)
+- [ ] Implement diff engine
+  - [ ] scalar bits_eq path (safe)
+  - [ ] row-major scan
+  - [ ] run grouping
+  - [ ] scratch buffer reuse
+- [ ] Implement Presenter
+  - [ ] cursor tracking
+  - [ ] style tracking
+  - [ ] link tracking
+  - [ ] buffered single write per frame
+  - [ ] sync output support (DEC 2026) with robust fallback
+- [ ] Optional ftui-simd
+  - [ ] isolated unsafe hot loops + scalar fallback
+  - [ ] benches + correctness tests per target arch
+
+## D) Inline Mode
+- [ ] Implement overlay redraw baseline
+  - [ ] cursor save/restore policy (robust across terminals)
+  - [ ] clear UI region only (never clear full screen)
+  - [ ] anchored UI region (bottom default, top optional)
+  - [ ] log write coordination (`write_log` suspends/redraws UI as needed)
+- [ ] Implement scroll-region optimization path (optional)
+  - [ ] DECSTBM setup + restore
+  - [ ] mux policy (tmux/screen) passthrough or disable-by-default
+  - [ ] resize behavior and re-anchoring
+- [ ] PTY tests for inline correctness + cleanup under panic
+
+## E) Input + Terminal
+- [ ] Input parser with bounded CSI/OSC/DCS lengths
+- [ ] Bracketed paste support with max size
+- [ ] Focus + resize events
+- [ ] Mouse SGR protocol decode
+- [ ] Optional: kitty keyboard protocol decode
+- [ ] Event coalescing (mouse move floods, resize storms)
+- [ ] Terminal RAII guard with panic hook
+
+## F) Style + Text
+- [ ] Style merge algorithm with explicit masks (deterministic)
+- [ ] Color downgrade (truecolor -> 256 -> 16 -> mono)
+- [ ] Theme system with semantic slots + presets
+- [ ] Markup parsing (optional layer, feature-gated)
+- [ ] Text wrapping + truncation (width-correct for ZWJ/emoji/combining)
+- [ ] Width caches and ASCII fast paths
+
+## G) Runtime + Scheduler
+- [ ] Model/Program loop (update/view)
+- [ ] Cmd batch + sequence
+- [ ] Tick scheduling
+- [ ] Deterministic simulator + snapshot capture
+- [ ] Optional async integration (threadpool/tokio) without breaking determinism
+
+## H) Widgets (v1 essentials)
+- [ ] Viewport/log viewer (agent harness essential)
+- [ ] Status line / panel
+- [ ] Text input / prompt
+- [ ] Progress + spinner
+- [ ] Table + list (basic)
+- [ ] Optional HitGrid for mouse affordances
+
+## I) Extras (feature-gated)
+- [ ] Markdown renderer
+- [ ] Syntax highlighting
+- [ ] Forms / pickers
+- [ ] Export adapters (HTML/SVG/text)
+- [ ] Optional clipboard integration (OSC 52 output best-effort)
+
+## J) Testing + QA
+- [ ] Diff property tests (apply diff reproduces target)
+- [ ] Terminal-model tests (presenter output correctness)
+- [ ] Unicode width corpus tests
+- [ ] Snapshot tests (widgets + themes + sizes)
+- [ ] PTY cleanup tests (normal exit + panic)
+- [ ] Adversarial tests (escape injection into logs)
+- [ ] Perf benchmarks with budgets + bytes-emitted tracking
+
+## K) Docs
+- [ ] Agent harness tutorial (inline + modal alt-screen)
+- [ ] Inline vs alt-screen explanation (scrollback tradeoffs)
+- [ ] One-writer rule guidance + supported routing patterns
+- [ ] Windows v1 limitations + compatibility notes
+
+---
+
 ## Conclusion
 
-FrankenTUI v5.0 represents an "ultimate hybrid" synthesis of three excellent terminal UI libraries:
+FrankenTUI v6.4 represents an "ultimate hybrid" synthesis of three excellent terminal UI libraries:
 
 1. **From opentui_rust**: Cache-optimal 16-byte cells, bitwise comparison, Porter-Duff blending, grapheme pooling, scissor/opacity stacks, cell-level diffing
 
@@ -4388,4 +4796,4 @@ Performance targets:
 - **16 bytes** per cell (4 cells per cache line)
 - **Zero heap allocation** for 99% of cells
 
-*FrankenTUI: Where rigor meets practical ergonomics.*
+*FrankenTUI: Where rigor meets practical ergonomics—and decisions turn into shipped software.*
