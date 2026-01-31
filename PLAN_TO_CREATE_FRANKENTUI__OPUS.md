@@ -2,10 +2,18 @@
 
 ## FrankenTUI (ftui): The Optimal Terminal UI Kernel
 
-**Version 5.0 — Mathematical Core + Pragmatic Workspace Architecture (Ultimate Hybrid Plan)**
+**Version 6.1 — Kernel-First, Math-Informed, Practice-Proven Architecture (Ultimate Hybrid Plan)**
 
 > Design goal: **scrollback-native, zero-flicker, agent-ergonomic, and high-performance** Rust terminal apps
 > (agent harnesses, REPLs, dashboards, pagers) built on a *tiny sacred kernel* plus feature-gated layers.
+
+> **Document note (important):**
+> Code blocks in this plan are **design sketches** for API shape, invariants, and responsibilities.
+> They are intentionally "close to Rust," but not guaranteed to compile verbatim.
+> The correctness contract lives in the invariants, tests, and ADRs—not in pseudo-code syntax.
+
+> **Core promise:** ftui is designed so you can build a Claude Code / Codex-class agent harness UI
+> without flicker, without cursor corruption, and without sacrificing native scrollback.
 
 ---
 
@@ -31,6 +39,36 @@ This is **not** a 1:1 port, and it is **not** "a widget zoo." ftui is:
   - no flicker, no cursor corruption, reliable cleanup on crash
 - **Traditional TUIs**: dashboards, monitors, pickers, forms
 - **Export / replay** (optional): capture frames or segment streams for HTML/SVG/text export and tests
+
+### 0.1.1 Non-Negotiables (Engineering Contract)
+
+These are not aspirations; they are the **contract**. If any are violated, ftui is not ftui yet.
+
+- **One writer owns the terminal**
+  - All bytes that affect terminal state (cursor, modes, clears, SGR, OSC, etc.) are serialized through a single owner.
+  - This is required for inline mode + streaming logs to be robust.
+
+- **Diffed + buffered UI only**
+  - No ad-hoc "println in the middle of render" patterns inside the UI path.
+  - If the application wants logs, logs go through the ftui writer API (or a controlled capture/mux).
+
+- **Inline-first is real**
+  - Inline mode must preserve native scrollback and must not rely on alt-screen to look correct.
+  - AltScreen remains opt-in and supported, including temporary modal use.
+
+- **Safe by default, unsafe isolated**
+  - `#![forbid(unsafe_code)]` in all core crates by default.
+  - If SIMD/unsafe hot loops exist, they live in an explicitly separate feature-gated module or crate,
+    with audit notes and benchmarks, and a scalar safe fallback always available.
+
+- **Deterministic by design**
+  - Rendering is pure given (model state + terminal size + theme).
+  - Side effects happen only through a controlled command/event system or an explicit IO API.
+
+- **Correctness is continuously verified**
+  - PTY tests validate cleanup/cursor behavior on real terminals.
+  - A terminal-model test harness validates presenter output.
+  - Fuzzing keeps the input parser panic-free and bounded.
 
 ## 0.2 Mission and Non-Goals
 
@@ -76,6 +114,12 @@ This separation ensures the kernel stays "obviously correct" while UX layers can
 
 Use a workspace (recommended) to enforce layering boundaries:
 
+0) `ftui` (facade / public API)
+   - The crate most apps depend on
+   - Re-exports stable public types (`App`, `ScreenMode`, `Event`, `Frame`, `Style`, etc.)
+   - Provides prelude, ergonomic builders, and sensible defaults
+   - Keeps internal crate boundaries intact without leaking complexity to users
+
 1) `ftui-core`
    - Raw mode + terminal lifecycle guards (RAII)
    - Capability detection (env heuristics + optional queries)
@@ -115,6 +159,18 @@ Use a workspace (recommended) to enforce layering boundaries:
 9) `ftui-harness` (examples / demos)
    - Agent harness reference implementation
 
+10) `ftui-simd` (optional, unsafe allowed, isolated)
+   - Feature-gated implementations of hot loops (cell compare/clear/blend/width fast paths)
+   - Strict rules:
+     - depends on `ftui-render` (not the other way around)
+     - must have scalar fallback
+     - must have benches + targeted correctness tests
+     - must document invariants and supported architectures
+
+11) `ftui-pty` (test-only helper crate)
+   - PTY spawning utilities and golden-output harness
+   - Minimizes boilerplate and makes PTY tests consistent in CI
+
 ## 0.5 Kernel Invariants (Must Always Hold)
 
 - **All UI rendering is diffed and buffered** (Frame/Buffer → diff → presenter). No ad-hoc writes.
@@ -125,6 +181,12 @@ Use a workspace (recommended) to enforce layering boundaries:
 - **Input parsing is lossless** for supported sequences and robust against malformed input (limits enforced).
 - **Cleanup is guaranteed**: raw mode, cursor visibility, bracketed paste, mouse modes, alt screen are restored
   even on panic (panic hook + RAII guards).
+- **Single-writer rule**: ftui owns and serializes terminal output for correctness in inline mode.
+  - If external code writes directly to stdout/stderr concurrently, inline-mode behavior is undefined unless
+    the app routes that output through ftui's mux/capture APIs.
+  - This is a deliberate constraint to keep guarantees meaningful.
+- **Unsafe isolation**: core crates are safe-by-default (`forbid(unsafe_code)`); any unsafe lives in `ftui-simd`
+  or similarly isolated module with explicit tests + benchmarks.
 
 ## 0.6 Design Decisions to Lock Early (Decision Records / ADRs)
 
@@ -149,6 +211,32 @@ Use a workspace (recommended) to enforce layering boundaries:
    - `CellStyle` is tiny and renderer-facing (packed fg/bg/attrs/link-id).
    - Higher-level style (theme/semantic colors/layout) resolves into `CellStyle` before drawing.
 
+6) **Public API shape**
+   - Provide a cohesive `ftui::App` / `ftui::Program` entrypoint with a stable ergonomic surface.
+   - Core crates remain composable for advanced usage, but the common path is obvious and pleasant.
+
+7) **Terminal backend strategy**
+   - Choose a default backend (cross-platform) for raw mode + input + resize.
+   - Allow swapping backends via feature flags if needed (but do not over-abstract prematurely).
+   - The plan must explicitly decide: "what do we ship first" vs "what stays optional."
+
+8) **Inline-mode implementation strategy**
+   - Decide whether the primary mechanism is:
+     - scroll-region margins (DECSTBM) to keep UI pinned while logs scroll, or
+     - save/restore overlay redraw, or
+     - hybrid with capability-based selection.
+   - This decision gets an ADR because it drives nearly every "agent harness" behavior.
+
+9) **Concurrency and IO model**
+   - Decide whether ftui supports:
+     - single-threaded ownership only, or
+     - optional render thread / output thread.
+   - Either way, the **one-writer rule** remains mandatory.
+
+10) **Span/style precedence**
+   - Explicitly define overlap semantics for text spans and markup.
+   - Determinism here prevents "heisenbugs" in rendering and snapshots.
+
 ## 0.7 Quality Gates (Stop-Ship if Failing)
 
 - **Gate 1: Inline mode stability**
@@ -162,6 +250,185 @@ Use a workspace (recommended) to enforce layering boundaries:
 
 - **Gate 4: Terminal cleanup**
   - PTY tests verify raw mode + cursor visibility + alt screen restoration after normal exit and panic.
+
+## 0.8 Public API Surface (Target)
+
+ftui succeeds or fails based on how it feels to build real apps—especially **agent harness UIs**.
+The kernel can remain minimal while the facade provides a coherent "pit of success."
+
+### 0.8.1 Canonical entrypoint: `ftui::App`
+
+Design goals:
+- An obvious default path that "just works" for inline + scrollback + stable UI region.
+- Advanced control remains available via `ftui-core` / `ftui-render` without fighting the facade.
+
+Sketch:
+```rust
+use ftui::{App, Cmd, Event, Frame, Model, ScreenMode, Result};
+
+struct State { count: u64 }
+
+impl Model for State {
+    type Message = Event;
+
+    fn update(&mut self, msg: Event) -> Cmd<Event> {
+        match msg {
+            Event::Key(k) if k.is_char('q') => Cmd::quit(),
+            Event::Key(k) if k.is_char('+') => { self.count += 1; Cmd::none() }
+            _ => Cmd::none(),
+        }
+    }
+
+    fn view(&self, frame: &mut Frame) {
+        // draw into frame.buffer using text/style/layout helpers
+    }
+}
+
+fn main() -> Result<()> {
+    App::new(State { count: 0 })
+        .screen_mode(ScreenMode::Inline { ui_height: 6 })
+        .run()
+}
+```
+
+### 0.8.2 "Easy mode" adapter: `view_string()`
+
+Support trivial apps and prototyping without violating kernel discipline:
+- Accept a `String` (or `Text`) and internally route it through:
+  `String -> Text/Segments -> Frame -> Diff -> Presenter`.
+
+### 0.8.3 Agent harness oriented API
+
+The reference harness must not be "just an example"; it is the design forcing function.
+
+Minimum harness primitives:
+- `write_log(text)` that is scrollback-native (inline mode)
+- `present_ui(frame)` that is atomic and flicker-resistant
+- optional "modal alt-screen" for complex UI interactions
+- child-process capture via PTY (feature gated) to guarantee the one-writer rule
+
+## 0.9 Output + Concurrency Architecture (Critical for Inline Mode)
+
+Inline mode plus streaming output is the hardest real-world requirement. Most flicker/corruption bugs
+come from broken assumptions about terminal ownership and write interleaving.
+
+ftui solves this by making the IO topology explicit.
+
+### 0.9.1 The One-Writer Rule
+
+- Exactly one component is allowed to emit bytes that mutate terminal state.
+- That component is either:
+  - a `TerminalWriter` in the same thread, or
+  - a dedicated render/output thread that owns the `Presenter`.
+
+Everything else communicates via messages (events/commands) or a controlled logging API.
+
+### 0.9.2 Two supported operating modes
+
+#### Mode A: Single-threaded (simplest, default)
+- The runtime loop owns the `Presenter` and writes to terminal synchronously.
+- `write_log()` and `present_ui()` are serialized by the runtime.
+- Best for smaller apps and simplest mental model.
+
+#### Mode B: Dedicated render/output thread (optional, feature gated)
+- A render thread owns:
+  - `Presenter`
+  - `TerminalSession` output handle
+  - `prev_buffer` (front buffer)
+- The runtime sends messages:
+  - `Render(frame_buffer)`
+  - `Log(bytes or lines)`
+  - `SetMode(...)`, `Shutdown`, etc.
+- Guarantees:
+  - no interleaving of writes
+  - optional backpressure (drop frames, coalesce logs)
+  - the runtime stays responsive under heavy IO
+
+### 0.9.3 Atomic present contract
+
+Goal: minimize flicker and tearing by ensuring "present" is emitted as a single buffered operation.
+
+Practical contract:
+- `Presenter::present()` performs:
+  - optional synchronized output begin/end
+  - run-grouped emission
+  - flush
+- Buffered writer is sized for worst-case frame bytes (practically 64KB+; tuneable).
+
+### 0.9.4 Output mux / capture (agent harness realism)
+
+To build reliable harnesses, ftui should support routing external output through the one-writer.
+
+Feature-gated options:
+- PTY capture for child processes:
+  - spawn tool subprocesses under PTY
+  - read their stdout/stderr streams
+  - write as log stream through ftui (preserving scrollback)
+- In-process log routing:
+  - provide a `LogSink` or `Writer` that application code uses
+  - discourage raw `println!` during inline mode
+
+## 0.10 Open Questions (Resolve Early; Track as ADRs)
+
+The plan is intentionally ambitious; these are the few decisions that most often cause multi-week churn
+if not resolved early.
+
+1) **Inline mode anchoring and scroll behavior**
+   - Bottom-anchored UI region is preferred for harness UIs, but the exact scroll strategy matters.
+   - Decide primary strategy: scroll-region vs overlay redraw vs hybrid.
+
+2) **Terminal backend choice**
+   - Which library is responsible for raw mode, resize detection, and reading input on:
+     - Unix terminals
+     - Windows terminal
+   - Prefer a backend that is stable and widely used.
+
+3) **Async commands model**
+   - Feature-gated:
+     - thread pool (std-only), or
+     - tokio integration
+   - Ensure deterministic simulator remains possible regardless.
+
+4) **Text span precedence**
+   - When spans overlap:
+     - "later wins" is deterministic but must be documented
+     - define how masks/explicit properties merge
+
+5) **Presenter style emission strategy**
+   - Full reset (`SGR 0`) then apply is simple and correct but may bloat output.
+   - Incremental SGR emission reduces bytes but increases complexity.
+   - Decide and benchmark with real workloads (harness logs + UI chrome).
+
+6) **Windows support scope (v1)**
+   - Decide what is supported in v1 and what is "best effort."
+   - Document feature gaps (OSC 8, sync output, mouse reporting differences).
+
+## 0.11 Definition of Done (v1)
+
+ftui "v1" is done when these are true:
+
+- Inline mode default is stable:
+  - streaming logs + UI chrome does not corrupt scrollback or cursor
+  - PTY tests confirm behavior on normal exit and panic
+- Diff/presenter correctness validated by:
+  - terminal-model tests for supported sequences
+  - output size baselines for representative workloads
+- Unicode width correctness proven by corpus tests (ZWJ, emoji, combining marks)
+- Style system is deterministic and documented (explicit masks + inheritance)
+- Runtime supports:
+  - update/view loop
+  - ticks
+  - batch/sequence commands
+  - deterministic simulator + snapshot tests
+- Core widgets needed for harness UIs exist and are tested:
+  - viewport/log viewer
+  - status line / panel
+  - text input / prompt line
+  - progress/spinner
+- Documentation includes:
+  - "build an agent harness UI" tutorial
+  - inline vs alt-screen explanation
+  - IO ownership and one-writer rule guidance
 
 ---
 
@@ -221,18 +488,22 @@ From first principles, a terminal UI library needs exactly these operations:
 
 ### 1.3 The Optimality Conditions
 
-A terminal UI library is **optimal** if and only if:
+In practice, terminals are messy and "global optimality" for ANSI emission is both hard to define and
+rarely worth the engineering complexity. ftui instead targets **practical optimality**:
 
-1. **Minimal output**: `|Render(G_c, G_d)| ≤ |Render'(G_c, G_d)|` for all alternative implementations
-2. **Minimal computation**: Operations achieve their theoretical complexity bounds
-3. **Minimal memory**: Data structures use asymptotically optimal space
-4. **Minimal latency**: No unnecessary blocking or synchronization
+1. **Correct output under real terminals** (primary)
+2. **Flicker resistance** via buffered atomic present and (when available) synchronized output
+3. **Near-minimal bytes** where it matters (run grouping, state tracking, sensible heuristics)
+4. **Low and predictable latency** (bounded CPU + bounded output)
+5. **Cache-efficient data layout** (so we can hit high FPS without drama)
 
-**Corollary** (practical): the optimal architecture must:
+### Practical corollary: required architecture choices
+
+The architecture must:
 - Use cell-level diffing (not region-level)
 - Track terminal state to avoid redundant SGR codes
-- Use bitwise cell comparison (not field-by-field)
-- Cache computed values (widths, styles)
+- Use fast cell equality (compiler-vectorized scalar comparisons are fine; SIMD is optional)
+- Cache computed values (widths, style resolution)
 - Pool complex content (graphemes, links)
 
 **Additional real-world constraints (often ignored by "optimal" proofs):**
@@ -241,6 +512,7 @@ A terminal UI library is **optimal** if and only if:
   - synchronized output support, and/or
   - a strict output policy (single buffered write per frame) and avoiding full-screen clears in inline mode.
 - Robustness depends on cleanup discipline and crash recovery.
+- Correctness depends on IO ownership; without the one-writer rule, guarantees become meaningless.
 
 ### 1.4 The Three-Library Synthesis
 
@@ -1447,6 +1719,44 @@ impl<W: Write> Presenter<W> {
 }
 ```
 
+### 8.2 Optional Dedicated Render/Output Thread (One-Writer Enforcement)
+
+For agent harness workloads, it is common to have:
+- background tasks producing log output
+- UI updates on ticks
+- subprocess output capture
+
+If these can interleave uncontrolled, inline mode breaks. A dedicated output thread is an optional but
+high leverage solution.
+
+Design sketch:
+- `RenderThread` owns:
+  - `TerminalSession` writer handle
+  - `Presenter`
+  - `prev_buffer`
+  - inline-mode policy state (ui rect, scroll margins, etc.)
+- The program sends messages:
+
+```rust
+enum OutMsg {
+    Log(Vec<u8>),             // already encoded UTF-8 bytes
+    Render(Buffer),           // desired UI buffer
+    Resize { w: u16, h: u16 },
+    SetMode(ScreenMode),
+    Shutdown,
+}
+```
+
+Rules:
+- All terminal writes happen in the render thread.
+- UI presents are coalesced:
+  - drop intermediate `Render` messages if a newer one exists
+  - keep latest only (like vsync)
+- Log writes are newline-aware and can be chunked to avoid starving UI.
+
+Testing:
+- PTY tests should run both with and without render thread enabled.
+
 ---
 
 ## Chapter 9: Terminal Protocol Support
@@ -1470,26 +1780,35 @@ pub struct TerminalCapabilities {
 impl TerminalCapabilities {
     /// Detect from environment
     pub fn detect() -> Self {
+        // Honor NO_COLOR (de-facto standard) as an explicit "disable color" signal.
+        // This should flow into the ColorProfile resolution in ftui-style.
+        // NOTE: We still keep true_color capability knowledge, but style resolution may choose mono.
+        let no_color = std::env::var("NO_COLOR").is_ok();
+
         let colorterm = std::env::var("COLORTERM").unwrap_or_default();
         let term = std::env::var("TERM").unwrap_or_default();
         let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
 
-        let true_color = colorterm.contains("truecolor")
+        let true_color = !no_color && (colorterm.contains("truecolor")
             || colorterm.contains("24bit")
             || term.contains("24bit")
-            || matches!(term_program.as_str(), "iTerm.app" | "WezTerm" | "Alacritty" | "Ghostty");
+            || matches!(term_program.as_str(), "iTerm.app" | "WezTerm" | "Alacritty" | "Ghostty"));
 
-        let colors_256 = true_color
+        let colors_256 = !no_color && (true_color
             || term.contains("256color")
-            || std::env::var("TERM").map(|t| t.contains("256")).unwrap_or(false);
+            || std::env::var("TERM").map(|t| t.contains("256")).unwrap_or(false));
 
         // Sync output: known support in Kitty, WezTerm, Alacritty, Ghostty
         let sync_output = matches!(term_program.as_str(), "WezTerm" | "Alacritty" | "Ghostty")
             || term.contains("kitty")
             || std::env::var("KITTY_WINDOW_ID").is_ok();
 
-        // OSC 8 hyperlinks: most modern terminals
-        let osc8_hyperlinks = true_color; // Good heuristic
+        // OSC 8 hyperlinks: many modern terminals, but not universal.
+        // Prefer conservative "off unless likely" heuristics; allow explicit override via config.
+        let osc8_hyperlinks = !no_color && (
+            matches!(term_program.as_str(), "iTerm.app" | "WezTerm" | "Ghostty")
+            || term.contains("kitty")
+        );
 
         Self {
             true_color,
@@ -1502,6 +1821,16 @@ impl TerminalCapabilities {
             mouse_sgr: true, // Widely supported
         }
     }
+
+    /// Optional runtime probing (future enhancement)
+    ///
+    /// Environment heuristics are imperfect. For high-confidence behavior, ftui may optionally
+    /// perform runtime feature probes (feature-gated, with timeouts), such as:
+    /// - device attribute queries (DA) to identify terminal families
+    /// - OSC queries for color / hyperlink support
+    /// - tmux passthrough negotiation
+    ///
+    /// This must never block app startup indefinitely; probes must be bounded and skippable.
 
     /// Minimal fallback (no advanced features)
     pub fn basic() -> Self {
@@ -1639,6 +1968,17 @@ Goals:
 - avoid full-screen clears
 - maintain a strict cursor contract
 
+##### Inline mode is hard (why ftui is opinionated here)
+
+Inline + logs is where most TUIs become flaky:
+- logs write while UI is mid-draw
+- cursor gets lost
+- scrollback gets wiped by a "helpful" full clear
+- tmux/screen complicate cursor save/restore and margins
+
+Therefore ftui treats inline mode as a **system**: output ownership, cursor policy, and (optional)
+scroll-region management are part of the design—not afterthoughts.
+
 Key idea:
 - The application owns a bounded **UI Region** (typically bottom-anchored).
 - Everything else is **Log Region** (append-only text written normally).
@@ -1648,17 +1988,71 @@ Inline mode contract:
 2) ftui must restore the cursor to the "log cursor" after drawing.
 3) ftui must never destroy existing scrollback by clearing the full screen.
 
-Recommended inline present sequence:
-1) Save cursor position (DECSC `ESC 7` or CSI s depending on terminal; prefer robust fallback)
-2) Move cursor to UI anchor position (bottom-anchored: row = term_height - ui_height + 1)
-3) Clear the UI region lines only (EL/ED localized clears)
-4) Present the UI frame (diffed and buffered, ideally with sync output if supported)
-5) Restore cursor position (DECRC `ESC 8` / CSI u)
+##### Three implementation strategies (ftui supports a capability-based hybrid)
 
-Additional requirements:
-- If the log stream writes while UI is visible, the library must:
-  - temporarily clear/redraw the UI region, or
-  - provide an API that centralizes all writing so the library can coordinate.
+**Strategy A: Scroll-region (recommended when reliable)**
+- Use DECSTBM (set top/bottom margins) to constrain scrolling to the log region.
+- This keeps the UI region pinned while logs scroll above it.
+- Benefits:
+  - fewer redraws of UI during heavy logging
+  - less cursor save/restore thrash
+- Risks:
+  - behavior varies under tmux/screen and some terminals
+  - must reset margins on exit and on mode switches
+
+**Strategy B: Overlay redraw (universal fallback)**
+- Before writing logs:
+  - temporarily clear/hide UI region
+  - write logs normally (so they enter scrollback)
+  - redraw UI region
+- Benefits:
+  - simple, works nearly everywhere
+- Costs:
+  - more redraw work (but diff+buffer keeps this manageable)
+
+**Strategy C: Hybrid**
+- Prefer scroll-region when supported and verified (PTY tests in CI).
+- Fall back to overlay redraw when uncertain (tmux, unknown terminal, etc.).
+
+##### Recommended inline present sequence (hybrid-safe)
+
+**Always**:
+1) Enter synchronized output if available
+2) Save cursor position (prefer robust option; see below)
+3) Move cursor to UI region anchor
+4) Clear UI region lines only (localized clears)
+5) Present UI frame (diffed + run-grouped)
+6) Restore cursor position
+7) Exit synchronized output
+
+**If using scroll-region**:
+- On entering inline mode:
+  - set scroll margins to log region: top=1, bottom=term_height-ui_height
+  - ensure cursor lives inside the scroll region for log writes
+- On exit:
+  - reset margins to full screen (`CSI r`)
+
+##### Cursor save/restore strategy (robustness)
+
+Terminals differ in which save/restore sequences they support reliably.
+ftui should implement a layered strategy:
+- Prefer DEC save/restore (`ESC 7` / `ESC 8`) where reliable
+- Fall back to ANSI save/restore (`CSI s` / `CSI u`)
+- If neither is reliable (rare), emulate by tracking cursor and explicitly moving back
+
+This is testable via PTY: "after present_ui(), cursor returns to expected position."
+
+##### TerminalWriter responsibilities (the real "kernel for harness UIs")
+
+`TerminalWriter` (or render thread) must:
+- serialize `write_log` and `present_ui`
+- apply the inline strategy (scroll-region vs overlay)
+- enforce cursor policy
+- enforce localized clears
+- coordinate with synchronized output
+- coordinate mode toggles (mouse, paste, focus, alt-screen modals)
+
+This is where "agent harness" reliability is won or lost.
 
 Practical API implication:
 - Provide a single **TerminalWriter** that mediates:
@@ -1719,16 +2113,35 @@ pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize { width: u16, height: u16 },
-    Paste(String),
-    FocusGained,
-    FocusLost,
+    Paste(PasteEvent),
+    Focus(bool),                 // true = gained, false = lost
+    Clipboard(ClipboardEvent),   // optional; may be feature-gated
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteEvent {
+    pub text: String,
+    pub bracketed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardEvent {
+    pub content: String,
+    pub source: ClipboardSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardSource { Osc52, Unknown }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyEvent {
     pub code: KeyCode,
     pub modifiers: Modifiers,
+    pub kind: KeyEventKind,   // Press/Repeat/Release when available; default Press
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyEventKind { Press, Repeat, Release }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyCode {
@@ -2824,6 +3237,31 @@ impl AgentHarness {
 }
 ```
 
+### 12.5 Runtime Ergonomics Checklist
+
+The runtime exists to make the *right* behavior easy:
+- owns terminal lifecycle
+- owns output serialization (one-writer rule)
+- handles resize storms and redraw scheduling
+- supports ticks/animations without forcing redraw spam
+- keeps present bounded (fps cap + coalescing)
+
+Recommended runtime defaults:
+- render on input event
+- render on tick only when something is "dirty"
+- coalesce multiple events into one update loop iteration when possible
+- cap UI redraw rate when logs are extremely high volume (but keep logs flowing)
+
+Event coalescing policy (recommended):
+- mouse move: keep latest position per frame
+- resize: keep latest size per tick
+- key repeat: optionally surface `KeyEventKind::Repeat` if kitty protocol enabled
+
+Bounds policy (DoS resistance):
+- CSI/OSC/DCS lengths bounded
+- bracketed paste bounded (configurable; default large but finite)
+- parser must remain linear-time and panic-free
+
 ---
 
 ## Chapter 13: Testing, Verification, and CI Gates
@@ -2925,11 +3363,29 @@ CI should enforce:
 
 ## Chapter 15: Implementation Roadmap (Phased, No Time Estimates)
 
+### Phase -1: Decision Spikes (tiny experiments, fast learning)
+
+Before building a big structure, run small spikes that de-risk the hardest unknowns:
+- [ ] Inline mode spike:
+  - implement both scroll-region and overlay strategies in a tiny prototype
+  - verify behavior in: plain terminal, tmux, and at least one modern terminal emulator
+  - choose a default strategy and document fallback rules (ADR)
+- [ ] Presenter validation spike:
+  - build terminal-model harness (subset of escape sequences)
+  - validate that a present cycle produces expected grid + cursor behavior
+- [ ] Backend spike:
+  - validate raw mode + resize + input reading across platforms
+  - decide default backend
+
+**Exit criteria**: one ADR per spike capturing decision + rationale + consequences.
+
 ### Phase 0: Contracts + Workspace Skeleton
 - [ ] Establish workspace crate layout (ftui-core/render/style/text/layout/runtime/widgets/extras)
 - [ ] Define public contracts for kernel types:
   - `Cell`, `Buffer`, `Frame`, `Presenter`, `TerminalSession`, `Event`
 - [ ] Write ADRs for the locked decisions (Section 0.6)
+- [ ] Add `ftui` facade crate with a thin stable API surface
+- [ ] Add `forbid(unsafe_code)` in all crates except optional `ftui-simd`
 
 **Exit criteria**: public API compiles; minimal demo crate prints a frame in Inline mode.
 
@@ -3026,6 +3482,71 @@ CI should enforce:
 Inline mode notes:
 - Inline mode works everywhere but depends on a correct cursor-save/restore strategy.
 - Sync output is a best-effort optimization where supported; inline correctness must not depend on it.
+
+---
+
+## Chapter 17: Operational Playbook (How This Actually Ships)
+
+This chapter exists to prevent the common failure mode of kernel projects:
+infinite refinement without a stable deliverable.
+
+### 17.1 "Definition of Done" gates become merge gates
+
+- Any PR that touches:
+  - inline mode cursor policy
+  - presenter output sequencing
+  - input parser
+  - width measurement
+must include:
+- tests (unit/property/pty/snapshot as appropriate)
+- a note on which invariants it preserves
+
+### 17.2 ADR discipline (how decisions get locked)
+
+Rules:
+- Every "this might be controversial later" design choice gets an ADR.
+- ADRs are short and opinionated:
+  - Context
+  - Decision
+  - Alternatives considered
+  - Consequences
+  - Test plan / how we'll know it worked
+
+### 17.3 Minimal deliverables order (avoid the widget trap)
+
+Ship in this order:
+1) Kernel: buffer/diff/presenter + terminal session + inline stability
+2) Runtime: update/view loop + simulator + snapshot testing
+3) Harness: reference app that proves the inline/log/UI story
+4) Widgets: only the ones needed by harness (viewport/input/status/progress)
+5) Extras: markdown/syntax/export (feature-gated)
+
+### 17.4 What "agent-ergonomic" means in practice
+
+The API should make it easy to do the right thing:
+- streaming logs that never break the UI
+- stable UI chrome that never flickers
+- input handling that doesn't miss paste/focus/resize
+- strong defaults + escape hatches
+
+Concrete checklist:
+- "Hello world harness" in <200 LOC
+- "Tool output streaming" is one function call
+- "Pinned bottom UI" is one config option
+- "Temporary full-screen modal" is supported without rewriting the app
+
+### 17.5 Immediate Next Steps (first PRs)
+
+1) Create workspace + `ftui` facade crate (empty re-exports, docs scaffold)
+2) Implement `TerminalSession` RAII with hard cleanup rules + PTY test
+3) Implement `Buffer`/`Cell`/`Frame` + unit tests
+4) Implement `Presenter` scalar path + terminal-model test harness
+5) Implement inline mode `TerminalWriter` with overlay redraw strategy
+6) Build the smallest `ftui-harness` demo that:
+   - writes logs continuously
+   - redraws pinned UI region
+   - survives resize
+   - exits cleanly on panic (forced)
 
 ---
 
