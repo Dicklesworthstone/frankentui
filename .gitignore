@@ -1,0 +1,9 @@
+# bv (beads viewer) local config and caches
+.bv/
+
+# Reference libraries cloned for development (synced via scripts/pull_latest_reference_library_repos.sh)
+/legacy_reference_library_code/
+
+# Rust build artifacts
+/target/
+Cargo.lock
