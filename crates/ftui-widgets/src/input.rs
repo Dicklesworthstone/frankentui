@@ -627,32 +627,32 @@ impl Widget for TextInput {
             }
         }
 
-        // Set cursor style at cursor position
-        let cursor_rel_x = cursor_visual_pos.saturating_sub(effective_scroll);
-        if cursor_rel_x < viewport_width {
-            let cursor_screen_x = area.x + cursor_rel_x as u16;
-            if let Some(cell) = frame.buffer.get_mut(cursor_screen_x, y) {
-                if !deg.apply_styling() {
-                    // At NoStyling, just use reverse video for cursor
-                    use ftui_render::cell::StyleFlags;
-                    let current_flags = cell.attrs.flags();
-                    let new_flags = current_flags ^ StyleFlags::REVERSE;
-                    cell.attrs = cell.attrs.with_flags(new_flags);
-                } else if self.cursor_style.is_empty() {
-                    // Default: toggle reverse video for cursor visibility
-                    use ftui_render::cell::StyleFlags;
-                    let current_flags = cell.attrs.flags();
-                    let new_flags = current_flags ^ StyleFlags::REVERSE;
-                    cell.attrs = cell.attrs.with_flags(new_flags);
-                } else {
-                    crate::apply_style(cell, self.cursor_style);
+        if self.focused {
+            // Set cursor style at cursor position
+            let cursor_rel_x = cursor_visual_pos.saturating_sub(effective_scroll);
+            if cursor_rel_x < viewport_width {
+                let cursor_screen_x = area.x + cursor_rel_x as u16;
+                if let Some(cell) = frame.buffer.get_mut(cursor_screen_x, y) {
+                    if !deg.apply_styling() {
+                        // At NoStyling, just use reverse video for cursor
+                        use ftui_render::cell::StyleFlags;
+                        let current_flags = cell.attrs.flags();
+                        let new_flags = current_flags ^ StyleFlags::REVERSE;
+                        cell.attrs = cell.attrs.with_flags(new_flags);
+                    } else if self.cursor_style.is_empty() {
+                        // Default: toggle reverse video for cursor visibility
+                        use ftui_render::cell::StyleFlags;
+                        let current_flags = cell.attrs.flags();
+                        let new_flags = current_flags ^ StyleFlags::REVERSE;
+                        cell.attrs = cell.attrs.with_flags(new_flags);
+                    } else {
+                        crate::apply_style(cell, self.cursor_style);
+                    }
                 }
             }
 
-            // Set frame cursor position for hardware cursor
-            // Note: This positions the terminal's cursor at the text input position,
-            // which is important for accessibility and IME input.
-            frame.set_cursor(Some((cursor_screen_x, y)));
+            frame.set_cursor(Some(self.cursor_position(area)));
+            frame.set_cursor_visible(true);
         }
     }
 
@@ -982,6 +982,55 @@ mod tests {
         assert_eq!(cell_h.content.as_char(), Some('h'));
         let cell_i = frame.buffer.get(1, 0).unwrap();
         assert_eq!(cell_i.content.as_char(), Some('i'));
+    }
+
+    #[test]
+    fn test_render_sets_cursor_when_focused() {
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let input = TextInput::new().with_value("hi").with_focused(true);
+        let area = Rect::new(0, 0, 10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        input.render(area, &mut frame);
+
+        assert_eq!(frame.cursor_position, Some((2, 0)));
+        assert!(frame.cursor_visible);
+    }
+
+    #[test]
+    fn test_render_does_not_set_cursor_when_unfocused() {
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let input = TextInput::new().with_value("hi");
+        let area = Rect::new(0, 0, 10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        input.render(area, &mut frame);
+
+        assert!(frame.cursor_position.is_none());
+    }
+
+    #[test]
+    fn test_render_grapheme_uses_pool() {
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let grapheme = "👩‍💻";
+        let input = TextInput::new().with_value(grapheme);
+        let area = Rect::new(0, 0, 6, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 1, &mut pool);
+        input.render(area, &mut frame);
+
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert!(cell.content.is_grapheme());
+        let width = UnicodeWidthStr::width(grapheme);
+        if width > 1 {
+            assert!(frame.buffer.get(1, 0).unwrap().is_continuation());
+        }
     }
 
     #[test]
