@@ -167,7 +167,7 @@ impl CachedWidgetState {
 impl<W: Widget, K: CacheKey<W>> StatefulWidget for CachedWidget<W, K> {
     type State = CachedWidgetState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut CachedWidgetState) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut CachedWidgetState) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -203,10 +203,14 @@ impl<W: Widget, K: CacheKey<W>> StatefulWidget for CachedWidget<W, K> {
         };
 
         if needs_render {
-            let mut cache_buf = Buffer::new(area.width, area.height);
             let local_area = Rect::from_size(area.width, area.height);
-            self.inner.render(local_area, &mut cache_buf);
-            state.cache = Some(CachedBuffer { buffer: cache_buf });
+            // Create a temporary frame for the inner widget
+            let mut cache_frame = Frame::new(area.width, area.height, frame.pool);
+            self.inner.render(local_area, &mut cache_frame);
+            // Extract the buffer from the frame for caching
+            state.cache = Some(CachedBuffer {
+                buffer: cache_frame.buffer,
+            });
             state.last_area = Some(area);
             state.dirty = false;
             state.last_key = key;
@@ -227,7 +231,7 @@ impl<W: Widget, K: CacheKey<W>> StatefulWidget for CachedWidget<W, K> {
 
         if let Some(cache) = &state.cache {
             let src_rect = Rect::from_size(area.width, area.height);
-            buf.copy_from(&cache.buffer, src_rect, area.x, area.y);
+            frame.buffer.copy_from(&cache.buffer, src_rect, area.x, area.y);
         }
     }
 }

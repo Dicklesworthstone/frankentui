@@ -1567,9 +1567,9 @@ mod proptest_fuzz {
         let kind = prop_oneof![Just(1u32), Just(2u32), Just(3u32)]; // press/repeat/release
         (keycode, prop::option::of(modifier), prop::option::of(kind)).prop_map(
             |(kc, mods, kind)| match (mods, kind) {
-                (Some(m), Some(k)) => format!("\x1b[{{kc}};{{m}}:{{k}}u").into_bytes(),
-                (Some(m), None) => format!("\x1b[{{kc}};{{m}}u").into_bytes(),
-                _ => format!("\x1b[{{kc}}u").into_bytes(),
+                (Some(m), Some(k)) => format!("\x1b[{kc};{m}:{k}u").into_bytes(),
+                (Some(m), None) => format!("\x1b[{kc};{m}u").into_bytes(),
+                _ => format!("\x1b[{kc}u").into_bytes(),
             },
         )
     }
@@ -1736,7 +1736,7 @@ mod proptest_fuzz {
 
             for i in 0..count {
                 input.extend_from_slice(b"\x1b[200~");
-                input.extend_from_slice(format!("paste_{{i}}").as_bytes());
+                input.extend_from_slice(format!("paste_{i}").as_bytes());
                 input.extend_from_slice(b"\x1b[201~");
             }
 

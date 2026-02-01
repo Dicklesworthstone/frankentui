@@ -536,6 +536,7 @@ mod tests {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+    use unicode_width::UnicodeWidthStr;
 
     proptest! {
         #[test]

@@ -11,6 +11,7 @@ use std::time::Instant;
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 
 use crate::{StatefulWidget, Widget, apply_style, draw_text_span, set_style_area};
@@ -163,7 +164,7 @@ impl<W: Widget> ErrorBoundary<W> {
 impl<W: Widget> StatefulWidget for ErrorBoundary<W> {
     type State = ErrorBoundaryState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut ErrorBoundaryState) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut ErrorBoundaryState) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -182,7 +183,7 @@ impl<W: Widget> StatefulWidget for ErrorBoundary<W> {
         match state {
             ErrorBoundaryState::Healthy | ErrorBoundaryState::Recovering { .. } => {
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    self.inner.render(area, buf);
+                    self.inner.render(area, frame);
                 }));
 
                 match result {
@@ -193,14 +194,14 @@ impl<W: Widget> StatefulWidget for ErrorBoundary<W> {
                     }
                     Err(payload) => {
                         let error = CapturedError::from_panic(payload, self.widget_name, area);
-                        clear_area(buf, area);
-                        render_error_fallback(buf, area, &error);
+                        clear_area(&mut frame.buffer, area);
+                        render_error_fallback(&mut frame.buffer, area, &error);
                         *state = ErrorBoundaryState::Failed(error);
                     }
                 }
             }
             ErrorBoundaryState::Failed(error) => {
-                render_error_fallback(buf, area, error);
+                render_error_fallback(&mut frame.buffer, area, error);
             }
         }
     }
@@ -375,7 +376,7 @@ impl FallbackWidget {
 }
 
 impl Widget for FallbackWidget {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -390,7 +391,7 @@ impl Widget for FallbackWidget {
         if area.is_empty() {
             return;
         }
-        render_error_fallback(buf, area, &self.error);
+        render_error_fallback(&mut frame.buffer, area, &self.error);
 
         // If retry hint is disabled, overwrite it with background
         if !self.show_retry_hint && area.height >= 5 {
@@ -401,7 +402,7 @@ impl Widget for FallbackWidget {
             let inner_right = area.x.saturating_add(area.width).saturating_sub(1);
             // Clear the retry hint line
             for x in inner_left..inner_right {
-                if let Some(cell) = buf.get_mut(x, inner_y) {
+                if let Some(cell) = frame.buffer.get_mut(x, inner_y) {
                     cell.content = ftui_render::cell::CellContent::from_char(' ');
                     apply_style(cell, bg_style);
                 }

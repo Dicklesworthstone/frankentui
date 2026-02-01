@@ -52,7 +52,7 @@ impl Event {
     /// Convert a Crossterm event into an ftui [`Event`].
     #[must_use]
     pub fn from_crossterm(event: cte::Event) -> Option<Self> {
-        map_crossterm_event(event)
+        map_crossterm_event_internal(event)
     }
 }
 
@@ -380,7 +380,7 @@ pub enum ClipboardSource {
     Unknown,
 }
 
-pub(crate) fn map_crossterm_event(event: cte::Event) -> Option<Event> {
+fn map_crossterm_event_internal(event: cte::Event) -> Option<Event> {
     match event {
         cte::Event::Key(key) => map_key_event(key).map(Event::Key),
         cte::Event::Mouse(mouse) => Some(Event::Mouse(map_mouse_event(mouse))),
@@ -807,7 +807,7 @@ mod tests {
             kind: ct_event::KeyEventKind::Press,
             state: ct_event::KeyEventState::NONE,
         });
-        let mapped = map_crossterm_event(ct_event).expect("should map");
+        let mapped = map_crossterm_event_internal(ct_event).expect("should map");
         assert!(matches!(mapped, Event::Key(_)));
     }
 
@@ -819,21 +819,21 @@ mod tests {
             row: 5,
             modifiers: ct_event::KeyModifiers::NONE,
         });
-        let mapped = map_crossterm_event(ct_event).expect("should map");
+        let mapped = map_crossterm_event_internal(ct_event).expect("should map");
         assert!(matches!(mapped, Event::Mouse(_)));
     }
 
     #[test]
     fn map_crossterm_event_resize() {
         let ct_event = ct_event::Event::Resize(80, 24);
-        let mapped = map_crossterm_event(ct_event).expect("should map");
+        let mapped = map_crossterm_event_internal(ct_event).expect("should map");
         assert!(matches!(mapped, Event::Resize { width: 80, height: 24 }));
     }
 
     #[test]
     fn map_crossterm_event_paste() {
         let ct_event = ct_event::Event::Paste("hello world".to_string());
-        let mapped = map_crossterm_event(ct_event).expect("should map");
+        let mapped = map_crossterm_event_internal(ct_event).expect("should map");
         match mapped {
             Event::Paste(paste) => assert_eq!(paste.text, "hello world"),
             _ => panic!("expected Paste event"),
@@ -846,11 +846,11 @@ mod tests {
         let lost = ct_event::Event::FocusLost;
 
         assert!(matches!(
-            map_crossterm_event(gained),
+            map_crossterm_event_internal(gained),
             Some(Event::Focus(true))
         ));
         assert!(matches!(
-            map_crossterm_event(lost),
+            map_crossterm_event_internal(lost),
             Some(Event::Focus(false))
         ));
     }
