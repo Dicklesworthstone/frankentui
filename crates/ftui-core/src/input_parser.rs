@@ -852,7 +852,7 @@ mod tests {
 
         // Create a very long CSI sequence
         let mut seq = vec![0x1B, b'['];
-        seq.extend(std::iter::repeat(b'0').take(MAX_CSI_LEN + 100));
+        seq.extend(std::iter::repeat_n(b'0', MAX_CSI_LEN + 100));
         seq.push(b'A');
 
         // Should not panic - DoS protection kicks in and resets parser to ground

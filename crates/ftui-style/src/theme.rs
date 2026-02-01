@@ -171,13 +171,12 @@ impl Theme {
     pub fn detect_dark_mode() -> bool {
         // COLORFGBG format: "fg;bg" where values are ANSI color indices
         // Common light terminals use bg=15 (white), dark use bg=0 (black)
-        if let Ok(colorfgbg) = env::var("COLORFGBG") {
-            if let Some(bg_part) = colorfgbg.split(';').last() {
-                if let Ok(bg) = bg_part.trim().parse::<u8>() {
-                    // High ANSI indices (7, 15) typically mean light background
-                    return bg != 7 && bg != 15;
-                }
-            }
+        if let Ok(colorfgbg) = env::var("COLORFGBG")
+            && let Some(bg_part) = colorfgbg.split(';').next_back()
+            && let Ok(bg) = bg_part.trim().parse::<u8>()
+        {
+            // High ANSI indices (7, 15) typically mean light background
+            return bg != 7 && bg != 15;
         }
 
         // Default to dark mode (most common for terminals)
