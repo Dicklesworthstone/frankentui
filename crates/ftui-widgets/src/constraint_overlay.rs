@@ -10,14 +10,14 @@
 //! ```ignore
 //! use ftui_widgets::{ConstraintOverlay, LayoutDebugger, Widget};
 //!
-//! let debugger = LayoutDebugger::new();
+//! let mut debugger = LayoutDebugger::new();
 //! debugger.set_enabled(true);
 //!
 //! // Record constraint data during layout...
 //!
 //! // Later, render the overlay
 //! let overlay = ConstraintOverlay::new(&debugger);
-//! overlay.render(area, &mut buf);
+//! overlay.render(area, &mut frame);
 //! ```
 
 use crate::Widget;
