@@ -262,7 +262,7 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
     let mut remaining = available_size;
     let mut grow_indices = Vec::new();
 
-    // 1. Allocate Fixed and Percentage
+    // 1. Allocate Fixed, Percentage, Min
     for (i, &constraint) in constraints.iter().enumerate() {
         match constraint {
             Constraint::Fixed(size) => {
@@ -293,8 +293,12 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
         }
     }
 
-    // 2. Distribute remaining space to flexible constraints (Min, Max, Ratio)
-    if remaining > 0 && !grow_indices.is_empty() {
+    // 2. Iterative distribution to flexible constraints
+    loop {
+        if remaining == 0 || grow_indices.is_empty() {
+            break;
+        }
+
         let mut total_weight = 0u64;
         const WEIGHT_SCALE: u64 = 10_000;
 
@@ -303,7 +307,7 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
                 Constraint::Ratio(n, d) => {
                     total_weight += n as u64 * WEIGHT_SCALE / d.max(1) as u64
                 }
-                _ => total_weight += WEIGHT_SCALE, // Treat others as Ratio(1, 1) effectively
+                _ => total_weight += WEIGHT_SCALE,
             }
         }
 
@@ -313,6 +317,7 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
 
         let space_to_distribute = remaining;
         let mut allocated = 0;
+        let mut shares = vec![0u16; constraints.len()];
 
         for (idx, &i) in grow_indices.iter().enumerate() {
             let weight = match constraints[i] {
@@ -328,15 +333,42 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
                 min(s, space_to_distribute - allocated)
             };
 
-            sizes[i] += size;
+            shares[i] = size;
             allocated += size;
         }
-    }
 
-    // 3. Clamp Max constraints
-    for (i, &constraint) in constraints.iter().enumerate() {
-        if let Constraint::Max(max_size) = constraint {
-            sizes[i] = sizes[i].min(max_size);
+        // Check for Max constraint violations
+        let mut violations = Vec::new();
+        for &i in &grow_indices {
+            if let Constraint::Max(max_val) = constraints[i] {
+                if sizes[i] + shares[i] > max_val {
+                    violations.push(i);
+                }
+            }
+        }
+
+        if violations.is_empty() {
+            // No violations, commit shares and exit
+            for &i in &grow_indices {
+                sizes[i] += shares[i];
+            }
+            break;
+        }
+
+        // Handle violations: clamp to Max and remove from grow pool
+        for i in violations {
+            if let Constraint::Max(max_val) = constraints[i] {
+                // Calculate how much space this item *actually* consumes from remaining
+                // which is (max - current_size)
+                let consumed = max_val.saturating_sub(sizes[i]);
+                sizes[i] = max_val;
+                remaining = remaining.saturating_sub(consumed);
+
+                // Remove from grow indices
+                if let Some(pos) = grow_indices.iter().position(|&x| x == i) {
+                    grow_indices.remove(pos);
+                }
+            }
         }
     }
 
