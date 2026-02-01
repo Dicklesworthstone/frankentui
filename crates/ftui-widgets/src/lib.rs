@@ -29,7 +29,7 @@ pub use debug_overlay::{
     DebugOverlayStatefulState,
 };
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
-pub use panel::{Panel, TitleAlignment};
+pub use panel::Panel;
 
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
