@@ -257,9 +257,47 @@ impl Flex {
 
     fn sizes_to_rects(&self, area: Rect, sizes: &[u16]) -> Vec<Rect> {
         let mut rects = Vec::with_capacity(sizes.len());
+
+        // Calculate total used space (sizes + gaps)
+        let total_gaps = if sizes.len() > 1 {
+            self.gap.saturating_mul((sizes.len() - 1) as u16)
+        } else {
+            0
+        };
+        let total_used: u16 = sizes.iter().sum::<u16>().saturating_add(total_gaps);
+        let total_available = match self.direction {
+            Direction::Horizontal => area.width,
+            Direction::Vertical => area.height,
+        };
+        let leftover = total_available.saturating_sub(total_used);
+
+        // Calculate starting position and gap adjustment based on alignment
+        let (start_offset, extra_gap) = match self.alignment {
+            Alignment::Start => (0, 0),
+            Alignment::End => (leftover, 0),
+            Alignment::Center => (leftover / 2, 0),
+            Alignment::SpaceBetween => {
+                if sizes.len() <= 1 {
+                    (0, 0)
+                } else {
+                    // Distribute leftover evenly between items
+                    (0, leftover / (sizes.len() - 1) as u16)
+                }
+            }
+            Alignment::SpaceAround => {
+                if sizes.is_empty() {
+                    (0, 0)
+                } else {
+                    // Space around: equal space before, between, and after
+                    let space_unit = leftover / (sizes.len() as u16 * 2);
+                    (space_unit, space_unit * 2)
+                }
+            }
+        };
+
         let mut current_pos = match self.direction {
-            Direction::Horizontal => area.x,
-            Direction::Vertical => area.y,
+            Direction::Horizontal => area.x.saturating_add(start_offset),
+            Direction::Vertical => area.y.saturating_add(start_offset),
         };
 
         for &size in sizes {
@@ -278,14 +316,12 @@ impl Flex {
                 },
             };
             rects.push(rect);
-            current_pos = current_pos.saturating_add(size).saturating_add(self.gap);
+            current_pos = current_pos
+                .saturating_add(size)
+                .saturating_add(self.gap)
+                .saturating_add(extra_gap);
         }
 
-        // Apply alignment if there is leftover space (because of Max clamping or similar)
-        // Note: The current implementation just places them sequentially. 
-        // Real alignment would shift `current_pos` start or spacing.
-        // For v1, Start alignment is implicit.
-        
         rects
     }
 }
