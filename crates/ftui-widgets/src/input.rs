@@ -589,6 +589,9 @@ impl Widget for TextInput {
         } else {
             for (gi, g) in graphemes.iter().enumerate() {
                 let w = self.grapheme_width(g);
+                if w == 0 {
+                    continue;
+                }
 
                 if visual_x + w <= effective_scroll {
                     visual_x += w;
@@ -598,12 +601,6 @@ impl Widget for TextInput {
                     break;
                 }
 
-                let text_char = if let Some(mask) = self.mask_char {
-                    mask
-                } else {
-                    g.chars().next().unwrap_or(' ')
-                };
-
                 let cell_style = if !deg.apply_styling() {
                     Style::default()
                 } else if self.is_in_selection(gi) {
@@ -612,7 +609,14 @@ impl Widget for TextInput {
                     self.style
                 };
 
-                let mut cell = Cell::from_char(text_char);
+                let mut cell = if let Some(mask) = self.mask_char {
+                    Cell::from_char(mask)
+                } else if g.chars().count() > 1 || w > 1 {
+                    let id = frame.intern_with_width(g, w as u8);
+                    Cell::new(CellContent::from_grapheme(id))
+                } else {
+                    Cell::from_char(g.chars().next().unwrap_or(' '))
+                };
                 crate::apply_style(&mut cell, cell_style);
 
                 let rel_x = visual_x.saturating_sub(effective_scroll);

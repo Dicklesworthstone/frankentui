@@ -33,7 +33,7 @@
 //! }
 //! ```
 //!
-//! Examples: [`Block`], [`Paragraph`], [`Rule`], [`StatusLine`]
+//! Examples: [`block::Block`], [`paragraph::Paragraph`], [`rule::Rule`], [`StatusLine`]
 //!
 //! ## Category B: Interactive Widgets with Hit Testing
 //!
