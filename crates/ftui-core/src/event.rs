@@ -437,9 +437,9 @@ pub(crate) fn map_key_code(code: cte::KeyCode) -> Option<KeyCode> {
 
 fn map_media_key(code: cte::MediaKeyCode) -> Option<KeyCode> {
     match code {
-        cte::MediaKeyCode::Play
-        | cte::MediaKeyCode::Pause
-        | cte::MediaKeyCode::PlayPause => Some(KeyCode::MediaPlayPause),
+        cte::MediaKeyCode::Play | cte::MediaKeyCode::Pause | cte::MediaKeyCode::PlayPause => {
+            Some(KeyCode::MediaPlayPause)
+        }
         cte::MediaKeyCode::Stop => Some(KeyCode::MediaStop),
         cte::MediaKeyCode::TrackNext => Some(KeyCode::MediaNextTrack),
         cte::MediaKeyCode::TrackPrevious => Some(KeyCode::MediaPrevTrack),
@@ -745,7 +745,10 @@ mod tests {
             modifiers: ct_event::KeyModifiers::NONE,
         };
 
-        assert!(matches!(map_mouse_event(scroll_up).kind, MouseEventKind::ScrollUp));
+        assert!(matches!(
+            map_mouse_event(scroll_up).kind,
+            MouseEventKind::ScrollUp
+        ));
         assert!(matches!(
             map_mouse_event(scroll_down).kind,
             MouseEventKind::ScrollDown
@@ -827,7 +830,13 @@ mod tests {
     fn map_crossterm_event_resize() {
         let ct_event = ct_event::Event::Resize(80, 24);
         let mapped = map_crossterm_event_internal(ct_event).expect("should map");
-        assert!(matches!(mapped, Event::Resize { width: 80, height: 24 }));
+        assert!(matches!(
+            mapped,
+            Event::Resize {
+                width: 80,
+                height: 24
+            }
+        ));
     }
 
     #[test]

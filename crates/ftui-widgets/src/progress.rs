@@ -132,7 +132,14 @@ impl<'a> Widget for ProgressBar<'a> {
                 + ((bar_area.width as usize).saturating_sub(label_width) / 2) as u16;
             let label_y = bar_area.top() + (bar_area.height / 2);
 
-            crate::draw_text_span(frame, label_x, label_y, label, label_style, bar_area.right());
+            crate::draw_text_span(
+                frame,
+                label_x,
+                label_y,
+                label,
+                label_style,
+                bar_area.right(),
+            );
         }
     }
 }

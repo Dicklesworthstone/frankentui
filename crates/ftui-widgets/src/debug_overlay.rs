@@ -256,7 +256,9 @@ impl Widget for DebugOverlay {
                 self.options.palette.border_colors[idx % self.options.palette.border_colors.len()];
             if self.options.show_boundaries {
                 let border_cell = Cell::from_char('+').with_fg(color);
-                frame.buffer.draw_border(rect, BorderChars::ASCII, border_cell);
+                frame
+                    .buffer
+                    .draw_border(rect, BorderChars::ASCII, border_cell);
             }
 
             if self.options.show_names {
@@ -267,7 +269,9 @@ impl Widget for DebugOverlay {
                         .with_bg(self.options.palette.label_bg);
                     let label_x = rect.x.saturating_add(1);
                     let max_x = rect.right();
-                    let _ = frame.buffer.print_text_clipped(label_x, rect.y, &label, label_cell, max_x);
+                    let _ = frame
+                        .buffer
+                        .print_text_clipped(label_x, rect.y, &label, label_cell, max_x);
                 }
             }
 

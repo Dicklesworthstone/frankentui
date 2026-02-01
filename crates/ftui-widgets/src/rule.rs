@@ -445,9 +445,15 @@ mod tests {
         assert_ne!(frame.buffer.get(4, 3).unwrap().content.as_char(), Some('─'));
         // Cells in the area should be rule chars
         assert_eq!(frame.buffer.get(5, 3).unwrap().content.as_char(), Some('─'));
-        assert_eq!(frame.buffer.get(14, 3).unwrap().content.as_char(), Some('─'));
+        assert_eq!(
+            frame.buffer.get(14, 3).unwrap().content.as_char(),
+            Some('─')
+        );
         // Cell after the area should be untouched
-        assert_ne!(frame.buffer.get(15, 3).unwrap().content.as_char(), Some('─'));
+        assert_ne!(
+            frame.buffer.get(15, 3).unwrap().content.as_char(),
+            Some('─')
+        );
     }
 
     #[test]

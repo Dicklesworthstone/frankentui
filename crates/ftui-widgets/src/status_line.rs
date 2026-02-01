@@ -67,11 +67,7 @@ impl<'a> StatusItem<'a> {
             Self::Spinner(_) => 1, // Single char spinner
             Self::Progress { current, total } => {
                 // Format: "42/100" or "100%"
-                let pct = if *total > 0 {
-                    (*current * 100) / *total
-                } else {
-                    0
-                };
+                let pct = current.saturating_mul(100).checked_div(*total).unwrap_or(0);
                 format!("{pct}%").len()
             }
             Self::KeyHint { key, action } => {
@@ -92,11 +88,7 @@ impl<'a> StatusItem<'a> {
                 FRAMES[*idx % FRAMES.len()].to_string()
             }
             Self::Progress { current, total } => {
-                let pct = if *total > 0 {
-                    (*current * 100) / *total
-                } else {
-                    0
-                };
+                let pct = current.saturating_mul(100).checked_div(*total).unwrap_or(0);
                 format!("{pct}%")
             }
             Self::KeyHint { key, action } => {
@@ -165,10 +157,7 @@ impl<'a> StatusLine<'a> {
             return 0;
         }
         let sep_width = UnicodeWidthStr::width(self.separator);
-        items
-            .iter()
-            .map(|item| item.width())
-            .sum::<usize>()
+        items.iter().map(|item| item.width()).sum::<usize>()
             + sep_width * items.len().saturating_sub(1)
     }
 

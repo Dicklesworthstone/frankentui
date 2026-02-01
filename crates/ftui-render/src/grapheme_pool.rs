@@ -43,6 +43,7 @@
 //! assert_eq!(pool.get(id), None);
 //! ```
 
+use crate::buffer::Buffer;
 use crate::cell::GraphemeId;
 use std::collections::HashMap;
 
@@ -217,6 +218,52 @@ impl GraphemePool {
                 "grapheme pool capacity exceeded"
             );
             idx
+        }
+    }
+
+    /// Garbage collect graphemes not referenced by the given buffers.
+    ///
+    /// This implements a Mark-and-Sweep algorithm:
+    /// 1. Reset all internal refcounts to 0.
+    /// 2. Scan provided buffers and increment refcounts for referenced graphemes.
+    /// 3. Free any slots that remain with refcount 0.
+    ///
+    /// This should be called periodically (e.g. every N frames) passing the
+    /// current front and back buffers to prevent memory leaks in long-running apps.
+    pub fn gc(&mut self, buffers: &[&Buffer]) {
+        // 1. Reset
+        for slot in self.slots.iter_mut().flatten() {
+            slot.refcount = 0;
+        }
+
+        // 2. Mark
+        for buf in buffers {
+            for cell in buf.cells() {
+                if let Some(id) = cell.content.grapheme_id() {
+                    // We access via slot index directly.
+                    // Note: id.slot() returns usize.
+                    if let Some(Some(slot)) = self.slots.get_mut(id.slot()) {
+                        slot.refcount = slot.refcount.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        // 3. Sweep
+        // We collect indices first to avoid borrow conflicts with self.lookup
+        let mut to_free = Vec::new();
+        for (idx, slot_opt) in self.slots.iter().enumerate() {
+            if let Some(slot) = slot_opt
+                && slot.refcount == 0
+            {
+                to_free.push((idx, slot.text.clone()));
+            }
+        }
+
+        for (idx, text) in to_free {
+            self.lookup.remove(&text);
+            self.slots[idx] = None;
+            self.free_list.push(idx as u32);
         }
     }
 }

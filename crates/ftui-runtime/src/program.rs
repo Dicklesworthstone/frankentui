@@ -120,7 +120,7 @@ pub enum Cmd<M> {
     None,
     /// Quit the application.
     Quit,
-    /// Execute multiple commands in parallel.
+    /// Execute multiple commands as a batch (currently sequential).
     Batch(Vec<Cmd<M>>),
     /// Execute commands sequentially.
     Sequence(Vec<Cmd<M>>),
@@ -183,7 +183,7 @@ impl<M> Cmd<M> {
         Self::Log(msg.into())
     }
 
-    /// Create a batch of parallel commands.
+    /// Create a batch of commands.
     pub fn batch(cmds: Vec<Self>) -> Self {
         if cmds.is_empty() {
             Self::None
@@ -608,12 +608,8 @@ impl<M: Model, W: Write> Program<M, W> {
                 self.execute_cmd(cmd)?;
             }
             Cmd::Batch(cmds) => {
-                // TODO: Batch is documented as "parallel" but currently executes
-                // sequentially. True parallel execution would require async or
-                // threading infrastructure. For now, Batch and Sequence have
-                // identical behavior. This is acceptable for synchronous Cmd
-                // variants (Msg, Quit, Log) but should be revisited if async
-                // commands (e.g., IO tasks) are added.
+                // Batch currently executes sequentially. This is intentional
+                // until an async runtime or task scheduler is added.
                 for c in cmds {
                     self.execute_cmd(c)?;
                 }

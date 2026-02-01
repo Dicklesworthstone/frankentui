@@ -459,7 +459,6 @@ impl Drop for SignalGuard {
     }
 }
 
-
 /// Spike validation notes (for ADR-003).
 ///
 /// ## Crossterm Evaluation Results
@@ -512,9 +511,7 @@ mod tests {
         match event {
             crossterm::event::Event::Key(key) => map_key_event(key).map(Event::Key),
             crossterm::event::Event::Mouse(mouse) => Some(Event::Mouse(map_mouse_event(mouse))),
-            crossterm::event::Event::Resize(width, height) => {
-                Some(Event::Resize { width, height })
-            }
+            crossterm::event::Event::Resize(width, height) => Some(Event::Resize { width, height }),
             crossterm::event::Event::Paste(text) => Some(Event::Paste(PasteEvent::bracketed(text))),
             crossterm::event::Event::FocusGained => Some(Event::Focus(true)),
             crossterm::event::Event::FocusLost => Some(Event::Focus(false)),
@@ -614,7 +611,8 @@ mod tests {
             crossterm::event::MouseEventKind::ScrollLeft => MouseEventKind::ScrollLeft,
             crossterm::event::MouseEventKind::ScrollRight => MouseEventKind::ScrollRight,
         };
-        MouseEvent::new(kind, event.column, event.row).with_modifiers(map_modifiers(event.modifiers))
+        MouseEvent::new(kind, event.column, event.row)
+            .with_modifiers(map_modifiers(event.modifiers))
     }
 
     fn map_mouse_button(button: crossterm::event::MouseButton) -> MouseButton {
@@ -815,14 +813,8 @@ mod tests {
     #[test]
     fn map_media_key_unsupported_returns_none() {
         // These media keys are not mapped to ftui KeyCodes
-        assert_eq!(
-            map_media_key(crossterm::event::MediaKeyCode::Record),
-            None
-        );
-        assert_eq!(
-            map_media_key(crossterm::event::MediaKeyCode::Rewind),
-            None
-        );
+        assert_eq!(map_media_key(crossterm::event::MediaKeyCode::Record), None);
+        assert_eq!(map_media_key(crossterm::event::MediaKeyCode::Rewind), None);
     }
 
     // -- Modifier mapping tests --
@@ -1075,7 +1067,13 @@ mod tests {
     fn map_crossterm_event_resize() {
         let ct_event = crossterm::event::Event::Resize(80, 24);
         let mapped = map_crossterm_event(ct_event).expect("should map");
-        assert!(matches!(mapped, Event::Resize { width: 80, height: 24 }));
+        assert!(matches!(
+            mapped,
+            Event::Resize {
+                width: 80,
+                height: 24
+            }
+        ));
     }
 
     #[test]

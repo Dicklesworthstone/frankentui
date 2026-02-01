@@ -516,6 +516,7 @@ impl Widget for TextInput {
 
         // TextInput is essential — always render content, but skip styling
         // at NoStyling+. At Skeleton, still render the raw text value.
+        // We explicitly DO NOT check deg.render_content() here because this widget is essential.
         if deg.apply_styling() {
             crate::set_style_area(&mut frame.buffer, area, self.style);
         }

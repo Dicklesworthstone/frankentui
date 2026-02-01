@@ -13,6 +13,7 @@ tracing = ["ftui-core/tracing", "dep:tracing"]
 bitflags = "2.10.0"
 memchr = "2"
 unicode-width = "0.2"
+unicode-segmentation = "1.11"
 ftui-core = { path = "../ftui-core" }
 tracing = { version = "0.1", optional = true }
 # Note: ftui-render is the core kernel and should not depend on ftui-style.

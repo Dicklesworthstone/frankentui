@@ -163,8 +163,12 @@ impl<'a> StatefulWidget for Table<'a> {
             return;
         }
 
+        let deg = frame.degradation;
+
         // Apply base style to the entire table area (clears gaps/empty space)
-        set_style_area(&mut frame.buffer, table_area, self.style);
+        if deg.apply_styling() {
+            set_style_area(&mut frame.buffer, table_area, self.style);
+        }
 
         // Ensure visible range includes selected item
         if let Some(selected) = state.selected {
@@ -176,7 +180,7 @@ impl<'a> StatefulWidget for Table<'a> {
                 let mut current_y = table_area.y;
                 let max_y = table_area.bottom();
                 let mut last_visible = state.offset;
-                
+
                 // Iterate forward to find visibility boundary
                 for (i, row) in self.rows.iter().enumerate().skip(state.offset) {
                     if current_y + row.height > max_y {
@@ -196,9 +200,9 @@ impl<'a> StatefulWidget for Table<'a> {
                     for i in (0..=selected).rev() {
                         let row = &self.rows[i];
                         let total_row_height = row.height + row.bottom_margin;
-                        
+
                         if accumulated_height + row.height > available_height {
-                            // This row doesn't fit fully. 
+                            // This row doesn't fit fully.
                             // If it's the selected row itself, we must show it (at top).
                             // Otherwise, the *next* row (i+1) is our start.
                             if i < selected {
@@ -208,7 +212,7 @@ impl<'a> StatefulWidget for Table<'a> {
                             }
                             break;
                         }
-                        
+
                         accumulated_height += total_row_height;
                         new_offset = i;
                     }
@@ -234,8 +238,13 @@ impl<'a> StatefulWidget for Table<'a> {
                 return;
             }
             let row_area = Rect::new(table_area.x, y, table_area.width, header.height);
-            set_style_area(&mut frame.buffer, row_area, header.style);
-            render_row(header, &column_rects, frame, y, header.style);
+            let header_style = if deg.apply_styling() {
+                set_style_area(&mut frame.buffer, row_area, header.style);
+                header.style
+            } else {
+                Style::default()
+            };
+            render_row(header, &column_rects, frame, y, header_style);
             y += header.height + header.bottom_margin;
         }
 
@@ -253,17 +262,19 @@ impl<'a> StatefulWidget for Table<'a> {
             }
 
             let is_selected = state.selected == Some(i);
-            let style = if is_selected {
-                self.highlight_style
+            let row_area = Rect::new(table_area.x, y, table_area.width, row.height);
+            let style = if deg.apply_styling() {
+                let s = if is_selected {
+                    self.highlight_style
+                } else {
+                    row.style
+                };
+                set_style_area(&mut frame.buffer, row_area, s);
+                s
             } else {
-                row.style
+                Style::default()
             };
 
-            // Merge with table base style?
-            // Usually specific row style overrides table style.
-
-            let row_area = Rect::new(table_area.x, y, table_area.width, row.height);
-            set_style_area(&mut frame.buffer, row_area, style);
             render_row(row, &column_rects, frame, y, style);
 
             // Register hit region for this row (if hit testing enabled)
@@ -277,6 +288,8 @@ impl<'a> StatefulWidget for Table<'a> {
 }
 
 fn render_row(row: &Row, col_rects: &[Rect], frame: &mut Frame, y: u16, style: Style) {
+    let apply_styling = frame.degradation.apply_styling();
+
     for (i, cell_text) in row.cells.iter().enumerate() {
         if i >= col_rects.len() {
             break;
@@ -284,7 +297,11 @@ fn render_row(row: &Row, col_rects: &[Rect], frame: &mut Frame, y: u16, style: S
         let rect = col_rects[i];
         let cell_area = Rect::new(rect.x, y, rect.width, row.height);
 
-        let styled_text = cell_text.clone().with_base_style(style);
+        let styled_text = if apply_styling {
+            cell_text.clone().with_base_style(style)
+        } else {
+            cell_text.clone()
+        };
 
         for (line_idx, line) in styled_text.lines().iter().enumerate() {
             if line_idx as u16 >= row.height {
@@ -293,7 +310,12 @@ fn render_row(row: &Row, col_rects: &[Rect], frame: &mut Frame, y: u16, style: S
 
             let mut x = cell_area.x;
             for span in line.spans() {
-                let span_style = span.style.unwrap_or_default();
+                // At NoStyling+, ignore span-level styles
+                let span_style = if apply_styling {
+                    span.style.unwrap_or(style)
+                } else {
+                    Style::default()
+                };
                 x = crate::draw_text_span(
                     frame,
                     x,

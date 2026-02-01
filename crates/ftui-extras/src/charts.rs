@@ -597,7 +597,6 @@ impl<'a> LineChart<'a> {
 
 impl Widget for LineChart<'_> {
     fn render(&self, area: Rect, frame: &mut Frame) {
-        let buf = &mut frame.buffer;
         if area.is_empty() || self.series.is_empty() {
             return;
         }
@@ -621,12 +620,19 @@ impl Widget for LineChart<'_> {
             return;
         }
 
-        let ((x_min, x_max), (y_min, y_max)) = self.auto_bounds();
+        let ((mut x_min, mut x_max), (mut y_min, mut y_max)) = self.auto_bounds();
+
+        if (x_max - x_min).abs() < f64::EPSILON {
+            x_min -= 1.0;
+            x_max += 1.0;
+        }
+        if (y_max - y_min).abs() < f64::EPSILON {
+            y_min -= 1.0;
+            y_max += 1.0;
+        }
+
         let x_range = x_max - x_min;
         let y_range = y_max - y_min;
-        if x_range <= 0.0 || y_range <= 0.0 {
-            return;
-        }
 
         // Draw data using Canvas/Painter with Braille mode.
         let mut painter = Painter::for_area(chart_area, Mode::Braille);
@@ -670,7 +676,10 @@ impl Widget for LineChart<'_> {
         }
 
         let canvas = crate::canvas::Canvas::from_painter(&painter).style(self.style);
-        canvas.render(chart_area, buf);
+        canvas.render(chart_area, frame);
+
+        // Get buffer reference for remaining rendering
+        let buf = &mut frame.buffer;
 
         // Y axis line.
         let axis_x = chart_area.x.saturating_sub(1);

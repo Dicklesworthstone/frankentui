@@ -221,9 +221,16 @@ fn wrap_paragraph(
             }
         } else {
             // Word fits on a fresh line
-            let trimmed = word.trim_start();
-            current_line.push_str(trimmed);
-            *current_width = trimmed.width();
+            let (fragment, fragment_width) = if options.preserve_indent {
+                (word.as_str(), word_width)
+            } else {
+                let trimmed = word.trim_start();
+                (trimmed, trimmed.width())
+            };
+            if !fragment.is_empty() {
+                current_line.push_str(fragment);
+            }
+            *current_width = fragment_width;
         }
     }
 }
@@ -240,7 +247,7 @@ fn wrap_long_word(
         let grapheme_width = grapheme.width();
 
         // Skip leading whitespace on new lines
-        if *current_width == 0 && grapheme.trim().is_empty() {
+        if *current_width == 0 && grapheme.trim().is_empty() && !options.preserve_indent {
             continue;
         }
 
@@ -250,7 +257,7 @@ fn wrap_long_word(
             *current_width = 0;
 
             // Skip leading whitespace after wrap
-            if grapheme.trim().is_empty() {
+            if grapheme.trim().is_empty() && !options.preserve_indent {
                 continue;
             }
         }
@@ -944,6 +951,24 @@ mod tests {
         let lines = wrap_with_options("hello   world", &opts);
         // Trailing spaces should be trimmed
         assert!(!lines.iter().any(|l| l.ends_with(' ')));
+    }
+
+    #[test]
+    fn wrap_preserve_indent_keeps_leading_ws_on_new_line() {
+        let opts = WrapOptions::new(7)
+            .mode(WrapMode::Word)
+            .preserve_indent(true);
+        let lines = wrap_with_options("word12  abcde", &opts);
+        assert_eq!(lines, vec!["word12", "  abcde"]);
+    }
+
+    #[test]
+    fn wrap_no_preserve_indent_trims_leading_ws_on_new_line() {
+        let opts = WrapOptions::new(7)
+            .mode(WrapMode::Word)
+            .preserve_indent(false);
+        let lines = wrap_with_options("word12  abcde", &opts);
+        assert_eq!(lines, vec!["word12", "abcde"]);
     }
 
     #[test]

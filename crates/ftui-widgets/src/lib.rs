@@ -5,6 +5,7 @@
 pub mod block;
 pub mod borders;
 pub mod cached;
+pub mod columns;
 pub mod constraint_overlay;
 #[cfg(feature = "debug-overlay")]
 pub mod debug_overlay;
@@ -23,6 +24,7 @@ pub mod status_line;
 pub mod table;
 
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
+pub use columns::{Column, Columns};
 pub use constraint_overlay::{ConstraintOverlay, ConstraintOverlayStyle};
 #[cfg(feature = "debug-overlay")]
 pub use debug_overlay::{
@@ -138,16 +140,17 @@ pub(crate) fn draw_text_span(
 
         let mut cell = Cell::new(cell_content);
         apply_style(&mut cell, style);
-        
+
         // Use set() which handles multi-width characters (atomic writes)
         frame.buffer.set(x, y, cell);
-        
+
         x = x.saturating_add(w as u16);
     }
     x
 }
 
 /// Draw a text span with horizontal scrolling (skip first `scroll_x` visual cells).
+#[allow(dead_code)] // TODO: will be used for partial span clipping in Paragraph
 pub(crate) fn draw_text_span_scrolled(
     frame: &mut Frame,
     mut x: u16,
@@ -203,9 +206,9 @@ pub(crate) fn draw_text_span_scrolled(
 
         let mut cell = Cell::new(cell_content);
         apply_style(&mut cell, style);
-        
+
         frame.buffer.set(x, y, cell);
-        
+
         x = x.saturating_add(w as u16);
         visual_pos = next_visual_pos;
     }
@@ -349,7 +352,10 @@ mod tests {
         let style = Style::new().fg(PackedRgba::rgb(255, 128, 0));
         draw_text_span(&mut frame, 0, 0, "A", style, 5);
 
-        assert_eq!(frame.buffer.get(0, 0).unwrap().fg, PackedRgba::rgb(255, 128, 0));
+        assert_eq!(
+            frame.buffer.get(0, 0).unwrap().fg,
+            PackedRgba::rgb(255, 128, 0)
+        );
     }
 
     #[test]
