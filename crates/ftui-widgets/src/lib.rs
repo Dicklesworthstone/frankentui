@@ -19,6 +19,7 @@ pub mod progress;
 pub mod rule;
 pub mod scrollbar;
 pub mod spinner;
+pub mod status_line;
 pub mod table;
 
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
@@ -30,6 +31,7 @@ pub use debug_overlay::{
 };
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 pub use panel::Panel;
+pub use status_line::{StatusItem, StatusLine};
 
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;

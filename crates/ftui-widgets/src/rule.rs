@@ -513,17 +513,20 @@ mod tests {
 
         let s = row_string(&frame.buffer, 0, 20);
         assert!(s.contains('─'), "Should contain rule chars, got: '{s}'");
-        // The unicode title should be rendered somewhere in the middle
-        let mut found_jp = false;
+        // The unicode title should be rendered somewhere in the middle.
+        // Wide characters are stored as grapheme IDs, so we check for
+        // non-empty cells with width > 1 (indicating a wide character).
+        let mut found_wide = false;
         for x in 0..20u16 {
             if let Some(cell) = frame.buffer.get(x, 0)
-                && cell.content.as_char() == Some('日')
+                && !cell.is_empty()
+                && cell.content.width() > 1
             {
-                found_jp = true;
+                found_wide = true;
                 break;
             }
         }
-        assert!(found_jp, "Should have rendered unicode title char");
+        assert!(found_wide, "Should have rendered unicode title (wide char)");
     }
 
     // --- Degradation tests ---
