@@ -14,6 +14,7 @@
 //! - Clipboard events are optional and feature-gated in the future
 
 use bitflags::bitflags;
+use crossterm::event as cte;
 
 /// Canonical input event.
 ///
@@ -45,6 +46,14 @@ pub enum Event {
 
     /// Clipboard content received (optional, from OSC 52 response).
     Clipboard(ClipboardEvent),
+}
+
+impl Event {
+    /// Convert a Crossterm event into an ftui [`Event`].
+    #[must_use]
+    pub fn from_crossterm(event: cte::Event) -> Option<Self> {
+        map_crossterm_event(event)
+    }
 }
 
 /// A keyboard event.
@@ -371,9 +380,120 @@ pub enum ClipboardSource {
     Unknown,
 }
 
+pub(crate) fn map_crossterm_event(event: cte::Event) -> Option<Event> {
+    match event {
+        cte::Event::Key(key) => map_key_event(key).map(Event::Key),
+        cte::Event::Mouse(mouse) => Some(Event::Mouse(map_mouse_event(mouse))),
+        cte::Event::Resize(width, height) => Some(Event::Resize { width, height }),
+        cte::Event::Paste(text) => Some(Event::Paste(PasteEvent::bracketed(text))),
+        cte::Event::FocusGained => Some(Event::Focus(true)),
+        cte::Event::FocusLost => Some(Event::Focus(false)),
+    }
+}
+
+fn map_key_event(event: cte::KeyEvent) -> Option<KeyEvent> {
+    let code = map_key_code(event.code)?;
+    let modifiers = map_modifiers(event.modifiers);
+    let kind = map_key_kind(event.kind);
+    Some(KeyEvent {
+        code,
+        modifiers,
+        kind,
+    })
+}
+
+fn map_key_kind(kind: cte::KeyEventKind) -> KeyEventKind {
+    match kind {
+        cte::KeyEventKind::Press => KeyEventKind::Press,
+        cte::KeyEventKind::Repeat => KeyEventKind::Repeat,
+        cte::KeyEventKind::Release => KeyEventKind::Release,
+    }
+}
+
+pub(crate) fn map_key_code(code: cte::KeyCode) -> Option<KeyCode> {
+    match code {
+        cte::KeyCode::Backspace => Some(KeyCode::Backspace),
+        cte::KeyCode::Enter => Some(KeyCode::Enter),
+        cte::KeyCode::Left => Some(KeyCode::Left),
+        cte::KeyCode::Right => Some(KeyCode::Right),
+        cte::KeyCode::Up => Some(KeyCode::Up),
+        cte::KeyCode::Down => Some(KeyCode::Down),
+        cte::KeyCode::Home => Some(KeyCode::Home),
+        cte::KeyCode::End => Some(KeyCode::End),
+        cte::KeyCode::PageUp => Some(KeyCode::PageUp),
+        cte::KeyCode::PageDown => Some(KeyCode::PageDown),
+        cte::KeyCode::Tab => Some(KeyCode::Tab),
+        cte::KeyCode::BackTab => Some(KeyCode::BackTab),
+        cte::KeyCode::Delete => Some(KeyCode::Delete),
+        cte::KeyCode::Insert => Some(KeyCode::Insert),
+        cte::KeyCode::F(n) => Some(KeyCode::F(n)),
+        cte::KeyCode::Char(c) => Some(KeyCode::Char(c)),
+        cte::KeyCode::Null => Some(KeyCode::Null),
+        cte::KeyCode::Esc => Some(KeyCode::Escape),
+        cte::KeyCode::Media(media) => map_media_key(media),
+        _ => None,
+    }
+}
+
+fn map_media_key(code: cte::MediaKeyCode) -> Option<KeyCode> {
+    match code {
+        cte::MediaKeyCode::Play
+        | cte::MediaKeyCode::Pause
+        | cte::MediaKeyCode::PlayPause => Some(KeyCode::MediaPlayPause),
+        cte::MediaKeyCode::Stop => Some(KeyCode::MediaStop),
+        cte::MediaKeyCode::TrackNext => Some(KeyCode::MediaNextTrack),
+        cte::MediaKeyCode::TrackPrevious => Some(KeyCode::MediaPrevTrack),
+        _ => None,
+    }
+}
+
+fn map_modifiers(modifiers: cte::KeyModifiers) -> Modifiers {
+    let mut mapped = Modifiers::NONE;
+    if modifiers.contains(cte::KeyModifiers::SHIFT) {
+        mapped |= Modifiers::SHIFT;
+    }
+    if modifiers.contains(cte::KeyModifiers::ALT) {
+        mapped |= Modifiers::ALT;
+    }
+    if modifiers.contains(cte::KeyModifiers::CONTROL) {
+        mapped |= Modifiers::CTRL;
+    }
+    if modifiers.contains(cte::KeyModifiers::SUPER)
+        || modifiers.contains(cte::KeyModifiers::HYPER)
+        || modifiers.contains(cte::KeyModifiers::META)
+    {
+        mapped |= Modifiers::SUPER;
+    }
+    mapped
+}
+
+fn map_mouse_event(event: cte::MouseEvent) -> MouseEvent {
+    let kind = match event.kind {
+        cte::MouseEventKind::Down(button) => MouseEventKind::Down(map_mouse_button(button)),
+        cte::MouseEventKind::Up(button) => MouseEventKind::Up(map_mouse_button(button)),
+        cte::MouseEventKind::Drag(button) => MouseEventKind::Drag(map_mouse_button(button)),
+        cte::MouseEventKind::Moved => MouseEventKind::Moved,
+        cte::MouseEventKind::ScrollUp => MouseEventKind::ScrollUp,
+        cte::MouseEventKind::ScrollDown => MouseEventKind::ScrollDown,
+        cte::MouseEventKind::ScrollLeft => MouseEventKind::ScrollLeft,
+        cte::MouseEventKind::ScrollRight => MouseEventKind::ScrollRight,
+    };
+
+    MouseEvent::new(kind, event.column, event.row).with_modifiers(map_modifiers(event.modifiers))
+}
+
+fn map_mouse_button(button: cte::MouseButton) -> MouseButton {
+    match button {
+        cte::MouseButton::Left => MouseButton::Left,
+        cte::MouseButton::Right => MouseButton::Right,
+        cte::MouseButton::Middle => MouseButton::Middle,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event as ct_event;
 
     #[test]
     fn key_event_is_char() {
@@ -483,5 +603,255 @@ mod tests {
         let event = Event::Key(KeyEvent::new(KeyCode::Char('x')));
         let cloned = event.clone();
         assert_eq!(event, cloned);
+    }
+
+    // -- Crossterm mapping tests --
+
+    #[test]
+    fn map_modifiers_ctrl() {
+        let mapped = map_modifiers(ct_event::KeyModifiers::CONTROL);
+        assert!(mapped.contains(Modifiers::CTRL));
+        assert!(!mapped.contains(Modifiers::SHIFT));
+    }
+
+    #[test]
+    fn map_modifiers_alt() {
+        let mapped = map_modifiers(ct_event::KeyModifiers::ALT);
+        assert!(mapped.contains(Modifiers::ALT));
+    }
+
+    #[test]
+    fn map_modifiers_super_variants() {
+        let super_mapped = map_modifiers(ct_event::KeyModifiers::SUPER);
+        assert!(super_mapped.contains(Modifiers::SUPER));
+
+        let hyper_mapped = map_modifiers(ct_event::KeyModifiers::HYPER);
+        assert!(hyper_mapped.contains(Modifiers::SUPER));
+
+        let meta_mapped = map_modifiers(ct_event::KeyModifiers::META);
+        assert!(meta_mapped.contains(Modifiers::SUPER));
+    }
+
+    #[test]
+    fn map_modifiers_combined() {
+        let combined = ct_event::KeyModifiers::SHIFT | ct_event::KeyModifiers::CONTROL;
+        let mapped = map_modifiers(combined);
+        assert!(mapped.contains(Modifiers::SHIFT));
+        assert!(mapped.contains(Modifiers::CTRL));
+        assert!(!mapped.contains(Modifiers::ALT));
+    }
+
+    #[test]
+    fn map_mouse_button_all() {
+        assert_eq!(
+            map_mouse_button(ct_event::MouseButton::Left),
+            MouseButton::Left
+        );
+        assert_eq!(
+            map_mouse_button(ct_event::MouseButton::Right),
+            MouseButton::Right
+        );
+        assert_eq!(
+            map_mouse_button(ct_event::MouseButton::Middle),
+            MouseButton::Middle
+        );
+    }
+
+    #[test]
+    fn map_mouse_event_down() {
+        let ct_event = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::Down(ct_event::MouseButton::Left),
+            column: 10,
+            row: 5,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+        let mapped = map_mouse_event(ct_event);
+        assert!(matches!(
+            mapped.kind,
+            MouseEventKind::Down(MouseButton::Left)
+        ));
+        assert_eq!(mapped.x, 10);
+        assert_eq!(mapped.y, 5);
+    }
+
+    #[test]
+    fn map_mouse_event_up() {
+        let ct_event = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::Up(ct_event::MouseButton::Right),
+            column: 20,
+            row: 15,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+        let mapped = map_mouse_event(ct_event);
+        assert!(matches!(
+            mapped.kind,
+            MouseEventKind::Up(MouseButton::Right)
+        ));
+        assert_eq!(mapped.x, 20);
+        assert_eq!(mapped.y, 15);
+    }
+
+    #[test]
+    fn map_mouse_event_drag() {
+        let ct_event = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::Drag(ct_event::MouseButton::Middle),
+            column: 5,
+            row: 10,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+        let mapped = map_mouse_event(ct_event);
+        assert!(matches!(
+            mapped.kind,
+            MouseEventKind::Drag(MouseButton::Middle)
+        ));
+    }
+
+    #[test]
+    fn map_mouse_event_moved() {
+        let ct_event = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::Moved,
+            column: 0,
+            row: 0,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+        let mapped = map_mouse_event(ct_event);
+        assert!(matches!(mapped.kind, MouseEventKind::Moved));
+    }
+
+    #[test]
+    fn map_mouse_event_scroll() {
+        let scroll_up = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+        let scroll_down = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+        let scroll_left = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::ScrollLeft,
+            column: 0,
+            row: 0,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+        let scroll_right = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::ScrollRight,
+            column: 0,
+            row: 0,
+            modifiers: ct_event::KeyModifiers::NONE,
+        };
+
+        assert!(matches!(map_mouse_event(scroll_up).kind, MouseEventKind::ScrollUp));
+        assert!(matches!(
+            map_mouse_event(scroll_down).kind,
+            MouseEventKind::ScrollDown
+        ));
+        assert!(matches!(
+            map_mouse_event(scroll_left).kind,
+            MouseEventKind::ScrollLeft
+        ));
+        assert!(matches!(
+            map_mouse_event(scroll_right).kind,
+            MouseEventKind::ScrollRight
+        ));
+    }
+
+    #[test]
+    fn map_mouse_event_modifiers() {
+        let ct_event = ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::Down(ct_event::MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: ct_event::KeyModifiers::SHIFT | ct_event::KeyModifiers::ALT,
+        };
+        let mapped = map_mouse_event(ct_event);
+        assert!(mapped.modifiers.contains(Modifiers::SHIFT));
+        assert!(mapped.modifiers.contains(Modifiers::ALT));
+    }
+
+    #[test]
+    fn map_key_event_char() {
+        let ct_event = ct_event::KeyEvent {
+            code: ct_event::KeyCode::Char('x'),
+            modifiers: ct_event::KeyModifiers::CONTROL,
+            kind: ct_event::KeyEventKind::Press,
+            state: ct_event::KeyEventState::NONE,
+        };
+        let mapped = map_key_event(ct_event).expect("should map");
+        assert_eq!(mapped.code, KeyCode::Char('x'));
+        assert!(mapped.modifiers.contains(Modifiers::CTRL));
+        assert_eq!(mapped.kind, KeyEventKind::Press);
+    }
+
+    #[test]
+    fn map_key_event_function_key() {
+        let ct_event = ct_event::KeyEvent {
+            code: ct_event::KeyCode::F(5),
+            modifiers: ct_event::KeyModifiers::NONE,
+            kind: ct_event::KeyEventKind::Press,
+            state: ct_event::KeyEventState::NONE,
+        };
+        let mapped = map_key_event(ct_event).expect("should map");
+        assert_eq!(mapped.code, KeyCode::F(5));
+    }
+
+    #[test]
+    fn map_crossterm_event_key() {
+        let ct_event = ct_event::Event::Key(ct_event::KeyEvent {
+            code: ct_event::KeyCode::Enter,
+            modifiers: ct_event::KeyModifiers::NONE,
+            kind: ct_event::KeyEventKind::Press,
+            state: ct_event::KeyEventState::NONE,
+        });
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        assert!(matches!(mapped, Event::Key(_)));
+    }
+
+    #[test]
+    fn map_crossterm_event_mouse() {
+        let ct_event = ct_event::Event::Mouse(ct_event::MouseEvent {
+            kind: ct_event::MouseEventKind::Down(ct_event::MouseButton::Left),
+            column: 10,
+            row: 5,
+            modifiers: ct_event::KeyModifiers::NONE,
+        });
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        assert!(matches!(mapped, Event::Mouse(_)));
+    }
+
+    #[test]
+    fn map_crossterm_event_resize() {
+        let ct_event = ct_event::Event::Resize(80, 24);
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        assert!(matches!(mapped, Event::Resize { width: 80, height: 24 }));
+    }
+
+    #[test]
+    fn map_crossterm_event_paste() {
+        let ct_event = ct_event::Event::Paste("hello world".to_string());
+        let mapped = map_crossterm_event(ct_event).expect("should map");
+        match mapped {
+            Event::Paste(paste) => assert_eq!(paste.text, "hello world"),
+            _ => panic!("expected Paste event"),
+        }
+    }
+
+    #[test]
+    fn map_crossterm_event_focus() {
+        let gained = ct_event::Event::FocusGained;
+        let lost = ct_event::Event::FocusLost;
+
+        assert!(matches!(
+            map_crossterm_event(gained),
+            Some(Event::Focus(true))
+        ));
+        assert!(matches!(
+            map_crossterm_event(lost),
+            Some(Event::Focus(false))
+        ));
     }
 }

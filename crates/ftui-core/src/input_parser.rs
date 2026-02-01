@@ -229,6 +229,7 @@ impl InputParser {
                 None
             }
             // Another ESC - emit Alt+Escape and stay in Escape state
+            // (or treat as start of new sequence - but ESC ESC is usually Alt+ESC)
             0x1B => Some(Event::Key(
                 KeyEvent::new(KeyCode::Escape).with_modifiers(Modifiers::ALT),
             )),
@@ -249,6 +250,13 @@ impl InputParser {
 
     /// Process byte at start of CSI sequence.
     fn process_csi(&mut self, byte: u8) -> Option<Event> {
+        // Robustness: ESC restarts sequence
+        if byte == 0x1B {
+            self.state = ParserState::Escape;
+            self.buffer.clear();
+            return None;
+        }
+
         self.buffer.push(byte);
 
         match byte {
@@ -273,6 +281,13 @@ impl InputParser {
 
     /// Process byte while collecting CSI parameters.
     fn process_csi_param(&mut self, byte: u8) -> Option<Event> {
+        // Robustness: ESC restarts sequence
+        if byte == 0x1B {
+            self.state = ParserState::Escape;
+            self.buffer.clear();
+            return None;
+        }
+
         // DoS protection
         if self.buffer.len() >= MAX_CSI_LEN {
             self.state = ParserState::CsiIgnore;
@@ -301,6 +316,12 @@ impl InputParser {
 
     /// Ignore bytes until end of CSI sequence.
     fn process_csi_ignore(&mut self, byte: u8) -> Option<Event> {
+        // Robustness: ESC restarts sequence
+        if byte == 0x1B {
+            self.state = ParserState::Escape;
+            return None;
+        }
+
         match byte {
             // Final byte (0x40-0x7E) - return to ground
             0x40..=0x7E => {
@@ -578,6 +599,12 @@ impl InputParser {
 
     /// Process SS3 (ESC O) sequences.
     fn process_ss3(&mut self, byte: u8) -> Option<Event> {
+        // Robustness: ESC restarts sequence
+        if byte == 0x1B {
+            self.state = ParserState::Escape;
+            return None;
+        }
+
         self.state = ParserState::Ground;
 
         let code = match byte {
@@ -599,6 +626,13 @@ impl InputParser {
 
     /// Process OSC start.
     fn process_osc(&mut self, byte: u8) -> Option<Event> {
+        // Robustness: ESC restarts sequence
+        if byte == 0x1B {
+            self.state = ParserState::OscEscape;
+            self.buffer.push(byte);
+            return None;
+        }
+
         self.buffer.push(byte);
 
         match byte {
@@ -606,11 +640,6 @@ impl InputParser {
             0x07 => {
                 self.state = ParserState::Ground;
                 self.parse_osc_sequence()
-            }
-            // ESC might start terminator
-            0x1B => {
-                self.state = ParserState::OscEscape;
-                None
             }
             // Continue collecting
             _ => {
@@ -635,7 +664,7 @@ impl InputParser {
                 self.state = ParserState::Ground;
                 self.parse_osc_sequence()
             }
-            // ESC might start terminator
+            // ESC might start terminator or new sequence
             0x1B => {
                 self.state = ParserState::OscEscape;
                 None
@@ -655,11 +684,26 @@ impl InputParser {
             self.state = ParserState::Ground;
             self.parse_osc_sequence()
         } else {
-            // Not a terminator, add ESC and byte to buffer
-            self.buffer.push(0x1B);
-            self.buffer.push(byte);
-            self.state = ParserState::OscContent;
-            None
+            // Not a terminator.
+            // If it's another ESC, treat it as start of new sequence.
+            if byte == 0x1B {
+                self.buffer.clear();
+                self.state = ParserState::Escape;
+                return None;
+            }
+
+            // Otherwise, it was ESC+byte inside OSC data.
+            // But wait, if it wasn't ST, it means the previous ESC was likely
+            // the start of a new sequence that we interrupted?
+            // Or it was part of the payload?
+            // Standards are fuzzy, but for robustness:
+            // - If we see ESC + [ it's definitely a new CSI.
+            // - If we see ESC + char, it's a new escape sequence.
+            // So we should assume the previous ESC cancelled the OSC.
+
+            self.buffer.clear();
+            self.state = ParserState::Escape;
+            self.process_escape(byte)
         }
     }
 
@@ -671,7 +715,7 @@ impl InputParser {
                 self.state = ParserState::Ground;
                 None
             }
-            // ESC might start terminator
+            // ESC might start terminator or new sequence
             0x1B => {
                 self.state = ParserState::OscEscape;
                 None
@@ -1478,8 +1522,21 @@ mod proptest_fuzz {
             events.len()
         );
     }
+}
 
-    // ── Additional fuzz invariant tests (bd-10i.11.3) ─────────────────
+// ── Additional fuzz invariant tests (bd-10i.11.3) ─────────────────
+#[cfg(test)]
+mod proptest_fuzz_additional {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_byte() -> impl Strategy<Value = u8> {
+        any::<u8>()
+    }
+
+    fn arb_byte_vec(max_len: usize) -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(arb_byte(), 0..=max_len)
+    }
 
     /// Generate an OSC 52 clipboard sequence with arbitrary base64 payload.
     fn osc52_sequence() -> impl Strategy<Value = Vec<u8>> {
@@ -1698,7 +1755,7 @@ mod proptest_fuzz {
 
             for i in 0..count {
                 input.extend_from_slice(b"\x1b[200~");
-                input.extend_from_slice(format!("paste_{i}").as_bytes());
+                input.extend_from_slice(format!("paste_{{i}}").as_bytes());
                 input.extend_from_slice(b"\x1b[201~");
             }
 
@@ -1738,8 +1795,8 @@ mod proptest_fuzz {
 
             // Terminate any pending OSC (BEL works from any OSC sub-state),
             // then ESC to flush any other intermediate state.
-            let _ = parser.parse(b"\x07\x1b\\\x1b");
-            let _ = parser.parse(b"\x1b");
+            let _ = parser.parse(&[0x07, 0x1b]);
+            let _ = parser.parse(&[0x1b]);
 
             // Now feed a clean character.
             let _ = parser.parse(b"z");
