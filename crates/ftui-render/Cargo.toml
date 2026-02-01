@@ -22,3 +22,6 @@ tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 proptest = "1"
+ftui-layout = { path = "../ftui-layout" }
+ftui-style = { path = "../ftui-style" }
+ftui-widgets = { path = "../ftui-widgets" }
