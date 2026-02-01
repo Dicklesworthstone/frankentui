@@ -1,0 +1,1189 @@
+#![forbid(unsafe_code)]
+
+//! Chart widgets for data visualization.
+//!
+//! Provides [`Sparkline`], [`BarChart`], and [`LineChart`] widgets for
+//! rendering data in the terminal. Feature-gated behind `charts`.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use ftui_extras::charts::Sparkline;
+//!
+//! let data = [1.0, 4.0, 2.0, 8.0, 5.0, 7.0, 3.0, 6.0];
+//! let sparkline = Sparkline::new(&data);
+//! sparkline.render(area, &mut buf);
+//! ```
+
+use ftui_core::geometry::Rect;
+use ftui_render::buffer::Buffer;
+use ftui_render::cell::{Cell, PackedRgba};
+use ftui_style::Style;
+use ftui_widgets::Widget;
+
+use crate::canvas::{Mode, Painter};
+
+// ===== Helpers =====
+
+/// Bar characters for sparkline/vertical-bar rendering (9 levels: empty through full).
+const BAR_CHARS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Linearly interpolate between two colors.
+fn lerp_color(a: PackedRgba, b: PackedRgba, t: f64) -> PackedRgba {
+    let t = t.clamp(0.0, 1.0) as f32;
+    let inv = 1.0 - t;
+    let r = (a.r() as f32 * inv + b.r() as f32 * t).round() as u8;
+    let g = (a.g() as f32 * inv + b.g() as f32 * t).round() as u8;
+    let bv = (a.b() as f32 * inv + b.b() as f32 * t).round() as u8;
+    let av = (a.a() as f32 * inv + b.a() as f32 * t).round() as u8;
+    PackedRgba::rgba(r, g, bv, av)
+}
+
+/// Apply a Style's fg/bg to a Cell.
+fn style_cell(cell: &mut Cell, style: Style) {
+    if let Some(fg) = style.fg {
+        cell.fg = fg;
+    }
+    if let Some(bg) = style.bg {
+        cell.bg = bg;
+    }
+}
+
+// ===== Sparkline =====
+
+/// Compact single-line data visualization using block characters (`▁▂▃▄▅▆▇█`).
+///
+/// Each data value maps to one terminal column. Values are auto-scaled to
+/// the data range unless explicit bounds are provided. An optional color
+/// gradient interpolates between two colors based on normalized value.
+#[derive(Debug, Clone)]
+pub struct Sparkline<'a> {
+    data: &'a [f64],
+    style: Style,
+    max: Option<f64>,
+    min: Option<f64>,
+    low_color: Option<PackedRgba>,
+    high_color: Option<PackedRgba>,
+}
+
+impl<'a> Sparkline<'a> {
+    pub fn new(data: &'a [f64]) -> Self {
+        Self {
+            data,
+            style: Style::new(),
+            max: None,
+            min: None,
+            low_color: None,
+            high_color: None,
+        }
+    }
+
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Set explicit maximum value (otherwise auto-computed from data).
+    pub fn max(mut self, max: f64) -> Self {
+        self.max = Some(max);
+        self
+    }
+
+    /// Set explicit minimum value (otherwise auto-computed from data).
+    pub fn min(mut self, min: f64) -> Self {
+        self.min = Some(min);
+        self
+    }
+
+    /// Set a color gradient from low values to high values.
+    pub fn gradient(mut self, low: PackedRgba, high: PackedRgba) -> Self {
+        self.low_color = Some(low);
+        self.high_color = Some(high);
+        self
+    }
+
+    fn compute_bounds(&self) -> (f64, f64) {
+        let data_min = self.data.iter().copied().fold(f64::INFINITY, f64::min);
+        let data_max = self.data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (self.min.unwrap_or(data_min), self.max.unwrap_or(data_max))
+    }
+}
+
+impl Widget for Sparkline<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() || self.data.is_empty() {
+            return;
+        }
+
+        let (min, max) = self.compute_bounds();
+        let range = max - min;
+
+        // Render on the last row of the area.
+        let y = area.y + area.height - 1;
+        let width = area.width as usize;
+
+        for (i, &value) in self.data.iter().enumerate().take(width) {
+            let x = area.x + i as u16;
+
+            let normalized = if range > 0.0 {
+                ((value - min) / range).clamp(0.0, 1.0)
+            } else {
+                1.0 // all values equal: full bar
+            };
+
+            // Map to bar character (0 = space, 8 = full block).
+            let bar_idx = (normalized * 8.0).round().min(8.0) as usize;
+            let ch = BAR_CHARS[bar_idx];
+            if ch == ' ' {
+                continue;
+            }
+
+            let mut cell = Cell::from_char(ch);
+            style_cell(&mut cell, self.style);
+
+            if let (Some(low), Some(high)) = (self.low_color, self.high_color) {
+                cell.fg = lerp_color(low, high, normalized);
+            }
+
+            buf.set(x, y, cell);
+        }
+    }
+}
+
+// ===== BarChart =====
+
+/// Bar orientation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarDirection {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+/// Bar grouping mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarMode {
+    #[default]
+    Grouped,
+    Stacked,
+}
+
+/// A group of bars sharing a label.
+#[derive(Debug, Clone)]
+pub struct BarGroup<'a> {
+    pub label: &'a str,
+    pub values: Vec<f64>,
+}
+
+impl<'a> BarGroup<'a> {
+    pub fn new(label: &'a str, values: Vec<f64>) -> Self {
+        Self { label, values }
+    }
+}
+
+/// Bar chart widget with grouped/stacked modes and horizontal/vertical orientation.
+#[derive(Debug, Clone)]
+pub struct BarChart<'a> {
+    groups: Vec<BarGroup<'a>>,
+    direction: BarDirection,
+    mode: BarMode,
+    bar_width: u16,
+    bar_gap: u16,
+    group_gap: u16,
+    colors: Vec<PackedRgba>,
+    style: Style,
+    max: Option<f64>,
+}
+
+impl<'a> BarChart<'a> {
+    pub fn new(groups: Vec<BarGroup<'a>>) -> Self {
+        Self {
+            groups,
+            direction: BarDirection::default(),
+            mode: BarMode::default(),
+            bar_width: 1,
+            bar_gap: 0,
+            group_gap: 1,
+            colors: vec![
+                PackedRgba::rgb(0, 150, 255),
+                PackedRgba::rgb(255, 100, 0),
+                PackedRgba::rgb(0, 200, 100),
+                PackedRgba::rgb(200, 50, 200),
+            ],
+            style: Style::new(),
+            max: None,
+        }
+    }
+
+    pub fn direction(mut self, direction: BarDirection) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    pub fn mode(mut self, mode: BarMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn bar_width(mut self, width: u16) -> Self {
+        self.bar_width = width.max(1);
+        self
+    }
+
+    pub fn bar_gap(mut self, gap: u16) -> Self {
+        self.bar_gap = gap;
+        self
+    }
+
+    pub fn group_gap(mut self, gap: u16) -> Self {
+        self.group_gap = gap;
+        self
+    }
+
+    pub fn colors(mut self, colors: Vec<PackedRgba>) -> Self {
+        self.colors = colors;
+        self
+    }
+
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn max(mut self, max: f64) -> Self {
+        self.max = Some(max);
+        self
+    }
+
+    fn compute_max(&self) -> f64 {
+        if let Some(m) = self.max {
+            return m;
+        }
+        match self.mode {
+            BarMode::Grouped => self
+                .groups
+                .iter()
+                .flat_map(|g| g.values.iter())
+                .copied()
+                .fold(0.0_f64, f64::max),
+            BarMode::Stacked => self
+                .groups
+                .iter()
+                .map(|g| g.values.iter().sum::<f64>())
+                .fold(0.0_f64, f64::max),
+        }
+    }
+
+    fn get_color(&self, series_idx: usize) -> PackedRgba {
+        if self.colors.is_empty() {
+            PackedRgba::WHITE
+        } else {
+            self.colors[series_idx % self.colors.len()]
+        }
+    }
+}
+
+impl Widget for BarChart<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() || self.groups.is_empty() {
+            return;
+        }
+
+        let max_val = self.compute_max();
+        if max_val <= 0.0 {
+            return;
+        }
+
+        match self.direction {
+            BarDirection::Vertical => self.render_vertical(area, buf, max_val),
+            BarDirection::Horizontal => self.render_horizontal(area, buf, max_val),
+        }
+    }
+}
+
+impl BarChart<'_> {
+    fn render_vertical(&self, area: Rect, buf: &mut Buffer, max_val: f64) {
+        // Reserve 1 row at bottom for labels.
+        let chart_height = area.height.saturating_sub(1) as f64;
+        if chart_height <= 0.0 {
+            return;
+        }
+
+        let label_y = area.y + area.height - 1;
+        let mut x_cursor = area.x;
+
+        for (gi, group) in self.groups.iter().enumerate() {
+            if gi > 0 {
+                x_cursor += self.group_gap;
+            }
+            let group_start_x = x_cursor;
+
+            match self.mode {
+                BarMode::Grouped => {
+                    for (si, &val) in group.values.iter().enumerate() {
+                        if si > 0 {
+                            x_cursor += self.bar_gap;
+                        }
+                        let h = (val / max_val) * chart_height;
+                        let full = h.floor() as u16;
+                        let frac_idx = ((h - h.floor()) * 8.0).round().min(8.0) as usize;
+                        let color = self.get_color(si);
+
+                        // Full rows from bottom up.
+                        for row in 0..full {
+                            let y = area.y + area.height - 2 - row;
+                            for dx in 0..self.bar_width {
+                                let x = x_cursor + dx;
+                                if x < area.right() {
+                                    let mut cell = Cell::from_char('█');
+                                    cell.fg = color;
+                                    buf.set(x, y, cell);
+                                }
+                            }
+                        }
+
+                        // Fractional top row.
+                        if frac_idx > 0 && full < area.height.saturating_sub(1) {
+                            let y = area.y + area.height - 2 - full;
+                            let ch = BAR_CHARS[frac_idx];
+                            for dx in 0..self.bar_width {
+                                let x = x_cursor + dx;
+                                if x < area.right() {
+                                    let mut cell = Cell::from_char(ch);
+                                    cell.fg = color;
+                                    buf.set(x, y, cell);
+                                }
+                            }
+                        }
+
+                        x_cursor += self.bar_width;
+                    }
+                }
+                BarMode::Stacked => {
+                    // Use cumulative heights to avoid fractional gaps.
+                    let mut cumulative = 0.0_f64;
+                    for (si, &val) in group.values.iter().enumerate() {
+                        let prev_rows = (cumulative / max_val * chart_height).round() as u16;
+                        cumulative += val;
+                        let curr_rows = (cumulative / max_val * chart_height).round() as u16;
+                        let segment = curr_rows.saturating_sub(prev_rows);
+                        let color = self.get_color(si);
+
+                        for row in 0..segment {
+                            let y = area.y + area.height - 2 - prev_rows - row;
+                            for dx in 0..self.bar_width {
+                                let x = x_cursor + dx;
+                                if x < area.right() {
+                                    let mut cell = Cell::from_char('█');
+                                    cell.fg = color;
+                                    buf.set(x, y, cell);
+                                }
+                            }
+                        }
+                    }
+                    x_cursor += self.bar_width;
+                }
+            }
+
+            // Group label (truncated to bar group width).
+            let group_width = x_cursor.saturating_sub(group_start_x);
+            let label_x = group_start_x + group_width.saturating_sub(1) / 2;
+            if let Some(ch) = group.label.chars().next() {
+                if label_x < area.right() && label_y < area.bottom() {
+                    let mut cell = Cell::from_char(ch);
+                    style_cell(&mut cell, self.style);
+                    buf.set(label_x, label_y, cell);
+                }
+            }
+        }
+    }
+
+    fn render_horizontal(&self, area: Rect, buf: &mut Buffer, max_val: f64) {
+        // Reserve 2 columns at left for labels.
+        let label_width = 2_u16;
+        let chart_width = area.width.saturating_sub(label_width) as f64;
+        if chart_width <= 0.0 {
+            return;
+        }
+
+        let mut y_cursor = area.y;
+
+        for (gi, group) in self.groups.iter().enumerate() {
+            if gi > 0 {
+                y_cursor += self.group_gap;
+            }
+
+            match self.mode {
+                BarMode::Grouped => {
+                    for (si, &val) in group.values.iter().enumerate() {
+                        if si > 0 {
+                            y_cursor += self.bar_gap;
+                        }
+                        let bar_len = ((val / max_val) * chart_width).round() as u16;
+                        let color = self.get_color(si);
+
+                        for dy in 0..self.bar_width {
+                            let y = y_cursor + dy;
+                            if y >= area.bottom() {
+                                break;
+                            }
+                            for dx in 0..bar_len {
+                                let x = area.x + label_width + dx;
+                                if x < area.right() {
+                                    let mut cell = Cell::from_char('█');
+                                    cell.fg = color;
+                                    buf.set(x, y, cell);
+                                }
+                            }
+                        }
+
+                        y_cursor += self.bar_width;
+                    }
+                }
+                BarMode::Stacked => {
+                    let mut left_col = 0_u16;
+                    for (si, &val) in group.values.iter().enumerate() {
+                        let bar_len = ((val / max_val) * chart_width).round() as u16;
+                        let color = self.get_color(si);
+
+                        for dy in 0..self.bar_width {
+                            let y = y_cursor + dy;
+                            if y >= area.bottom() {
+                                break;
+                            }
+                            for dx in 0..bar_len {
+                                let x = area.x + label_width + left_col + dx;
+                                if x < area.right() {
+                                    let mut cell = Cell::from_char('█');
+                                    cell.fg = color;
+                                    buf.set(x, y, cell);
+                                }
+                            }
+                        }
+                        left_col += bar_len;
+                    }
+                    y_cursor += self.bar_width;
+                }
+            }
+
+            // Group label at left edge.
+            if let Some(ch) = group.label.chars().next() {
+                let ly = match self.mode {
+                    BarMode::Grouped => y_cursor.saturating_sub(
+                        (group.values.len() as u16) * self.bar_width
+                            + group.values.len().saturating_sub(1) as u16 * self.bar_gap,
+                    ),
+                    BarMode::Stacked => y_cursor.saturating_sub(self.bar_width),
+                };
+                if ly < area.bottom() {
+                    let mut cell = Cell::from_char(ch);
+                    style_cell(&mut cell, self.style);
+                    buf.set(area.x, ly, cell);
+                }
+            }
+        }
+    }
+}
+
+// ===== LineChart =====
+
+/// A data series for the line chart.
+#[derive(Debug, Clone)]
+pub struct Series<'a> {
+    pub name: &'a str,
+    pub data: &'a [(f64, f64)],
+    pub color: PackedRgba,
+    pub show_markers: bool,
+}
+
+impl<'a> Series<'a> {
+    pub fn new(name: &'a str, data: &'a [(f64, f64)], color: PackedRgba) -> Self {
+        Self {
+            name,
+            data,
+            color,
+            show_markers: false,
+        }
+    }
+
+    pub fn markers(mut self, show: bool) -> Self {
+        self.show_markers = show;
+        self
+    }
+}
+
+/// Line chart with multi-series support, axis rendering, and legend.
+///
+/// Uses [`Canvas`](crate::canvas::Canvas) internally with Braille mode for
+/// sub-cell line resolution.
+#[derive(Debug, Clone)]
+pub struct LineChart<'a> {
+    series: Vec<Series<'a>>,
+    x_bounds: Option<(f64, f64)>,
+    y_bounds: Option<(f64, f64)>,
+    style: Style,
+    x_labels: Vec<&'a str>,
+    y_labels: Vec<&'a str>,
+    show_legend: bool,
+}
+
+impl<'a> LineChart<'a> {
+    pub fn new(series: Vec<Series<'a>>) -> Self {
+        Self {
+            series,
+            x_bounds: None,
+            y_bounds: None,
+            style: Style::new(),
+            x_labels: Vec::new(),
+            y_labels: Vec::new(),
+            show_legend: false,
+        }
+    }
+
+    pub fn x_bounds(mut self, min: f64, max: f64) -> Self {
+        self.x_bounds = Some((min, max));
+        self
+    }
+
+    pub fn y_bounds(mut self, min: f64, max: f64) -> Self {
+        self.y_bounds = Some((min, max));
+        self
+    }
+
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn x_labels(mut self, labels: Vec<&'a str>) -> Self {
+        self.x_labels = labels;
+        self
+    }
+
+    pub fn y_labels(mut self, labels: Vec<&'a str>) -> Self {
+        self.y_labels = labels;
+        self
+    }
+
+    pub fn legend(mut self, show: bool) -> Self {
+        self.show_legend = show;
+        self
+    }
+
+    fn auto_bounds(&self) -> ((f64, f64), (f64, f64)) {
+        let mut x_min = f64::INFINITY;
+        let mut x_max = f64::NEG_INFINITY;
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+
+        for series in &self.series {
+            for &(x, y) in series.data {
+                x_min = x_min.min(x);
+                x_max = x_max.max(x);
+                y_min = y_min.min(y);
+                y_max = y_max.max(y);
+            }
+        }
+
+        (
+            self.x_bounds.unwrap_or((x_min, x_max)),
+            self.y_bounds.unwrap_or((y_min, y_max)),
+        )
+    }
+}
+
+impl Widget for LineChart<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() || self.series.is_empty() {
+            return;
+        }
+
+        // Reserve space for axes.
+        let y_axis_width: u16 = if self.y_labels.is_empty() {
+            1
+        } else {
+            self.y_labels.iter().map(|l| l.len()).max().unwrap_or(0) as u16 + 1
+        };
+        let x_axis_height: u16 = if self.x_labels.is_empty() { 1 } else { 2 };
+
+        let chart_area = Rect::new(
+            area.x + y_axis_width,
+            area.y,
+            area.width.saturating_sub(y_axis_width),
+            area.height.saturating_sub(x_axis_height),
+        );
+
+        if chart_area.width < 2 || chart_area.height < 2 {
+            return;
+        }
+
+        let ((x_min, x_max), (y_min, y_max)) = self.auto_bounds();
+        let x_range = x_max - x_min;
+        let y_range = y_max - y_min;
+        if x_range <= 0.0 || y_range <= 0.0 {
+            return;
+        }
+
+        // Draw data using Canvas/Painter with Braille mode.
+        let mut painter = Painter::for_area(chart_area, Mode::Braille);
+        let px_w = (chart_area.width * Mode::Braille.cols_per_cell()) as f64;
+        let px_h = (chart_area.height * Mode::Braille.rows_per_cell()) as f64;
+
+        let to_px = |x: f64, y: f64| -> (i32, i32) {
+            let px = ((x - x_min) / x_range * (px_w - 1.0)).round() as i32;
+            let py = ((y_max - y) / y_range * (px_h - 1.0)).round() as i32;
+            (px, py)
+        };
+
+        for series in &self.series {
+            if series.data.is_empty() {
+                continue;
+            }
+
+            // Draw lines between consecutive points.
+            for window in series.data.windows(2) {
+                let (x0, y0) = to_px(window[0].0, window[0].1);
+                let (x1, y1) = to_px(window[1].0, window[1].1);
+                painter.line_colored(x0, y0, x1, y1, Some(series.color));
+            }
+
+            // Single point: just a dot.
+            if series.data.len() == 1 {
+                let (px, py) = to_px(series.data[0].0, series.data[0].1);
+                painter.point_colored(px, py, series.color);
+            }
+
+            // Optional markers.
+            if series.show_markers {
+                for &(x, y) in series.data {
+                    let (px, py) = to_px(x, y);
+                    for d in -1..=1 {
+                        painter.point_colored(px + d, py, series.color);
+                        painter.point_colored(px, py + d, series.color);
+                    }
+                }
+            }
+        }
+
+        let canvas = crate::canvas::Canvas::from_painter(&painter).style(self.style);
+        canvas.render(chart_area, buf);
+
+        // Y axis line.
+        let axis_x = chart_area.x.saturating_sub(1);
+        if axis_x >= area.x {
+            for y in chart_area.y..chart_area.bottom() {
+                let mut cell = Cell::from_char('│');
+                style_cell(&mut cell, self.style);
+                buf.set(axis_x, y, cell);
+            }
+        }
+
+        // X axis line.
+        let axis_y = chart_area.bottom();
+        if axis_y < area.bottom() {
+            for x in chart_area.x..chart_area.right() {
+                let mut cell = Cell::from_char('─');
+                style_cell(&mut cell, self.style);
+                buf.set(x, axis_y, cell);
+            }
+            // Corner.
+            if axis_x >= area.x {
+                let mut cell = Cell::from_char('└');
+                style_cell(&mut cell, self.style);
+                buf.set(axis_x, axis_y, cell);
+            }
+        }
+
+        // Y labels (top-to-bottom order).
+        if !self.y_labels.is_empty() {
+            let n = self.y_labels.len();
+            for (i, label) in self.y_labels.iter().enumerate() {
+                let y = if n == 1 {
+                    chart_area.y
+                } else {
+                    chart_area.y
+                        + (i as u32 * chart_area.height.saturating_sub(1) as u32
+                            / (n as u32 - 1).max(1)) as u16
+                };
+                let max_len = y_axis_width.saturating_sub(1) as usize;
+                let label_len = label.len().min(max_len);
+                let start_x =
+                    area.x + (y_axis_width.saturating_sub(1)).saturating_sub(label_len as u16);
+                for (j, ch) in label.chars().enumerate().take(label_len) {
+                    let mut cell = Cell::from_char(ch);
+                    style_cell(&mut cell, self.style);
+                    buf.set(start_x + j as u16, y, cell);
+                }
+            }
+        }
+
+        // X labels.
+        if !self.x_labels.is_empty() && axis_y + 1 < area.bottom() {
+            let text_y = axis_y + 1;
+            let n = self.x_labels.len();
+            for (i, label) in self.x_labels.iter().enumerate() {
+                let x = if n == 1 {
+                    chart_area.x
+                } else {
+                    chart_area.x
+                        + (i as u32 * chart_area.width.saturating_sub(1) as u32
+                            / (n as u32 - 1).max(1)) as u16
+                };
+                for (j, ch) in label.chars().enumerate() {
+                    let lx = x + j as u16;
+                    if lx < area.right() {
+                        let mut cell = Cell::from_char(ch);
+                        style_cell(&mut cell, self.style);
+                        buf.set(lx, text_y, cell);
+                    }
+                }
+            }
+        }
+
+        // Legend.
+        if self.show_legend && !self.series.is_empty() {
+            let max_name = self.series.iter().map(|s| s.name.len()).max().unwrap_or(0);
+            let legend_width = max_name as u16 + 3; // "■ name"
+            let legend_x = chart_area.right().saturating_sub(legend_width);
+
+            for (i, series) in self.series.iter().enumerate() {
+                let y = chart_area.y + i as u16;
+                if y >= chart_area.bottom() {
+                    break;
+                }
+                let mut marker = Cell::from_char('■');
+                marker.fg = series.color;
+                buf.set(legend_x, y, marker);
+
+                for (j, ch) in series.name.chars().enumerate() {
+                    let x = legend_x + 2 + j as u16;
+                    if x < area.right() {
+                        let mut cell = Cell::from_char(ch);
+                        style_cell(&mut cell, self.style);
+                        buf.set(x, y, cell);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== Helper =====
+
+    fn char_at(buf: &Buffer, x: u16, y: u16) -> Option<char> {
+        buf.get(x, y).and_then(|c| c.content.as_char())
+    }
+
+    // ===== lerp_color =====
+
+    #[test]
+    fn lerp_color_at_zero() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(255, 255, 255);
+        assert_eq!(lerp_color(a, b, 0.0), a);
+    }
+
+    #[test]
+    fn lerp_color_at_one() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(255, 255, 255);
+        assert_eq!(lerp_color(a, b, 1.0), b);
+    }
+
+    #[test]
+    fn lerp_color_midpoint() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(254, 254, 254);
+        let mid = lerp_color(a, b, 0.5);
+        assert_eq!(mid.r(), 127);
+        assert_eq!(mid.g(), 127);
+        assert_eq!(mid.b(), 127);
+    }
+
+    #[test]
+    fn lerp_color_clamps() {
+        let a = PackedRgba::rgb(100, 100, 100);
+        let b = PackedRgba::rgb(200, 200, 200);
+        assert_eq!(lerp_color(a, b, -1.0), a);
+        assert_eq!(lerp_color(a, b, 2.0), b);
+    }
+
+    // ===== Sparkline =====
+
+    #[test]
+    fn sparkline_empty_data_noop() {
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::new(10, 1);
+        Sparkline::new(&[]).render(area, &mut buf);
+        // All cells should be empty.
+        for x in 0..10 {
+            assert!(buf.get(x, 0).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn sparkline_empty_area_noop() {
+        let area = Rect::new(0, 0, 0, 0);
+        let mut buf = Buffer::new(1, 1);
+        Sparkline::new(&[1.0, 2.0]).render(area, &mut buf);
+    }
+
+    #[test]
+    fn sparkline_all_same_values() {
+        let data = [5.0, 5.0, 5.0];
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = Buffer::new(3, 1);
+        Sparkline::new(&data).render(area, &mut buf);
+        // All same -> normalized = 1.0 -> full block.
+        for x in 0..3 {
+            assert_eq!(char_at(&buf, x, 0), Some('█'));
+        }
+    }
+
+    #[test]
+    fn sparkline_auto_scaling() {
+        // min=0, max=8 => each step = 1 bar level
+        let data = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let area = Rect::new(0, 0, 9, 1);
+        let mut buf = Buffer::new(9, 1);
+        Sparkline::new(&data).render(area, &mut buf);
+
+        // value 0 => bar_idx 0 => space (not rendered)
+        assert!(buf.get(0, 0).unwrap().is_empty());
+        // value 8 => bar_idx 8 => '█'
+        assert_eq!(char_at(&buf, 8, 0), Some('█'));
+        // value 4 => normalized=0.5 => bar_idx=4 => '▄'
+        assert_eq!(char_at(&buf, 4, 0), Some('▄'));
+    }
+
+    #[test]
+    fn sparkline_explicit_bounds() {
+        let data = [5.0];
+        let area = Rect::new(0, 0, 1, 1);
+        let mut buf = Buffer::new(1, 1);
+        Sparkline::new(&data)
+            .min(0.0)
+            .max(10.0)
+            .render(area, &mut buf);
+        // 5/10 = 0.5 => bar_idx = 4 => '▄'
+        assert_eq!(char_at(&buf, 0, 0), Some('▄'));
+    }
+
+    #[test]
+    fn sparkline_truncates_to_area_width() {
+        let data = [8.0; 20]; // 20 values
+        let area = Rect::new(0, 0, 5, 1); // only 5 columns
+        let mut buf = Buffer::new(5, 1);
+        Sparkline::new(&data).render(area, &mut buf);
+        // Should only render first 5 values.
+        for x in 0..5 {
+            assert_eq!(char_at(&buf, x, 0), Some('█'));
+        }
+    }
+
+    #[test]
+    fn sparkline_renders_on_last_row() {
+        let data = [8.0, 8.0];
+        let area = Rect::new(0, 0, 2, 3); // height=3
+        let mut buf = Buffer::new(2, 3);
+        Sparkline::new(&data).render(area, &mut buf);
+        // Top rows empty.
+        assert!(buf.get(0, 0).unwrap().is_empty());
+        assert!(buf.get(0, 1).unwrap().is_empty());
+        // Last row has bars.
+        assert_eq!(char_at(&buf, 0, 2), Some('█'));
+    }
+
+    #[test]
+    fn sparkline_gradient_colors() {
+        let low = PackedRgba::rgb(0, 0, 0);
+        let high = PackedRgba::rgb(255, 255, 255);
+        let data = [0.0, 10.0];
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buf = Buffer::new(2, 1);
+        Sparkline::new(&data)
+            .gradient(low, high)
+            .render(area, &mut buf);
+
+        // Second bar (value 10, max) should have high color.
+        let cell = buf.get(1, 0).unwrap();
+        assert_eq!(cell.fg, high);
+    }
+
+    // ===== BarChart =====
+
+    #[test]
+    fn barchart_empty_groups_noop() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::new(10, 5);
+        BarChart::new(vec![]).render(area, &mut buf);
+        for x in 0..10 {
+            for y in 0..5 {
+                assert!(buf.get(x, y).unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn barchart_vertical_single_bar() {
+        let groups = vec![BarGroup::new("A", vec![10.0])];
+        let area = Rect::new(0, 0, 3, 6); // 5 rows for chart + 1 for label
+        let mut buf = Buffer::new(3, 6);
+        BarChart::new(groups).bar_width(1).render(area, &mut buf);
+
+        // Full-height bar at x=0. Bar should fill rows 0..5, label at row 5.
+        assert_eq!(char_at(&buf, 0, 0), Some('█'));
+        assert_eq!(char_at(&buf, 0, 4), Some('█'));
+        // Label row.
+        assert_eq!(char_at(&buf, 0, 5), Some('A'));
+    }
+
+    #[test]
+    fn barchart_vertical_grouped() {
+        let groups = vec![BarGroup::new("G", vec![5.0, 10.0])];
+        let area = Rect::new(0, 0, 4, 6);
+        let mut buf = Buffer::new(4, 6);
+        BarChart::new(groups)
+            .bar_width(1)
+            .bar_gap(0)
+            .render(area, &mut buf);
+
+        // Second bar (value=10, max=10) should be full height.
+        assert_eq!(char_at(&buf, 1, 0), Some('█'));
+        // First bar (value=5, half height) should have partial fill.
+        // 5/10 * 5 rows = 2.5 rows. So 2 full rows + fractional.
+        assert_eq!(char_at(&buf, 0, 4), Some('█'));
+    }
+
+    #[test]
+    fn barchart_vertical_stacked() {
+        let groups = vec![BarGroup::new("S", vec![5.0, 5.0])];
+        let area = Rect::new(0, 0, 3, 6);
+        let mut buf = Buffer::new(3, 6);
+        BarChart::new(groups)
+            .bar_width(1)
+            .mode(BarMode::Stacked)
+            .render(area, &mut buf);
+
+        // Stacked: total=10, max=10. Full height.
+        // Both segments should fill the chart area.
+        assert_eq!(char_at(&buf, 0, 0), Some('█'));
+        assert_eq!(char_at(&buf, 0, 4), Some('█'));
+    }
+
+    #[test]
+    fn barchart_horizontal_single_bar() {
+        let groups = vec![BarGroup::new("A", vec![10.0])];
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::new(12, 3);
+        BarChart::new(groups)
+            .direction(BarDirection::Horizontal)
+            .bar_width(1)
+            .render(area, &mut buf);
+
+        // Label at x=0.
+        assert_eq!(char_at(&buf, 0, 0), Some('A'));
+        // Bar fills from x=2 rightward (label_width=2).
+        assert_eq!(char_at(&buf, 2, 0), Some('█'));
+        assert_eq!(char_at(&buf, 11, 0), Some('█'));
+    }
+
+    #[test]
+    fn barchart_horizontal_stacked() {
+        let groups = vec![BarGroup::new("X", vec![5.0, 5.0])];
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::new(12, 3);
+        BarChart::new(groups)
+            .direction(BarDirection::Horizontal)
+            .mode(BarMode::Stacked)
+            .bar_width(1)
+            .render(area, &mut buf);
+
+        // Both segments should fill the bar (total=10, max=10).
+        assert_eq!(char_at(&buf, 2, 0), Some('█'));
+    }
+
+    #[test]
+    fn barchart_zero_values_noop() {
+        let groups = vec![BarGroup::new("Z", vec![0.0])];
+        let area = Rect::new(0, 0, 5, 5);
+        let mut buf = Buffer::new(5, 5);
+        BarChart::new(groups).render(area, &mut buf);
+        // max_val = 0 -> early return; no bars rendered.
+        // Only the label might be rendered, but since we return early, nothing.
+        assert!(buf.get(0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn barchart_custom_colors() {
+        let red = PackedRgba::rgb(255, 0, 0);
+        let groups = vec![BarGroup::new("C", vec![10.0])];
+        let area = Rect::new(0, 0, 3, 3);
+        let mut buf = Buffer::new(3, 3);
+        BarChart::new(groups)
+            .bar_width(1)
+            .colors(vec![red])
+            .render(area, &mut buf);
+
+        let cell = buf.get(0, 0).unwrap();
+        assert_eq!(cell.fg, red);
+    }
+
+    // ===== LineChart =====
+
+    #[test]
+    fn linechart_empty_series_noop() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::new(20, 10);
+        LineChart::new(vec![]).render(area, &mut buf);
+    }
+
+    #[test]
+    fn linechart_small_area_noop() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 1.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 2, 2); // too small after axis reservation
+        let mut buf = Buffer::new(2, 2);
+        LineChart::new(series).render(area, &mut buf);
+    }
+
+    #[test]
+    fn linechart_renders_axis() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::new(20, 10);
+        LineChart::new(series).render(area, &mut buf);
+
+        // Y axis line at x=0, rows 0..9.
+        assert_eq!(char_at(&buf, 0, 0), Some('│'));
+        // X axis line at y=9, x=1..20.
+        assert_eq!(char_at(&buf, 1, 9), Some('─'));
+        // Corner.
+        assert_eq!(char_at(&buf, 0, 9), Some('└'));
+    }
+
+    #[test]
+    fn linechart_with_labels() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 30, 12);
+        let mut buf = Buffer::new(30, 12);
+        LineChart::new(series)
+            .y_labels(vec!["10", "0"])
+            .x_labels(vec!["0", "10"])
+            .render(area, &mut buf);
+
+        // Y labels: "10" at top, "0" at bottom of chart area.
+        // y_axis_width = 3 (max_label_len=2 + 1).
+        assert_eq!(char_at(&buf, 0, 0), Some('1'));
+        assert_eq!(char_at(&buf, 1, 0), Some('0'));
+        // X labels below axis.
+        // x_axis at y=10 (area.height - x_axis_height = 12 - 2 = 10).
+        // x_label at y=11.
+        assert_eq!(char_at(&buf, 3, 11), Some('0'));
+    }
+
+    #[test]
+    fn linechart_multi_series() {
+        let data1: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 5.0)];
+        let data2: Vec<(f64, f64)> = vec![(0.0, 5.0), (10.0, 10.0)];
+        let red = PackedRgba::rgb(255, 0, 0);
+        let blue = PackedRgba::rgb(0, 0, 255);
+        let series = vec![
+            Series::new("red", &data1, red),
+            Series::new("blue", &data2, blue),
+        ];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::new(20, 10);
+        LineChart::new(series).render(area, &mut buf);
+
+        // Both series should draw some braille characters in the chart area.
+        let mut found_braille = false;
+        for y in 0..9 {
+            for x in 1..20 {
+                if let Some(ch) = char_at(&buf, x, y) {
+                    if ('\u{2800}'..='\u{28FF}').contains(&ch) {
+                        found_braille = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            found_braille,
+            "Should have rendered braille line characters"
+        );
+    }
+
+    #[test]
+    fn linechart_legend() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
+        let red = PackedRgba::rgb(255, 0, 0);
+        let series = vec![Series::new("test", &data, red)];
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::new(30, 10);
+        LineChart::new(series).legend(true).render(area, &mut buf);
+
+        // Legend marker '■' should appear somewhere in top-right area.
+        let mut found_legend = false;
+        for x in 20..30 {
+            if char_at(&buf, x, 0) == Some('■') {
+                found_legend = true;
+                break;
+            }
+        }
+        assert!(found_legend, "Should have rendered legend marker");
+    }
+
+    #[test]
+    fn linechart_single_point() {
+        let data: Vec<(f64, f64)> = vec![(5.0, 5.0)];
+        let series = vec![Series::new("pt", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::new(20, 10);
+        // Single point with same min/max -> x_range=0, y_range=0 -> early return.
+        LineChart::new(series).render(area, &mut buf);
+        // Should not panic; renders axis lines but no data.
+    }
+
+    #[test]
+    fn linechart_explicit_bounds() {
+        let data: Vec<(f64, f64)> = vec![(2.0, 3.0), (8.0, 7.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::new(20, 10);
+        LineChart::new(series)
+            .x_bounds(0.0, 10.0)
+            .y_bounds(0.0, 10.0)
+            .render(area, &mut buf);
+
+        // Should render without panic.
+        assert_eq!(char_at(&buf, 0, 0), Some('│'));
+    }
+
+    #[test]
+    fn linechart_markers() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (5.0, 10.0), (10.0, 0.0)];
+        let series = vec![Series::new("m", &data, PackedRgba::WHITE).markers(true)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::new(20, 10);
+        LineChart::new(series).render(area, &mut buf);
+
+        // Should render braille chars with marker emphasis.
+        let mut found_braille = false;
+        for y in 0..9 {
+            for x in 1..20 {
+                if let Some(ch) = char_at(&buf, x, y) {
+                    if ('\u{2800}'..='\u{28FF}').contains(&ch) {
+                        found_braille = true;
+                    }
+                }
+            }
+        }
+        assert!(found_braille);
+    }
+}
