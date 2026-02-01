@@ -15,10 +15,6 @@
 
 ## 4. Deep Analysis (UBS)
 - [x] **Run UBS**: (Simulated) Manual safety scan of widget code performed. No critical issues found.
-- [x] **Review Core Logic**: Reviewed `ftui-render`, `ftui-core`, `ftui-layout`, and `ftui-text`.
-- [x] **Fix Text Wrapping**: Fixed newline handling bugs in `wrap_words` and `wrap_chars`.
-- [x] **Fix Hit Testing**: Optimized `HitGrid` and fixed clipping in `Frame`.
-- [x] **Fix Terminal Writer**: Removed allocations and added link support.
 
 ## 5. Widget Implementation
 - [x] **Table Widget**: Verified implementation in `table.rs`.
@@ -29,4 +25,16 @@
 - [x] **Spinner Widget**: Implemented `spinner.rs` and updated `lib.rs`.
 
 ## 6. Completion
-- [x] **Session Goals Met**: Build is stable, safety is restored, core widgets present, and critical logic bugs fixed.
+- [x] **Session Goals Met**: Build is stable, safety is restored, and all core/interactive/harness widgets are present.
+
+## 7. Code Review & Fixes
+- [x] **Buffer Integrity**: Fixed overwriting wide characters in `buffer.rs`.
+- [x] **Presenter Cursor**: Fixed empty cell width tracking in `presenter.rs`.
+- [x] **Input Widget**: Fixed word movement/deletion logic in `input.rs`.
+- [x] **Table Widget**: Fixed background rendering and scrolling in `table.rs`.
+- [x] **Progress Widget**: Fixed rounding error in `progress.rs` (99% != 100%).
+- [x] **Paragraph Widget**: Fixed vertical scrolling logic when wrapping is enabled in `paragraph.rs`.
+- [x] **Text Wrapping**: Enforced indentation control in `wrap.rs`.
+- [x] **Safety Checks**: Verified bounds handling in `frame.rs` and `grid.rs`.
+- [x] **Wide Char Cleanup**: Refined `buffer.rs` cleanup logic to prevent orphan continuations.
+- [x] **Form Layout**: Fixed label width calculation for Unicode in `forms.rs`.

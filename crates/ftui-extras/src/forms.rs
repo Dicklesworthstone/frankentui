@@ -319,7 +319,7 @@ impl Form {
         }
         self.fields
             .iter()
-            .map(|f| f.label().len() as u16)
+            .map(|f| unicode_width::UnicodeWidthStr::width(f.label()) as u16)
             .max()
             .unwrap_or(0)
             .saturating_add(2) // ": " suffix

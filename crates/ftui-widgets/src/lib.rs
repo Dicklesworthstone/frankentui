@@ -34,18 +34,15 @@ pub use panel::Panel;
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 /// A `Widget` is a renderable component.
 ///
-/// Widgets render themselves into a `Buffer` within a given `Rect`.
-/// Widgets should check `buf.degradation` to respect the render budget
-/// and gracefully degrade visual fidelity when the system is under load.
+/// Widgets render themselves into a `Frame` within a given `Rect`.
 pub trait Widget {
-    /// Render the widget into the buffer at the given area.
-    fn render(&self, area: Rect, buf: &mut Buffer);
+    /// Render the widget into the frame at the given area.
+    fn render(&self, area: Rect, frame: &mut Frame);
 
     /// Whether this widget is essential and should always render,
     /// even at `EssentialOnly` degradation.
@@ -61,8 +58,8 @@ pub trait Widget {
 pub trait StatefulWidget {
     type State;
 
-    /// Render the widget into the buffer with mutable state.
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State);
+    /// Render the widget into the frame with mutable state.
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State);
 }
 
 /// Helper to apply style to a cell.
@@ -100,18 +97,21 @@ pub(crate) fn set_style_area(buf: &mut Buffer, area: Rect, style: Style) {
     }
 }
 
-/// Draw a text span into a buffer at the given position.
+/// Draw a text span into a frame at the given position.
 ///
 /// Returns the x position after the last drawn character.
 /// Stops at `max_x` (exclusive).
 pub(crate) fn draw_text_span(
-    buf: &mut Buffer,
+    frame: &mut Frame,
     mut x: u16,
     y: u16,
     content: &str,
     style: Style,
     max_x: u16,
 ) -> u16 {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
     for grapheme in content.graphemes(true) {
         if x >= max_x {
             break;
@@ -123,11 +123,23 @@ pub(crate) fn draw_text_span(
         if x + w as u16 > max_x {
             break;
         }
-        if let Some(c) = grapheme.chars().next() {
-            let mut cell = Cell::from_char(c);
-            apply_style(&mut cell, style);
-            buf.set(x, y, cell);
-        }
+
+        // Intern grapheme if needed
+        let cell_content = if w > 1 || grapheme.chars().count() > 1 {
+            let id = frame.intern_with_width(grapheme, w as u8);
+            ftui_render::cell::CellContent::from_grapheme(id)
+        } else if let Some(c) = grapheme.chars().next() {
+            ftui_render::cell::CellContent::from_char(c)
+        } else {
+            continue;
+        };
+
+        let mut cell = Cell::new(cell_content);
+        apply_style(&mut cell, style);
+        
+        // Use set() which handles multi-width characters (atomic writes)
+        frame.buffer.set(x, y, cell);
+        
         x = x.saturating_add(w as u16);
     }
     x

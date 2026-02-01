@@ -116,6 +116,8 @@ struct StyleEntry {
     position: usize,
     /// The style before this tag was applied.
     previous_style: Style,
+    /// The style delta applied by this tag.
+    style_delta: Style,
     /// URL for link tags.
     link_url: Option<String>,
 }
@@ -302,17 +304,19 @@ impl MarkupParser {
         value: Option<&str>,
         position: usize,
     ) -> Result<(), MarkupError> {
+        // Apply the new style to get the delta
+        let style_delta = self.apply_tag(name, value, position)?;
+
         // Save current state
         let entry = StyleEntry {
             tag: name.to_lowercase(),
             position,
             previous_style: self.current_style,
+            style_delta,
             link_url: self.current_link.clone(),
         };
 
-        // Apply the new style
-        let new_style = self.apply_tag(name, value, position)?;
-        self.current_style = self.current_style.merge(&new_style);
+        self.current_style = self.current_style.merge(&style_delta);
 
         self.style_stack.push(entry);
         Ok(())
@@ -345,40 +349,12 @@ impl MarkupParser {
         }
 
         // Re-apply styles from any stack entries that were above the removed
-        // entry (now shifted down to entry_idx..). Each entry's previous_style
-        // recorded the state before that tag was pushed, but since we removed
-        // an entry below them, we need to rebuild by replaying their style
-        // deltas on top of the restored base.
+        // entry (now shifted down to entry_idx..).
         for remaining in &self.style_stack[entry_idx..] {
-            // Compute the delta this entry added: the difference between
-            // what was current when it was pushed (previous_style) and what
-            // it changed. Since we stored previous_style but not the delta,
-            // we can recover the delta by re-applying the tag. However, we
-            // don't store the tag value. Instead, note that each entry's
-            // accumulated style at push time was previous_style merged with
-            // the delta. The entries above still hold valid previous_style
-            // chains, but their previous_style values reference the now-stale
-            // chain. The simplest correct approach: rebuild from the base.
-            //
-            // We re-derive: when entry at index j was pushed, the style was
-            // previous_style[j], and after push it became previous_style[j]
-            // merged with delta[j]. Since entries above entry_idx still have
-            // their original previous_style (which included the removed entry's
-            // contribution), we need to adjust. The most robust approach is to
-            // note that the remaining entries' deltas can be recovered as:
-            //   delta = current_after_push - previous_style
-            // But we don't have current_after_push stored.
-            //
-            // Pragmatic fix: since each remaining entry stored previous_style
-            // that included the removed tag's effect, and we've now removed
-            // that effect from self.current_style, we can approximate by
-            // examining what fields the remaining entry changed. The entry's
-            // tag tells us what style property it added.
-            //
-            // For correctness, re-apply the tag's style effect.
-            if let Ok(delta) = self.reapply_tag(&remaining.tag) {
-                self.current_style = self.current_style.merge(&delta);
-            }
+            // Because we removed an entry below this one, we must rebuild the
+            // accumulated style chain. We use the stored style_delta to exactly
+            // replay the effect of each remaining tag.
+            self.current_style = self.current_style.merge(&remaining.style_delta);
 
             // Restore link state from remaining entries
             if remaining.tag == "link" {
@@ -388,28 +364,6 @@ impl MarkupParser {
         }
 
         Ok(())
-    }
-
-    /// Re-derive the style delta for a tag (without value context).
-    ///
-    /// Used when rebuilding styles after a non-LIFO tag close. For tags that
-    /// require a value (fg, bg, link), we can't recover the exact color, so
-    /// we skip them - their style contribution will be lost. This is an
-    /// acceptable degradation for the uncommon case of misordered closes.
-    fn reapply_tag(&self, tag: &str) -> Result<Style, ()> {
-        match tag {
-            "bold" | "b" => Ok(Style::new().bold()),
-            "italic" | "i" => Ok(Style::new().italic()),
-            "underline" | "u" => Ok(Style::new().underline()),
-            "dim" => Ok(Style::new().dim()),
-            "reverse" => Ok(Style::new().reverse()),
-            "strikethrough" | "s" => Ok(Style::new().strikethrough()),
-            "blink" => Ok(Style::new().blink()),
-            "hidden" => Ok(Style::new().hidden()),
-            // Value-dependent tags: can't recover exact color/url without
-            // storing the value. Skip gracefully.
-            _ => Err(()),
-        }
     }
 
     /// Apply a tag and return the style delta.
@@ -679,6 +633,28 @@ mod tests {
     // =========================================================================
     // Nested tags tests
     // =========================================================================
+
+    #[test]
+    fn parse_interleaved_tags_with_values() {
+        // [fg=red][bg=blue]text[/fg]more[/bg]
+        // Push fg=red (Current: red)
+        // Push bg=blue (Current: red on blue)
+        // Pop fg (restore bg=blue prev... wait, bg=blue prev was red. Restoring fg's prev (empty). Reapply bg=blue.)
+        // Result: "text" is red on blue. "more" should be blue background (default fg).
+        let text = parse_markup("[fg=red][bg=blue]text[/fg]more[/bg]").unwrap();
+        
+        assert_eq!(text.to_plain_text(), "textmore");
+        
+        // "text" span
+        let style1 = text.lines()[0].spans()[0].style.unwrap();
+        assert_eq!(style1.fg, Some(PackedRgba::rgb(255, 0, 0))); // Red
+        assert_eq!(style1.bg, Some(PackedRgba::rgb(0, 0, 255))); // Blue
+        
+        // "more" span
+        let style2 = text.lines()[0].spans()[1].style.unwrap();
+        assert_eq!(style2.fg, None); // Default fg
+        assert_eq!(style2.bg, Some(PackedRgba::rgb(0, 0, 255))); // Blue
+    }
 
     #[test]
     fn parse_nested_tags() {

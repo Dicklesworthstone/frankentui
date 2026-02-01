@@ -502,7 +502,8 @@ impl GenericTokenizer {
         let mut end = pos + 1;
         while end < bytes.len() {
             if bytes[end] == b'\\' {
-                end += 2; // skip escaped character
+                // Skip escaped character, but don't go past end of line
+                end = (end + 2).min(bytes.len());
             } else if bytes[end] == quote {
                 return (end + 1, true); // closed
             } else {
@@ -543,7 +544,8 @@ impl GenericTokenizer {
         let mut end = 0;
         while end < bytes.len() {
             if bytes[end] == b'\\' {
-                end += 2;
+                // Skip escaped character, but don't go past end of line
+                end = (end + 2).min(bytes.len());
             } else if bytes[end] == quote {
                 let tokens = vec![Token::new(TokenKind::String, 0..end + 1)];
                 let rest = &line[end + 1..];
@@ -1414,6 +1416,45 @@ mod tests {
         let (tokens2, state2) = t.tokenize_line(r#"world""#, state);
         assert_eq!(tokens2[0].kind, TokenKind::String);
         assert_eq!(state2, LineState::Normal);
+    }
+
+    #[test]
+    fn string_trailing_backslash_at_eol() {
+        // Edge case: string ends with backslash at end of line
+        let t = rust_tokenizer();
+        let input = r#""hello\"#; // unclosed string ending with backslash
+        let (tokens, state) = t.tokenize_line(input, LineState::Normal);
+
+        // Token range must not exceed input length
+        assert!(
+            tokens[0].range.end <= input.len(),
+            "Token range {:?} exceeds input length {}",
+            tokens[0].range,
+            input.len()
+        );
+        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert!(matches!(state, LineState::InString(_)));
+
+        // Should be able to extract text without panic
+        let _ = tokens[0].text(input);
+    }
+
+    #[test]
+    fn string_continuation_trailing_backslash() {
+        // Edge case: continued string line ends with backslash
+        let t = rust_tokenizer();
+        let (_, state) = t.tokenize_line(r#""start"#, LineState::Normal);
+
+        let continued = r#"middle\"#; // continuation ending with backslash
+        let (tokens, state2) = t.tokenize_line(continued, state);
+
+        assert!(
+            tokens[0].range.end <= continued.len(),
+            "Token range {:?} exceeds input length {}",
+            tokens[0].range,
+            continued.len()
+        );
+        assert!(matches!(state2, LineState::InString(_)));
     }
 
     // -- Comments -----------------------------------------------------------
