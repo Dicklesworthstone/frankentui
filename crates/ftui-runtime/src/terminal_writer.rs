@@ -290,15 +290,20 @@ impl<W: Write> TerminalWriter<W> {
     /// log scrolling to the region above the UI. This prevents log output from
     /// overwriting the UI, reducing redraw work.
     fn present_inline(&mut self, buffer: &Buffer, ui_height: u16) -> io::Result<()> {
+        let visible_height = ui_height.min(self.term_height);
+        if visible_height == 0 {
+            return Ok(());
+        }
+
         // Activate scroll region if strategy calls for it
         {
             let _span = debug_span!("scroll_region").entered();
             match self.inline_strategy {
                 InlineStrategy::ScrollRegion => {
-                    self.activate_scroll_region(ui_height)?;
+                    self.activate_scroll_region(visible_height)?;
                 }
                 InlineStrategy::Hybrid => {
-                    self.activate_scroll_region(ui_height)?;
+                    self.activate_scroll_region(visible_height)?;
                 }
                 InlineStrategy::OverlayRedraw => {}
             }
@@ -316,11 +321,11 @@ impl<W: Write> TerminalWriter<W> {
 
         // Move to UI anchor and clear UI region
         {
-            let _span = debug_span!("clear_ui", rows = ui_height).entered();
-            let ui_y = self.ui_start_row();
+            let _span = debug_span!("clear_ui", rows = visible_height).entered();
+            let ui_y = self.term_height.saturating_sub(visible_height);
             write!(self.writer(), "\x1b[{};1H", ui_y + 1)?;
 
-            for i in 0..ui_height {
+            for i in 0..visible_height {
                 write!(self.writer(), "\x1b[{};1H", ui_y + i + 1)?;
                 self.writer().write_all(ERASE_LINE)?;
             }
@@ -345,7 +350,7 @@ impl<W: Write> TerminalWriter<W> {
         // Emit diff
         {
             let _span = debug_span!("emit").entered();
-            self.emit_diff(buffer, &diff)?;
+            self.emit_diff(buffer, &diff, Some(visible_height))?;
         }
 
         // Restore cursor
@@ -388,7 +393,7 @@ impl<W: Write> TerminalWriter<W> {
 
         {
             let _span = debug_span!("emit").entered();
-            self.emit_diff(buffer, &diff)?;
+            self.emit_diff(buffer, &diff, None)?;
         }
 
         // Reset style at end
@@ -405,7 +410,12 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     /// Emit a diff directly to the writer.
-    fn emit_diff(&mut self, buffer: &Buffer, diff: &BufferDiff) -> io::Result<()> {
+    fn emit_diff(
+        &mut self,
+        buffer: &Buffer,
+        diff: &BufferDiff,
+        max_height: Option<u16>,
+    ) -> io::Result<()> {
         use ftui_render::cell::{CellAttrs, StyleFlags};
 
         let runs = diff.runs();
@@ -423,6 +433,11 @@ impl<W: Write> TerminalWriter<W> {
         let writer = self.writer.as_mut().expect("writer has been consumed");
 
         for run in runs {
+            if let Some(limit) = max_height
+                && run.y >= limit
+            {
+                continue;
+            }
             // Move cursor to run start
             write!(writer, "\x1b[{};{}H", ui_y_start + run.y + 1, run.x0 + 1)?;
 
@@ -694,6 +709,36 @@ impl<W: Write> Drop for TerminalWriter<W> {
 mod tests {
     use super::*;
     use ftui_render::cell::Cell;
+
+    fn max_cursor_row(output: &[u8]) -> u16 {
+        let mut max_row = 0u16;
+        let mut i = 0;
+        while i + 2 < output.len() {
+            if output[i] == 0x1b && output[i + 1] == b'[' {
+                let mut j = i + 2;
+                let mut row: u16 = 0;
+                let mut saw_row = false;
+                while j < output.len() && output[j].is_ascii_digit() {
+                    saw_row = true;
+                    row = row.saturating_mul(10).saturating_add((output[j] - b'0') as u16);
+                    j += 1;
+                }
+                if saw_row && j < output.len() && output[j] == b';' {
+                    j += 1;
+                    let mut saw_col = false;
+                    while j < output.len() && output[j].is_ascii_digit() {
+                        saw_col = true;
+                        j += 1;
+                    }
+                    if saw_col && j < output.len() && output[j] == b'H' {
+                        max_row = max_row.max(row);
+                    }
+                }
+            }
+            i += 1;
+        }
+        max_row
+    }
 
     fn basic_caps() -> TerminalCapabilities {
         TerminalCapabilities::basic()
@@ -1091,6 +1136,25 @@ mod tests {
 
         // Should saturate to 0, not underflow
         assert_eq!(writer.ui_start_row(), 0);
+    }
+
+    #[test]
+    fn inline_ui_height_clamped_to_terminal_height() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 10 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(8, 3);
+            let buffer = Buffer::new(8, 10);
+            writer.present_ui(&buffer).unwrap();
+        }
+
+        let max_row = max_cursor_row(&output);
+        assert!(max_row <= 3, "cursor row {} exceeds terminal height", max_row);
     }
 
     // --- Scroll-region optimization tests ---

@@ -146,9 +146,14 @@ impl Widget for Paragraph<'_> {
             let mut x = align_x(text_area, line_width, self.alignment);
 
             for span in line.spans() {
-                let span_style = match span.style {
-                    Some(s) => s.merge(&style),
-                    None => style,
+                // At NoStyling+, ignore span-level styles entirely
+                let span_style = if deg.apply_styling() {
+                    match span.style {
+                        Some(s) => s.merge(&style),
+                        None => style,
+                    }
+                } else {
+                    style // Style::default() at NoStyling
                 };
                 x = draw_text_span(
                     buf,
@@ -417,5 +422,30 @@ mod tests {
 
         // EssentialOnly still renders content (< Skeleton)
         assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('H'));
+    }
+
+    #[test]
+    fn degradation_no_styling_ignores_span_styles() {
+        use ftui_render::budget::DegradationLevel;
+        use ftui_render::cell::PackedRgba;
+        use ftui_text::{Line, Span};
+
+        // Create text with a styled span
+        let styled_span = Span::styled("Hello", Style::new().fg(PackedRgba::RED));
+        let text = Text::from(vec![Line::from(vec![styled_span])]);
+        let para = Paragraph::new(text);
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::new(10, 1);
+        buf.degradation = DegradationLevel::NoStyling;
+        para.render(area, &mut buf);
+
+        // Text should render but span style should be ignored
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('H'));
+        // Foreground color should NOT be red
+        assert_ne!(
+            buf.get(0, 0).unwrap().fg,
+            PackedRgba::RED,
+            "Span fg color should be ignored at NoStyling"
+        );
     }
 }

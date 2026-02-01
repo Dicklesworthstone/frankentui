@@ -26,6 +26,7 @@ use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
+use ftui_render::frame::Frame;
 
 /// Visualization style for constraint overlay.
 #[derive(Debug, Clone)]
@@ -237,13 +238,13 @@ impl<'a> ConstraintOverlay<'a> {
 }
 
 impl Widget for ConstraintOverlay<'_> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         if !self.debugger.enabled() {
             return;
         }
 
         for record in self.debugger.records() {
-            self.render_record(record, area, buf);
+            self.render_record(record, area, &mut frame.buffer);
         }
     }
 }
@@ -252,6 +253,7 @@ impl Widget for ConstraintOverlay<'_> {
 mod tests {
     use super::*;
     use crate::layout_debugger::LayoutConstraints;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     #[test]
     fn overlay_renders_nothing_when_disabled() {
@@ -265,11 +267,12 @@ mod tests {
         ));
 
         let overlay = ConstraintOverlay::new(&debugger);
-        let mut buf = Buffer::new(20, 10);
-        overlay.render(Rect::new(0, 0, 20, 10), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
 
         // Buffer should be unchanged (all default cells)
-        assert!(buf.get(0, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
     }
 
     #[test]
@@ -284,11 +287,12 @@ mod tests {
         ));
 
         let overlay = ConstraintOverlay::new(&debugger);
-        let mut buf = Buffer::new(20, 10);
-        overlay.render(Rect::new(0, 0, 20, 10), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
 
         // Should have border drawn
-        let cell = buf.get(1, 1).unwrap();
+        let cell = frame.buffer.get(1, 1).unwrap();
         assert_eq!(cell.content.as_char(), Some('+'));
     }
 
@@ -310,10 +314,11 @@ mod tests {
         };
 
         let overlay = ConstraintOverlay::new(&debugger).style(style);
-        let mut buf = Buffer::new(20, 10);
-        overlay.render(Rect::new(0, 0, 20, 10), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
 
-        let cell = buf.get(0, 0).unwrap();
+        let cell = frame.buffer.get(0, 0).unwrap();
         assert_eq!(cell.fg, PackedRgba::rgb(255, 0, 0));
     }
 
@@ -335,10 +340,11 @@ mod tests {
         };
 
         let overlay = ConstraintOverlay::new(&debugger).style(style);
-        let mut buf = Buffer::new(20, 10);
-        overlay.render(Rect::new(0, 0, 20, 10), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
 
-        let cell = buf.get(0, 0).unwrap();
+        let cell = frame.buffer.get(0, 0).unwrap();
         assert_eq!(cell.fg, PackedRgba::rgb(255, 255, 0));
     }
 
@@ -360,11 +366,12 @@ mod tests {
         };
 
         let overlay = ConstraintOverlay::new(&debugger).style(style);
-        let mut buf = Buffer::new(20, 10);
-        overlay.render(Rect::new(0, 0, 20, 10), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
 
         // Corner of requested area (10x5) should have dot marker
-        let cell = buf.get(9, 0).unwrap();
+        let cell = frame.buffer.get(9, 0).unwrap();
         assert_eq!(cell.content.as_char(), Some('.'));
         assert_eq!(cell.fg, PackedRgba::rgb(0, 0, 255));
     }
@@ -390,14 +397,15 @@ mod tests {
         debugger.record(parent);
 
         let overlay = ConstraintOverlay::new(&debugger);
-        let mut buf = Buffer::new(20, 10);
-        overlay.render(Rect::new(0, 0, 20, 10), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
 
         // Both parent and child should have borders
-        let parent_cell = buf.get(0, 0).unwrap();
+        let parent_cell = frame.buffer.get(0, 0).unwrap();
         assert_eq!(parent_cell.content.as_char(), Some('+'));
 
-        let child_cell = buf.get(2, 2).unwrap();
+        let child_cell = frame.buffer.get(2, 2).unwrap();
         assert_eq!(child_cell.content.as_char(), Some('+'));
     }
 
@@ -413,16 +421,17 @@ mod tests {
         ));
 
         let overlay = ConstraintOverlay::new(&debugger);
-        let mut buf = Buffer::new(10, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
         // Render area is 0,0,10,10 but widget is at 5,5,10,10
-        overlay.render(Rect::new(0, 0, 10, 10), &mut buf);
+        overlay.render(Rect::new(0, 0, 10, 10), &mut frame);
 
         // Should render the visible portion
-        let cell = buf.get(5, 5).unwrap();
+        let cell = frame.buffer.get(5, 5).unwrap();
         assert_eq!(cell.content.as_char(), Some('+'));
 
         // Outside render area should be empty
-        let outside = buf.get(0, 0).unwrap();
+        let outside = frame.buffer.get(0, 0).unwrap();
         assert!(outside.is_empty());
     }
 

@@ -1522,21 +1522,7 @@ mod proptest_fuzz {
             events.len()
         );
     }
-}
-
-// ── Additional fuzz invariant tests (bd-10i.11.3) ─────────────────
-#[cfg(test)]
-mod proptest_fuzz_additional {
-    use super::*;
-    use proptest::prelude::*;
-
-    fn arb_byte() -> impl Strategy<Value = u8> {
-        any::<u8>()
-    }
-
-    fn arb_byte_vec(max_len: usize) -> impl Strategy<Value = Vec<u8>> {
-        prop::collection::vec(arb_byte(), 0..=max_len)
-    }
+    // ── Additional fuzz invariant tests (bd-10i.11.3) ─────────────────
 
     /// Generate an OSC 52 clipboard sequence with arbitrary base64 payload.
     fn osc52_sequence() -> impl Strategy<Value = Vec<u8>> {
@@ -1755,7 +1741,7 @@ mod proptest_fuzz_additional {
 
             for i in 0..count {
                 input.extend_from_slice(b"\x1b[200~");
-                input.extend_from_slice(format!("paste_{{i}}").as_bytes());
+                input.extend_from_slice(format!("paste_{i}").as_bytes());
                 input.extend_from_slice(b"\x1b[201~");
             }
 

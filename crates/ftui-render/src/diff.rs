@@ -214,7 +214,7 @@ impl BufferDiff {
             // Coalesce consecutive x positions on the same row
             while i < sorted.len() {
                 let (x, yy) = sorted[i];
-                if yy != y || x != x1 + 1 {
+                if yy != y || x != x1.saturating_add(1) {
                     break;
                 }
                 x1 = x;
@@ -332,6 +332,18 @@ mod tests {
         assert_eq!(runs[1].y, 0);
         assert_eq!(runs[1].x0, 3);
         assert_eq!(runs[1].x1, 4);
+    }
+
+    #[test]
+    fn runs_handles_max_column_without_overflow() {
+        let diff = BufferDiff {
+            changes: vec![(u16::MAX, 0)],
+        };
+
+        let runs = diff.runs();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0], ChangeRun::new(0, u16::MAX, u16::MAX));
     }
 
     #[test]

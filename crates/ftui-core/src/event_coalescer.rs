@@ -590,6 +590,34 @@ mod tests {
     }
 
     #[test]
+    fn scroll_preserves_position() {
+        let mut coalescer = EventCoalescer::new();
+
+        // Scroll at position (10, 20)
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            10,
+            20,
+        )));
+        // Scroll at position (15, 25) - latest position should be preserved
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            15,
+            25,
+        )));
+
+        let pending = coalescer.flush();
+        assert_eq!(pending.len(), 1);
+        if let Event::Mouse(m) = &pending[0] {
+            assert!(matches!(m.kind, MouseEventKind::ScrollUp));
+            assert_eq!(m.x, 15, "scroll should preserve latest x position");
+            assert_eq!(m.y, 25, "scroll should preserve latest y position");
+        } else {
+            panic!("expected mouse event");
+        }
+    }
+
+    #[test]
     fn mixed_coalescing_workflow() {
         let mut coalescer = EventCoalescer::new();
         let mut processed = Vec::new();

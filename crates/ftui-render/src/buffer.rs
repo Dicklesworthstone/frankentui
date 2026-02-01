@@ -239,24 +239,21 @@ impl Buffer {
             // Cleanup overlaps
             self.cleanup_overlap(x, y, &cell);
 
-            // Composite background: new cell's bg over existing cell's bg
             let existing_bg = self.cells[idx].bg;
-            let composited_bg = cell.bg.over(existing_bg);
 
-            // Apply opacity
-            let final_cell = if self.current_opacity() < 1.0 {
+            // Apply opacity to the incoming cell, then composite over existing background.
+            let mut final_cell = if self.current_opacity() < 1.0 {
                 let opacity = self.current_opacity();
                 Cell {
                     fg: cell.fg.with_opacity(opacity),
-                    bg: composited_bg.with_opacity(opacity),
+                    bg: cell.bg.with_opacity(opacity),
                     ..cell
                 }
             } else {
-                Cell {
-                    bg: composited_bg,
-                    ..cell
-                }
+                cell
             };
+
+            final_cell.bg = final_cell.bg.over(existing_bg);
 
             self.cells[idx] = final_cell;
             return;
@@ -664,6 +661,22 @@ mod tests {
         let stored = buf.get(5, 5).unwrap();
         // Alpha should be reduced by 0.5
         assert_eq!(stored.fg.a(), 128);
+    }
+
+    #[test]
+    fn opacity_composites_background_before_storage() {
+        let mut buf = Buffer::new(1, 1);
+
+        let red = PackedRgba::rgb(255, 0, 0);
+        let blue = PackedRgba::rgb(0, 0, 255);
+
+        buf.set(0, 0, Cell::default().with_bg(red));
+        buf.push_opacity(0.5);
+        buf.set(0, 0, Cell::default().with_bg(blue));
+
+        let stored = buf.get(0, 0).unwrap();
+        let expected = blue.with_opacity(0.5).over(red);
+        assert_eq!(stored.bg, expected);
     }
 
     #[test]

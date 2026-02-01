@@ -11,6 +11,7 @@ use crate::{Widget, apply_style, draw_text_span};
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use unicode_width::UnicodeWidthStr;
 
@@ -118,7 +119,7 @@ impl<'a> Rule<'a> {
 }
 
 impl Widget for Rule<'_> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -135,7 +136,7 @@ impl Widget for Rule<'_> {
         }
 
         // Rule is decorative — skip at EssentialOnly+
-        if !buf.degradation.render_decorative() {
+        if !frame.buffer.degradation.render_decorative() {
             return;
         }
 
@@ -145,9 +146,9 @@ impl Widget for Rule<'_> {
         match self.title {
             None => {
                 // No title: fill the entire width with rule characters.
-                self.fill_rule_char(buf, y, area.x, area.right());
+                self.fill_rule_char(&mut frame.buffer, y, area.x, area.right());
             }
-            Some("") => self.fill_rule_char(buf, y, area.x, area.right()),
+            Some("") => self.fill_rule_char(&mut frame.buffer, y, area.x, area.right()),
             Some(title) => {
                 let title_width = UnicodeWidthStr::width(title) as u16;
 
@@ -160,14 +161,14 @@ impl Widget for Rule<'_> {
                     // If title fits exactly, truncate and show just the rule.
                     if title_width > width {
                         // Title doesn't even fit; just draw the rule line.
-                        self.fill_rule_char(buf, y, area.x, area.right());
+                        self.fill_rule_char(&mut frame.buffer, y, area.x, area.right());
                     } else {
                         // Title fits but no room for rule chars; show truncated title.
                         let ts = self.title_style.unwrap_or(self.style);
-                        draw_text_span(buf, area.x, y, title, ts, area.right());
+                        draw_text_span(frame, area.x, y, title, ts, area.right());
                         // Fill remaining with rule
                         let after = area.x.saturating_add(title_width);
-                        self.fill_rule_char(buf, y, after, area.right());
+                        self.fill_rule_char(&mut frame.buffer, y, after, area.right());
                     }
                     return;
                 }
@@ -185,11 +186,11 @@ impl Widget for Rule<'_> {
                 };
 
                 // Draw left rule section.
-                self.fill_rule_char(buf, y, area.x, title_block_x);
+                self.fill_rule_char(&mut frame.buffer, y, area.x, title_block_x);
 
                 // Draw left padding space.
                 let pad_x = title_block_x;
-                if let Some(cell) = buf.get_mut(pad_x, y) {
+                if let Some(cell) = frame.buffer.get_mut(pad_x, y) {
                     *cell = Cell::from_char(' ');
                     apply_style(cell, self.style);
                 }
@@ -198,12 +199,12 @@ impl Widget for Rule<'_> {
                 let ts = self.title_style.unwrap_or(self.style);
                 let title_x = pad_x.saturating_add(1);
                 let title_end = title_x.saturating_add(display_width);
-                draw_text_span(buf, title_x, y, title, ts, title_end);
+                draw_text_span(frame, title_x, y, title, ts, title_end);
 
                 // Draw right padding space.
                 let right_pad_x = title_end;
                 if right_pad_x < area.right()
-                    && let Some(cell) = buf.get_mut(right_pad_x, y)
+                    && let Some(cell) = frame.buffer.get_mut(right_pad_x, y)
                 {
                     *cell = Cell::from_char(' ');
                     apply_style(cell, self.style);
@@ -211,7 +212,7 @@ impl Widget for Rule<'_> {
 
                 // Draw right rule section.
                 let right_rule_start = right_pad_x.saturating_add(1);
-                self.fill_rule_char(buf, y, right_rule_start, area.right());
+                self.fill_rule_char(&mut frame.buffer, y, right_rule_start, area.right());
             }
         }
     }

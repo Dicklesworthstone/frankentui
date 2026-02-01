@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 ftui-runtime = { path = "../ftui-runtime" }
-ftui-widgets = { path = "../ftui-widgets" }
+ftui-widgets = { path = "../ftui-widgets", optional = true }
 ftui-core = { path = "../ftui-core", optional = true }
 ftui-render = { path = "../ftui-render", optional = true }
 ftui-style = { path = "../ftui-style", optional = true }
@@ -20,7 +20,7 @@ unicode-segmentation = { version = "1", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
 [features]
-canvas = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style"]
+canvas = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-widgets"]
 charts = ["canvas"]
 clipboard = ["dep:base64", "dep:ftui-core"]
 console = ["dep:ftui-render", "dep:ftui-style", "dep:ftui-text", "dep:unicode-width"]
@@ -29,7 +29,7 @@ clipboard-logging = ["clipboard", "dep:tracing"]
 image = ["dep:base64", "dep:ftui-core", "dep:image"]
 markdown = ["dep:pulldown-cmark", "dep:ftui-render", "dep:ftui-style", "dep:ftui-text"]
 export = ["dep:ftui-render"]
-forms = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:unicode-segmentation", "dep:unicode-width"]
+forms = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-widgets", "dep:unicode-segmentation", "dep:unicode-width"]
 pty-capture = ["dep:portable-pty"]
 syntax = ["dep:ftui-render", "dep:ftui-style"]
 

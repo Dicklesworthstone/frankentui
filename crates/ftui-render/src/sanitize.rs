@@ -183,31 +183,41 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
         // CSI sequence: ESC [ params... final_byte
         b'[' => {
             i += 1;
-            // Consume parameter bytes and intermediate bytes until final byte
+            // Consume parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
+            // Stop at final byte (0x40-0x7E)
             while i < bytes.len() {
-                match bytes[i] {
-                    // Final byte: 0x40-0x7E
-                    0x40..=0x7E => {
-                        return i + 1;
-                    }
-                    // Continue parsing
-                    _ => {
-                        i += 1;
-                    }
+                let b = bytes[i];
+                if (0x40..=0x7E).contains(&b) {
+                    return i + 1;
                 }
+                // Valid parameter/intermediate bytes are 0x20-0x3F
+                if !(0x20..=0x3F).contains(&b) {
+                    // Invalid char in CSI (e.g. newline, control char, or high byte)
+                    // Abort sequence processing to prevent eating valid text
+                    return i;
+                }
+                i += 1;
             }
         }
         // OSC sequence: ESC ] ... (BEL or ST)
         b']' => {
             i += 1;
             while i < bytes.len() {
+                let b = bytes[i];
                 // BEL terminates OSC
-                if bytes[i] == 0x07 {
+                if b == 0x07 {
                     return i + 1;
                 }
                 // ST (ESC \) terminates OSC
-                if bytes[i] == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
                     return i + 2;
+                }
+                // Abort on other C0 controls (e.g. newline) to prevent swallowing logs
+                // 0x1B is allowed as part of ST check above, but lone ESC is tricky.
+                // We'll allow 0x1B here to let the loop check for ST next iteration,
+                // but strictly block other C0 (0x00-0x1F except 0x1B).
+                if b < 0x20 && b != 0x1B {
+                    return i;
                 }
                 i += 1;
             }
@@ -216,9 +226,14 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
         b'P' | b'^' | b'_' => {
             i += 1;
             while i < bytes.len() {
+                let b = bytes[i];
                 // ST (ESC \) terminates
-                if bytes[i] == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
                     return i + 2;
+                }
+                // Abort on C0 controls
+                if b < 0x20 && b != 0x1B {
+                    return i;
                 }
                 i += 1;
             }
@@ -227,7 +242,7 @@ fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
         0x20..=0x7E => {
             return i + 1;
         }
-        // Unknown - just skip the ESC
+        // Unknown or invalid - just skip the ESC
         _ => {}
     }
 

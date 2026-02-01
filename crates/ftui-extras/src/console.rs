@@ -73,7 +73,7 @@ use std::io::{self, Write};
 
 use ftui_style::Style;
 use ftui_text::Segment;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[cfg(test)]
 use ftui_render::cell::PackedRgba;
@@ -414,15 +414,24 @@ impl Console {
                 remaining = rest;
             } else if self.current_line.is_empty() {
                 // Word doesn't fit but line is empty - char wrap
-                let (fits, overflow) = split_at_width(word, remaining_width);
+                let (fits, _overflow) = split_at_width(word, remaining_width);
                 if !fits.is_empty() {
                     self.current_line.push(fits, style.clone());
-                }
-                self.flush_line();
-                remaining = overflow;
-                if !rest.is_empty() {
-                    // Continue with rest after overflow is processed
-                    remaining = &text[text.len() - rest.len()..];
+                    self.flush_line();
+                    // Continue with overflow + rest (everything after fits)
+                    remaining = &remaining[fits.len()..];
+                } else {
+                    // First character is too wide to fit - push it anyway to avoid infinite loop
+                    let first_char_end = word
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| i)
+                        .unwrap_or(word.len());
+                    self.current_line
+                        .push(&word[..first_char_end], style.clone());
+                    self.flush_line();
+                    // Continue after the first char (in remaining, not word, to preserve rest)
+                    remaining = &remaining[first_char_end..];
                 }
             } else {
                 // Word doesn't fit - wrap to next line
@@ -612,7 +621,7 @@ fn split_at_width(text: &str, max_width: usize) -> (&str, &str) {
     let mut split_idx = 0;
 
     for (idx, ch) in text.char_indices() {
-        let ch_width = ch.to_string().width();
+        let ch_width = ch.width().unwrap_or(0);
         if width + ch_width > max_width {
             break;
         }
@@ -706,6 +715,41 @@ mod tests {
         for line in &lines {
             assert!(line.width() <= 20, "Line too wide: {:?}", line.plain_text());
         }
+    }
+
+    #[test]
+    fn console_word_wrap_long_word_with_rest() {
+        // Regression test: long word followed by more text should not lose the rest
+        let sink = ConsoleSink::capture();
+        let mut console = Console::with_options(10, sink, WrapMode::Word);
+
+        console.print_text("superlongword more text");
+        console.flush().unwrap();
+
+        let lines = console.into_captured_lines();
+        let all_text: String = lines.iter().map(|l| l.plain_text()).collect::<Vec<_>>().join("");
+        // Verify no text was lost
+        assert_eq!(all_text.replace(" ", ""), "superlongwordmoretext");
+
+        // Verify all lines fit within width
+        for line in &lines {
+            assert!(line.width() <= 10, "Line too wide: {:?}", line.plain_text());
+        }
+    }
+
+    #[test]
+    fn console_word_wrap_wide_char_boundary() {
+        // Test word wrap with wide characters that need char-wrapping
+        let sink = ConsoleSink::capture();
+        let mut console = Console::with_options(3, sink, WrapMode::Word);
+
+        console.print_text("中文 test");
+        console.flush().unwrap();
+
+        let lines = console.into_captured_lines();
+        let all_text: String = lines.iter().map(|l| l.plain_text()).collect::<Vec<_>>().join("");
+        // Verify no text was lost (including space handling)
+        assert!(all_text.contains("中") && all_text.contains("文") && all_text.contains("test"));
     }
 
     #[test]

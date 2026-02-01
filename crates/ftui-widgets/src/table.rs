@@ -152,11 +152,55 @@ impl<'a> StatefulWidget for Table<'a> {
         // Apply base style to the entire table area (clears gaps/empty space)
         set_style_area(buf, table_area, self.style);
 
-        // Ensure selection is at least not above offset
-        if let Some(selected) = state.selected
-            && selected < state.offset
-        {
-            state.offset = selected;
+        // Ensure visible range includes selected item
+        if let Some(selected) = state.selected {
+            if selected < state.offset {
+                state.offset = selected;
+            } else {
+                // Check if selected is visible; if not, scroll down
+                // 1. Find the index of the last currently visible row
+                let mut current_y = table_area.y;
+                let max_y = table_area.bottom();
+                let mut last_visible = state.offset;
+                
+                // Iterate forward to find visibility boundary
+                for (i, row) in self.rows.iter().enumerate().skip(state.offset) {
+                    if current_y + row.height > max_y {
+                        break;
+                    }
+                    current_y += row.height + row.bottom_margin;
+                    last_visible = i;
+                }
+
+                if selected > last_visible {
+                    // Selected is below viewport. Find new offset to make it visible at bottom.
+                    let mut new_offset = selected;
+                    let mut accumulated_height = 0;
+                    let available_height = table_area.height;
+
+                    // Iterate backwards from selected
+                    for i in (0..=selected).rev() {
+                        let row = &self.rows[i];
+                        let total_row_height = row.height + row.bottom_margin;
+                        
+                        if accumulated_height + row.height > available_height {
+                            // This row doesn't fit fully. 
+                            // If it's the selected row itself, we must show it (at top).
+                            // Otherwise, the *next* row (i+1) is our start.
+                            if i < selected {
+                                new_offset = i + 1;
+                            } else {
+                                new_offset = selected;
+                            }
+                            break;
+                        }
+                        
+                        accumulated_height += total_row_height;
+                        new_offset = i;
+                    }
+                    state.offset = new_offset;
+                }
+            }
         }
 
         // Calculate column widths
