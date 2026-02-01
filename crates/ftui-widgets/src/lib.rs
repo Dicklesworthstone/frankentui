@@ -1,6 +1,119 @@
 #![forbid(unsafe_code)]
 
 //! Core widgets for FrankenTUI.
+//!
+//! This crate provides the [`Widget`] and [`StatefulWidget`] traits, along with
+//! a collection of ready-to-use widgets for building terminal UIs.
+//!
+//! # Widget Trait Design
+//!
+//! Widgets render into a [`Frame`] rather than directly into a [`Buffer`]. The Frame
+//! provides access to several subsystems beyond the cell grid:
+//!
+//! - **`frame.buffer`** - The cell grid for drawing characters and styles
+//! - **`frame.hit_grid`** - Optional mouse hit testing (for interactive widgets)
+//! - **`frame.cursor_position`** - Cursor placement (for input widgets)
+//! - **`frame.cursor_visible`** - Cursor visibility control
+//! - **`frame.degradation`** - Performance budget hints (for adaptive rendering)
+//!
+//! # Widget Categories
+//!
+//! Widgets fall into four categories based on which Frame features they use:
+//!
+//! ## Category A: Simple Buffer-Only Widgets
+//!
+//! Most widgets only need buffer access. These are the simplest to implement:
+//!
+//! ```ignore
+//! impl Widget for MyWidget {
+//!     fn render(&self, area: Rect, frame: &mut Frame) {
+//!         // Just write to the buffer
+//!         frame.buffer.set(area.x, area.y, Cell::from_char('X'));
+//!     }
+//! }
+//! ```
+//!
+//! Examples: [`Block`], [`Paragraph`], [`Rule`], [`StatusLine`]
+//!
+//! ## Category B: Interactive Widgets with Hit Testing
+//!
+//! Widgets that handle mouse clicks register hit regions:
+//!
+//! ```ignore
+//! impl Widget for ClickableList {
+//!     fn render(&self, area: Rect, frame: &mut Frame) {
+//!         // Draw items...
+//!         for (i, item) in self.items.iter().enumerate() {
+//!             let row_area = Rect::new(area.x, area.y + i as u16, area.width, 1);
+//!             // Draw item to buffer...
+//!
+//!             // Register hit region for mouse interaction
+//!             if let Some(id) = self.hit_id {
+//!                 frame.register_hit(row_area, id, HitRegion::Content, i as u64);
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! Examples: [`List`], [`Table`], [`Scrollbar`]
+//!
+//! ## Category C: Input Widgets with Cursor Control
+//!
+//! Text input widgets need to position the cursor:
+//!
+//! ```ignore
+//! impl Widget for TextInput {
+//!     fn render(&self, area: Rect, frame: &mut Frame) {
+//!         // Draw the input content...
+//!
+//!         // Position cursor when focused
+//!         if self.focused {
+//!             let cursor_x = area.x + self.cursor_offset as u16;
+//!             frame.cursor_position = Some((cursor_x, area.y));
+//!             frame.cursor_visible = true;
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! Examples: [`TextInput`](input::TextInput)
+//!
+//! ## Category D: Adaptive Widgets with Degradation Support
+//!
+//! Complex widgets can adapt their rendering based on performance budget:
+//!
+//! ```ignore
+//! impl Widget for FancyProgressBar {
+//!     fn render(&self, area: Rect, frame: &mut Frame) {
+//!         let deg = frame.buffer.degradation;
+//!
+//!         if !deg.render_decorative() {
+//!             // Skip decorative elements at reduced budgets
+//!             return;
+//!         }
+//!
+//!         if deg.apply_styling() {
+//!             // Use full styling and effects
+//!         } else {
+//!             // Use simplified ASCII rendering
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! Examples: [`ProgressBar`](progress::ProgressBar), [`Spinner`](spinner::Spinner)
+//!
+//! # Essential vs Decorative Widgets
+//!
+//! The [`Widget::is_essential`] method indicates whether a widget should always render,
+//! even at `EssentialOnly` degradation level:
+//!
+//! - **Essential**: Text inputs, primary content, status information
+//! - **Decorative**: Borders, scrollbars, spinners, visual separators
+//!
+//! [`Frame`]: ftui_render::frame::Frame
+//! [`Buffer`]: ftui_render::buffer::Buffer
 
 pub mod block;
 pub mod borders;
@@ -41,18 +154,63 @@ use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 
-/// A `Widget` is a renderable component.
+/// A widget that can render itself into a [`Frame`].
 ///
-/// Widgets render themselves into a `Frame` within a given `Rect`.
+/// # Frame vs Buffer
+///
+/// Widgets render into a `Frame` rather than directly into a `Buffer`. This provides:
+///
+/// - **Buffer access**: `frame.buffer` for drawing cells
+/// - **Hit testing**: `frame.register_hit()` for mouse interaction
+/// - **Cursor control**: `frame.cursor_position` for input widgets
+/// - **Performance hints**: `frame.buffer.degradation` for adaptive rendering
+///
+/// # Implementation Guide
+///
+/// Most widgets only need buffer access:
+///
+/// ```ignore
+/// fn render(&self, area: Rect, frame: &mut Frame) {
+///     for y in area.y..area.bottom() {
+///         for x in area.x..area.right() {
+///             frame.buffer.set(x, y, Cell::from_char('.'));
+///         }
+///     }
+/// }
+/// ```
+///
+/// Interactive widgets should register hit regions when a `hit_id` is set.
+/// Input widgets should set `frame.cursor_position` when focused.
+///
+/// # Degradation Levels
+///
+/// Check `frame.buffer.degradation` to adapt rendering:
+///
+/// - `Full`: All features enabled
+/// - `SimpleBorders`: Skip fancy borders, use ASCII
+/// - `NoStyling`: Skip colors and attributes
+/// - `EssentialOnly`: Only render essential widgets
+/// - `Skeleton`: Minimal placeholder rendering
+///
+/// [`Frame`]: ftui_render::frame::Frame
 pub trait Widget {
     /// Render the widget into the frame at the given area.
+    ///
+    /// The `area` defines the bounding rectangle within which the widget
+    /// should render. Widgets should respect the area bounds and not
+    /// draw outside them (the buffer's scissor stack enforces this).
     fn render(&self, area: Rect, frame: &mut Frame);
 
-    /// Whether this widget is essential and should always render,
-    /// even at `EssentialOnly` degradation.
+    /// Whether this widget is essential and should always render.
     ///
-    /// Essential widgets include text inputs and primary content areas.
-    /// Decorative widgets (borders, scrollbars, spinners, rules) are not essential.
+    /// Essential widgets render even at `EssentialOnly` degradation level.
+    /// Override this to return `true` for:
+    ///
+    /// - Text inputs (user needs to see what they're typing)
+    /// - Primary content areas (main information display)
+    /// - Critical status indicators
+    ///
+    /// Returns `false` by default, appropriate for decorative widgets.
     fn is_essential(&self) -> bool {
         false
     }
