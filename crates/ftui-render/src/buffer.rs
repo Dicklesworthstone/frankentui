@@ -18,6 +18,7 @@
 //! 4. Opacity stack product stays in `[0.0, 1.0]`
 //! 5. Scissor/opacity stacks always have at least one element
 
+use crate::budget::DegradationLevel;
 use crate::cell::Cell;
 use ftui_core::geometry::Rect;
 
@@ -40,6 +41,11 @@ pub struct Buffer {
     cells: Vec<Cell>,
     scissor_stack: Vec<Rect>,
     opacity_stack: Vec<f32>,
+    /// Current degradation level for this frame.
+    ///
+    /// Widgets read this during rendering to decide how much visual fidelity
+    /// to provide. Set by the runtime before calling `Model::view()`.
+    pub degradation: DegradationLevel,
 }
 
 impl Buffer {
@@ -64,6 +70,7 @@ impl Buffer {
             cells,
             scissor_stack: vec![Rect::from_size(width, height)],
             opacity_stack: vec![1.0],
+            degradation: DegradationLevel::Full,
         }
     }
 
@@ -148,6 +155,60 @@ impl Buffer {
         &self.cells[i]
     }
 
+    /// Helper to clean up overlapping multi-width cells before writing.
+    fn cleanup_overlap(&mut self, x: u16, y: u16, new_cell: &Cell) {
+        let Some(idx) = self.index(x, y) else { return };
+        let current = self.cells[idx];
+
+        // Case 1: Overwriting a Wide Head
+        if current.content.width() > 1 {
+            let width = current.content.width();
+            // Clear the head
+            // self.cells[idx] = Cell::default(); // Caller (set) will overwrite this, but for correctness/safety we could.
+            // Actually, `set` overwrites `cells[idx]` immediately after.
+            // But we must clear the tails.
+            for i in 1..width {
+                if let Some(tail_idx) = self.index(x + i as u16, y)
+                    && self.cells[tail_idx].is_continuation()
+                {
+                    self.cells[tail_idx] = Cell::default();
+                }
+            }
+        }
+        // Case 2: Overwriting a Continuation
+        else if current.is_continuation() && !new_cell.is_continuation() {
+            let mut back_x = x;
+            while back_x > 0 {
+                back_x -= 1;
+                if let Some(h_idx) = self.index(back_x, y) {
+                    let h_cell = self.cells[h_idx];
+                    if !h_cell.is_continuation() {
+                        // Found the potential head
+                        let width = h_cell.content.width();
+                        if (back_x as usize + width) > x as usize {
+                            // This head owns the cell we are overwriting.
+                            // Clear the head.
+                            self.cells[h_idx] = Cell::default();
+
+                            // Clear all its tails (except the one we're about to write, effectively)
+                            // We just iterate 1..width and clear CONTs.
+                            for i in 1..width {
+                                if let Some(tail_idx) = self.index(back_x + i as u16, y) {
+                                    // Note: tail_idx might be our current `idx`.
+                                    // We can clear it; `set` will overwrite it in a moment.
+                                    if self.cells[tail_idx].is_continuation() {
+                                        self.cells[tail_idx] = Cell::default();
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// Set the cell at (x, y).
     ///
     /// This method:
@@ -155,22 +216,72 @@ impl Buffer {
     /// - Applies the current opacity stack to cell colors
     /// - Does nothing if coordinates are out of bounds
     /// - **Automatically sets CONTINUATION cells** for multi-width content
+    /// - **Atomic wide writes**: If a wide character doesn't fully fit in the
+    ///   scissor region/bounds, NOTHING is written.
     ///
     /// For bulk operations without scissor/opacity/safety, use [`set_raw`].
     #[inline]
     pub fn set(&mut self, x: u16, y: u16, cell: Cell) {
-        // Check bounds
-        let Some(idx) = self.index(x, y) else {
-            return;
-        };
+        let width = cell.content.width();
 
-        // Check scissor region
-        if !self.current_scissor().contains(x, y) {
+        // Single cell fast path (width 0 or 1)
+        if width <= 1 {
+            // Check bounds
+            let Some(idx) = self.index(x, y) else {
+                return;
+            };
+
+            // Check scissor region
+            if !self.current_scissor().contains(x, y) {
+                return;
+            }
+
+            // Cleanup overlaps
+            self.cleanup_overlap(x, y, &cell);
+
+            // Apply opacity
+            let final_cell = if self.current_opacity() < 1.0 {
+                let opacity = self.current_opacity();
+                Cell {
+                    fg: cell.fg.with_opacity(opacity),
+                    bg: cell.bg.with_opacity(opacity),
+                    ..cell
+                }
+            } else {
+                cell
+            };
+
+            self.cells[idx] = final_cell;
             return;
         }
 
-        // Apply opacity
-        let final_cell = if self.current_opacity() < 1.0 {
+        // Multi-width character atomicity check
+        // Ensure ALL cells (head + tail) are within bounds and scissor
+        let scissor = self.current_scissor();
+        for i in 0..width {
+            let cx = x + i as u16;
+            // Check bounds
+            if cx >= self.width || y >= self.height {
+                return;
+            }
+            // Check scissor
+            if !scissor.contains(cx, y) {
+                return;
+            }
+        }
+
+        // If we get here, it's safe to write everything.
+
+        // Cleanup overlaps for all cells
+        self.cleanup_overlap(x, y, &cell);
+        for i in 1..width {
+            self.cleanup_overlap(x + i as u16, y, &Cell::CONTINUATION);
+        }
+
+        // 1. Write Head
+        let idx = self.index_unchecked(x, y);
+        let old_cell = self.cells[idx];
+        let mut final_cell = if self.current_opacity() < 1.0 {
             let opacity = self.current_opacity();
             Cell {
                 fg: cell.fg.with_opacity(opacity),
@@ -181,19 +292,16 @@ impl Buffer {
             cell
         };
 
+        // Composite background (src over dst)
+        final_cell.bg = final_cell.bg.over(old_cell.bg);
+
         self.cells[idx] = final_cell;
 
-        // Handle multi-width characters
-        // We use the accurate width calculation (not width_hint) because wide CJK characters
-        // need proper continuation cells. width_hint() returns 1 for direct chars as a fast path.
-        let width = cell.content.width();
-        if width > 1 {
-            for i in 1..width {
-                // Recursively set continuation cells.
-                // This ensures they are also bounds-checked and scissor-clipped.
-                // Cell::CONTINUATION has width 0, so this won't recurse infinitely.
-                self.set(x + i as u16, y, Cell::CONTINUATION);
-            }
+        // 2. Write Tail (Continuation cells)
+        // We can use set_raw-like access because we already verified bounds
+        for i in 1..width {
+            let idx = self.index_unchecked(x + i as u16, y);
+            self.cells[idx] = Cell::CONTINUATION;
         }
     }
 
@@ -246,6 +354,17 @@ impl Buffer {
     #[inline]
     pub fn cells_mut(&mut self) -> &mut [Cell] {
         &mut self.cells
+    }
+
+    /// Get the cells for a single row as a slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `y >= height`.
+    #[inline]
+    pub fn row_cells(&self, y: u16) -> &[Cell] {
+        let start = y as usize * self.width as usize;
+        &self.cells[start..start + self.width as usize]
     }
 
     // ========== Scissor Stack ==========
@@ -359,6 +478,26 @@ impl Eq for Buffer {}
 mod tests {
     use super::*;
     use crate::cell::PackedRgba;
+
+    #[test]
+    fn set_composites_background() {
+        let mut buf = Buffer::new(1, 1);
+
+        // Set background to RED
+        let red = PackedRgba::rgb(255, 0, 0);
+        buf.set(0, 0, Cell::default().with_bg(red));
+
+        // Write 'X' with transparent background
+        let cell = Cell::from_char('X'); // Default bg is TRANSPARENT
+        buf.set(0, 0, cell);
+
+        let result = buf.get(0, 0).unwrap();
+        assert_eq!(result.content.as_char(), Some('X'));
+        assert_eq!(
+            result.bg, red,
+            "Background should be preserved (composited)"
+        );
+    }
 
     #[test]
     fn rect_contains() {
@@ -617,14 +756,14 @@ mod tests {
     #[test]
     fn set_handles_wide_chars() {
         let mut buf = Buffer::new(10, 10);
-        
+
         // Set a wide character (width 2)
         buf.set(0, 0, Cell::from_char('中'));
-        
+
         // Check head
         let head = buf.get(0, 0).unwrap();
         assert_eq!(head.content.as_char(), Some('中'));
-        
+
         // Check continuation
         let cont = buf.get(1, 0).unwrap();
         assert!(cont.is_continuation());
@@ -635,12 +774,478 @@ mod tests {
     fn set_handles_wide_chars_clipped() {
         let mut buf = Buffer::new(10, 10);
         buf.push_scissor(Rect::new(0, 0, 1, 10)); // Only column 0 is visible
-        
-        // Set wide char at 0,0. Head is visible, tail is clipped.
+
+        // Set wide char at 0,0. Tail at x=1 is outside scissor.
+        // Atomic rejection: entire write is rejected because tail doesn't fit.
         buf.set(0, 0, Cell::from_char('中'));
-        
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('中'));
-        // Continuation at (1,0) should be blocked by scissor
+
+        // Head should NOT be written (atomic rejection)
+        assert!(buf.get(0, 0).unwrap().is_empty());
+        // Tail position should also be unmodified
         assert!(buf.get(1, 0).unwrap().is_empty());
+    }
+
+    // --- get_mut ---
+
+    #[test]
+    fn get_mut_modifies_cell() {
+        let mut buf = Buffer::new(10, 10);
+        buf.set(3, 3, Cell::from_char('A'));
+
+        if let Some(cell) = buf.get_mut(3, 3) {
+            *cell = Cell::from_char('B');
+        }
+
+        assert_eq!(buf.get(3, 3).unwrap().content.as_char(), Some('B'));
+    }
+
+    #[test]
+    fn get_mut_out_of_bounds() {
+        let mut buf = Buffer::new(5, 5);
+        assert!(buf.get_mut(10, 10).is_none());
+    }
+
+    // --- clear_with ---
+
+    #[test]
+    fn clear_with_fills_all_cells() {
+        let mut buf = Buffer::new(5, 3);
+        let fill_cell = Cell::from_char('*');
+        buf.clear_with(fill_cell);
+
+        for y in 0..3 {
+            for x in 0..5 {
+                assert_eq!(buf.get(x, y).unwrap().content.as_char(), Some('*'));
+            }
+        }
+    }
+
+    // --- cells / cells_mut ---
+
+    #[test]
+    fn cells_slice_has_correct_length() {
+        let buf = Buffer::new(10, 5);
+        assert_eq!(buf.cells().len(), 50);
+    }
+
+    #[test]
+    fn cells_mut_allows_direct_modification() {
+        let mut buf = Buffer::new(3, 2);
+        let cells = buf.cells_mut();
+        cells[0] = Cell::from_char('Z');
+
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('Z'));
+    }
+
+    // --- row_cells ---
+
+    #[test]
+    fn row_cells_returns_correct_row() {
+        let mut buf = Buffer::new(5, 3);
+        buf.set(2, 1, Cell::from_char('R'));
+
+        let row = buf.row_cells(1);
+        assert_eq!(row.len(), 5);
+        assert_eq!(row[2].content.as_char(), Some('R'));
+    }
+
+    #[test]
+    #[should_panic]
+    fn row_cells_out_of_bounds_panics() {
+        let buf = Buffer::new(5, 3);
+        let _ = buf.row_cells(5);
+    }
+
+    // --- is_empty ---
+
+    #[test]
+    fn buffer_is_not_empty() {
+        let buf = Buffer::new(1, 1);
+        assert!(!buf.is_empty());
+    }
+
+    // --- set_raw out of bounds ---
+
+    #[test]
+    fn set_raw_out_of_bounds_is_safe() {
+        let mut buf = Buffer::new(5, 5);
+        buf.set_raw(100, 100, Cell::from_char('X'));
+        // Should not panic, just be ignored
+    }
+
+    // --- copy_from with offset ---
+
+    #[test]
+    fn copy_from_out_of_bounds_partial() {
+        let mut src = Buffer::new(5, 5);
+        src.set(0, 0, Cell::from_char('A'));
+        src.set(4, 4, Cell::from_char('B'));
+
+        let mut dst = Buffer::new(5, 5);
+        // Copy entire src with offset that puts part out of bounds
+        dst.copy_from(&src, Rect::new(0, 0, 5, 5), 3, 3);
+
+        // (0,0) in src → (3,3) in dst = inside
+        assert_eq!(dst.get(3, 3).unwrap().content.as_char(), Some('A'));
+        // (4,4) in src → (7,7) in dst = outside, should be ignored
+        assert!(dst.get(4, 4).unwrap().is_empty());
+    }
+
+    // --- content_eq with different dimensions ---
+
+    #[test]
+    fn content_eq_different_dimensions() {
+        let buf1 = Buffer::new(5, 5);
+        let buf2 = Buffer::new(10, 10);
+        // Different dimensions should not be equal (different cell counts)
+        assert!(!buf1.content_eq(&buf2));
+    }
+
+    // ====== Property tests (proptest) ======
+
+    mod property {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn buffer_dimensions_are_preserved(width in 1u16..200, height in 1u16..200) {
+                let buf = Buffer::new(width, height);
+                prop_assert_eq!(buf.width(), width);
+                prop_assert_eq!(buf.height(), height);
+                prop_assert_eq!(buf.len(), width as usize * height as usize);
+            }
+
+            #[test]
+            fn buffer_get_in_bounds_always_succeeds(width in 1u16..100, height in 1u16..100) {
+                let buf = Buffer::new(width, height);
+                for x in 0..width {
+                    for y in 0..height {
+                        prop_assert!(buf.get(x, y).is_some(), "get({x},{y}) failed for {width}x{height} buffer");
+                    }
+                }
+            }
+
+            #[test]
+            fn buffer_get_out_of_bounds_returns_none(width in 1u16..50, height in 1u16..50) {
+                let buf = Buffer::new(width, height);
+                prop_assert!(buf.get(width, 0).is_none());
+                prop_assert!(buf.get(0, height).is_none());
+                prop_assert!(buf.get(width, height).is_none());
+            }
+
+            #[test]
+            fn buffer_set_get_roundtrip(
+                width in 5u16..50,
+                height in 5u16..50,
+                x in 0u16..5,
+                y in 0u16..5,
+                ch_idx in 0u32..26,
+            ) {
+                let x = x % width;
+                let y = y % height;
+                let ch = char::from_u32('A' as u32 + ch_idx).unwrap();
+                let mut buf = Buffer::new(width, height);
+                buf.set(x, y, Cell::from_char(ch));
+                let got = buf.get(x, y).unwrap();
+                prop_assert_eq!(got.content.as_char(), Some(ch));
+            }
+
+            #[test]
+            fn scissor_push_pop_stack_depth(
+                width in 10u16..50,
+                height in 10u16..50,
+                push_count in 1usize..10,
+            ) {
+                let mut buf = Buffer::new(width, height);
+                prop_assert_eq!(buf.scissor_depth(), 1); // base
+
+                for i in 0..push_count {
+                    buf.push_scissor(Rect::new(0, 0, width, height));
+                    prop_assert_eq!(buf.scissor_depth(), i + 2);
+                }
+
+                for i in (0..push_count).rev() {
+                    buf.pop_scissor();
+                    prop_assert_eq!(buf.scissor_depth(), i + 1);
+                }
+
+                // Base cannot be popped
+                buf.pop_scissor();
+                prop_assert_eq!(buf.scissor_depth(), 1);
+            }
+
+            #[test]
+            fn scissor_monotonic_intersection(
+                width in 20u16..60,
+                height in 20u16..60,
+            ) {
+                // Scissor stack always shrinks or stays the same
+                let mut buf = Buffer::new(width, height);
+                let outer = Rect::new(2, 2, width - 4, height - 4);
+                buf.push_scissor(outer);
+                let s1 = buf.current_scissor();
+
+                let inner = Rect::new(5, 5, 10, 10);
+                buf.push_scissor(inner);
+                let s2 = buf.current_scissor();
+
+                // Inner scissor must be contained within or equal to outer
+                prop_assert!(s2.width <= s1.width, "inner width {} > outer width {}", s2.width, s1.width);
+                prop_assert!(s2.height <= s1.height, "inner height {} > outer height {}", s2.height, s1.height);
+            }
+
+            #[test]
+            fn opacity_push_pop_stack_depth(
+                width in 5u16..20,
+                height in 5u16..20,
+                push_count in 1usize..10,
+            ) {
+                let mut buf = Buffer::new(width, height);
+                prop_assert_eq!(buf.opacity_depth(), 1);
+
+                for i in 0..push_count {
+                    buf.push_opacity(0.9);
+                    prop_assert_eq!(buf.opacity_depth(), i + 2);
+                }
+
+                for i in (0..push_count).rev() {
+                    buf.pop_opacity();
+                    prop_assert_eq!(buf.opacity_depth(), i + 1);
+                }
+
+                buf.pop_opacity();
+                prop_assert_eq!(buf.opacity_depth(), 1);
+            }
+
+            #[test]
+            fn opacity_multiplication_is_monotonic(
+                opacity1 in 0.0f32..=1.0,
+                opacity2 in 0.0f32..=1.0,
+            ) {
+                let mut buf = Buffer::new(5, 5);
+                buf.push_opacity(opacity1);
+                let after_first = buf.current_opacity();
+                buf.push_opacity(opacity2);
+                let after_second = buf.current_opacity();
+
+                // Effective opacity can only decrease (or stay same at 0 or 1)
+                prop_assert!(after_second <= after_first + f32::EPSILON,
+                    "opacity increased: {} -> {}", after_first, after_second);
+            }
+
+            #[test]
+            fn clear_resets_all_cells(width in 1u16..30, height in 1u16..30) {
+                let mut buf = Buffer::new(width, height);
+                // Write some data
+                for x in 0..width {
+                    buf.set_raw(x, 0, Cell::from_char('X'));
+                }
+                buf.clear();
+                // All cells should be default (empty)
+                for y in 0..height {
+                    for x in 0..width {
+                        prop_assert!(buf.get(x, y).unwrap().is_empty(),
+                            "cell ({x},{y}) not empty after clear");
+                    }
+                }
+            }
+
+            #[test]
+            fn content_eq_is_reflexive(width in 1u16..30, height in 1u16..30) {
+                let buf = Buffer::new(width, height);
+                prop_assert!(buf.content_eq(&buf));
+            }
+
+            #[test]
+            fn content_eq_detects_single_change(
+                width in 5u16..30,
+                height in 5u16..30,
+                x in 0u16..5,
+                y in 0u16..5,
+            ) {
+                let x = x % width;
+                let y = y % height;
+                let buf1 = Buffer::new(width, height);
+                let mut buf2 = Buffer::new(width, height);
+                buf2.set_raw(x, y, Cell::from_char('Z'));
+                prop_assert!(!buf1.content_eq(&buf2));
+            }
+
+            // --- Executable Invariant Tests (bd-10i.13.2) ---
+
+            #[test]
+            fn dimensions_immutable_through_operations(
+                width in 5u16..30,
+                height in 5u16..30,
+            ) {
+                let mut buf = Buffer::new(width, height);
+
+                // Operations that must not change dimensions
+                buf.set(0, 0, Cell::from_char('A'));
+                prop_assert_eq!(buf.width(), width);
+                prop_assert_eq!(buf.height(), height);
+                prop_assert_eq!(buf.len(), width as usize * height as usize);
+
+                buf.push_scissor(Rect::new(1, 1, 3, 3));
+                prop_assert_eq!(buf.width(), width);
+                prop_assert_eq!(buf.height(), height);
+
+                buf.push_opacity(0.5);
+                prop_assert_eq!(buf.width(), width);
+                prop_assert_eq!(buf.height(), height);
+
+                buf.pop_scissor();
+                buf.pop_opacity();
+                prop_assert_eq!(buf.width(), width);
+                prop_assert_eq!(buf.height(), height);
+
+                buf.clear();
+                prop_assert_eq!(buf.width(), width);
+                prop_assert_eq!(buf.height(), height);
+                prop_assert_eq!(buf.len(), width as usize * height as usize);
+            }
+
+            #[test]
+            fn scissor_area_never_increases_random_rects(
+                width in 20u16..60,
+                height in 20u16..60,
+                rects in proptest::collection::vec(
+                    (0u16..20, 0u16..20, 1u16..15, 1u16..15),
+                    1..8
+                ),
+            ) {
+                let mut buf = Buffer::new(width, height);
+                let mut prev_area = (width as u32) * (height as u32);
+
+                for (x, y, w, h) in rects {
+                    buf.push_scissor(Rect::new(x, y, w, h));
+                    let s = buf.current_scissor();
+                    let area = (s.width as u32) * (s.height as u32);
+                    prop_assert!(area <= prev_area,
+                        "scissor area increased: {} -> {} after push({},{},{},{})",
+                        prev_area, area, x, y, w, h);
+                    prev_area = area;
+                }
+            }
+
+            #[test]
+            fn opacity_range_invariant_random_sequence(
+                opacities in proptest::collection::vec(0.0f32..=1.0, 1..15),
+            ) {
+                let mut buf = Buffer::new(5, 5);
+
+                for &op in &opacities {
+                    buf.push_opacity(op);
+                    let current = buf.current_opacity();
+                    prop_assert!(current >= 0.0, "opacity below 0: {}", current);
+                    prop_assert!(current <= 1.0 + f32::EPSILON,
+                        "opacity above 1: {}", current);
+                }
+
+                // Pop everything and verify we get back to 1.0
+                for _ in &opacities {
+                    buf.pop_opacity();
+                }
+                // After popping all pushed, should be back to base (1.0)
+                prop_assert!((buf.current_opacity() - 1.0).abs() < f32::EPSILON);
+            }
+
+            #[test]
+            fn opacity_clamp_out_of_range(
+                neg in -100.0f32..0.0,
+                over in 1.01f32..100.0,
+            ) {
+                let mut buf = Buffer::new(5, 5);
+
+                buf.push_opacity(neg);
+                prop_assert!(buf.current_opacity() >= 0.0,
+                    "negative opacity not clamped: {}", buf.current_opacity());
+                buf.pop_opacity();
+
+                buf.push_opacity(over);
+                prop_assert!(buf.current_opacity() <= 1.0 + f32::EPSILON,
+                    "over-1 opacity not clamped: {}", buf.current_opacity());
+            }
+
+            #[test]
+            fn scissor_stack_always_has_base(
+                pushes in 0usize..10,
+                pops in 0usize..15,
+            ) {
+                let mut buf = Buffer::new(10, 10);
+
+                for _ in 0..pushes {
+                    buf.push_scissor(Rect::new(0, 0, 5, 5));
+                }
+                for _ in 0..pops {
+                    buf.pop_scissor();
+                }
+
+                // Invariant: depth is always >= 1
+                prop_assert!(buf.scissor_depth() >= 1,
+                    "scissor depth dropped below 1 after {} pushes, {} pops",
+                    pushes, pops);
+            }
+
+            #[test]
+            fn opacity_stack_always_has_base(
+                pushes in 0usize..10,
+                pops in 0usize..15,
+            ) {
+                let mut buf = Buffer::new(10, 10);
+
+                for _ in 0..pushes {
+                    buf.push_opacity(0.5);
+                }
+                for _ in 0..pops {
+                    buf.pop_opacity();
+                }
+
+                // Invariant: depth is always >= 1
+                prop_assert!(buf.opacity_depth() >= 1,
+                    "opacity depth dropped below 1 after {} pushes, {} pops",
+                    pushes, pops);
+            }
+
+            #[test]
+            fn cells_len_invariant_always_holds(
+                width in 1u16..50,
+                height in 1u16..50,
+            ) {
+                let mut buf = Buffer::new(width, height);
+                let expected = width as usize * height as usize;
+
+                prop_assert_eq!(buf.cells().len(), expected);
+
+                // After mutations
+                buf.set(0, 0, Cell::from_char('X'));
+                prop_assert_eq!(buf.cells().len(), expected);
+
+                buf.clear();
+                prop_assert_eq!(buf.cells().len(), expected);
+            }
+
+            #[test]
+            fn set_outside_scissor_is_noop(
+                width in 10u16..30,
+                height in 10u16..30,
+            ) {
+                let mut buf = Buffer::new(width, height);
+                buf.push_scissor(Rect::new(2, 2, 3, 3));
+
+                // Write outside scissor region
+                buf.set(0, 0, Cell::from_char('X'));
+                // Should be unmodified (still empty)
+                let cell = buf.get(0, 0).unwrap();
+                prop_assert!(cell.is_empty(),
+                    "cell (0,0) modified outside scissor region");
+
+                // Write inside scissor region should work
+                buf.set(3, 3, Cell::from_char('Y'));
+                let cell = buf.get(3, 3).unwrap();
+                prop_assert_eq!(cell.content.as_char(), Some('Y'));
+            }
+        }
     }
 }

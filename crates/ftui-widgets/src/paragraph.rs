@@ -70,7 +70,16 @@ impl Widget for Paragraph<'_> {
         )
         .entered();
 
-        set_style_area(buf, area, self.style);
+        let deg = buf.degradation;
+
+        // Skeleton+: nothing to render
+        if !deg.render_content() {
+            return;
+        }
+
+        if deg.apply_styling() {
+            set_style_area(buf, area, self.style);
+        }
 
         let text_area = match self.block {
             Some(ref b) => {
@@ -84,10 +93,18 @@ impl Widget for Paragraph<'_> {
             return;
         }
 
-        let style = self.style;
+        // At NoStyling, render text without per-span styles
+        let style = if deg.apply_styling() {
+            self.style
+        } else {
+            Style::default()
+        };
 
         let mut y = text_area.y;
-        for line in self.text.lines().iter().skip(self.scroll.0 as usize) {
+        let mut current_visual_line = 0;
+        let scroll_offset = self.scroll.0 as usize;
+
+        for line in self.text.lines() {
             if y >= text_area.bottom() {
                 break;
             }
@@ -100,6 +117,11 @@ impl Widget for Paragraph<'_> {
                 if line_width > text_area.width as usize {
                     let wrapped = wrap_text(&plain, text_area.width as usize, wrap_mode);
                     for wrapped_line in &wrapped {
+                        if current_visual_line < scroll_offset {
+                            current_visual_line += 1;
+                            continue;
+                        }
+
                         if y >= text_area.bottom() {
                             break;
                         }
@@ -107,9 +129,16 @@ impl Widget for Paragraph<'_> {
                         let x = align_x(text_area, w, self.alignment);
                         draw_text_span(buf, x, y, wrapped_line, style, text_area.right());
                         y += 1;
+                        current_visual_line += 1;
                     }
                     continue;
                 }
+            }
+
+            // Non-wrapped line (or fits in width)
+            if current_visual_line < scroll_offset {
+                current_visual_line += 1;
+                continue;
             }
 
             // Render spans with proper Unicode widths
@@ -134,6 +163,7 @@ impl Widget for Paragraph<'_> {
                 }
             }
             y += 1;
+            current_visual_line += 1;
         }
     }
 }
@@ -344,5 +374,48 @@ mod tests {
         // Only 2 rows of 4 chars each
         assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('a'));
         assert_eq!(buf.get(0, 1).unwrap().content.as_char(), Some('e'));
+    }
+
+    // --- Degradation tests ---
+
+    #[test]
+    fn degradation_skeleton_skips_content() {
+        use ftui_render::budget::DegradationLevel;
+
+        let para = Paragraph::new(Text::raw("Hello"));
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::new(10, 1);
+        buf.degradation = DegradationLevel::Skeleton;
+        para.render(area, &mut buf);
+
+        // No text should be rendered at Skeleton level
+        assert!(buf.get(0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn degradation_full_renders_content() {
+        use ftui_render::budget::DegradationLevel;
+
+        let para = Paragraph::new(Text::raw("Hello"));
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::new(10, 1);
+        buf.degradation = DegradationLevel::Full;
+        para.render(area, &mut buf);
+
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('H'));
+    }
+
+    #[test]
+    fn degradation_essential_only_still_renders_text() {
+        use ftui_render::budget::DegradationLevel;
+
+        let para = Paragraph::new(Text::raw("Hello"));
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::new(10, 1);
+        buf.degradation = DegradationLevel::EssentialOnly;
+        para.render(area, &mut buf);
+
+        // EssentialOnly still renders content (< Skeleton)
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('H'));
     }
 }

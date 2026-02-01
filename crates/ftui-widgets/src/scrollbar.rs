@@ -101,6 +101,11 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
         )
         .entered();
 
+        // Scrollbar is decorative — skip at EssentialOnly+
+        if !buf.degradation.render_decorative() {
+            return;
+        }
+
         if area.is_empty() || state.content_length == 0 {
             return;
         }
@@ -159,7 +164,9 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
                 track_char
             };
 
-            let style = if is_thumb {
+            let style = if !buf.degradation.apply_styling() {
+                Style::default()
+            } else if is_thumb {
                 self.thumb_style
             } else {
                 self.track_style
@@ -386,5 +393,78 @@ mod tests {
             ScrollbarOrientation::default(),
             ScrollbarOrientation::VerticalRight
         );
+    }
+
+    // --- Degradation tests ---
+
+    #[test]
+    fn degradation_essential_only_skips_entirely() {
+        use ftui_render::budget::DegradationLevel;
+
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        let area = Rect::new(0, 0, 1, 10);
+        let mut buf = Buffer::new(1, 10);
+        buf.degradation = DegradationLevel::EssentialOnly;
+        let mut state = ScrollbarState::new(100, 0, 10);
+        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+
+        // Scrollbar is decorative, should be skipped at EssentialOnly
+        for y in 0..10u16 {
+            assert!(
+                buf.get(0, y).unwrap().is_empty(),
+                "cell at y={y} should be empty at EssentialOnly"
+            );
+        }
+    }
+
+    #[test]
+    fn degradation_skeleton_skips_entirely() {
+        use ftui_render::budget::DegradationLevel;
+
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        let area = Rect::new(0, 0, 1, 10);
+        let mut buf = Buffer::new(1, 10);
+        buf.degradation = DegradationLevel::Skeleton;
+        let mut state = ScrollbarState::new(100, 0, 10);
+        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+
+        for y in 0..10u16 {
+            assert!(
+                buf.get(0, y).unwrap().is_empty(),
+                "cell at y={y} should be empty at Skeleton"
+            );
+        }
+    }
+
+    #[test]
+    fn degradation_full_renders_scrollbar() {
+        use ftui_render::budget::DegradationLevel;
+
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        let area = Rect::new(0, 0, 1, 10);
+        let mut buf = Buffer::new(1, 10);
+        buf.degradation = DegradationLevel::Full;
+        let mut state = ScrollbarState::new(100, 0, 10);
+        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+
+        // Should render something (thumb or track)
+        let top_cell = buf.get(0, 0).unwrap();
+        assert!(top_cell.content.as_char().is_some());
+    }
+
+    #[test]
+    fn degradation_simple_borders_still_renders() {
+        use ftui_render::budget::DegradationLevel;
+
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        let area = Rect::new(0, 0, 1, 10);
+        let mut buf = Buffer::new(1, 10);
+        buf.degradation = DegradationLevel::SimpleBorders;
+        let mut state = ScrollbarState::new(100, 0, 10);
+        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+
+        // SimpleBorders still renders decorative content
+        let top_cell = buf.get(0, 0).unwrap();
+        assert!(top_cell.content.as_char().is_some());
     }
 }

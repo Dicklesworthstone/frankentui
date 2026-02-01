@@ -147,6 +147,86 @@ impl<'a> Block<'a> {
         }
     }
 
+    /// Render borders using ASCII characters regardless of configured border_type.
+    fn render_borders_ascii(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+
+        let set = crate::borders::BorderSet::ASCII;
+
+        if self.borders.contains(Borders::LEFT) {
+            for y in area.y..area.bottom() {
+                buf.set(area.x, y, self.border_cell(set.vertical));
+            }
+        }
+        if self.borders.contains(Borders::RIGHT) {
+            let x = area.right() - 1;
+            for y in area.y..area.bottom() {
+                buf.set(x, y, self.border_cell(set.vertical));
+            }
+        }
+        if self.borders.contains(Borders::TOP) {
+            for x in area.x..area.right() {
+                buf.set(x, area.y, self.border_cell(set.horizontal));
+            }
+        }
+        if self.borders.contains(Borders::BOTTOM) {
+            let y = area.bottom() - 1;
+            for x in area.x..area.right() {
+                buf.set(x, y, self.border_cell(set.horizontal));
+            }
+        }
+
+        if self.borders.contains(Borders::LEFT | Borders::TOP) {
+            buf.set(area.x, area.y, self.border_cell(set.top_left));
+        }
+        if self.borders.contains(Borders::RIGHT | Borders::TOP) {
+            buf.set(area.right() - 1, area.y, self.border_cell(set.top_right));
+        }
+        if self.borders.contains(Borders::LEFT | Borders::BOTTOM) {
+            buf.set(area.x, area.bottom() - 1, self.border_cell(set.bottom_left));
+        }
+        if self.borders.contains(Borders::RIGHT | Borders::BOTTOM) {
+            buf.set(
+                area.right() - 1,
+                area.bottom() - 1,
+                self.border_cell(set.bottom_right),
+            );
+        }
+    }
+
+    /// Render title without styling.
+    fn render_title_plain(&self, area: Rect, buf: &mut Buffer) {
+        if let Some(title) = self.title {
+            if !self.borders.contains(Borders::TOP) || area.width < 3 {
+                return;
+            }
+
+            let available_width = area.width.saturating_sub(2) as usize;
+            if available_width == 0 {
+                return;
+            }
+
+            let title_width = unicode_width::UnicodeWidthStr::width(title);
+            let display_width = title_width.min(available_width);
+
+            let x = match self.title_alignment {
+                Alignment::Left => area.x + 1,
+                Alignment::Center => {
+                    area.x + 1 + ((available_width.saturating_sub(display_width)) / 2) as u16
+                }
+                Alignment::Right => area
+                    .right()
+                    .saturating_sub(1)
+                    .saturating_sub(display_width as u16),
+            };
+
+            let max_x = area.right().saturating_sub(1);
+            draw_text_span(buf, x, area.y, title, Style::default(), max_x);
+        }
+    }
+
     fn render_title(&self, area: Rect, buf: &mut Buffer) {
         if let Some(title) = self.title {
             if !self.borders.contains(Borders::TOP) || area.width < 3 {
@@ -195,9 +275,40 @@ impl Widget for Block<'_> {
             return;
         }
 
-        set_style_area(buf, area, self.style);
-        self.render_borders(area, buf);
-        self.render_title(area, buf);
+        let deg = buf.degradation;
+
+        // Skeleton+: skip everything, just clear area
+        if !deg.render_content() {
+            buf.fill(area, Cell::default());
+            return;
+        }
+
+        // EssentialOnly: skip borders entirely, only apply bg style
+        if !deg.render_decorative() {
+            set_style_area(buf, area, self.style);
+            return;
+        }
+
+        // Apply background/style
+        if deg.apply_styling() {
+            set_style_area(buf, area, self.style);
+        }
+
+        // Render borders (with possible ASCII downgrade)
+        if deg.use_unicode_borders() {
+            self.render_borders(area, buf);
+        } else {
+            // Force ASCII borders regardless of configured border_type
+            self.render_borders_ascii(area, buf);
+        }
+
+        // Render title (skip at NoStyling to save time)
+        if deg.apply_styling() {
+            self.render_title(area, buf);
+        } else if deg.render_decorative() {
+            // Still show title but without styling
+            self.render_title_plain(area, buf);
+        }
     }
 }
 
@@ -397,5 +508,88 @@ mod tests {
         let block = Block::default();
         let area = Rect::new(0, 0, 5, 5);
         assert_eq!(block.inner(area), area);
+    }
+
+    // --- Degradation tests ---
+
+    #[test]
+    fn degradation_simple_borders_uses_ascii() {
+        use ftui_render::budget::DegradationLevel;
+
+        let block = Block::bordered().border_type(BorderType::Rounded);
+        let area = Rect::new(0, 0, 5, 3);
+        let mut buf = Buffer::new(5, 3);
+        buf.degradation = DegradationLevel::SimpleBorders;
+        block.render(area, &mut buf);
+
+        // Should use ASCII '+' corners, not Unicode '╭'
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('+'));
+        assert_eq!(buf.get(4, 0).unwrap().content.as_char(), Some('+'));
+        assert_eq!(buf.get(0, 2).unwrap().content.as_char(), Some('+'));
+        assert_eq!(buf.get(4, 2).unwrap().content.as_char(), Some('+'));
+        // Edges should be ASCII '-' and '|'
+        assert_eq!(buf.get(2, 0).unwrap().content.as_char(), Some('-'));
+        assert_eq!(buf.get(0, 1).unwrap().content.as_char(), Some('|'));
+    }
+
+    #[test]
+    fn degradation_essential_only_skips_borders() {
+        use ftui_render::budget::DegradationLevel;
+
+        let block = Block::bordered();
+        let area = Rect::new(0, 0, 5, 3);
+        let mut buf = Buffer::new(5, 3);
+        buf.degradation = DegradationLevel::EssentialOnly;
+        block.render(area, &mut buf);
+
+        // No border characters should be rendered
+        assert_ne!(buf.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_ne!(buf.get(0, 0).unwrap().content.as_char(), Some('+'));
+    }
+
+    #[test]
+    fn degradation_skeleton_clears_area() {
+        use ftui_render::budget::DegradationLevel;
+
+        let block = Block::bordered();
+        let area = Rect::new(0, 0, 5, 3);
+        let mut buf = Buffer::new(5, 3);
+        buf.degradation = DegradationLevel::Skeleton;
+        block.render(area, &mut buf);
+
+        // Area should be cleared (fill with default cells), no borders
+        assert_ne!(buf.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_ne!(buf.get(2, 0).unwrap().content.as_char(), Some('─'));
+    }
+
+    #[test]
+    fn degradation_no_styling_skips_title_style() {
+        use ftui_render::budget::DegradationLevel;
+
+        let block = Block::bordered()
+            .title("Test")
+            .border_style(Style::new().fg(PackedRgba::RED));
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = Buffer::new(10, 3);
+        buf.degradation = DegradationLevel::NoStyling;
+        block.render(area, &mut buf);
+
+        // Borders should be ASCII, title present but unstyled
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('+'));
+        // Title should still be rendered
+        assert_eq!(buf.get(1, 0).unwrap().content.as_char(), Some('T'));
+    }
+
+    #[test]
+    fn degradation_full_uses_unicode() {
+        use ftui_render::budget::DegradationLevel;
+
+        let block = Block::bordered().border_type(BorderType::Rounded);
+        let area = Rect::new(0, 0, 5, 3);
+        let mut buf = Buffer::new(5, 3);
+        buf.degradation = DegradationLevel::Full;
+        block.render(area, &mut buf);
+
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('╭'));
     }
 }

@@ -167,16 +167,23 @@ impl HitGrid {
     /// All cells within the rectangle will map to this hit cell.
     pub fn register(&mut self, rect: Rect, widget_id: HitId, region: HitRegion, data: HitData) {
         // Use usize to avoid overflow for large coordinates
-        let x_end = (rect.x as usize + rect.width as usize).min(self.width as usize) as u16;
-        let y_end = (rect.y as usize + rect.height as usize).min(self.height as usize) as u16;
+        let x_end = (rect.x as usize + rect.width as usize).min(self.width as usize);
+        let y_end = (rect.y as usize + rect.height as usize).min(self.height as usize);
+
+        // Check if there's anything to do
+        if rect.x as usize >= x_end || rect.y as usize >= y_end {
+            return;
+        }
 
         let hit_cell = HitCell::new(widget_id, region, data);
-        for y in rect.y..y_end {
-            for x in rect.x..x_end {
-                if let Some(cell) = self.get_mut(x, y) {
-                    *cell = hit_cell;
-                }
-            }
+
+        for y in rect.y as usize..y_end {
+            let row_start = y * self.width as usize;
+            let start = row_start + rect.x as usize;
+            let end = row_start + x_end;
+
+            // Optimize: use slice fill for contiguous memory access
+            self.cells[start..end].fill(hit_cell);
         }
     }
 
@@ -340,6 +347,16 @@ impl<'a> Frame<'a> {
         self.cursor_visible = visible;
     }
 
+    /// Set the degradation level for this frame.
+    ///
+    /// Propagates to the buffer so widgets can read `buf.degradation`
+    /// during rendering without needing access to the full Frame.
+    #[inline]
+    pub fn set_degradation(&mut self, level: DegradationLevel) {
+        self.degradation = level;
+        self.buffer.degradation = level;
+    }
+
     /// Get the bounding rectangle of the frame.
     #[inline]
     pub fn bounds(&self) -> Rect {
@@ -349,6 +366,12 @@ impl<'a> Frame<'a> {
     /// Register a hit region (if hit grid is enabled).
     ///
     /// Returns `true` if the region was registered, `false` if no hit grid.
+    ///
+    /// # Clipping
+    ///
+    /// The region is intersected with the current scissor stack of the
+    /// internal buffer. Parts of the region outside the scissor are
+    /// ignored.
     pub fn register_hit(
         &mut self,
         rect: Rect,
@@ -357,7 +380,11 @@ impl<'a> Frame<'a> {
         data: HitData,
     ) -> bool {
         if let Some(ref mut grid) = self.hit_grid {
-            grid.register(rect, id, region, data);
+            // Clip against current scissor
+            let clipped = rect.intersection(&self.buffer.current_scissor());
+            if !clipped.is_empty() {
+                grid.register(clipped, id, region, data);
+            }
             true
         } else {
             false

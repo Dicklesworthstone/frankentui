@@ -123,6 +123,41 @@ impl DegradationLevel {
     pub fn level(self) -> u8 {
         self as u8
     }
+
+    // ---- Widget convenience queries ----
+
+    /// Whether to use Unicode box-drawing characters.
+    ///
+    /// Returns `false` at `SimpleBorders` and above (use ASCII instead).
+    #[inline]
+    pub fn use_unicode_borders(self) -> bool {
+        self < Self::SimpleBorders
+    }
+
+    /// Whether to apply colors and style attributes to cells.
+    ///
+    /// Returns `false` at `NoStyling` and above.
+    #[inline]
+    pub fn apply_styling(self) -> bool {
+        self < Self::NoStyling
+    }
+
+    /// Whether to render decorative (non-essential) elements.
+    ///
+    /// Returns `false` at `EssentialOnly` and above.
+    /// Decorative elements include borders, scrollbars, spinners, rules.
+    #[inline]
+    pub fn render_decorative(self) -> bool {
+        self < Self::EssentialOnly
+    }
+
+    /// Whether to render content text.
+    ///
+    /// Returns `false` at `Skeleton` and above.
+    #[inline]
+    pub fn render_content(self) -> bool {
+        self < Self::Skeleton
+    }
 }
 
 /// Per-phase time budgets within a frame.

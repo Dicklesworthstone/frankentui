@@ -34,9 +34,20 @@ use unicode_width::UnicodeWidthStr;
 /// A `Widget` is a renderable component.
 ///
 /// Widgets render themselves into a `Buffer` within a given `Rect`.
+/// Widgets should check `buf.degradation` to respect the render budget
+/// and gracefully degrade visual fidelity when the system is under load.
 pub trait Widget {
     /// Render the widget into the buffer at the given area.
     fn render(&self, area: Rect, buf: &mut Buffer);
+
+    /// Whether this widget is essential and should always render,
+    /// even at `EssentialOnly` degradation.
+    ///
+    /// Essential widgets include text inputs and primary content areas.
+    /// Decorative widgets (borders, scrollbars, spinners, rules) are not essential.
+    fn is_essential(&self) -> bool {
+        false
+    }
 }
 
 /// A `StatefulWidget` is a widget that renders based on mutable state.
