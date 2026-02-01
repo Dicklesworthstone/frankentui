@@ -11,6 +11,9 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::Draw;
 
+#[cfg(feature = "tracing")]
+use tracing::{debug, warn};
+
 /// Constraint bounds for a widget's layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutConstraints {
@@ -134,6 +137,23 @@ impl LayoutDebugger {
     pub fn record(&mut self, record: LayoutRecord) {
         if !self.enabled {
             return;
+        }
+        #[cfg(feature = "tracing")]
+        {
+            if record.overflow() || record.underflow() {
+                warn!(
+                    widget = record.widget_name.as_str(),
+                    requested = ?record.area_requested,
+                    received = ?record.area_received,
+                    "Layout constraint violation"
+                );
+            }
+            debug!(
+                widget = record.widget_name.as_str(),
+                constraints = ?record.constraints,
+                result = ?record.area_received,
+                "Layout computed"
+            );
         }
         self.records.push(record);
     }

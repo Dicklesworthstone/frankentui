@@ -7,6 +7,7 @@ pub mod borders;
 pub mod cached;
 #[cfg(feature = "debug-overlay")]
 pub mod debug_overlay;
+pub mod layout_debugger;
 pub mod error_boundary;
 pub mod input;
 pub mod list;
@@ -24,6 +25,7 @@ pub use debug_overlay::{
     DebugOverlay, DebugOverlayOptions, DebugOverlayState, DebugOverlayStateful,
     DebugOverlayStatefulState,
 };
+pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
