@@ -266,8 +266,7 @@ impl LayoutDebugger {
 
     /// Toggle debugging on/off.
     pub fn toggle(&self) -> bool {
-        let next = !self.enabled.fetch_xor(true, Ordering::Relaxed);
-        next
+        !self.enabled.fetch_xor(true, Ordering::Relaxed)
     }
 
     /// Clear all recorded data.
