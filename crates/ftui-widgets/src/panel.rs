@@ -221,7 +221,14 @@ impl<'a, W> Panel<'a, W> {
         std::borrow::Cow::Owned(out)
     }
 
-    fn render_top_text(&self, area: Rect, buf: &mut Buffer, text: &str, alignment: Alignment, style: Style) {
+    fn render_top_text(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        text: &str,
+        alignment: Alignment,
+        style: Style,
+    ) {
         if area.width < 2 {
             return;
         }
@@ -232,7 +239,9 @@ impl<'a, W> Panel<'a, W> {
 
         let x = match alignment {
             Alignment::Left => area.x + 1,
-            Alignment::Center => area.x + 1 + ((available_width.saturating_sub(display_width)) / 2) as u16,
+            Alignment::Center => {
+                area.x + 1 + ((available_width.saturating_sub(display_width)) / 2) as u16
+            }
             Alignment::Right => area
                 .right()
                 .saturating_sub(1)
@@ -261,7 +270,9 @@ impl<'a, W> Panel<'a, W> {
 
         let x = match alignment {
             Alignment::Left => area.x + 1,
-            Alignment::Center => area.x + 1 + ((available_width.saturating_sub(display_width)) / 2) as u16,
+            Alignment::Center => {
+                area.x + 1 + ((available_width.saturating_sub(display_width)) / 2) as u16
+            }
             Alignment::Right => area
                 .right()
                 .saturating_sub(1)
@@ -326,26 +337,32 @@ impl<W: Widget> Widget for Panel<'_, W> {
             let set = self.pick_border_set(buf);
             self.render_borders(area, buf, set);
 
-            if self.borders.contains(Borders::TOP) {
-                if let Some(title) = self.title {
-                    let title_style = if deg.apply_styling() {
-                        self.title_style.merge(&self.border_style)
-                    } else {
-                        Style::default()
-                    };
-                    self.render_top_text(area, buf, title, self.title_alignment, title_style);
-                }
+            if self.borders.contains(Borders::TOP)
+                && let Some(title) = self.title
+            {
+                let title_style = if deg.apply_styling() {
+                    self.title_style.merge(&self.border_style)
+                } else {
+                    Style::default()
+                };
+                self.render_top_text(area, buf, title, self.title_alignment, title_style);
             }
 
-            if self.borders.contains(Borders::BOTTOM) {
-                if let Some(subtitle) = self.subtitle {
-                    let subtitle_style = if deg.apply_styling() {
-                        self.subtitle_style.merge(&self.border_style)
-                    } else {
-                        Style::default()
-                    };
-                    self.render_bottom_text(area, buf, subtitle, self.subtitle_alignment, subtitle_style);
-                }
+            if self.borders.contains(Borders::BOTTOM)
+                && let Some(subtitle) = self.subtitle
+            {
+                let subtitle_style = if deg.apply_styling() {
+                    self.subtitle_style.merge(&self.border_style)
+                } else {
+                    Style::default()
+                };
+                self.render_bottom_text(
+                    area,
+                    buf,
+                    subtitle,
+                    self.subtitle_alignment,
+                    subtitle_style,
+                );
             }
         }
 
@@ -384,4 +401,3 @@ mod tests {
         assert_eq!(out, "abc…");
     }
 }
-
