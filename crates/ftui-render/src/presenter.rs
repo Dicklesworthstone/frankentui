@@ -40,6 +40,7 @@ use crate::cell::{Cell, CellAttrs, PackedRgba, StyleFlags};
 use crate::diff::BufferDiff;
 use crate::grapheme_pool::GraphemePool;
 use crate::link_registry::LinkRegistry;
+use ftui_core::{debug_span, info_span, trace};
 
 pub use ftui_core::terminal_capabilities::TerminalCapabilities;
 

@@ -4,8 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+# Enable performance tracing spans
+tracing = ["ftui-core/tracing"]
+
 [dependencies]
 bitflags = "2.10.0"
+unicode-width = "0.2"
+ftui-core = { path = "../ftui-core" }
 # Note: ftui-render is the core kernel and should not depend on ftui-style.
 # ftui-style depends on ftui-render (not vice versa).
 # ftui-layout = { path = "../ftui-layout" }  # TODO: Add when needed
