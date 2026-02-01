@@ -263,8 +263,6 @@ pub struct Program<M: Model, W: Write = Stdout> {
     prev_frame: Frame,
     /// Frame budget configuration.
     budget_config: FrameBudgetConfig,
-    /// Frames since last degradation change.
-    frames_since_change: u32,
     /// Current render budget (persists across frames for degradation tracking).
     budget: RenderBudget,
 }
@@ -299,7 +297,6 @@ impl<M: Model> Program<M, Stdout> {
             dirty: true,
             prev_frame: Frame::new(width, height),
             budget_config: config.budget,
-            frames_since_change: 0,
             budget,
         })
     }
@@ -386,18 +383,12 @@ impl<M: Model, W: Write> Program<M, W> {
         // Let model render to frame
         self.model.view(&mut frame);
 
-        // Compute diff
-        let diff = BufferDiff::compute(&self.prev_frame.buffer, &frame.buffer);
-
         // Check budget before presenting
         if !self.budget.exhausted() {
             // Present the frame
             // Note: present_ui internally handles diffing
             self.writer.present_ui(&frame.buffer)?;
         }
-
-        // Store diff for metrics (unused for now but available)
-        let _ = diff;
 
         // Store frame for next diff
         self.prev_frame = frame;
