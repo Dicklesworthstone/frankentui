@@ -29,6 +29,7 @@
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_widgets::Widget;
 
@@ -420,11 +421,11 @@ impl Canvas {
 }
 
 impl Widget for Canvas {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         if area.is_empty() {
             return;
         }
-        self.painter.render_to_buffer(area, buf, self.style);
+        self.painter.render_to_buffer(area, &mut frame.buffer, self.style);
     }
 }
 
