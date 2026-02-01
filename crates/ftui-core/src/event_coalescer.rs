@@ -135,14 +135,17 @@ impl EventCoalescer {
         direction: ScrollDirection,
         mouse: &MouseEvent,
     ) -> Option<Event> {
-        if let Some(pending) = &mut self.pending_scroll {
+        if let Some(pending) = self.pending_scroll {
             if pending.direction == direction {
                 // Same direction: increment count
-                pending.count = pending.count.saturating_add(1);
+                self.pending_scroll = Some(ScrollState {
+                    count: pending.count.saturating_add(1),
+                    ..pending
+                });
                 None
             } else {
                 // Different direction: flush old, start new
-                let old = self.scroll_to_event(*pending);
+                let old = self.scroll_to_event(pending);
                 self.pending_scroll = Some(ScrollState {
                     direction,
                     count: 1,
