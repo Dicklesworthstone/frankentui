@@ -28,15 +28,15 @@
 //!
 //! let mut coalescer = EventCoalescer::new();
 //!
-//! // Mouse moves coalesce
+//! // Mouse moves coalesce - only the latest position is kept
 //! assert!(coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 10, 10))).is_none());
 //! assert!(coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 20, 20))).is_none());
 //!
-//! // A non-move event flushes the pending move
+//! // Non-coalescable events pass through immediately (no auto-flush)
 //! let result = coalescer.push(Event::Key(KeyEvent::new(KeyCode::Enter)));
 //! assert!(result.is_some()); // Returns the key event
 //!
-//! // Flush to get the coalesced mouse move
+//! // Caller must explicitly flush to get pending coalesced events
 //! let pending = coalescer.flush();
 //! assert_eq!(pending.len(), 1);
 //! if let Event::Mouse(m) = &pending[0] {
@@ -73,6 +73,9 @@ struct ScrollState {
     direction: ScrollDirection,
     count: u32,
     modifiers: crate::event::Modifiers,
+    /// Position of the last scroll event (some terminals report scroll position).
+    x: u16,
+    y: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,9 +136,12 @@ impl EventCoalescer {
     fn handle_scroll(&mut self, direction: ScrollDirection, mouse: &MouseEvent) -> Option<Event> {
         if let Some(pending) = self.pending_scroll {
             if pending.direction == direction {
-                // Same direction: increment count
+                // Same direction: increment count, update position to latest
                 self.pending_scroll = Some(ScrollState {
                     count: pending.count.saturating_add(1),
+                    x: mouse.x,
+                    y: mouse.y,
+                    modifiers: mouse.modifiers,
                     ..pending
                 });
                 None
@@ -146,6 +152,8 @@ impl EventCoalescer {
                     direction,
                     count: 1,
                     modifiers: mouse.modifiers,
+                    x: mouse.x,
+                    y: mouse.y,
                 });
                 Some(old)
             }
@@ -155,6 +163,8 @@ impl EventCoalescer {
                 direction,
                 count: 1,
                 modifiers: mouse.modifiers,
+                x: mouse.x,
+                y: mouse.y,
             });
             None
         }
@@ -165,7 +175,7 @@ impl EventCoalescer {
     /// For coalesced scrolls, we emit the scroll event N times where N is
     /// the accumulated count. However, since most applications process
     /// scroll events one at a time, we return a single event and the caller
-    /// can check `scroll_count()` if they want to handle batched scrolls.
+    /// can check `pending_scroll_count()` if they want to handle batched scrolls.
     fn scroll_to_event(&self, state: ScrollState) -> Event {
         let kind = match state.direction {
             ScrollDirection::Up => MouseEventKind::ScrollUp,
@@ -173,8 +183,8 @@ impl EventCoalescer {
             ScrollDirection::Left => MouseEventKind::ScrollLeft,
             ScrollDirection::Right => MouseEventKind::ScrollRight,
         };
-        // Use (0, 0) as position since scroll events don't have meaningful coordinates
-        Event::Mouse(MouseEvent::new(kind, 0, 0).with_modifiers(state.modifiers))
+        // Preserve the position from the last scroll event
+        Event::Mouse(MouseEvent::new(kind, state.x, state.y).with_modifiers(state.modifiers))
     }
 
     /// Flush all pending coalesced events.
@@ -609,25 +619,33 @@ mod tests {
         ];
 
         for event in events {
-            // Flush before non-coalescable events
-            if coalescer.has_pending() {
-                if let Some(e) = coalescer.push(event.clone()) {
-                    // If event passed through, flush pending first
-                    coalescer.flush_each(|pending| processed.push(pending));
-                    processed.push(e);
-                }
-            } else if let Some(e) = coalescer.push(event) {
+            if let Some(e) = coalescer.push(event) {
+                // Non-coalescable event passed through - flush pending first, then process
+                coalescer.flush_each(|pending| processed.push(pending));
                 processed.push(e);
             }
+            // If push returned None, event was coalesced and is pending
         }
 
-        // Final flush
+        // Final flush for any remaining pending events
         coalescer.flush_each(|e| processed.push(e));
 
-        // Verify: mouse moves coalesced, clicks passed through, scrolls coalesced
-        // Expected order: move(5,5), down, drag, up, scroll_up, escape
-        // Actually, the exact order depends on the logic, but we should see fewer events
-        // than we put in due to coalescing
-        assert!(processed.len() < 8); // Less than input due to coalescing
+        // Verify coalescing occurred:
+        // - 2 mouse moves -> 1 coalesced move
+        // - down, drag, up -> 3 pass-through events
+        // - 2 scroll ups -> 1 coalesced scroll
+        // - escape -> 1 pass-through event
+        // Total: 1 + 3 + 1 + 1 = 6 events (down from 8 input events)
+        assert_eq!(processed.len(), 6);
+
+        // Verify the coalesced move has the final position
+        let move_event = processed
+            .iter()
+            .find(|e| matches!(e, Event::Mouse(m) if matches!(m.kind, MouseEventKind::Moved)));
+        assert!(move_event.is_some());
+        if let Some(Event::Mouse(m)) = move_event {
+            assert_eq!(m.x, 5);
+            assert_eq!(m.y, 5);
+        }
     }
 }
