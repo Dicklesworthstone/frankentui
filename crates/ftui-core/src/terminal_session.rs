@@ -77,10 +77,7 @@
 use std::io::{self, Write};
 use std::sync::OnceLock;
 
-use crate::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
-    PasteEvent,
-};
+use crate::event::Event;
 
 const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
 const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
@@ -505,6 +502,10 @@ pub const _SPIKE_NOTES: () = ();
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{
+        KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+        PasteEvent,
+    };
 
     // Test-only mapping functions (production code uses Event::from_crossterm in event.rs)
     fn map_crossterm_event(event: crossterm::event::Event) -> Option<Event> {
