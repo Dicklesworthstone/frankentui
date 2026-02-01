@@ -4,7 +4,7 @@
 //!
 //! This is a small compositional building block: it shrinks the render area
 //! passed to a child widget by applying [`Sides`] padding, and uses the
-//! [`Buffer`] scissor stack to guarantee the child cannot write outside the
+//! buffer's scissor stack to guarantee the child cannot write outside the
 //! padded inner rectangle.
 
 use crate::{StatefulWidget, Widget};
