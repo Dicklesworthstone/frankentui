@@ -34,14 +34,15 @@
 //!
 //! ```
 //! use ftui_extras::console::{Console, ConsoleSink};
+//! use ftui_render::cell::PackedRgba;
 //! use ftui_text::Segment;
 //! use ftui_style::Style;
 //!
 //! let sink = ConsoleSink::capture();
 //! let mut console = Console::new(80, sink);
 //!
-//! // Push base style
-//! console.push_style(Style::new().fg(ftui_style::Color::Blue));
+//! // Push base style (blue foreground)
+//! console.push_style(Style::new().fg(PackedRgba::rgb(0, 0, 255)));
 //! console.print(Segment::text("Blue text"));
 //!
 //! // Nested style (inherits blue, adds bold)
@@ -70,10 +71,14 @@
 use std::borrow::Cow;
 use std::io::{self, Write};
 
-use ftui_render::cell::PackedRgba;
-use ftui_style::{Style, StyleFlags};
+use ftui_style::Style;
 use ftui_text::Segment;
 use unicode_width::UnicodeWidthStr;
+
+#[cfg(test)]
+use ftui_render::cell::PackedRgba;
+#[cfg(test)]
+use ftui_style::StyleFlags;
 
 // ============================================================================
 // Wrap Mode
@@ -441,8 +446,23 @@ impl Console {
             let (fits, overflow) = split_at_width(remaining, remaining_width);
             if !fits.is_empty() {
                 self.current_line.push(fits, style.clone());
+                remaining = overflow;
+            } else {
+                // First character is too wide to fit - flush and try again
+                // If line is empty and still can't fit, push it anyway to avoid infinite loop
+                if self.current_line.is_empty() {
+                    // Push first char even if too wide
+                    let first_char_end = remaining
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| i)
+                        .unwrap_or(remaining.len());
+                    self.current_line
+                        .push(&remaining[..first_char_end], style.clone());
+                    remaining = &remaining[first_char_end..];
+                }
+                self.flush_line();
             }
-            remaining = overflow;
         }
     }
 
@@ -643,14 +663,15 @@ mod tests {
     #[test]
     fn console_style_stack() {
         let sink = ConsoleSink::capture();
-        let mut console = Console::new(80, sink);
+        // Use WrapMode::None to avoid word-splitting segments
+        let mut console = Console::with_options(80, sink, WrapMode::None);
 
         console.push_style(Style::new().fg(RED));
-        console.print_text("Red ");
+        console.print_text("Red");
         console.push_style(Style::new().bold());
-        console.print_text("Red+Bold ");
+        console.print_text("Bold");
         console.pop_style();
-        console.print_text("Red again");
+        console.print_text("Red");
         console.newline();
 
         let lines = console.into_captured_lines();
