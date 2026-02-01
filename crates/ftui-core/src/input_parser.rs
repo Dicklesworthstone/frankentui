@@ -1249,7 +1249,7 @@ mod proptest_fuzz {
     fn osc_sequence() -> impl Strategy<Value = Vec<u8>> {
         let content = prop::collection::vec(0x20u8..=0x7E, 0..=64);
         let terminator = prop_oneof![
-            Just(vec![0x1B, b'\']), // ESC backslash
+            Just(vec![0x1B, b'\\']), // ESC backslash
             Just(vec![0x07]),        // BEL
         ];
         (content, terminator).prop_map(|(c, t)| {
@@ -1535,7 +1535,7 @@ mod proptest_fuzz {
             0..=128,
         );
         let terminator = prop_oneof![
-            Just(vec![0x1B, b'\']), // ESC backslash (ST)
+            Just(vec![0x1B, b'\\']), // ESC backslash (ST)
             Just(vec![0x07]),        // BEL
         ];
         (selector, payload, terminator).prop_map(|(sel, pay, term)| {
