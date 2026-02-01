@@ -40,4 +40,5 @@
 - [x] **Form Layout**: Fixed label width calculation for Unicode in `forms.rs`.
 - [x] **Sanitization**: Hardened escape sequence parser against log-swallowing attacks in `sanitize.rs`.
 - [x] **Unicode Rendering**: Refactored `Widget` trait to use `Frame` for correct grapheme handling.
-- [ ] **Widget Updates**: Update remaining widgets (`Progress`, `Scrollbar`, `Spinner`, `ftui-extras`) to new `Widget` signature.
+- [x] **Core Widget Updates**: Updated `Block`, `Paragraph`, `List`, `Table`, `Input`, `Progress`, `Scrollbar`, `Spinner`.
+- [ ] **Extras Widget Updates**: Update `Canvas`, `Charts`, `Forms` in `ftui-extras`.
