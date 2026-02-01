@@ -4,9 +4,23 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+# Enable dedicated render/output thread (Mode B).
+# When enabled, all terminal output is serialized on a background thread,
+# preventing interleaving between logs and UI presents.
+render-thread = []
+# Best-effort stdio capture to prevent accidental println! from corrupting
+# inline mode. See stdio_capture module docs for limitations.
+stdio-capture = []
+
 [dependencies]
 ftui-core = { path = "../ftui-core" }
 ftui-layout = { path = "../ftui-layout" }
 ftui-render = { path = "../ftui-render" }
 ftui-style = { path = "../ftui-style" }
 ftui-text = { path = "../ftui-text" }
+crossterm = "0.28"
+tracing = "0.1"
+unicode-segmentation = "1.11"
+unicode-width = "0.2"
