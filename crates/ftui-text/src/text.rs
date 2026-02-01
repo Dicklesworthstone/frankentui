@@ -30,9 +30,9 @@
 
 use crate::TextMeasurement;
 use crate::segment::{Segment, SegmentLine, SegmentLines, split_into_lines};
+use crate::wrap::truncate_to_width_with_info;
 use ftui_style::Style;
 use std::borrow::Cow;
-use unicode_width::UnicodeWidthStr;
 
 /// A styled span of text.
 ///
@@ -527,7 +527,7 @@ impl Text {
     /// Lines exceeding `max_width` are truncated. If `ellipsis` is provided,
     /// it replaces the end of truncated lines.
     pub fn truncate(&mut self, max_width: usize, ellipsis: Option<&str>) {
-        let ellipsis_width = ellipsis.map(|e| e.width()).unwrap_or(0);
+        let ellipsis_width = ellipsis.map(crate::display_width).unwrap_or(0);
 
         for line in &mut self.lines {
             let line_width = line.width();
@@ -558,10 +558,10 @@ impl Text {
                     remaining -= span_width;
                 } else {
                     // Need to truncate this span
-                    let truncated = truncate_str(&span.content, remaining);
+                    let (truncated, _) = truncate_to_width_with_info(&span.content, remaining);
                     if !truncated.is_empty() {
                         new_spans.push(Span {
-                            content: Cow::Owned(truncated),
+                            content: Cow::Owned(truncated.to_string()),
                             style: span.style,
                         });
                     }
@@ -588,25 +588,6 @@ impl Text {
         text.truncate(max_width, ellipsis);
         text
     }
-}
-
-/// Truncate a string to fit within `max_width` cells.
-fn truncate_str(s: &str, max_width: usize) -> String {
-    use unicode_segmentation::UnicodeSegmentation;
-
-    let mut result = String::new();
-    let mut width = 0;
-
-    for grapheme in s.graphemes(true) {
-        let g_width = grapheme.width();
-        if width + g_width > max_width {
-            break;
-        }
-        result.push_str(grapheme);
-        width += g_width;
-    }
-
-    result
 }
 
 impl From<&str> for Text {

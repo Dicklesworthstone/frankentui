@@ -115,7 +115,7 @@ impl WidthCache {
     /// Otherwise, computes the width using `unicode_width` and caches it.
     #[inline]
     pub fn get_or_compute(&mut self, text: &str) -> usize {
-        self.get_or_compute_with(text, |s| s.width())
+        self.get_or_compute_with(text, |s| crate::display_width(s))
     }
 
     /// Get cached width or compute using a custom function.
@@ -169,7 +169,7 @@ impl WidthCache {
     pub fn preload(&mut self, text: &str) {
         let hash = hash_text(text);
         if !self.cache.contains(&hash) {
-            let width = text.width();
+            let width = crate::display_width(text);
             self.cache.put(hash, width);
         }
     }
