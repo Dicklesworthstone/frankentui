@@ -21,7 +21,10 @@ fn sequence_forwards_overshoot() {
     let mut seq = sequence(Fade::new(MS_100), Fade::new(MS_100));
     // One tick of 200ms should complete both
     seq.tick(Duration::from_millis(200));
-    assert!(seq.is_complete(), "200ms tick should complete 100ms+100ms sequence");
+    assert!(
+        seq.is_complete(),
+        "200ms tick should complete 100ms+100ms sequence"
+    );
 }
 
 #[test]

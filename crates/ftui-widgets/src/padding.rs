@@ -96,7 +96,7 @@ impl<W: Widget> Widget for Padding<W> {
             return;
         }
 
-        let mut guard = ScissorGuard::new(buf, inner);
+        let guard = ScissorGuard::new(buf, inner);
         self.inner.render(inner, &mut *guard.buf);
     }
 
@@ -129,7 +129,7 @@ impl<W: StatefulWidget> StatefulWidget for Padding<W> {
             return;
         }
 
-        let mut guard = ScissorGuard::new(buf, inner);
+        let guard = ScissorGuard::new(buf, inner);
         self.inner.render(inner, &mut *guard.buf, state);
     }
 }
@@ -256,4 +256,3 @@ mod tests {
         assert_eq!(buf.scissor_depth(), 1);
     }
 }
-

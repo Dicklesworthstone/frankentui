@@ -7,7 +7,9 @@
 //! - [`Flex`] - 1D constraint-based layout (rows or columns)
 //! - [`Grid`] - 2D constraint-based layout with cell spanning
 //! - [`Constraint`] - Size constraints (Fixed, Percentage, Min, Max, Ratio)
+//! - [`debug`] - Layout constraint debugging and introspection
 
+pub mod debug;
 pub mod grid;
 
 pub use ftui_core::geometry::{Rect, Sides};
