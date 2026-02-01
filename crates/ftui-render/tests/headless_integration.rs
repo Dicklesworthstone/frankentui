@@ -172,8 +172,8 @@ fn block_with_borders_renders_correctly() {
     );
 
     // Sides should have vertical border chars
-    let left_char = term.model().cell(0, 1).map(|c| c.ch);
-    assert!(left_char.is_some(), "left border should have a character");
+    let left_text = term.model().cell(0, 1).map(|c| c.text.as_str());
+    assert!(left_text.is_some(), "left border should have a character");
 
     // Bottom border should be present
     let bottom = term.row_text(4);
@@ -307,7 +307,7 @@ fn style_bold_roundtrips() {
     let term = present_into_headless(&prev, &next);
     let cell = term.model().cell(0, 0).expect("cell should exist");
     assert!(cell.attrs.has_flag(StyleFlags::BOLD), "cell should be bold");
-    assert_eq!(cell.ch, 'B');
+    assert_eq!(cell.text.as_str(), "B");
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn style_fg_color_roundtrips() {
 
     let term = present_into_headless(&prev, &next);
     let cell = term.model().cell(0, 0).expect("cell should exist");
-    assert_eq!(cell.ch, 'R');
+    assert_eq!(cell.text.as_str(), "R");
     assert_eq!(cell.fg, red, "foreground color should round-trip");
 }
 
@@ -372,7 +372,7 @@ fn style_combined_attrs_roundtrip() {
 
     let term = present_into_headless(&prev, &next);
     let cell = term.model().cell(0, 0).expect("cell should exist");
-    assert_eq!(cell.ch, 'X');
+    assert_eq!(cell.text.as_str(), "X");
     assert_eq!(cell.fg, fg);
     assert_eq!(cell.bg, bg);
     assert!(cell.attrs.has_flag(StyleFlags::BOLD));

@@ -147,6 +147,71 @@ pub(crate) fn draw_text_span(
     x
 }
 
+/// Draw a text span with horizontal scrolling (skip first `scroll_x` visual cells).
+pub(crate) fn draw_text_span_scrolled(
+    frame: &mut Frame,
+    mut x: u16,
+    y: u16,
+    content: &str,
+    style: Style,
+    max_x: u16,
+    scroll_x: u16,
+) -> u16 {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    let mut visual_pos = 0;
+
+    for grapheme in content.graphemes(true) {
+        if x >= max_x {
+            break;
+        }
+        let w = UnicodeWidthStr::width(grapheme);
+        if w == 0 {
+            continue;
+        }
+
+        let next_visual_pos = visual_pos + w as u16;
+
+        // Check if this grapheme is visible
+        if next_visual_pos <= scroll_x {
+            // Fully scrolled out
+            visual_pos = next_visual_pos;
+            continue;
+        }
+
+        if visual_pos < scroll_x {
+            // Partially scrolled out (e.g. wide char starting at scroll_x - 1)
+            // We skip the whole character because we can't render half a cell.
+            visual_pos = next_visual_pos;
+            continue;
+        }
+
+        if x + w as u16 > max_x {
+            break;
+        }
+
+        // Intern grapheme if needed
+        let cell_content = if w > 1 || grapheme.chars().count() > 1 {
+            let id = frame.intern_with_width(grapheme, w as u8);
+            ftui_render::cell::CellContent::from_grapheme(id)
+        } else if let Some(c) = grapheme.chars().next() {
+            ftui_render::cell::CellContent::from_char(c)
+        } else {
+            continue;
+        };
+
+        let mut cell = Cell::new(cell_content);
+        apply_style(&mut cell, style);
+        
+        frame.buffer.set(x, y, cell);
+        
+        x = x.saturating_add(w as u16);
+        visual_pos = next_visual_pos;
+    }
+    x
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

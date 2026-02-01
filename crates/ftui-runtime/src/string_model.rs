@@ -197,6 +197,7 @@ fn apply_style(cell: &mut Cell, style: ftui_style::Style) {
 mod tests {
     use super::*;
     use ftui_render::grapheme_pool::GraphemePool;
+    use unicode_width::UnicodeWidthStr;
 
     // ---------- Shared test message type ----------
 
@@ -365,6 +366,45 @@ mod tests {
         // Only first 5 chars rendered
         assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('A'));
         assert_eq!(frame.buffer.get(4, 0).unwrap().content.as_char(), Some('E'));
+    }
+
+    #[test]
+    fn adapter_renders_grapheme_clusters() {
+        struct EmojiModel;
+
+        impl StringModel for EmojiModel {
+            type Message = TestMsg;
+            fn update(&mut self, _: TestMsg) -> Cmd<TestMsg> {
+                Cmd::none()
+            }
+            fn view_string(&self) -> String {
+                "👩‍🚀X".to_string()
+            }
+        }
+
+        let adapter = StringModelAdapter::new(EmojiModel);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 1, &mut pool);
+
+        adapter.view(&mut frame);
+
+        let grapheme_width = UnicodeWidthStr::width("👩‍🚀");
+        assert!(grapheme_width >= 2);
+
+        let head = frame.buffer.get(0, 0).unwrap();
+        assert!(head.content.is_grapheme());
+        assert_eq!(head.content.width(), grapheme_width);
+
+        for i in 1..grapheme_width {
+            let tail = frame.buffer.get(i as u16, 0).unwrap();
+            assert!(tail.is_continuation(), "cell {i} should be continuation");
+        }
+
+        let next = frame
+            .buffer
+            .get(grapheme_width as u16, 0)
+            .unwrap();
+        assert_eq!(next.content.as_char(), Some('X'));
     }
 
     #[test]

@@ -182,8 +182,6 @@ impl<'a> StatusLine<'a> {
         max_x: u16,
         style: Style,
     ) -> u16 {
-        let sep_width = UnicodeWidthStr::width(self.separator) as u16;
-
         for (i, item) in items.iter().enumerate() {
             if x >= max_x {
                 break;

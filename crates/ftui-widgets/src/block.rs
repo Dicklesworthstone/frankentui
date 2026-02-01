@@ -198,7 +198,8 @@ impl<'a> Block<'a> {
     }
 
     /// Render title without styling.
-    fn render_title_plain(&self, area: Rect, buf: &mut Buffer) {
+    #[allow(dead_code, unused_variables)]
+    fn render_title_plain(&self, area: Rect, _buf: &mut Buffer) {
         if let Some(title) = self.title {
             if !self.borders.contains(Borders::TOP) || area.width < 3 {
                 return;
@@ -212,7 +213,7 @@ impl<'a> Block<'a> {
             let title_width = unicode_width::UnicodeWidthStr::width(title);
             let display_width = title_width.min(available_width);
 
-            let x = match self.title_alignment {
+            let _x = match self.title_alignment {
                 Alignment::Left => area.x + 1,
                 Alignment::Center => {
                     area.x + 1 + ((available_width.saturating_sub(display_width)) / 2) as u16
@@ -223,7 +224,7 @@ impl<'a> Block<'a> {
                     .saturating_sub(display_width as u16),
             };
 
-            let max_x = area.right().saturating_sub(1);
+            let _max_x = area.right().saturating_sub(1);
             // This still uses buffer directly because it's plain text (no interning needed for simple titles)
             // But we should really use draw_text_span with frame if possible.
             // For now, let's assume plain title rendering is safe on Buffer for ASCII.

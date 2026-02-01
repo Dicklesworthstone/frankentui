@@ -22,7 +22,7 @@
 //! model.process(b"\x1b[1;1H"); // Move cursor to (0, 0)
 //! model.process(b"\x1b[1mHello\x1b[0m"); // Write "Hello" in bold
 //! assert_eq!(model.cursor(), (5, 0)); // Cursor advanced
-//! assert_eq!(model.cell(0, 0).char, 'H');
+//! assert_eq!(model.cell(0, 0).text, "H");
 //! ```
 
 use crate::cell::{CellAttrs, PackedRgba, StyleFlags};
@@ -32,8 +32,8 @@ use unicode_width::UnicodeWidthChar;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCell {
     // ... (existing code matches, just updating imports implies I need context for replace)
-    /// Character content (default is space).
-    pub ch: char,
+    /// Text content (grapheme cluster). Default is space.
+    pub text: String,
     /// Foreground color.
     pub fg: PackedRgba,
     /// Background color.
@@ -47,7 +47,7 @@ pub struct ModelCell {
 impl Default for ModelCell {
     fn default() -> Self {
         Self {
-            ch: ' ',
+            text: " ".to_string(),
             fg: PackedRgba::WHITE,
             bg: PackedRgba::TRANSPARENT,
             attrs: CellAttrs::NONE,
@@ -60,7 +60,7 @@ impl ModelCell {
     /// Create a cell with the given character and default style.
     pub fn with_char(ch: char) -> Self {
         Self {
-            ch,
+            text: ch.to_string(),
             ..Default::default()
         }
     }
@@ -238,7 +238,7 @@ impl TerminalModel {
     /// Extract the text content of a row as a string (trimmed of trailing spaces).
     pub fn row_text(&self, y: usize) -> Option<String> {
         self.row(y).map(|cells| {
-            let s: String = cells.iter().map(|c| c.ch).collect();
+            let s: String = cells.iter().map(|c| c.text.as_str()).collect();
             s.trim_end().to_string()
         })
     }
@@ -466,9 +466,31 @@ impl TerminalModel {
     fn put_char(&mut self, ch: char) {
         let width = UnicodeWidthChar::width(ch).unwrap_or(0);
 
+        // Zero-width (combining) character handling
+        if width == 0 {
+            if self.cursor_x > 0 {
+                // Append to previous cell
+                let idx = self.cursor_y * self.width + self.cursor_x - 1;
+                if let Some(cell) = self.cells.get_mut(idx) {
+                    cell.text.push(ch);
+                }
+            } else if self.cursor_x < self.width && self.cursor_y < self.height {
+                // At start of line, attach to current cell (if empty/space) or append
+                let idx = self.cursor_y * self.width + self.cursor_x;
+                let cell = &mut self.cells[idx];
+                if cell.text == " " {
+                    // Replace default space with space+combining
+                    cell.text = format!(" {}", ch);
+                } else {
+                    cell.text.push(ch);
+                }
+            }
+            return;
+        }
+
         if self.cursor_x < self.width && self.cursor_y < self.height {
             let cell = &mut self.cells[self.cursor_y * self.width + self.cursor_x];
-            cell.ch = ch;
+            cell.text = ch.to_string();
             cell.fg = self.sgr.fg;
             cell.bg = self.sgr.bg;
             cell.attrs = CellAttrs::new(self.sgr.flags, self.current_link_id);
@@ -477,10 +499,10 @@ impl TerminalModel {
             // Handle wide characters (clear the next cell if it exists)
             if width == 2 && self.cursor_x + 1 < self.width {
                 let next_cell = &mut self.cells[self.cursor_y * self.width + self.cursor_x + 1];
-                next_cell.ch = ' '; // Clear content
+                next_cell.text = String::new(); // Clear content (placeholder)
                 next_cell.fg = self.sgr.fg; // Extend background color
                 next_cell.bg = self.sgr.bg;
-                next_cell.attrs = CellAttrs::NONE; // Clear attributes (or should they extend?)
+                next_cell.attrs = CellAttrs::NONE; // Clear attributes
                 next_cell.link_id = 0; // Clear link
             }
         }
@@ -624,7 +646,7 @@ impl TerminalModel {
         // Copy background color before borrowing self mutably
         let bg = self.sgr.bg;
         if let Some(cell) = self.cell_mut(x, y) {
-            cell.ch = ' ';
+            cell.text = " ".to_string();
             // Erase uses current background color
             cell.fg = PackedRgba::WHITE;
             cell.bg = bg;
@@ -845,7 +867,7 @@ impl TerminalModel {
                 let y = i / self.width;
                 diffs.push(format!(
                     "  ({}, {}): got {:?}, expected {:?}",
-                    x, y, actual.ch, exp.ch
+                    x, y, actual.text, exp.text
                 ));
             }
         }

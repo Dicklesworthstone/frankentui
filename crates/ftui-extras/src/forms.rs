@@ -12,6 +12,7 @@ use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_widgets::{StatefulWidget, Widget};
 
@@ -650,7 +651,8 @@ impl FormState {
 impl StatefulWidget for Form {
     type State = FormState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
+        let buf = &mut frame.buffer;
         if area.is_empty() || self.fields.is_empty() {
             return;
         }
@@ -815,9 +817,9 @@ impl Form {
 
 // Implement Widget with default state for simple rendering
 impl Widget for Form {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         let mut state = FormState::default();
-        StatefulWidget::render(self, area, buf, &mut state);
+        StatefulWidget::render(self, area, frame, &mut state);
     }
 }
 
@@ -924,7 +926,8 @@ impl ConfirmDialogState {
 impl StatefulWidget for ConfirmDialog {
     type State = ConfirmDialogState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
+        let buf = &mut frame.buffer;
         if area.is_empty() {
             return;
         }
@@ -967,9 +970,9 @@ impl StatefulWidget for ConfirmDialog {
 }
 
 impl Widget for ConfirmDialog {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         let mut state = ConfirmDialogState::default();
-        StatefulWidget::render(self, area, buf, &mut state);
+        StatefulWidget::render(self, area, frame, &mut state);
     }
 }
 

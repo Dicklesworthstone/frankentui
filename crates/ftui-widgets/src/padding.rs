@@ -96,8 +96,8 @@ impl<W: Widget> Widget for Padding<W> {
             return;
         }
 
-        let mut guard = ScissorGuard::new(frame, inner);
-        self.inner.render(inner, &mut *guard.frame);
+        let guard = ScissorGuard::new(frame, inner);
+        self.inner.render(inner, guard.frame);
     }
 
     fn is_essential(&self) -> bool {
@@ -129,8 +129,8 @@ impl<W: StatefulWidget> StatefulWidget for Padding<W> {
             return;
         }
 
-        let mut guard = ScissorGuard::new(frame, inner);
-        self.inner.render(inner, &mut *guard.frame, state);
+        let guard = ScissorGuard::new(frame, inner);
+        self.inner.render(inner, guard.frame, state);
     }
 }
 
