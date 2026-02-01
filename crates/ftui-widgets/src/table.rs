@@ -10,14 +10,14 @@ use ftui_text::Text;
 
 /// A row in a table.
 #[derive(Debug, Clone, Default)]
-pub struct Row<'a> {
+pub struct Row {
     cells: Vec<Text>,
     height: u16,
     style: Style,
     bottom_margin: u16,
 }
 
-impl<'a> Row<'a> {
+impl Row {
     pub fn new(cells: impl IntoIterator<Item = impl Into<Text>>) -> Self {
         Self {
             cells: cells.into_iter().map(|c| c.into()).collect(),
