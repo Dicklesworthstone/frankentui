@@ -6,10 +6,10 @@
 //! a preview of the selected frame underneath.
 
 use crate::time_travel::TimeTravel;
+use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::drawing::Draw;
-use ftui_core::geometry::Rect;
 
 /// Time-travel inspector for stepping through recorded frames.
 #[derive(Debug, Clone, Default)]
@@ -75,9 +75,7 @@ impl TimeTravelInspector {
         let count = time_travel.len();
         let index_display = if count == 0 { 0 } else { self.index + 1 };
         let meta = time_travel.metadata(self.index);
-        let render_us = meta
-            .map(|m| m.render_time.as_micros())
-            .unwrap_or(0);
+        let render_us = meta.map(|m| m.render_time.as_micros()).unwrap_or(0);
         let events = meta.map(|m| m.event_count).unwrap_or(0);
         let hash = meta.and_then(|m| m.model_hash);
         if let Some(hash) = hash {

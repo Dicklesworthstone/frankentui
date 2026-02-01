@@ -95,7 +95,12 @@ impl Default for WrapOptions {
 /// This is a convenience function using default word-wrap mode.
 #[must_use]
 pub fn wrap_text(text: &str, width: usize, mode: WrapMode) -> Vec<String> {
-    wrap_with_options(text, &WrapOptions::new(width).mode(mode))
+    // Char mode should preserve leading whitespace since it's raw character-boundary wrapping
+    let preserve = mode == WrapMode::Char;
+    wrap_with_options(
+        text,
+        &WrapOptions::new(width).mode(mode).preserve_indent(preserve),
+    )
 }
 
 /// Wrap text with full options.

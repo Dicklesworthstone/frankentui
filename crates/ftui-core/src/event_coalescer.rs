@@ -130,11 +130,7 @@ impl EventCoalescer {
     }
 
     /// Handle a scroll event, coalescing if same direction.
-    fn handle_scroll(
-        &mut self,
-        direction: ScrollDirection,
-        mouse: &MouseEvent,
-    ) -> Option<Event> {
+    fn handle_scroll(&mut self, direction: ScrollDirection, mouse: &MouseEvent) -> Option<Event> {
         if let Some(pending) = self.pending_scroll {
             if pending.direction == direction {
                 // Same direction: increment count
@@ -292,7 +288,8 @@ mod tests {
     fn mouse_move_preserves_modifiers() {
         let mut coalescer = EventCoalescer::new();
 
-        let move_event = MouseEvent::new(MouseEventKind::Moved, 5, 5).with_modifiers(Modifiers::ALT);
+        let move_event =
+            MouseEvent::new(MouseEventKind::Moved, 5, 5).with_modifiers(Modifiers::ALT);
         coalescer.push(Event::Mouse(move_event));
 
         let pending = coalescer.flush();
@@ -345,9 +342,21 @@ mod tests {
         let mut coalescer = EventCoalescer::new();
 
         // Three scroll-ups
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            0,
+            0,
+        )));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            0,
+            0,
+        )));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            0,
+            0,
+        )));
 
         assert_eq!(coalescer.pending_scroll_count(), 3);
 
@@ -363,11 +372,23 @@ mod tests {
         let mut coalescer = EventCoalescer::new();
 
         // Scroll up twice
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            0,
+            0,
+        )));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            0,
+            0,
+        )));
 
         // Scroll down: should flush the pending up scrolls
-        let result = coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollDown, 0, 0)));
+        let result = coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            0,
+            0,
+        )));
 
         // Should return the old scroll (up)
         assert!(result.is_some());
@@ -402,31 +423,63 @@ mod tests {
         let mut coalescer = EventCoalescer::new();
 
         // Add both scroll and move
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            0,
+            0,
+        )));
         coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 10, 10)));
 
         let pending = coalescer.flush();
         assert_eq!(pending.len(), 2);
 
         // Scroll first
-        assert!(matches!(pending[0], Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollUp, .. })));
+        assert!(matches!(
+            pending[0],
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                ..
+            })
+        ));
         // Move second
-        assert!(matches!(pending[1], Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. })));
+        assert!(matches!(
+            pending[1],
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn flush_each_processes_in_order() {
         let mut coalescer = EventCoalescer::new();
 
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollDown, 0, 0)));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            0,
+            0,
+        )));
         coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 5, 5)));
 
         let mut events = Vec::new();
         coalescer.flush_each(|e| events.push(e));
 
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollDown, .. })));
-        assert!(matches!(events[1], Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. })));
+        assert!(matches!(
+            events[0],
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                ..
+            })
+        ));
+        assert!(matches!(
+            events[1],
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -434,7 +487,11 @@ mod tests {
         let mut coalescer = EventCoalescer::new();
 
         coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 10, 10)));
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            0,
+            0,
+        )));
         assert!(coalescer.has_pending());
 
         coalescer.clear();
@@ -489,7 +546,11 @@ mod tests {
 
         // This many scrolls won't overflow
         for _ in 0..1000 {
-            coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)));
+            coalescer.push(Event::Mouse(MouseEvent::new(
+                MouseEventKind::ScrollUp,
+                0,
+                0,
+            )));
         }
 
         assert_eq!(coalescer.pending_scroll_count(), 1000);
@@ -499,8 +560,16 @@ mod tests {
     fn horizontal_scroll_coalesces() {
         let mut coalescer = EventCoalescer::new();
 
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollLeft, 0, 0)));
-        coalescer.push(Event::Mouse(MouseEvent::new(MouseEventKind::ScrollLeft, 0, 0)));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollLeft,
+            0,
+            0,
+        )));
+        coalescer.push(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollLeft,
+            0,
+            0,
+        )));
 
         assert_eq!(coalescer.pending_scroll_count(), 2);
 
@@ -519,9 +588,21 @@ mod tests {
         let events = vec![
             Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 0, 0)),
             Event::Mouse(MouseEvent::new(MouseEventKind::Moved, 5, 5)),
-            Event::Mouse(MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 5, 5)),
-            Event::Mouse(MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 10, 10)),
-            Event::Mouse(MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 10, 10)),
+            Event::Mouse(MouseEvent::new(
+                MouseEventKind::Down(MouseButton::Left),
+                5,
+                5,
+            )),
+            Event::Mouse(MouseEvent::new(
+                MouseEventKind::Drag(MouseButton::Left),
+                10,
+                10,
+            )),
+            Event::Mouse(MouseEvent::new(
+                MouseEventKind::Up(MouseButton::Left),
+                10,
+                10,
+            )),
             Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)),
             Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 0, 0)),
             Event::Key(KeyEvent::new(KeyCode::Escape)),

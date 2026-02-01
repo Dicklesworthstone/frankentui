@@ -511,7 +511,7 @@ impl<W: Write> TerminalWriter<W> {
 
         // Reset style
         writer.write_all(b"\x1b[0m")?;
-        
+
         // Close any open link
         if current_link.is_some() {
             writer.write_all(b"\x1b]8;;\x1b\\")?;
@@ -522,7 +522,10 @@ impl<W: Write> TerminalWriter<W> {
     }
 
     /// Emit SGR flags.
-    fn emit_style_flags(writer: &mut impl Write, flags: ftui_render::cell::StyleFlags) -> io::Result<()> {
+    fn emit_style_flags(
+        writer: &mut impl Write,
+        flags: ftui_render::cell::StyleFlags,
+    ) -> io::Result<()> {
         use ftui_render::cell::StyleFlags;
 
         let mut codes = Vec::with_capacity(8);

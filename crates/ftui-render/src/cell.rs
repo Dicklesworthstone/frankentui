@@ -171,10 +171,10 @@ impl CellContent {
 
     /// Extract the character if this is a direct char (not a grapheme).
     ///
-    /// Returns `None` if this is a grapheme reference.
+    /// Returns `None` if this is empty, continuation, or a grapheme reference.
     #[inline]
     pub fn as_char(self) -> Option<char> {
-        if self.is_grapheme() {
+        if self.is_grapheme() || self.0 == Self::EMPTY.0 || self.0 == Self::CONTINUATION.0 {
             None
         } else {
             char::from_u32(self.0)
