@@ -2,8 +2,8 @@
 
 //! Layout primitives and solvers.
 
-use ftui_core::geometry::{Rect, Sides};
-use std::cmp::{max, min};
+pub use ftui_core::geometry::{Rect, Sides};
+use std::cmp::min;
 
 /// A constraint on the size of a layout area.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -39,6 +39,35 @@ pub enum Alignment {
     End,
     SpaceAround,
     SpaceBetween,
+}
+
+/// Size negotiation hints for layout.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Measurement {
+    pub min_width: u16,
+    pub min_height: u16,
+    pub max_width: Option<u16>,
+    pub max_height: Option<u16>,
+}
+
+impl Measurement {
+    pub fn fixed(width: u16, height: u16) -> Self {
+        Self {
+            min_width: width,
+            min_height: height,
+            max_width: Some(width),
+            max_height: Some(height),
+        }
+    }
+
+    pub fn flexible(min_width: u16, min_height: u16) -> Self {
+        Self {
+            min_width,
+            min_height,
+            max_width: None,
+            max_height: None,
+        }
+    }
 }
 
 /// A flexible layout container.
@@ -101,7 +130,7 @@ impl Flex {
     /// Split the given area into smaller rectangles according to the configuration.
     pub fn split(&self, area: Rect) -> Vec<Rect> {
         // Apply margin
-        let inner = area.inner(&self.margin);
+        let inner = area.inner(self.margin);
         if inner.is_empty() {
             return self.constraints.iter().map(|_| Rect::default()).collect();
         }
@@ -165,16 +194,6 @@ impl Flex {
 
         // 2. Distribute remaining space to flexible constraints (Min, Max, Ratio)
         if remaining > 0 && !grow_indices.is_empty() {
-            let mut ratio_total = 0;
-            let mut flex_count = 0;
-
-            for &i in &grow_indices {
-                match self.constraints[i] {
-                    Constraint::Ratio(n, d) => ratio_total += n as u64 * 10000 / d as u64, // normalize
-                    _ => flex_count += 1,
-                }
-            }
-
             // Simple distribution: equal share for non-ratio, proportional for ratio
             // If we have both, we need a policy.
             // Let's assume Min/Max get equal share of remainder, Ratio gets ratio.
@@ -328,5 +347,23 @@ mod tests {
         assert_eq!(rects[0].width, 10); // Fixed
         assert_eq!(rects[2].width, 10); // Percent
         assert_eq!(rects[1].width, 80); // Min + Remainder
+    }
+
+    #[test]
+    fn measurement_fixed_constraints() {
+        let fixed = Measurement::fixed(5, 7);
+        assert_eq!(fixed.min_width, 5);
+        assert_eq!(fixed.min_height, 7);
+        assert_eq!(fixed.max_width, Some(5));
+        assert_eq!(fixed.max_height, Some(7));
+    }
+
+    #[test]
+    fn measurement_flexible_constraints() {
+        let flexible = Measurement::flexible(2, 3);
+        assert_eq!(flexible.min_width, 2);
+        assert_eq!(flexible.min_height, 3);
+        assert_eq!(flexible.max_width, None);
+        assert_eq!(flexible.max_height, None);
     }
 }

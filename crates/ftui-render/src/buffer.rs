@@ -198,9 +198,10 @@ impl Buffer {
     ///
     /// Respects scissor region and applies opacity.
     pub fn fill(&mut self, rect: Rect, cell: Cell) {
-        let Some(clipped) = self.current_scissor().intersection(&rect) else {
+        let clipped = self.current_scissor().intersection(&rect);
+        if clipped.is_empty() {
             return;
-        };
+        }
 
         for y in clipped.y..clipped.bottom() {
             for x in clipped.x..clipped.right() {
@@ -241,7 +242,7 @@ impl Buffer {
     /// If the intersection is empty, no cells will be drawn.
     pub fn push_scissor(&mut self, rect: Rect) {
         let current = self.current_scissor();
-        let intersected = current.intersection(&rect).unwrap_or(Rect::new(0, 0, 0, 0));
+        let intersected = current.intersection(&rect);
         self.scissor_stack.push(intersected);
     }
 
@@ -359,12 +360,12 @@ mod tests {
     fn rect_intersection() {
         let a = Rect::new(0, 0, 10, 10);
         let b = Rect::new(5, 5, 10, 10);
-        let i = a.intersection(&b).unwrap();
+        let i = a.intersection(&b);
         assert_eq!(i, Rect::new(5, 5, 5, 5));
 
         // Non-overlapping
         let c = Rect::new(20, 20, 5, 5);
-        assert!(a.intersection(&c).is_none());
+        assert_eq!(a.intersection(&c), Rect::default());
     }
 
     #[test]

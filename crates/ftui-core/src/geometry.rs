@@ -67,23 +67,14 @@ impl Rect {
 
     /// Compute the intersection with another rectangle.
     ///
-    /// Returns `None` if the rectangles don't overlap.
+    /// Returns an empty rectangle if the rectangles don't overlap.
     #[inline]
-    pub fn intersection(&self, other: &Rect) -> Option<Rect> {
-        let x = self.x.max(other.x);
-        let y = self.y.max(other.y);
-        let right = self.right().min(other.right());
-        let bottom = self.bottom().min(other.bottom());
-
-        if x < right && y < bottom {
-            Some(Rect::new(x, y, right - x, bottom - y))
-        } else {
-            None
-        }
+    pub fn intersection(&self, other: &Rect) -> Rect {
+        self.intersection_opt(other).unwrap_or_default()
     }
 
     /// Create a new rectangle inside the current one with the given margin.
-    pub fn inner(&self, margin: &Sides) -> Rect {
+    pub fn inner(&self, margin: Sides) -> Rect {
         let x = self.x.saturating_add(margin.left);
         let y = self.y.saturating_add(margin.top);
         let width = self
@@ -119,6 +110,21 @@ impl Rect {
             height: bottom.saturating_sub(y),
         }
     }
+
+    /// Compute the intersection with another rectangle, returning `None` if no overlap.
+    #[inline]
+    pub fn intersection_opt(&self, other: &Rect) -> Option<Rect> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = self.right().min(other.right());
+        let bottom = self.bottom().min(other.bottom());
+
+        if x < right && y < bottom {
+            Some(Rect::new(x, y, right - x, bottom - y))
+        } else {
+            None
+        }
+    }
 }
 
 /// Sides for padding/margin.
@@ -141,6 +147,26 @@ impl Sides {
         }
     }
 
+    /// Create new sides with horizontal values only.
+    pub const fn horizontal(val: u16) -> Self {
+        Self {
+            top: 0,
+            right: val,
+            bottom: 0,
+            left: val,
+        }
+    }
+
+    /// Create new sides with vertical values only.
+    pub const fn vertical(val: u16) -> Self {
+        Self {
+            top: val,
+            right: 0,
+            bottom: val,
+            left: 0,
+        }
+    }
+
     /// Create new sides with specific values.
     pub const fn new(top: u16, right: u16, bottom: u16, left: u16) -> Self {
         Self {
@@ -149,5 +175,138 @@ impl Sides {
             bottom,
             left,
         }
+    }
+
+    /// Sum of left and right.
+    #[inline]
+    pub const fn horizontal_sum(&self) -> u16 {
+        self.left.saturating_add(self.right)
+    }
+
+    /// Sum of top and bottom.
+    #[inline]
+    pub const fn vertical_sum(&self) -> u16 {
+        self.top.saturating_add(self.bottom)
+    }
+}
+
+impl From<u16> for Sides {
+    fn from(val: u16) -> Self {
+        Self::all(val)
+    }
+}
+
+impl From<(u16, u16)> for Sides {
+    fn from((vertical, horizontal): (u16, u16)) -> Self {
+        Self {
+            top: vertical,
+            right: horizontal,
+            bottom: vertical,
+            left: horizontal,
+        }
+    }
+}
+
+impl From<(u16, u16, u16, u16)> for Sides {
+    fn from((top, right, bottom, left): (u16, u16, u16, u16)) -> Self {
+        Self {
+            top,
+            right,
+            bottom,
+            left,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Rect, Sides};
+
+    #[test]
+    fn rect_contains_edges() {
+        let rect = Rect::new(2, 3, 4, 5);
+        assert!(rect.contains(2, 3));
+        assert!(rect.contains(5, 7));
+        assert!(!rect.contains(6, 3));
+        assert!(!rect.contains(2, 8));
+    }
+
+    #[test]
+    fn rect_intersection_overlaps() {
+        let a = Rect::new(0, 0, 4, 4);
+        let b = Rect::new(2, 2, 4, 4);
+        assert_eq!(a.intersection(&b), Rect::new(2, 2, 2, 2));
+    }
+
+    #[test]
+    fn rect_intersection_no_overlap_is_empty() {
+        let a = Rect::new(0, 0, 2, 2);
+        let b = Rect::new(3, 3, 2, 2);
+        assert_eq!(a.intersection(&b), Rect::default());
+    }
+
+    #[test]
+    fn rect_inner_reduces() {
+        let rect = Rect::new(0, 0, 10, 10);
+        let inner = rect.inner(Sides {
+            top: 1,
+            right: 2,
+            bottom: 3,
+            left: 4,
+        });
+        assert_eq!(inner, Rect::new(4, 1, 4, 6));
+    }
+
+    #[test]
+    fn sides_constructors_and_conversions() {
+        assert_eq!(Sides::all(3), Sides::from(3));
+        assert_eq!(
+            Sides::horizontal(2),
+            Sides {
+                top: 0,
+                right: 2,
+                bottom: 0,
+                left: 2,
+            }
+        );
+        assert_eq!(
+            Sides::vertical(4),
+            Sides {
+                top: 4,
+                right: 0,
+                bottom: 4,
+                left: 0,
+            }
+        );
+        assert_eq!(
+            Sides::from((1, 2)),
+            Sides {
+                top: 1,
+                right: 2,
+                bottom: 1,
+                left: 2,
+            }
+        );
+        assert_eq!(
+            Sides::from((1, 2, 3, 4)),
+            Sides {
+                top: 1,
+                right: 2,
+                bottom: 3,
+                left: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn sides_sums() {
+        let sides = Sides {
+            top: 1,
+            right: 2,
+            bottom: 3,
+            left: 4,
+        };
+        assert_eq!(sides.horizontal_sum(), 6);
+        assert_eq!(sides.vertical_sum(), 4);
     }
 }
