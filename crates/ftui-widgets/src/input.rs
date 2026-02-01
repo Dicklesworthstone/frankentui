@@ -7,7 +7,7 @@
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
-use ftui_render::cell::Cell;
+use ftui_render::cell::{Cell, CellContent};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 use unicode_segmentation::UnicodeSegmentation;
@@ -40,6 +40,8 @@ pub struct TextInput {
     placeholder_style: Style,
     /// Selection highlight style.
     selection_style: Style,
+    /// Whether the input is focused (controls cursor output).
+    focused: bool,
 }
 
 impl TextInput {
@@ -97,6 +99,12 @@ impl TextInput {
     /// Set selection style (builder).
     pub fn with_selection_style(mut self, style: Style) -> Self {
         self.selection_style = style;
+        self
+    }
+
+    /// Set whether the input is focused (builder).
+    pub fn with_focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
         self
     }
 
