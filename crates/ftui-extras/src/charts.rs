@@ -18,6 +18,7 @@
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_widgets::Widget;
 
@@ -110,7 +111,8 @@ impl<'a> Sparkline<'a> {
 }
 
 impl Widget for Sparkline<'_> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        let buf = &mut frame.buffer;
         if area.is_empty() || self.data.is_empty() {
             return;
         }
@@ -284,7 +286,8 @@ impl<'a> BarChart<'a> {
 }
 
 impl Widget for BarChart<'_> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        let buf = &mut frame.buffer;
         if area.is_empty() || self.groups.is_empty() {
             return;
         }
@@ -593,7 +596,8 @@ impl<'a> LineChart<'a> {
 }
 
 impl Widget for LineChart<'_> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        let buf = &mut frame.buffer;
         if area.is_empty() || self.series.is_empty() {
             return;
         }

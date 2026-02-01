@@ -740,11 +740,13 @@ mod proptests {
             for &(x, y) in &changed_positions {
                 let buf_cell = buffer.get_unchecked(x, y);
                 let expected_ch = buf_cell.content.as_char().unwrap_or(' ');
+                let mut expected_buf = [0u8; 4];
+                let expected_str = expected_ch.encode_utf8(&mut expected_buf);
 
                 if let Some(model_cell) = model.cell(x as usize, y as usize) {
                     prop_assert_eq!(
-                        model_cell.ch,
-                        expected_ch,
+                        model_cell.text.as_str(),
+                        expected_str,
                         "Character mismatch at ({}, {})", x, y
                     );
                 }

@@ -5,8 +5,9 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use ftui_core::geometry::Rect;
 use ftui_layout::Constraint;
-use ftui_render::buffer::Buffer;
 use ftui_render::cell::PackedRgba;
+use ftui_render::frame::Frame;
+use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::Style;
 use ftui_text::Text;
 use ftui_widgets::Widget;
@@ -28,15 +29,17 @@ fn bench_block_render(c: &mut Criterion) {
 
     for (w, h) in [(40, 10), (80, 24), (200, 60)] {
         let area = Rect::from_size(w, h);
-        let mut buf = Buffer::new(w, h);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(w, h, &mut pool);
 
         group.bench_with_input(
             BenchmarkId::new("plain", format!("{w}x{h}")),
             &(),
             |b, _| {
                 b.iter(|| {
-                    block_plain.render(area, &mut buf);
-                    black_box(&buf);
+                    frame.buffer.clear();
+                    block_plain.render(area, &mut frame);
+                    black_box(&frame.buffer);
                 })
             },
         );
@@ -46,8 +49,9 @@ fn bench_block_render(c: &mut Criterion) {
             &(),
             |b, _| {
                 b.iter(|| {
-                    block_bordered.render(area, &mut buf);
-                    black_box(&buf);
+                    frame.buffer.clear();
+                    block_bordered.render(area, &mut frame);
+                    black_box(&frame.buffer);
                 })
             },
         );
@@ -76,12 +80,14 @@ fn bench_paragraph_render(c: &mut Criterion) {
         let text = make_paragraph_text(chars);
         let para = Paragraph::new(text);
         let area = Rect::from_size(80, 24);
-        let mut buf = Buffer::new(80, 24);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
 
         group.bench_with_input(BenchmarkId::new("no_wrap", label), &para, |b, para| {
             b.iter(|| {
-                para.render(area, &mut buf);
-                black_box(&buf);
+                frame.buffer.clear();
+                para.render(area, &mut frame);
+                black_box(&frame.buffer);
             })
         });
     }
@@ -96,12 +102,14 @@ fn bench_paragraph_wrapped(c: &mut Criterion) {
         let text = make_paragraph_text(chars);
         let para = Paragraph::new(text).wrap(ftui_text::WrapMode::Word);
         let area = Rect::from_size(80, 24);
-        let mut buf = Buffer::new(80, 24);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
 
         group.bench_with_input(BenchmarkId::new("word_wrap", label), &para, |b, para| {
             b.iter(|| {
-                para.render(area, &mut buf);
-                black_box(&buf);
+                frame.buffer.clear();
+                para.render(area, &mut frame);
+                black_box(&frame.buffer);
             })
         });
     }
@@ -146,12 +154,14 @@ fn bench_table_render(c: &mut Criterion) {
     ] {
         let (table, _) = make_table(rows, cols);
         let area = Rect::from_size(120, 40);
-        let mut buf = Buffer::new(120, 40);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
 
         group.bench_with_input(BenchmarkId::new("render", label), &table, |b, table| {
             b.iter(|| {
-                table.render(area, &mut buf);
-                black_box(&buf);
+                frame.buffer.clear();
+                table.render(area, &mut frame);
+                black_box(&frame.buffer);
             })
         });
     }

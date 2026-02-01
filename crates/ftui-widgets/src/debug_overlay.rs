@@ -10,9 +10,9 @@
 use crate::{StatefulWidget, Widget};
 use ftui_core::event::{Event, KeyCode, KeyEventKind, MouseEventKind};
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
+use ftui_render::frame::Frame;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -223,7 +223,7 @@ impl DebugOverlay {
 }
 
 impl Widget for DebugOverlay {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -256,7 +256,7 @@ impl Widget for DebugOverlay {
                 self.options.palette.border_colors[idx % self.options.palette.border_colors.len()];
             if self.options.show_boundaries {
                 let border_cell = Cell::from_char('+').with_fg(color);
-                buf.draw_border(rect, BorderChars::ASCII, border_cell);
+                frame.buffer.draw_border(rect, BorderChars::ASCII, border_cell);
             }
 
             if self.options.show_names {
@@ -267,7 +267,7 @@ impl Widget for DebugOverlay {
                         .with_bg(self.options.palette.label_bg);
                     let label_x = rect.x.saturating_add(1);
                     let max_x = rect.right();
-                    let _ = buf.print_text_clipped(label_x, rect.y, &label, label_cell, max_x);
+                    let _ = frame.buffer.print_text_clipped(label_x, rect.y, &label, label_cell, max_x);
                 }
             }
 
@@ -284,7 +284,7 @@ impl Widget for DebugOverlay {
                             self.options.palette.hit_color
                         };
                         let hit_cell = Cell::from_char('.').with_fg(color);
-                        buf.draw_rect_outline(hit_rect, hit_cell);
+                        frame.buffer.draw_rect_outline(hit_rect, hit_cell);
                     }
                 }
             }
@@ -352,7 +352,7 @@ impl<S> DebugOverlayStatefulState<S> {
 impl<W: StatefulWidget> StatefulWidget for DebugOverlayStateful<W> {
     type State = DebugOverlayStatefulState<W::State>;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -365,7 +365,7 @@ impl<W: StatefulWidget> StatefulWidget for DebugOverlayStateful<W> {
         .entered();
 
         if !self.state.enabled() {
-            self.inner.render(area, buf, &mut state.inner);
+            self.inner.render(area, frame, &mut state.inner);
             return;
         }
 
@@ -375,7 +375,7 @@ impl<W: StatefulWidget> StatefulWidget for DebugOverlayStateful<W> {
             None
         };
 
-        self.inner.render(area, buf, &mut state.inner);
+        self.inner.render(area, frame, &mut state.inner);
 
         let render_time = start.map(|t| t.elapsed());
         #[cfg(feature = "tracing")]
@@ -388,9 +388,9 @@ impl<W: StatefulWidget> StatefulWidget for DebugOverlayStateful<W> {
 }
 
 impl<W: Widget> Widget for DebugOverlayStateful<W> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         if !self.state.enabled() {
-            self.inner.render(area, buf);
+            self.inner.render(area, frame);
             return;
         }
 
@@ -400,7 +400,7 @@ impl<W: Widget> Widget for DebugOverlayStateful<W> {
             None
         };
 
-        self.inner.render(area, buf);
+        self.inner.render(area, frame);
 
         let render_time = start.map(|t| t.elapsed());
         #[cfg(feature = "tracing")]
@@ -434,13 +434,15 @@ fn env_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::buffer::Buffer;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     struct StubWidget;
 
     impl StatefulWidget for StubWidget {
         type State = ();
 
-        fn render(&self, _area: Rect, _buf: &mut Buffer, _state: &mut Self::State) {}
+        fn render(&self, _area: Rect, _frame: &mut Frame, _state: &mut Self::State) {}
     }
 
     #[test]
@@ -462,9 +464,10 @@ mod tests {
 
         let widget = DebugOverlayStateful::new(StubWidget, "Stub", state.clone())
             .hit_areas(vec![Rect::new(1, 1, 2, 1)]);
-        let mut buf = Buffer::new(4, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 2, &mut pool);
         let mut widget_state = DebugOverlayStatefulState::new(());
-        widget.render(Rect::new(0, 0, 4, 2), &mut buf, &mut widget_state);
+        widget.render(Rect::new(0, 0, 4, 2), &mut frame, &mut widget_state);
 
         let entries = state.snapshot();
         assert_eq!(entries.len(), 1);
@@ -482,16 +485,17 @@ mod tests {
         options.show_names = false;
         options.show_render_times = false;
         let overlay = DebugOverlay::new(state).options(options);
-        let mut buf = Buffer::new(6, 4);
-        overlay.render(Rect::new(0, 0, 6, 4), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 4, &mut pool);
+        overlay.render(Rect::new(0, 0, 6, 4), &mut frame);
 
-        let cell = buf.get(0, 0).expect("cell exists");
+        let cell = frame.buffer.get(0, 0).expect("cell exists");
         assert_eq!(cell.content.as_char(), Some('+'));
 
-        let cell = buf.get(1, 0).expect("cell exists");
+        let cell = frame.buffer.get(1, 0).expect("cell exists");
         assert_eq!(cell.content.as_char(), Some('-'));
 
-        let cell = buf.get(0, 1).expect("cell exists");
+        let cell = frame.buffer.get(0, 1).expect("cell exists");
         assert_eq!(cell.content.as_char(), Some('|'));
     }
 
@@ -504,10 +508,11 @@ mod tests {
         let mut options = DebugOverlayOptions::default();
         options.show_render_times = false;
         let overlay = DebugOverlay::new(state).options(options);
-        let mut buf = Buffer::new(6, 4);
-        overlay.render(Rect::new(0, 0, 6, 4), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 4, &mut pool);
+        overlay.render(Rect::new(0, 0, 6, 4), &mut frame);
 
-        let cell = buf.get(1, 0).expect("label cell exists");
+        let cell = frame.buffer.get(1, 0).expect("label cell exists");
         assert_eq!(cell.content.as_char(), Some('H'));
     }
 
@@ -529,10 +534,11 @@ mod tests {
         let expected = options.palette.hit_hot_color;
 
         let overlay = DebugOverlay::new(state).options(options);
-        let mut buf = Buffer::new(6, 4);
-        overlay.render(Rect::new(0, 0, 6, 4), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 4, &mut pool);
+        overlay.render(Rect::new(0, 0, 6, 4), &mut frame);
 
-        let cell = buf.get(2, 2).expect("hit cell exists");
+        let cell = frame.buffer.get(2, 2).expect("hit cell exists");
         assert_eq!(cell.content.as_char(), Some('.'));
         assert_eq!(cell.fg, expected);
     }
@@ -544,8 +550,9 @@ mod tests {
         state.record(WidgetDebugInfo::new("Stub", Rect::new(0, 0, 2, 2)));
 
         let overlay = DebugOverlay::new(state.clone());
-        let mut buf = Buffer::new(4, 4);
-        overlay.render(Rect::new(0, 0, 4, 4), &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 4, &mut pool);
+        overlay.render(Rect::new(0, 0, 4, 4), &mut frame);
 
         assert!(state.snapshot().is_empty());
     }
@@ -557,12 +564,13 @@ mod tests {
         state.record(WidgetDebugInfo::new("Stub", Rect::new(0, 0, 3, 3)));
 
         let overlay = DebugOverlay::new(state);
-        let mut buf = Buffer::new(6, 6);
-        buf.set(5, 5, Cell::from_char('#'));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 6, &mut pool);
+        frame.buffer.set(5, 5, Cell::from_char('#'));
 
-        overlay.render(Rect::new(0, 0, 4, 4), &mut buf);
+        overlay.render(Rect::new(0, 0, 4, 4), &mut frame);
 
-        let cell = buf.get(5, 5).expect("sentinel cell exists");
+        let cell = frame.buffer.get(5, 5).expect("sentinel cell exists");
         assert_eq!(cell.content.as_char(), Some('#'));
     }
 

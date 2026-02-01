@@ -294,6 +294,10 @@ impl<W: Write> TerminalWriter<W> {
         if visible_height == 0 {
             return Ok(());
         }
+        let ui_y_start = match self.ui_anchor {
+            UiAnchor::Bottom => self.term_height.saturating_sub(visible_height),
+            UiAnchor::Top => 0,
+        };
 
         // Activate scroll region if strategy calls for it
         {
@@ -322,15 +326,14 @@ impl<W: Write> TerminalWriter<W> {
         // Move to UI anchor and clear UI region
         {
             let _span = debug_span!("clear_ui", rows = visible_height).entered();
-            let ui_y = self.term_height.saturating_sub(visible_height);
-            write!(self.writer(), "\x1b[{};1H", ui_y + 1)?;
+            write!(self.writer(), "\x1b[{};1H", ui_y_start + 1)?;
 
             for i in 0..visible_height {
-                write!(self.writer(), "\x1b[{};1H", ui_y + i + 1)?;
+                write!(self.writer(), "\x1b[{};1H", ui_y_start + i + 1)?;
                 self.writer().write_all(ERASE_LINE)?;
             }
 
-            write!(self.writer(), "\x1b[{};1H", ui_y + 1)?;
+            write!(self.writer(), "\x1b[{};1H", ui_y_start + 1)?;
         }
 
         // Compute diff
@@ -350,7 +353,7 @@ impl<W: Write> TerminalWriter<W> {
         // Emit diff
         {
             let _span = debug_span!("emit").entered();
-            self.emit_diff(buffer, &diff, Some(visible_height))?;
+            self.emit_diff(buffer, &diff, Some(visible_height), ui_y_start)?;
         }
 
         // Restore cursor
@@ -393,7 +396,7 @@ impl<W: Write> TerminalWriter<W> {
 
         {
             let _span = debug_span!("emit").entered();
-            self.emit_diff(buffer, &diff, None)?;
+            self.emit_diff(buffer, &diff, None, 0)?;
         }
 
         // Reset style at end
@@ -415,6 +418,7 @@ impl<W: Write> TerminalWriter<W> {
         buffer: &Buffer,
         diff: &BufferDiff,
         max_height: Option<u16>,
+        ui_y_start: u16,
     ) -> io::Result<()> {
         use ftui_render::cell::{CellAttrs, StyleFlags};
 
@@ -428,7 +432,6 @@ impl<W: Write> TerminalWriter<W> {
         )> = None;
         let mut current_link: Option<u32> = None;
 
-        let ui_y_start = self.ui_start_row();
         // Borrow writer once
         let writer = self.writer.as_mut().expect("writer has been consumed");
 

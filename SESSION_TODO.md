@@ -39,3 +39,4 @@
 - [x] **Wide Char Cleanup**: Refined `buffer.rs` cleanup logic to prevent orphan continuations.
 - [x] **Form Layout**: Fixed label width calculation for Unicode in `forms.rs`.
 - [x] **Sanitization**: Hardened escape sequence parser against log-swallowing attacks in `sanitize.rs`.
+- [x] **Unicode Rendering**: Refactored `Widget` trait to use `Frame` for correct grapheme handling.
