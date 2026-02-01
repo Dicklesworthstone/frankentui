@@ -5,13 +5,15 @@
 pub mod block;
 pub mod borders;
 pub mod cached;
+pub mod constraint_overlay;
 #[cfg(feature = "debug-overlay")]
 pub mod debug_overlay;
-pub mod layout_debugger;
 pub mod error_boundary;
+pub mod layout_debugger;
 pub mod input;
 pub mod list;
 pub mod padding;
+pub mod panel;
 pub mod paragraph;
 pub mod progress;
 pub mod rule;
@@ -20,12 +22,14 @@ pub mod spinner;
 pub mod table;
 
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
+pub use constraint_overlay::{ConstraintOverlay, ConstraintOverlayStyle};
 #[cfg(feature = "debug-overlay")]
 pub use debug_overlay::{
     DebugOverlay, DebugOverlayOptions, DebugOverlayState, DebugOverlayStateful,
     DebugOverlayStatefulState,
 };
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
+pub use panel::{Panel, TitleAlignment};
 
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;

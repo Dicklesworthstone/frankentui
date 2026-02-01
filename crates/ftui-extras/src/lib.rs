@@ -3,6 +3,9 @@
 #[cfg(feature = "canvas")]
 pub mod canvas;
 
+#[cfg(feature = "console")]
+pub mod console;
+
 #[cfg(feature = "charts")]
 pub mod charts;
 
