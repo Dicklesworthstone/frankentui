@@ -57,19 +57,24 @@ use memchr::memchr;
 /// # What Gets Stripped
 /// - ESC (0x1B) and all following CSI/OSC/DCS/APC sequences
 /// - C0 controls except: TAB (0x09), LF (0x0A), CR (0x0D)
+/// - C1 controls (U+0080..U+009F) — these are the 8-bit equivalents of
+///   ESC-prefixed sequences and some terminals honor them
+/// - DEL (0x7F)
 ///
 /// # What Gets Preserved
 /// - TAB, LF, CR (allowed control characters)
 /// - All printable ASCII (0x20-0x7E)
-/// - All valid UTF-8 sequences
+/// - All valid UTF-8 sequences above U+009F
 #[inline]
 pub fn sanitize(input: &str) -> Cow<'_, str> {
     let bytes = input.as_bytes();
 
-    // Fast path: check for any ESC byte, forbidden C0 controls, or DEL
+    // Fast path: check for any ESC byte, forbidden C0 controls, DEL, or C1 controls.
+    // C1 controls (U+0080..U+009F) are encoded in UTF-8 as \xC2\x80..\xC2\x9F.
     if memchr(0x1B, bytes).is_none()
         && memchr(0x7F, bytes).is_none()
         && !has_forbidden_c0(bytes)
+        && !has_c1_controls(bytes)
     {
         return Cow::Borrowed(input);
     }
@@ -94,6 +99,18 @@ const fn is_forbidden_c0(b: u8) -> bool {
         b,
         0x00..=0x08 | 0x0B..=0x0C | 0x0E..=0x1A | 0x1C..=0x1F
     )
+}
+
+/// Check if any C1 control characters (U+0080..U+009F) are present.
+///
+/// In UTF-8, these are encoded as the two-byte sequence \xC2\x80..\xC2\x9F.
+/// C1 controls include CSI (U+009B), OSC (U+009D), DCS (U+0090), APC (U+009F),
+/// etc. — some terminals honor these as equivalent to their ESC-prefixed forms.
+#[inline]
+fn has_c1_controls(bytes: &[u8]) -> bool {
+    bytes
+        .windows(2)
+        .any(|w| w[0] == 0xC2 && (0x80..=0x9F).contains(&w[1]))
 }
 
 /// Slow path: strip escape sequences and forbidden controls.
@@ -130,7 +147,11 @@ fn sanitize_slow(input: &str) -> String {
             // Start of UTF-8 sequence (high bit set)
             0x80..=0xFF => {
                 if let Some((c, len)) = decode_utf8_char(&bytes[i..]) {
-                    output.push(c);
+                    // Skip C1 controls (U+0080..U+009F) — these are the 8-bit
+                    // equivalents of ESC-prefixed sequences (CSI, OSC, DCS, etc.)
+                    if !('\u{0080}'..='\u{009F}').contains(&c) {
+                        output.push(c);
+                    }
                     i += len;
                 } else {
                     // Invalid UTF-8, skip byte
@@ -457,6 +478,27 @@ mod tests {
         assert_eq!(result.as_ref(), "BeforeAfter");
     }
 
+    #[test]
+    fn slow_path_strips_osc52_clipboard() {
+        let input = "Before\x1b]52;c;SGVsbG8=\x07After";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "BeforeAfter");
+    }
+
+    #[test]
+    fn slow_path_strips_osc52_clipboard_st() {
+        let input = "Before\x1b]52;c;SGVsbG8=\x1b\\After";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "BeforeAfter");
+    }
+
+    #[test]
+    fn slow_path_strips_private_modes() {
+        let input = "A\x1b[?1049hB\x1b[?1000hC\x1b[?2004hD";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "ABCD");
+    }
+
     // ============== Slow Path: C0 Controls ==============
 
     #[test]
@@ -516,6 +558,30 @@ mod tests {
     #[test]
     fn handles_truncated_csi() {
         let input = "Hello\x1b[";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        assert_eq!(result.as_ref(), "Hello");
+    }
+
+    #[test]
+    fn handles_truncated_dcs() {
+        let input = "Hello\x1bP1;2;3";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        assert_eq!(result.as_ref(), "Hello");
+    }
+
+    #[test]
+    fn handles_truncated_apc() {
+        let input = "Hello\x1b_test";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        assert_eq!(result.as_ref(), "Hello");
+    }
+
+    #[test]
+    fn handles_truncated_pm() {
+        let input = "Hello\x1b^secret";
         let result = sanitize(input);
         assert!(!result.contains('\x1b'));
         assert_eq!(result.as_ref(), "Hello");
@@ -727,5 +793,722 @@ mod tests {
         let bytes = &[0xC2, 0x00]; // Invalid continuation byte
         let result = decode_utf8_char(bytes);
         assert_eq!(result, None);
+    }
+
+    // ================================================================
+    // Adversarial Security Tests (bd-397)
+    //
+    // Tests below exercise the specific threat model from ADR-006:
+    //   1. Log injection / cursor corruption
+    //   2. Title injection (OSC 0)
+    //   3. Clipboard hijacking (OSC 52)
+    //   4. Terminal mode hijacking
+    //   5. Data exfiltration via terminal queries
+    //   6. Social engineering via fake prompts
+    //   7. C1 control code injection
+    //   8. Sequence terminator confusion
+    //   9. DoS via large / deeply nested payloads
+    //  10. Combined / chained attacks
+    // ================================================================
+
+    // ---- 1. Log injection / cursor corruption ----
+
+    #[test]
+    fn adversarial_clear_screen() {
+        let input = "\x1b[2J";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_home_cursor() {
+        let input = "visible\x1b[Hhidden";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "visiblehidden");
+    }
+
+    #[test]
+    fn adversarial_cursor_absolute_position() {
+        let input = "ok\x1b[999;999Hmalicious";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "okmalicious");
+    }
+
+    #[test]
+    fn adversarial_scroll_up() {
+        let input = "text\x1b[5Smore";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "textmore");
+    }
+
+    #[test]
+    fn adversarial_scroll_down() {
+        let input = "text\x1b[5Tmore";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "textmore");
+    }
+
+    #[test]
+    fn adversarial_erase_line() {
+        let input = "secret\x1b[2Koverwrite";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "secretoverwrite");
+    }
+
+    #[test]
+    fn adversarial_insert_delete_lines() {
+        let input = "text\x1b[10Linserted\x1b[5Mdeleted";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "textinserteddeleted");
+    }
+
+    // ---- 2. Title injection (OSC 0, 1, 2) ----
+
+    #[test]
+    fn adversarial_osc0_title_injection() {
+        let input = "\x1b]0;PWNED - Enter Password\x07";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+        assert!(!result.contains('\x1b'));
+        assert!(!result.contains('\x07'));
+    }
+
+    #[test]
+    fn adversarial_osc1_icon_title() {
+        let input = "\x1b]1;evil-icon\x07";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_osc2_window_title() {
+        let input = "\x1b]2;sudo password required\x1b\\";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    // ---- 3. Clipboard hijacking (OSC 52) ----
+
+    #[test]
+    fn adversarial_osc52_clipboard_set_bel() {
+        // Set clipboard to "rm -rf /" encoded in base64
+        let input = "safe\x1b]52;c;cm0gLXJmIC8=\x07text";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "safetext");
+    }
+
+    #[test]
+    fn adversarial_osc52_clipboard_set_st() {
+        let input = "safe\x1b]52;c;cm0gLXJmIC8=\x1b\\text";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "safetext");
+    }
+
+    #[test]
+    fn adversarial_osc52_clipboard_query() {
+        // Query clipboard (could exfiltrate data)
+        let input = "\x1b]52;c;?\x07";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    // ---- 4. Terminal mode hijacking ----
+
+    #[test]
+    fn adversarial_alt_screen_enable() {
+        let input = "\x1b[?1049h";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_alt_screen_disable() {
+        let input = "\x1b[?1049l";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_mouse_enable() {
+        let input = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_bracketed_paste_enable() {
+        let input = "\x1b[?2004h";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_focus_events_enable() {
+        let input = "\x1b[?1004h";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_raw_mode_sequence() {
+        // Attempt to set raw mode
+        let input = "\x1b[?7727h";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_cursor_hide_show() {
+        let input = "\x1b[?25l\x1b[?25h";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    // ---- 5. Data exfiltration via terminal queries ----
+
+    #[test]
+    fn adversarial_device_attributes_query_da1() {
+        let input = "\x1b[c";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_device_attributes_query_da2() {
+        let input = "\x1b[>c";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_device_status_report() {
+        let input = "\x1b[6n";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_osc_color_query() {
+        // Query background color (OSC 11)
+        let input = "\x1b]11;?\x07";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_decrpm_query() {
+        let input = "\x1b[?2026$p";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    // ---- 6. Social engineering via fake prompts ----
+
+    #[test]
+    fn adversarial_fake_shell_prompt() {
+        // Try to move cursor to create a fake prompt
+        let input = "\x1b[999;1H\x1b[2K$ sudo rm -rf /\x1b[A";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        // Only text content should survive
+        assert_eq!(result.as_ref(), "$ sudo rm -rf /");
+    }
+
+    #[test]
+    fn adversarial_fake_password_prompt() {
+        // Combine title set + cursor move + fake prompt
+        let input = "\x1b]0;Terminal\x07\x1b[2J\x1b[HPassword: ";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "Password: ");
+    }
+
+    #[test]
+    fn adversarial_overwrite_existing_content() {
+        // Try to use backspaces + CR to overwrite existing output
+        let input = "safe output\r\x1b[2Kmalicious replacement";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "safe output\rmalicious replacement");
+    }
+
+    // ---- 7. C1 control codes (single-byte, 0x80-0x9F) ----
+    //
+    // In ISO-8859-1, 0x80-0x9F are C1 control characters.
+    // In UTF-8, these byte values are continuation bytes and should
+    // be handled by the UTF-8 decoder (invalid as leading bytes).
+    // The sanitizer should not let them through as control codes.
+
+    #[test]
+    fn adversarial_c1_single_byte_csi() {
+        // U+009B is the C1 equivalent of ESC [ (CSI)
+        // Some terminals treat this as a CSI introducer, so it MUST be stripped.
+        let input = "text\u{009B}31mmalicious";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        assert!(
+            !result.contains('\u{009B}'),
+            "C1 CSI (U+009B) must be stripped"
+        );
+    }
+
+    #[test]
+    fn adversarial_c1_osc_byte() {
+        // U+009D is the C1 equivalent of ESC ] (OSC)
+        let input = "text\u{009D}0;Evil Title\x07malicious";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        assert!(
+            !result.contains('\u{009D}'),
+            "C1 OSC (U+009D) must be stripped"
+        );
+    }
+
+    #[test]
+    fn adversarial_c1_dcs_byte() {
+        // U+0090 (DCS)
+        let input = "A\u{0090}device control\x1b\\B";
+        let result = sanitize(input);
+        assert!(!result.contains('\u{0090}'));
+    }
+
+    #[test]
+    fn adversarial_c1_apc_byte() {
+        // U+009F (APC)
+        let input = "A\u{009F}app command\x1b\\B";
+        let result = sanitize(input);
+        assert!(!result.contains('\u{009F}'));
+    }
+
+    #[test]
+    fn adversarial_c1_pm_byte() {
+        // U+009E (PM)
+        let input = "A\u{009E}private msg\x1b\\B";
+        let result = sanitize(input);
+        assert!(!result.contains('\u{009E}'));
+    }
+
+    #[test]
+    fn adversarial_c1_st_byte() {
+        // U+009C (ST = String Terminator)
+        let input = "A\u{009C}B";
+        let result = sanitize(input);
+        assert!(!result.contains('\u{009C}'));
+    }
+
+    #[test]
+    fn adversarial_all_c1_controls_stripped() {
+        // Every C1 control (U+0080..U+009F) must be stripped
+        for cp in 0x0080..=0x009F_u32 {
+            let c = char::from_u32(cp).unwrap();
+            let input = format!("A{c}B");
+            let result = sanitize(&input);
+            assert!(
+                !result
+                    .chars()
+                    .any(|ch| ('\u{0080}'..='\u{009F}').contains(&ch)),
+                "C1 control U+{cp:04X} passed through sanitizer"
+            );
+            // The surrounding text must survive
+            assert!(result.contains('A'), "Text before C1 U+{cp:04X} lost");
+            assert!(result.contains('B'), "Text after C1 U+{cp:04X} lost");
+        }
+    }
+
+    #[test]
+    fn adversarial_c1_fast_path_triggers_slow_path() {
+        // C1 controls must trigger the slow path even without ESC/DEL/C0
+        let input = "clean\u{0085}text"; // U+0085 = NEL (Next Line)
+        let result = sanitize(input);
+        assert!(
+            matches!(result, Cow::Owned(_)),
+            "C1 should trigger slow path"
+        );
+        assert!(!result.contains('\u{0085}'));
+        assert_eq!(result.as_ref(), "cleantext");
+    }
+
+    // ---- 8. Sequence terminator confusion ----
+
+    #[test]
+    fn adversarial_nested_osc_in_osc() {
+        // OSC within OSC - inner should not terminate outer
+        let input = "safe\x1b]8;;\x1b]0;evil\x07https://ok.com\x07text";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        assert!(!result.contains('\x07'));
+    }
+
+    #[test]
+    fn adversarial_st_inside_dcs() {
+        // Ensure ST properly terminates DCS
+        let input = "A\x1bPsome\x1bdata\x1b\\B";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "AB");
+    }
+
+    #[test]
+    fn adversarial_bel_vs_st_terminator() {
+        // OSC terminated by BEL, then more text, then ST
+        let input = "A\x1b]0;title\x07B\x1b\\C";
+        let result = sanitize(input);
+        // BEL terminates the OSC; "B" is text; ESC \ is a single-char escape
+        assert!(!result.contains('\x1b'));
+        assert!(!result.contains('\x07'));
+    }
+
+    #[test]
+    fn adversarial_csi_without_final_byte() {
+        // CSI with only parameter bytes, never reaching a final byte
+        let input = "A\x1b[0;0;0;0;0;0;0;0;0;0B";
+        let result = sanitize(input);
+        // The 'B' (0x42) IS a valid CSI final byte, so entire CSI is consumed
+        assert_eq!(result.as_ref(), "A");
+    }
+
+    #[test]
+    fn adversarial_csi_many_params_then_final() {
+        // CSI with many parameters followed by a valid final byte
+        let input = "X\x1b[1;2;3;4;5;6;7;8;9;10mY";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "XY");
+    }
+
+    // ---- 9. DoS-style payloads ----
+
+    #[test]
+    fn adversarial_very_long_csi_params() {
+        // Very long CSI parameter string
+        let params: String = std::iter::repeat_n("0;", 10_000).collect();
+        let input = format!("start\x1b[{params}mend");
+        let result = sanitize(&input);
+        assert_eq!(result.as_ref(), "startend");
+    }
+
+    #[test]
+    fn adversarial_many_short_sequences() {
+        // Many small CSI sequences back to back
+        let input: String = (0..10_000).map(|_| "\x1b[0m").collect();
+        let input = format!("start{input}end");
+        let result = sanitize(&input);
+        assert_eq!(result.as_ref(), "startend");
+    }
+
+    #[test]
+    fn adversarial_very_long_osc_content() {
+        // Very long OSC payload (could be used to cause memory issues)
+        let payload: String = std::iter::repeat_n('A', 100_000).collect();
+        let input = format!("text\x1b]0;{payload}\x07more");
+        let result = sanitize(&input);
+        assert_eq!(result.as_ref(), "textmore");
+    }
+
+    #[test]
+    fn adversarial_very_long_dcs_content() {
+        let payload: String = std::iter::repeat_n('X', 100_000).collect();
+        let input = format!("text\x1bP{payload}\x1b\\more");
+        let result = sanitize(&input);
+        assert_eq!(result.as_ref(), "textmore");
+    }
+
+    #[test]
+    fn adversarial_only_escape_bytes() {
+        // Input composed entirely of ESC bytes
+        let input: String = std::iter::repeat_n('\x1b', 1000).collect();
+        let result = sanitize(&input);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn adversarial_alternating_esc_and_text() {
+        // ESC-char-ESC-char pattern
+        let input: String = (0..1000)
+            .map(|i| if i % 2 == 0 { "\x1b[m" } else { "a" })
+            .collect();
+        let result = sanitize(&input);
+        // Only the "a" chars survive
+        let expected: String = std::iter::repeat_n('a', 500).collect();
+        assert_eq!(result.as_ref(), expected);
+    }
+
+    #[test]
+    fn adversarial_all_forbidden_c0_in_sequence() {
+        // Every forbidden C0 byte
+        let mut input = String::from("start");
+        for b in 0x00u8..=0x1F {
+            if b != 0x09 && b != 0x0A && b != 0x0D && b != 0x1B {
+                input.push(b as char);
+            }
+        }
+        input.push_str("end");
+        let result = sanitize(&input);
+        assert_eq!(result.as_ref(), "startend");
+    }
+
+    // ---- 10. Combined / chained attacks ----
+
+    #[test]
+    fn adversarial_combined_title_clear_clipboard() {
+        // Chain: set title + clear screen + set clipboard + fake prompt
+        let input = concat!(
+            "\x1b]0;Terminal\x07",    // set title
+            "\x1b[2J",                // clear screen
+            "\x1b[H",                 // home cursor
+            "\x1b]52;c;cm0gLXJm\x07", // set clipboard
+            "Password: ",             // fake prompt
+        );
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "Password: ");
+        assert!(!result.contains('\x1b'));
+        assert!(!result.contains('\x07'));
+    }
+
+    #[test]
+    fn adversarial_sgr_color_soup() {
+        // Many SGR sequences interspersed with text to try to leak colors
+        let input = "\x1b[31m\x1b[1m\x1b[4m\x1b[7m\x1b[38;2;255;0;0mred\x1b[0m";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "red");
+    }
+
+    #[test]
+    fn adversarial_hyperlink_wrapping_attack() {
+        // Try to create a clickable region that covers existing content
+        let input = concat!(
+            "\x1b]8;;https://evil.com\x07",
+            "Click here for info",
+            "\x1b]8;;\x07",
+        );
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "Click here for info");
+    }
+
+    #[test]
+    fn adversarial_kitty_graphics_protocol() {
+        // Kitty graphics protocol uses APC
+        let input = "img\x1b_Gf=100,s=1,v=1;AAAA\x1b\\text";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "imgtext");
+    }
+
+    #[test]
+    fn adversarial_sixel_data() {
+        // Sixel graphics data via DCS
+        let input = "pre\x1bPq#0;2;0;0;0#1;2;100;100;100~-\x1b\\post";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "prepost");
+    }
+
+    #[test]
+    fn adversarial_mixed_valid_utf8_and_escapes() {
+        // Unicode text interspersed with escape sequences
+        let input = "\u{1f512}\x1b[31m\u{26a0}\x1b[0m secure\x1b]0;evil\x07\u{2705}";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "\u{1f512}\u{26a0} secure\u{2705}");
+    }
+
+    #[test]
+    fn adversarial_control_char_near_escape() {
+        // Control chars adjacent to escape sequences
+        let input = "\x01\x1b[31m\x02text\x03\x1b[0m\x04";
+        let result = sanitize(input);
+        assert!(!result.contains('\x1b'));
+        assert_eq!(result.as_ref(), "text");
+    }
+
+    #[test]
+    fn adversarial_save_restore_cursor_attack() {
+        // Save cursor, write fake content, restore cursor to hide it
+        let input = "\x1b7fake prompt\x1b8real content";
+        let result = sanitize(input);
+        assert_eq!(result.as_ref(), "fake promptreal content");
+    }
+
+    #[test]
+    fn adversarial_dec_set_reset_barrage() {
+        // Barrage of DEC private mode set/reset sequences
+        let input = (1..100)
+            .map(|i| format!("\x1b[?{i}h\x1b[?{i}l"))
+            .collect::<String>();
+        let input = format!("A{input}B");
+        let result = sanitize(&input);
+        assert_eq!(result.as_ref(), "AB");
+    }
+
+    // ---- Property-based tests via proptest ----
+
+    mod proptest_adversarial {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn sanitize_never_panics(input in ".*") {
+                let _ = sanitize(&input);
+            }
+
+            #[test]
+            fn sanitize_output_never_contains_esc(input in ".*") {
+                let result = sanitize(&input);
+                prop_assert!(
+                    !result.contains('\x1b'),
+                    "Output contained ESC for input {:?}", input
+                );
+            }
+
+            #[test]
+            fn sanitize_output_never_contains_del(input in ".*") {
+                let result = sanitize(&input);
+                prop_assert!(
+                    !result.contains('\x7f'),
+                    "Output contained DEL for input {:?}", input
+                );
+            }
+
+            #[test]
+            fn sanitize_output_no_forbidden_c0(input in ".*") {
+                let result = sanitize(&input);
+                for &b in result.as_bytes() {
+                    prop_assert!(
+                        !is_forbidden_c0(b),
+                        "Output contains forbidden C0 0x{:02X}", b
+                    );
+                }
+            }
+
+            #[test]
+            fn sanitize_preserves_clean_input(input in "[a-zA-Z0-9 .,!?\\n\\t]+") {
+                let result = sanitize(&input);
+                prop_assert_eq!(result.as_ref(), input.as_str());
+            }
+
+            #[test]
+            fn sanitize_idempotent(input in ".*") {
+                let first = sanitize(&input);
+                let second = sanitize(first.as_ref());
+                prop_assert_eq!(
+                    first.as_ref(),
+                    second.as_ref(),
+                    "Sanitize is not idempotent"
+                );
+            }
+
+            #[test]
+            fn sanitize_output_len_lte_input(input in ".*") {
+                let result = sanitize(&input);
+                prop_assert!(
+                    result.len() <= input.len(),
+                    "Output ({}) longer than input ({})", result.len(), input.len()
+                );
+            }
+
+            #[test]
+            fn sanitize_output_is_valid_utf8(input in ".*") {
+                let result = sanitize(&input);
+                // The return type is Cow<str> so it's guaranteed valid UTF-8,
+                // but verify the invariant explicitly.
+                prop_assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+            }
+
+            #[test]
+            fn sanitize_output_no_c1_controls(input in ".*") {
+                let result = sanitize(&input);
+                for c in result.as_ref().chars() {
+                    prop_assert!(
+                        !('\u{0080}'..='\u{009F}').contains(&c),
+                        "Output contains C1 control U+{:04X}", c as u32
+                    );
+                }
+            }
+        }
+
+        // Targeted generators for adversarial byte patterns
+
+        fn escape_sequence() -> impl Strategy<Value = String> {
+            prop_oneof![
+                // CSI sequences with random params and final bytes
+                (
+                    proptest::collection::vec(0x30u8..=0x3F, 0..20),
+                    0x40u8..=0x7E,
+                )
+                    .prop_map(|(params, final_byte)| {
+                        let mut s = String::from("\x1b[");
+                        for b in params {
+                            s.push(b as char);
+                        }
+                        s.push(final_byte as char);
+                        s
+                    }),
+                // OSC with BEL terminator
+                proptest::string::string_regex("[^\x07\x1b]{0,50}")
+                    .unwrap()
+                    .prop_map(|content| format!("\x1b]{content}\x07")),
+                // OSC with ST terminator
+                proptest::string::string_regex("[^\x1b]{0,50}")
+                    .unwrap()
+                    .prop_map(|content| format!("\x1b]{content}\x1b\\")),
+                // DCS
+                proptest::string::string_regex("[^\x1b]{0,50}")
+                    .unwrap()
+                    .prop_map(|content| format!("\x1bP{content}\x1b\\")),
+                // APC
+                proptest::string::string_regex("[^\x1b]{0,50}")
+                    .unwrap()
+                    .prop_map(|content| format!("\x1b_{content}\x1b\\")),
+                // PM
+                proptest::string::string_regex("[^\x1b]{0,50}")
+                    .unwrap()
+                    .prop_map(|content| format!("\x1b^{content}\x1b\\")),
+                // Single-char escapes
+                (0x20u8..=0x7E).prop_map(|b| format!("\x1b{}", b as char)),
+            ]
+        }
+
+        fn mixed_adversarial_input() -> impl Strategy<Value = String> {
+            proptest::collection::vec(
+                prop_oneof![
+                    // Clean text
+                    proptest::string::string_regex("[a-zA-Z0-9 ]{1,10}").unwrap(),
+                    // Escape sequences
+                    escape_sequence(),
+                    // Forbidden C0 controls
+                    (0x00u8..=0x1F)
+                        .prop_filter("not allowed control", |b| {
+                            *b != 0x09 && *b != 0x0A && *b != 0x0D
+                        })
+                        .prop_map(|b| String::from(b as char)),
+                ],
+                1..20,
+            )
+            .prop_map(|parts| parts.join(""))
+        }
+
+        proptest! {
+            #[test]
+            fn adversarial_mixed_input_safe(input in mixed_adversarial_input()) {
+                let result = sanitize(&input);
+                prop_assert!(!result.contains('\x1b'));
+                prop_assert!(!result.contains('\x7f'));
+                for &b in result.as_bytes() {
+                    prop_assert!(!is_forbidden_c0(b));
+                }
+            }
+
+            #[test]
+            fn escape_sequences_fully_stripped(seq in escape_sequence()) {
+                let input = format!("before{seq}after");
+                let result = sanitize(&input);
+                prop_assert!(
+                    !result.contains('\x1b'),
+                    "Output contains ESC for sequence {:?}", seq
+                );
+                prop_assert!(
+                    result.starts_with("before"),
+                    "Output doesn't start with 'before' for {:?}: got {:?}", seq, result
+                );
+                // Note: unterminated DCS/APC/PM/OSC sequences consume to
+                // end of input, so "after" may be absorbed. This is correct
+                // security behavior — consuming unterminated sequences is
+                // safer than letting potential payload through.
+            }
+        }
     }
 }

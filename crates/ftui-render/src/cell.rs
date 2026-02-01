@@ -351,15 +351,23 @@ impl Cell {
 
     /// Bitwise equality comparison (fast path for diffing).
     ///
-    /// This compares the raw bytes of two cells, which is faster than
-    /// field-by-field comparison for bulk operations.
+    /// Uses bitwise AND (`&`) instead of short-circuit AND (`&&`) so all
+    /// four u32 comparisons are always evaluated. This avoids branch
+    /// mispredictions in tight loops and allows LLVM to lower the check
+    /// to a single 128-bit SIMD compare on supported targets.
     #[inline]
     pub fn bits_eq(&self, other: &Self) -> bool {
-        // Safe because Cell is repr(C) with no padding
-        self.content.raw() == other.content.raw()
-            && self.fg == other.fg
-            && self.bg == other.bg
-            && self.attrs == other.attrs
+        (self.content.raw() == other.content.raw())
+            & (self.fg == other.fg)
+            & (self.bg == other.bg)
+            & (self.attrs == other.attrs)
+    }
+
+    /// Set the cell content to a character, preserving other fields.
+    #[inline]
+    pub const fn with_char(mut self, c: char) -> Self {
+        self.content = CellContent::from_char(c);
+        self
     }
 
     /// Set the foreground color.
@@ -383,7 +391,6 @@ impl Cell {
         self
     }
 }
-
 impl Default for Cell {
     fn default() -> Self {
         Self {
@@ -423,6 +430,9 @@ impl PackedRgba {
     pub const TRANSPARENT: Self = Self(0);
     pub const BLACK: Self = Self::rgb(0, 0, 0);
     pub const WHITE: Self = Self::rgb(255, 255, 255);
+    pub const RED: Self = Self::rgb(255, 0, 0);
+    pub const GREEN: Self = Self::rgb(0, 255, 0);
+    pub const BLUE: Self = Self::rgb(0, 0, 255);
 
     #[inline]
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
@@ -946,5 +956,228 @@ mod tests {
 
         let ascii = Cell::from_char('A');
         assert_eq!(ascii.width_hint(), 1);
+    }
+
+    // Property tests moved to top-level `cell_proptests` module for edition 2024 compat.
+}
+
+/// Property tests for Cell types (bd-10i.13.2).
+///
+/// Top-level `#[cfg(test)]` scope: the `proptest!` macro has edition-2024
+/// compatibility issues when nested inside another test module.
+#[cfg(test)]
+mod cell_proptests {
+    use super::{Cell, CellAttrs, CellContent, GraphemeId, PackedRgba, StyleFlags};
+    use proptest::prelude::*;
+
+    fn arb_packed_rgba() -> impl Strategy<Value = PackedRgba> {
+        (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
+            .prop_map(|(r, g, b, a)| PackedRgba::rgba(r, g, b, a))
+    }
+
+    fn arb_grapheme_id() -> impl Strategy<Value = GraphemeId> {
+        (0u32..=GraphemeId::MAX_SLOT, 0u8..=GraphemeId::MAX_WIDTH)
+            .prop_map(|(slot, width)| GraphemeId::new(slot, width))
+    }
+
+    fn arb_style_flags() -> impl Strategy<Value = StyleFlags> {
+        any::<u8>().prop_map(StyleFlags::from_bits_truncate)
+    }
+
+    proptest! {
+        #[test]
+        fn packed_rgba_roundtrips_all_components(tuple in (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())) {
+            let (r, g, b, a) = tuple;
+            let c = PackedRgba::rgba(r, g, b, a);
+            prop_assert_eq!(c.r(), r);
+            prop_assert_eq!(c.g(), g);
+            prop_assert_eq!(c.b(), b);
+            prop_assert_eq!(c.a(), a);
+        }
+
+        #[test]
+        fn packed_rgba_rgb_always_opaque(tuple in (any::<u8>(), any::<u8>(), any::<u8>())) {
+            let (r, g, b) = tuple;
+            let c = PackedRgba::rgb(r, g, b);
+            prop_assert_eq!(c.a(), 255);
+            prop_assert_eq!(c.r(), r);
+            prop_assert_eq!(c.g(), g);
+            prop_assert_eq!(c.b(), b);
+        }
+
+        #[test]
+        fn packed_rgba_over_identity_transparent(dst in arb_packed_rgba()) {
+            // Transparent source leaves destination unchanged
+            let result = PackedRgba::TRANSPARENT.over(dst);
+            prop_assert_eq!(result, dst);
+        }
+
+        #[test]
+        fn packed_rgba_over_identity_opaque(tuple in (any::<u8>(), any::<u8>(), any::<u8>(), arb_packed_rgba())) {
+            // Fully opaque source replaces destination
+            let (r, g, b, dst) = tuple;
+            let src = PackedRgba::rgba(r, g, b, 255);
+            let result = src.over(dst);
+            prop_assert_eq!(result, src);
+        }
+
+        #[test]
+        fn grapheme_id_slot_width_roundtrip(tuple in (0u32..=GraphemeId::MAX_SLOT, 0u8..=GraphemeId::MAX_WIDTH)) {
+            let (slot, width) = tuple;
+            let id = GraphemeId::new(slot, width);
+            prop_assert_eq!(id.slot(), slot as usize);
+            prop_assert_eq!(id.width(), width as usize);
+        }
+
+        #[test]
+        fn grapheme_id_raw_roundtrip(id in arb_grapheme_id()) {
+            let raw = id.raw();
+            let restored = GraphemeId::from_raw(raw);
+            prop_assert_eq!(restored.slot(), id.slot());
+            prop_assert_eq!(restored.width(), id.width());
+        }
+
+        #[test]
+        fn cell_content_char_roundtrip(c in (0x20u32..0xD800u32).prop_union(0xE000u32..0x110000u32)) {
+            if let Some(ch) = char::from_u32(c) {
+                let content = CellContent::from_char(ch);
+                prop_assert_eq!(content.as_char(), Some(ch));
+                prop_assert!(!content.is_grapheme());
+                prop_assert!(!content.is_empty());
+                prop_assert!(!content.is_continuation());
+            }
+        }
+
+        #[test]
+        fn cell_content_grapheme_roundtrip(id in arb_grapheme_id()) {
+            let content = CellContent::from_grapheme(id);
+            prop_assert!(content.is_grapheme());
+            prop_assert_eq!(content.grapheme_id(), Some(id));
+            prop_assert_eq!(content.width_hint(), id.width());
+        }
+
+        #[test]
+        fn cell_bits_eq_is_reflexive(
+            tuple in (
+                (0x20u32..0x80u32).prop_map(|c| char::from_u32(c).unwrap()),
+                any::<u8>(), any::<u8>(), any::<u8>(),
+                arb_style_flags(),
+            ),
+        ) {
+            let (c, r, g, b, flags) = tuple;
+            let cell = Cell::from_char(c)
+                .with_fg(PackedRgba::rgb(r, g, b))
+                .with_attrs(CellAttrs::new(flags, 0));
+            prop_assert!(cell.bits_eq(&cell));
+        }
+
+        #[test]
+        fn cell_bits_eq_detects_fg_difference(
+            tuple in (
+                (0x41u32..0x5Bu32).prop_map(|c| char::from_u32(c).unwrap()),
+                any::<u8>(), any::<u8>(),
+            ),
+        ) {
+            let (c, r1, r2) = tuple;
+            prop_assume!(r1 != r2);
+            let cell1 = Cell::from_char(c).with_fg(PackedRgba::rgb(r1, 0, 0));
+            let cell2 = Cell::from_char(c).with_fg(PackedRgba::rgb(r2, 0, 0));
+            prop_assert!(!cell1.bits_eq(&cell2));
+        }
+
+        #[test]
+        fn cell_attrs_flags_roundtrip(tuple in (arb_style_flags(), 0u32..CellAttrs::LINK_ID_MAX)) {
+            let (flags, link) = tuple;
+            let attrs = CellAttrs::new(flags, link);
+            prop_assert_eq!(attrs.flags(), flags);
+            prop_assert_eq!(attrs.link_id(), link);
+        }
+
+        #[test]
+        fn cell_attrs_with_flags_preserves_link(tuple in (arb_style_flags(), 0u32..CellAttrs::LINK_ID_MAX, arb_style_flags())) {
+            let (flags, link, new_flags) = tuple;
+            let attrs = CellAttrs::new(flags, link);
+            let updated = attrs.with_flags(new_flags);
+            prop_assert_eq!(updated.flags(), new_flags);
+            prop_assert_eq!(updated.link_id(), link);
+        }
+
+        #[test]
+        fn cell_attrs_with_link_preserves_flags(tuple in (arb_style_flags(), 0u32..CellAttrs::LINK_ID_MAX, 0u32..CellAttrs::LINK_ID_MAX)) {
+            let (flags, link1, link2) = tuple;
+            let attrs = CellAttrs::new(flags, link1);
+            let updated = attrs.with_link(link2);
+            prop_assert_eq!(updated.flags(), flags);
+            prop_assert_eq!(updated.link_id(), link2);
+        }
+
+        // --- Executable Invariant Tests (bd-10i.13.2) ---
+
+        #[test]
+        fn cell_bits_eq_is_symmetric(
+            tuple in (
+                (0x41u32..0x5Bu32).prop_map(|c| char::from_u32(c).unwrap()),
+                (0x41u32..0x5Bu32).prop_map(|c| char::from_u32(c).unwrap()),
+                arb_packed_rgba(),
+                arb_packed_rgba(),
+            ),
+        ) {
+            let (c1, c2, fg1, fg2) = tuple;
+            let cell_a = Cell::from_char(c1).with_fg(fg1);
+            let cell_b = Cell::from_char(c2).with_fg(fg2);
+            prop_assert_eq!(cell_a.bits_eq(&cell_b), cell_b.bits_eq(&cell_a),
+                "bits_eq is not symmetric");
+        }
+
+        #[test]
+        fn cell_content_bit31_discriminates(id in arb_grapheme_id()) {
+            // Char content: bit 31 is 0
+            let char_content = CellContent::from_char('A');
+            prop_assert!(!char_content.is_grapheme());
+            prop_assert!(char_content.as_char().is_some());
+            prop_assert!(char_content.grapheme_id().is_none());
+
+            // Grapheme content: bit 31 is 1
+            let grapheme_content = CellContent::from_grapheme(id);
+            prop_assert!(grapheme_content.is_grapheme());
+            prop_assert!(grapheme_content.grapheme_id().is_some());
+            prop_assert!(grapheme_content.as_char().is_none());
+        }
+
+        #[test]
+        fn cell_from_char_width_matches_unicode(
+            c in (0x20u32..0x7Fu32).prop_map(|c| char::from_u32(c).unwrap()),
+        ) {
+            let cell = Cell::from_char(c);
+            let expected = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            prop_assert_eq!(cell.width_hint(), expected,
+                "Cell width for '{}' doesn't match Unicode width", c);
+        }
+    }
+
+    // Zero-parameter invariant tests (cannot be inside proptest! macro)
+
+    #[test]
+    fn cell_content_continuation_has_zero_width() {
+        let cont = CellContent::CONTINUATION;
+        assert_eq!(cont.width(), 0, "CONTINUATION cell should have width 0");
+        assert!(cont.is_continuation());
+        assert!(!cont.is_grapheme());
+    }
+
+    #[test]
+    fn cell_content_empty_has_zero_width() {
+        let empty = CellContent::EMPTY;
+        assert_eq!(empty.width(), 0, "EMPTY cell should have width 0");
+        assert!(empty.is_empty());
+        assert!(!empty.is_grapheme());
+        assert!(!empty.is_continuation());
+    }
+
+    #[test]
+    fn cell_default_is_empty() {
+        let cell = Cell::default();
+        assert!(cell.is_empty());
+        assert_eq!(cell.width_hint(), 0);
     }
 }
