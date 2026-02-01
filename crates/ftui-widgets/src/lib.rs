@@ -56,7 +56,7 @@
 //! }
 //! ```
 //!
-//! Examples: [`List`], [`Table`], [`Scrollbar`]
+//! Examples: [`list::List`], [`table::Table`], [`scrollbar::Scrollbar`]
 //!
 //! ## Category C: Input Widgets with Cursor Control
 //!

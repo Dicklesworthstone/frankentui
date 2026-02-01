@@ -558,6 +558,9 @@ impl Widget for TextInput {
             };
             for g in self.placeholder.graphemes(true) {
                 let w = UnicodeWidthStr::width(g);
+                if w == 0 {
+                    continue;
+                }
 
                 if visual_x + w <= effective_scroll {
                     visual_x += w;
@@ -567,13 +570,19 @@ impl Widget for TextInput {
                     break;
                 }
 
-                if let Some(c) = g.chars().next() {
-                    let mut cell = Cell::from_char(c);
-                    crate::apply_style(&mut cell, placeholder_style);
-                    let rel_x = visual_x.saturating_sub(effective_scroll);
-                    if rel_x < viewport_width {
-                        frame.buffer.set(area.x + rel_x as u16, y, cell);
-                    }
+                let mut cell = if g.chars().count() > 1 || w > 1 {
+                    let id = frame.intern_with_width(g, w as u8);
+                    Cell::new(CellContent::from_grapheme(id))
+                } else if let Some(c) = g.chars().next() {
+                    Cell::from_char(c)
+                } else {
+                    visual_x += w;
+                    continue;
+                };
+                crate::apply_style(&mut cell, placeholder_style);
+                let rel_x = visual_x.saturating_sub(effective_scroll);
+                if rel_x < viewport_width {
+                    frame.buffer.set(area.x + rel_x as u16, y, cell);
                 }
                 visual_x += w;
             }
