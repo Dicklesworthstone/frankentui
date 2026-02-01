@@ -532,6 +532,11 @@ impl Widget for TextInput {
         let y = area.y;
 
         if show_placeholder {
+            let placeholder_style = if deg.apply_styling() {
+                self.placeholder_style
+            } else {
+                Style::default()
+            };
             for g in self.placeholder.graphemes(true) {
                 let w = UnicodeWidthStr::width(g);
 
@@ -545,7 +550,7 @@ impl Widget for TextInput {
 
                 if let Some(c) = g.chars().next() {
                     let mut cell = Cell::from_char(c);
-                    crate::apply_style(&mut cell, self.placeholder_style);
+                    crate::apply_style(&mut cell, placeholder_style);
                     let rel_x = visual_x.saturating_sub(effective_scroll);
                     if rel_x < viewport_width {
                         buf.set(area.x + rel_x as u16, y, cell);

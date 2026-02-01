@@ -283,9 +283,11 @@ impl Widget for Block<'_> {
             return;
         }
 
-        // EssentialOnly: skip borders entirely, only apply bg style
+        // EssentialOnly: skip borders entirely, only apply bg style if styling enabled
         if !deg.render_decorative() {
-            set_style_area(buf, area, self.style);
+            if deg.apply_styling() {
+                set_style_area(buf, area, self.style);
+            }
             return;
         }
 

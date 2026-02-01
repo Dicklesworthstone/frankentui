@@ -89,7 +89,9 @@ impl<'a> Widget for ProgressBar<'a> {
             return;
         }
 
-        set_style_area(buf, bar_area, self.style);
+        if deg.apply_styling() {
+            set_style_area(buf, bar_area, self.style);
+        }
 
         let max_width = bar_area.width as f64;
         let filled_width = if self.ratio >= 1.0 {
@@ -99,13 +101,20 @@ impl<'a> Widget for ProgressBar<'a> {
         };
 
         // Draw filled part
+        let gauge_style = if deg.apply_styling() {
+            self.gauge_style
+        } else {
+            // At NoStyling, use '#' as fill char instead of background color
+            Style::default()
+        };
+        let fill_char = if deg.apply_styling() { ' ' } else { '#' };
+
         for y in bar_area.top()..bar_area.bottom() {
             for x in 0..filled_width {
                 let cell_x = bar_area.left() + x;
                 if cell_x < bar_area.right() {
-                    let mut cell = Cell::from_char(' '); // Block char or space with bg?
-                    // Usually progress bars use space with background color
-                    crate::apply_style(&mut cell, self.gauge_style);
+                    let mut cell = Cell::from_char(fill_char);
+                    crate::apply_style(&mut cell, gauge_style);
                     buf.set(cell_x, y, cell);
                 }
             }
