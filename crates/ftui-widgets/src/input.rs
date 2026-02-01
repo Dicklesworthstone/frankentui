@@ -136,6 +136,16 @@ impl TextInput {
         self.cursor
     }
 
+    /// Check if the input is focused.
+    pub fn focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Set focus state.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
     /// Get the cursor screen position relative to a render area.
     ///
     /// Returns `(x, y)` where x is the column and y is the row.

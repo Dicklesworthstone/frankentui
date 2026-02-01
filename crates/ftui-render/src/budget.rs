@@ -611,15 +611,16 @@ mod tests {
 
     #[test]
     fn should_degrade_when_cost_exceeds_remaining() {
-        let budget = RenderBudget::new(Duration::from_millis(10));
+        // Use wider margins to avoid timing flakiness
+        let budget = RenderBudget::new(Duration::from_millis(100));
 
-        // Wait until most budget is consumed
-        thread::sleep(Duration::from_millis(8));
+        // Wait until ~half budget is consumed (~50ms remaining)
+        thread::sleep(Duration::from_millis(50));
 
-        // Should degrade for expensive operations
-        assert!(budget.should_degrade(Duration::from_millis(5)));
-        // Should not degrade for cheap operations
-        assert!(!budget.should_degrade(Duration::from_millis(1)));
+        // Should degrade for expensive operations (80ms > ~50ms remaining)
+        assert!(budget.should_degrade(Duration::from_millis(80)));
+        // Should not degrade for cheap operations (10ms < ~50ms remaining)
+        assert!(!budget.should_degrade(Duration::from_millis(10)));
     }
 
     #[test]
