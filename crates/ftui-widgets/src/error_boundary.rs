@@ -455,7 +455,7 @@ impl<W: Widget> CustomErrorBoundary<W> {
 impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
     type State = ErrorBoundaryState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut ErrorBoundaryState) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut ErrorBoundaryState) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -474,7 +474,7 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
         match state {
             ErrorBoundaryState::Healthy | ErrorBoundaryState::Recovering { .. } => {
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    self.inner.render(area, buf);
+                    self.inner.render(area, frame);
                 }));
 
                 match result {
@@ -485,12 +485,12 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
                     }
                     Err(payload) => {
                         let error = CapturedError::from_panic(payload, self.widget_name, area);
-                        clear_area(buf, area);
+                        clear_area(&mut frame.buffer, area);
                         if let Some(factory) = &self.fallback_factory {
                             let fallback = factory(&error);
-                            fallback.render(area, buf);
+                            fallback.render(area, frame);
                         } else {
-                            render_error_fallback(buf, area, &error);
+                            render_error_fallback(&mut frame.buffer, area, &error);
                         }
                         *state = ErrorBoundaryState::Failed(error);
                     }
@@ -499,9 +499,9 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
             ErrorBoundaryState::Failed(error) => {
                 if let Some(factory) = &self.fallback_factory {
                     let fallback = factory(error);
-                    fallback.render(area, buf);
+                    fallback.render(area, frame);
                 } else {
-                    render_error_fallback(buf, area, error);
+                    render_error_fallback(&mut frame.buffer, area, error);
                 }
             }
         }

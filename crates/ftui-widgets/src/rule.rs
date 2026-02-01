@@ -223,16 +223,6 @@ mod tests {
     use super::*;
     use ftui_render::grapheme_pool::GraphemePool;
 
-    /// Helper: create a Frame for testing.
-    fn test_frame(width: u16, height: u16) -> (GraphemePool, Frame<'static>) {
-        let pool = GraphemePool::new();
-        // SAFETY: We're leaking the pool to get a 'static lifetime for tests.
-        // This is acceptable in tests as memory is cleaned up at process exit.
-        let pool_ref: &'static mut GraphemePool = Box::leak(Box::new(pool));
-        let frame = Frame::new(width, height, pool_ref);
-        (GraphemePool::new(), frame) // Return a dummy pool; the real one is leaked
-    }
-
     /// Helper: extract row content as chars from a buffer.
     fn row_chars(buf: &Buffer, y: u16, width: u16) -> Vec<char> {
         (0..width)
@@ -256,7 +246,8 @@ mod tests {
     fn no_title_fills_width() {
         let rule = Rule::new();
         let area = Rect::new(0, 0, 10, 1);
-        let (_, mut frame) = test_frame(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let row = row_chars(&frame.buffer, 0, 10);
@@ -270,7 +261,8 @@ mod tests {
     fn no_title_heavy_border() {
         let rule = Rule::new().border_type(BorderType::Heavy);
         let area = Rect::new(0, 0, 5, 1);
-        let (_, mut frame) = test_frame(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let row = row_chars(&frame.buffer, 0, 5);
@@ -284,7 +276,8 @@ mod tests {
     fn no_title_double_border() {
         let rule = Rule::new().border_type(BorderType::Double);
         let area = Rect::new(0, 0, 5, 1);
-        let (_, mut frame) = test_frame(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let row = row_chars(&frame.buffer, 0, 5);
@@ -298,7 +291,8 @@ mod tests {
     fn no_title_ascii_border() {
         let rule = Rule::new().border_type(BorderType::Ascii);
         let area = Rect::new(0, 0, 5, 1);
-        let (_, mut frame) = test_frame(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let row = row_chars(&frame.buffer, 0, 5);
@@ -314,7 +308,8 @@ mod tests {
     fn title_center_default() {
         let rule = Rule::new().title("Hi");
         let area = Rect::new(0, 0, 20, 1);
-        let (_, mut frame) = test_frame(20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let s = row_string(&frame.buffer, 0, 20);
@@ -329,7 +324,8 @@ mod tests {
     fn title_left_aligned() {
         let rule = Rule::new().title("Hi").title_alignment(Alignment::Left);
         let area = Rect::new(0, 0, 20, 1);
-        let (_, mut frame) = test_frame(20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let s = row_string(&frame.buffer, 0, 20);
@@ -343,7 +339,8 @@ mod tests {
     fn title_right_aligned() {
         let rule = Rule::new().title("Hi").title_alignment(Alignment::Right);
         let area = Rect::new(0, 0, 20, 1);
-        let (_, mut frame) = test_frame(20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let s = row_string(&frame.buffer, 0, 20);
@@ -358,7 +355,8 @@ mod tests {
         // Title "Hello" is 5 chars, needs 7 with padding. Width is 7 exactly.
         let rule = Rule::new().title("Hello");
         let area = Rect::new(0, 0, 7, 1);
-        let (_, mut frame) = test_frame(7, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(7, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let s = row_string(&frame.buffer, 0, 7);
@@ -370,7 +368,8 @@ mod tests {
         // Title "VeryLongTitle" is 13 chars, area is 5 wide. Can't fit.
         let rule = Rule::new().title("VeryLongTitle");
         let area = Rect::new(0, 0, 5, 1);
-        let (_, mut frame) = test_frame(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let row = row_chars(&frame.buffer, 0, 5);
@@ -385,7 +384,8 @@ mod tests {
     fn empty_title_same_as_no_title() {
         let rule = Rule::new().title("");
         let area = Rect::new(0, 0, 10, 1);
-        let (_, mut frame) = test_frame(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let row = row_chars(&frame.buffer, 0, 10);
@@ -401,7 +401,8 @@ mod tests {
     fn zero_width_no_panic() {
         let rule = Rule::new().title("Test");
         let area = Rect::new(0, 0, 0, 0);
-        let (_, mut frame) = test_frame(1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
         rule.render(area, &mut frame);
         // Should not panic
     }
@@ -410,7 +411,8 @@ mod tests {
     fn width_one_no_title() {
         let rule = Rule::new();
         let area = Rect::new(0, 0, 1, 1);
-        let (_, mut frame) = test_frame(1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
         rule.render(area, &mut frame);
 
         assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('─'));
@@ -421,7 +423,8 @@ mod tests {
         // Width 2, title "X" (1 char). min_width_for_title = 3. Falls back.
         let rule = Rule::new().title("X");
         let area = Rect::new(0, 0, 2, 1);
-        let (_, mut frame) = test_frame(2, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 1, &mut pool);
         rule.render(area, &mut frame);
 
         // Title "X" fits in 2 but no room for padding; should show "X" + rule or just rule
@@ -434,7 +437,8 @@ mod tests {
         // Rule rendered at a non-zero origin.
         let rule = Rule::new();
         let area = Rect::new(5, 3, 10, 1);
-        let (_, mut frame) = test_frame(20, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
         rule.render(area, &mut frame);
 
         // Cells before the area should be untouched (space/default)
@@ -453,7 +457,8 @@ mod tests {
         let fg = PackedRgba::rgb(255, 0, 0);
         let rule = Rule::new().style(Style::new().fg(fg));
         let area = Rect::new(0, 0, 5, 1);
-        let (_, mut frame) = test_frame(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         rule.render(area, &mut frame);
 
         for x in 0..5 {
@@ -473,7 +478,8 @@ mod tests {
             .style(Style::new().fg(rule_fg))
             .title_style(Style::new().fg(title_fg));
         let area = Rect::new(0, 0, 20, 1);
-        let (_, mut frame) = test_frame(20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
         rule.render(area, &mut frame);
 
         // Find the title characters and check their fg
@@ -501,7 +507,8 @@ mod tests {
         // Japanese characters (each 2 cells wide)
         let rule = Rule::new().title("日本");
         let area = Rect::new(0, 0, 20, 1);
-        let (_, mut frame) = test_frame(20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
         rule.render(area, &mut frame);
 
         let s = row_string(&frame.buffer, 0, 20);
@@ -527,7 +534,8 @@ mod tests {
 
         let rule = Rule::new();
         let area = Rect::new(0, 0, 10, 1);
-        let (_, mut frame) = test_frame(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         frame.buffer.degradation = DegradationLevel::EssentialOnly;
         rule.render(area, &mut frame);
 
@@ -546,7 +554,8 @@ mod tests {
 
         let rule = Rule::new();
         let area = Rect::new(0, 0, 10, 1);
-        let (_, mut frame) = test_frame(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         frame.buffer.degradation = DegradationLevel::Skeleton;
         rule.render(area, &mut frame);
 
@@ -564,7 +573,8 @@ mod tests {
 
         let rule = Rule::new().border_type(BorderType::Square);
         let area = Rect::new(0, 0, 10, 1);
-        let (_, mut frame) = test_frame(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         frame.buffer.degradation = DegradationLevel::SimpleBorders;
         rule.render(area, &mut frame);
 
@@ -582,7 +592,8 @@ mod tests {
 
         let rule = Rule::new().border_type(BorderType::Square);
         let area = Rect::new(0, 0, 10, 1);
-        let (_, mut frame) = test_frame(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         frame.buffer.degradation = DegradationLevel::Full;
         rule.render(area, &mut frame);
 
