@@ -35,6 +35,18 @@ impl Rect {
         Self::new(0, 0, width, height)
     }
 
+    /// Left edge (alias for x).
+    #[inline]
+    pub const fn left(&self) -> u16 {
+        self.x
+    }
+
+    /// Top edge (alias for y).
+    #[inline]
+    pub const fn top(&self) -> u16 {
+        self.y
+    }
+
     /// Right edge (exclusive).
     #[inline]
     pub const fn right(&self) -> u16 {
