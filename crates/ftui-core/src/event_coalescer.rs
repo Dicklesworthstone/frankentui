@@ -17,8 +17,8 @@
 //! - Mouse moves: keep only the most recent position
 //! - Scroll events: keep direction and total delta
 //!
-//! Non-coalescable events (key presses, mouse clicks, etc.) flush any
-//! pending coalesced events before being returned.
+//! Non-coalescable events (key presses, mouse clicks, etc.) pass through
+//! immediately. The caller is responsible for flushing pending events.
 //!
 //! # Usage
 //!
