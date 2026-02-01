@@ -7,11 +7,12 @@ publish = false
 [features]
 default = []
 thread_local_cache = []
-markup = []
+markup = ["dep:ftui-render"]
 
 [dependencies]
 ftui-layout = { path = "../ftui-layout" }
 ftui-style = { path = "../ftui-style" }
+ftui-render = { path = "../ftui-render", optional = true }
 unicode-width = "0.2"
 unicode-segmentation = "1.11"
 smallvec = "1.13"

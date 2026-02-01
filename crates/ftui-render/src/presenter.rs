@@ -64,7 +64,6 @@ impl Default for CellStyle {
         }
     }
 }
-
 impl CellStyle {
     fn from_cell(cell: &Cell) -> Self {
         Self {
@@ -242,7 +241,13 @@ impl<W: Write> Presenter<W> {
 
         // Update cursor position (character output advances cursor)
         if let Some(x) = self.cursor_x {
-            self.cursor_x = Some(x + cell.content.width() as u16);
+            // Empty cells are emitted as spaces (width 1)
+            let width = if cell.is_empty() {
+                1
+            } else {
+                cell.content.width()
+            };
+            self.cursor_x = Some(x + width as u16);
         }
 
         Ok(())
@@ -323,8 +328,15 @@ impl<W: Write> Presenter<W> {
             {
                 return self.writer.write_all(text.as_bytes());
             }
-            // Fallback: emit replacement character
-            return self.writer.write_all("�".as_bytes());
+            // Fallback: emit replacement characters matching expected width
+            // to maintain cursor synchronization.
+            let width = cell.content.width();
+            if width > 0 {
+                for _ in 0..width {
+                    self.writer.write_all(b"?")?;
+                }
+            }
+            return Ok(());
         }
 
         // Regular character content
@@ -645,35 +657,35 @@ mod tests {
         // '中' takes x=0,1 on screen. Cursor moves to 2.
         // Loop visits x=1 (empty). Emits ' '. Cursor moves to 3.
         // So we emitted 3 columns worth of stuff for 2 cells of buffer.
-        
+
         // This is hard to assert on the raw string without parsing ANSI,
         // but we know '中' is bytes e4 b8 ad.
-        
+
         // If correct (with continuation):
         // x=0: emits '中'. cursor -> 2.
         // x=1: skipped (continuation).
         // x=2: next char...
-        
+
         // If incorrect (current behavior):
         // x=0: emits '中'. cursor -> 2.
         // x=1: emits ' '. cursor -> 3.
-        
+
         // We can check if a space is emitted immediately after the wide char.
         // Note: Presenter might optimize cursor movement, but here we are writing sequentially.
-        
+
         // The output should contain '中' then ' '.
         // In a correct world, x=1 is CONTINUATION, so ' ' is NOT emitted for x=1.
-        
+
         // So if we see '中' followed immediately by ' ' (or escape sequence then ' '), it implies drift IF x=1 was supposed to be covered by '中'.
-        
+
         // To verify this failure, we assert that the output DOES contain the space.
-        // If we fix the bug in Buffer::set, this test setup would need to use set() instead of set_raw() 
+        // If we fix the bug in Buffer::set, this test setup would need to use set() instead of set_raw()
         // to prove the fix.
-        
-        // But for now, let's just assert the current broken behavior exists? 
+
+        // But for now, let's just assert the current broken behavior exists?
         // No, I want to assert the *bug* is that the buffer allows this state.
         // The Presenter is doing its job (GIGO).
-        
+
         // Let's rely on the fix verification instead.
     }
 }

@@ -498,8 +498,10 @@ impl<M: Model, W: Write> Program<M, W> {
             if self.session.poll_event(timeout)? {
                 // Drain all pending events
                 loop {
-                    let event = self.session.read_event()?;
-                    self.handle_event(event)?;
+                    // read_event returns Option<Event> after converting from crossterm
+                    if let Some(event) = self.session.read_event()? {
+                        self.handle_event(event)?;
+                    }
                     if !self.session.poll_event(Duration::from_millis(0))? {
                         break;
                     }

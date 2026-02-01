@@ -4,5 +4,18 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+pty-capture = ["dep:ftui-extras", "dep:ftui-runtime", "dep:portable-pty"]
+
 [dependencies]
-ftui = { path = "../ftui" }
+ftui-render = { path = "../ftui-render" }
+ftui-core = { path = "../ftui-core" }
+ftui-extras = { path = "../ftui-extras", features = ["pty-capture"], optional = true }
+ftui-runtime = { path = "../ftui-runtime", optional = true }
+portable-pty = { version = "0.8.1", optional = true }
+
+[dev-dependencies]
+ftui-widgets = { path = "../ftui-widgets" }
+ftui-style = { path = "../ftui-style" }
+ftui-text = { path = "../ftui-text" }

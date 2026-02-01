@@ -142,10 +142,9 @@ fn wrap_chars(text: &str, options: &WrapOptions) -> Vec<String> {
         current_width += grapheme_width;
     }
 
-    // Don't forget the last line
-    if !current_line.is_empty() || lines.is_empty() {
-        lines.push(finalize_line(&current_line, options));
-    }
+    // Always push the pending line at the end.
+    // This handles the last segment of text, or the empty line after a trailing newline.
+    lines.push(finalize_line(&current_line, options));
 
     lines
 }
@@ -159,6 +158,8 @@ fn wrap_words(text: &str, options: &WrapOptions, char_fallback: bool) -> Vec<Str
         let mut current_line = String::new();
         let mut current_width = 0;
 
+        let len_before = lines.len();
+
         wrap_paragraph(
             paragraph,
             options,
@@ -168,15 +169,11 @@ fn wrap_words(text: &str, options: &WrapOptions, char_fallback: bool) -> Vec<Str
             &mut current_width,
         );
 
-        // Push the last line of the paragraph if non-empty
-        if !current_line.is_empty() {
+        // Push the last line of the paragraph if non-empty, or if wrap_paragraph
+        // added no lines (empty paragraph from explicit newline).
+        if !current_line.is_empty() || lines.len() == len_before {
             lines.push(finalize_line(&current_line, options));
         }
-    }
-
-    // Ensure at least one line exists
-    if lines.is_empty() {
-        lines.push(String::new());
     }
 
     lines
@@ -287,11 +284,39 @@ fn split_words(text: &str) -> Vec<String> {
 
 /// Finalize a line (apply trimming, etc.).
 fn finalize_line(line: &str, options: &WrapOptions) -> String {
-    if options.trim_trailing {
+    let mut result = if options.trim_trailing {
         line.trim_end().to_string()
     } else {
         line.to_string()
+    };
+
+    if !options.preserve_indent {
+        // We only trim start if the user explicitly opted out of preserving indent.
+        // However, standard wrapping usually preserves start indent of the first line
+        // and only indents continuations.
+        // The `preserve_indent` option in `WrapOptions` usually refers to *hanging* indent
+        // or preserving leading whitespace on new lines.
+        //
+        // In this implementation, `wrap_paragraph` logic trims start of *continuation* lines
+        // if they fit.
+        //
+        // But for `finalize_line`, which handles the *completed* line string,
+        // we generally don't want to aggressively strip leading whitespace unless
+        // it was a blank line.
+        //
+        // Let's stick to the requested change: trim start if not preserving indent.
+        // But wait, `line.trim_start()` would kill paragraph indentation.
+        //
+        // Re-reading intent: "trim leading indentation if preserve_indent is false".
+        // This implies that if `preserve_indent` is false, we want flush-left text.
+
+        let trimmed = result.trim_start();
+        if trimmed.len() != result.len() {
+            result = trimmed.to_string();
+        }
     }
+
+    result
 }
 
 /// Truncate text to fit within a width, adding ellipsis if needed.
@@ -492,15 +517,14 @@ pub fn truncate_to_width_with_info(text: &str, max_width: usize) -> (&str, usize
 /// assert!(breaks.contains(&12));  // After "world "
 /// ```
 pub fn word_boundaries(text: &str) -> impl Iterator<Item = usize> + '_ {
-    text.split_word_bound_indices()
-        .filter_map(|(idx, word)| {
-            // Return index at end of whitespace sequences (good break points)
-            if word.chars().all(|c| c.is_whitespace()) {
-                Some(idx + word.len())
-            } else {
-                None
-            }
-        })
+    text.split_word_bound_indices().filter_map(|(idx, word)| {
+        // Return index at end of whitespace sequences (good break points)
+        if word.chars().all(|c| c.is_whitespace()) {
+            Some(idx + word.len())
+        } else {
+            None
+        }
+    })
 }
 
 /// Split text into word segments preserving boundaries.
@@ -549,6 +573,21 @@ mod tests {
     fn wrap_text_preserves_newlines() {
         let lines = wrap_text("line1\nline2", 20, WrapMode::Word);
         assert_eq!(lines, vec!["line1", "line2"]);
+    }
+
+    #[test]
+    fn wrap_text_trailing_newlines() {
+        // "line1\n" -> ["line1", ""]
+        let lines = wrap_text("line1\n", 20, WrapMode::Word);
+        assert_eq!(lines, vec!["line1", ""]);
+
+        // "\n" -> ["", ""]
+        let lines = wrap_text("\n", 20, WrapMode::Word);
+        assert_eq!(lines, vec!["", ""]);
+
+        // Same for Char mode
+        let lines = wrap_text("line1\n", 20, WrapMode::Char);
+        assert_eq!(lines, vec!["line1", ""]);
     }
 
     #[test]

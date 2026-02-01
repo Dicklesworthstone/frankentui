@@ -12,8 +12,8 @@ use std::fmt;
 
 pub use ftui_core::cursor::{CursorManager, CursorSaveStrategy};
 pub use ftui_core::event::{
-    ClipboardEvent, ClipboardSource, Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton,
-    MouseEvent, MouseEventKind, PasteEvent,
+    ClipboardEvent, ClipboardSource, Event, KeyCode, KeyEvent, KeyEventKind, Modifiers,
+    MouseButton, MouseEvent, MouseEventKind, PasteEvent,
 };
 pub use ftui_core::terminal_capabilities::TerminalCapabilities;
 pub use ftui_core::terminal_session::{SessionOptions, TerminalSession};
@@ -37,7 +37,9 @@ pub use ftui_style::{
 
 // --- Runtime re-exports ----------------------------------------------------
 
-pub use ftui_runtime::{ScreenMode, TerminalWriter, UiAnchor};
+pub use ftui_runtime::{
+    App, Cmd, Model, Program, ProgramConfig, ScreenMode, TerminalWriter, UiAnchor,
+};
 
 // --- Errors ---------------------------------------------------------------
 
@@ -70,55 +72,15 @@ impl From<std::io::Error> for Error {
 /// Standard result type for ftui APIs.
 pub type Result<T> = std::result::Result<T, Error>;
 
-// --- App facade (placeholder) ---------------------------------------------
-
-/// Minimal facade for building and running an ftui application.
-///
-/// This is a placeholder surface; the full runtime model is implemented in
-/// `ftui-runtime` as it matures.
-pub struct App<M> {
-    model: M,
-    screen_mode: ScreenMode,
-}
-
-impl<M> App<M> {
-    /// Create a new application.
-    #[must_use]
-    pub fn new(model: M) -> Self {
-        Self {
-            model,
-            screen_mode: ScreenMode::AltScreen,
-        }
-    }
-
-    /// Set the desired screen mode.
-    #[must_use]
-    pub fn screen_mode(mut self, mode: ScreenMode) -> Self {
-        self.screen_mode = mode;
-        self
-    }
-
-    /// Run the application (not yet implemented).
-    pub fn run(self) -> Result<()> {
-        let _ = self.model;
-        let _ = self.screen_mode;
-        Err(Error::Terminal(
-            "App runtime is not implemented yet".to_string(),
-        ))
-    }
-}
-
 // --- Prelude --------------------------------------------------------------
 
 pub mod prelude {
     pub use crate::{
-        App, Buffer, Error, Event, Frame, KeyCode, KeyEvent, Modifiers, Result, ScreenMode, Style,
-        TerminalSession, TerminalWriter, Theme,
+        App, Buffer, Cmd, Error, Event, Frame, KeyCode, KeyEvent, Model, Modifiers, Result,
+        ScreenMode, Style, TerminalSession, TerminalWriter, Theme,
     };
 
-    pub use crate::{
-        core, layout, render, runtime, style, text, widgets,
-    };
+    pub use crate::{core, layout, render, runtime, style, text, widgets};
 }
 
 pub use ftui_core as core;

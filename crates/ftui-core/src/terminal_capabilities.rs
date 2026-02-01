@@ -25,6 +25,35 @@
 
 use std::env;
 
+#[derive(Debug, Clone)]
+struct DetectInputs {
+    no_color: bool,
+    term: String,
+    term_program: String,
+    colorterm: String,
+    in_tmux: bool,
+    in_screen: bool,
+    in_zellij: bool,
+    kitty_window_id: bool,
+    wt_session: bool,
+}
+
+impl DetectInputs {
+    fn from_env() -> Self {
+        Self {
+            no_color: env::var("NO_COLOR").is_ok(),
+            term: env::var("TERM").unwrap_or_default(),
+            term_program: env::var("TERM_PROGRAM").unwrap_or_default(),
+            colorterm: env::var("COLORTERM").unwrap_or_default(),
+            in_tmux: env::var("TMUX").is_ok(),
+            in_screen: env::var("STY").is_ok(),
+            in_zellij: env::var("ZELLIJ").is_ok(),
+            kitty_window_id: env::var("KITTY_WINDOW_ID").is_ok(),
+            wt_session: env::var("WT_SESSION").is_ok(),
+        }
+    }
+}
+
 /// Known modern terminal programs that support advanced features.
 const MODERN_TERMINALS: &[&str] = &[
     "iTerm.app",
@@ -109,25 +138,32 @@ impl TerminalCapabilities {
     /// for safety.
     #[must_use]
     pub fn detect() -> Self {
-        let no_color = env::var("NO_COLOR").is_ok();
-        let term = env::var("TERM").unwrap_or_default();
-        let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
-        let colorterm = env::var("COLORTERM").unwrap_or_default();
+        let env = DetectInputs::from_env();
+        Self::detect_from_inputs(&env)
+    }
 
+    fn detect_from_inputs(env: &DetectInputs) -> Self {
         // Multiplexer detection
-        let in_tmux = env::var("TMUX").is_ok();
-        let in_screen = env::var("STY").is_ok();
-        let in_zellij = env::var("ZELLIJ").is_ok();
+        let in_tmux = env.in_tmux;
+        let in_screen = env.in_screen;
+        let in_zellij = env.in_zellij;
         let in_any_mux = in_tmux || in_screen || in_zellij;
 
-        // Check for dumb terminal
-        let is_dumb = term == "dumb" || term.is_empty();
-
-        // Kitty detection
-        let is_kitty = env::var("KITTY_WINDOW_ID").is_ok() || term.contains("kitty");
+        let term = env.term.as_str();
+        let term_program = env.term_program.as_str();
+        let colorterm = env.colorterm.as_str();
 
         // Windows Terminal detection
-        let is_windows_terminal = env::var("WT_SESSION").is_ok();
+        let is_windows_terminal = env.wt_session;
+
+        // Check for dumb terminal
+        //
+        // NOTE: Windows Terminal often omits TERM; treat it as non-dumb when
+        // WT_SESSION is present so we don't incorrectly disable features.
+        let is_dumb = term == "dumb" || (term.is_empty() && !is_windows_terminal);
+
+        // Kitty detection
+        let is_kitty = env.kitty_window_id || term.contains("kitty");
 
         // Check if running in a modern terminal
         let is_modern_terminal = MODERN_TERMINALS
@@ -136,7 +172,7 @@ impl TerminalCapabilities {
             || is_windows_terminal;
 
         // True color detection
-        let true_color = !no_color
+        let true_color = !env.no_color
             && !is_dumb
             && (colorterm.contains("truecolor")
                 || colorterm.contains("24bit")
@@ -144,7 +180,7 @@ impl TerminalCapabilities {
                 || is_kitty);
 
         // 256-color detection
-        let colors_256 = !no_color
+        let colors_256 = !env.no_color
             && !is_dumb
             && (true_color || term.contains("256color") || term.contains("256"));
 
@@ -156,7 +192,7 @@ impl TerminalCapabilities {
                     .any(|t| term_program.contains(t)));
 
         // OSC 8 hyperlinks detection
-        let osc8_hyperlinks = !no_color && !is_dumb && is_modern_terminal;
+        let osc8_hyperlinks = !env.no_color && !is_dumb && is_modern_terminal;
 
         // Scroll region support (broadly available except dumb)
         let scroll_region = !is_dumb;
@@ -246,6 +282,75 @@ impl TerminalCapabilities {
             "mono"
         }
     }
+
+    // --- Mux-aware feature policies ---
+    //
+    // These methods apply conservative defaults when running inside a
+    // multiplexer to avoid quirks with sequence passthrough.
+
+    /// Whether synchronized output (DEC 2026) should be used.
+    ///
+    /// Disabled in multiplexers because passthrough is unreliable
+    /// for mode-setting sequences.
+    #[must_use]
+    #[inline]
+    pub const fn use_sync_output(&self) -> bool {
+        if self.in_tmux || self.in_screen || self.in_zellij {
+            return false;
+        }
+        self.sync_output
+    }
+
+    /// Whether scroll-region optimization (DECSTBM) is safe to use.
+    ///
+    /// Disabled in multiplexers due to inconsistent scroll margin
+    /// handling across tmux, screen, and Zellij.
+    #[must_use]
+    #[inline]
+    pub const fn use_scroll_region(&self) -> bool {
+        if self.in_tmux || self.in_screen || self.in_zellij {
+            return false;
+        }
+        self.scroll_region
+    }
+
+    /// Whether OSC 8 hyperlinks should be emitted.
+    ///
+    /// Disabled in tmux and screen because passthrough for OSC
+    /// sequences is fragile. Zellij (0.39+) has better passthrough
+    /// but is still disabled by default for safety.
+    #[must_use]
+    #[inline]
+    pub const fn use_hyperlinks(&self) -> bool {
+        if self.in_tmux || self.in_screen || self.in_zellij {
+            return false;
+        }
+        self.osc8_hyperlinks
+    }
+
+    /// Whether OSC 52 clipboard access should be used.
+    ///
+    /// Already gated by mux detection in `detect()`, but this method
+    /// provides a consistent policy interface.
+    #[must_use]
+    #[inline]
+    pub const fn use_clipboard(&self) -> bool {
+        if self.in_tmux || self.in_screen || self.in_zellij {
+            return false;
+        }
+        self.osc52_clipboard
+    }
+
+    /// Whether the passthrough wrapping is needed for this environment.
+    ///
+    /// Returns `true` if running in tmux or screen, which require
+    /// DCS passthrough for escape sequences to reach the inner terminal.
+    /// Zellij handles passthrough natively and doesn't need wrapping.
+    #[must_use]
+    #[inline]
+    pub const fn needs_passthrough_wrap(&self) -> bool {
+        self.in_tmux || self.in_screen
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +428,127 @@ mod tests {
     fn detect_does_not_panic() {
         // detect() should never panic, even with unusual environment
         let _caps = TerminalCapabilities::detect();
+    }
+
+    #[test]
+    fn windows_terminal_not_dumb_when_term_missing() {
+        let env = DetectInputs {
+            no_color: false,
+            term: String::new(),
+            term_program: String::new(),
+            colorterm: String::new(),
+            in_tmux: false,
+            in_screen: false,
+            in_zellij: false,
+            kitty_window_id: false,
+            wt_session: true,
+        };
+
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.true_color, "WT_SESSION implies true color by default");
+        assert!(caps.colors_256, "truecolor implies 256-color");
+        assert!(
+            caps.osc8_hyperlinks,
+            "WT_SESSION implies OSC 8 hyperlink support by default"
+        );
+        assert!(
+            caps.bracketed_paste,
+            "WT_SESSION should not be treated as dumb"
+        );
+        assert!(caps.mouse_sgr, "WT_SESSION should not be treated as dumb");
+    }
+
+    // --- Mux-aware policy tests ---
+
+    #[test]
+    fn use_sync_output_disabled_in_tmux() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.sync_output = true;
+        assert!(caps.use_sync_output());
+
+        caps.in_tmux = true;
+        assert!(!caps.use_sync_output());
+    }
+
+    #[test]
+    fn use_sync_output_disabled_in_screen() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.sync_output = true;
+        caps.in_screen = true;
+        assert!(!caps.use_sync_output());
+    }
+
+    #[test]
+    fn use_sync_output_disabled_in_zellij() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.sync_output = true;
+        caps.in_zellij = true;
+        assert!(!caps.use_sync_output());
+    }
+
+    #[test]
+    fn use_scroll_region_disabled_in_mux() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        assert!(caps.use_scroll_region());
+
+        caps.in_tmux = true;
+        assert!(!caps.use_scroll_region());
+
+        caps.in_tmux = false;
+        caps.in_screen = true;
+        assert!(!caps.use_scroll_region());
+
+        caps.in_screen = false;
+        caps.in_zellij = true;
+        assert!(!caps.use_scroll_region());
+    }
+
+    #[test]
+    fn use_hyperlinks_disabled_in_mux() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.osc8_hyperlinks = true;
+        assert!(caps.use_hyperlinks());
+
+        caps.in_tmux = true;
+        assert!(!caps.use_hyperlinks());
+    }
+
+    #[test]
+    fn use_clipboard_disabled_in_mux() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.osc52_clipboard = true;
+        assert!(caps.use_clipboard());
+
+        caps.in_screen = true;
+        assert!(!caps.use_clipboard());
+    }
+
+    #[test]
+    fn needs_passthrough_wrap_only_for_tmux_screen() {
+        let mut caps = TerminalCapabilities::basic();
+        assert!(!caps.needs_passthrough_wrap());
+
+        caps.in_tmux = true;
+        assert!(caps.needs_passthrough_wrap());
+
+        caps.in_tmux = false;
+        caps.in_screen = true;
+        assert!(caps.needs_passthrough_wrap());
+
+        // Zellij doesn't need wrapping
+        caps.in_screen = false;
+        caps.in_zellij = true;
+        assert!(!caps.needs_passthrough_wrap());
+    }
+
+    #[test]
+    fn policies_return_false_when_capability_absent() {
+        // Even without mux, policies return false when capability is off
+        let caps = TerminalCapabilities::basic();
+        assert!(!caps.use_sync_output());
+        assert!(!caps.use_scroll_region());
+        assert!(!caps.use_hyperlinks());
+        assert!(!caps.use_clipboard());
     }
 }

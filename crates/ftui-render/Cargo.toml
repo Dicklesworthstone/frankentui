@@ -21,7 +21,26 @@ tracing = { version = "0.1", optional = true }
 # ftui-text = { path = "../ftui-text" }      # TODO: Add when needed
 
 [dev-dependencies]
-proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+ftui-core = { path = "../ftui-core" }
 ftui-layout = { path = "../ftui-layout" }
 ftui-style = { path = "../ftui-style" }
+ftui-text = { path = "../ftui-text" }
 ftui-widgets = { path = "../ftui-widgets" }
+proptest = "1"
+
+[[bench]]
+name = "cell_bench"
+harness = false
+
+[[bench]]
+name = "buffer_bench"
+harness = false
+
+[[bench]]
+name = "diff_bench"
+harness = false
+
+[[bench]]
+name = "presenter_bench"
+harness = false

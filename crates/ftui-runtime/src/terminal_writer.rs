@@ -49,11 +49,13 @@
 
 use std::io::{self, BufWriter, Write};
 
+use ftui_core::inline_mode::InlineStrategy;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
+use tracing::{debug_span, info_span, trace};
 
 /// Size of the internal write buffer (64KB).
 const BUFFER_CAPACITY: usize = 64 * 1024;
@@ -123,6 +125,10 @@ pub struct TerminalWriter<W: Write> {
     in_sync_block: bool,
     /// Whether cursor has been saved.
     cursor_saved: bool,
+    /// Inline mode rendering strategy (selected from capabilities).
+    inline_strategy: InlineStrategy,
+    /// Whether a scroll region is currently active.
+    scroll_region_active: bool,
 }
 
 impl<W: Write> TerminalWriter<W> {
@@ -140,6 +146,7 @@ impl<W: Write> TerminalWriter<W> {
         ui_anchor: UiAnchor,
         capabilities: TerminalCapabilities,
     ) -> Self {
+        let inline_strategy = InlineStrategy::select(&capabilities);
         Self {
             writer: Some(BufWriter::with_capacity(BUFFER_CAPACITY, writer)),
             screen_mode,
@@ -152,6 +159,8 @@ impl<W: Write> TerminalWriter<W> {
             term_height: 24,
             in_sync_block: false,
             cursor_saved: false,
+            inline_strategy,
+            scroll_region_active: false,
         }
     }
 
@@ -173,6 +182,10 @@ impl<W: Write> TerminalWriter<W> {
         self.term_height = height;
         // Clear prev_buffer to force full redraw after resize
         self.prev_buffer = None;
+        // Reset scroll region on resize; it will be re-established on next present
+        if self.scroll_region_active {
+            let _ = self.deactivate_scroll_region();
+        }
     }
 
     /// Get the current terminal width.
@@ -204,6 +217,43 @@ impl<W: Write> TerminalWriter<W> {
         }
     }
 
+    /// Get the inline mode rendering strategy.
+    pub fn inline_strategy(&self) -> InlineStrategy {
+        self.inline_strategy
+    }
+
+    /// Check if a scroll region is currently active.
+    pub fn scroll_region_active(&self) -> bool {
+        self.scroll_region_active
+    }
+
+    /// Activate the scroll region for inline mode.
+    ///
+    /// Sets DECSTBM to constrain scrolling to the log region (above UI).
+    /// Only called when the strategy permits scroll-region usage.
+    fn activate_scroll_region(&mut self, ui_height: u16) -> io::Result<()> {
+        if self.scroll_region_active {
+            return Ok(());
+        }
+
+        let log_bottom = self.term_height.saturating_sub(ui_height);
+        if log_bottom > 0 {
+            // DECSTBM: set scroll region to rows 1..log_bottom (1-indexed)
+            write!(self.writer(), "\x1b[1;{}r", log_bottom)?;
+            self.scroll_region_active = true;
+        }
+        Ok(())
+    }
+
+    /// Deactivate the scroll region, resetting to full screen.
+    fn deactivate_scroll_region(&mut self) -> io::Result<()> {
+        if self.scroll_region_active {
+            self.writer().write_all(b"\x1b[r")?;
+            self.scroll_region_active = false;
+        }
+        Ok(())
+    }
+
     /// Present a UI frame.
     ///
     /// In inline mode, this:
@@ -216,18 +266,44 @@ impl<W: Write> TerminalWriter<W> {
     ///
     /// In AltScreen mode, this just renders the buffer.
     pub fn present_ui(&mut self, buffer: &Buffer) -> io::Result<()> {
+        let mode_str = match self.screen_mode {
+            ScreenMode::Inline { .. } => "inline",
+            ScreenMode::AltScreen => "altscreen",
+        };
+        let _span = info_span!(
+            "present_ui",
+            mode = mode_str,
+            width = buffer.width(),
+            height = buffer.height(),
+        )
+        .entered();
+
         match self.screen_mode {
-            ScreenMode::Inline { ui_height } => {
-                self.present_inline(buffer, ui_height)
-            }
-            ScreenMode::AltScreen => {
-                self.present_altscreen(buffer)
-            }
+            ScreenMode::Inline { ui_height } => self.present_inline(buffer, ui_height),
+            ScreenMode::AltScreen => self.present_altscreen(buffer),
         }
     }
 
     /// Present UI in inline mode with cursor save/restore.
+    ///
+    /// When the scroll-region strategy is active, DECSTBM is set to constrain
+    /// log scrolling to the region above the UI. This prevents log output from
+    /// overwriting the UI, reducing redraw work.
     fn present_inline(&mut self, buffer: &Buffer, ui_height: u16) -> io::Result<()> {
+        // Activate scroll region if strategy calls for it
+        {
+            let _span = debug_span!("scroll_region").entered();
+            match self.inline_strategy {
+                InlineStrategy::ScrollRegion => {
+                    self.activate_scroll_region(ui_height)?;
+                }
+                InlineStrategy::Hybrid => {
+                    self.activate_scroll_region(ui_height)?;
+                }
+                InlineStrategy::OverlayRedraw => {}
+            }
+        }
+
         // Begin sync output if available
         if self.capabilities.sync_output && !self.in_sync_block {
             self.writer().write_all(SYNC_BEGIN)?;
@@ -238,34 +314,39 @@ impl<W: Write> TerminalWriter<W> {
         self.writer().write_all(CURSOR_SAVE)?;
         self.cursor_saved = true;
 
-        // Move to UI anchor
-        let ui_y = self.ui_start_row();
-        write!(self.writer(), "\x1b[{};1H", ui_y + 1)?; // 1-indexed
+        // Move to UI anchor and clear UI region
+        {
+            let _span = debug_span!("clear_ui", rows = ui_height).entered();
+            let ui_y = self.ui_start_row();
+            write!(self.writer(), "\x1b[{};1H", ui_y + 1)?;
 
-        // Clear UI region only (not full screen!)
-        for i in 0..ui_height {
-            write!(self.writer(), "\x1b[{};1H", ui_y + i + 1)?;
-            self.writer().write_all(ERASE_LINE)?;
+            for i in 0..ui_height {
+                write!(self.writer(), "\x1b[{};1H", ui_y + i + 1)?;
+                self.writer().write_all(ERASE_LINE)?;
+            }
+
+            write!(self.writer(), "\x1b[{};1H", ui_y + 1)?;
         }
 
-        // Move back to UI start
-        write!(self.writer(), "\x1b[{};1H", ui_y + 1)?;
-
-        // Compute diff and present
-        let diff = if let Some(ref prev) = self.prev_buffer {
-            if prev.width() == buffer.width() && prev.height() == buffer.height() {
-                BufferDiff::compute(prev, buffer)
+        // Compute diff
+        let diff = {
+            let _span = debug_span!("diff_compute").entered();
+            if let Some(ref prev) = self.prev_buffer {
+                if prev.width() == buffer.width() && prev.height() == buffer.height() {
+                    BufferDiff::compute(prev, buffer)
+                } else {
+                    self.create_full_diff(buffer)
+                }
             } else {
-                // Size changed, full redraw
                 self.create_full_diff(buffer)
             }
-        } else {
-            // No previous buffer, full redraw
-            self.create_full_diff(buffer)
         };
 
-        // Present the diff directly (we handle cursor ourselves in inline mode)
-        self.emit_diff(buffer, &diff)?;
+        // Emit diff
+        {
+            let _span = debug_span!("emit").entered();
+            self.emit_diff(buffer, &diff)?;
+        }
 
         // Restore cursor
         self.writer().write_all(CURSOR_RESTORE)?;
@@ -287,23 +368,28 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Present UI in alternate screen mode (simpler, no cursor gymnastics).
     fn present_altscreen(&mut self, buffer: &Buffer) -> io::Result<()> {
-        let diff = if let Some(ref prev) = self.prev_buffer {
-            if prev.width() == buffer.width() && prev.height() == buffer.height() {
-                BufferDiff::compute(prev, buffer)
+        let diff = {
+            let _span = debug_span!("diff_compute").entered();
+            if let Some(ref prev) = self.prev_buffer {
+                if prev.width() == buffer.width() && prev.height() == buffer.height() {
+                    BufferDiff::compute(prev, buffer)
+                } else {
+                    self.create_full_diff(buffer)
+                }
             } else {
                 self.create_full_diff(buffer)
             }
-        } else {
-            self.create_full_diff(buffer)
         };
 
-        // Use presenter directly
         // Begin sync if available
         if self.capabilities.sync_output {
             self.writer().write_all(SYNC_BEGIN)?;
         }
 
-        self.emit_diff(buffer, &diff)?;
+        {
+            let _span = debug_span!("emit").entered();
+            self.emit_diff(buffer, &diff)?;
+        }
 
         // Reset style at end
         self.writer().write_all(b"\x1b[0m")?;
@@ -320,14 +406,25 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Emit a diff directly to the writer.
     fn emit_diff(&mut self, buffer: &Buffer, diff: &BufferDiff) -> io::Result<()> {
-        use ftui_render::cell::StyleFlags;
+        use ftui_render::cell::{CellAttrs, StyleFlags};
 
-        let mut current_style: Option<(ftui_render::cell::PackedRgba, ftui_render::cell::PackedRgba, StyleFlags)> = None;
+        let runs = diff.runs();
+        let _span = debug_span!("emit_diff", run_count = runs.len()).entered();
 
-        for run in diff.runs() {
+        let mut current_style: Option<(
+            ftui_render::cell::PackedRgba,
+            ftui_render::cell::PackedRgba,
+            StyleFlags,
+        )> = None;
+        let mut current_link: Option<u32> = None;
+
+        let ui_y_start = self.ui_start_row();
+        // Borrow writer once
+        let writer = self.writer.as_mut().expect("writer has been consumed");
+
+        for run in runs {
             // Move cursor to run start
-            let ui_y = self.ui_start_row();
-            write!(self.writer(), "\x1b[{};{}H", ui_y + run.y + 1, run.x0 + 1)?;
+            write!(writer, "\x1b[{};{}H", ui_y_start + run.y + 1, run.x0 + 1)?;
 
             // Emit cells in the run
             for x in run.x0..=run.x1 {
@@ -342,68 +439,121 @@ impl<W: Write> TerminalWriter<W> {
                 let cell_style = (cell.fg, cell.bg, cell.attrs.flags());
                 if current_style != Some(cell_style) {
                     // Reset and apply new style
-                    self.writer().write_all(b"\x1b[0m")?;
+                    writer.write_all(b"\x1b[0m")?;
 
                     // Apply attributes
                     if !cell_style.2.is_empty() {
-                        self.emit_style_flags(cell_style.2)?;
+                        Self::emit_style_flags(writer, cell_style.2)?;
                     }
 
                     // Apply colors
                     if cell_style.0.a() > 0 {
-                        write!(self.writer(), "\x1b[38;2;{};{};{}m",
-                            cell_style.0.r(), cell_style.0.g(), cell_style.0.b())?;
+                        write!(
+                            writer,
+                            "\x1b[38;2;{};{};{}m",
+                            cell_style.0.r(),
+                            cell_style.0.g(),
+                            cell_style.0.b()
+                        )?;
                     }
                     if cell_style.1.a() > 0 {
-                        write!(self.writer(), "\x1b[48;2;{};{};{}m",
-                            cell_style.1.r(), cell_style.1.g(), cell_style.1.b())?;
+                        write!(
+                            writer,
+                            "\x1b[48;2;{};{};{}m",
+                            cell_style.1.r(),
+                            cell_style.1.g(),
+                            cell_style.1.b()
+                        )?;
                     }
 
                     current_style = Some(cell_style);
+                }
+
+                // Check if link changed
+                let raw_link_id = cell.attrs.link_id();
+                let new_link = if raw_link_id == CellAttrs::LINK_ID_NONE {
+                    None
+                } else {
+                    Some(raw_link_id)
+                };
+
+                if current_link != new_link {
+                    // Close current link
+                    if current_link.is_some() {
+                        writer.write_all(b"\x1b]8;;\x1b\\")?;
+                    }
+                    // Open new link if present
+                    if let Some(link_id) = new_link
+                        && let Some(url) = self.links.get(link_id)
+                    {
+                        write!(writer, "\x1b]8;;{}\x1b\\", url)?;
+                    }
+                    current_link = new_link;
                 }
 
                 // Emit content
                 if let Some(ch) = cell.content.as_char() {
                     let mut buf = [0u8; 4];
                     let encoded = ch.encode_utf8(&mut buf);
-                    self.writer().write_all(encoded.as_bytes())?;
+                    writer.write_all(encoded.as_bytes())?;
                 } else if let Some(gid) = cell.content.grapheme_id() {
-                    // Clone text out of pool to avoid borrow conflict with writer
-                    let text = self.pool.get(gid).map(|s| s.to_string());
-                    if let Some(text) = text {
-                        self.writer().write_all(text.as_bytes())?;
+                    // Use pool directly with writer (no clone needed)
+                    if let Some(text) = self.pool.get(gid) {
+                        writer.write_all(text.as_bytes())?;
                     } else {
-                        self.writer().write_all(b" ")?;
+                        writer.write_all(b" ")?;
                     }
                 } else {
-                    self.writer().write_all(b" ")?;
+                    writer.write_all(b" ")?;
                 }
             }
         }
 
         // Reset style
-        self.writer().write_all(b"\x1b[0m")?;
+        writer.write_all(b"\x1b[0m")?;
+        
+        // Close any open link
+        if current_link.is_some() {
+            writer.write_all(b"\x1b]8;;\x1b\\")?;
+        }
 
+        trace!("emit_diff complete");
         Ok(())
     }
 
     /// Emit SGR flags.
-    fn emit_style_flags(&mut self, flags: ftui_render::cell::StyleFlags) -> io::Result<()> {
+    fn emit_style_flags(writer: &mut impl Write, flags: ftui_render::cell::StyleFlags) -> io::Result<()> {
         use ftui_render::cell::StyleFlags;
 
         let mut codes = Vec::with_capacity(8);
 
-        if flags.contains(StyleFlags::BOLD) { codes.push("1"); }
-        if flags.contains(StyleFlags::DIM) { codes.push("2"); }
-        if flags.contains(StyleFlags::ITALIC) { codes.push("3"); }
-        if flags.contains(StyleFlags::UNDERLINE) { codes.push("4"); }
-        if flags.contains(StyleFlags::BLINK) { codes.push("5"); }
-        if flags.contains(StyleFlags::REVERSE) { codes.push("7"); }
-        if flags.contains(StyleFlags::HIDDEN) { codes.push("8"); }
-        if flags.contains(StyleFlags::STRIKETHROUGH) { codes.push("9"); }
+        if flags.contains(StyleFlags::BOLD) {
+            codes.push("1");
+        }
+        if flags.contains(StyleFlags::DIM) {
+            codes.push("2");
+        }
+        if flags.contains(StyleFlags::ITALIC) {
+            codes.push("3");
+        }
+        if flags.contains(StyleFlags::UNDERLINE) {
+            codes.push("4");
+        }
+        if flags.contains(StyleFlags::BLINK) {
+            codes.push("5");
+        }
+        if flags.contains(StyleFlags::REVERSE) {
+            codes.push("7");
+        }
+        if flags.contains(StyleFlags::HIDDEN) {
+            codes.push("8");
+        }
+        if flags.contains(StyleFlags::STRIKETHROUGH) {
+            codes.push("9");
+        }
 
         if !codes.is_empty() {
-            write!(self.writer(), "\x1b[{}m", codes.join(";"))?;
+            write!(writer, "\x1b[{}m", codes.join(";"))?;
         }
 
         Ok(())
@@ -514,6 +664,12 @@ impl<W: Write> TerminalWriter<W> {
             self.cursor_saved = false;
         }
 
+        // Reset scroll region if active
+        if self.scroll_region_active {
+            let _ = writer.write_all(b"\x1b[r");
+            self.scroll_region_active = false;
+        }
+
         // Reset style
         let _ = writer.write_all(b"\x1b[0m");
 
@@ -616,7 +772,11 @@ mod tests {
 
         // Should contain cursor save and restore
         assert!(output.windows(CURSOR_SAVE.len()).any(|w| w == CURSOR_SAVE));
-        assert!(output.windows(CURSOR_RESTORE.len()).any(|w| w == CURSOR_RESTORE));
+        assert!(
+            output
+                .windows(CURSOR_RESTORE.len())
+                .any(|w| w == CURSOR_RESTORE)
+        );
     }
 
     #[test]
@@ -726,7 +886,11 @@ mod tests {
         }
 
         // Should contain cursor restore
-        assert!(output.windows(CURSOR_RESTORE.len()).any(|w| w == CURSOR_RESTORE));
+        assert!(
+            output
+                .windows(CURSOR_RESTORE.len())
+                .any(|w| w == CURSOR_RESTORE)
+        );
     }
 
     #[test]
@@ -891,17 +1055,22 @@ mod tests {
         }
 
         // Should have cursor save before each UI present
-        let save_count = output.windows(CURSOR_SAVE.len())
+        let save_count = output
+            .windows(CURSOR_SAVE.len())
             .filter(|w| *w == CURSOR_SAVE)
             .count();
         assert_eq!(save_count, 2, "Should have saved cursor twice");
 
         // Should have cursor restore after each UI present
-        let restore_count = output.windows(CURSOR_RESTORE.len())
+        let restore_count = output
+            .windows(CURSOR_RESTORE.len())
             .filter(|w| *w == CURSOR_RESTORE)
             .count();
         // At least 2 from presents, plus 1 from drop cleanup = 3
-        assert!(restore_count >= 2, "Should have restored cursor at least twice");
+        assert!(
+            restore_count >= 2,
+            "Should have restored cursor at least twice"
+        );
     }
 
     #[test]
@@ -919,5 +1088,296 @@ mod tests {
 
         // Should saturate to 0, not underflow
         assert_eq!(writer.ui_start_row(), 0);
+    }
+
+    // --- Scroll-region optimization tests ---
+
+    /// Capabilities that enable scroll-region strategy (no mux, scroll_region + sync_output).
+    fn scroll_region_caps() -> TerminalCapabilities {
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        caps.sync_output = true;
+        caps
+    }
+
+    /// Capabilities for hybrid strategy (scroll_region but no sync_output).
+    fn hybrid_caps() -> TerminalCapabilities {
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        caps
+    }
+
+    /// Capabilities that force overlay (in tmux even with scroll_region).
+    fn mux_caps() -> TerminalCapabilities {
+        let mut caps = TerminalCapabilities::basic();
+        caps.scroll_region = true;
+        caps.sync_output = true;
+        caps.in_tmux = true;
+        caps
+    }
+
+    #[test]
+    fn strategy_selected_from_capabilities() {
+        // No capabilities → OverlayRedraw
+        let w = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(w.inline_strategy(), InlineStrategy::OverlayRedraw);
+
+        // scroll_region + sync_output → ScrollRegion
+        let w = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            scroll_region_caps(),
+        );
+        assert_eq!(w.inline_strategy(), InlineStrategy::ScrollRegion);
+
+        // scroll_region only → Hybrid
+        let w = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            hybrid_caps(),
+        );
+        assert_eq!(w.inline_strategy(), InlineStrategy::Hybrid);
+
+        // In mux → OverlayRedraw even with all caps
+        let w = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            mux_caps(),
+        );
+        assert_eq!(w.inline_strategy(), InlineStrategy::OverlayRedraw);
+    }
+
+    #[test]
+    fn scroll_region_activated_on_present() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                scroll_region_caps(),
+            );
+            writer.set_size(80, 24);
+            assert!(!writer.scroll_region_active());
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer).unwrap();
+            assert!(writer.scroll_region_active());
+        }
+
+        // Should contain DECSTBM: ESC [ 1 ; 19 r (rows 1-19 are log region)
+        let expected = b"\x1b[1;19r";
+        assert!(
+            output.windows(expected.len()).any(|w| w == expected),
+            "Should set scroll region to rows 1-19"
+        );
+    }
+
+    #[test]
+    fn scroll_region_not_activated_for_overlay() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer).unwrap();
+            assert!(!writer.scroll_region_active());
+        }
+
+        // Should NOT contain any scroll region setup
+        let decstbm = b"\x1b[1;19r";
+        assert!(
+            !output.windows(decstbm.len()).any(|w| w == decstbm),
+            "OverlayRedraw should not set scroll region"
+        );
+    }
+
+    #[test]
+    fn scroll_region_not_activated_in_mux() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                mux_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer).unwrap();
+            assert!(!writer.scroll_region_active());
+        }
+
+        // Should NOT contain scroll region setup despite having the capability
+        let decstbm = b"\x1b[1;19r";
+        assert!(
+            !output.windows(decstbm.len()).any(|w| w == decstbm),
+            "Mux environment should not use scroll region"
+        );
+    }
+
+    #[test]
+    fn scroll_region_reset_on_cleanup() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                scroll_region_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer).unwrap();
+            // Dropped here - cleanup should reset scroll region
+        }
+
+        // Should contain scroll region reset: ESC [ r
+        let reset = b"\x1b[r";
+        assert!(
+            output.windows(reset.len()).any(|w| w == reset),
+            "Cleanup should reset scroll region"
+        );
+    }
+
+    #[test]
+    fn scroll_region_reset_on_resize() {
+        let output = Vec::new();
+        let mut writer = TerminalWriter::new(
+            output,
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            scroll_region_caps(),
+        );
+        writer.set_size(80, 24);
+
+        // Manually activate scroll region
+        writer.activate_scroll_region(5).unwrap();
+        assert!(writer.scroll_region_active());
+
+        // Resize should deactivate it
+        writer.set_size(80, 40);
+        assert!(!writer.scroll_region_active());
+    }
+
+    #[test]
+    fn scroll_region_reactivated_after_resize() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                scroll_region_caps(),
+            );
+            writer.set_size(80, 24);
+
+            // First present activates scroll region
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer).unwrap();
+            assert!(writer.scroll_region_active());
+
+            // Resize deactivates
+            writer.set_size(80, 40);
+            assert!(!writer.scroll_region_active());
+
+            // Next present re-activates with new dimensions
+            let buffer2 = Buffer::new(80, 5);
+            writer.present_ui(&buffer2).unwrap();
+            assert!(writer.scroll_region_active());
+        }
+
+        // Should contain the new scroll region: ESC [ 1 ; 35 r (40 - 5 = 35)
+        let new_region = b"\x1b[1;35r";
+        assert!(
+            output.windows(new_region.len()).any(|w| w == new_region),
+            "Should set scroll region to new dimensions after resize"
+        );
+    }
+
+    #[test]
+    fn hybrid_strategy_activates_scroll_region() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                hybrid_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer).unwrap();
+            assert!(writer.scroll_region_active());
+        }
+
+        // Hybrid uses scroll region as internal optimization
+        let expected = b"\x1b[1;19r";
+        assert!(
+            output.windows(expected.len()).any(|w| w == expected),
+            "Hybrid should activate scroll region as optimization"
+        );
+    }
+
+    #[test]
+    fn altscreen_does_not_activate_scroll_region() {
+        let output = Vec::new();
+        let mut writer = TerminalWriter::new(
+            output,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            scroll_region_caps(),
+        );
+        writer.set_size(80, 24);
+
+        let buffer = Buffer::new(80, 24);
+        writer.present_ui(&buffer).unwrap();
+        assert!(!writer.scroll_region_active());
+    }
+
+    #[test]
+    fn scroll_region_still_saves_restores_cursor() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                scroll_region_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer).unwrap();
+        }
+
+        // Even with scroll region, cursor save/restore is used for UI presents
+        assert!(
+            output.windows(CURSOR_SAVE.len()).any(|w| w == CURSOR_SAVE),
+            "Scroll region mode should still save cursor"
+        );
+        assert!(
+            output
+                .windows(CURSOR_RESTORE.len())
+                .any(|w| w == CURSOR_RESTORE),
+            "Scroll region mode should still restore cursor"
+        );
     }
 }

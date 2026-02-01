@@ -21,7 +21,7 @@ impl Write for SharedWriter {
 fn repro_redundant_cup_after_wide_char() {
     let output = Arc::new(Mutex::new(Vec::new()));
     let writer = SharedWriter(output.clone());
-    
+
     // Setup presenter
     let caps = TerminalCapabilities::basic();
     let mut presenter = Presenter::new(writer, caps);
@@ -35,22 +35,22 @@ fn repro_redundant_cup_after_wide_char() {
     let diff1 = BufferDiff::compute(&empty, &buf1);
 
     presenter.present(&buf1, &diff1).unwrap();
-    
+
     // Clear output buffer to check Frame 2 cleanly
     output.lock().unwrap().clear();
-    
+
     // Frame 2: Render "A" at (2,0). "日" is unchanged.
     let mut buf2 = buf1.clone();
     buf2.set_raw(2, 0, Cell::from_char('A'));
-    
+
     let diff2 = BufferDiff::compute(&buf1, &buf2);
     assert_eq!(diff2.len(), 1);
-    
+
     presenter.present(&buf2, &diff2).unwrap();
-    
+
     let bytes = output.lock().unwrap().clone();
     let output_str = String::from_utf8_lossy(&bytes);
-    
+
     // Debug output
     println!("Frame 2 output: {:?}", output_str);
 
@@ -90,5 +90,9 @@ fn repro_redundant_cup_after_wide_char() {
     }
 
     // Verify 'A' is present in output
-    assert!(output_str.contains('A'), "Output should contain 'A': {:?}", output_str);
+    assert!(
+        output_str.contains('A'),
+        "Output should contain 'A': {:?}",
+        output_str
+    );
 }

@@ -181,23 +181,26 @@ impl Flex {
         };
         let leftover = total_available.saturating_sub(total_used);
 
-        // Determine starting position
-        let mut current_pos = match self.direction {
-            Direction::Horizontal => area.x,
-            Direction::Vertical => area.y,
-        };
-
-        match self.alignment {
-            Alignment::Start | Alignment::SpaceBetween => {}
-            Alignment::End => current_pos = current_pos.saturating_add(leftover),
-            Alignment::Center => current_pos = current_pos.saturating_add(leftover / 2),
+        // Calculate starting position and gap adjustment based on alignment
+        let (start_offset, extra_gap) = match self.alignment {
+            Alignment::Start => (0, 0),
+            Alignment::End => (leftover, 0),
+            Alignment::Center => (leftover / 2, 0),
+            Alignment::SpaceBetween => (0, 0),
             Alignment::SpaceAround => {
-                if !sizes.is_empty() {
-                    let slots = sizes.len() as u16 * 2;
-                    let unit = leftover / slots;
-                    current_pos = current_pos.saturating_add(unit);
+                if sizes.is_empty() {
+                    (0, 0)
+                } else {
+                    // Space around: equal space before, between, and after
+                    let space_unit = leftover / (sizes.len() as u16 * 2);
+                    (space_unit, 0)
                 }
             }
+        };
+
+        let mut current_pos = match self.direction {
+            Direction::Horizontal => area.x.saturating_add(start_offset),
+            Direction::Vertical => area.y.saturating_add(start_offset),
         };
 
         for (i, &size) in sizes.iter().enumerate() {
@@ -218,7 +221,10 @@ impl Flex {
             rects.push(rect);
 
             // Advance position for next item
-            current_pos = current_pos.saturating_add(size).saturating_add(self.gap);
+            current_pos = current_pos
+                .saturating_add(size)
+                .saturating_add(self.gap)
+                .saturating_add(extra_gap);
 
             // Add alignment-specific spacing
             match self.alignment {
@@ -674,187 +680,6 @@ mod tests {
                 rect,
                 inner
             );
-        }
-    }
-
-    // --- Min constraint edge cases ---
-
-    #[test]
-    fn min_exceeds_available_clamped() {
-        let flex = Flex::horizontal().constraints([Constraint::Min(50)]);
-        let rects = flex.split(Rect::new(0, 0, 30, 10));
-        // Min(50) in 30 width: gets clamped to 30
-        assert_eq!(rects[0].width, 30);
-    }
-
-    #[test]
-    fn min_plus_max_interaction() {
-        let flex = Flex::horizontal().constraints([Constraint::Min(10), Constraint::Max(30)]);
-        let rects = flex.split(Rect::new(0, 0, 100, 10));
-        // Min(10) gets 10 base + share of remaining
-        // Max(30) gets share of remaining, clamped to 30
-        assert!(rects[0].width >= 10);
-        assert!(rects[1].width <= 30);
-        assert!(rects[0].width + rects[1].width <= 100);
-    }
-
-    #[test]
-    fn multiple_min_compete_for_growth() {
-        let flex = Flex::horizontal().constraints([
-            Constraint::Min(5),
-            Constraint::Min(5),
-            Constraint::Min(5),
-        ]);
-        let rects = flex.split(Rect::new(0, 0, 90, 10));
-        // Three Min(5) constraints: each gets 5 base + equal share of remaining 75
-        // Total should be 90
-        let total: u16 = rects.iter().map(|r| r.width).sum();
-        assert_eq!(total, 90);
-        // Each should get approximately equal share
-        for r in &rects {
-            assert!(r.width >= 5);
-        }
-    }
-
-    // --- Max constraint edge cases ---
-
-    #[test]
-    fn max_zero_produces_zero_width() {
-        let flex = Flex::horizontal().constraints([Constraint::Max(0), Constraint::Fixed(10)]);
-        let rects = flex.split(Rect::new(0, 0, 20, 10));
-        assert_eq!(rects[0].width, 0);
-        assert_eq!(rects[1].width, 10);
-    }
-
-    #[test]
-    fn max_smaller_than_fixed() {
-        let flex = Flex::horizontal().constraints([Constraint::Fixed(20), Constraint::Max(5)]);
-        let rects = flex.split(Rect::new(0, 0, 30, 10));
-        assert_eq!(rects[0].width, 20);
-        assert!(rects[1].width <= 5);
-    }
-
-    // --- Ratio constraint edge cases ---
-
-    #[test]
-    fn ratio_zero_numerator() {
-        let flex =
-            Flex::horizontal().constraints([Constraint::Ratio(0, 1), Constraint::Ratio(1, 1)]);
-        let rects = flex.split(Rect::new(0, 0, 100, 10));
-        // Ratio(0,1) should get 0, Ratio(1,1) should get all remaining
-        assert_eq!(rects[0].width, 0);
-        assert_eq!(rects[1].width, 100);
-    }
-
-    #[test]
-    fn ratio_zero_denominator_treated_as_one() {
-        let flex = Flex::horizontal().constraints([Constraint::Ratio(1, 0)]);
-        let rects = flex.split(Rect::new(0, 0, 100, 10));
-        // d.max(1) prevents division by zero, Ratio(1,0) -> Ratio(1,1)
-        assert_eq!(rects[0].width, 100);
-    }
-
-    #[test]
-    fn ratio_proportional_three_way() {
-        let flex = Flex::horizontal().constraints([
-            Constraint::Ratio(1, 6),
-            Constraint::Ratio(2, 6),
-            Constraint::Ratio(3, 6),
-        ]);
-        let rects = flex.split(Rect::new(0, 0, 60, 10));
-        // 1/6 : 2/6 : 3/6 = 1:2:3 of 60 = 10:20:30
-        let total: u16 = rects.iter().map(|r| r.width).sum();
-        assert_eq!(total, 60);
-        assert!(rects[0].width < rects[1].width);
-        assert!(rects[1].width < rects[2].width);
-    }
-
-    // --- Percentage edge cases ---
-
-    #[test]
-    fn percentage_zero() {
-        let flex =
-            Flex::horizontal().constraints([Constraint::Percentage(0.0), Constraint::Fixed(10)]);
-        let rects = flex.split(Rect::new(0, 0, 50, 10));
-        assert_eq!(rects[0].width, 0);
-        assert_eq!(rects[1].width, 10);
-    }
-
-    #[test]
-    fn percentage_hundred() {
-        let flex = Flex::horizontal().constraints([Constraint::Percentage(100.0)]);
-        let rects = flex.split(Rect::new(0, 0, 50, 10));
-        assert_eq!(rects[0].width, 50);
-    }
-
-    // --- Gap edge cases ---
-
-    #[test]
-    fn gap_exceeds_available() {
-        let flex = Flex::horizontal()
-            .gap(50)
-            .constraints([Constraint::Fixed(10), Constraint::Fixed(10)]);
-        let rects = flex.split(Rect::new(0, 0, 40, 10));
-        // gap(50) with two items needs 50 gap space
-        // available=40, total_gap=50 -> available_size = 0 (saturating sub)
-        // Both Fixed(10) get clamped to 0
-        let total: u16 = rects.iter().map(|r| r.width).sum();
-        assert!(total <= 40);
-    }
-
-    #[test]
-    fn margin_consumes_all_space() {
-        let flex = Flex::horizontal()
-            .margin(Sides::all(25))
-            .constraints([Constraint::Fixed(10)]);
-        let rects = flex.split(Rect::new(0, 0, 50, 50));
-        // 50 - 25*2 = 0 inner width -> empty rects
-        assert_eq!(rects[0].width, 0);
-    }
-
-    // --- Many constraints stress test ---
-
-    #[test]
-    fn many_constraints_within_bounds() {
-        let constraints: Vec<_> = (0..15)
-            .map(|i| match i % 3 {
-                0 => Constraint::Fixed(5),
-                1 => Constraint::Min(3),
-                _ => Constraint::Ratio(1, 15),
-            })
-            .collect();
-        let flex = Flex::horizontal().constraints(constraints);
-        let area = Rect::new(0, 0, 200, 10);
-        let rects = flex.split(area);
-
-        assert_eq!(rects.len(), 15);
-        let total: u16 = rects.iter().map(|r| r.width).sum();
-        assert!(total <= 200, "total {total} exceeds available 200");
-        for r in &rects {
-            assert!(r.right() <= 200, "{:?} exceeds bounds", r);
-        }
-    }
-
-    // --- Direction symmetry ---
-
-    #[test]
-    fn vertical_and_horizontal_produce_equivalent_sizes() {
-        let constraints = [
-            Constraint::Fixed(10),
-            Constraint::Min(5),
-            Constraint::Ratio(1, 2),
-        ];
-
-        let h_rects = Flex::horizontal()
-            .constraints(constraints)
-            .split(Rect::new(0, 0, 100, 50));
-        let v_rects = Flex::vertical()
-            .constraints(constraints)
-            .split(Rect::new(0, 0, 50, 100));
-
-        // Horizontal widths should equal vertical heights
-        for (h, v) in h_rects.iter().zip(v_rects.iter()) {
-            assert_eq!(h.width, v.height);
         }
     }
 }

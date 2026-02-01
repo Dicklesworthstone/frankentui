@@ -26,10 +26,12 @@
 //! ```
 
 use crate::cell::{CellAttrs, PackedRgba, StyleFlags};
+use unicode_width::UnicodeWidthChar;
 
 /// A single cell in the terminal model grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCell {
+    // ... (existing code matches, just updating imports implies I need context for replace)
     /// Character content (default is space).
     pub ch: char,
     /// Foreground color.
@@ -462,6 +464,8 @@ impl TerminalModel {
     }
 
     fn put_char(&mut self, ch: char) {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+
         if self.cursor_x < self.width && self.cursor_y < self.height {
             let cell = &mut self.cells[self.cursor_y * self.width + self.cursor_x];
             cell.ch = ch;
@@ -469,8 +473,20 @@ impl TerminalModel {
             cell.bg = self.sgr.bg;
             cell.attrs = CellAttrs::new(self.sgr.flags, self.current_link_id);
             cell.link_id = self.current_link_id;
-            self.cursor_x += 1;
+
+            // Handle wide characters (clear the next cell if it exists)
+            if width == 2 && self.cursor_x + 1 < self.width {
+                let next_cell = &mut self.cells[self.cursor_y * self.width + self.cursor_x + 1];
+                next_cell.ch = ' '; // Clear content
+                next_cell.fg = self.sgr.fg; // Extend background color
+                next_cell.bg = self.sgr.bg;
+                next_cell.attrs = CellAttrs::NONE; // Clear attributes (or should they extend?)
+                next_cell.link_id = 0; // Clear link
+            }
         }
+
+        self.cursor_x += width;
+
         // Handle line wrap if at edge
         if self.cursor_x >= self.width {
             self.cursor_x = 0;

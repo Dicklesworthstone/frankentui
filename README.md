@@ -22,6 +22,7 @@ clean architecture across multiple crates.
 - **Risk Register**: `docs/risk-register.md` — failure modes and mitigations
 - **Glossary**: `docs/glossary.md` — terminology and definitions
 - Architecture Decision Records: `docs/adr/README.md`
+- Screen modes (inline vs alt-screen): `docs/concepts/screen-modes.md`
 - Rendering/terminal state machines: `docs/spec/state-machines.md`
 - Test coverage expectations: `docs/testing/coverage-matrix.md`
 - One-Writer Rule guidance: `docs/one-writer-rule.md`

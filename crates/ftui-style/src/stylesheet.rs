@@ -108,7 +108,10 @@ impl StyleSheet {
         let sheet = Self::new();
 
         // Error: Red, bold
-        sheet.define("error", Style::new().fg(PackedRgba::rgb(255, 85, 85)).bold());
+        sheet.define(
+            "error",
+            Style::new().fg(PackedRgba::rgb(255, 85, 85)).bold(),
+        );
 
         // Warning: Orange/yellow
         sheet.define("warning", Style::new().fg(PackedRgba::rgb(255, 170, 0)));
@@ -120,7 +123,10 @@ impl StyleSheet {
         sheet.define("success", Style::new().fg(PackedRgba::rgb(85, 255, 85)));
 
         // Muted: Gray, dim
-        sheet.define("muted", Style::new().fg(PackedRgba::rgb(128, 128, 128)).dim());
+        sheet.define(
+            "muted",
+            Style::new().fg(PackedRgba::rgb(128, 128, 128)).dim(),
+        );
 
         // Highlight: Yellow background
         sheet.define(

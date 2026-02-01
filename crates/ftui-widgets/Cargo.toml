@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+debug-overlay = []
+tracing = ["dep:tracing", "ftui-render/tracing"]
+
 [dependencies]
 bitflags = "2.10.0"
 ftui-core = { path = "../ftui-core" }
@@ -11,5 +16,15 @@ ftui-layout = { path = "../ftui-layout" }
 ftui-render = { path = "../ftui-render" }
 ftui-style = { path = "../ftui-style" }
 ftui-text = { path = "../ftui-text" }
+tracing = { version = "0.1", optional = true }
 unicode-segmentation = "1.11"
 unicode-width = "0.2"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["registry"] }
+
+[[bench]]
+name = "widget_bench"
+harness = false

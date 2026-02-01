@@ -6,7 +6,5 @@ publish = false
 
 [dependencies]
 ftui-core = { path = "../ftui-core" }
+portable-pty = "0.8.1"
 time = { version = "0.3", features = ["formatting"] }
-
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.25.1", default-features = false, features = ["poll", "process", "signal", "term"] }

@@ -57,8 +57,7 @@ fn combining_text(len: usize) -> String {
 
 /// ZWJ sequences (complex graphemes)
 fn zwj_text(count: usize) -> String {
-    "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
-        .repeat(count)
+    "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".repeat(count)
 }
 
 // =============================================================================

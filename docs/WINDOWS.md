@@ -41,7 +41,8 @@ v1 behavior, not a guarantee for every Windows terminal.
 - Prefer **Windows Terminal** for the best experience.
 - Use a Unicode-capable font (Cascadia Mono, JetBrains Mono, Fira Code).
 - If using legacy consoles, ensure UTF-8 mode is enabled.
-- If `TERM`/`COLORTERM` are missing, expect reduced feature detection.
+- `WT_SESSION` (Windows Terminal) is treated as authoritative even if `TERM` is missing.
+- If `TERM`/`COLORTERM` are missing and `WT_SESSION` is not set, expect reduced feature detection.
 
 ## Troubleshooting
 

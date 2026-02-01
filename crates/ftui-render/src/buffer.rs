@@ -239,16 +239,23 @@ impl Buffer {
             // Cleanup overlaps
             self.cleanup_overlap(x, y, &cell);
 
+            // Composite background: new cell's bg over existing cell's bg
+            let existing_bg = self.cells[idx].bg;
+            let composited_bg = cell.bg.over(existing_bg);
+
             // Apply opacity
             let final_cell = if self.current_opacity() < 1.0 {
                 let opacity = self.current_opacity();
                 Cell {
                     fg: cell.fg.with_opacity(opacity),
-                    bg: cell.bg.with_opacity(opacity),
+                    bg: composited_bg.with_opacity(opacity),
                     ..cell
                 }
             } else {
-                cell
+                Cell {
+                    bg: composited_bg,
+                    ..cell
+                }
             };
 
             self.cells[idx] = final_cell;

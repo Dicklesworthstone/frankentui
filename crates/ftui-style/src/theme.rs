@@ -169,9 +169,13 @@ impl Theme {
     /// terminal interaction which isn't always safe or fast.
     #[must_use]
     pub fn detect_dark_mode() -> bool {
+        Self::detect_dark_mode_from_colorfgbg(env::var("COLORFGBG").ok().as_deref())
+    }
+
+    fn detect_dark_mode_from_colorfgbg(colorfgbg: Option<&str>) -> bool {
         // COLORFGBG format: "fg;bg" where values are ANSI color indices
         // Common light terminals use bg=15 (white), dark use bg=0 (black)
-        if let Ok(colorfgbg) = env::var("COLORFGBG")
+        if let Some(colorfgbg) = colorfgbg
             && let Some(bg_part) = colorfgbg.split(';').next_back()
             && let Ok(bg) = bg_part.trim().parse::<u8>()
         {
@@ -397,24 +401,24 @@ pub mod themes {
     #[must_use]
     pub fn dark() -> Theme {
         Theme {
-            primary: AdaptiveColor::fixed(Color::rgb(88, 166, 255)),    // Blue
+            primary: AdaptiveColor::fixed(Color::rgb(88, 166, 255)), // Blue
             secondary: AdaptiveColor::fixed(Color::rgb(163, 113, 247)), // Purple
-            accent: AdaptiveColor::fixed(Color::rgb(255, 123, 114)),    // Coral
+            accent: AdaptiveColor::fixed(Color::rgb(255, 123, 114)), // Coral
 
-            background: AdaptiveColor::fixed(Color::rgb(22, 27, 34)),  // Dark gray
-            surface: AdaptiveColor::fixed(Color::rgb(33, 38, 45)),     // Slightly lighter
-            overlay: AdaptiveColor::fixed(Color::rgb(48, 54, 61)),     // Even lighter
+            background: AdaptiveColor::fixed(Color::rgb(22, 27, 34)), // Dark gray
+            surface: AdaptiveColor::fixed(Color::rgb(33, 38, 45)),    // Slightly lighter
+            overlay: AdaptiveColor::fixed(Color::rgb(48, 54, 61)),    // Even lighter
 
-            text: AdaptiveColor::fixed(Color::rgb(230, 237, 243)),        // Bright
-            text_muted: AdaptiveColor::fixed(Color::rgb(139, 148, 158)),  // Gray
+            text: AdaptiveColor::fixed(Color::rgb(230, 237, 243)), // Bright
+            text_muted: AdaptiveColor::fixed(Color::rgb(139, 148, 158)), // Gray
             text_subtle: AdaptiveColor::fixed(Color::rgb(110, 118, 129)), // Darker gray
 
-            success: AdaptiveColor::fixed(Color::rgb(63, 185, 80)),   // Green
-            warning: AdaptiveColor::fixed(Color::rgb(210, 153, 34)),  // Yellow
-            error: AdaptiveColor::fixed(Color::rgb(248, 81, 73)),     // Red
-            info: AdaptiveColor::fixed(Color::rgb(88, 166, 255)),     // Blue
+            success: AdaptiveColor::fixed(Color::rgb(63, 185, 80)), // Green
+            warning: AdaptiveColor::fixed(Color::rgb(210, 153, 34)), // Yellow
+            error: AdaptiveColor::fixed(Color::rgb(248, 81, 73)),   // Red
+            info: AdaptiveColor::fixed(Color::rgb(88, 166, 255)),   // Blue
 
-            border: AdaptiveColor::fixed(Color::rgb(48, 54, 61)),       // Subtle
+            border: AdaptiveColor::fixed(Color::rgb(48, 54, 61)), // Subtle
             border_focused: AdaptiveColor::fixed(Color::rgb(88, 166, 255)), // Accent
 
             selection_bg: AdaptiveColor::fixed(Color::rgb(56, 139, 253)), // Blue
@@ -429,24 +433,24 @@ pub mod themes {
     #[must_use]
     pub fn light() -> Theme {
         Theme {
-            primary: AdaptiveColor::fixed(Color::rgb(9, 105, 218)),      // Blue
-            secondary: AdaptiveColor::fixed(Color::rgb(130, 80, 223)),   // Purple
-            accent: AdaptiveColor::fixed(Color::rgb(207, 34, 46)),       // Red
+            primary: AdaptiveColor::fixed(Color::rgb(9, 105, 218)), // Blue
+            secondary: AdaptiveColor::fixed(Color::rgb(130, 80, 223)), // Purple
+            accent: AdaptiveColor::fixed(Color::rgb(207, 34, 46)),  // Red
 
             background: AdaptiveColor::fixed(Color::rgb(255, 255, 255)), // White
             surface: AdaptiveColor::fixed(Color::rgb(246, 248, 250)),    // Light gray
             overlay: AdaptiveColor::fixed(Color::rgb(255, 255, 255)),    // White
 
-            text: AdaptiveColor::fixed(Color::rgb(31, 35, 40)),          // Dark
-            text_muted: AdaptiveColor::fixed(Color::rgb(87, 96, 106)),   // Gray
+            text: AdaptiveColor::fixed(Color::rgb(31, 35, 40)), // Dark
+            text_muted: AdaptiveColor::fixed(Color::rgb(87, 96, 106)), // Gray
             text_subtle: AdaptiveColor::fixed(Color::rgb(140, 149, 159)), // Light gray
 
-            success: AdaptiveColor::fixed(Color::rgb(26, 127, 55)),   // Green
-            warning: AdaptiveColor::fixed(Color::rgb(158, 106, 3)),   // Yellow
-            error: AdaptiveColor::fixed(Color::rgb(207, 34, 46)),     // Red
-            info: AdaptiveColor::fixed(Color::rgb(9, 105, 218)),      // Blue
+            success: AdaptiveColor::fixed(Color::rgb(26, 127, 55)), // Green
+            warning: AdaptiveColor::fixed(Color::rgb(158, 106, 3)), // Yellow
+            error: AdaptiveColor::fixed(Color::rgb(207, 34, 46)),   // Red
+            info: AdaptiveColor::fixed(Color::rgb(9, 105, 218)),    // Blue
 
-            border: AdaptiveColor::fixed(Color::rgb(208, 215, 222)),     // Light gray
+            border: AdaptiveColor::fixed(Color::rgb(208, 215, 222)), // Light gray
             border_focused: AdaptiveColor::fixed(Color::rgb(9, 105, 218)), // Accent
 
             selection_bg: AdaptiveColor::fixed(Color::rgb(221, 244, 255)), // Light blue
@@ -461,27 +465,27 @@ pub mod themes {
     #[must_use]
     pub fn nord() -> Theme {
         Theme {
-            primary: AdaptiveColor::fixed(Color::rgb(136, 192, 208)),    // Nord8 (frost)
+            primary: AdaptiveColor::fixed(Color::rgb(136, 192, 208)), // Nord8 (frost)
             secondary: AdaptiveColor::fixed(Color::rgb(180, 142, 173)), // Nord15 (purple)
-            accent: AdaptiveColor::fixed(Color::rgb(191, 97, 106)),     // Nord11 (aurora red)
+            accent: AdaptiveColor::fixed(Color::rgb(191, 97, 106)),   // Nord11 (aurora red)
 
-            background: AdaptiveColor::fixed(Color::rgb(46, 52, 64)),   // Nord0
-            surface: AdaptiveColor::fixed(Color::rgb(59, 66, 82)),      // Nord1
-            overlay: AdaptiveColor::fixed(Color::rgb(67, 76, 94)),      // Nord2
+            background: AdaptiveColor::fixed(Color::rgb(46, 52, 64)), // Nord0
+            surface: AdaptiveColor::fixed(Color::rgb(59, 66, 82)),    // Nord1
+            overlay: AdaptiveColor::fixed(Color::rgb(67, 76, 94)),    // Nord2
 
-            text: AdaptiveColor::fixed(Color::rgb(236, 239, 244)),        // Nord6
-            text_muted: AdaptiveColor::fixed(Color::rgb(216, 222, 233)),  // Nord4
+            text: AdaptiveColor::fixed(Color::rgb(236, 239, 244)), // Nord6
+            text_muted: AdaptiveColor::fixed(Color::rgb(216, 222, 233)), // Nord4
             text_subtle: AdaptiveColor::fixed(Color::rgb(129, 161, 193)), // Nord9
 
-            success: AdaptiveColor::fixed(Color::rgb(163, 190, 140)),  // Nord14 (green)
-            warning: AdaptiveColor::fixed(Color::rgb(235, 203, 139)),  // Nord13 (yellow)
-            error: AdaptiveColor::fixed(Color::rgb(191, 97, 106)),     // Nord11 (red)
-            info: AdaptiveColor::fixed(Color::rgb(129, 161, 193)),     // Nord9 (blue)
+            success: AdaptiveColor::fixed(Color::rgb(163, 190, 140)), // Nord14 (green)
+            warning: AdaptiveColor::fixed(Color::rgb(235, 203, 139)), // Nord13 (yellow)
+            error: AdaptiveColor::fixed(Color::rgb(191, 97, 106)),    // Nord11 (red)
+            info: AdaptiveColor::fixed(Color::rgb(129, 161, 193)),    // Nord9 (blue)
 
-            border: AdaptiveColor::fixed(Color::rgb(76, 86, 106)),         // Nord3
+            border: AdaptiveColor::fixed(Color::rgb(76, 86, 106)), // Nord3
             border_focused: AdaptiveColor::fixed(Color::rgb(136, 192, 208)), // Nord8
 
-            selection_bg: AdaptiveColor::fixed(Color::rgb(76, 86, 106)),   // Nord3
+            selection_bg: AdaptiveColor::fixed(Color::rgb(76, 86, 106)), // Nord3
             selection_fg: AdaptiveColor::fixed(Color::rgb(236, 239, 244)), // Nord6
 
             scrollbar_track: AdaptiveColor::fixed(Color::rgb(59, 66, 82)),
@@ -493,27 +497,27 @@ pub mod themes {
     #[must_use]
     pub fn dracula() -> Theme {
         Theme {
-            primary: AdaptiveColor::fixed(Color::rgb(189, 147, 249)),    // Purple
+            primary: AdaptiveColor::fixed(Color::rgb(189, 147, 249)), // Purple
             secondary: AdaptiveColor::fixed(Color::rgb(255, 121, 198)), // Pink
-            accent: AdaptiveColor::fixed(Color::rgb(139, 233, 253)),    // Cyan
+            accent: AdaptiveColor::fixed(Color::rgb(139, 233, 253)),  // Cyan
 
-            background: AdaptiveColor::fixed(Color::rgb(40, 42, 54)),   // Background
-            surface: AdaptiveColor::fixed(Color::rgb(68, 71, 90)),      // Current line
-            overlay: AdaptiveColor::fixed(Color::rgb(68, 71, 90)),      // Current line
+            background: AdaptiveColor::fixed(Color::rgb(40, 42, 54)), // Background
+            surface: AdaptiveColor::fixed(Color::rgb(68, 71, 90)),    // Current line
+            overlay: AdaptiveColor::fixed(Color::rgb(68, 71, 90)),    // Current line
 
-            text: AdaptiveColor::fixed(Color::rgb(248, 248, 242)),         // Foreground
-            text_muted: AdaptiveColor::fixed(Color::rgb(188, 188, 188)),   // Lighter
-            text_subtle: AdaptiveColor::fixed(Color::rgb(98, 114, 164)),   // Comment
+            text: AdaptiveColor::fixed(Color::rgb(248, 248, 242)), // Foreground
+            text_muted: AdaptiveColor::fixed(Color::rgb(188, 188, 188)), // Lighter
+            text_subtle: AdaptiveColor::fixed(Color::rgb(98, 114, 164)), // Comment
 
-            success: AdaptiveColor::fixed(Color::rgb(80, 250, 123)),   // Green
-            warning: AdaptiveColor::fixed(Color::rgb(255, 184, 108)),  // Orange
-            error: AdaptiveColor::fixed(Color::rgb(255, 85, 85)),      // Red
-            info: AdaptiveColor::fixed(Color::rgb(139, 233, 253)),     // Cyan
+            success: AdaptiveColor::fixed(Color::rgb(80, 250, 123)), // Green
+            warning: AdaptiveColor::fixed(Color::rgb(255, 184, 108)), // Orange
+            error: AdaptiveColor::fixed(Color::rgb(255, 85, 85)),    // Red
+            info: AdaptiveColor::fixed(Color::rgb(139, 233, 253)),   // Cyan
 
-            border: AdaptiveColor::fixed(Color::rgb(68, 71, 90)),          // Current line
+            border: AdaptiveColor::fixed(Color::rgb(68, 71, 90)), // Current line
             border_focused: AdaptiveColor::fixed(Color::rgb(189, 147, 249)), // Purple
 
-            selection_bg: AdaptiveColor::fixed(Color::rgb(68, 71, 90)),    // Current line
+            selection_bg: AdaptiveColor::fixed(Color::rgb(68, 71, 90)), // Current line
             selection_fg: AdaptiveColor::fixed(Color::rgb(248, 248, 242)), // Foreground
 
             scrollbar_track: AdaptiveColor::fixed(Color::rgb(40, 42, 54)),
@@ -525,27 +529,27 @@ pub mod themes {
     #[must_use]
     pub fn solarized_dark() -> Theme {
         Theme {
-            primary: AdaptiveColor::fixed(Color::rgb(38, 139, 210)),    // Blue
+            primary: AdaptiveColor::fixed(Color::rgb(38, 139, 210)), // Blue
             secondary: AdaptiveColor::fixed(Color::rgb(108, 113, 196)), // Violet
-            accent: AdaptiveColor::fixed(Color::rgb(203, 75, 22)),      // Orange
+            accent: AdaptiveColor::fixed(Color::rgb(203, 75, 22)),   // Orange
 
-            background: AdaptiveColor::fixed(Color::rgb(0, 43, 54)),    // Base03
-            surface: AdaptiveColor::fixed(Color::rgb(7, 54, 66)),       // Base02
-            overlay: AdaptiveColor::fixed(Color::rgb(7, 54, 66)),       // Base02
+            background: AdaptiveColor::fixed(Color::rgb(0, 43, 54)), // Base03
+            surface: AdaptiveColor::fixed(Color::rgb(7, 54, 66)),    // Base02
+            overlay: AdaptiveColor::fixed(Color::rgb(7, 54, 66)),    // Base02
 
-            text: AdaptiveColor::fixed(Color::rgb(131, 148, 150)),        // Base0
-            text_muted: AdaptiveColor::fixed(Color::rgb(101, 123, 131)),  // Base00
-            text_subtle: AdaptiveColor::fixed(Color::rgb(88, 110, 117)),  // Base01
+            text: AdaptiveColor::fixed(Color::rgb(131, 148, 150)), // Base0
+            text_muted: AdaptiveColor::fixed(Color::rgb(101, 123, 131)), // Base00
+            text_subtle: AdaptiveColor::fixed(Color::rgb(88, 110, 117)), // Base01
 
-            success: AdaptiveColor::fixed(Color::rgb(133, 153, 0)),    // Green
-            warning: AdaptiveColor::fixed(Color::rgb(181, 137, 0)),    // Yellow
-            error: AdaptiveColor::fixed(Color::rgb(220, 50, 47)),      // Red
-            info: AdaptiveColor::fixed(Color::rgb(38, 139, 210)),      // Blue
+            success: AdaptiveColor::fixed(Color::rgb(133, 153, 0)), // Green
+            warning: AdaptiveColor::fixed(Color::rgb(181, 137, 0)), // Yellow
+            error: AdaptiveColor::fixed(Color::rgb(220, 50, 47)),   // Red
+            info: AdaptiveColor::fixed(Color::rgb(38, 139, 210)),   // Blue
 
-            border: AdaptiveColor::fixed(Color::rgb(7, 54, 66)),           // Base02
+            border: AdaptiveColor::fixed(Color::rgb(7, 54, 66)), // Base02
             border_focused: AdaptiveColor::fixed(Color::rgb(38, 139, 210)), // Blue
 
-            selection_bg: AdaptiveColor::fixed(Color::rgb(7, 54, 66)),     // Base02
+            selection_bg: AdaptiveColor::fixed(Color::rgb(7, 54, 66)), // Base02
             selection_fg: AdaptiveColor::fixed(Color::rgb(147, 161, 161)), // Base1
 
             scrollbar_track: AdaptiveColor::fixed(Color::rgb(0, 43, 54)),
@@ -557,24 +561,24 @@ pub mod themes {
     #[must_use]
     pub fn solarized_light() -> Theme {
         Theme {
-            primary: AdaptiveColor::fixed(Color::rgb(38, 139, 210)),    // Blue
+            primary: AdaptiveColor::fixed(Color::rgb(38, 139, 210)), // Blue
             secondary: AdaptiveColor::fixed(Color::rgb(108, 113, 196)), // Violet
-            accent: AdaptiveColor::fixed(Color::rgb(203, 75, 22)),      // Orange
+            accent: AdaptiveColor::fixed(Color::rgb(203, 75, 22)),   // Orange
 
             background: AdaptiveColor::fixed(Color::rgb(253, 246, 227)), // Base3
             surface: AdaptiveColor::fixed(Color::rgb(238, 232, 213)),    // Base2
             overlay: AdaptiveColor::fixed(Color::rgb(253, 246, 227)),    // Base3
 
-            text: AdaptiveColor::fixed(Color::rgb(101, 123, 131)),        // Base00
-            text_muted: AdaptiveColor::fixed(Color::rgb(88, 110, 117)),   // Base01
+            text: AdaptiveColor::fixed(Color::rgb(101, 123, 131)), // Base00
+            text_muted: AdaptiveColor::fixed(Color::rgb(88, 110, 117)), // Base01
             text_subtle: AdaptiveColor::fixed(Color::rgb(147, 161, 161)), // Base1
 
-            success: AdaptiveColor::fixed(Color::rgb(133, 153, 0)),    // Green
-            warning: AdaptiveColor::fixed(Color::rgb(181, 137, 0)),    // Yellow
-            error: AdaptiveColor::fixed(Color::rgb(220, 50, 47)),      // Red
-            info: AdaptiveColor::fixed(Color::rgb(38, 139, 210)),      // Blue
+            success: AdaptiveColor::fixed(Color::rgb(133, 153, 0)), // Green
+            warning: AdaptiveColor::fixed(Color::rgb(181, 137, 0)), // Yellow
+            error: AdaptiveColor::fixed(Color::rgb(220, 50, 47)),   // Red
+            info: AdaptiveColor::fixed(Color::rgb(38, 139, 210)),   // Blue
 
-            border: AdaptiveColor::fixed(Color::rgb(238, 232, 213)),      // Base2
+            border: AdaptiveColor::fixed(Color::rgb(238, 232, 213)), // Base2
             border_focused: AdaptiveColor::fixed(Color::rgb(38, 139, 210)), // Blue
 
             selection_bg: AdaptiveColor::fixed(Color::rgb(238, 232, 213)), // Base2
@@ -589,27 +593,27 @@ pub mod themes {
     #[must_use]
     pub fn monokai() -> Theme {
         Theme {
-            primary: AdaptiveColor::fixed(Color::rgb(102, 217, 239)),   // Cyan
+            primary: AdaptiveColor::fixed(Color::rgb(102, 217, 239)), // Cyan
             secondary: AdaptiveColor::fixed(Color::rgb(174, 129, 255)), // Purple
-            accent: AdaptiveColor::fixed(Color::rgb(249, 38, 114)),     // Pink
+            accent: AdaptiveColor::fixed(Color::rgb(249, 38, 114)),   // Pink
 
-            background: AdaptiveColor::fixed(Color::rgb(39, 40, 34)),   // Background
-            surface: AdaptiveColor::fixed(Color::rgb(60, 61, 54)),      // Lighter
-            overlay: AdaptiveColor::fixed(Color::rgb(60, 61, 54)),      // Lighter
+            background: AdaptiveColor::fixed(Color::rgb(39, 40, 34)), // Background
+            surface: AdaptiveColor::fixed(Color::rgb(60, 61, 54)),    // Lighter
+            overlay: AdaptiveColor::fixed(Color::rgb(60, 61, 54)),    // Lighter
 
-            text: AdaptiveColor::fixed(Color::rgb(248, 248, 242)),        // Foreground
-            text_muted: AdaptiveColor::fixed(Color::rgb(189, 189, 189)),  // Gray
-            text_subtle: AdaptiveColor::fixed(Color::rgb(117, 113, 94)),  // Comment
+            text: AdaptiveColor::fixed(Color::rgb(248, 248, 242)), // Foreground
+            text_muted: AdaptiveColor::fixed(Color::rgb(189, 189, 189)), // Gray
+            text_subtle: AdaptiveColor::fixed(Color::rgb(117, 113, 94)), // Comment
 
-            success: AdaptiveColor::fixed(Color::rgb(166, 226, 46)),   // Green
-            warning: AdaptiveColor::fixed(Color::rgb(230, 219, 116)),  // Yellow
-            error: AdaptiveColor::fixed(Color::rgb(249, 38, 114)),     // Pink/red
-            info: AdaptiveColor::fixed(Color::rgb(102, 217, 239)),     // Cyan
+            success: AdaptiveColor::fixed(Color::rgb(166, 226, 46)), // Green
+            warning: AdaptiveColor::fixed(Color::rgb(230, 219, 116)), // Yellow
+            error: AdaptiveColor::fixed(Color::rgb(249, 38, 114)),   // Pink/red
+            info: AdaptiveColor::fixed(Color::rgb(102, 217, 239)),   // Cyan
 
-            border: AdaptiveColor::fixed(Color::rgb(60, 61, 54)),         // Lighter bg
+            border: AdaptiveColor::fixed(Color::rgb(60, 61, 54)), // Lighter bg
             border_focused: AdaptiveColor::fixed(Color::rgb(102, 217, 239)), // Cyan
 
-            selection_bg: AdaptiveColor::fixed(Color::rgb(73, 72, 62)),   // Selection
+            selection_bg: AdaptiveColor::fixed(Color::rgb(73, 72, 62)), // Selection
             selection_fg: AdaptiveColor::fixed(Color::rgb(248, 248, 242)), // Foreground
 
             scrollbar_track: AdaptiveColor::fixed(Color::rgb(39, 40, 34)),
@@ -636,7 +640,7 @@ mod tests {
             Color::rgb(255, 255, 255), // light
             Color::rgb(0, 0, 0),       // dark
         );
-        assert_eq!(color.resolve(true), Color::rgb(0, 0, 0));      // dark
+        assert_eq!(color.resolve(true), Color::rgb(0, 0, 0)); // dark
         assert_eq!(color.resolve(false), Color::rgb(255, 255, 255)); // light
         assert!(color.is_adaptive());
     }
@@ -732,10 +736,7 @@ mod tests {
             dark.background.resolve(true),
             light.background.resolve(false)
         );
-        assert_ne!(
-            dark.background.resolve(true),
-            nord.background.resolve(true)
-        );
+        assert_ne!(dark.background.resolve(true), nord.background.resolve(true));
     }
 
     #[test]
@@ -794,5 +795,167 @@ mod tests {
             &theme.scrollbar_track,
             &theme.scrollbar_thumb,
         ];
+    }
+
+    #[test]
+    fn adaptive_color_default_is_gray() {
+        let color = AdaptiveColor::default();
+        assert!(!color.is_adaptive());
+        assert_eq!(color.resolve(true), Color::rgb(128, 128, 128));
+        assert_eq!(color.resolve(false), Color::rgb(128, 128, 128));
+    }
+
+    #[test]
+    fn theme_builder_default() {
+        let builder = ThemeBuilder::default();
+        let theme = builder.build();
+        // Default builder starts from dark theme
+        assert_eq!(theme, themes::dark());
+    }
+
+    #[test]
+    fn resolved_theme_has_all_19_slots() {
+        let theme = themes::dark();
+        let resolved = theme.resolve(true);
+        // Just verify all slots are accessible without panic
+        let _colors = [
+            resolved.primary,
+            resolved.secondary,
+            resolved.accent,
+            resolved.background,
+            resolved.surface,
+            resolved.overlay,
+            resolved.text,
+            resolved.text_muted,
+            resolved.text_subtle,
+            resolved.success,
+            resolved.warning,
+            resolved.error,
+            resolved.info,
+            resolved.border,
+            resolved.border_focused,
+            resolved.selection_bg,
+            resolved.selection_fg,
+            resolved.scrollbar_track,
+            resolved.scrollbar_thumb,
+        ];
+    }
+
+    #[test]
+    fn dark_and_light_resolve_differently() {
+        let theme = Theme {
+            text: AdaptiveColor::adaptive(Color::rgb(0, 0, 0), Color::rgb(255, 255, 255)),
+            ..themes::dark()
+        };
+        let dark_resolved = theme.resolve(true);
+        let light_resolved = theme.resolve(false);
+        assert_ne!(dark_resolved.text, light_resolved.text);
+        assert_eq!(dark_resolved.text, Color::rgb(255, 255, 255));
+        assert_eq!(light_resolved.text, Color::rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn all_dark_presets_have_dark_backgrounds() {
+        for (name, theme) in [
+            ("dark", themes::dark()),
+            ("nord", themes::nord()),
+            ("dracula", themes::dracula()),
+            ("solarized_dark", themes::solarized_dark()),
+            ("monokai", themes::monokai()),
+        ] {
+            let bg = theme.background.resolve(true);
+            if let Color::Rgb(rgb) = bg {
+                assert!(
+                    rgb.luminance_u8() < 100,
+                    "{name} background too bright: {}",
+                    rgb.luminance_u8()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_light_presets_have_light_backgrounds() {
+        for (name, theme) in [
+            ("light", themes::light()),
+            ("solarized_light", themes::solarized_light()),
+        ] {
+            let bg = theme.background.resolve(false);
+            if let Color::Rgb(rgb) = bg {
+                assert!(
+                    rgb.luminance_u8() > 150,
+                    "{name} background too dark: {}",
+                    rgb.luminance_u8()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn theme_default_equals_dark() {
+        assert_eq!(Theme::default(), themes::dark());
+        assert_eq!(themes::default(), themes::dark());
+    }
+
+    #[test]
+    fn builder_all_setters_chain() {
+        let theme = Theme::builder()
+            .primary(Color::rgb(1, 0, 0))
+            .secondary(Color::rgb(2, 0, 0))
+            .accent(Color::rgb(3, 0, 0))
+            .background(Color::rgb(4, 0, 0))
+            .surface(Color::rgb(5, 0, 0))
+            .overlay(Color::rgb(6, 0, 0))
+            .text(Color::rgb(7, 0, 0))
+            .text_muted(Color::rgb(8, 0, 0))
+            .text_subtle(Color::rgb(9, 0, 0))
+            .success(Color::rgb(10, 0, 0))
+            .warning(Color::rgb(11, 0, 0))
+            .error(Color::rgb(12, 0, 0))
+            .info(Color::rgb(13, 0, 0))
+            .border(Color::rgb(14, 0, 0))
+            .border_focused(Color::rgb(15, 0, 0))
+            .selection_bg(Color::rgb(16, 0, 0))
+            .selection_fg(Color::rgb(17, 0, 0))
+            .scrollbar_track(Color::rgb(18, 0, 0))
+            .scrollbar_thumb(Color::rgb(19, 0, 0))
+            .build();
+        assert_eq!(theme.primary.resolve(true), Color::rgb(1, 0, 0));
+        assert_eq!(theme.scrollbar_thumb.resolve(true), Color::rgb(19, 0, 0));
+    }
+
+    #[test]
+    fn resolved_theme_is_copy() {
+        let theme = themes::dark();
+        let resolved = theme.resolve(true);
+        let copy = resolved;
+        assert_eq!(resolved, copy);
+    }
+
+    #[test]
+    fn detect_dark_mode_with_colorfgbg_dark() {
+        // COLORFGBG "0;0" means fg=0 bg=0 (black bg = dark mode)
+        let result = Theme::detect_dark_mode_from_colorfgbg(Some("0;0"));
+        assert!(result, "bg=0 should be dark mode");
+    }
+
+    #[test]
+    fn detect_dark_mode_with_colorfgbg_light_15() {
+        // COLORFGBG "0;15" means bg=15 (white = light mode)
+        let result = Theme::detect_dark_mode_from_colorfgbg(Some("0;15"));
+        assert!(!result, "bg=15 should be light mode");
+    }
+
+    #[test]
+    fn detect_dark_mode_with_colorfgbg_light_7() {
+        // COLORFGBG "0;7" means bg=7 (silver = light mode)
+        let result = Theme::detect_dark_mode_from_colorfgbg(Some("0;7"));
+        assert!(!result, "bg=7 should be light mode");
+    }
+
+    #[test]
+    fn detect_dark_mode_without_env_defaults_dark() {
+        let result = Theme::detect_dark_mode_from_colorfgbg(None);
+        assert!(result, "missing COLORFGBG should default to dark");
     }
 }

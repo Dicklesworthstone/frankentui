@@ -116,7 +116,12 @@ pub struct PresentStats {
 impl PresentStats {
     /// Create new stats with the given values.
     #[inline]
-    pub fn new(bytes_emitted: u64, cells_changed: usize, run_count: usize, duration: Duration) -> Self {
+    pub fn new(
+        bytes_emitted: u64,
+        cells_changed: usize,
+        run_count: usize,
+        duration: Duration,
+    ) -> Self {
         Self {
             bytes_emitted,
             cells_changed,
@@ -437,7 +442,10 @@ mod tests {
             stats.within_budget(),
             "Single cell update should be within budget"
         );
-        assert!(stats.bytes_emitted < 50, "Spinner tick should be < 50 bytes");
+        assert!(
+            stats.bytes_emitted < 50,
+            "Spinner tick should be < 50 bytes"
+        );
     }
 
     #[test]
@@ -458,13 +466,7 @@ mod tests {
     fn full_redraw_budget() {
         // Full 80x24 screen
         let stats = PresentStats::new(50000, 1920, 24, Duration::from_micros(1000));
-        assert!(
-            stats.within_budget(),
-            "Full redraw should be within budget"
-        );
-        assert!(
-            stats.bytes_emitted < 80000,
-            "Full redraw should be < 80KB"
-        );
+        assert!(stats.within_budget(), "Full redraw should be within budget");
+        assert!(stats.bytes_emitted < 80000, "Full redraw should be < 80KB");
     }
 }

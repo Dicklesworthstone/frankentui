@@ -6,3 +6,10 @@ publish = false
 
 [dependencies]
 ftui-core = { path = "../ftui-core" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "layout_bench"
+harness = false

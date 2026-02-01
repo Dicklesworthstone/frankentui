@@ -75,9 +75,20 @@
 //! ```
 
 use std::io::{self, Write};
+use std::sync::OnceLock;
+
+use crate::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+    PasteEvent,
+};
 
 const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
 const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
+
+#[cfg(unix)]
+use signal_hook::consts::signal::{SIGINT, SIGTERM, SIGWINCH};
+#[cfg(unix)]
+use signal_hook::iterator::Signals;
 
 /// Terminal session configuration options.
 ///
@@ -181,8 +192,9 @@ pub struct SessionOptions {
 ///     // Application loop
 ///     loop {
 ///         if session.poll_event(std::time::Duration::from_millis(100))? {
-///             let event = session.read_event()?;
-///             // Handle event...
+///             if let Some(event) = session.read_event()? {
+///                 // Handle event...
+///             }
 ///         }
 ///     }
 ///     // Session cleaned up when dropped
@@ -197,6 +209,8 @@ pub struct TerminalSession {
     bracketed_paste_enabled: bool,
     focus_events_enabled: bool,
     kitty_keyboard_enabled: bool,
+    #[cfg(unix)]
+    signal_guard: Option<SignalGuard>,
 }
 
 impl TerminalSession {
@@ -206,8 +220,12 @@ impl TerminalSession {
     ///
     /// Returns an error if raw mode cannot be enabled.
     pub fn new(options: SessionOptions) -> io::Result<Self> {
+        install_panic_hook();
+
         // Enter raw mode first
         crossterm::terminal::enable_raw_mode()?;
+        #[cfg(feature = "tracing")]
+        tracing::info!("terminal raw mode enabled");
 
         let mut session = Self {
             options: options.clone(),
@@ -216,6 +234,8 @@ impl TerminalSession {
             bracketed_paste_enabled: false,
             focus_events_enabled: false,
             kitty_keyboard_enabled: false,
+            #[cfg(unix)]
+            signal_guard: Some(SignalGuard::new()?),
         };
 
         // Enable optional features
@@ -224,26 +244,36 @@ impl TerminalSession {
         if options.alternate_screen {
             crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
             session.alternate_screen_enabled = true;
+            #[cfg(feature = "tracing")]
+            tracing::info!("alternate screen enabled");
         }
 
         if options.mouse_capture {
             crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)?;
             session.mouse_enabled = true;
+            #[cfg(feature = "tracing")]
+            tracing::info!("mouse capture enabled");
         }
 
         if options.bracketed_paste {
             crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)?;
             session.bracketed_paste_enabled = true;
+            #[cfg(feature = "tracing")]
+            tracing::info!("bracketed paste enabled");
         }
 
         if options.focus_events {
             crossterm::execute!(stdout, crossterm::event::EnableFocusChange)?;
             session.focus_events_enabled = true;
+            #[cfg(feature = "tracing")]
+            tracing::info!("focus events enabled");
         }
 
         if options.kitty_keyboard {
             Self::enable_kitty_keyboard(&mut stdout)?;
             session.kitty_keyboard_enabled = true;
+            #[cfg(feature = "tracing")]
+            tracing::info!("kitty keyboard enabled");
         }
 
         Ok(session)
@@ -267,8 +297,12 @@ impl TerminalSession {
     }
 
     /// Read the next event (blocking until available).
-    pub fn read_event(&self) -> io::Result<crossterm::event::Event> {
-        crossterm::event::read()
+    ///
+    /// Returns `Ok(None)` if the event cannot be represented by the
+    /// ftui canonical event types (e.g. unsupported key codes).
+    pub fn read_event(&self) -> io::Result<Option<Event>> {
+        let event = crossterm::event::read()?;
+        Ok(map_crossterm_event(event))
     }
 
     /// Show the cursor.
@@ -288,27 +322,38 @@ impl TerminalSession {
 
     /// Cleanup helper (shared between drop and explicit cleanup).
     fn cleanup(&mut self) {
+        #[cfg(unix)]
+        let _ = self.signal_guard.take();
+
         let mut stdout = io::stdout();
 
         // Disable features in reverse order of enabling
         if self.kitty_keyboard_enabled {
             let _ = Self::disable_kitty_keyboard(&mut stdout);
             self.kitty_keyboard_enabled = false;
+            #[cfg(feature = "tracing")]
+            tracing::info!("kitty keyboard disabled");
         }
 
         if self.focus_events_enabled {
             let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
             self.focus_events_enabled = false;
+            #[cfg(feature = "tracing")]
+            tracing::info!("focus events disabled");
         }
 
         if self.bracketed_paste_enabled {
             let _ = crossterm::execute!(stdout, crossterm::event::DisableBracketedPaste);
             self.bracketed_paste_enabled = false;
+            #[cfg(feature = "tracing")]
+            tracing::info!("bracketed paste disabled");
         }
 
         if self.mouse_enabled {
             let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
             self.mouse_enabled = false;
+            #[cfg(feature = "tracing")]
+            tracing::info!("mouse capture disabled");
         }
 
         // Always show cursor before leaving
@@ -317,10 +362,14 @@ impl TerminalSession {
         if self.alternate_screen_enabled {
             let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
             self.alternate_screen_enabled = false;
+            #[cfg(feature = "tracing")]
+            tracing::info!("alternate screen disabled");
         }
 
         // Exit raw mode last
         let _ = crossterm::terminal::disable_raw_mode();
+        #[cfg(feature = "tracing")]
+        tracing::info!("terminal raw mode disabled");
 
         // Flush to ensure cleanup bytes are sent
         let _ = stdout.flush();
@@ -340,6 +389,192 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         self.cleanup();
+    }
+}
+
+fn install_panic_hook() {
+    static HOOK: OnceLock<()> = OnceLock::new();
+    HOOK.get_or_init(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            best_effort_cleanup();
+            previous(info);
+        }));
+    });
+}
+
+fn best_effort_cleanup() {
+    let mut stdout = io::stdout();
+
+    let _ = TerminalSession::disable_kitty_keyboard(&mut stdout);
+    let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
+    let _ = crossterm::execute!(stdout, crossterm::event::DisableBracketedPaste);
+    let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+    let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
+    let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = stdout.flush();
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct SignalGuard {
+    handle: signal_hook::iterator::Handle,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl SignalGuard {
+    fn new() -> io::Result<Self> {
+        let mut signals = Signals::new([SIGINT, SIGTERM, SIGWINCH]).map_err(io::Error::other)?;
+        let handle = signals.handle();
+        let thread = std::thread::spawn(move || {
+            for signal in signals.forever() {
+                match signal {
+                    SIGWINCH => {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!("SIGWINCH received");
+                    }
+                    SIGINT | SIGTERM => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!("termination signal received, cleaning up");
+                        best_effort_cleanup();
+                        std::process::exit(128 + signal);
+                    }
+                    _ => {}
+                }
+            }
+        });
+        Ok(Self {
+            handle,
+            thread: Some(thread),
+        })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn map_crossterm_event(event: crossterm::event::Event) -> Option<Event> {
+    match event {
+        crossterm::event::Event::Key(key) => map_key_event(key).map(Event::Key),
+        crossterm::event::Event::Mouse(mouse) => Some(Event::Mouse(map_mouse_event(mouse))),
+        crossterm::event::Event::Resize(width, height) => Some(Event::Resize { width, height }),
+        crossterm::event::Event::Paste(text) => Some(Event::Paste(PasteEvent::bracketed(text))),
+        crossterm::event::Event::FocusGained => Some(Event::Focus(true)),
+        crossterm::event::Event::FocusLost => Some(Event::Focus(false)),
+    }
+}
+
+fn map_key_event(event: crossterm::event::KeyEvent) -> Option<KeyEvent> {
+    let code = map_key_code(event.code)?;
+    let modifiers = map_modifiers(event.modifiers);
+    let kind = map_key_kind(event.kind);
+    Some(KeyEvent {
+        code,
+        modifiers,
+        kind,
+    })
+}
+
+fn map_key_kind(kind: crossterm::event::KeyEventKind) -> KeyEventKind {
+    match kind {
+        crossterm::event::KeyEventKind::Press => KeyEventKind::Press,
+        crossterm::event::KeyEventKind::Repeat => KeyEventKind::Repeat,
+        crossterm::event::KeyEventKind::Release => KeyEventKind::Release,
+    }
+}
+
+fn map_key_code(code: crossterm::event::KeyCode) -> Option<KeyCode> {
+    match code {
+        crossterm::event::KeyCode::Backspace => Some(KeyCode::Backspace),
+        crossterm::event::KeyCode::Enter => Some(KeyCode::Enter),
+        crossterm::event::KeyCode::Left => Some(KeyCode::Left),
+        crossterm::event::KeyCode::Right => Some(KeyCode::Right),
+        crossterm::event::KeyCode::Up => Some(KeyCode::Up),
+        crossterm::event::KeyCode::Down => Some(KeyCode::Down),
+        crossterm::event::KeyCode::Home => Some(KeyCode::Home),
+        crossterm::event::KeyCode::End => Some(KeyCode::End),
+        crossterm::event::KeyCode::PageUp => Some(KeyCode::PageUp),
+        crossterm::event::KeyCode::PageDown => Some(KeyCode::PageDown),
+        crossterm::event::KeyCode::Tab => Some(KeyCode::Tab),
+        crossterm::event::KeyCode::BackTab => Some(KeyCode::BackTab),
+        crossterm::event::KeyCode::Delete => Some(KeyCode::Delete),
+        crossterm::event::KeyCode::Insert => Some(KeyCode::Insert),
+        crossterm::event::KeyCode::F(n) => Some(KeyCode::F(n)),
+        crossterm::event::KeyCode::Char(c) => Some(KeyCode::Char(c)),
+        crossterm::event::KeyCode::Null => Some(KeyCode::Null),
+        crossterm::event::KeyCode::Esc => Some(KeyCode::Escape),
+        crossterm::event::KeyCode::Media(media) => map_media_key(media),
+        _ => None,
+    }
+}
+
+fn map_media_key(code: crossterm::event::MediaKeyCode) -> Option<KeyCode> {
+    match code {
+        crossterm::event::MediaKeyCode::Play
+        | crossterm::event::MediaKeyCode::Pause
+        | crossterm::event::MediaKeyCode::PlayPause => Some(KeyCode::MediaPlayPause),
+        crossterm::event::MediaKeyCode::Stop => Some(KeyCode::MediaStop),
+        crossterm::event::MediaKeyCode::TrackNext => Some(KeyCode::MediaNextTrack),
+        crossterm::event::MediaKeyCode::TrackPrevious => Some(KeyCode::MediaPrevTrack),
+        _ => None,
+    }
+}
+
+fn map_modifiers(modifiers: crossterm::event::KeyModifiers) -> Modifiers {
+    let mut mapped = Modifiers::NONE;
+    if modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+        mapped |= Modifiers::SHIFT;
+    }
+    if modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+        mapped |= Modifiers::ALT;
+    }
+    if modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+        mapped |= Modifiers::CTRL;
+    }
+    if modifiers.contains(crossterm::event::KeyModifiers::SUPER)
+        || modifiers.contains(crossterm::event::KeyModifiers::HYPER)
+        || modifiers.contains(crossterm::event::KeyModifiers::META)
+    {
+        mapped |= Modifiers::SUPER;
+    }
+    mapped
+}
+
+fn map_mouse_event(event: crossterm::event::MouseEvent) -> MouseEvent {
+    let kind = match event.kind {
+        crossterm::event::MouseEventKind::Down(button) => {
+            MouseEventKind::Down(map_mouse_button(button))
+        }
+        crossterm::event::MouseEventKind::Up(button) => {
+            MouseEventKind::Up(map_mouse_button(button))
+        }
+        crossterm::event::MouseEventKind::Drag(button) => {
+            MouseEventKind::Drag(map_mouse_button(button))
+        }
+        crossterm::event::MouseEventKind::Moved => MouseEventKind::Moved,
+        crossterm::event::MouseEventKind::ScrollUp => MouseEventKind::ScrollUp,
+        crossterm::event::MouseEventKind::ScrollDown => MouseEventKind::ScrollDown,
+        crossterm::event::MouseEventKind::ScrollLeft => MouseEventKind::ScrollLeft,
+        crossterm::event::MouseEventKind::ScrollRight => MouseEventKind::ScrollRight,
+    };
+
+    MouseEvent::new(kind, event.column, event.row).with_modifiers(map_modifiers(event.modifiers))
+}
+
+fn map_mouse_button(button: crossterm::event::MouseButton) -> MouseButton {
+    match button {
+        crossterm::event::MouseButton::Left => MouseButton::Left,
+        crossterm::event::MouseButton::Right => MouseButton::Right,
+        crossterm::event::MouseButton::Middle => MouseButton::Middle,
     }
 }
 

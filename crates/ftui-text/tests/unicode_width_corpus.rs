@@ -106,11 +106,7 @@ const CJK_TESTS: &[WidthTestCase] = &[
     WidthTestCase::new("\u{D55C}\u{AE00}", "hangul (Korean script)", 4),
     WidthTestCase::new("\u{C548}\u{B155}", "annyeong (hello)", 4),
     // Mixed CJK
-    WidthTestCase::new(
-        "\u{4E2D}\u{65E5}\u{D55C}",
-        "Chinese+Japanese+Korean",
-        6,
-    ),
+    WidthTestCase::new("\u{4E2D}\u{65E5}\u{D55C}", "Chinese+Japanese+Korean", 6),
     // CJK Extension B (rare but valid)
     WidthTestCase::new("\u{20000}", "CJK Extension B char", 2),
 ];
@@ -495,7 +491,8 @@ fn control_character_width_tests() {
         // Note: unicode-width 0.2+ returns Some(1) for C0/C1 controls, not None
         // This is technically incorrect for terminals, but we test actual behavior
         assert_eq!(
-            width, case.expected_unicode_width,
+            width,
+            case.expected_unicode_width,
             "Control char '{}' ({}) - expected {}, got {}",
             case.input.escape_unicode(),
             case.description,
@@ -530,7 +527,8 @@ fn variation_selector_width_tests() {
     for case in VARIATION_SELECTOR_TESTS {
         let width = case.input.width();
         assert_eq!(
-            width, case.expected_unicode_width,
+            width,
+            case.expected_unicode_width,
             "Variation selector test '{}' ({}) - expected {}, got {}",
             case.input.escape_unicode(),
             case.description,
@@ -600,7 +598,8 @@ fn pua_width_tests() {
     for case in PUA_TESTS {
         let width = case.input.width();
         assert_eq!(
-            width, case.expected_unicode_width,
+            width,
+            case.expected_unicode_width,
             "PUA test '{}' ({}) - expected {}, got {}",
             case.input.escape_unicode(),
             case.description,
@@ -629,7 +628,8 @@ fn zero_width_tests() {
     for case in ZERO_WIDTH_TESTS {
         let width = case.input.width();
         assert_eq!(
-            width, case.expected_unicode_width,
+            width,
+            case.expected_unicode_width,
             "Zero-width test '{}' ({}) - expected {}, got {}",
             case.input.escape_unicode(),
             case.description,
@@ -718,7 +718,8 @@ fn width_cache_consistency() {
         let direct = s.width();
 
         assert_eq!(
-            cached, direct,
+            cached,
+            direct,
             "Cached width should match direct width for '{}'",
             s.escape_unicode()
         );

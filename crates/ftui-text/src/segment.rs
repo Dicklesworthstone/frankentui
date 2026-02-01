@@ -191,7 +191,7 @@ impl<'a> Segment<'a> {
         if self.is_control() {
             return 0;
         }
-        self.text.width()
+        crate::display_width(&self.text)
     }
 
     /// Calculate cell length with a specific width function.

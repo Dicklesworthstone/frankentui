@@ -28,6 +28,7 @@
 //!     .with_span(Span::styled("OK", Style::new().bold()));
 //! ```
 
+use crate::TextMeasurement;
 use crate::segment::{Segment, SegmentLine, SegmentLines, split_into_lines};
 use ftui_style::Style;
 use std::borrow::Cow;
@@ -77,7 +78,17 @@ impl<'a> Span<'a> {
     #[inline]
     #[must_use]
     pub fn width(&self) -> usize {
-        self.content.width()
+        crate::display_width(&self.content)
+    }
+
+    /// Return bounds-based measurement for this span.
+    #[must_use]
+    pub fn measurement(&self) -> TextMeasurement {
+        let width = self.width();
+        TextMeasurement {
+            minimum: width,
+            maximum: width,
+        }
     }
 
     /// Check if the span is empty.
@@ -220,6 +231,16 @@ impl Line {
     #[must_use]
     pub fn width(&self) -> usize {
         self.spans.iter().map(|s| s.width()).sum()
+    }
+
+    /// Return bounds-based measurement for this line.
+    #[must_use]
+    pub fn measurement(&self) -> TextMeasurement {
+        let width = self.width();
+        TextMeasurement {
+            minimum: width,
+            maximum: width,
+        }
     }
 
     /// Get the spans.
@@ -410,6 +431,16 @@ impl Text {
         self.lines.iter().map(|l| l.width()).max().unwrap_or(0)
     }
 
+    /// Return bounds-based measurement for this text block.
+    #[must_use]
+    pub fn measurement(&self) -> TextMeasurement {
+        let width = self.width();
+        TextMeasurement {
+            minimum: width,
+            maximum: width,
+        }
+    }
+
     /// Get the lines.
     #[inline]
     #[must_use]
@@ -505,7 +536,8 @@ impl Text {
             }
 
             // Calculate how much content we can keep
-            let (content_width, use_ellipsis) = if ellipsis.is_some() && max_width >= ellipsis_width {
+            let (content_width, use_ellipsis) = if ellipsis.is_some() && max_width >= ellipsis_width
+            {
                 (max_width - ellipsis_width, true)
             } else {
                 (max_width, false)
@@ -538,7 +570,10 @@ impl Text {
             }
 
             // Add ellipsis if needed and we have space
-            if use_ellipsis && line_width > max_width && let Some(e) = ellipsis {
+            if use_ellipsis
+                && line_width > max_width
+                && let Some(e) = ellipsis
+            {
                 new_spans.push(Span::raw(e.to_string()));
             }
 

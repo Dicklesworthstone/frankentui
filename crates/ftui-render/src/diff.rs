@@ -104,6 +104,17 @@ impl BufferDiff {
     /// Uses row-major scan for cache efficiency. Both buffers must have
     /// the same dimensions.
     ///
+    /// # Optimizations
+    ///
+    /// - **Row-skip fast path**: unchanged rows are detected via slice
+    ///   equality and skipped entirely. For typical UI updates where most
+    ///   rows are static, this eliminates the majority of per-cell work.
+    /// - **Direct slice iteration**: row slices are computed once per row
+    ///   instead of calling `get_unchecked(x, y)` per cell, eliminating
+    ///   repeated `y * width + x` index arithmetic.
+    /// - **Branchless cell comparison**: `bits_eq` uses bitwise AND to
+    ///   avoid branch mispredictions in the inner loop.
+    ///
     /// # Panics
     ///
     /// Debug-asserts that both buffers have identical dimensions.
@@ -119,18 +130,33 @@ impl BufferDiff {
 
         let width = old.width();
         let height = old.height();
+        let w = width as usize;
 
         // Estimate capacity: assume ~5% of cells change on average
-        let estimated_changes = (width as usize * height as usize) / 20;
+        let estimated_changes = (w * height as usize) / 20;
         let mut changes = Vec::with_capacity(estimated_changes);
 
-        // Row-major scan for cache efficiency
+        let old_cells = old.cells();
+        let new_cells = new.cells();
+
+        // Row-major scan with row-skip fast path
         for y in 0..height {
-            for x in 0..width {
-                let old_cell = old.get_unchecked(x, y);
-                let new_cell = new.get_unchecked(x, y);
+            let row_start = y as usize * w;
+            let old_row = &old_cells[row_start..row_start + w];
+            let new_row = &new_cells[row_start..row_start + w];
+
+            // Fast path: skip entirely unchanged rows.
+            // Cell derives PartialEq over four u32 fields, so slice
+            // equality compiles to tight element-wise comparison that
+            // LLVM can auto-vectorize for 16-byte aligned cells.
+            if old_row == new_row {
+                continue;
+            }
+
+            // Scan for changed cells within this row
+            for (x, (old_cell, new_cell)) in old_row.iter().zip(new_row.iter()).enumerate() {
                 if !old_cell.bits_eq(new_cell) {
-                    changes.push((x, y));
+                    changes.push((x as u16, y));
                 }
             }
         }

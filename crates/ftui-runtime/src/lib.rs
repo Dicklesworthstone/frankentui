@@ -27,7 +27,10 @@ pub mod string_model;
 pub mod subscription;
 pub mod terminal_writer;
 
-pub use input_macro::{InputMacro, MacroPlayer, MacroRecorder, TimedEvent};
+pub use input_macro::{
+    EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayer, MacroRecorder, RecordingFilter,
+    RecordingState, TimedEvent,
+};
 pub use log_sink::LogSink;
 pub use program::{App, AppBuilder, Cmd, Model, Program, ProgramConfig};
 pub use simulator::ProgramSimulator;

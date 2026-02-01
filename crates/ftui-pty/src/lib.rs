@@ -1,32 +1,23 @@
-// Note: We allow unsafe code because Rust 2024 requires unsafe for std::env::set_var,
-// which we use in the child process after fork (where it's safe since single-threaded).
+#![forbid(unsafe_code)]
 
-//! PTY utilities for integration tests.
+//! PTY utilities for subprocess-based integration tests.
+//!
+//! # Why this exists
+//! FrankenTUI needs PTY-backed tests to validate terminal cleanup behavior and
+//! to safely capture subprocess output without corrupting the parent terminal.
+//!
+//! # Safety / policy
+//! - This crate forbids unsafe code (`#![forbid(unsafe_code)]`).
+//! - We use `portable-pty` as a safe, cross-platform abstraction.
 
 use std::fmt;
-use std::io;
+use std::io::{self, Read, Write};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use ftui_core::terminal_session::{SessionOptions, TerminalSession};
-
-#[cfg(unix)]
-use nix::errno::Errno;
-#[cfg(unix)]
-use nix::poll::{PollFd, PollFlags, poll};
-#[cfg(unix)]
-use nix::pty::{ForkptyResult, Winsize, forkpty};
-#[cfg(unix)]
-use nix::sys::signal::{kill, Signal};
-#[cfg(unix)]
-use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-#[cfg(unix)]
-use nix::unistd::{ForkResult, Pid, close, read, write};
-#[cfg(unix)]
-use std::os::unix::io::RawFd;
-#[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
-#[cfg(unix)]
-use std::process::ExitStatus;
+use ftui_core::terminal_session::SessionOptions;
+use portable_pty::{CommandBuilder, ExitStatus, PtySize};
 
 /// Configuration for PTY-backed test sessions.
 #[derive(Debug, Clone)]
@@ -117,7 +108,7 @@ impl CleanupExpectations {
         }
     }
 
-    /// Build expectations from the session options used in the child.
+    /// Build expectations from the session options used by the child.
     pub fn for_session(options: &SessionOptions) -> Self {
         Self {
             sgr_reset: false,
@@ -131,136 +122,95 @@ impl CleanupExpectations {
     }
 }
 
-#[cfg(unix)]
 #[derive(Debug)]
+enum ReaderMsg {
+    Data(Vec<u8>),
+    Eof,
+    Err(io::Error),
+}
+
+/// A spawned PTY session with captured output.
 pub struct PtySession {
-    master_fd: RawFd,
-    child_pid: Pid,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    writer: Box<dyn Write + Send>,
+    rx: mpsc::Receiver<ReaderMsg>,
+    reader_thread: Option<thread::JoinHandle<()>>,
     captured: Vec<u8>,
-    config: PtyConfig,
     eof: bool,
-}
-
-#[cfg(not(unix))]
-#[derive(Debug)]
-pub struct PtySession {
     config: PtyConfig,
 }
 
-/// Spawn a PTY and run the closure with a `TerminalSession` in the child.
-pub fn spawn_app<F>(f: F) -> io::Result<PtySession>
-where
-    F: FnOnce(&mut TerminalSession) -> io::Result<()>,
-{
-    spawn_app_with(PtyConfig::default(), SessionOptions::default(), f)
+impl fmt::Debug for PtySession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PtySession")
+            .field("child_pid", &self.child.process_id())
+            .field("captured_len", &self.captured.len())
+            .field("eof", &self.eof)
+            .field("config", &self.config)
+            .finish()
+    }
 }
 
-/// Spawn a PTY with custom config and session options.
-pub fn spawn_app_with<F>(
-    config: PtyConfig,
-    session_options: SessionOptions,
-    f: F,
-) -> io::Result<PtySession>
-where
-    F: FnOnce(&mut TerminalSession) -> io::Result<()>,
-{
-    spawn_app_with_unix(config, session_options, f)
-}
-
-#[cfg(unix)]
-fn spawn_app_with_unix<F>(
-    mut config: PtyConfig,
-    session_options: SessionOptions,
-    f: F,
-) -> io::Result<PtySession>
-where
-    F: FnOnce(&mut TerminalSession) -> io::Result<()>,
-{
+/// Spawn a command into a new PTY.
+///
+/// `config.term` and `config.env` are applied to the `CommandBuilder` before spawn.
+pub fn spawn_command(mut config: PtyConfig, mut cmd: CommandBuilder) -> io::Result<PtySession> {
     if let Some(name) = config.test_name.as_ref() {
         log_event(config.log_events, "PTY_TEST_START", name);
     }
 
-    let winsize = Winsize {
-        ws_row: config.rows,
-        ws_col: config.cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
+    if let Some(term) = config.term.take() {
+        cmd.env("TERM", term);
+    }
+    for (k, v) in config.env.drain(..) {
+        cmd.env(k, v);
+    }
 
-    // SAFETY: forkpty is safe when the child process doesn't use threads
-    // before exec. We control the child code and ensure thread safety.
-    let ForkptyResult {
-        master,
-        fork_result,
-    } = unsafe { forkpty(Some(&winsize), None) }.map_err(nix_error)?;
+    let pty_system = portable_pty::native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: config.rows,
+            cols: config.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(portable_pty_error)?;
 
-    match fork_result {
-        ForkResult::Parent { child } => {
-            log_event(
-                config.log_events,
-                "PTY_SPAWN",
-                format!("child_pid={}", child),
-            );
+    let child = pair.slave.spawn_command(cmd).map_err(portable_pty_error)?;
+    let mut reader = pair.master.try_clone_reader().map_err(portable_pty_error)?;
+    let writer = pair.master.take_writer().map_err(portable_pty_error)?;
 
-            Ok(PtySession {
-                master_fd: master,
-                child_pid: child,
-                captured: Vec::new(),
-                config,
-                eof: false,
-            })
-        }
-        ForkResult::Child => {
-            let _ = close(master);
-
-            // SAFETY: We're in a child process after fork, which is single-threaded.
-            // The set_var calls are safe here because there are no other threads.
-            if let Some(term) = config.term.take() {
-                unsafe { std::env::set_var("TERM", term) };
-            }
-
-            for (key, value) in &config.env {
-                unsafe { std::env::set_var(key, value) };
-            }
-
-            let mut session = TerminalSession::new(session_options)?;
-            let result = f(&mut session);
-            drop(session);
-
-            match result {
-                Ok(()) => std::process::exit(0),
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+    let reader_thread = thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => {
+                    let _ = tx.send(ReaderMsg::Eof);
+                    break;
+                }
+                Ok(n) => {
+                    let _ = tx.send(ReaderMsg::Data(buf[..n].to_vec()));
+                }
                 Err(err) => {
-                    log_event(
-                        config.log_events,
-                        "PTY_CHILD_ERROR",
-                        format!("child_error={}", err),
-                    );
-                    std::process::exit(1);
+                    let _ = tx.send(ReaderMsg::Err(err));
+                    break;
                 }
             }
         }
-    }
+    });
+
+    Ok(PtySession {
+        child,
+        writer,
+        rx,
+        reader_thread: Some(reader_thread),
+        captured: Vec::new(),
+        eof: false,
+        config,
+    })
 }
 
-#[cfg(not(unix))]
-fn spawn_app_with_unix<F>(
-    config: PtyConfig,
-    _session_options: SessionOptions,
-    _f: F,
-) -> io::Result<PtySession>
-where
-    F: FnOnce(&mut TerminalSession) -> io::Result<()>,
-{
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "PTY support is not available on this platform. test_name={:?}",
-            config.test_name
-        ),
-    ))
-}
-
-#[cfg(unix)]
 impl PtySession {
     /// Read any available output without blocking.
     pub fn read_output(&mut self) -> Vec<u8> {
@@ -270,7 +220,7 @@ impl PtySession {
                 log_event(
                     self.config.log_events,
                     "PTY_READ_ERROR",
-                    format!("error={}", err),
+                    format!("error={err}"),
                 );
                 self.captured.clone()
             }
@@ -301,17 +251,12 @@ impl PtySession {
                 return Ok(self.captured.clone());
             }
 
-            let now = Instant::now();
-            if now >= deadline {
+            if self.eof || Instant::now() >= deadline {
                 break;
             }
 
-            let remaining = deadline - now;
+            let remaining = deadline.saturating_duration_since(Instant::now());
             let _ = self.read_available(remaining)?;
-
-            if self.eof {
-                break;
-            }
         }
 
         Err(io::Error::new(
@@ -326,7 +271,8 @@ impl PtySession {
             return Ok(());
         }
 
-        write(self.master_fd, bytes).map_err(nix_error)?;
+        self.writer.write_all(bytes)?;
+        self.writer.flush()?;
 
         log_event(
             self.config.log_events,
@@ -337,63 +283,9 @@ impl PtySession {
         Ok(())
     }
 
-    /// Send a signal to the child process.
-    pub fn send_signal(&self, signal: Signal) -> io::Result<()> {
-        kill(self.child_pid, signal).map_err(nix_error)?;
-        log_event(
-            self.config.log_events,
-            "PTY_SIGNAL",
-            format!("signal={:?}", signal),
-        );
-        Ok(())
-    }
-
-    /// Request a graceful shutdown (SIGTERM).
-    pub fn terminate(&self) -> io::Result<()> {
-        self.send_signal(Signal::SIGTERM)
-    }
-
-    /// Force-kill the child (SIGKILL).
-    pub fn force_kill(&self) -> io::Result<()> {
-        self.send_signal(Signal::SIGKILL)
-    }
-
     /// Wait for the child to exit and return its status.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        match waitpid(self.child_pid, None).map_err(nix_error)? {
-            WaitStatus::Exited(_, code) => Ok(ExitStatus::from_raw(code << 8)),
-            WaitStatus::Signaled(_, signal, _) => Ok(ExitStatus::from_raw(signal as i32)),
-            other => Err(io::Error::other(format!(
-                "unexpected wait status: {:?}",
-                other
-            ))),
-        }
-    }
-
-    /// Wait for the child to exit, but return `None` if the timeout elapses.
-    pub fn wait_with_timeout(&mut self, timeout: Duration) -> io::Result<Option<ExitStatus>> {
-        let deadline = Instant::now() + timeout;
-
-        loop {
-            match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)).map_err(nix_error)? {
-                WaitStatus::StillAlive => {
-                    if Instant::now() >= deadline {
-                        return Ok(None);
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                WaitStatus::Exited(_, code) => return Ok(Some(ExitStatus::from_raw(code << 8))),
-                WaitStatus::Signaled(_, signal, _) => {
-                    return Ok(Some(ExitStatus::from_raw(signal as i32)));
-                }
-                other => {
-                    return Err(io::Error::other(format!(
-                        "unexpected wait status: {:?}",
-                        other
-                    )));
-                }
-            }
-        }
+        self.child.wait()
     }
 
     /// Access all captured output so far.
@@ -401,9 +293,9 @@ impl PtySession {
         &self.captured
     }
 
-    /// Child PID for logging/debugging.
-    pub fn child_pid(&self) -> Pid {
-        self.child_pid
+    /// Child process id (if available on this platform).
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.process_id()
     }
 
     fn read_available(&mut self, timeout: Duration) -> io::Result<usize> {
@@ -412,49 +304,40 @@ impl PtySession {
         }
 
         let mut total = 0usize;
-        let mut first = true;
-        let mut buffer = [0u8; 8192];
+
+        // First read: optionally wait up to `timeout`.
+        let first = if timeout.is_zero() {
+            self.rx.try_recv().ok()
+        } else {
+            self.rx.recv_timeout(timeout).ok()
+        };
+
+        let mut msg = match first {
+            Some(m) => m,
+            None => return Ok(0),
+        };
 
         loop {
-            let wait = if first {
-                timeout
-            } else {
-                Duration::from_millis(0)
-            };
-            let timeout_ms = duration_to_ms(wait);
-
-            let mut fds = [PollFd::new(
-                self.master_fd,
-                PollFlags::POLLIN | PollFlags::POLLHUP,
-            )];
-            let ready = poll(&mut fds, timeout_ms).map_err(nix_error)?;
-            if ready == 0 {
-                break;
-            }
-
-            let revents = fds[0].revents().unwrap_or(PollFlags::empty());
-            if !revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-                break;
-            }
-
-            match read(self.master_fd, &mut buffer) {
-                Ok(0) => {
+            match msg {
+                ReaderMsg::Data(bytes) => {
+                    total = total.saturating_add(bytes.len());
+                    self.captured.extend_from_slice(&bytes);
+                }
+                ReaderMsg::Eof => {
                     self.eof = true;
                     break;
                 }
-                Ok(count) => {
-                    self.captured.extend_from_slice(&buffer[..count]);
-                    total = total.saturating_add(count);
-                }
-                Err(err) => {
-                    if err == Errno::EAGAIN || err == Errno::EWOULDBLOCK {
-                        break;
-                    }
-                    return Err(nix_error(err));
-                }
+                ReaderMsg::Err(err) => return Err(err),
             }
 
-            first = false;
+            match self.rx.try_recv() {
+                Ok(next) => msg = next,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.eof = true;
+                    break;
+                }
+            }
         }
 
         if total > 0 {
@@ -469,10 +352,15 @@ impl PtySession {
     }
 }
 
-#[cfg(unix)]
 impl Drop for PtySession {
     fn drop(&mut self) {
-        let _ = close(self.master_fd);
+        // Best-effort cleanup: close writer (sends EOF), then try to terminate the child.
+        let _ = self.writer.flush();
+        let _ = self.child.kill();
+
+        if let Some(handle) = self.reader_thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -610,19 +498,8 @@ fn contains_any(haystack: &[u8], needles: &[&[u8]]) -> bool {
         .any(|needle| find_subsequence(haystack, needle).is_some())
 }
 
-#[cfg(unix)]
-fn duration_to_ms(duration: Duration) -> i32 {
-    let ms = duration.as_millis();
-    if ms > i32::MAX as u128 {
-        i32::MAX
-    } else {
-        ms as i32
-    }
-}
-
-#[cfg(unix)]
-fn nix_error(err: Errno) -> io::Error {
-    io::Error::from_raw_os_error(err as i32)
+fn portable_pty_error<E: fmt::Display>(err: E) -> io::Error {
+    io::Error::other(err.to_string())
 }
 
 const SGR_RESET_SEQS: &[&[u8]] = &[b"\x1b[0m", b"\x1b[m"];
@@ -657,24 +534,323 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn spawn_app_captures_output() {
+    fn spawn_command_captures_output() {
         let config = PtyConfig::default().logging(false);
-        let mut session = spawn_app_with(config, SessionOptions::default(), |_term| {
-            use std::io::Write;
-            let mut stdout = std::io::stdout();
-            stdout.write_all(b"hello-pty")?;
-            stdout.flush()?;
-            Ok(())
-        })
-        .expect("spawn_app_with should succeed on unix");
 
-        let _ = session.wait().expect("wait should succeed");
-        let output = session.read_output();
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.args(["-c", "printf hello-pty"]);
+
+        let mut session = spawn_command(config, cmd).expect("spawn_command should succeed");
+
+        let _status = session.wait().expect("wait should succeed");
+        // Use read_until with a timeout to avoid a race condition:
+        // after wait() returns, the reader thread may not have drained
+        // all PTY output yet. A non-blocking read_output() can miss data.
+        let output = session
+            .read_until(b"hello-pty", Duration::from_secs(5))
+            .expect("expected PTY output to contain test string");
         assert!(
             output
                 .windows(b"hello-pty".len())
                 .any(|w| w == b"hello-pty"),
             "expected PTY output to contain test string"
         );
+    }
+
+    // --- find_subsequence tests ---
+
+    #[test]
+    fn find_subsequence_empty_needle() {
+        assert_eq!(find_subsequence(b"anything", b""), Some(0));
+    }
+
+    #[test]
+    fn find_subsequence_empty_haystack() {
+        assert_eq!(find_subsequence(b"", b"x"), None);
+    }
+
+    #[test]
+    fn find_subsequence_found_at_start() {
+        assert_eq!(find_subsequence(b"hello world", b"hello"), Some(0));
+    }
+
+    #[test]
+    fn find_subsequence_found_in_middle() {
+        assert_eq!(find_subsequence(b"hello world", b"o w"), Some(4));
+    }
+
+    #[test]
+    fn find_subsequence_found_at_end() {
+        assert_eq!(find_subsequence(b"hello world", b"world"), Some(6));
+    }
+
+    #[test]
+    fn find_subsequence_not_found() {
+        assert_eq!(find_subsequence(b"hello world", b"xyz"), None);
+    }
+
+    #[test]
+    fn find_subsequence_needle_longer_than_haystack() {
+        assert_eq!(find_subsequence(b"ab", b"abcdef"), None);
+    }
+
+    #[test]
+    fn find_subsequence_exact_match() {
+        assert_eq!(find_subsequence(b"abc", b"abc"), Some(0));
+    }
+
+    // --- contains_any tests ---
+
+    #[test]
+    fn contains_any_finds_first_match() {
+        assert!(contains_any(b"\x1b[0m test", &[b"\x1b[0m", b"\x1b[m"]));
+    }
+
+    #[test]
+    fn contains_any_finds_second_match() {
+        assert!(contains_any(b"\x1b[m test", &[b"\x1b[0m", b"\x1b[m"]));
+    }
+
+    #[test]
+    fn contains_any_no_match() {
+        assert!(!contains_any(b"plain text", &[b"\x1b[0m", b"\x1b[m"]));
+    }
+
+    #[test]
+    fn contains_any_empty_needles() {
+        assert!(!contains_any(b"test", &[]));
+    }
+
+    // --- hex_preview tests ---
+
+    #[test]
+    fn hex_preview_basic() {
+        let result = hex_preview(&[0x41, 0x42, 0x43], 10);
+        assert_eq!(result, "414243");
+    }
+
+    #[test]
+    fn hex_preview_truncated() {
+        let result = hex_preview(&[0x00, 0x01, 0x02, 0x03, 0x04], 3);
+        assert_eq!(result, "000102..");
+    }
+
+    #[test]
+    fn hex_preview_empty() {
+        assert_eq!(hex_preview(&[], 10), "");
+    }
+
+    // --- hex_dump tests ---
+
+    #[test]
+    fn hex_dump_single_row() {
+        let result = hex_dump(&[0x41, 0x42], 100);
+        assert!(result.starts_with("0000: "));
+        assert!(result.contains("41 42"));
+    }
+
+    #[test]
+    fn hex_dump_multi_row() {
+        let data: Vec<u8> = (0..20).collect();
+        let result = hex_dump(&data, 100);
+        assert!(result.contains("0000: "));
+        assert!(result.contains("0010: ")); // second row at offset 16
+    }
+
+    #[test]
+    fn hex_dump_truncated() {
+        let data: Vec<u8> = (0..100).collect();
+        let result = hex_dump(&data, 32);
+        assert!(result.contains("(truncated)"));
+    }
+
+    #[test]
+    fn hex_dump_empty() {
+        let result = hex_dump(&[], 100);
+        assert!(result.is_empty());
+    }
+
+    // --- printable_dump tests ---
+
+    #[test]
+    fn printable_dump_ascii() {
+        let result = printable_dump(b"Hello", 100);
+        assert!(result.contains("Hello"));
+    }
+
+    #[test]
+    fn printable_dump_replaces_control_chars() {
+        let result = printable_dump(&[0x01, 0x02, 0x1B], 100);
+        // Control chars should be replaced with '.'
+        assert!(result.contains("..."));
+    }
+
+    #[test]
+    fn printable_dump_truncated() {
+        let data: Vec<u8> = (0..100).collect();
+        let result = printable_dump(&data, 32);
+        assert!(result.contains("(truncated)"));
+    }
+
+    // --- PtyConfig builder tests ---
+
+    #[test]
+    fn pty_config_defaults() {
+        let config = PtyConfig::default();
+        assert_eq!(config.cols, 80);
+        assert_eq!(config.rows, 24);
+        assert_eq!(config.term.as_deref(), Some("xterm-256color"));
+        assert!(config.env.is_empty());
+        assert!(config.test_name.is_none());
+        assert!(config.log_events);
+    }
+
+    #[test]
+    fn pty_config_with_size() {
+        let config = PtyConfig::default().with_size(120, 40);
+        assert_eq!(config.cols, 120);
+        assert_eq!(config.rows, 40);
+    }
+
+    #[test]
+    fn pty_config_with_term() {
+        let config = PtyConfig::default().with_term("dumb");
+        assert_eq!(config.term.as_deref(), Some("dumb"));
+    }
+
+    #[test]
+    fn pty_config_with_env() {
+        let config = PtyConfig::default()
+            .with_env("FOO", "bar")
+            .with_env("BAZ", "qux");
+        assert_eq!(config.env.len(), 2);
+        assert_eq!(config.env[0], ("FOO".to_string(), "bar".to_string()));
+        assert_eq!(config.env[1], ("BAZ".to_string(), "qux".to_string()));
+    }
+
+    #[test]
+    fn pty_config_with_test_name() {
+        let config = PtyConfig::default().with_test_name("my_test");
+        assert_eq!(config.test_name.as_deref(), Some("my_test"));
+    }
+
+    #[test]
+    fn pty_config_logging_disabled() {
+        let config = PtyConfig::default().logging(false);
+        assert!(!config.log_events);
+    }
+
+    #[test]
+    fn pty_config_builder_chaining() {
+        let config = PtyConfig::default()
+            .with_size(132, 50)
+            .with_term("xterm")
+            .with_env("KEY", "val")
+            .with_test_name("chain_test")
+            .logging(false);
+        assert_eq!(config.cols, 132);
+        assert_eq!(config.rows, 50);
+        assert_eq!(config.term.as_deref(), Some("xterm"));
+        assert_eq!(config.env.len(), 1);
+        assert_eq!(config.test_name.as_deref(), Some("chain_test"));
+        assert!(!config.log_events);
+    }
+
+    // --- CleanupExpectations tests ---
+
+    #[test]
+    fn cleanup_strict_all_true() {
+        let strict = CleanupExpectations::strict();
+        assert!(strict.sgr_reset);
+        assert!(strict.show_cursor);
+        assert!(strict.alt_screen);
+        assert!(strict.mouse);
+        assert!(strict.bracketed_paste);
+        assert!(strict.focus_events);
+        assert!(strict.kitty_keyboard);
+    }
+
+    #[test]
+    fn cleanup_for_session_matches_options() {
+        let options = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: false,
+            bracketed_paste: true,
+            focus_events: false,
+            kitty_keyboard: true,
+        };
+        let expectations = CleanupExpectations::for_session(&options);
+        assert!(!expectations.sgr_reset); // always false for for_session
+        assert!(expectations.show_cursor); // always true
+        assert!(expectations.alt_screen);
+        assert!(!expectations.mouse);
+        assert!(expectations.bracketed_paste);
+        assert!(!expectations.focus_events);
+        assert!(expectations.kitty_keyboard);
+    }
+
+    #[test]
+    fn cleanup_for_session_all_disabled() {
+        let options = SessionOptions {
+            alternate_screen: false,
+            mouse_capture: false,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+        };
+        let expectations = CleanupExpectations::for_session(&options);
+        assert!(expectations.show_cursor); // still true
+        assert!(!expectations.alt_screen);
+        assert!(!expectations.mouse);
+        assert!(!expectations.bracketed_paste);
+        assert!(!expectations.focus_events);
+        assert!(!expectations.kitty_keyboard);
+    }
+
+    // --- assert_terminal_restored edge cases ---
+
+    #[test]
+    fn assert_restored_with_alt_sequence_variants() {
+        // Both alt-screen exit sequences should be accepted
+        let output1 = b"\x1b[0m\x1b[?25h\x1b[?1049l\x1b[?1000l\x1b[?2004l\x1b[?1004l\x1b[<u";
+        assert_terminal_restored(output1, &CleanupExpectations::strict());
+
+        let output2 = b"\x1b[0m\x1b[?25h\x1b[?1047l\x1b[?1000;1002l\x1b[?2004l\x1b[?1004l\x1b[<u";
+        assert_terminal_restored(output2, &CleanupExpectations::strict());
+    }
+
+    #[test]
+    fn assert_restored_sgr_reset_variant() {
+        // Both \x1b[0m and \x1b[m should be accepted for sgr_reset
+        let output = b"\x1b[m\x1b[?25h\x1b[?1049l\x1b[?1000l\x1b[?2004l\x1b[?1004l\x1b[<u";
+        assert_terminal_restored(output, &CleanupExpectations::strict());
+    }
+
+    #[test]
+    fn assert_restored_partial_expectations() {
+        // Only cursor show required — should pass with just that sequence
+        let expectations = CleanupExpectations {
+            sgr_reset: false,
+            show_cursor: true,
+            alt_screen: false,
+            mouse: false,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+        };
+        assert_terminal_restored(b"\x1b[?25h", &expectations);
+    }
+
+    // --- sequence constant tests ---
+
+    #[test]
+    fn sequence_constants_are_nonempty() {
+        assert!(!SGR_RESET_SEQS.is_empty());
+        assert!(!CURSOR_SHOW_SEQS.is_empty());
+        assert!(!ALT_SCREEN_EXIT_SEQS.is_empty());
+        assert!(!MOUSE_DISABLE_SEQS.is_empty());
+        assert!(!BRACKETED_PASTE_DISABLE_SEQS.is_empty());
+        assert!(!FOCUS_DISABLE_SEQS.is_empty());
+        assert!(!KITTY_DISABLE_SEQS.is_empty());
     }
 }

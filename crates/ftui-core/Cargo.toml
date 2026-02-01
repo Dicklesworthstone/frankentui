@@ -10,10 +10,17 @@ default = []
 tracing = ["dep:tracing"]
 # Enable JSON output for production logging
 tracing-json = ["tracing", "dep:tracing-subscriber"]
+# Enable runtime terminal capability probing (DA queries, OSC probes).
+# Requires exclusive terminal ownership; probes are bounded by timeouts.
+caps-probe = []
 
 [dependencies]
 bitflags = "2.10.0"
 crossterm = "0.28"
+
+# Unix-only signal handling for cleanup on SIGINT/SIGTERM.
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.3.18", features = ["iterator"] }
 
 # Optional tracing support
 tracing = { version = "0.1", optional = true }
@@ -22,3 +29,4 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"], optio
 [dev-dependencies]
 # For spike PTY tests
 portable-pty = "0.8"
+proptest = "1"
