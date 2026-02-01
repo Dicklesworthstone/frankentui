@@ -20,8 +20,8 @@
 //! overlay.render(area, &mut buf);
 //! ```
 
-use crate::layout_debugger::{LayoutDebugger, LayoutRecord};
 use crate::Widget;
+use crate::layout_debugger::{LayoutDebugger, LayoutRecord};
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
@@ -101,7 +101,7 @@ impl<'a> ConstraintOverlay<'a> {
         self
     }
 
-    fn render_record(&self, record: &LayoutRecord, area: Rect, buf: &mut Buffer, depth: usize) {
+    fn render_record(&self, record: &LayoutRecord, area: Rect, buf: &mut Buffer) {
         // Only render if the received area intersects with our render area
         let Some(clipped) = record.area_received.intersection_opt(&area) else {
             return;
@@ -136,14 +136,13 @@ impl<'a> ConstraintOverlay<'a> {
         // Draw requested area outline if different from received
         if self.style.show_size_diff {
             let requested = &record.area_requested;
-            if requested != received {
-                if let Some(req_clipped) = requested.intersection_opt(&area) {
-                    if !req_clipped.is_empty() {
-                        // Draw dashed corners to indicate requested size
-                        let req_cell = Cell::from_char('.').with_fg(self.style.requested_color);
-                        self.draw_requested_outline(req_clipped, buf, req_cell);
-                    }
-                }
+            if requested != received
+                && let Some(req_clipped) = requested.intersection_opt(&area)
+                && !req_clipped.is_empty()
+            {
+                // Draw dashed corners to indicate requested size
+                let req_cell = Cell::from_char('.').with_fg(self.style.requested_color);
+                self.draw_requested_outline(req_clipped, buf, req_cell);
             }
         }
 
@@ -164,20 +163,20 @@ impl<'a> ConstraintOverlay<'a> {
 
         // Render children
         for child in &record.children {
-            self.render_record(child, area, buf, depth + 1);
+            self.render_record(child, area, buf);
         }
     }
 
     fn draw_requested_outline(&self, area: Rect, buf: &mut Buffer, cell: Cell) {
         // Draw corner dots to indicate requested size boundary
         if area.width >= 1 && area.height >= 1 {
-            buf.set(area.x, area.y, cell.clone());
+            buf.set(area.x, area.y, cell);
         }
         if area.width >= 2 && area.height >= 1 {
-            buf.set(area.right().saturating_sub(1), area.y, cell.clone());
+            buf.set(area.right().saturating_sub(1), area.y, cell);
         }
         if area.width >= 1 && area.height >= 2 {
-            buf.set(area.x, area.bottom().saturating_sub(1), cell.clone());
+            buf.set(area.x, area.bottom().saturating_sub(1), cell);
         }
         if area.width >= 2 && area.height >= 2 {
             buf.set(
@@ -244,7 +243,7 @@ impl Widget for ConstraintOverlay<'_> {
         }
 
         for record in self.debugger.records() {
-            self.render_record(record, area, buf, 0);
+            self.render_record(record, area, buf);
         }
     }
 }
@@ -305,8 +304,10 @@ mod tests {
             LayoutConstraints::new(0, 8, 0, 3),
         ));
 
-        let mut style = ConstraintOverlayStyle::default();
-        style.overflow_color = PackedRgba::rgb(255, 0, 0);
+        let style = ConstraintOverlayStyle {
+            overflow_color: PackedRgba::rgb(255, 0, 0),
+            ..Default::default()
+        };
 
         let overlay = ConstraintOverlay::new(&debugger).style(style);
         let mut buf = Buffer::new(20, 10);
@@ -328,8 +329,10 @@ mod tests {
             LayoutConstraints::new(6, 0, 3, 0),
         ));
 
-        let mut style = ConstraintOverlayStyle::default();
-        style.underflow_color = PackedRgba::rgb(255, 255, 0);
+        let style = ConstraintOverlayStyle {
+            underflow_color: PackedRgba::rgb(255, 255, 0),
+            ..Default::default()
+        };
 
         let overlay = ConstraintOverlay::new(&debugger).style(style);
         let mut buf = Buffer::new(20, 10);
@@ -351,9 +354,10 @@ mod tests {
             LayoutConstraints::unconstrained(),
         ));
 
-        let mut style = ConstraintOverlayStyle::default();
-        style.show_size_diff = true;
-        style.requested_color = PackedRgba::rgb(0, 0, 255);
+        let style = ConstraintOverlayStyle {
+            requested_color: PackedRgba::rgb(0, 0, 255),
+            ..Default::default()
+        };
 
         let overlay = ConstraintOverlay::new(&debugger).style(style);
         let mut buf = Buffer::new(20, 10);
@@ -449,10 +453,12 @@ mod tests {
     #[test]
     fn style_can_be_customized() {
         let debugger = LayoutDebugger::new();
-        let mut style = ConstraintOverlayStyle::default();
-        style.show_borders = false;
-        style.show_labels = false;
-        style.show_size_diff = false;
+        let style = ConstraintOverlayStyle {
+            show_borders: false,
+            show_labels: false,
+            show_size_diff: false,
+            ..Default::default()
+        };
 
         let overlay = ConstraintOverlay::new(&debugger).style(style);
         assert!(!overlay.style.show_borders);

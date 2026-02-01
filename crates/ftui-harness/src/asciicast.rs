@@ -510,10 +510,7 @@ impl<R: io::Read> AsciicastLoader<R> {
         // Extract idle_time_limit
         if let Some(pos) = line.find("\"idle_time_limit\":") {
             let rest = &line[pos + 18..];
-            if let Some(num) = rest
-                .split(|c: char| !c.is_ascii_digit() && c != '.')
-                .next()
-            {
+            if let Some(num) = rest.split(|c: char| !c.is_ascii_digit() && c != '.').next() {
                 idle_time_limit = num.parse().ok();
             }
         }
@@ -576,9 +573,9 @@ impl<R: io::Read> AsciicastLoader<R> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "missing time"));
         };
         let time_str = inner[..comma1].trim();
-        let time: f64 = time_str.parse().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid time value")
-        })?;
+        let time: f64 = time_str
+            .parse()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid time value"))?;
 
         // Find type
         let rest = &inner[comma1 + 1..];
@@ -587,7 +584,10 @@ impl<R: io::Read> AsciicastLoader<R> {
         };
         let rest = &rest[type_start + 1..];
         let Some(type_end) = rest.find('"') else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "missing type end"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing type end",
+            ));
         };
         let event_type = rest[..type_end].to_string();
 
@@ -652,10 +652,10 @@ fn unescape_json_string(s: &str) -> io::Result<String> {
                             code.push(hex);
                         }
                     }
-                    if let Ok(n) = u32::from_str_radix(&code, 16) {
-                        if let Some(ch) = char::from_u32(n) {
-                            result.push(ch);
-                        }
+                    if let Ok(n) = u32::from_str_radix(&code, 16)
+                        && let Some(ch) = char::from_u32(n)
+                    {
+                        result.push(ch);
                     }
                 }
                 Some(other) => {
@@ -884,8 +884,12 @@ mod tests {
         let config = RecordConfig::new(80, 24).with_title("Test");
         let mut recorder = AsciicastRecorder::new(&mut output, config).unwrap();
 
-        recorder.record_output_at(Duration::from_millis(100), b"Hello").unwrap();
-        recorder.record_output_at(Duration::from_millis(200), b"World").unwrap();
+        recorder
+            .record_output_at(Duration::from_millis(100), b"Hello")
+            .unwrap();
+        recorder
+            .record_output_at(Duration::from_millis(200), b"World")
+            .unwrap();
         recorder.finish().unwrap();
 
         let data = output.into_inner();

@@ -91,19 +91,13 @@ impl LayoutRecord {
     }
 
     fn overflow(&self) -> bool {
-        self.constraints
-            .width_overflow(self.area_received.width)
-            || self
-                .constraints
-                .height_overflow(self.area_received.height)
+        self.constraints.width_overflow(self.area_received.width)
+            || self.constraints.height_overflow(self.area_received.height)
     }
 
     fn underflow(&self) -> bool {
-        self.constraints
-            .width_underflow(self.area_received.width)
-            || self
-                .constraints
-                .height_underflow(self.area_received.height)
+        self.constraints.width_underflow(self.area_received.width)
+            || self.constraints.height_underflow(self.area_received.height)
     }
 }
 

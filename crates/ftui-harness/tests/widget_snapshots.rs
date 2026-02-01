@@ -10,8 +10,10 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_text::Text;
 use ftui_widgets::block::{Alignment, Block};
+use ftui_widgets::borders::BorderType;
 use ftui_widgets::borders::Borders;
 use ftui_widgets::list::{List, ListItem, ListState};
+use ftui_widgets::panel::Panel;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ftui_widgets::{StatefulWidget, Widget};
@@ -166,4 +168,62 @@ fn snapshot_raw_buffer_pattern() {
         }
     }
     assert_snapshot!("raw_checkerboard", &buf);
+}
+
+// ============================================================================
+// Panel
+// ============================================================================
+
+#[test]
+fn snapshot_panel_square() {
+    let child = Paragraph::new(Text::raw("Inner"));
+    let panel = Panel::new(child)
+        .title("Panel")
+        .padding(ftui_core::geometry::Sides::all(1));
+    let area = Rect::new(0, 0, 14, 7);
+    let mut buf = Buffer::new(14, 7);
+    panel.render(area, &mut buf);
+    assert_snapshot!("panel_square", &buf);
+}
+
+#[test]
+fn snapshot_panel_rounded_with_subtitle() {
+    let child = Paragraph::new(Text::raw("Hello"));
+    let panel = Panel::new(child)
+        .border_type(BorderType::Rounded)
+        .title("Top")
+        .subtitle("Bottom")
+        .title_alignment(Alignment::Center)
+        .subtitle_alignment(Alignment::Center)
+        .padding(ftui_core::geometry::Sides::all(1));
+    let area = Rect::new(0, 0, 16, 7);
+    let mut buf = Buffer::new(16, 7);
+    panel.render(area, &mut buf);
+    assert_snapshot!("panel_rounded_subtitle", &buf);
+}
+
+#[test]
+fn snapshot_panel_ascii_borders() {
+    let child = Paragraph::new(Text::raw("ASCII"));
+    let panel = Panel::new(child)
+        .border_type(BorderType::Ascii)
+        .title("Box")
+        .padding(ftui_core::geometry::Sides::all(1));
+    let area = Rect::new(0, 0, 12, 5);
+    let mut buf = Buffer::new(12, 5);
+    panel.render(area, &mut buf);
+    assert_snapshot!("panel_ascii", &buf);
+}
+
+#[test]
+fn snapshot_panel_title_truncates_with_ellipsis() {
+    let child = Paragraph::new(Text::raw("X"));
+    let panel = Panel::new(child)
+        .border_type(BorderType::Square)
+        .title("VeryLongTitle")
+        .padding(ftui_core::geometry::Sides::all(0));
+    let area = Rect::new(0, 0, 10, 3);
+    let mut buf = Buffer::new(10, 3);
+    panel.render(area, &mut buf);
+    assert_snapshot!("panel_title_ellipsis", &buf);
 }

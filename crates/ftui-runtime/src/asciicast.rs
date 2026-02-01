@@ -225,7 +225,7 @@ fn write_header<W: Write>(
 fn unix_timestamp() -> io::Result<i64> {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "system time before unix epoch"))?;
+        .map_err(|_| io::Error::other("system time before unix epoch"))?;
     Ok(since_epoch.as_secs() as i64)
 }
 
