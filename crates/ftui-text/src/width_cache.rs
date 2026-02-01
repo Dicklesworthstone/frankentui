@@ -30,7 +30,6 @@ use lru::LruCache;
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use unicode_width::UnicodeWidthStr;
 
 /// Default cache capacity.
 pub const DEFAULT_CACHE_CAPACITY: usize = 4096;
@@ -115,7 +114,7 @@ impl WidthCache {
     /// Otherwise, computes the width using `unicode_width` and caches it.
     #[inline]
     pub fn get_or_compute(&mut self, text: &str) -> usize {
-        self.get_or_compute_with(text, |s| crate::display_width(s))
+        self.get_or_compute_with(text, crate::display_width)
     }
 
     /// Get cached width or compute using a custom function.
