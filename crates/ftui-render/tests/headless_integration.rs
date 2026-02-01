@@ -10,6 +10,8 @@ use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, CellAttrs, PackedRgba, StyleFlags};
 use ftui_render::diff::BufferDiff;
+use ftui_render::frame::Frame;
+use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::headless::HeadlessTerm;
 use ftui_render::presenter::{Presenter, TerminalCapabilities};
 
@@ -147,10 +149,11 @@ fn render_widget_into_headless<W: ftui_widgets::Widget>(
     height: u16,
 ) -> HeadlessTerm {
     let prev = Buffer::new(width, height);
-    let mut next = Buffer::new(width, height);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(width, height, &mut pool);
     let area = Rect::from_size(width, height);
-    widget.render(area, &mut next);
-    present_into_headless(&prev, &next)
+    widget.render(area, &mut frame);
+    present_into_headless(&prev, &frame.buffer)
 }
 
 #[test]
@@ -228,15 +231,16 @@ fn nested_layout_block_in_columns() {
 
     // Render a block into each column
     let prev = Buffer::new(width, height);
-    let mut next = Buffer::new(width, height);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(width, height, &mut pool);
 
     let left_block = Block::new().borders(Borders::ALL).title("L");
     let right_block = Block::new().borders(Borders::ALL).title("R");
 
-    left_block.render(columns[0], &mut next);
-    right_block.render(columns[1], &mut next);
+    left_block.render(columns[0], &mut frame);
+    right_block.render(columns[1], &mut frame);
 
-    let term = present_into_headless(&prev, &next);
+    let term = present_into_headless(&prev, &frame.buffer);
 
     // Both titles should appear on row 0
     let top = term.row_text(0);
@@ -264,10 +268,11 @@ fn table_renders_header_and_rows() {
     let height = 10u16;
     let area = Rect::from_size(width, height);
     let prev = Buffer::new(width, height);
-    let mut next = Buffer::new(width, height);
-    table.render(area, &mut next);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(width, height, &mut pool);
+    table.render(area, &mut frame);
 
-    let term = present_into_headless(&prev, &next);
+    let term = present_into_headless(&prev, &frame.buffer);
 
     // Header and data rows should be present
     let all_text = term.screen_string();

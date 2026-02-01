@@ -8,6 +8,8 @@ use ftui_core::geometry::Rect;
 use ftui_harness::assert_snapshot;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
+use ftui_render::grapheme_pool::GraphemePool;
 use ftui_text::Text;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::BorderType;
@@ -26,18 +28,20 @@ use ftui_widgets::{StatefulWidget, Widget};
 fn snapshot_block_plain() {
     let block = Block::default().borders(Borders::ALL).title("Box");
     let area = Rect::new(0, 0, 12, 5);
-    let mut buf = Buffer::new(12, 5);
-    block.render(area, &mut buf);
-    assert_snapshot!("block_plain", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(12, 5, &mut pool);
+    block.render(area, &mut frame);
+    assert_snapshot!("block_plain", &frame.buffer);
 }
 
 #[test]
 fn snapshot_block_no_borders() {
     let block = Block::default().title("Hello");
     let area = Rect::new(0, 0, 10, 3);
-    let mut buf = Buffer::new(10, 3);
-    block.render(area, &mut buf);
-    assert_snapshot!("block_no_borders", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(10, 3, &mut pool);
+    block.render(area, &mut frame);
+    assert_snapshot!("block_no_borders", &frame.buffer);
 }
 
 // ============================================================================
@@ -48,27 +52,30 @@ fn snapshot_block_no_borders() {
 fn snapshot_paragraph_simple() {
     let para = Paragraph::new(Text::raw("Hello, FrankenTUI!"));
     let area = Rect::new(0, 0, 20, 1);
-    let mut buf = Buffer::new(20, 1);
-    para.render(area, &mut buf);
-    assert_snapshot!("paragraph_simple", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(20, 1, &mut pool);
+    para.render(area, &mut frame);
+    assert_snapshot!("paragraph_simple", &frame.buffer);
 }
 
 #[test]
 fn snapshot_paragraph_multiline() {
     let para = Paragraph::new(Text::raw("Line 1\nLine 2\nLine 3"));
     let area = Rect::new(0, 0, 10, 3);
-    let mut buf = Buffer::new(10, 3);
-    para.render(area, &mut buf);
-    assert_snapshot!("paragraph_multiline", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(10, 3, &mut pool);
+    para.render(area, &mut frame);
+    assert_snapshot!("paragraph_multiline", &frame.buffer);
 }
 
 #[test]
 fn snapshot_paragraph_centered() {
     let para = Paragraph::new(Text::raw("Hi")).alignment(Alignment::Center);
     let area = Rect::new(0, 0, 10, 1);
-    let mut buf = Buffer::new(10, 1);
-    para.render(area, &mut buf);
-    assert_snapshot!("paragraph_centered", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(10, 1, &mut pool);
+    para.render(area, &mut frame);
+    assert_snapshot!("paragraph_centered", &frame.buffer);
 }
 
 #[test]
@@ -76,9 +83,10 @@ fn snapshot_paragraph_in_block() {
     let para = Paragraph::new(Text::raw("Inner"))
         .block(Block::default().borders(Borders::ALL).title("Frame"));
     let area = Rect::new(0, 0, 15, 5);
-    let mut buf = Buffer::new(15, 5);
-    para.render(area, &mut buf);
-    assert_snapshot!("paragraph_in_block", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(15, 5, &mut pool);
+    para.render(area, &mut frame);
+    assert_snapshot!("paragraph_in_block", &frame.buffer);
 }
 
 // ============================================================================
@@ -94,10 +102,11 @@ fn snapshot_list_basic() {
     ];
     let list = List::new(items);
     let area = Rect::new(0, 0, 12, 3);
-    let mut buf = Buffer::new(12, 3);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(12, 3, &mut pool);
     let mut state = ListState::default();
-    StatefulWidget::render(&list, area, &mut buf, &mut state);
-    assert_snapshot!("list_basic", &buf);
+    StatefulWidget::render(&list, area, &mut frame, &mut state);
+    assert_snapshot!("list_basic", &frame.buffer);
 }
 
 #[test]
@@ -109,11 +118,12 @@ fn snapshot_list_with_selection() {
     ];
     let list = List::new(items).highlight_symbol(">");
     let area = Rect::new(0, 0, 12, 3);
-    let mut buf = Buffer::new(12, 3);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(12, 3, &mut pool);
     let mut state = ListState::default();
     state.select(Some(1));
-    StatefulWidget::render(&list, area, &mut buf, &mut state);
-    assert_snapshot!("list_with_selection", &buf);
+    StatefulWidget::render(&list, area, &mut frame, &mut state);
+    assert_snapshot!("list_with_selection", &frame.buffer);
 }
 
 // ============================================================================
@@ -124,30 +134,33 @@ fn snapshot_list_with_selection() {
 fn snapshot_scrollbar_vertical() {
     let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
     let area = Rect::new(0, 0, 1, 10);
-    let mut buf = Buffer::new(1, 10);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(1, 10, &mut pool);
     let mut state = ScrollbarState::new(100, 0, 10);
-    StatefulWidget::render(&sb, area, &mut buf, &mut state);
-    assert_snapshot!("scrollbar_vertical_top", &buf);
+    StatefulWidget::render(&sb, area, &mut frame, &mut state);
+    assert_snapshot!("scrollbar_vertical_top", &frame.buffer);
 }
 
 #[test]
 fn snapshot_scrollbar_vertical_mid() {
     let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
     let area = Rect::new(0, 0, 1, 10);
-    let mut buf = Buffer::new(1, 10);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(1, 10, &mut pool);
     let mut state = ScrollbarState::new(100, 45, 10);
-    StatefulWidget::render(&sb, area, &mut buf, &mut state);
-    assert_snapshot!("scrollbar_vertical_mid", &buf);
+    StatefulWidget::render(&sb, area, &mut frame, &mut state);
+    assert_snapshot!("scrollbar_vertical_mid", &frame.buffer);
 }
 
 #[test]
 fn snapshot_scrollbar_horizontal() {
     let sb = Scrollbar::new(ScrollbarOrientation::HorizontalBottom);
     let area = Rect::new(0, 0, 20, 1);
-    let mut buf = Buffer::new(20, 1);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(20, 1, &mut pool);
     let mut state = ScrollbarState::new(100, 0, 20);
-    StatefulWidget::render(&sb, area, &mut buf, &mut state);
-    assert_snapshot!("scrollbar_horizontal", &buf);
+    StatefulWidget::render(&sb, area, &mut frame, &mut state);
+    assert_snapshot!("scrollbar_horizontal", &frame.buffer);
 }
 
 // ============================================================================
@@ -181,9 +194,10 @@ fn snapshot_panel_square() {
         .title("Panel")
         .padding(ftui_core::geometry::Sides::all(1));
     let area = Rect::new(0, 0, 14, 7);
-    let mut buf = Buffer::new(14, 7);
-    panel.render(area, &mut buf);
-    assert_snapshot!("panel_square", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(14, 7, &mut pool);
+    panel.render(area, &mut frame);
+    assert_snapshot!("panel_square", &frame.buffer);
 }
 
 #[test]
@@ -197,9 +211,10 @@ fn snapshot_panel_rounded_with_subtitle() {
         .subtitle_alignment(Alignment::Center)
         .padding(ftui_core::geometry::Sides::all(1));
     let area = Rect::new(0, 0, 16, 7);
-    let mut buf = Buffer::new(16, 7);
-    panel.render(area, &mut buf);
-    assert_snapshot!("panel_rounded_subtitle", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(16, 7, &mut pool);
+    panel.render(area, &mut frame);
+    assert_snapshot!("panel_rounded_subtitle", &frame.buffer);
 }
 
 #[test]
@@ -210,9 +225,10 @@ fn snapshot_panel_ascii_borders() {
         .title("Box")
         .padding(ftui_core::geometry::Sides::all(1));
     let area = Rect::new(0, 0, 12, 5);
-    let mut buf = Buffer::new(12, 5);
-    panel.render(area, &mut buf);
-    assert_snapshot!("panel_ascii", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(12, 5, &mut pool);
+    panel.render(area, &mut frame);
+    assert_snapshot!("panel_ascii", &frame.buffer);
 }
 
 #[test]
@@ -223,7 +239,8 @@ fn snapshot_panel_title_truncates_with_ellipsis() {
         .title("VeryLongTitle")
         .padding(ftui_core::geometry::Sides::all(0));
     let area = Rect::new(0, 0, 10, 3);
-    let mut buf = Buffer::new(10, 3);
-    panel.render(area, &mut buf);
-    assert_snapshot!("panel_title_ellipsis", &buf);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(10, 3, &mut pool);
+    panel.render(area, &mut frame);
+    assert_snapshot!("panel_title_ellipsis", &frame.buffer);
 }
