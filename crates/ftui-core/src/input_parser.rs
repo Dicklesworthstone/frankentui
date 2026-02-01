@@ -553,12 +553,16 @@ impl InputParser {
         let (button, mods) = self.decode_mouse_button(button_code);
 
         let kind = if final_byte == b'M' {
-            if button_code & 32 != 0 {
+            if button_code & 64 != 0 {
+                // Scroll event: bit 6 (64) is set
+                // bits 0-1 determine direction: 0=up, 1=down
+                if button_code & 1 != 0 {
+                    MouseEventKind::ScrollDown
+                } else {
+                    MouseEventKind::ScrollUp
+                }
+            } else if button_code & 32 != 0 {
                 MouseEventKind::Moved
-            } else if button_code & 64 != 0 {
-                MouseEventKind::ScrollUp
-            } else if button_code & 65 != 0 {
-                MouseEventKind::ScrollDown
             } else {
                 MouseEventKind::Down(button)
             }
@@ -694,7 +698,7 @@ impl InputParser {
             // Strict ANSI would say the OSC is cancelled by the ESC.
             // We treat this as a restart of parsing at the *current* byte,
             // effectively interpreting the previous ESC as a cancel.
-            
+
             self.buffer.clear();
             self.state = ParserState::Escape;
             self.process_escape(byte)
@@ -1080,6 +1084,30 @@ mod tests {
     }
 
     #[test]
+    fn mouse_sgr_scroll_up() {
+        let mut parser = InputParser::new();
+
+        // Scroll up: button code 64
+        let events = parser.parse(b"\x1b[<64;5;5M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::ScrollUp)
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_scroll_down() {
+        let mut parser = InputParser::new();
+
+        // Scroll down: button code 65
+        let events = parser.parse(b"\x1b[<65;5;5M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::ScrollDown)
+        ));
+    }
+
+    #[test]
     fn utf8_characters() {
         let mut parser = InputParser::new();
 
@@ -1362,7 +1390,7 @@ mod proptest_fuzz {
             let events = parser.parse(&input);
             for event in &events {
                 if let Event::Paste(p) = event {
-                    prop_assert!(p.text.len() <= MAX_PASTE_LEN, 
+                    prop_assert!(p.text.len() <= MAX_PASTE_LEN,
                         "Paste text {} exceeds limit {}", p.text.len(), MAX_PASTE_LEN);
                 }
             }

@@ -1,0 +1,262 @@
+#![forbid(unsafe_code)]
+
+//! Columns widget: lays out children side-by-side using Flex constraints.
+
+use crate::Widget;
+use ftui_core::geometry::{Rect, Sides};
+use ftui_layout::{Constraint, Flex};
+use ftui_render::frame::Frame;
+
+/// A single column definition.
+pub struct Column<'a> {
+    widget: Box<dyn Widget + 'a>,
+    constraint: Constraint,
+    padding: Sides,
+}
+
+impl std::fmt::Debug for Column<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Column")
+            .field("widget", &"<dyn Widget>")
+            .field("constraint", &self.constraint)
+            .field("padding", &self.padding)
+            .finish()
+    }
+}
+
+impl<'a> Column<'a> {
+    /// Create a new column with a widget and constraint.
+    pub fn new(widget: impl Widget + 'a, constraint: Constraint) -> Self {
+        Self {
+            widget: Box::new(widget),
+            constraint,
+            padding: Sides::default(),
+        }
+    }
+
+    /// Set the column padding.
+    pub fn padding(mut self, padding: Sides) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    /// Set the column constraint.
+    pub fn constraint(mut self, constraint: Constraint) -> Self {
+        self.constraint = constraint;
+        self
+    }
+}
+
+/// A horizontal column layout container.
+#[derive(Debug, Default)]
+pub struct Columns<'a> {
+    columns: Vec<Column<'a>>,
+    gap: u16,
+}
+
+impl<'a> Columns<'a> {
+    /// Create an empty columns container.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the gap between columns.
+    pub fn gap(mut self, gap: u16) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    /// Add a column definition.
+    pub fn push(mut self, column: Column<'a>) -> Self {
+        self.columns.push(column);
+        self
+    }
+
+    /// Add a column with a widget and constraint.
+    pub fn column(mut self, widget: impl Widget + 'a, constraint: Constraint) -> Self {
+        self.columns.push(Column::new(widget, constraint));
+        self
+    }
+
+    /// Add a column with equal ratio sizing.
+    #[allow(clippy::should_implement_trait)] // Builder pattern, not std::ops::Add
+    pub fn add(mut self, widget: impl Widget + 'a) -> Self {
+        self.columns
+            .push(Column::new(widget, Constraint::Ratio(1, 1)));
+        self
+    }
+}
+
+struct ScissorGuard<'a, 'pool> {
+    frame: &'a mut Frame<'pool>,
+}
+
+impl<'a, 'pool> ScissorGuard<'a, 'pool> {
+    fn new(frame: &'a mut Frame<'pool>, rect: Rect) -> Self {
+        frame.buffer.push_scissor(rect);
+        Self { frame }
+    }
+
+    fn frame_mut(&mut self) -> &mut Frame<'pool> {
+        self.frame
+    }
+}
+
+impl Drop for ScissorGuard<'_, '_> {
+    fn drop(&mut self) {
+        self.frame.buffer.pop_scissor();
+    }
+}
+
+impl Widget for Columns<'_> {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        #[cfg(feature = "tracing")]
+        let _span = tracing::debug_span!(
+            "widget_render",
+            widget = "Columns",
+            x = area.x,
+            y = area.y,
+            w = area.width,
+            h = area.height
+        )
+        .entered();
+
+        if area.is_empty() || self.columns.is_empty() {
+            return;
+        }
+
+        if !frame.buffer.degradation.render_content() {
+            return;
+        }
+
+        let flex = Flex::horizontal()
+            .gap(self.gap)
+            .constraints(self.columns.iter().map(|c| c.constraint));
+        let rects = flex.split(area);
+
+        for (col, rect) in self.columns.iter().zip(rects) {
+            if rect.is_empty() {
+                continue;
+            }
+            let inner = rect.inner(col.padding);
+            if inner.is_empty() {
+                continue;
+            }
+
+            let mut guard = ScissorGuard::new(frame, inner);
+            col.widget.render(inner, guard.frame_mut());
+        }
+    }
+
+    fn is_essential(&self) -> bool {
+        self.columns.iter().any(|c| c.widget.is_essential())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Clone, Debug)]
+    struct Record {
+        rects: Rc<RefCell<Vec<Rect>>>,
+    }
+
+    impl Record {
+        fn new() -> (Self, Rc<RefCell<Vec<Rect>>>) {
+            let rects = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    rects: rects.clone(),
+                },
+                rects,
+            )
+        }
+    }
+
+    impl Widget for Record {
+        fn render(&self, area: Rect, _frame: &mut Frame) {
+            self.rects.borrow_mut().push(area);
+        }
+    }
+
+    #[test]
+    fn equal_columns_split_evenly() {
+        let (a, a_rects) = Record::new();
+        let (b, b_rects) = Record::new();
+        let (c, c_rects) = Record::new();
+
+        let columns = Columns::new().add(a).add(b).add(c).gap(0);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 2, &mut pool);
+        columns.render(Rect::new(0, 0, 12, 2), &mut frame);
+
+        let a = a_rects.borrow()[0];
+        let b = b_rects.borrow()[0];
+        let c = c_rects.borrow()[0];
+
+        assert_eq!(a, Rect::new(0, 0, 4, 2));
+        assert_eq!(b, Rect::new(4, 0, 4, 2));
+        assert_eq!(c, Rect::new(8, 0, 4, 2));
+    }
+
+    #[test]
+    fn fixed_columns_with_gap() {
+        let (a, a_rects) = Record::new();
+        let (b, b_rects) = Record::new();
+
+        let columns = Columns::new()
+            .column(a, Constraint::Fixed(4))
+            .column(b, Constraint::Fixed(4))
+            .gap(2);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        columns.render(Rect::new(0, 0, 20, 1), &mut frame);
+
+        let a = a_rects.borrow()[0];
+        let b = b_rects.borrow()[0];
+
+        assert_eq!(a, Rect::new(0, 0, 4, 1));
+        assert_eq!(b, Rect::new(6, 0, 4, 1));
+    }
+
+    #[test]
+    fn ratio_columns_split_proportionally() {
+        let (a, a_rects) = Record::new();
+        let (b, b_rects) = Record::new();
+
+        let columns = Columns::new()
+            .column(a, Constraint::Ratio(1, 3))
+            .column(b, Constraint::Ratio(2, 3));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 1, &mut pool);
+        columns.render(Rect::new(0, 0, 30, 1), &mut frame);
+
+        let a = a_rects.borrow()[0];
+        let b = b_rects.borrow()[0];
+
+        assert_eq!(a.width + b.width, 30);
+        assert_eq!(a.width, 10);
+        assert_eq!(b.width, 20);
+    }
+
+    #[test]
+    fn column_padding_applies_to_child_area() {
+        let (a, a_rects) = Record::new();
+        let columns =
+            Columns::new().push(Column::new(a, Constraint::Fixed(6)).padding(Sides::all(1)));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 3, &mut pool);
+        columns.render(Rect::new(0, 0, 6, 3), &mut frame);
+
+        let rect = a_rects.borrow()[0];
+        assert_eq!(rect, Rect::new(1, 1, 4, 1));
+    }
+}

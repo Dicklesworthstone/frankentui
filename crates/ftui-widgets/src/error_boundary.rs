@@ -576,7 +576,10 @@ mod tests {
         boundary.render(area, &mut frame2, &mut state);
 
         assert!(state.is_failed());
-        assert_eq!(frame2.buffer.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_eq!(
+            frame2.buffer.get(0, 0).unwrap().content.as_char(),
+            Some('┌')
+        );
     }
 
     #[test]
@@ -825,6 +828,9 @@ mod tests {
 
         assert!(bad_state.is_failed());
         assert!(!good_state.is_failed());
-        assert_eq!(frame.buffer.get(10, 0).unwrap().content.as_char(), Some('G'));
+        assert_eq!(
+            frame.buffer.get(10, 0).unwrap().content.as_char(),
+            Some('G')
+        );
     }
 }

@@ -296,10 +296,14 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
     // 2. Distribute remaining space to flexible constraints (Min, Max, Ratio)
     if remaining > 0 && !grow_indices.is_empty() {
         let mut total_weight = 0u64;
+        const WEIGHT_SCALE: u64 = 10_000;
+
         for &i in &grow_indices {
             match constraints[i] {
-                Constraint::Ratio(n, d) => total_weight += n as u64 * 100 / d.max(1) as u64,
-                _ => total_weight += 100, // Treat others as Ratio(1, 1) effectively
+                Constraint::Ratio(n, d) => {
+                    total_weight += n as u64 * WEIGHT_SCALE / d.max(1) as u64
+                }
+                _ => total_weight += WEIGHT_SCALE, // Treat others as Ratio(1, 1) effectively
             }
         }
 
@@ -312,8 +316,8 @@ pub(crate) fn solve_constraints(constraints: &[Constraint], available_size: u16)
 
         for (idx, &i) in grow_indices.iter().enumerate() {
             let weight = match constraints[i] {
-                Constraint::Ratio(n, d) => n as u64 * 100 / d.max(1) as u64,
-                _ => 100,
+                Constraint::Ratio(n, d) => n as u64 * WEIGHT_SCALE / d.max(1) as u64,
+                _ => WEIGHT_SCALE,
             };
 
             // Last item gets the rest to ensure exact sum

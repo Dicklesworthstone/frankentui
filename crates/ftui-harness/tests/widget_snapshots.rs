@@ -4,7 +4,7 @@
 //!
 //! Run `BLESS=1 cargo test --package ftui-harness` to create/update snapshots.
 
-use ftui_core::geometry::Rect;
+use ftui_core::geometry::{Rect, Sides};
 use ftui_harness::assert_snapshot;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
@@ -14,7 +14,9 @@ use ftui_text::Text;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::BorderType;
 use ftui_widgets::borders::Borders;
+use ftui_widgets::columns::Columns;
 use ftui_widgets::list::{List, ListItem, ListState};
+use ftui_widgets::padding::Padding;
 use ftui_widgets::panel::Panel;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
@@ -161,6 +163,42 @@ fn snapshot_scrollbar_horizontal() {
     let mut state = ScrollbarState::new(100, 0, 20);
     StatefulWidget::render(&sb, area, &mut frame, &mut state);
     assert_snapshot!("scrollbar_horizontal", &frame.buffer);
+}
+
+// ============================================================================
+// Columns
+// ============================================================================
+
+#[test]
+fn snapshot_columns_equal() {
+    let columns = Columns::new()
+        .add(Paragraph::new(Text::raw("Left")))
+        .add(Paragraph::new(Text::raw("Center")))
+        .add(Paragraph::new(Text::raw("Right")))
+        .gap(1);
+
+    let area = Rect::new(0, 0, 20, 3);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(20, 3, &mut pool);
+    columns.render(area, &mut frame);
+    assert_snapshot!("columns_equal", &frame.buffer);
+}
+
+#[test]
+fn snapshot_columns_padding() {
+    let columns = Columns::new()
+        .add(Padding::new(
+            Paragraph::new(Text::raw("Pad")),
+            Sides::all(1),
+        ))
+        .add(Paragraph::new(Text::raw("Plain")))
+        .gap(1);
+
+    let area = Rect::new(0, 0, 17, 5);
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(17, 5, &mut pool);
+    columns.render(area, &mut frame);
+    assert_snapshot!("columns_padding", &frame.buffer);
 }
 
 // ============================================================================

@@ -296,16 +296,16 @@ mod tests {
         for i in 0..100 {
             logs.push(OutMsg::Log(format!("log-{i}\n").into_bytes()));
         }
-        
+
         let mut buf = Buffer::new(10, 5);
         buf.set_raw(0, 0, Cell::from_char('X'));
-        
+
         // Send logs, then render
         // Note: channel is FIFO. render loop drains ALL.
         // It will see 100 logs + 1 render (if we send render last).
         // Since we want to test interleaving logic, we rely on the loop's
         // behavior of processing the batch.
-        
+
         for msg in logs {
             rt.send(msg).unwrap();
         }
@@ -316,11 +316,11 @@ mod tests {
 
         let raw = tw.output();
         let output = String::from_utf8_lossy(&raw);
-        
+
         // Verify logs are present
         assert!(output.contains("log-0"));
         assert!(output.contains("log-99"));
-        
+
         // Verify render occurred (X is present)
         // With corrected logic, X should appear after first chunk(64),
         // and potentially again after last chunk (100-64=36).

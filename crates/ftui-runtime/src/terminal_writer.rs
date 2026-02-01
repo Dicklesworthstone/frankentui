@@ -208,8 +208,12 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Calculate the row where the UI starts (0-indexed).
     fn ui_start_row(&self) -> u16 {
+        let ui_height = match self.screen_mode {
+            ScreenMode::Inline { ui_height } => ui_height.min(self.term_height),
+            ScreenMode::AltScreen => self.term_height,
+        };
         match (self.screen_mode, self.ui_anchor) {
-            (ScreenMode::Inline { ui_height }, UiAnchor::Bottom) => {
+            (ScreenMode::Inline { .. }, UiAnchor::Bottom) => {
                 self.term_height.saturating_sub(ui_height)
             }
             (ScreenMode::Inline { .. }, UiAnchor::Top) => 0,
@@ -294,10 +298,7 @@ impl<W: Write> TerminalWriter<W> {
         if visible_height == 0 {
             return Ok(());
         }
-        let ui_y_start = match self.ui_anchor {
-            UiAnchor::Bottom => self.term_height.saturating_sub(visible_height),
-            UiAnchor::Top => 0,
-        };
+        let ui_y_start = self.ui_start_row();
 
         // Activate scroll region if strategy calls for it
         {
@@ -723,7 +724,9 @@ mod tests {
                 let mut saw_row = false;
                 while j < output.len() && output[j].is_ascii_digit() {
                     saw_row = true;
-                    row = row.saturating_mul(10).saturating_add((output[j] - b'0') as u16);
+                    row = row
+                        .saturating_mul(10)
+                        .saturating_add((output[j] - b'0') as u16);
                     j += 1;
                 }
                 if saw_row && j < output.len() && output[j] == b';' {
@@ -1157,7 +1160,11 @@ mod tests {
         }
 
         let max_row = max_cursor_row(&output);
-        assert!(max_row <= 3, "cursor row {} exceeds terminal height", max_row);
+        assert!(
+            max_row <= 3,
+            "cursor row {} exceeds terminal height",
+            max_row
+        );
     }
 
     // --- Scroll-region optimization tests ---

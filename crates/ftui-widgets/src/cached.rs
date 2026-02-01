@@ -231,7 +231,9 @@ impl<W: Widget, K: CacheKey<W>> StatefulWidget for CachedWidget<W, K> {
 
         if let Some(cache) = &state.cache {
             let src_rect = Rect::from_size(area.width, area.height);
-            frame.buffer.copy_from(&cache.buffer, src_rect, area.x, area.y);
+            frame
+                .buffer
+                .copy_from(&cache.buffer, src_rect, area.x, area.y);
         }
     }
 }

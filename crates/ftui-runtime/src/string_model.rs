@@ -400,10 +400,7 @@ mod tests {
             assert!(tail.is_continuation(), "cell {i} should be continuation");
         }
 
-        let next = frame
-            .buffer
-            .get(grapheme_width as u16, 0)
-            .unwrap();
+        let next = frame.buffer.get(grapheme_width as u16, 0).unwrap();
         assert_eq!(next.content.as_char(), Some('X'));
     }
 

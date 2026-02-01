@@ -190,11 +190,12 @@ impl Draw for Buffer {
         base_cell: Cell,
         max_x: u16,
     ) -> u16 {
-        use unicode_width::UnicodeWidthChar;
+        use unicode_segmentation::UnicodeSegmentation;
+        use unicode_width::UnicodeWidthStr;
 
         let mut cx = x;
-        for c in text.chars() {
-            let width = UnicodeWidthChar::width(c).unwrap_or(0);
+        for grapheme in text.graphemes(true) {
+            let width = UnicodeWidthStr::width(grapheme);
             if width == 0 {
                 continue;
             }
@@ -208,13 +209,19 @@ impl Draw for Buffer {
                 break;
             }
 
-            let cell = Cell {
-                content: CellContent::from_char(c),
-                fg: base_cell.fg,
-                bg: base_cell.bg,
-                attrs: base_cell.attrs,
-            };
-            self.set(cx, y, cell);
+            // Fallback for multi-char graphemes (e.g. emoji, combining)
+            // Since we can't intern without a pool, we use the first char.
+            // This is imperfect but safe.
+            if let Some(c) = grapheme.chars().next() {
+                let cell = Cell {
+                    content: CellContent::from_char(c),
+                    fg: base_cell.fg,
+                    bg: base_cell.bg,
+                    attrs: base_cell.attrs,
+                };
+                self.set(cx, y, cell);
+            }
+
             cx = cx.saturating_add(width as u16);
         }
         cx

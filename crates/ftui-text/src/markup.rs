@@ -642,14 +642,14 @@ mod tests {
         // Pop fg (restore bg=blue prev... wait, bg=blue prev was red. Restoring fg's prev (empty). Reapply bg=blue.)
         // Result: "text" is red on blue. "more" should be blue background (default fg).
         let text = parse_markup("[fg=red][bg=blue]text[/fg]more[/bg]").unwrap();
-        
+
         assert_eq!(text.to_plain_text(), "textmore");
-        
+
         // "text" span
         let style1 = text.lines()[0].spans()[0].style.unwrap();
         assert_eq!(style1.fg, Some(PackedRgba::rgb(255, 0, 0))); // Red
         assert_eq!(style1.bg, Some(PackedRgba::rgb(0, 0, 255))); // Blue
-        
+
         // "more" span
         let style2 = text.lines()[0].spans()[1].style.unwrap();
         assert_eq!(style2.fg, None); // Default fg

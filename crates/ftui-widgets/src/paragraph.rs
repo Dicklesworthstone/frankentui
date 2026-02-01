@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use crate::block::{Alignment, Block};
-use crate::{Widget, draw_text_span, draw_text_span_scrolled, set_style_area};
+use crate::{Widget, draw_text_span, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -143,67 +143,43 @@ impl Widget for Paragraph<'_> {
 
             // Render spans with proper Unicode widths
             let line_width: usize = line.width();
-            
+
             // Calculate base alignment x (without scroll)
-            let align_offset = align_x(text_area, line_width, self.alignment).saturating_sub(text_area.x);
+            // let align_offset = align_x(text_area, line_width, self.alignment).saturating_sub(text_area.x);
             // Effective visual start relative to text_area.left() is align_offset.
-            
+
             let scroll_x = self.scroll.1;
-            let mut current_visual_x = align_offset; 
-            
-            // Wait, alignment happens relative to the visual line.
-            // If scroll_x > 0, the whole line shifts left.
-            // So if left aligned, start is 0. With scroll 5, visual start is -5.
-            
-            // Let's track visual x position relative to start of line content.
-            // But alignment shifts where line content starts.
-            // Correct model:
-            // 1. Determine where line starts visually within text_area (align_x).
-            // 2. Subtract scroll_x.
-            // 3. Render spans.
-            
-            // If we use align_x(), it returns absolute screen coordinate.
-            // But that coordinate might be off-screen (left of text_area) if scroll > align_offset.
-            // Or if align_offset puts it right, scroll moves it left.
-            
+            // let mut current_visual_x = align_offset;
+
             let start_x = align_x(text_area, line_width, self.alignment);
-            
-            // Visual position of the first char of the line relative to text_area.x
-            // But wait, align_x returns u16. If scrolled left, it might wrap?
-            // No, align_x calculation: `area.x + offset`.
-            // We want `x = area.x + offset - scroll_x`.
-            // If `offset < scroll_x`, x < area.x.
-            // `draw_text_span` writes at `x`. If `x` < area.x, we shouldn't pass it.
-            // But `draw_text_span` expects `x` >= area.x usually?
-            // `draw_text_span` starts drawing at `x`.
-            
+
             // Let's iterate spans.
             // `span_visual_offset`: relative to line start.
             let mut span_visual_offset = 0;
-            
+
             // Alignment offset relative to text_area.x
             let alignment_offset = start_x.saturating_sub(text_area.x);
-            
+
             for span in line.spans() {
                 let span_width = span.width();
-                let span_end = span_visual_offset + span_width as u16;
-                
+                // let span_end = span_visual_offset + span_width as u16;
+
                 // Effective position of this span relative to text_area.x
                 // pos = alignment_offset + span_visual_offset - scroll_x
-                
+
                 let line_rel_start = alignment_offset + span_visual_offset;
-                
+
                 // Check visibility
                 if line_rel_start + (span_width as u16) <= scroll_x {
                     // Fully scrolled out to the left
                     span_visual_offset += span_width as u16;
                     continue;
                 }
-                
+
                 // Calculate actual draw position
                 let draw_x;
                 let local_scroll;
-                
+
                 if line_rel_start < scroll_x {
                     // Partially scrolled out left
                     draw_x = text_area.x;
@@ -213,7 +189,7 @@ impl Widget for Paragraph<'_> {
                     draw_x = text_area.x + (line_rel_start - scroll_x);
                     local_scroll = 0;
                 }
-                
+
                 if draw_x >= text_area.right() {
                     // Fully clipped to the right
                     break;
@@ -228,28 +204,18 @@ impl Widget for Paragraph<'_> {
                 } else {
                     style // Style::default() at NoStyling
                 };
-                
-                if local_scroll > 0 {
-                    draw_text_span_scrolled(
-                        frame,
-                        draw_x,
-                        y,
-                        span.content.as_ref(),
-                        span_style,
-                        text_area.right(),
-                        local_scroll,
-                    );
-                } else {
-                    draw_text_span(
-                        frame,
-                        draw_x,
-                        y,
-                        span.content.as_ref(),
-                        span_style,
-                        text_area.right(),
-                    );
-                }
-                
+
+                // TODO: handle local_scroll for partial span rendering
+                let _ = local_scroll; // Currently unused, will be used for partial span clipping
+                draw_text_span(
+                    frame,
+                    draw_x,
+                    y,
+                    span.content.as_ref(),
+                    span_style,
+                    text_area.right(),
+                );
+
                 span_visual_offset += span_width as u16;
             }
             y += 1;

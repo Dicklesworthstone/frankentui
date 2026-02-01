@@ -19,3 +19,4 @@ portable-pty = { version = "0.8.1", optional = true }
 ftui-widgets = { path = "../ftui-widgets" }
 ftui-style = { path = "../ftui-style" }
 ftui-text = { path = "../ftui-text" }
+ftui-layout = { path = "../ftui-layout" }

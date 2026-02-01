@@ -425,7 +425,8 @@ impl Widget for Canvas {
         if area.is_empty() {
             return;
         }
-        self.painter.render_to_buffer(area, &mut frame.buffer, self.style);
+        self.painter
+            .render_to_buffer(area, &mut frame.buffer, self.style);
     }
 }
 

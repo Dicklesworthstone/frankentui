@@ -319,21 +319,29 @@ impl Widget for Block<'_> {
         } else if deg.render_decorative() {
             // Still show title but without styling
             // Pass frame to reuse draw_text_span
-            if let Some(title) = self.title {
-                 if self.borders.contains(Borders::TOP) && area.width >= 3 {
-                    let available_width = area.width.saturating_sub(2) as usize;
-                    if available_width > 0 {
-                        let title_width = unicode_width::UnicodeWidthStr::width(title);
-                        let display_width = title_width.min(available_width);
-                        let x = match self.title_alignment {
-                            Alignment::Left => area.x + 1,
-                            Alignment::Center => area.x + 1 + ((available_width.saturating_sub(display_width)) / 2) as u16,
-                            Alignment::Right => area.right().saturating_sub(1).saturating_sub(display_width as u16),
-                        };
-                        let max_x = area.right().saturating_sub(1);
-                        draw_text_span(frame, x, area.y, title, Style::default(), max_x);
-                    }
-                 }
+            if let Some(title) = self.title
+                && self.borders.contains(Borders::TOP)
+                && area.width >= 3
+            {
+                let available_width = area.width.saturating_sub(2) as usize;
+                if available_width > 0 {
+                    let title_width = unicode_width::UnicodeWidthStr::width(title);
+                    let display_width = title_width.min(available_width);
+                    let x = match self.title_alignment {
+                        Alignment::Left => area.x + 1,
+                        Alignment::Center => {
+                            area.x
+                                + 1
+                                + ((available_width.saturating_sub(display_width)) / 2) as u16
+                        }
+                        Alignment::Right => area
+                            .right()
+                            .saturating_sub(1)
+                            .saturating_sub(display_width as u16),
+                    };
+                    let max_x = area.right().saturating_sub(1);
+                    draw_text_span(frame, x, area.y, title, Style::default(), max_x);
+                }
             }
         }
     }
@@ -415,8 +423,7 @@ mod tests {
 
     #[test]
     fn render_block_with_background() {
-        let block = Block::new()
-            .style(Style::new().bg(PackedRgba::rgb(10, 20, 30)));
+        let block = Block::new().style(Style::new().bg(PackedRgba::rgb(10, 20, 30)));
         let area = Rect::new(0, 0, 3, 2);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(3, 2, &mut pool);

@@ -727,7 +727,11 @@ mod tests {
         console.flush().unwrap();
 
         let lines = console.into_captured_lines();
-        let all_text: String = lines.iter().map(|l| l.plain_text()).collect::<Vec<_>>().join("");
+        let all_text: String = lines
+            .iter()
+            .map(|l| l.plain_text())
+            .collect::<Vec<_>>()
+            .join("");
         // Verify no text was lost
         assert_eq!(all_text.replace(" ", ""), "superlongwordmoretext");
 
@@ -747,7 +751,11 @@ mod tests {
         console.flush().unwrap();
 
         let lines = console.into_captured_lines();
-        let all_text: String = lines.iter().map(|l| l.plain_text()).collect::<Vec<_>>().join("");
+        let all_text: String = lines
+            .iter()
+            .map(|l| l.plain_text())
+            .collect::<Vec<_>>()
+            .join("");
         // Verify no text was lost (including space handling)
         assert!(all_text.contains("中") && all_text.contains("文") && all_text.contains("test"));
     }
