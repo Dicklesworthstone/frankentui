@@ -216,11 +216,52 @@ pub trait Widget {
     }
 }
 
-/// A `StatefulWidget` is a widget that renders based on mutable state.
+/// A widget that renders based on mutable state.
+///
+/// Use `StatefulWidget` when the widget needs to:
+///
+/// - Update scroll position during render
+/// - Track selection state
+/// - Cache computed layout information
+/// - Synchronize view with external model
+///
+/// # Example
+///
+/// ```ignore
+/// pub struct ListState {
+///     pub selected: Option<usize>,
+///     pub offset: usize,
+/// }
+///
+/// impl StatefulWidget for List<'_> {
+///     type State = ListState;
+///
+///     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
+///         // Adjust offset to keep selection visible
+///         if let Some(sel) = state.selected {
+///             if sel < state.offset {
+///                 state.offset = sel;
+///             }
+///         }
+///         // Render items starting from offset...
+///     }
+/// }
+/// ```
+///
+/// # Stateful vs Stateless
+///
+/// Prefer stateless [`Widget`] when possible. Use `StatefulWidget` only when
+/// the render pass genuinely needs to modify state (e.g., scroll adjustment).
 pub trait StatefulWidget {
+    /// The state type associated with this widget.
     type State;
 
-    /// Render the widget into the frame with mutable state.
+    /// Render the widget into the frame, potentially modifying state.
+    ///
+    /// State modifications should be limited to:
+    /// - Scroll offset adjustments
+    /// - Selection clamping
+    /// - Layout caching
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State);
 }
 
