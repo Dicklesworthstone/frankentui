@@ -498,9 +498,8 @@ impl<M: Model, W: Write> Program<M, W> {
             if self.session.poll_event(timeout)? {
                 // Drain all pending events
                 loop {
-                    if let Some(event) = self.session.read_event()? {
-                        self.handle_event(event)?;
-                    }
+                    let event = self.session.read_event()?;
+                    self.handle_event(event)?;
                     if !self.session.poll_event(Duration::from_millis(0))? {
                         break;
                     }
