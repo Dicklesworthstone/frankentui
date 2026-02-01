@@ -18,7 +18,7 @@
 //! let output = Cursor::new(Vec::new());
 //! let recording_output = AsciicastWriter::new(output, recorder);
 //! let caps = TerminalCapabilities::detect();
-//! let mut writer = TerminalWriter::new(recording_output, ScreenMode::Inline, UiAnchor::Bottom, caps);
+//! let mut writer = TerminalWriter::new(recording_output, ScreenMode::Inline { ui_height: 10 }, UiAnchor::Bottom, caps);
 //! writer.write_log("hello\n").unwrap();
 //! ```
 
@@ -94,6 +94,18 @@ impl<W: Write> AsciicastRecorder<W> {
     #[must_use]
     pub fn duration(&self) -> Duration {
         self.start.elapsed()
+    }
+
+    /// Returns the terminal width recorded in the asciicast header.
+    #[must_use]
+    pub const fn width(&self) -> u16 {
+        self.width
+    }
+
+    /// Returns the terminal height recorded in the asciicast header.
+    #[must_use]
+    pub const fn height(&self) -> u16 {
+        self.height
     }
 
     /// Flush output and return the inner writer.
@@ -197,7 +209,12 @@ impl<W: Write, R: Write> Write for AsciicastWriter<W, R> {
     }
 }
 
-fn write_header<W: Write>(output: &mut W, width: u16, height: u16, timestamp: i64) -> io::Result<()> {
+fn write_header<W: Write>(
+    output: &mut W,
+    width: u16,
+    height: u16,
+    timestamp: i64,
+) -> io::Result<()> {
     writeln!(
         output,
         "{{\"version\":2,\"width\":{},\"height\":{},\"timestamp\":{}}}",

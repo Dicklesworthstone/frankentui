@@ -23,6 +23,7 @@ unicode-width = { version = "0.2", optional = true }
 canvas = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style"]
 charts = ["canvas"]
 clipboard = ["dep:base64", "dep:ftui-core"]
+console = ["dep:ftui-style", "dep:ftui-text", "dep:unicode-width"]
 clipboard-fallback = ["clipboard"]
 clipboard-logging = ["clipboard", "dep:tracing"]
 image = ["dep:base64", "dep:ftui-core", "dep:image"]

@@ -15,6 +15,7 @@
 //! - [`Subscription`] - Trait for continuous event sources
 //! - [`Every`] - Built-in tick subscription
 
+pub mod asciicast;
 pub mod input_macro;
 pub mod log_sink;
 pub mod program;
@@ -27,6 +28,7 @@ pub mod string_model;
 pub mod subscription;
 pub mod terminal_writer;
 
+pub use asciicast::{AsciicastRecorder, AsciicastWriter};
 pub use input_macro::{
     EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayer, MacroRecorder, RecordingFilter,
     RecordingState, TimedEvent,
