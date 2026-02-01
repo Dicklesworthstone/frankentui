@@ -7,7 +7,7 @@
 use crate::block::Block;
 use crate::{StatefulWidget, Widget, draw_text_span, set_style_area};
 use ftui_core::geometry::Rect;
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
 use ftui_text::Text;
 
@@ -53,6 +53,9 @@ pub struct List<'a> {
     style: Style,
     highlight_style: Style,
     highlight_symbol: Option<&'a str>,
+    /// Optional hit ID for mouse interaction.
+    /// When set, each list item registers a hit region with the hit grid.
+    hit_id: Option<HitId>,
 }
 
 impl<'a> List<'a> {
@@ -63,6 +66,7 @@ impl<'a> List<'a> {
             style: Style::default(),
             highlight_style: Style::default(),
             highlight_symbol: None,
+            hit_id: None,
         }
     }
 
@@ -83,6 +87,16 @@ impl<'a> List<'a> {
 
     pub fn highlight_symbol(mut self, symbol: &'a str) -> Self {
         self.highlight_symbol = Some(symbol);
+        self
+    }
+
+    /// Set a hit ID for mouse interaction.
+    ///
+    /// When set, each list item will register a hit region with the frame's
+    /// hit grid (if enabled). The hit data will be the item's index, allowing
+    /// click handlers to determine which item was clicked.
+    pub fn hit_id(mut self, id: HitId) -> Self {
+        self.hit_id = Some(id);
         self
     }
 }
@@ -209,6 +223,11 @@ impl<'a> StatefulWidget for List<'a> {
                         break;
                     }
                 }
+            }
+
+            // Register hit region for this item (if hit testing enabled)
+            if let Some(id) = self.hit_id {
+                frame.register_hit(row_area, id, HitRegion::Content, i as u64);
             }
         }
     }
@@ -415,5 +434,53 @@ mod tests {
         // Using Widget trait (not StatefulWidget)
         Widget::render(&list, area, &mut frame);
         assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('X'));
+    }
+
+    #[test]
+    fn list_registers_hit_regions() {
+        let items = vec![ListItem::new("A"), ListItem::new("B"), ListItem::new("C")];
+        let list = List::new(items).hit_id(HitId::new(42));
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(10, 3, &mut pool);
+        let mut state = ListState::default();
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
+
+        // Each row should have a hit region with the item index as data
+        let hit0 = frame.hit_test(5, 0);
+        let hit1 = frame.hit_test(5, 1);
+        let hit2 = frame.hit_test(5, 2);
+
+        assert_eq!(hit0, Some((HitId::new(42), HitRegion::Content, 0)));
+        assert_eq!(hit1, Some((HitId::new(42), HitRegion::Content, 1)));
+        assert_eq!(hit2, Some((HitId::new(42), HitRegion::Content, 2)));
+    }
+
+    #[test]
+    fn list_no_hit_without_hit_id() {
+        let items = vec![ListItem::new("A")];
+        let list = List::new(items); // No hit_id set
+        let area = Rect::new(0, 0, 10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(10, 1, &mut pool);
+        let mut state = ListState::default();
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
+
+        // No hit region should be registered
+        assert!(frame.hit_test(5, 0).is_none());
+    }
+
+    #[test]
+    fn list_no_hit_without_hit_grid() {
+        let items = vec![ListItem::new("A")];
+        let list = List::new(items).hit_id(HitId::new(1));
+        let area = Rect::new(0, 0, 10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool); // No hit grid
+        let mut state = ListState::default();
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
+
+        // hit_test returns None when no hit grid
+        assert!(frame.hit_test(5, 0).is_none());
     }
 }

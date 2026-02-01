@@ -616,6 +616,11 @@ impl Widget for TextInput {
                     crate::apply_style(cell, self.cursor_style);
                 }
             }
+
+            // Set frame cursor position for hardware cursor
+            // Note: This positions the terminal's cursor at the text input position,
+            // which is important for accessibility and IME input.
+            frame.set_cursor(Some((cursor_screen_x, y)));
         }
     }
 
@@ -965,5 +970,38 @@ mod tests {
         input.move_cursor_right();
         assert_eq!(input.cursor(), 4);
         assert!(input.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn test_render_sets_frame_cursor() {
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let input = TextInput::new().with_value("hello");
+        let area = Rect::new(5, 3, 20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        input.render(area, &mut frame);
+
+        // Cursor should be positioned at the end of "hello" (5 chars)
+        // area.x = 5, cursor_visual_pos = 5, effective_scroll = 0
+        // So cursor_screen_x = 5 + 5 = 10
+        assert_eq!(frame.cursor_position, Some((10, 3)));
+    }
+
+    #[test]
+    fn test_render_cursor_mid_text() {
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut input = TextInput::new().with_value("hello");
+        input.cursor = 2; // After "he"
+        let area = Rect::new(0, 0, 20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        input.render(area, &mut frame);
+
+        // Cursor after "he" = visual position 2
+        assert_eq!(frame.cursor_position, Some((2, 0)));
     }
 }

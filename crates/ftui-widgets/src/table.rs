@@ -2,7 +2,7 @@ use crate::block::Block;
 use crate::{StatefulWidget, Widget, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
 use ftui_text::Text;
 
@@ -51,6 +51,9 @@ pub struct Table<'a> {
     style: Style,
     highlight_style: Style,
     column_spacing: u16,
+    /// Optional hit ID for mouse interaction.
+    /// When set, each table row registers a hit region with the hit grid.
+    hit_id: Option<HitId>,
 }
 
 impl<'a> Table<'a> {
@@ -66,6 +69,7 @@ impl<'a> Table<'a> {
             style: Style::default(),
             highlight_style: Style::default(),
             column_spacing: 1,
+            hit_id: None,
         }
     }
 
@@ -91,6 +95,16 @@ impl<'a> Table<'a> {
 
     pub fn column_spacing(mut self, spacing: u16) -> Self {
         self.column_spacing = spacing;
+        self
+    }
+
+    /// Set a hit ID for mouse interaction.
+    ///
+    /// When set, each table row will register a hit region with the frame's
+    /// hit grid (if enabled). The hit data will be the row's index, allowing
+    /// click handlers to determine which row was clicked.
+    pub fn hit_id(mut self, id: HitId) -> Self {
+        self.hit_id = Some(id);
         self
     }
 }
@@ -251,6 +265,12 @@ impl<'a> StatefulWidget for Table<'a> {
             let row_area = Rect::new(table_area.x, y, table_area.width, row.height);
             set_style_area(&mut frame.buffer, row_area, style);
             render_row(row, &column_rects, frame, y, style);
+
+            // Register hit region for this row (if hit testing enabled)
+            if let Some(id) = self.hit_id {
+                frame.register_hit(row_area, id, HitRegion::Content, i as u64);
+            }
+
             y += row.height + row.bottom_margin;
         }
     }
@@ -550,5 +570,55 @@ mod tests {
         // Row "A" at y=0, margin leaves y=1 empty, row "B" at y=2
         assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
         assert_eq!(cell_char(&frame.buffer, 0, 2), Some('B'));
+    }
+
+    #[test]
+    fn table_registers_hit_regions() {
+        let table = Table::new(
+            [Row::new(["A"]), Row::new(["B"]), Row::new(["C"])],
+            [Constraint::Fixed(5)],
+        )
+        .hit_id(HitId::new(99));
+
+        let area = Rect::new(0, 0, 5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(5, 3, &mut pool);
+        let mut state = TableState::default();
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        // Each row should have a hit region with the row index as data
+        let hit0 = frame.hit_test(2, 0);
+        let hit1 = frame.hit_test(2, 1);
+        let hit2 = frame.hit_test(2, 2);
+
+        assert_eq!(hit0, Some((HitId::new(99), HitRegion::Content, 0)));
+        assert_eq!(hit1, Some((HitId::new(99), HitRegion::Content, 1)));
+        assert_eq!(hit2, Some((HitId::new(99), HitRegion::Content, 2)));
+    }
+
+    #[test]
+    fn table_no_hit_without_hit_id() {
+        let table = Table::new([Row::new(["A"])], [Constraint::Fixed(5)]);
+        let area = Rect::new(0, 0, 5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(5, 1, &mut pool);
+        let mut state = TableState::default();
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        // No hit region should be registered
+        assert!(frame.hit_test(2, 0).is_none());
+    }
+
+    #[test]
+    fn table_no_hit_without_hit_grid() {
+        let table = Table::new([Row::new(["A"])], [Constraint::Fixed(5)]).hit_id(HitId::new(1));
+        let area = Rect::new(0, 0, 5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool); // No hit grid
+        let mut state = TableState::default();
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        // hit_test returns None when no hit grid
+        assert!(frame.hit_test(2, 0).is_none());
     }
 }
