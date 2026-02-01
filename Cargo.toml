@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ftui",
+  "crates/ftui-core",
+  "crates/ftui-render",
+  "crates/ftui-style",
+  "crates/ftui-text",
+  "crates/ftui-layout",
+  "crates/ftui-runtime",
+  "crates/ftui-widgets",
+  "crates/ftui-extras",
+  "crates/ftui-harness",
+  "crates/ftui-pty",
+  "crates/ftui-simd",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

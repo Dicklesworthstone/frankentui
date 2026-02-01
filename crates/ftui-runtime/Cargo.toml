@@ -1,0 +1,12 @@
+[package]
+name = "ftui-runtime"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ftui-core = { path = "../ftui-core" }
+ftui-layout = { path = "../ftui-layout" }
+ftui-render = { path = "../ftui-render" }
+ftui-style = { path = "../ftui-style" }
+ftui-text = { path = "../ftui-text" }

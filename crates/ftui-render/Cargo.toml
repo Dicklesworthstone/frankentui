@@ -1,0 +1,11 @@
+[package]
+name = "ftui-render"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bitflags = "2.10.0"
+ftui-layout = { path = "../ftui-layout" }
+ftui-style = { path = "../ftui-style" }
+ftui-text = { path = "../ftui-text" }

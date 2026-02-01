@@ -1,0 +1,9 @@
+[package]
+name = "ftui-extras"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ftui-runtime = { path = "../ftui-runtime" }
+ftui-widgets = { path = "../ftui-widgets" }

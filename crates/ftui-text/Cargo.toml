@@ -1,0 +1,9 @@
+[package]
+name = "ftui-text"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ftui-layout = { path = "../ftui-layout" }
+ftui-style = { path = "../ftui-style" }
