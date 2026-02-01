@@ -149,6 +149,7 @@ pub(crate) fn draw_text_span(
 mod tests {
     use super::*;
     use ftui_render::cell::PackedRgba;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     #[test]
     fn apply_style_sets_fg() {
@@ -231,59 +232,65 @@ mod tests {
 
     #[test]
     fn draw_text_span_basic() {
-        let mut buf = Buffer::new(10, 1);
-        let end_x = draw_text_span(&mut buf, 0, 0, "ABC", Style::default(), 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        let end_x = draw_text_span(&mut frame, 0, 0, "ABC", Style::default(), 10);
 
         assert_eq!(end_x, 3);
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('A'));
-        assert_eq!(buf.get(1, 0).unwrap().content.as_char(), Some('B'));
-        assert_eq!(buf.get(2, 0).unwrap().content.as_char(), Some('C'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('A'));
+        assert_eq!(frame.buffer.get(1, 0).unwrap().content.as_char(), Some('B'));
+        assert_eq!(frame.buffer.get(2, 0).unwrap().content.as_char(), Some('C'));
     }
 
     #[test]
     fn draw_text_span_clipped_at_max_x() {
-        let mut buf = Buffer::new(10, 1);
-        let end_x = draw_text_span(&mut buf, 0, 0, "ABCDEF", Style::default(), 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        let end_x = draw_text_span(&mut frame, 0, 0, "ABCDEF", Style::default(), 3);
 
         assert_eq!(end_x, 3);
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('A'));
-        assert_eq!(buf.get(2, 0).unwrap().content.as_char(), Some('C'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('A'));
+        assert_eq!(frame.buffer.get(2, 0).unwrap().content.as_char(), Some('C'));
         // 'D' should not be drawn
-        assert!(buf.get(3, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(3, 0).unwrap().is_empty());
     }
 
     #[test]
     fn draw_text_span_starts_at_offset() {
-        let mut buf = Buffer::new(10, 1);
-        let end_x = draw_text_span(&mut buf, 5, 0, "XY", Style::default(), 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        let end_x = draw_text_span(&mut frame, 5, 0, "XY", Style::default(), 10);
 
         assert_eq!(end_x, 7);
-        assert_eq!(buf.get(5, 0).unwrap().content.as_char(), Some('X'));
-        assert_eq!(buf.get(6, 0).unwrap().content.as_char(), Some('Y'));
-        assert!(buf.get(4, 0).unwrap().is_empty());
+        assert_eq!(frame.buffer.get(5, 0).unwrap().content.as_char(), Some('X'));
+        assert_eq!(frame.buffer.get(6, 0).unwrap().content.as_char(), Some('Y'));
+        assert!(frame.buffer.get(4, 0).unwrap().is_empty());
     }
 
     #[test]
     fn draw_text_span_empty_string() {
-        let mut buf = Buffer::new(5, 1);
-        let end_x = draw_text_span(&mut buf, 0, 0, "", Style::default(), 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        let end_x = draw_text_span(&mut frame, 0, 0, "", Style::default(), 5);
         assert_eq!(end_x, 0);
     }
 
     #[test]
     fn draw_text_span_applies_style() {
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         let style = Style::new().fg(PackedRgba::rgb(255, 128, 0));
-        draw_text_span(&mut buf, 0, 0, "A", style, 5);
+        draw_text_span(&mut frame, 0, 0, "A", style, 5);
 
-        assert_eq!(buf.get(0, 0).unwrap().fg, PackedRgba::rgb(255, 128, 0));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().fg, PackedRgba::rgb(255, 128, 0));
     }
 
     #[test]
     fn draw_text_span_max_x_at_start_draws_nothing() {
-        let mut buf = Buffer::new(5, 1);
-        let end_x = draw_text_span(&mut buf, 3, 0, "ABC", Style::default(), 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        let end_x = draw_text_span(&mut frame, 3, 0, "ABC", Style::default(), 3);
         assert_eq!(end_x, 3);
-        assert!(buf.get(3, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(3, 0).unwrap().is_empty());
     }
 }

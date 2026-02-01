@@ -6,7 +6,7 @@
 
 use crate::{StatefulWidget, Widget};
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 
 /// Scrollbar orientation.
@@ -89,7 +89,7 @@ impl ScrollbarState {
 impl<'a> StatefulWidget for Scrollbar<'a> {
     type State = ScrollbarState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -102,7 +102,7 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
         .entered();
 
         // Scrollbar is decorative — skip at EssentialOnly+
-        if !buf.degradation.render_decorative() {
+        if !frame.buffer.degradation.render_decorative() {
             return;
         }
 
@@ -164,7 +164,7 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
                 track_char
             };
 
-            let style = if !buf.degradation.apply_styling() {
+            let style = if !frame.buffer.degradation.apply_styling() {
                 Style::default()
             } else if is_thumb {
                 self.thumb_style
@@ -195,7 +195,7 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
                 if let Some(c) = symbol.chars().next() {
                     let mut cell = Cell::from_char(c);
                     crate::apply_style(&mut cell, style);
-                    buf.set(x, y, cell);
+                    frame.buffer.set(x, y, cell);
                 }
             }
         }
@@ -203,32 +203,35 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 }
 
 impl<'a> Widget for Scrollbar<'a> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         let mut state = ScrollbarState::default();
-        StatefulWidget::render(self, area, buf, &mut state);
+        StatefulWidget::render(self, area, frame, &mut state);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     #[test]
     fn scrollbar_empty_area() {
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
     }
 
     #[test]
     fn scrollbar_zero_content() {
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
         let mut state = ScrollbarState::new(0, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
         // Should not render anything when content_length is 0
     }
 
@@ -236,12 +239,13 @@ mod tests {
     fn scrollbar_vertical_right_renders() {
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         // Thumb should be at the top (position=0), track should have chars
-        let top_cell = buf.get(0, 0).unwrap();
+        let top_cell = frame.buffer.get(0, 0).unwrap();
         assert!(top_cell.content.as_char().is_some());
     }
 
@@ -249,11 +253,12 @@ mod tests {
     fn scrollbar_vertical_left_renders() {
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalLeft);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
-        let top_cell = buf.get(0, 0).unwrap();
+        let top_cell = frame.buffer.get(0, 0).unwrap();
         assert!(top_cell.content.as_char().is_some());
     }
 
@@ -261,11 +266,12 @@ mod tests {
     fn scrollbar_horizontal_renders() {
         let sb = Scrollbar::new(ScrollbarOrientation::HorizontalBottom);
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
-        let left_cell = buf.get(0, 0).unwrap();
+        let left_cell = frame.buffer.get(0, 0).unwrap();
         assert!(left_cell.content.as_char().is_some());
     }
 
@@ -275,21 +281,23 @@ mod tests {
         let area = Rect::new(0, 0, 1, 10);
 
         // Position at start
-        let mut buf1 = Buffer::new(1, 10);
+        let mut pool1 = GraphemePool::new();
+        let mut frame1 = Frame::new(1, 10, &mut pool1);
         let mut state1 = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf1, &mut state1);
+        StatefulWidget::render(&sb, area, &mut frame1, &mut state1);
 
         // Position at end
-        let mut buf2 = Buffer::new(1, 10);
+        let mut pool2 = GraphemePool::new();
+        let mut frame2 = Frame::new(1, 10, &mut pool2);
         let mut state2 = ScrollbarState::new(100, 90, 10);
-        StatefulWidget::render(&sb, area, &mut buf2, &mut state2);
+        StatefulWidget::render(&sb, area, &mut frame2, &mut state2);
 
         // The thumb char (█) should be at different positions
         let thumb_char = '█';
-        let thumb_pos_1 =
-            (0..10u16).find(|&y| buf1.get(0, y).unwrap().content.as_char() == Some(thumb_char));
-        let thumb_pos_2 =
-            (0..10u16).find(|&y| buf2.get(0, y).unwrap().content.as_char() == Some(thumb_char));
+        let thumb_pos_1 = (0..10u16)
+            .find(|&y| frame1.buffer.get(0, y).unwrap().content.as_char() == Some(thumb_char));
+        let thumb_pos_2 = (0..10u16)
+            .find(|&y| frame2.buffer.get(0, y).unwrap().content.as_char() == Some(thumb_char));
 
         // At start, thumb should be near top; at end, near bottom
         assert!(thumb_pos_1.unwrap_or(0) < thumb_pos_2.unwrap_or(0));
@@ -308,14 +316,18 @@ mod tests {
         // When viewport >= content, thumb should fill the whole track
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
         let mut state = ScrollbarState::new(5, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         // All cells should be thumb (█)
         let thumb_char = '█';
         for y in 0..10u16 {
-            assert_eq!(buf.get(0, y).unwrap().content.as_char(), Some(thumb_char));
+            assert_eq!(
+                frame.buffer.get(0, y).unwrap().content.as_char(),
+                Some(thumb_char)
+            );
         }
     }
 
@@ -323,11 +335,12 @@ mod tests {
     fn scrollbar_horizontal_top_renders() {
         let sb = Scrollbar::new(ScrollbarOrientation::HorizontalTop);
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
-        let left_cell = buf.get(0, 0).unwrap();
+        let left_cell = frame.buffer.get(0, 0).unwrap();
         assert!(left_cell.content.as_char().is_some());
     }
 
@@ -340,14 +353,15 @@ mod tests {
             Some("v"),
         );
         let area = Rect::new(0, 0, 1, 5);
-        let mut buf = Buffer::new(1, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 5, &mut pool);
         let mut state = ScrollbarState::new(50, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         // Should use our custom symbols
         let mut chars: Vec<Option<char>> = Vec::new();
         for y in 0..5u16 {
-            chars.push(buf.get(0, y).unwrap().content.as_char());
+            chars.push(frame.buffer.get(0, y).unwrap().content.as_char());
         }
         // At least some cells should have our custom chars
         assert!(chars.contains(&Some('#')) || chars.contains(&Some('.')));
@@ -357,15 +371,16 @@ mod tests {
     fn scrollbar_position_clamped_beyond_max() {
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
         // Position way beyond content_length
         let mut state = ScrollbarState::new(100, 500, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         // Should still render without panic, thumb at bottom
         let thumb_char = '█';
-        let thumb_pos =
-            (0..10u16).find(|&y| buf.get(0, y).unwrap().content.as_char() == Some(thumb_char));
+        let thumb_pos = (0..10u16)
+            .find(|&y| frame.buffer.get(0, y).unwrap().content.as_char() == Some(thumb_char));
         assert!(thumb_pos.is_some());
     }
 
@@ -381,9 +396,10 @@ mod tests {
     fn scrollbar_widget_trait_renders() {
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 5);
-        let mut buf = Buffer::new(1, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 5, &mut pool);
         // Widget trait uses default state (content_length=0, so no rendering)
-        Widget::render(&sb, area, &mut buf);
+        Widget::render(&sb, area, &mut frame);
         // Should not panic with default state
     }
 
@@ -403,15 +419,16 @@ mod tests {
 
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
-        buf.degradation = DegradationLevel::EssentialOnly;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
+        frame.buffer.degradation = DegradationLevel::EssentialOnly;
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         // Scrollbar is decorative, should be skipped at EssentialOnly
         for y in 0..10u16 {
             assert!(
-                buf.get(0, y).unwrap().is_empty(),
+                frame.buffer.get(0, y).unwrap().is_empty(),
                 "cell at y={y} should be empty at EssentialOnly"
             );
         }
@@ -423,14 +440,15 @@ mod tests {
 
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
-        buf.degradation = DegradationLevel::Skeleton;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
+        frame.buffer.degradation = DegradationLevel::Skeleton;
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         for y in 0..10u16 {
             assert!(
-                buf.get(0, y).unwrap().is_empty(),
+                frame.buffer.get(0, y).unwrap().is_empty(),
                 "cell at y={y} should be empty at Skeleton"
             );
         }
@@ -442,13 +460,14 @@ mod tests {
 
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
-        buf.degradation = DegradationLevel::Full;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
+        frame.buffer.degradation = DegradationLevel::Full;
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         // Should render something (thumb or track)
-        let top_cell = buf.get(0, 0).unwrap();
+        let top_cell = frame.buffer.get(0, 0).unwrap();
         assert!(top_cell.content.as_char().is_some());
     }
 
@@ -458,13 +477,14 @@ mod tests {
 
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let area = Rect::new(0, 0, 1, 10);
-        let mut buf = Buffer::new(1, 10);
-        buf.degradation = DegradationLevel::SimpleBorders;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
+        frame.buffer.degradation = DegradationLevel::SimpleBorders;
         let mut state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
 
         // SimpleBorders still renders decorative content
-        let top_cell = buf.get(0, 0).unwrap();
+        let top_cell = frame.buffer.get(0, 0).unwrap();
         assert!(top_cell.content.as_char().is_some());
     }
 }

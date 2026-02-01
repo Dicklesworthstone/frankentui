@@ -42,8 +42,7 @@
 
 use crate::program::{Cmd, Model};
 use ftui_core::event::Event;
-use ftui_render::buffer::Buffer;
-use ftui_render::cell::Cell;
+use ftui_render::cell::{Cell, CellContent};
 use ftui_render::frame::Frame;
 use ftui_text::Text;
 use unicode_segmentation::UnicodeSegmentation;
@@ -121,7 +120,7 @@ impl<S: StringModel> Model for StringModelAdapter<S> {
     fn view(&self, frame: &mut Frame) {
         let s = self.inner.view_string();
         let text = Text::raw(&s);
-        render_text_to_buffer(&text, &mut frame.buffer);
+        render_text_to_frame(&text, frame);
     }
 }
 
@@ -129,9 +128,9 @@ impl<S: StringModel> Model for StringModelAdapter<S> {
 ///
 /// Each line is rendered left-aligned from (0, y). Lines beyond the
 /// buffer height are clipped. Characters beyond buffer width are clipped.
-fn render_text_to_buffer(text: &Text, buf: &mut Buffer) {
-    let width = buf.width();
-    let height = buf.height();
+fn render_text_to_frame(text: &Text, frame: &mut Frame) {
+    let width = frame.width();
+    let height = frame.height();
 
     for (y, line) in text.lines().iter().enumerate() {
         if y as u16 >= height {
@@ -161,11 +160,18 @@ fn render_text_to_buffer(text: &Text, buf: &mut Buffer) {
                     break;
                 }
 
-                if let Some(c) = grapheme.chars().next() {
-                    let mut cell = Cell::from_char(c);
-                    apply_style(&mut cell, style);
-                    buf.set(x, y as u16, cell);
-                }
+                let content = if w > 1 || grapheme.chars().count() > 1 {
+                    let id = frame.intern_with_width(grapheme, w as u8);
+                    CellContent::from_grapheme(id)
+                } else if let Some(c) = grapheme.chars().next() {
+                    CellContent::from_char(c)
+                } else {
+                    continue;
+                };
+
+                let mut cell = Cell::new(content);
+                apply_style(&mut cell, style);
+                frame.buffer.set(x, y as u16, cell);
 
                 x = x.saturating_add(w as u16);
             }

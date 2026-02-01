@@ -17,7 +17,8 @@ use std::time::Instant;
 
 use ftui_core::geometry::Rect;
 use ftui_layout::Constraint;
-use ftui_render::buffer::Buffer;
+use ftui_render::frame::Frame;
+use ftui_render::grapheme_pool::GraphemePool;
 #[cfg(feature = "tracing")]
 use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
@@ -326,13 +327,14 @@ fn spans_nest_correctly() {
 fn zero_overhead_when_disabled() {
     let handle = with_captured_spans(|| {
         let area = Rect::new(0, 0, 20, 5);
-        let mut buf = Buffer::new(20, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
 
-        Block::bordered().render(area, &mut buf);
-        Paragraph::new(ftui_text::Text::raw("test")).render(area, &mut buf);
+        Block::bordered().render(area, &mut frame);
+        Paragraph::new(ftui_text::Text::raw("test")).render(area, &mut frame);
 
         let table = Table::new([Row::new(["X"])], [Constraint::Fixed(5)]);
-        Widget::render(&table, area, &mut buf);
+        Widget::render(&table, area, &mut frame);
     });
 
     let spans = handle.spans();

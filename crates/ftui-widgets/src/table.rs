@@ -2,7 +2,7 @@ use crate::block::Block;
 use crate::{StatefulWidget, Widget, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
-use ftui_render::buffer::Buffer;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_text::Text;
 
@@ -96,9 +96,9 @@ impl<'a> Table<'a> {
 }
 
 impl<'a> Widget for Table<'a> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         let mut state = TableState::default();
-        StatefulWidget::render(self, area, buf, &mut state);
+        StatefulWidget::render(self, area, frame, &mut state);
     }
 }
 
@@ -120,7 +120,7 @@ impl TableState {
 impl<'a> StatefulWidget for Table<'a> {
     type State = TableState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -139,7 +139,7 @@ impl<'a> StatefulWidget for Table<'a> {
         // Render block if present
         let table_area = match &self.block {
             Some(b) => {
-                b.render(area, buf);
+                b.render(area, frame);
                 b.inner(area)
             }
             None => area,
@@ -150,7 +150,7 @@ impl<'a> StatefulWidget for Table<'a> {
         }
 
         // Apply base style to the entire table area (clears gaps/empty space)
-        set_style_area(buf, table_area, self.style);
+        set_style_area(&mut frame.buffer, table_area, self.style);
 
         // Ensure visible range includes selected item
         if let Some(selected) = state.selected {
@@ -220,8 +220,8 @@ impl<'a> StatefulWidget for Table<'a> {
                 return;
             }
             let row_area = Rect::new(table_area.x, y, table_area.width, header.height);
-            set_style_area(buf, row_area, header.style);
-            render_row(header, &column_rects, buf, y, header.style);
+            set_style_area(&mut frame.buffer, row_area, header.style);
+            render_row(header, &column_rects, frame, y, header.style);
             y += header.height + header.bottom_margin;
         }
 
@@ -249,14 +249,14 @@ impl<'a> StatefulWidget for Table<'a> {
             // Usually specific row style overrides table style.
 
             let row_area = Rect::new(table_area.x, y, table_area.width, row.height);
-            set_style_area(buf, row_area, style);
-            render_row(row, &column_rects, buf, y, style);
+            set_style_area(&mut frame.buffer, row_area, style);
+            render_row(row, &column_rects, frame, y, style);
             y += row.height + row.bottom_margin;
         }
     }
 }
 
-fn render_row(row: &Row, col_rects: &[Rect], buf: &mut Buffer, y: u16, style: Style) {
+fn render_row(row: &Row, col_rects: &[Rect], frame: &mut Frame, y: u16, style: Style) {
     for (i, cell_text) in row.cells.iter().enumerate() {
         if i >= col_rects.len() {
             break;
@@ -275,7 +275,7 @@ fn render_row(row: &Row, col_rects: &[Rect], buf: &mut Buffer, y: u16, style: St
             for span in line.spans() {
                 let span_style = span.style.unwrap_or_default();
                 x = crate::draw_text_span(
-                    buf,
+                    frame,
                     x,
                     cell_area.y + line_idx as u16,
                     &span.content,
@@ -293,6 +293,8 @@ fn render_row(row: &Row, col_rects: &[Rect], buf: &mut Buffer, y: u16, style: St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::buffer::Buffer;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> Option<char> {
         buf.get(x, y).and_then(|c| c.content.as_char())
@@ -355,8 +357,9 @@ mod tests {
     fn render_zero_area() {
         let table = Table::new([Row::new(["A"])], [Constraint::Fixed(5)]);
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
         // Should not panic
     }
 
@@ -364,8 +367,9 @@ mod tests {
     fn render_empty_rows() {
         let table = Table::new(Vec::<Row>::new(), [Constraint::Fixed(5)]);
         let area = Rect::new(0, 0, 10, 5);
-        let mut buf = Buffer::new(10, 5);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        Widget::render(&table, area, &mut frame);
         // Should not panic; no content rendered
     }
 
@@ -373,12 +377,13 @@ mod tests {
     fn render_single_row_single_column() {
         let table = Table::new([Row::new(["Hello"])], [Constraint::Fixed(10)]);
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
 
-        assert_eq!(cell_char(&buf, 0, 0), Some('H'));
-        assert_eq!(cell_char(&buf, 1, 0), Some('e'));
-        assert_eq!(cell_char(&buf, 4, 0), Some('o'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('H'));
+        assert_eq!(cell_char(&frame.buffer, 1, 0), Some('e'));
+        assert_eq!(cell_char(&frame.buffer, 4, 0), Some('o'));
     }
 
     #[test]
@@ -388,13 +393,14 @@ mod tests {
             [Constraint::Fixed(4), Constraint::Fixed(4)],
         );
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
 
         // First row
-        assert_eq!(cell_char(&buf, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
         // Second row
-        assert_eq!(cell_char(&buf, 0, 1), Some('C'));
+        assert_eq!(cell_char(&frame.buffer, 0, 1), Some('C'));
     }
 
     #[test]
@@ -407,13 +413,14 @@ mod tests {
         .header(header);
 
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
 
         // Header on row 0
-        assert_eq!(cell_char(&buf, 0, 0), Some('N'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('N'));
         // Data on row 1
-        assert_eq!(cell_char(&buf, 0, 1), Some('f'));
+        assert_eq!(cell_char(&frame.buffer, 0, 1), Some('f'));
     }
 
     #[test]
@@ -421,12 +428,13 @@ mod tests {
         let table = Table::new([Row::new(["X"])], [Constraint::Fixed(5)]).block(Block::bordered());
 
         let area = Rect::new(0, 0, 10, 5);
-        let mut buf = Buffer::new(10, 5);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        Widget::render(&table, area, &mut frame);
 
         // Content should be inside the block border
         // Border chars are at row 0, content starts at row 1
-        assert_eq!(cell_char(&buf, 1, 1), Some('X'));
+        assert_eq!(cell_char(&frame.buffer, 1, 1), Some('X'));
     }
 
     #[test]
@@ -438,14 +446,15 @@ mod tests {
         .highlight_style(Style::new().bold());
 
         let area = Rect::new(0, 0, 5, 3);
-        let mut buf = Buffer::new(5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
         let mut state = TableState::default();
         state.select(Some(1));
 
-        StatefulWidget::render(&table, area, &mut buf, &mut state);
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
         // Selected row should have the highlight style applied
         // Row 1 (index 1) should render "B"
-        assert_eq!(cell_char(&buf, 0, 1), Some('B'));
+        assert_eq!(cell_char(&frame.buffer, 0, 1), Some('B'));
     }
 
     #[test]
@@ -460,8 +469,9 @@ mod tests {
             [Constraint::Fixed(10)],
         );
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
-        StatefulWidget::render(&table, area, &mut buf, &mut state);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
 
         // Offset should have been adjusted down to selected
         assert_eq!(state.offset, 2);
@@ -474,13 +484,14 @@ mod tests {
             [Constraint::Fixed(5)],
         );
         let area = Rect::new(0, 0, 5, 3);
-        let mut buf = Buffer::new(5, 3);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
 
         // Only first 3 rows fit
-        assert_eq!(cell_char(&buf, 0, 0), Some('R'));
-        assert_eq!(cell_char(&buf, 1, 0), Some('0'));
-        assert_eq!(cell_char(&buf, 1, 2), Some('2'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('R'));
+        assert_eq!(cell_char(&frame.buffer, 1, 0), Some('0'));
+        assert_eq!(cell_char(&frame.buffer, 1, 2), Some('2'));
     }
 
     #[test]
@@ -492,11 +503,12 @@ mod tests {
         .column_spacing(2);
 
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
 
         // "A" starts at x=0, "B" starts at x=3+2=5 (column width + gap)
-        assert_eq!(cell_char(&buf, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
     }
 
     #[test]
@@ -506,8 +518,9 @@ mod tests {
             [Constraint::Fixed(3), Constraint::Fixed(3)],
         );
         let area = Rect::new(0, 0, 8, 1);
-        let mut buf = Buffer::new(8, 1);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(8, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
         // Should not panic; extra cells beyond column count are skipped
     }
 
@@ -517,8 +530,9 @@ mod tests {
         let table = Table::new([Row::new(["X"])], [Constraint::Fixed(5)]).header(header);
 
         let area = Rect::new(0, 0, 5, 3);
-        let mut buf = Buffer::new(5, 3);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
         // Header doesn't fit; should return early without rendering data
     }
 
@@ -529,11 +543,12 @@ mod tests {
             [Constraint::Fixed(5)],
         );
         let area = Rect::new(0, 0, 5, 4);
-        let mut buf = Buffer::new(5, 4);
-        Widget::render(&table, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 4, &mut pool);
+        Widget::render(&table, area, &mut frame);
 
         // Row "A" at y=0, margin leaves y=1 empty, row "B" at y=2
-        assert_eq!(cell_char(&buf, 0, 0), Some('A'));
-        assert_eq!(cell_char(&buf, 0, 2), Some('B'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 0, 2), Some('B'));
     }
 }

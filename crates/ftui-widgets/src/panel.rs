@@ -8,6 +8,7 @@ use crate::{Widget, apply_style, draw_text_span, set_style_area};
 use ftui_core::geometry::{Rect, Sides};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -224,7 +225,7 @@ impl<'a, W> Panel<'a, W> {
     fn render_top_text(
         &self,
         area: Rect,
-        buf: &mut Buffer,
+        frame: &mut Frame,
         text: &str,
         alignment: Alignment,
         style: Style,
@@ -249,13 +250,13 @@ impl<'a, W> Panel<'a, W> {
         };
 
         let max_x = area.right().saturating_sub(1);
-        draw_text_span(buf, x, area.y, text.as_ref(), style, max_x);
+        draw_text_span(frame, x, area.y, text.as_ref(), style, max_x);
     }
 
     fn render_bottom_text(
         &self,
         area: Rect,
-        buf: &mut Buffer,
+        frame: &mut Frame,
         text: &str,
         alignment: Alignment,
         style: Style,
@@ -281,29 +282,29 @@ impl<'a, W> Panel<'a, W> {
 
         let y = area.bottom() - 1;
         let max_x = area.right().saturating_sub(1);
-        draw_text_span(buf, x, y, text.as_ref(), style, max_x);
+        draw_text_span(frame, x, y, text.as_ref(), style, max_x);
     }
 }
 
-struct ScissorGuard<'a> {
-    buf: &'a mut Buffer,
+struct ScissorGuard<'a, 'pool> {
+    frame: &'a mut Frame<'pool>,
 }
 
-impl<'a> ScissorGuard<'a> {
-    fn new(buf: &'a mut Buffer, rect: Rect) -> Self {
-        buf.push_scissor(rect);
-        Self { buf }
+impl<'a, 'pool> ScissorGuard<'a, 'pool> {
+    fn new(frame: &'a mut Frame<'pool>, rect: Rect) -> Self {
+        frame.buffer.push_scissor(rect);
+        Self { frame }
     }
 }
 
-impl Drop for ScissorGuard<'_> {
+impl Drop for ScissorGuard<'_, '_> {
     fn drop(&mut self) {
-        self.buf.pop_scissor();
+        self.frame.buffer.pop_scissor();
     }
 }
 
 impl<W: Widget> Widget for Panel<'_, W> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -319,23 +320,23 @@ impl<W: Widget> Widget for Panel<'_, W> {
             return;
         }
 
-        let deg = buf.degradation;
+        let deg = frame.buffer.degradation;
 
         // Skeleton+: skip everything, just clear area
         if !deg.render_content() {
-            buf.fill(area, Cell::default());
+            frame.buffer.fill(area, Cell::default());
             return;
         }
 
         // Background/style
         if deg.apply_styling() {
-            set_style_area(buf, area, self.style);
+            set_style_area(&mut frame.buffer, area, self.style);
         }
 
         // Decorative layer: borders + title/subtitle
         if deg.render_decorative() {
-            let set = self.pick_border_set(buf);
-            self.render_borders(area, buf, set);
+            let set = self.pick_border_set(&frame.buffer);
+            self.render_borders(area, &mut frame.buffer, set);
 
             if self.borders.contains(Borders::TOP)
                 && let Some(title) = self.title
@@ -345,7 +346,7 @@ impl<W: Widget> Widget for Panel<'_, W> {
                 } else {
                     Style::default()
                 };
-                self.render_top_text(area, buf, title, self.title_alignment, title_style);
+                self.render_top_text(area, frame, title, self.title_alignment, title_style);
             }
 
             if self.borders.contains(Borders::BOTTOM)
@@ -358,7 +359,7 @@ impl<W: Widget> Widget for Panel<'_, W> {
                 };
                 self.render_bottom_text(
                     area,
-                    buf,
+                    frame,
                     subtitle,
                     self.subtitle_alignment,
                     subtitle_style,
@@ -373,8 +374,8 @@ impl<W: Widget> Widget for Panel<'_, W> {
             return;
         }
 
-        let guard = ScissorGuard::new(buf, content_area);
-        self.child.render(content_area, &mut *guard.buf);
+        let guard = ScissorGuard::new(frame, content_area);
+        self.child.render(content_area, guard.frame);
     }
 
     fn is_essential(&self) -> bool {

@@ -5,8 +5,8 @@
 use crate::block::Block;
 use crate::{Widget, set_style_area};
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 
 /// A widget to display a progress bar.
@@ -51,7 +51,7 @@ impl<'a> ProgressBar<'a> {
 }
 
 impl<'a> Widget for ProgressBar<'a> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -63,7 +63,7 @@ impl<'a> Widget for ProgressBar<'a> {
         )
         .entered();
 
-        let deg = buf.degradation;
+        let deg = frame.buffer.degradation;
 
         // Skeleton+: skip entirely
         if !deg.render_content() {
@@ -73,13 +73,13 @@ impl<'a> Widget for ProgressBar<'a> {
         // EssentialOnly: just show percentage text, no bar
         if !deg.render_decorative() {
             let pct = format!("{}%", (self.ratio * 100.0) as u8);
-            crate::draw_text_span(buf, area.x, area.y, &pct, Style::default(), area.right());
+            crate::draw_text_span(frame, area.x, area.y, &pct, Style::default(), area.right());
             return;
         }
 
         let bar_area = match &self.block {
             Some(b) => {
-                b.render(area, buf);
+                b.render(area, frame);
                 b.inner(area)
             }
             None => area,
@@ -90,7 +90,7 @@ impl<'a> Widget for ProgressBar<'a> {
         }
 
         if deg.apply_styling() {
-            set_style_area(buf, bar_area, self.style);
+            set_style_area(&mut frame.buffer, bar_area, self.style);
         }
 
         let max_width = bar_area.width as f64;
@@ -115,7 +115,7 @@ impl<'a> Widget for ProgressBar<'a> {
                 if cell_x < bar_area.right() {
                     let mut cell = Cell::from_char(fill_char);
                     crate::apply_style(&mut cell, gauge_style);
-                    buf.set(cell_x, y, cell);
+                    frame.buffer.set(cell_x, y, cell);
                 }
             }
         }
@@ -132,7 +132,7 @@ impl<'a> Widget for ProgressBar<'a> {
                 + ((bar_area.width as usize).saturating_sub(label_width) / 2) as u16;
             let label_y = bar_area.top() + (bar_area.height / 2);
 
-            crate::draw_text_span(buf, label_x, label_y, label, label_style, bar_area.right());
+            crate::draw_text_span(frame, label_x, label_y, label, label_style, bar_area.right());
         }
     }
 }
@@ -141,6 +141,7 @@ impl<'a> Widget for ProgressBar<'a> {
 mod tests {
     use super::*;
     use ftui_render::cell::PackedRgba;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     // --- Builder tests ---
 
@@ -182,8 +183,9 @@ mod tests {
     fn render_zero_area() {
         let pb = ProgressBar::new().ratio(0.5);
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Widget::render(&pb, area, &mut frame);
         // Should not panic
     }
 
@@ -192,12 +194,13 @@ mod tests {
         let gauge_style = Style::new().bg(PackedRgba::RED);
         let pb = ProgressBar::new().ratio(0.0).gauge_style(gauge_style);
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        Widget::render(&pb, area, &mut frame);
 
         // No cells should have the gauge style bg
         for x in 0..10 {
-            let cell = buf.get(x, 0).unwrap();
+            let cell = frame.buffer.get(x, 0).unwrap();
             assert_ne!(
                 cell.bg,
                 PackedRgba::RED,
@@ -211,12 +214,13 @@ mod tests {
         let gauge_style = Style::new().bg(PackedRgba::GREEN);
         let pb = ProgressBar::new().ratio(1.0).gauge_style(gauge_style);
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        Widget::render(&pb, area, &mut frame);
 
         // All cells should have gauge bg
         for x in 0..10 {
-            let cell = buf.get(x, 0).unwrap();
+            let cell = frame.buffer.get(x, 0).unwrap();
             assert_eq!(
                 cell.bg,
                 PackedRgba::GREEN,
@@ -230,12 +234,13 @@ mod tests {
         let gauge_style = Style::new().bg(PackedRgba::BLUE);
         let pb = ProgressBar::new().ratio(0.5).gauge_style(gauge_style);
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        Widget::render(&pb, area, &mut frame);
 
         // About 5 cells should be filled (10 * 0.5 = 5)
         let filled_count = (0..10)
-            .filter(|&x| buf.get(x, 0).unwrap().bg == PackedRgba::BLUE)
+            .filter(|&x| frame.buffer.get(x, 0).unwrap().bg == PackedRgba::BLUE)
             .count();
         assert_eq!(filled_count, 5);
     }
@@ -245,13 +250,14 @@ mod tests {
         let gauge_style = Style::new().bg(PackedRgba::RED);
         let pb = ProgressBar::new().ratio(1.0).gauge_style(gauge_style);
         let area = Rect::new(0, 0, 5, 3);
-        let mut buf = Buffer::new(5, 3);
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+        Widget::render(&pb, area, &mut frame);
 
         // All 3 rows should be filled
         for y in 0..3 {
             for x in 0..5 {
-                let cell = buf.get(x, y).unwrap();
+                let cell = frame.buffer.get(x, y).unwrap();
                 assert_eq!(
                     cell.bg,
                     PackedRgba::RED,
@@ -265,16 +271,17 @@ mod tests {
     fn render_with_label_centered() {
         let pb = ProgressBar::new().ratio(0.5).label("50%");
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        Widget::render(&pb, area, &mut frame);
 
         // Label "50%" is 3 chars wide, centered in 10 = starts at x=3
         // (10 - 3) / 2 = 3
-        let c = buf.get(3, 0).and_then(|c| c.content.as_char());
+        let c = frame.buffer.get(3, 0).and_then(|c| c.content.as_char());
         assert_eq!(c, Some('5'));
-        let c = buf.get(4, 0).and_then(|c| c.content.as_char());
+        let c = frame.buffer.get(4, 0).and_then(|c| c.content.as_char());
         assert_eq!(c, Some('0'));
-        let c = buf.get(5, 0).and_then(|c| c.content.as_char());
+        let c = frame.buffer.get(5, 0).and_then(|c| c.content.as_char());
         assert_eq!(c, Some('%'));
     }
 
@@ -285,13 +292,14 @@ mod tests {
             .gauge_style(Style::new().bg(PackedRgba::GREEN))
             .block(Block::bordered());
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        Widget::render(&pb, area, &mut frame);
 
         // Inner area is 8x1 (border takes 1 on each side)
         // All inner cells should have gauge bg
         for x in 1..9 {
-            let cell = buf.get(x, 1).unwrap();
+            let cell = frame.buffer.get(x, 1).unwrap();
             assert_eq!(
                 cell.bg,
                 PackedRgba::GREEN,
@@ -310,14 +318,15 @@ mod tests {
             .ratio(0.5)
             .gauge_style(Style::new().bg(PackedRgba::GREEN));
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        buf.degradation = DegradationLevel::Skeleton;
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        frame.buffer.degradation = DegradationLevel::Skeleton;
+        Widget::render(&pb, area, &mut frame);
 
         // Nothing should be rendered
         for x in 0..10 {
             assert!(
-                buf.get(x, 0).unwrap().is_empty(),
+                frame.buffer.get(x, 0).unwrap().is_empty(),
                 "cell at x={x} should be empty at Skeleton"
             );
         }
@@ -331,16 +340,17 @@ mod tests {
             .ratio(0.5)
             .gauge_style(Style::new().bg(PackedRgba::GREEN));
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        buf.degradation = DegradationLevel::EssentialOnly;
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        frame.buffer.degradation = DegradationLevel::EssentialOnly;
+        Widget::render(&pb, area, &mut frame);
 
         // Should show "50%" text, no gauge bar
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('5'));
-        assert_eq!(buf.get(1, 0).unwrap().content.as_char(), Some('0'));
-        assert_eq!(buf.get(2, 0).unwrap().content.as_char(), Some('%'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('5'));
+        assert_eq!(frame.buffer.get(1, 0).unwrap().content.as_char(), Some('0'));
+        assert_eq!(frame.buffer.get(2, 0).unwrap().content.as_char(), Some('%'));
         // No gauge background color
-        assert_ne!(buf.get(0, 0).unwrap().bg, PackedRgba::GREEN);
+        assert_ne!(frame.buffer.get(0, 0).unwrap().bg, PackedRgba::GREEN);
     }
 
     #[test]
@@ -351,14 +361,15 @@ mod tests {
             .ratio(1.0)
             .gauge_style(Style::new().bg(PackedRgba::BLUE));
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        buf.degradation = DegradationLevel::Full;
-        Widget::render(&pb, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        frame.buffer.degradation = DegradationLevel::Full;
+        Widget::render(&pb, area, &mut frame);
 
         // All cells should have gauge bg
         for x in 0..10 {
             assert_eq!(
-                buf.get(x, 0).unwrap().bg,
+                frame.buffer.get(x, 0).unwrap().bg,
                 PackedRgba::BLUE,
                 "cell at x={x} should have gauge bg at Full"
             );

@@ -5,7 +5,7 @@
 use crate::block::Block;
 use crate::{StatefulWidget, Widget, set_style_area};
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 
 pub const DOTS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -65,7 +65,7 @@ impl SpinnerState {
 impl<'a> StatefulWidget for Spinner<'a> {
     type State = SpinnerState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -77,7 +77,7 @@ impl<'a> StatefulWidget for Spinner<'a> {
         )
         .entered();
 
-        let deg = buf.degradation;
+        let deg = frame.buffer.degradation;
 
         // Skeleton+: skip entirely (spinner is decorative)
         if !deg.render_content() {
@@ -87,14 +87,14 @@ impl<'a> StatefulWidget for Spinner<'a> {
         // EssentialOnly: spinner is decorative, only show label text
         if !deg.render_decorative() {
             if let Some(label) = self.label {
-                crate::draw_text_span(buf, area.x, area.y, label, Style::default(), area.right());
+                crate::draw_text_span(frame, area.x, area.y, label, Style::default(), area.right());
             }
             return;
         }
 
         let spinner_area = match &self.block {
             Some(b) => {
-                b.render(area, buf);
+                b.render(area, frame);
                 b.inner(area)
             }
             None => area,
@@ -111,7 +111,7 @@ impl<'a> StatefulWidget for Spinner<'a> {
         };
 
         if deg.apply_styling() {
-            set_style_area(buf, spinner_area, self.style);
+            set_style_area(&mut frame.buffer, spinner_area, self.style);
         }
 
         // At NoStyling, use static ASCII frame instead of animated Unicode
@@ -128,7 +128,7 @@ impl<'a> StatefulWidget for Spinner<'a> {
         let mut x = spinner_area.left();
         let y = spinner_area.top();
 
-        crate::draw_text_span(buf, x, y, frame_char, style, spinner_area.right());
+        crate::draw_text_span(frame, x, y, frame_char, style, spinner_area.right());
 
         let w = unicode_width::UnicodeWidthStr::width(frame_char);
         x += w as u16;
@@ -137,22 +137,24 @@ impl<'a> StatefulWidget for Spinner<'a> {
         if let Some(label) = self.label {
             x += 1;
             if x < spinner_area.right() {
-                crate::draw_text_span(buf, x, y, label, style, spinner_area.right());
+                crate::draw_text_span(frame, x, y, label, style, spinner_area.right());
             }
         }
     }
 }
 
 impl<'a> Widget for Spinner<'a> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         let mut state = SpinnerState::default();
-        StatefulWidget::render(self, area, buf, &mut state);
+        StatefulWidget::render(self, area, frame, &mut state);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::buffer::Buffer;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> Option<char> {
         buf.get(x, y).and_then(|c| c.content.as_char())
@@ -212,8 +214,9 @@ mod tests {
     fn render_zero_area() {
         let spinner = Spinner::new();
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
-        Widget::render(&spinner, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Widget::render(&spinner, area, &mut frame);
         // Should not panic
     }
 
@@ -222,10 +225,11 @@ mod tests {
         let frames: &[&str] = &["A", "B", "C"];
         let spinner = Spinner::new().frames(frames);
         let area = Rect::new(0, 0, 5, 1);
-        let mut buf = Buffer::new(5, 1);
-        Widget::render(&spinner, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        Widget::render(&spinner, area, &mut frame);
 
-        assert_eq!(cell_char(&buf, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
     }
 
     #[test]
@@ -235,28 +239,32 @@ mod tests {
         let area = Rect::new(0, 0, 5, 1);
 
         // Frame 0 -> "X"
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         let mut state = SpinnerState { current_frame: 0 };
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
-        assert_eq!(cell_char(&buf, 0, 0), Some('X'));
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('X'));
 
         // Frame 1 -> "Y"
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         state.current_frame = 1;
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
-        assert_eq!(cell_char(&buf, 0, 0), Some('Y'));
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('Y'));
 
         // Frame 2 -> "Z"
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         state.current_frame = 2;
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
-        assert_eq!(cell_char(&buf, 0, 0), Some('Z'));
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('Z'));
 
         // Frame 3 wraps -> "X"
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         state.current_frame = 3;
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
-        assert_eq!(cell_char(&buf, 0, 0), Some('X'));
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('X'));
     }
 
     #[test]
@@ -264,14 +272,15 @@ mod tests {
         let frames: &[&str] = &["*"];
         let spinner = Spinner::new().frames(frames).label("Go");
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
         let mut state = SpinnerState::default();
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
         // "*" at x=0, then space, then "Go" at x=2
-        assert_eq!(cell_char(&buf, 0, 0), Some('*'));
-        assert_eq!(cell_char(&buf, 2, 0), Some('G'));
-        assert_eq!(cell_char(&buf, 3, 0), Some('o'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('*'));
+        assert_eq!(cell_char(&frame.buffer, 2, 0), Some('G'));
+        assert_eq!(cell_char(&frame.buffer, 3, 0), Some('o'));
     }
 
     #[test]
@@ -279,12 +288,13 @@ mod tests {
         let frames: &[&str] = &["!"];
         let spinner = Spinner::new().frames(frames).block(Block::bordered());
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
         let mut state = SpinnerState::default();
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
         // Inside the border at (1, 1)
-        assert_eq!(cell_char(&buf, 1, 1), Some('!'));
+        assert_eq!(cell_char(&frame.buffer, 1, 1), Some('!'));
     }
 
     #[test]
@@ -292,15 +302,17 @@ mod tests {
         let spinner = Spinner::new().frames(LINE);
         let area = Rect::new(0, 0, 5, 1);
 
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         let mut state = SpinnerState { current_frame: 0 };
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
-        assert_eq!(cell_char(&buf, 0, 0), Some('|'));
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('|'));
 
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         state.current_frame = 1;
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
-        assert_eq!(cell_char(&buf, 0, 0), Some('/'));
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('/'));
     }
 
     #[test]
@@ -308,13 +320,14 @@ mod tests {
         let frames: &[&str] = &["A", "B"];
         let spinner = Spinner::new().frames(frames);
         let area = Rect::new(0, 0, 5, 1);
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         let mut state = SpinnerState {
             current_frame: 1000,
         };
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
         // 1000 % 2 = 0 -> "A"
-        assert_eq!(cell_char(&buf, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
     }
 
     #[test]
@@ -336,13 +349,14 @@ mod tests {
         let frames: &[&str] = &["*"];
         let spinner = Spinner::new().frames(frames).label("Loading");
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        buf.degradation = DegradationLevel::Skeleton;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        frame.buffer.degradation = DegradationLevel::Skeleton;
         let mut state = SpinnerState::default();
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
         // Nothing rendered at Skeleton
-        assert!(buf.get(0, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
     }
 
     #[test]
@@ -352,14 +366,15 @@ mod tests {
         let frames: &[&str] = &["*"];
         let spinner = Spinner::new().frames(frames).label("Go");
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        buf.degradation = DegradationLevel::EssentialOnly;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        frame.buffer.degradation = DegradationLevel::EssentialOnly;
         let mut state = SpinnerState::default();
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
         // Label "Go" rendered, no spinner frame
-        assert_eq!(cell_char(&buf, 0, 0), Some('G'));
-        assert_eq!(cell_char(&buf, 1, 0), Some('o'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('G'));
+        assert_eq!(cell_char(&frame.buffer, 1, 0), Some('o'));
     }
 
     #[test]
@@ -369,13 +384,14 @@ mod tests {
         // Use Unicode frames that should fall back to ASCII
         let spinner = Spinner::new(); // default DOTS frames are Unicode
         let area = Rect::new(0, 0, 5, 1);
-        let mut buf = Buffer::new(5, 1);
-        buf.degradation = DegradationLevel::SimpleBorders;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        frame.buffer.degradation = DegradationLevel::SimpleBorders;
         let mut state = SpinnerState::default();
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
         // Should use "*" fallback since DOTS are non-ASCII
-        assert_eq!(cell_char(&buf, 0, 0), Some('*'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('*'));
     }
 
     #[test]
@@ -384,12 +400,13 @@ mod tests {
 
         let spinner = Spinner::new(); // DOTS frames
         let area = Rect::new(0, 0, 5, 1);
-        let mut buf = Buffer::new(5, 1);
-        buf.degradation = DegradationLevel::Full;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        frame.buffer.degradation = DegradationLevel::Full;
         let mut state = SpinnerState::default();
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
         // Should use the first DOTS frame '⠋'
-        assert_eq!(cell_char(&buf, 0, 0), Some('⠋'));
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('⠋'));
     }
 }

@@ -7,7 +7,7 @@
 use crate::block::Block;
 use crate::{StatefulWidget, Widget, draw_text_span, set_style_area};
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_text::Text;
 
@@ -109,7 +109,7 @@ impl ListState {
 impl<'a> StatefulWidget for List<'a> {
     type State = ListState;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -123,7 +123,7 @@ impl<'a> StatefulWidget for List<'a> {
 
         let list_area = match &self.block {
             Some(b) => {
-                b.render(area, buf);
+                b.render(area, frame);
                 b.inner(area)
             }
             None => area,
@@ -134,7 +134,7 @@ impl<'a> StatefulWidget for List<'a> {
         }
 
         // Apply base style
-        set_style_area(buf, list_area, self.style);
+        set_style_area(&mut frame.buffer, list_area, self.style);
 
         if self.items.is_empty() {
             return;
@@ -178,7 +178,7 @@ impl<'a> StatefulWidget for List<'a> {
 
             // Apply item background style to the whole row
             let row_area = Rect::new(list_area.x, y, list_area.width, 1);
-            set_style_area(buf, row_area, item_style);
+            set_style_area(&mut frame.buffer, row_area, item_style);
 
             // Determine symbol
             let symbol = if is_selected {
@@ -191,9 +191,9 @@ impl<'a> StatefulWidget for List<'a> {
 
             // Draw symbol if present
             if !symbol.is_empty() {
-                x = draw_text_span(buf, x, y, symbol, item_style, list_area.right());
+                x = draw_text_span(frame, x, y, symbol, item_style, list_area.right());
                 // Add a space after symbol
-                x = draw_text_span(buf, x, y, " ", item_style, list_area.right());
+                x = draw_text_span(frame, x, y, " ", item_style, list_area.right());
             }
 
             // Draw content
@@ -204,7 +204,7 @@ impl<'a> StatefulWidget for List<'a> {
                         Some(s) => s.merge(&item_style),
                         None => item_style,
                     };
-                    x = draw_text_span(buf, x, y, &span.content, span_style, list_area.right());
+                    x = draw_text_span(frame, x, y, &span.content, span_style, list_area.right());
                     if x >= list_area.right() {
                         break;
                     }
@@ -215,22 +215,24 @@ impl<'a> StatefulWidget for List<'a> {
 }
 
 impl<'a> Widget for List<'a> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         let mut state = ListState::default();
-        StatefulWidget::render(self, area, buf, &mut state);
+        StatefulWidget::render(self, area, frame, &mut state);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     #[test]
     fn render_empty_list() {
         let list = List::new(Vec::<ListItem>::new());
         let area = Rect::new(0, 0, 10, 5);
-        let mut buf = Buffer::new(10, 5);
-        Widget::render(&list, area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        Widget::render(&list, area, &mut frame);
     }
 
     #[test]
@@ -242,14 +244,15 @@ mod tests {
         ];
         let list = List::new(items);
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
         let mut state = ListState::default();
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
 
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('I'));
-        assert_eq!(buf.get(5, 0).unwrap().content.as_char(), Some('A'));
-        assert_eq!(buf.get(5, 1).unwrap().content.as_char(), Some('B'));
-        assert_eq!(buf.get(5, 2).unwrap().content.as_char(), Some('C'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('I'));
+        assert_eq!(frame.buffer.get(5, 0).unwrap().content.as_char(), Some('A'));
+        assert_eq!(frame.buffer.get(5, 1).unwrap().content.as_char(), Some('B'));
+        assert_eq!(frame.buffer.get(5, 2).unwrap().content.as_char(), Some('C'));
     }
 
     #[test]
@@ -272,11 +275,12 @@ mod tests {
             .collect();
         let list = List::new(items);
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
         let mut state = ListState::default();
         state.select(Some(5));
 
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
         // offset should have been adjusted so item 5 is visible
         assert!(state.offset <= 5);
         assert!(state.offset + 3 > 5);
@@ -287,11 +291,12 @@ mod tests {
         let items = vec![ListItem::new("A"), ListItem::new("B")];
         let list = List::new(items);
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
         let mut state = ListState::default();
         state.select(Some(10)); // out of bounds
 
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
         // should clamp to last item
         assert_eq!(state.selected(), Some(1));
     }
@@ -301,22 +306,24 @@ mod tests {
         let items = vec![ListItem::new("A"), ListItem::new("B")];
         let list = List::new(items).highlight_symbol(">");
         let area = Rect::new(0, 0, 10, 2);
-        let mut buf = Buffer::new(10, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 2, &mut pool);
         let mut state = ListState::default();
         state.select(Some(0));
 
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
         // First item should have ">" symbol
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('>'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('>'));
     }
 
     #[test]
     fn render_zero_area() {
         let list = List::new(vec![ListItem::new("A")]);
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
         let mut state = ListState::default();
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
     }
 
     #[test]
@@ -337,13 +344,14 @@ mod tests {
         ];
         let list = List::new(items);
         let area = Rect::new(0, 0, 10, 2);
-        let mut buf = Buffer::new(10, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 2, &mut pool);
         let mut state = ListState::default();
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
 
         // Marker should be rendered at the start
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('•'));
-        assert_eq!(buf.get(0, 1).unwrap().content.as_char(), Some('•'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('•'));
+        assert_eq!(frame.buffer.get(0, 1).unwrap().content.as_char(), Some('•'));
     }
 
     #[test]
@@ -366,17 +374,18 @@ mod tests {
             .collect();
         let list = List::new(items);
         let area = Rect::new(0, 0, 10, 3);
-        let mut buf = Buffer::new(10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
         let mut state = ListState::default();
 
         // First scroll down
         state.select(Some(8));
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
         assert!(state.offset > 0);
 
         // Now select item 0 - should scroll back up
         state.select(Some(0));
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
         assert_eq!(state.offset, 0);
     }
 
@@ -385,14 +394,15 @@ mod tests {
         let items: Vec<ListItem> = (0..20).map(|i| ListItem::new(format!("{i}"))).collect();
         let list = List::new(items);
         let area = Rect::new(0, 0, 5, 3);
-        let mut buf = Buffer::new(5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
         let mut state = ListState::default();
-        StatefulWidget::render(&list, area, &mut buf, &mut state);
+        StatefulWidget::render(&list, area, &mut frame, &mut state);
 
         // Only first 3 should render
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('0'));
-        assert_eq!(buf.get(0, 1).unwrap().content.as_char(), Some('1'));
-        assert_eq!(buf.get(0, 2).unwrap().content.as_char(), Some('2'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('0'));
+        assert_eq!(frame.buffer.get(0, 1).unwrap().content.as_char(), Some('1'));
+        assert_eq!(frame.buffer.get(0, 2).unwrap().content.as_char(), Some('2'));
     }
 
     #[test]
@@ -400,9 +410,10 @@ mod tests {
         let items = vec![ListItem::new("X")];
         let list = List::new(items);
         let area = Rect::new(0, 0, 5, 1);
-        let mut buf = Buffer::new(5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
         // Using Widget trait (not StatefulWidget)
-        Widget::render(&list, area, &mut buf);
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('X'));
+        Widget::render(&list, area, &mut frame);
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('X'));
     }
 }

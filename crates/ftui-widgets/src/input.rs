@@ -7,8 +7,8 @@
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
+use ftui_render::frame::Frame;
 use ftui_style::Style;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -496,7 +496,7 @@ impl TextInput {
 }
 
 impl Widget for TextInput {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -512,12 +512,12 @@ impl Widget for TextInput {
             return;
         }
 
-        let deg = buf.degradation;
+        let deg = frame.buffer.degradation;
 
         // TextInput is essential — always render content, but skip styling
         // at NoStyling+. At Skeleton, still render the raw text value.
         if deg.apply_styling() {
-            crate::set_style_area(buf, area, self.style);
+            crate::set_style_area(&mut frame.buffer, area, self.style);
         }
 
         let graphemes: Vec<&str> = self.value.graphemes(true).collect();
@@ -553,7 +553,7 @@ impl Widget for TextInput {
                     crate::apply_style(&mut cell, placeholder_style);
                     let rel_x = visual_x.saturating_sub(effective_scroll);
                     if rel_x < viewport_width {
-                        buf.set(area.x + rel_x as u16, y, cell);
+                        frame.buffer.set(area.x + rel_x as u16, y, cell);
                     }
                 }
                 visual_x += w;
@@ -589,7 +589,7 @@ impl Widget for TextInput {
 
                 let rel_x = visual_x.saturating_sub(effective_scroll);
                 if rel_x < viewport_width {
-                    buf.set(area.x + rel_x as u16, y, cell);
+                    frame.buffer.set(area.x + rel_x as u16, y, cell);
                 }
                 visual_x += w;
             }
@@ -599,7 +599,7 @@ impl Widget for TextInput {
         let cursor_rel_x = cursor_visual_pos.saturating_sub(effective_scroll);
         if cursor_rel_x < viewport_width {
             let cursor_screen_x = area.x + cursor_rel_x as u16;
-            if let Some(cell) = buf.get_mut(cursor_screen_x, y) {
+            if let Some(cell) = frame.buffer.get_mut(cursor_screen_x, y) {
                 if !deg.apply_styling() {
                     // At NoStyling, just use reverse video for cursor
                     use ftui_render::cell::StyleFlags;
@@ -933,13 +933,17 @@ mod tests {
 
     #[test]
     fn test_render_basic() {
+        use ftui_render::frame::Frame;
+        use ftui_render::grapheme_pool::GraphemePool;
+
         let input = TextInput::new().with_value("hi");
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        input.render(area, &mut buf);
-        let cell_h = buf.get(0, 0).unwrap();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        input.render(area, &mut frame);
+        let cell_h = frame.buffer.get(0, 0).unwrap();
         assert_eq!(cell_h.content.as_char(), Some('h'));
-        let cell_i = buf.get(1, 0).unwrap();
+        let cell_i = frame.buffer.get(1, 0).unwrap();
         assert_eq!(cell_i.content.as_char(), Some('i'));
     }
 

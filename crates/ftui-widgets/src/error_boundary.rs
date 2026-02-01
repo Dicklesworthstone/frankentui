@@ -9,7 +9,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
 use ftui_core::geometry::Rect;
-use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -194,44 +193,44 @@ impl<W: Widget> StatefulWidget for ErrorBoundary<W> {
                     }
                     Err(payload) => {
                         let error = CapturedError::from_panic(payload, self.widget_name, area);
-                        clear_area(&mut frame.buffer, area);
-                        render_error_fallback(&mut frame.buffer, area, &error);
+                        clear_area(frame, area);
+                        render_error_fallback(frame, area, &error);
                         *state = ErrorBoundaryState::Failed(error);
                     }
                 }
             }
             ErrorBoundaryState::Failed(error) => {
-                render_error_fallback(&mut frame.buffer, area, error);
+                render_error_fallback(frame, area, error);
             }
         }
     }
 }
 
 /// Clear an area of the buffer to spaces.
-fn clear_area(buf: &mut Buffer, area: Rect) {
+fn clear_area(frame: &mut Frame, area: Rect) {
     let blank = Cell::from_char(' ');
     for y in area.y..area.y.saturating_add(area.height) {
         for x in area.x..area.x.saturating_add(area.width) {
-            buf.set(x, y, blank);
+            frame.buffer.set(x, y, blank);
         }
     }
 }
 
 /// Render a fallback error indicator in the given area.
-fn render_error_fallback(buf: &mut Buffer, area: Rect, error: &CapturedError) {
+fn render_error_fallback(frame: &mut Frame, area: Rect, error: &CapturedError) {
     let error_fg = PackedRgba::rgb(255, 60, 60);
     let error_bg = PackedRgba::rgb(40, 0, 0);
     let error_style = Style::new().fg(error_fg).bg(error_bg);
     let border_style = Style::new().fg(error_fg);
 
-    set_style_area(buf, area, Style::new().bg(error_bg));
+    set_style_area(&mut frame.buffer, area, Style::new().bg(error_bg));
 
     if area.width < 3 || area.height < 1 {
         // Too small for border, just show "!"
         if area.width >= 1 && area.height >= 1 {
             let mut cell = Cell::from_char('!');
             apply_style(&mut cell, error_style);
-            buf.set(area.x, area.y, cell);
+            frame.buffer.set(area.x, area.y, cell);
         }
         return;
     }
@@ -252,7 +251,7 @@ fn render_error_fallback(buf: &mut Buffer, area: Rect, error: &CapturedError) {
         };
         let mut cell = Cell::from_char(c);
         apply_style(&mut cell, border_style);
-        buf.set(x, top, cell);
+        frame.buffer.set(x, top, cell);
     }
 
     // Bottom border
@@ -267,7 +266,7 @@ fn render_error_fallback(buf: &mut Buffer, area: Rect, error: &CapturedError) {
             };
             let mut cell = Cell::from_char(c);
             apply_style(&mut cell, border_style);
-            buf.set(x, bottom, cell);
+            frame.buffer.set(x, bottom, cell);
         }
     }
 
@@ -276,18 +275,18 @@ fn render_error_fallback(buf: &mut Buffer, area: Rect, error: &CapturedError) {
         for y in (top + 1)..bottom {
             let mut cell_l = Cell::from_char('│');
             apply_style(&mut cell_l, border_style);
-            buf.set(left, y, cell_l);
+            frame.buffer.set(left, y, cell_l);
 
             let mut cell_r = Cell::from_char('│');
             apply_style(&mut cell_r, border_style);
-            buf.set(right, y, cell_r);
+            frame.buffer.set(right, y, cell_r);
         }
     }
 
     // Title "[Error]" on top border
     if area.width >= 9 {
         let title_x = left + 1;
-        draw_text_span(buf, title_x, top, "[Error]", border_style, right);
+        draw_text_span(frame, title_x, top, "[Error]", border_style, right);
     }
 
     // Error message inside
@@ -308,14 +307,14 @@ fn render_error_fallback(buf: &mut Buffer, area: Rect, error: &CapturedError) {
             format!("! {}", error.message)
         };
 
-        draw_text_span(buf, inner_left, inner_y, &msg, error_style, inner_right);
+        draw_text_span(frame, inner_left, inner_y, &msg, error_style, inner_right);
 
         // Widget name on next line if space
         if area.height >= 4 {
             let name_msg = format!("  in: {}", error.widget_name);
             let name_style = Style::new().fg(PackedRgba::rgb(180, 180, 180)).bg(error_bg);
             draw_text_span(
-                buf,
+                frame,
                 inner_left,
                 inner_y + 1,
                 &name_msg,
@@ -328,7 +327,7 @@ fn render_error_fallback(buf: &mut Buffer, area: Rect, error: &CapturedError) {
         if area.height >= 5 {
             let hint_style = Style::new().fg(PackedRgba::rgb(120, 120, 120)).bg(error_bg);
             draw_text_span(
-                buf,
+                frame,
                 inner_left,
                 inner_y + 2,
                 "  Press R to retry",
@@ -391,7 +390,7 @@ impl Widget for FallbackWidget {
         if area.is_empty() {
             return;
         }
-        render_error_fallback(&mut frame.buffer, area, &self.error);
+        render_error_fallback(frame, area, &self.error);
 
         // If retry hint is disabled, overwrite it with background
         if !self.show_retry_hint && area.height >= 5 {
@@ -485,12 +484,12 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
                     }
                     Err(payload) => {
                         let error = CapturedError::from_panic(payload, self.widget_name, area);
-                        clear_area(&mut frame.buffer, area);
+                        clear_area(frame, area);
                         if let Some(factory) = &self.fallback_factory {
                             let fallback = factory(&error);
                             fallback.render(area, frame);
                         } else {
-                            render_error_fallback(&mut frame.buffer, area, &error);
+                            render_error_fallback(frame, area, &error);
                         }
                         *state = ErrorBoundaryState::Failed(error);
                     }
@@ -501,7 +500,7 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
                     let fallback = factory(error);
                     fallback.render(area, frame);
                 } else {
-                    render_error_fallback(&mut frame.buffer, area, error);
+                    render_error_fallback(frame, area, error);
                 }
             }
         }
@@ -511,11 +510,12 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     struct PanickingWidget;
 
     impl Widget for PanickingWidget {
-        fn render(&self, _area: Rect, _buf: &mut Buffer) {
+        fn render(&self, _area: Rect, _frame: &mut Frame) {
             panic!("widget exploded");
         }
     }
@@ -523,9 +523,9 @@ mod tests {
     struct GoodWidget;
 
     impl Widget for GoodWidget {
-        fn render(&self, area: Rect, buf: &mut Buffer) {
+        fn render(&self, area: Rect, frame: &mut Frame) {
             if area.width > 0 && area.height > 0 {
-                buf.set(area.x, area.y, Cell::from_char('G'));
+                frame.buffer.set(area.x, area.y, Cell::from_char('G'));
             }
         }
     }
@@ -535,12 +535,13 @@ mod tests {
         let boundary = ErrorBoundary::new(GoodWidget, "good");
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 10, 5);
-        let mut buf = Buffer::new(10, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
 
-        boundary.render(area, &mut buf, &mut state);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(!state.is_failed());
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('G'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('G'));
     }
 
     #[test]
@@ -548,9 +549,10 @@ mod tests {
         let boundary = ErrorBoundary::new(PanickingWidget, "panicker");
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 30, 5);
-        let mut buf = Buffer::new(30, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 5, &mut pool);
 
-        boundary.render(area, &mut buf, &mut state);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(state.is_failed());
         let err = state.error().unwrap();
@@ -563,16 +565,18 @@ mod tests {
         let boundary = ErrorBoundary::new(PanickingWidget, "panicker");
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 30, 5);
-        let mut buf = Buffer::new(30, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 5, &mut pool);
 
-        boundary.render(area, &mut buf, &mut state);
+        boundary.render(area, &mut frame, &mut state);
 
         // Second render shows fallback without re-trying
-        let mut buf2 = Buffer::new(30, 5);
-        boundary.render(area, &mut buf2, &mut state);
+        let mut pool2 = GraphemePool::new();
+        let mut frame2 = Frame::new(30, 5, &mut pool2);
+        boundary.render(area, &mut frame2, &mut state);
 
         assert!(state.is_failed());
-        assert_eq!(buf2.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_eq!(frame2.buffer.get(0, 0).unwrap().content.as_char(), Some('┌'));
     }
 
     #[test]
@@ -589,8 +593,9 @@ mod tests {
         assert!(matches!(state, ErrorBoundaryState::Recovering { .. }));
 
         let area = Rect::new(0, 0, 10, 5);
-        let mut buf = Buffer::new(10, 5);
-        good.render(area, &mut buf, &mut state);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        good.render(area, &mut frame, &mut state);
 
         assert!(!state.is_failed());
         assert!(matches!(state, ErrorBoundaryState::Healthy));
@@ -653,9 +658,10 @@ mod tests {
         let boundary = ErrorBoundary::new(PanickingWidget, "panicker");
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
 
-        boundary.render(area, &mut buf, &mut state);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(!state.is_failed());
     }
@@ -665,12 +671,13 @@ mod tests {
         let boundary = ErrorBoundary::new(PanickingWidget, "panicker");
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 2, 1);
-        let mut buf = Buffer::new(2, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 1, &mut pool);
 
-        boundary.render(area, &mut buf, &mut state);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(state.is_failed());
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('!'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('!'));
     }
 
     #[test]
@@ -705,35 +712,38 @@ mod tests {
         });
 
         let area = Rect::new(0, 0, 30, 5);
-        let mut buf = Buffer::new(30, 5);
-        boundary.render(area, &mut buf, &mut state);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 5, &mut pool);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(state.is_failed());
         // Should see border, not 'G'
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('┌'));
     }
 
     #[test]
     fn fallback_widget_renders_standalone() {
         let fallback = FallbackWidget::from_message("render failed", "my_widget");
         let area = Rect::new(0, 0, 30, 5);
-        let mut buf = Buffer::new(30, 5);
-        fallback.render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 5, &mut pool);
+        fallback.render(area, &mut frame);
 
         // Should show error border
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('┌'));
     }
 
     #[test]
     fn fallback_widget_without_retry_hint() {
         let fallback = FallbackWidget::from_message("error", "w").without_retry_hint();
         let area = Rect::new(0, 0, 30, 6);
-        let mut buf = Buffer::new(30, 6);
-        fallback.render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 6, &mut pool);
+        fallback.render(area, &mut frame);
 
         // Retry hint line (y=3) should be blank spaces, not text
         // The hint would be at inner_y + 2 = area.y + 3 = 3
-        let hint_cell = buf.get(4, 3).unwrap();
+        let hint_cell = frame.buffer.get(4, 3).unwrap();
         assert_eq!(hint_cell.content.as_char(), Some(' '));
     }
 
@@ -741,8 +751,9 @@ mod tests {
     fn fallback_widget_empty_area() {
         let fallback = FallbackWidget::from_message("error", "w");
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
-        fallback.render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        fallback.render(area, &mut frame);
         // Should not panic
     }
 
@@ -758,12 +769,13 @@ mod tests {
             });
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 40, 5);
-        let mut buf = Buffer::new(40, 5);
-        boundary.render(area, &mut buf, &mut state);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 5, &mut pool);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(state.is_failed());
         // Should show the custom error (border should still appear)
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('┌'));
     }
 
     #[test]
@@ -771,11 +783,12 @@ mod tests {
         let boundary = CustomErrorBoundary::new(PanickingWidget, "panicker");
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 30, 5);
-        let mut buf = Buffer::new(30, 5);
-        boundary.render(area, &mut buf, &mut state);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 5, &mut pool);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(state.is_failed());
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('┌'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('┌'));
     }
 
     #[test]
@@ -783,14 +796,15 @@ mod tests {
         let boundary = ErrorBoundary::new(PanickingWidget, "panicker");
         let mut state = ErrorBoundaryState::default();
         let area = Rect::new(0, 0, 30, 6);
-        let mut buf = Buffer::new(30, 6);
-        boundary.render(area, &mut buf, &mut state);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 6, &mut pool);
+        boundary.render(area, &mut frame, &mut state);
 
         assert!(state.is_failed());
         // Retry hint at inner_y + 2 = 3
         // The text "Press R to retry" starts at inner_left (x=2) + 2 spaces
         // "  Press R to retry" -> 'P' at x=4
-        let p_cell = buf.get(4, 3).unwrap();
+        let p_cell = frame.buffer.get(4, 3).unwrap();
         assert_eq!(p_cell.content.as_char(), Some('P'));
     }
 
@@ -801,15 +815,16 @@ mod tests {
         let mut bad_state = ErrorBoundaryState::default();
         let mut good_state = ErrorBoundaryState::default();
 
-        let mut buf = Buffer::new(20, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
         let area_a = Rect::new(0, 0, 10, 5);
         let area_b = Rect::new(10, 0, 10, 5);
 
-        bad.render(area_a, &mut buf, &mut bad_state);
-        good.render(area_b, &mut buf, &mut good_state);
+        bad.render(area_a, &mut frame, &mut bad_state);
+        good.render(area_b, &mut frame, &mut good_state);
 
         assert!(bad_state.is_failed());
         assert!(!good_state.is_failed());
-        assert_eq!(buf.get(10, 0).unwrap().content.as_char(), Some('G'));
+        assert_eq!(frame.buffer.get(10, 0).unwrap().content.as_char(), Some('G'));
     }
 }

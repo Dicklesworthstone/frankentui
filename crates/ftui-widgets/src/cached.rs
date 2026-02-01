@@ -245,6 +245,7 @@ fn hash_value<T: Hash>(value: &T) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
     use std::cell::Cell as CounterCell;
     use std::rc::Rc;
 
@@ -254,10 +255,10 @@ mod tests {
     }
 
     impl Widget for CountWidget {
-        fn render(&self, area: Rect, buf: &mut Buffer) {
+        fn render(&self, area: Rect, frame: &mut Frame) {
             self.count.set(self.count.get() + 1);
             if !area.is_empty() {
-                buf.set(area.x, area.y, Cell::from_char('x'));
+                frame.buffer.set(area.x, area.y, Cell::from_char('x'));
             }
         }
     }
@@ -269,10 +270,10 @@ mod tests {
     }
 
     impl Widget for KeyWidget {
-        fn render(&self, area: Rect, buf: &mut Buffer) {
+        fn render(&self, area: Rect, frame: &mut Frame) {
             self.count.set(self.count.get() + 1);
             if !area.is_empty() {
-                buf.set(area.x, area.y, Cell::from_char('k'));
+                frame.buffer.set(area.x, area.y, Cell::from_char('k'));
             }
         }
     }
@@ -285,11 +286,12 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::default();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
         let area = Rect::new(1, 1, 3, 3);
 
-        cached.render(area, &mut buf, &mut state);
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
+        cached.render(area, &mut frame, &mut state);
 
         assert_eq!(count.get(), 1);
     }
@@ -302,10 +304,11 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::default();
-        let mut buf = Buffer::new(6, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 6, &mut pool);
 
-        cached.render(Rect::new(0, 0, 3, 3), &mut buf, &mut state);
-        cached.render(Rect::new(1, 1, 3, 3), &mut buf, &mut state);
+        cached.render(Rect::new(0, 0, 3, 3), &mut frame, &mut state);
+        cached.render(Rect::new(1, 1, 3, 3), &mut frame, &mut state);
 
         assert_eq!(count.get(), 2);
     }
@@ -318,12 +321,13 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::default();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
         let area = Rect::new(0, 0, 3, 3);
 
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
         cached.mark_dirty(&mut state);
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
 
         assert_eq!(count.get(), 2);
     }
@@ -338,12 +342,13 @@ mod tests {
         };
         let cached = CachedWidget::with_key(widget, |w| w.key.get());
         let mut state = CachedWidgetState::default();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
         let area = Rect::new(0, 0, 3, 3);
 
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
         key.set(2);
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
 
         assert_eq!(count.get(), 2);
     }
@@ -356,14 +361,15 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::default();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
 
         // First render populates cache
-        cached.render(Rect::new(0, 0, 3, 3), &mut buf, &mut state);
+        cached.render(Rect::new(0, 0, 3, 3), &mut frame, &mut state);
         assert!(state.cache.is_some());
 
         // Empty area should clear cache
-        cached.render(Rect::new(0, 0, 0, 0), &mut buf, &mut state);
+        cached.render(Rect::new(0, 0, 0, 0), &mut frame, &mut state);
         assert!(state.cache.is_none());
         assert_eq!(count.get(), 1);
     }
@@ -382,9 +388,10 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::new();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
 
-        cached.render(Rect::new(0, 0, 3, 3), &mut buf, &mut state);
+        cached.render(Rect::new(0, 0, 3, 3), &mut frame, &mut state);
         assert!(state.cache_size_bytes() > 0);
         assert_eq!(state.cache_size_bytes(), 9 * std::mem::size_of::<Cell>());
     }
@@ -397,9 +404,10 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::new();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
 
-        cached.render(Rect::new(0, 0, 3, 3), &mut buf, &mut state);
+        cached.render(Rect::new(0, 0, 3, 3), &mut frame, &mut state);
         assert!(state.cache_size_bytes() > 0);
 
         state.clear_cache();
@@ -414,16 +422,17 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::new();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
         let area = Rect::new(0, 0, 3, 3);
 
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
         assert_eq!(count.get(), 1);
 
         state.mark_dirty();
         assert!(state.dirty);
 
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
         assert_eq!(count.get(), 2);
         assert!(!state.dirty);
     }
@@ -491,15 +500,17 @@ mod tests {
         let mut state = CachedWidgetState::new();
         let area = Rect::new(0, 0, 3, 3);
 
-        let mut buf_cached = Buffer::new(3, 3);
-        cached.render(area, &mut buf_cached, &mut state);
+        let mut pool_cached = GraphemePool::new();
+        let mut frame_cached = Frame::new(3, 3, &mut pool_cached);
+        cached.render(area, &mut frame_cached, &mut state);
 
-        let mut buf_direct = Buffer::new(3, 3);
-        widget.render(area, &mut buf_direct);
+        let mut pool_direct = GraphemePool::new();
+        let mut frame_direct = Frame::new(3, 3, &mut pool_direct);
+        widget.render(area, &mut frame_direct);
 
         assert_eq!(
-            buf_cached.get(0, 0).unwrap().content.as_char(),
-            buf_direct.get(0, 0).unwrap().content.as_char()
+            frame_cached.buffer.get(0, 0).unwrap().content.as_char(),
+            frame_direct.buffer.get(0, 0).unwrap().content.as_char()
         );
     }
 
@@ -511,11 +522,12 @@ mod tests {
         };
         let cached = CachedWidget::new(widget);
         let mut state = CachedWidgetState::new();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
         let area = Rect::new(0, 0, 3, 3);
 
         for _ in 0..10 {
-            cached.render(area, &mut buf, &mut state);
+            cached.render(area, &mut frame, &mut state);
         }
         assert_eq!(count.get(), 1);
     }
@@ -530,12 +542,13 @@ mod tests {
         };
         let cached = CachedWidget::with_key(widget, |w| w.key.get());
         let mut state = CachedWidgetState::new();
-        let mut buf = Buffer::new(5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
         let area = Rect::new(0, 0, 3, 3);
 
-        cached.render(area, &mut buf, &mut state);
-        cached.render(area, &mut buf, &mut state);
-        cached.render(area, &mut buf, &mut state);
+        cached.render(area, &mut frame, &mut state);
+        cached.render(area, &mut frame, &mut state);
+        cached.render(area, &mut frame, &mut state);
 
         assert_eq!(count.get(), 1);
     }

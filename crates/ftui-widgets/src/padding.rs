@@ -9,7 +9,7 @@
 
 use crate::{StatefulWidget, Widget};
 use ftui_core::geometry::{Rect, Sides};
-use ftui_render::buffer::Buffer;
+use ftui_render::frame::Frame;
 
 /// A widget wrapper that applies padding around an inner widget.
 #[derive(Debug, Clone)]
@@ -57,25 +57,25 @@ impl<W> Padding<W> {
     }
 }
 
-struct ScissorGuard<'a> {
-    buf: &'a mut Buffer,
+struct ScissorGuard<'a, 'pool> {
+    frame: &'a mut Frame<'pool>,
 }
 
-impl<'a> ScissorGuard<'a> {
-    fn new(buf: &'a mut Buffer, rect: Rect) -> Self {
-        buf.push_scissor(rect);
-        Self { buf }
+impl<'a, 'pool> ScissorGuard<'a, 'pool> {
+    fn new(frame: &'a mut Frame<'pool>, rect: Rect) -> Self {
+        frame.buffer.push_scissor(rect);
+        Self { frame }
     }
 }
 
-impl Drop for ScissorGuard<'_> {
+impl Drop for ScissorGuard<'_, '_> {
     fn drop(&mut self) {
-        self.buf.pop_scissor();
+        self.frame.buffer.pop_scissor();
     }
 }
 
 impl<W: Widget> Widget for Padding<W> {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
+    fn render(&self, area: Rect, frame: &mut Frame) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -96,8 +96,8 @@ impl<W: Widget> Widget for Padding<W> {
             return;
         }
 
-        let guard = ScissorGuard::new(buf, inner);
-        self.inner.render(inner, &mut *guard.buf);
+        let mut guard = ScissorGuard::new(frame, inner);
+        self.inner.render(inner, &mut *guard.frame);
     }
 
     fn is_essential(&self) -> bool {
@@ -108,7 +108,7 @@ impl<W: Widget> Widget for Padding<W> {
 impl<W: StatefulWidget> StatefulWidget for Padding<W> {
     type State = W::State;
 
-    fn render(&self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!(
             "widget_render",
@@ -129,15 +129,17 @@ impl<W: StatefulWidget> StatefulWidget for Padding<W> {
             return;
         }
 
-        let guard = ScissorGuard::new(buf, inner);
-        self.inner.render(inner, &mut *guard.buf, state);
+        let mut guard = ScissorGuard::new(frame, inner);
+        self.inner.render(inner, &mut *guard.frame, state);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::buffer::Buffer;
     use ftui_render::cell::Cell;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     fn buf_to_lines(buf: &Buffer) -> Vec<String> {
         let mut lines = Vec::new();
@@ -159,10 +161,10 @@ mod tests {
     struct Fill(char);
 
     impl Widget for Fill {
-        fn render(&self, area: Rect, buf: &mut Buffer) {
+        fn render(&self, area: Rect, frame: &mut Frame) {
             for y in area.y..area.bottom() {
                 for x in area.x..area.right() {
-                    buf.set(x, y, Cell::from_char(self.0));
+                    frame.buffer.set(x, y, Cell::from_char(self.0));
                 }
             }
         }
@@ -172,10 +174,10 @@ mod tests {
     struct Naughty;
 
     impl Widget for Naughty {
-        fn render(&self, _area: Rect, buf: &mut Buffer) {
+        fn render(&self, _area: Rect, frame: &mut Frame) {
             // Intentionally ignore the provided area and attempt to write outside.
-            buf.set(0, 0, Cell::from_char('X'));
-            buf.set(2, 2, Cell::from_char('Y'));
+            frame.buffer.set(0, 0, Cell::from_char('X'));
+            frame.buffer.set(2, 2, Cell::from_char('Y'));
         }
     }
 
@@ -183,7 +185,7 @@ mod tests {
     struct Boom;
 
     impl Widget for Boom {
-        fn render(&self, _area: Rect, _buf: &mut Buffer) {
+        fn render(&self, _area: Rect, _frame: &mut Frame) {
             panic!("boom");
         }
     }
@@ -214,11 +216,12 @@ mod tests {
     fn render_padding_shifts_child_and_leaves_gutter_blank() {
         let pad = Padding::new(Fill('A'), Sides::all(1));
         let area = Rect::from_size(5, 5);
-        let mut buf = Buffer::new(5, 5);
-        pad.render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+        pad.render(area, &mut frame);
 
         assert_eq!(
-            buf_to_lines(&buf),
+            buf_to_lines(&frame.buffer),
             vec![
                 "     ".to_string(),
                 " AAA ".to_string(),
@@ -233,26 +236,28 @@ mod tests {
     fn render_is_clipped_to_inner_rect_via_scissor() {
         let pad = Padding::new(Naughty, Sides::all(1));
         let area = Rect::from_size(5, 5);
-        let mut buf = Buffer::new(5, 5);
-        pad.render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+        pad.render(area, &mut frame);
 
         // (0,0) is outside the inner rect, so it must not be written.
-        assert!(buf.get(0, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
         // (2,2) is inside the inner rect and should be written.
-        assert_eq!(buf.get(2, 2).unwrap().content.as_char(), Some('Y'));
+        assert_eq!(frame.buffer.get(2, 2).unwrap().content.as_char(), Some('Y'));
     }
 
     #[test]
     fn scissor_stack_restores_on_panic() {
         let pad = Padding::new(Boom, Sides::all(1));
         let area = Rect::from_size(5, 5);
-        let mut buf = Buffer::new(5, 5);
-        assert_eq!(buf.scissor_depth(), 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+        assert_eq!(frame.buffer.scissor_depth(), 1);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pad.render(area, &mut buf);
+            pad.render(area, &mut frame);
         }));
         assert!(result.is_err());
-        assert_eq!(buf.scissor_depth(), 1);
+        assert_eq!(frame.buffer.scissor_depth(), 1);
     }
 }
