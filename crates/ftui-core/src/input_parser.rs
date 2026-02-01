@@ -651,6 +651,12 @@ impl InputParser {
 
     /// Process OSC content.
     fn process_osc_content(&mut self, byte: u8) -> Option<Event> {
+        // Handle ESC (0x1B) as potential terminator or reset
+        if byte == 0x1B {
+            self.state = ParserState::OscEscape;
+            return None;
+        }
+
         // DoS protection
         if self.buffer.len() >= MAX_OSC_LEN {
             self.state = ParserState::OscIgnore;
@@ -663,11 +669,6 @@ impl InputParser {
             0x07 => {
                 self.state = ParserState::Ground;
                 self.parse_osc_sequence()
-            }
-            // ESC might start terminator or new sequence
-            0x1B => {
-                self.state = ParserState::OscEscape;
-                None
             }
             // Continue collecting
             _ => {
@@ -683,24 +684,17 @@ impl InputParser {
             // ST (String Terminator) found
             self.state = ParserState::Ground;
             self.parse_osc_sequence()
+        } else if byte == 0x1B {
+            // ESC ESC - treat second ESC as start of new sequence (restart)
+            self.state = ParserState::Escape;
+            self.buffer.clear();
+            None
         } else {
-            // Not a terminator.
-            // If it's another ESC, treat it as start of new sequence.
-            if byte == 0x1B {
-                self.buffer.clear();
-                self.state = ParserState::Escape;
-                return None;
-            }
-
-            // Otherwise, it was ESC+byte inside OSC data.
-            // But wait, if it wasn't ST, it means the previous ESC was likely
-            // the start of a new sequence that we interrupted?
-            // Or it was part of the payload?
-            // Standards are fuzzy, but for robustness:
-            // - If we see ESC + [ it's definitely a new CSI.
-            // - If we see ESC + char, it's a new escape sequence.
-            // So we should assume the previous ESC cancelled the OSC.
-
+            // ESC followed by something else.
+            // Strict ANSI would say the OSC is cancelled by the ESC.
+            // We treat this as a restart of parsing at the *current* byte,
+            // effectively interpreting the previous ESC as a cancel.
+            
             self.buffer.clear();
             self.state = ParserState::Escape;
             self.process_escape(byte)
@@ -1255,7 +1249,7 @@ mod proptest_fuzz {
     fn osc_sequence() -> impl Strategy<Value = Vec<u8>> {
         let content = prop::collection::vec(0x20u8..=0x7E, 0..=64);
         let terminator = prop_oneof![
-            Just(vec![0x1B, b'\\']), // ESC backslash
+            Just(vec![0x1B, b'\']), // ESC backslash
             Just(vec![0x07]),        // BEL
         ];
         (content, terminator).prop_map(|(c, t)| {
@@ -1368,7 +1362,7 @@ mod proptest_fuzz {
             let events = parser.parse(&input);
             for event in &events {
                 if let Event::Paste(p) = event {
-                    prop_assert!(p.text.len() <= MAX_PASTE_LEN,
+                    prop_assert!(p.text.len() <= MAX_PASTE_LEN, 
                         "Paste text {} exceeds limit {}", p.text.len(), MAX_PASTE_LEN);
                 }
             }
@@ -1522,6 +1516,7 @@ mod proptest_fuzz {
             events.len()
         );
     }
+
     // ── Additional fuzz invariant tests (bd-10i.11.3) ─────────────────
 
     /// Generate an OSC 52 clipboard sequence with arbitrary base64 payload.
@@ -1540,7 +1535,7 @@ mod proptest_fuzz {
             0..=128,
         );
         let terminator = prop_oneof![
-            Just(vec![0x1B, b'\\']), // ESC backslash (ST)
+            Just(vec![0x1B, b'\']), // ESC backslash (ST)
             Just(vec![0x07]),        // BEL
         ];
         (selector, payload, terminator).prop_map(|(sel, pay, term)| {
@@ -1572,9 +1567,9 @@ mod proptest_fuzz {
         let kind = prop_oneof![Just(1u32), Just(2u32), Just(3u32)]; // press/repeat/release
         (keycode, prop::option::of(modifier), prop::option::of(kind)).prop_map(
             |(kc, mods, kind)| match (mods, kind) {
-                (Some(m), Some(k)) => format!("\x1b[{kc};{m}:{k}u").into_bytes(),
-                (Some(m), None) => format!("\x1b[{kc};{m}u").into_bytes(),
-                _ => format!("\x1b[{kc}u").into_bytes(),
+                (Some(m), Some(k)) => format!("\x1b[{{kc}};{{m}}:{{k}}u").into_bytes(),
+                (Some(m), None) => format!("\x1b[{{kc}};{{m}}u").into_bytes(),
+                _ => format!("\x1b[{{kc}}u").into_bytes(),
             },
         )
     }
@@ -1741,7 +1736,7 @@ mod proptest_fuzz {
 
             for i in 0..count {
                 input.extend_from_slice(b"\x1b[200~");
-                input.extend_from_slice(format!("paste_{i}").as_bytes());
+                input.extend_from_slice(format!("paste_{{i}}").as_bytes());
                 input.extend_from_slice(b"\x1b[201~");
             }
 
@@ -1781,8 +1776,8 @@ mod proptest_fuzz {
 
             // Terminate any pending OSC (BEL works from any OSC sub-state),
             // then ESC to flush any other intermediate state.
-            let _ = parser.parse(&[0x07, 0x1b]);
-            let _ = parser.parse(&[0x1b]);
+            let _ = parser.parse(b"\x07\x1b\\\x1b");
+            let _ = parser.parse(b"\x1b");
 
             // Now feed a clean character.
             let _ = parser.parse(b"z");
