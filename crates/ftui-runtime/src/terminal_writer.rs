@@ -74,7 +74,7 @@ const SYNC_END: &[u8] = b"\x1b[?2026l";
 const ERASE_LINE: &[u8] = b"\x1b[2K";
 
 /// Screen mode determines whether we use alternate screen or inline mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScreenMode {
     /// Inline mode preserves scrollback. UI is anchored at bottom/top.
     Inline {
@@ -82,13 +82,8 @@ pub enum ScreenMode {
         ui_height: u16,
     },
     /// Alternate screen mode for full-screen applications.
+    #[default]
     AltScreen,
-}
-
-impl Default for ScreenMode {
-    fn default() -> Self {
-        Self::AltScreen
-    }
 }
 
 /// Where the UI region is anchored in inline mode.
@@ -106,8 +101,8 @@ pub enum UiAnchor {
 /// Enforces the one-writer rule and implements inline mode correctly.
 /// All terminal output should go through this struct.
 pub struct TerminalWriter<W: Write> {
-    /// Buffered writer for efficient output.
-    writer: BufWriter<W>,
+    /// Buffered writer for efficient output. Option allows moving out for into_inner().
+    writer: Option<BufWriter<W>>,
     /// Current screen mode.
     screen_mode: ScreenMode,
     /// Where UI is anchored in inline mode.
@@ -146,7 +141,7 @@ impl<W: Write> TerminalWriter<W> {
         capabilities: TerminalCapabilities,
     ) -> Self {
         Self {
-            writer: BufWriter::with_capacity(BUFFER_CAPACITY, writer),
+            writer: Some(BufWriter::with_capacity(BUFFER_CAPACITY, writer)),
             screen_mode,
             ui_anchor,
             prev_buffer: None,
@@ -158,6 +153,16 @@ impl<W: Write> TerminalWriter<W> {
             in_sync_block: false,
             cursor_saved: false,
         }
+    }
+
+    /// Get a mutable reference to the internal writer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the writer has been taken (via `into_inner`).
+    #[inline]
+    fn writer(&mut self) -> &mut BufWriter<W> {
+        self.writer.as_mut().expect("writer has been consumed")
     }
 
     /// Set the terminal size.
@@ -225,26 +230,26 @@ impl<W: Write> TerminalWriter<W> {
     fn present_inline(&mut self, buffer: &Buffer, ui_height: u16) -> io::Result<()> {
         // Begin sync output if available
         if self.capabilities.sync_output && !self.in_sync_block {
-            self.writer.write_all(SYNC_BEGIN)?;
+            self.writer().write_all(SYNC_BEGIN)?;
             self.in_sync_block = true;
         }
 
         // Save cursor (DEC save)
-        self.writer.write_all(CURSOR_SAVE)?;
+        self.writer().write_all(CURSOR_SAVE)?;
         self.cursor_saved = true;
 
         // Move to UI anchor
         let ui_y = self.ui_start_row();
-        write!(self.writer, "\x1b[{};1H", ui_y + 1)?; // 1-indexed
+        write!(self.writer(), "\x1b[{};1H", ui_y + 1)?; // 1-indexed
 
         // Clear UI region only (not full screen!)
         for i in 0..ui_height {
-            write!(self.writer, "\x1b[{};1H", ui_y + i + 1)?;
-            self.writer.write_all(ERASE_LINE)?;
+            write!(self.writer(), "\x1b[{};1H", ui_y + i + 1)?;
+            self.writer().write_all(ERASE_LINE)?;
         }
 
         // Move back to UI start
-        write!(self.writer, "\x1b[{};1H", ui_y + 1)?;
+        write!(self.writer(), "\x1b[{};1H", ui_y + 1)?;
 
         // Compute diff and present
         let diff = if let Some(ref prev) = self.prev_buffer {
@@ -263,16 +268,16 @@ impl<W: Write> TerminalWriter<W> {
         self.emit_diff(buffer, &diff)?;
 
         // Restore cursor
-        self.writer.write_all(CURSOR_RESTORE)?;
+        self.writer().write_all(CURSOR_RESTORE)?;
         self.cursor_saved = false;
 
         // End sync output
         if self.in_sync_block {
-            self.writer.write_all(SYNC_END)?;
+            self.writer().write_all(SYNC_END)?;
             self.in_sync_block = false;
         }
 
-        self.writer.flush()?;
+        self.writer().flush()?;
 
         // Save current buffer for next diff
         self.prev_buffer = Some(buffer.clone());
@@ -295,19 +300,19 @@ impl<W: Write> TerminalWriter<W> {
         // Use presenter directly
         // Begin sync if available
         if self.capabilities.sync_output {
-            self.writer.write_all(SYNC_BEGIN)?;
+            self.writer().write_all(SYNC_BEGIN)?;
         }
 
         self.emit_diff(buffer, &diff)?;
 
         // Reset style at end
-        self.writer.write_all(b"\x1b[0m")?;
+        self.writer().write_all(b"\x1b[0m")?;
 
         if self.capabilities.sync_output {
-            self.writer.write_all(SYNC_END)?;
+            self.writer().write_all(SYNC_END)?;
         }
 
-        self.writer.flush()?;
+        self.writer().flush()?;
         self.prev_buffer = Some(buffer.clone());
 
         Ok(())
@@ -322,7 +327,7 @@ impl<W: Write> TerminalWriter<W> {
         for run in diff.runs() {
             // Move cursor to run start
             let ui_y = self.ui_start_row();
-            write!(self.writer, "\x1b[{};{}H", ui_y + run.y + 1, run.x0 + 1)?;
+            write!(self.writer(), "\x1b[{};{}H", ui_y + run.y + 1, run.x0 + 1)?;
 
             // Emit cells in the run
             for x in run.x0..=run.x1 {
@@ -337,7 +342,7 @@ impl<W: Write> TerminalWriter<W> {
                 let cell_style = (cell.fg, cell.bg, cell.attrs.flags());
                 if current_style != Some(cell_style) {
                     // Reset and apply new style
-                    self.writer.write_all(b"\x1b[0m")?;
+                    self.writer().write_all(b"\x1b[0m")?;
 
                     // Apply attributes
                     if !cell_style.2.is_empty() {
@@ -346,11 +351,11 @@ impl<W: Write> TerminalWriter<W> {
 
                     // Apply colors
                     if cell_style.0.a() > 0 {
-                        write!(self.writer, "\x1b[38;2;{};{};{}m",
+                        write!(self.writer(), "\x1b[38;2;{};{};{}m",
                             cell_style.0.r(), cell_style.0.g(), cell_style.0.b())?;
                     }
                     if cell_style.1.a() > 0 {
-                        write!(self.writer, "\x1b[48;2;{};{};{}m",
+                        write!(self.writer(), "\x1b[48;2;{};{};{}m",
                             cell_style.1.r(), cell_style.1.g(), cell_style.1.b())?;
                     }
 
@@ -361,21 +366,23 @@ impl<W: Write> TerminalWriter<W> {
                 if let Some(ch) = cell.content.as_char() {
                     let mut buf = [0u8; 4];
                     let encoded = ch.encode_utf8(&mut buf);
-                    self.writer.write_all(encoded.as_bytes())?;
+                    self.writer().write_all(encoded.as_bytes())?;
                 } else if let Some(gid) = cell.content.grapheme_id() {
-                    if let Some(text) = self.pool.get(gid) {
-                        self.writer.write_all(text.as_bytes())?;
+                    // Clone text out of pool to avoid borrow conflict with writer
+                    let text = self.pool.get(gid).map(|s| s.to_string());
+                    if let Some(text) = text {
+                        self.writer().write_all(text.as_bytes())?;
                     } else {
-                        self.writer.write_all(b" ")?;
+                        self.writer().write_all(b" ")?;
                     }
                 } else {
-                    self.writer.write_all(b" ")?;
+                    self.writer().write_all(b" ")?;
                 }
             }
         }
 
         // Reset style
-        self.writer.write_all(b"\x1b[0m")?;
+        self.writer().write_all(b"\x1b[0m")?;
 
         Ok(())
     }
@@ -396,7 +403,7 @@ impl<W: Write> TerminalWriter<W> {
         if flags.contains(StyleFlags::STRIKETHROUGH) { codes.push("9"); }
 
         if !codes.is_empty() {
-            write!(self.writer, "\x1b[{}m", codes.join(";"))?;
+            write!(self.writer(), "\x1b[{}m", codes.join(";"))?;
         }
 
         Ok(())
@@ -418,8 +425,8 @@ impl<W: Write> TerminalWriter<W> {
                 // Log writes go to scrollback region (above UI)
                 // Just write normally - terminal scrolls
                 // The next present_ui will redraw UI in correct position
-                self.writer.write_all(text.as_bytes())?;
-                self.writer.flush()
+                self.writer().write_all(text.as_bytes())?;
+                self.writer().flush()
             }
             ScreenMode::AltScreen => {
                 // AltScreen: no scrollback, logs are typically handled differently
@@ -431,27 +438,27 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Clear the screen.
     pub fn clear_screen(&mut self) -> io::Result<()> {
-        self.writer.write_all(b"\x1b[2J\x1b[1;1H")?;
-        self.writer.flush()?;
+        self.writer().write_all(b"\x1b[2J\x1b[1;1H")?;
+        self.writer().flush()?;
         self.prev_buffer = None;
         Ok(())
     }
 
     /// Hide the cursor.
     pub fn hide_cursor(&mut self) -> io::Result<()> {
-        self.writer.write_all(b"\x1b[?25l")?;
-        self.writer.flush()
+        self.writer().write_all(b"\x1b[?25l")?;
+        self.writer().flush()
     }
 
     /// Show the cursor.
     pub fn show_cursor(&mut self) -> io::Result<()> {
-        self.writer.write_all(b"\x1b[?25h")?;
-        self.writer.flush()
+        self.writer().write_all(b"\x1b[?25h")?;
+        self.writer().flush()
     }
 
     /// Flush any buffered output.
     pub fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush()
+        self.writer().flush()
     }
 
     /// Get the grapheme pool for interning complex characters.
@@ -479,28 +486,42 @@ impl<W: Write> TerminalWriter<W> {
         &self.capabilities
     }
 
+    /// Consume the writer and return the underlying writer.
+    ///
+    /// Performs cleanup operations before returning.
+    /// Returns `None` if the buffer could not be flushed.
+    pub fn into_inner(mut self) -> Option<W> {
+        self.cleanup();
+        // Take the writer before Drop runs (Drop will see None and skip cleanup)
+        self.writer.take()?.into_inner().ok()
+    }
+
     /// Internal cleanup on drop.
     fn cleanup(&mut self) {
+        let Some(ref mut writer) = self.writer else {
+            return; // Writer already taken (via into_inner)
+        };
+
         // End any pending sync block
         if self.in_sync_block {
-            let _ = self.writer.write_all(SYNC_END);
+            let _ = writer.write_all(SYNC_END);
             self.in_sync_block = false;
         }
 
         // Restore cursor if saved
         if self.cursor_saved {
-            let _ = self.writer.write_all(CURSOR_RESTORE);
+            let _ = writer.write_all(CURSOR_RESTORE);
             self.cursor_saved = false;
         }
 
         // Reset style
-        let _ = self.writer.write_all(b"\x1b[0m");
+        let _ = writer.write_all(b"\x1b[0m");
 
         // Show cursor
-        let _ = self.writer.write_all(b"\x1b[?25h");
+        let _ = writer.write_all(b"\x1b[?25h");
 
         // Flush
-        let _ = self.writer.flush();
+        let _ = writer.flush();
     }
 }
 

@@ -40,7 +40,7 @@
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, trace, warn};
+use tracing::{trace, warn};
 
 /// Progressive degradation levels for render quality.
 ///
@@ -296,12 +296,12 @@ impl RenderBudget {
     ///
     /// Logs a warning when degradation occurs.
     pub fn degrade(&mut self) {
-        let _from = self.degradation;
+        let from = self.degradation;
         self.degradation = self.degradation.next();
         self.frames_since_change = 0;
 
         #[cfg(feature = "tracing")]
-        if _from != self.degradation {
+        if from != self.degradation {
             warn!(
                 from = from.as_str(),
                 to = self.degradation.as_str(),
@@ -309,6 +309,7 @@ impl RenderBudget {
                 "render budget degradation"
             );
         }
+        let _ = from; // Suppress unused warning when tracing is disabled
     }
 
     /// Get the current degradation level.
@@ -350,12 +351,12 @@ impl RenderBudget {
     ///
     /// Logs when upgrade occurs.
     pub fn upgrade(&mut self) {
-        let _from = self.degradation;
+        let from = self.degradation;
         self.degradation = self.degradation.prev();
         self.frames_since_change = 0;
 
         #[cfg(feature = "tracing")]
-        if _from != self.degradation {
+        if from != self.degradation {
             trace!(
                 from = from.as_str(),
                 to = self.degradation.as_str(),
@@ -363,6 +364,7 @@ impl RenderBudget {
                 "render budget upgrade"
             );
         }
+        let _ = from; // Suppress unused warning when tracing is disabled
     }
 
     /// Reset the budget for a new frame.

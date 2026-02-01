@@ -5,8 +5,11 @@ edition = "2024"
 publish = false
 
 [dependencies]
+bitflags = "2.10.0"
 ftui-core = { path = "../ftui-core" }
 ftui-layout = { path = "../ftui-layout" }
 ftui-render = { path = "../ftui-render" }
 ftui-style = { path = "../ftui-style" }
 ftui-text = { path = "../ftui-text" }
+unicode-segmentation = "1.11"
+unicode-width = "0.2"

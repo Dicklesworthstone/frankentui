@@ -154,8 +154,9 @@ impl Buffer {
     /// - Respects the current scissor region (skips if outside)
     /// - Applies the current opacity stack to cell colors
     /// - Does nothing if coordinates are out of bounds
+    /// - **Automatically sets CONTINUATION cells** for multi-width content
     ///
-    /// For bulk operations without scissor/opacity, use [`set_raw`].
+    /// For bulk operations without scissor/opacity/safety, use [`set_raw`].
     #[inline]
     pub fn set(&mut self, x: u16, y: u16, cell: Cell) {
         // Check bounds
@@ -169,7 +170,7 @@ impl Buffer {
         }
 
         // Apply opacity
-        let cell = if self.current_opacity() < 1.0 {
+        let final_cell = if self.current_opacity() < 1.0 {
             let opacity = self.current_opacity();
             Cell {
                 fg: cell.fg.with_opacity(opacity),
@@ -180,7 +181,20 @@ impl Buffer {
             cell
         };
 
-        self.cells[idx] = cell;
+        self.cells[idx] = final_cell;
+
+        // Handle multi-width characters
+        // We use the accurate width calculation (not width_hint) because wide CJK characters
+        // need proper continuation cells. width_hint() returns 1 for direct chars as a fast path.
+        let width = cell.content.width();
+        if width > 1 {
+            for i in 1..width {
+                // Recursively set continuation cells.
+                // This ensures they are also bounds-checked and scissor-clipped.
+                // Cell::CONTINUATION has width 0, so this won't recurse infinitely.
+                self.set(x + i as u16, y, Cell::CONTINUATION);
+            }
+        }
     }
 
     /// Set the cell at (x, y) without scissor or opacity processing.
@@ -598,5 +612,35 @@ mod tests {
         // set_raw() bypasses scissor - this should work
         buf.set_raw(0, 0, Cell::from_char('R'));
         assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('R'));
+    }
+
+    #[test]
+    fn set_handles_wide_chars() {
+        let mut buf = Buffer::new(10, 10);
+        
+        // Set a wide character (width 2)
+        buf.set(0, 0, Cell::from_char('中'));
+        
+        // Check head
+        let head = buf.get(0, 0).unwrap();
+        assert_eq!(head.content.as_char(), Some('中'));
+        
+        // Check continuation
+        let cont = buf.get(1, 0).unwrap();
+        assert!(cont.is_continuation());
+        assert!(!cont.is_empty());
+    }
+
+    #[test]
+    fn set_handles_wide_chars_clipped() {
+        let mut buf = Buffer::new(10, 10);
+        buf.push_scissor(Rect::new(0, 0, 1, 10)); // Only column 0 is visible
+        
+        // Set wide char at 0,0. Head is visible, tail is clipped.
+        buf.set(0, 0, Cell::from_char('中'));
+        
+        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('中'));
+        // Continuation at (1,0) should be blocked by scissor
+        assert!(buf.get(1, 0).unwrap().is_empty());
     }
 }

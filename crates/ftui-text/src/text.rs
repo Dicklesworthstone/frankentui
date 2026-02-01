@@ -505,10 +505,10 @@ impl Text {
             }
 
             // Calculate how much content we can keep
-            let content_width = if ellipsis.is_some() && max_width > ellipsis_width {
-                max_width - ellipsis_width
+            let (content_width, use_ellipsis) = if ellipsis.is_some() && max_width >= ellipsis_width {
+                (max_width - ellipsis_width, true)
             } else {
-                max_width
+                (max_width, false)
             };
 
             // Truncate spans
@@ -537,10 +537,8 @@ impl Text {
                 }
             }
 
-            // Add ellipsis if needed
-            if let Some(e) = ellipsis
-                && line_width > max_width
-            {
+            // Add ellipsis if needed and we have space
+            if use_ellipsis && line_width > max_width && let Some(e) = ellipsis {
                 new_spans.push(Span::raw(e.to_string()));
             }
 

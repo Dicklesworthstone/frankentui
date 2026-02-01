@@ -214,7 +214,7 @@ impl Flex {
             let mut total_weight = 0u64;
             for &i in &grow_indices {
                 match self.constraints[i] {
-                    Constraint::Ratio(n, d) => total_weight += n as u64 * 100 / d as u64,
+                    Constraint::Ratio(n, d) => total_weight += n as u64 * 100 / d.max(1) as u64,
                     _ => total_weight += 100, // Treat others as Ratio(1, 1) effectively? No.
                 }
             }
@@ -228,7 +228,7 @@ impl Flex {
             
             for (idx, &i) in grow_indices.iter().enumerate() {
                 let weight = match self.constraints[i] {
-                    Constraint::Ratio(n, d) => n as u64 * 100 / d as u64,
+                    Constraint::Ratio(n, d) => n as u64 * 100 / d.max(1) as u64,
                     _ => 100,
                 };
                 

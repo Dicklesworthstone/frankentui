@@ -45,8 +45,59 @@ impl HitId {
 
     /// Get the raw ID value.
     #[inline]
-    pub const fn id(self) -> u32 {
-        self.0
+pub const fn id(self) -> u32 {
+    self.0
+}
+}
+
+/// Opaque user data for hit callbacks.
+pub type HitData = u64;
+
+/// Regions within a widget for mouse interaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum HitRegion {
+    /// No interactive region.
+    #[default]
+    None,
+    /// Main content area.
+    Content,
+    /// Widget border area.
+    Border,
+    /// Scrollbar track or thumb.
+    Scrollbar,
+    /// Resize handle or drag target.
+    Handle,
+    /// Clickable button.
+    Button,
+    /// Hyperlink.
+    Link,
+    /// Custom region tag.
+    Custom(u8),
+}
+
+/// A single hit cell in the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HitCell {
+    pub widget_id: Option<HitId>,
+    pub region: HitRegion,
+    pub data: HitData,
+}
+
+impl HitCell {
+    /// Create a populated hit cell.
+    #[inline]
+    pub const fn new(widget_id: HitId, region: HitRegion, data: HitData) -> Self {
+        Self {
+            widget_id: Some(widget_id),
+            region,
+            data,
+        }
+    }
+
+    /// Check if the cell is empty.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.widget_id.is_none()
     }
 }
 
@@ -58,7 +109,7 @@ impl HitId {
 pub struct HitGrid {
     width: u16,
     height: u16,
-    cells: Vec<Option<HitId>>,
+    cells: Vec<HitCell>,
 }
 
 impl HitGrid {
@@ -68,7 +119,7 @@ impl HitGrid {
         Self {
             width,
             height,
-            cells: vec![None; size],
+            cells: vec![HitCell::default(); size],
         }
     }
 
@@ -94,29 +145,31 @@ impl HitGrid {
         }
     }
 
-    /// Get the hit ID at (x, y).
+    /// Get the hit cell at (x, y).
     #[inline]
-    pub fn get(&self, x: u16, y: u16) -> Option<&Option<HitId>> {
+    pub fn get(&self, x: u16, y: u16) -> Option<&HitCell> {
         self.index(x, y).map(|i| &self.cells[i])
     }
 
-    /// Get mutable reference to hit ID at (x, y).
+    /// Get mutable reference to hit cell at (x, y).
     #[inline]
-    pub fn get_mut(&mut self, x: u16, y: u16) -> Option<&mut Option<HitId>> {
+    pub fn get_mut(&mut self, x: u16, y: u16) -> Option<&mut HitCell> {
         self.index(x, y).map(|i| &mut self.cells[i])
     }
 
-    /// Register a clickable region with the given hit ID.
+    /// Register a clickable region with the given hit metadata.
     ///
-    /// All cells within the rectangle will map to this hit ID.
-    pub fn register(&mut self, rect: Rect, id: HitId) {
-        let x_end = (rect.x + rect.width).min(self.width);
-        let y_end = (rect.y + rect.height).min(self.height);
+    /// All cells within the rectangle will map to this hit cell.
+    pub fn register(&mut self, rect: Rect, widget_id: HitId, region: HitRegion, data: HitData) {
+        // Use usize to avoid overflow for large coordinates
+        let x_end = (rect.x as usize + rect.width as usize).min(self.width as usize) as u16;
+        let y_end = (rect.y as usize + rect.height as usize).min(self.height as usize) as u16;
 
+        let hit_cell = HitCell::new(widget_id, region, data);
         for y in rect.y..y_end {
             for x in rect.x..x_end {
                 if let Some(cell) = self.get_mut(x, y) {
-                    *cell = Some(id);
+                    *cell = hit_cell;
                 }
             }
         }
@@ -124,14 +177,34 @@ impl HitGrid {
 
     /// Hit test at the given position.
     ///
-    /// Returns the hit ID if a region is registered at (x, y).
-    pub fn hit_test(&self, x: u16, y: u16) -> Option<HitId> {
-        self.get(x, y).and_then(|c| *c)
+    /// Returns the hit tuple if a region is registered at (x, y).
+    pub fn hit_test(&self, x: u16, y: u16) -> Option<(HitId, HitRegion, HitData)> {
+        self.get(x, y).and_then(|cell| {
+            cell.widget_id
+                .map(|id| (id, cell.region, cell.data))
+        })
+    }
+
+    /// Return all hits within the given rectangle.
+    pub fn hits_in(&self, rect: Rect) -> Vec<(HitId, HitRegion, HitData)> {
+        let x_end = (rect.x as usize + rect.width as usize).min(self.width as usize) as u16;
+        let y_end = (rect.y as usize + rect.height as usize).min(self.height as usize) as u16;
+        let mut hits = Vec::new();
+
+        for y in rect.y..y_end {
+            for x in rect.x..x_end {
+                if let Some((id, region, data)) = self.hit_test(x, y) {
+                    hits.push((id, region, data));
+                }
+            }
+        }
+
+        hits
     }
 
     /// Clear all hit regions.
     pub fn clear(&mut self) {
-        self.cells.fill(None);
+        self.cells.fill(HitCell::default());
     }
 }
 
@@ -184,6 +257,13 @@ impl Frame {
         }
     }
 
+    /// Enable hit testing on an existing frame.
+    pub fn enable_hit_testing(&mut self) {
+        if self.hit_grid.is_none() {
+            self.hit_grid = Some(HitGrid::new(self.width(), self.height()));
+        }
+    }
+
     /// Frame width in cells.
     #[inline]
     pub fn width(&self) -> u16 {
@@ -229,9 +309,9 @@ impl Frame {
     /// Register a hit region (if hit grid is enabled).
     ///
     /// Returns `true` if the region was registered, `false` if no hit grid.
-    pub fn register_hit_region(&mut self, rect: Rect, id: HitId) -> bool {
+    pub fn register_hit(&mut self, rect: Rect, id: HitId, region: HitRegion, data: HitData) -> bool {
         if let Some(ref mut grid) = self.hit_grid {
-            grid.register(rect, id);
+            grid.register(rect, id, region, data);
             true
         } else {
             false
@@ -239,8 +319,13 @@ impl Frame {
     }
 
     /// Hit test at the given position (if hit grid is enabled).
-    pub fn hit_test(&self, x: u16, y: u16) -> Option<HitId> {
+    pub fn hit_test(&self, x: u16, y: u16) -> Option<(HitId, HitRegion, HitData)> {
         self.hit_grid.as_ref().and_then(|grid| grid.hit_test(x, y))
+    }
+
+    /// Register a hit region with default metadata (Content, data=0).
+    pub fn register_hit_region(&mut self, rect: Rect, id: HitId) -> bool {
+        self.register_hit(rect, id, HitRegion::Content, 0)
     }
 }
 
@@ -300,7 +385,10 @@ mod tests {
 
         // Verify content exists
         assert_eq!(frame.buffer.get(5, 5).unwrap().content.as_char(), Some('X'));
-        assert_eq!(frame.hit_test(2, 2), Some(HitId::new(1)));
+        assert_eq!(
+            frame.hit_test(2, 2),
+            Some((HitId::new(1), HitRegion::Content, 0))
+        );
 
         // Clear
         frame.clear();
@@ -333,18 +421,27 @@ mod tests {
         let hit_id = HitId::new(42);
         let rect = Rect::new(10, 5, 20, 3);
 
-        frame.register_hit_region(rect, hit_id);
+        frame.register_hit(rect, hit_id, HitRegion::Button, 99);
 
         // Inside rect
-        assert_eq!(frame.hit_test(15, 6), Some(hit_id));
-        assert_eq!(frame.hit_test(10, 5), Some(hit_id)); // Top-left corner
-        assert_eq!(frame.hit_test(29, 7), Some(hit_id)); // Bottom-right corner
+        assert_eq!(
+            frame.hit_test(15, 6),
+            Some((hit_id, HitRegion::Button, 99))
+        );
+        assert_eq!(
+            frame.hit_test(10, 5),
+            Some((hit_id, HitRegion::Button, 99))
+        ); // Top-left corner
+        assert_eq!(
+            frame.hit_test(29, 7),
+            Some((hit_id, HitRegion::Button, 99))
+        ); // Bottom-right corner
 
         // Outside rect
-        assert_eq!(frame.hit_test(5, 5), None); // Left of rect
-        assert_eq!(frame.hit_test(30, 6), None); // Right of rect (exclusive)
-        assert_eq!(frame.hit_test(15, 8), None); // Below rect
-        assert_eq!(frame.hit_test(15, 4), None); // Above rect
+        assert!(frame.hit_test(5, 5).is_none()); // Left of rect
+        assert!(frame.hit_test(30, 6).is_none()); // Right of rect (exclusive)
+        assert!(frame.hit_test(15, 8).is_none()); // Below rect
+        assert!(frame.hit_test(15, 4).is_none()); // Above rect
     }
 
     #[test]
@@ -352,17 +449,26 @@ mod tests {
         let mut frame = Frame::with_hit_grid(20, 20);
 
         // Register two overlapping regions
-        frame.register_hit_region(Rect::new(0, 0, 10, 10), HitId::new(1));
-        frame.register_hit_region(Rect::new(5, 5, 10, 10), HitId::new(2));
+        frame.register_hit(Rect::new(0, 0, 10, 10), HitId::new(1), HitRegion::Content, 1);
+        frame.register_hit(Rect::new(5, 5, 10, 10), HitId::new(2), HitRegion::Border, 2);
 
         // Non-overlapping region from first
-        assert_eq!(frame.hit_test(2, 2), Some(HitId::new(1)));
+        assert_eq!(
+            frame.hit_test(2, 2),
+            Some((HitId::new(1), HitRegion::Content, 1))
+        );
 
         // Overlapping region - second wins (last registered)
-        assert_eq!(frame.hit_test(7, 7), Some(HitId::new(2)));
+        assert_eq!(
+            frame.hit_test(7, 7),
+            Some((HitId::new(2), HitRegion::Border, 2))
+        );
 
         // Non-overlapping region from second
-        assert_eq!(frame.hit_test(12, 12), Some(HitId::new(2)));
+        assert_eq!(
+            frame.hit_test(12, 12),
+            Some((HitId::new(2), HitRegion::Border, 2))
+        );
     }
 
     #[test]
@@ -399,9 +505,12 @@ mod tests {
     #[test]
     fn hit_grid_clear() {
         let mut grid = HitGrid::new(10, 10);
-        grid.register(Rect::new(0, 0, 5, 5), HitId::new(1));
+        grid.register(Rect::new(0, 0, 5, 5), HitId::new(1), HitRegion::Content, 0);
 
-        assert_eq!(grid.hit_test(2, 2), Some(HitId::new(1)));
+        assert_eq!(
+            grid.hit_test(2, 2),
+            Some((HitId::new(1), HitRegion::Content, 0))
+        );
 
         grid.clear();
 
@@ -413,13 +522,27 @@ mod tests {
         let mut grid = HitGrid::new(10, 10);
 
         // Register region that extends beyond grid
-        grid.register(Rect::new(8, 8, 10, 10), HitId::new(1));
+        grid.register(Rect::new(8, 8, 10, 10), HitId::new(1), HitRegion::Content, 0);
 
         // Inside clipped region
-        assert_eq!(grid.hit_test(9, 9), Some(HitId::new(1)));
+        assert_eq!(
+            grid.hit_test(9, 9),
+            Some((HitId::new(1), HitRegion::Content, 0))
+        );
 
         // Outside grid
         assert!(grid.hit_test(10, 10).is_none());
+    }
+
+    #[test]
+    fn hit_grid_hits_in_area() {
+        let mut grid = HitGrid::new(5, 5);
+        grid.register(Rect::new(0, 0, 2, 2), HitId::new(1), HitRegion::Content, 10);
+        grid.register(Rect::new(1, 1, 2, 2), HitId::new(2), HitRegion::Button, 20);
+
+        let hits = grid.hits_in(Rect::new(0, 0, 3, 3));
+        assert!(hits.contains(&(HitId::new(1), HitRegion::Content, 10)));
+        assert!(hits.contains(&(HitId::new(2), HitRegion::Button, 20)));
     }
 
     #[test]

@@ -5,3 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
+ftui-core = { path = "../ftui-core" }
+time = { version = "0.3", features = ["formatting"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.25.1", default-features = false, features = ["poll", "process", "term"] }

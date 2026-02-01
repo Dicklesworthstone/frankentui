@@ -57,6 +57,7 @@ use ftui_core::input_parser::InputParser;
 use ftui_render::budget::{FrameBudgetConfig, RenderBudget};
 use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
+use ftui_render::sanitize::sanitize;
 use std::io::{self, Stdout, Write};
 use std::time::{Duration, Instant};
 
@@ -109,6 +110,11 @@ pub enum Cmd<M> {
     Msg(M),
     /// Schedule a tick after a duration.
     Tick(Duration),
+    /// Write a log message to the terminal output.
+    ///
+    /// This writes to the scrollback region in inline mode, or is ignored/handled
+    /// appropriately in alternate screen mode. Safe to use with the One-Writer Rule.
+    Log(String),
 }
 
 impl<M> Cmd<M> {
@@ -128,6 +134,15 @@ impl<M> Cmd<M> {
     #[inline]
     pub fn msg(m: M) -> Self {
         Self::Msg(m)
+    }
+
+    /// Create a log command.
+    ///
+    /// The message will be sanitized and written to the terminal log (scrollback).
+    /// A newline is appended if not present.
+    #[inline]
+    pub fn log(msg: impl Into<String>) -> Self {
+        Self::Log(msg.into())
     }
 
     /// Create a batch of parallel commands.
@@ -352,6 +367,9 @@ impl<M: Model, W: Write> Program<M, W> {
             Cmd::Tick(duration) => {
                 self.tick_rate = Some(duration);
                 self.last_tick = Instant::now();
+            }
+            Cmd::Log(text) => {
+                self.writer.write_log(&text)?;
             }
         }
         Ok(())

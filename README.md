@@ -18,7 +18,10 @@ clean architecture across multiple crates.
 
 ## Key Docs
 
+- **Operational Playbook**: `docs/operational-playbook.md` — merge gates, shipping order, process
+- **Risk Register**: `docs/risk-register.md` — failure modes and mitigations
 - Architecture Decision Records: `docs/adr/README.md`
 - Rendering/terminal state machines: `docs/spec/state-machines.md`
 - Test coverage expectations: `docs/testing/coverage-matrix.md`
+- One-Writer Rule guidance: `docs/one-writer-rule.md`
 - Windows compatibility: `docs/WINDOWS.md`

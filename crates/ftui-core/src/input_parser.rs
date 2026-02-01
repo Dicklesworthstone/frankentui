@@ -710,9 +710,9 @@ impl InputParser {
     fn process_utf8(&mut self, byte: u8, collected: u8, expected: u8) -> Option<Event> {
         // Check for valid continuation byte
         if (byte & 0xC0) != 0x80 {
-            // Invalid - return to ground
+            // Invalid - return to ground and re-process the unexpected byte
             self.state = ParserState::Ground;
-            return None;
+            return self.process_ground(byte);
         }
 
         self.utf8_buffer[collected as usize] = byte;

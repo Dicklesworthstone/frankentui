@@ -35,6 +35,7 @@ const MODERN_TERMINALS: &[&str] = &[
     "Rio",
     "Hyper",
     "Contour",
+    "vscode",
 ];
 
 /// Terminals known to implement the Kitty keyboard protocol.
@@ -125,10 +126,14 @@ impl TerminalCapabilities {
         // Kitty detection
         let is_kitty = env::var("KITTY_WINDOW_ID").is_ok() || term.contains("kitty");
 
+        // Windows Terminal detection
+        let is_windows_terminal = env::var("WT_SESSION").is_ok();
+
         // Check if running in a modern terminal
         let is_modern_terminal = MODERN_TERMINALS
             .iter()
-            .any(|t| term_program.contains(t) || term.contains(&t.to_lowercase()));
+            .any(|t| term_program.contains(t) || term.contains(&t.to_lowercase()))
+            || is_windows_terminal;
 
         // True color detection
         let true_color = !no_color
