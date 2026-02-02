@@ -1112,4 +1112,58 @@ mod tests {
         let s = String::from("hello");
         assert_eq!(s.height(), 1);
     }
+
+    #[test]
+    fn test_page_up_down() {
+        let mut virt: Virtualized<i32> = Virtualized::new(100);
+        for i in 0..50 {
+            virt.push(i);
+        }
+        virt.set_visible_count(10);
+
+        // Start at top
+        assert_eq!(virt.scroll_offset(), 0);
+
+        // Page down
+        virt.page_down();
+        assert_eq!(virt.scroll_offset(), 10);
+
+        // Page down again
+        virt.page_down();
+        assert_eq!(virt.scroll_offset(), 20);
+
+        // Page up
+        virt.page_up();
+        assert_eq!(virt.scroll_offset(), 10);
+
+        // Page up again
+        virt.page_up();
+        assert_eq!(virt.scroll_offset(), 0);
+
+        // Page up at top stays at 0
+        virt.page_up();
+        assert_eq!(virt.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn test_virtualized_list_state_page_up_down() {
+        let mut state = VirtualizedListState::new();
+        state.visible_count = 10;
+
+        // Page down
+        state.page_down(50);
+        assert_eq!(state.scroll_offset(), 10);
+
+        // Page down again
+        state.page_down(50);
+        assert_eq!(state.scroll_offset(), 20);
+
+        // Page up
+        state.page_up(50);
+        assert_eq!(state.scroll_offset(), 10);
+
+        // Page up again
+        state.page_up(50);
+        assert_eq!(state.scroll_offset(), 0);
+    }
 }
