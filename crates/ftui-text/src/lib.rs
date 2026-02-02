@@ -55,8 +55,13 @@ pub mod wrap;
 #[cfg(feature = "markup")]
 pub mod markup;
 
+#[cfg(feature = "bidi")]
+pub mod bidi;
+
 #[cfg(feature = "normalization")]
 pub mod normalization;
+
+pub mod search;
 
 /// Bounds-based text measurement for layout negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -123,6 +128,10 @@ pub use markup::{MarkupError, MarkupParser, parse_markup};
 
 #[cfg(feature = "normalization")]
 pub use normalization::{NormForm, eq_normalized, is_normalized, normalize, normalize_for_search};
+
+pub use search::{SearchResult, search_ascii_case_insensitive, search_exact, search_exact_overlapping};
+#[cfg(feature = "normalization")]
+pub use search::{search_case_insensitive, search_normalized};
 
 #[cfg(test)]
 mod measurement_tests {
