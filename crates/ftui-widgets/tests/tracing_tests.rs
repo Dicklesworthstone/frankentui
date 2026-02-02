@@ -193,20 +193,21 @@ where
 fn spans_created_for_render_phases() {
     let handle = with_captured_spans(|| {
         let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::new(20, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
 
         // Block
-        Block::bordered().render(area, &mut buf);
+        Block::bordered().render(area, &mut frame);
 
         // Paragraph
-        Paragraph::new(ftui_text::Text::raw("Hello")).render(area, &mut buf);
+        Paragraph::new(ftui_text::Text::raw("Hello")).render(area, &mut frame);
 
         // Table (delegates to StatefulWidget internally)
         let table = Table::new(
             [Row::new(["A", "B"])],
             [Constraint::Fixed(5), Constraint::Fixed(5)],
         );
-        Widget::render(&table, area, &mut buf);
+        Widget::render(&table, area, &mut frame);
     });
 
     let spans = handle.spans();
@@ -246,7 +247,8 @@ fn spans_created_for_render_phases() {
 fn span_timing_accurate() {
     let handle = with_captured_spans(|| {
         let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::new(80, 24);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
 
         // Render a reasonably complex table
         let table = Table::new(
@@ -256,7 +258,7 @@ fn span_timing_accurate() {
         .header(Row::new(["Name", "Value"]))
         .block(Block::bordered());
 
-        Widget::render(&table, area, &mut buf);
+        Widget::render(&table, area, &mut frame);
     });
 
     let timings = handle.timings();
@@ -288,13 +290,14 @@ fn span_timing_accurate() {
 fn spans_nest_correctly() {
     let handle = with_captured_spans(|| {
         let area = Rect::new(0, 0, 20, 5);
-        let mut buf = Buffer::new(20, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
 
         // Table with a Block — Block's span should be child of Table's span
         let table =
             Table::new([Row::new(["Data"])], [Constraint::Fixed(10)]).block(Block::bordered());
 
-        Widget::render(&table, area, &mut buf);
+        Widget::render(&table, area, &mut frame);
     });
 
     let spans = handle.spans();
@@ -366,47 +369,48 @@ fn zero_overhead_when_disabled() {
 fn tracing_subscriber_receives_all_spans() {
     let handle = with_captured_spans(|| {
         let area = Rect::new(0, 0, 40, 10);
-        let mut buf = Buffer::new(40, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
 
         // Block
-        Block::bordered().render(area, &mut buf);
+        Block::bordered().render(area, &mut frame);
 
         // Paragraph
-        Paragraph::new(ftui_text::Text::raw("Hello")).render(area, &mut buf);
+        Paragraph::new(ftui_text::Text::raw("Hello")).render(area, &mut frame);
 
         // Table
         let table = Table::new([Row::new(["A"])], [Constraint::Fixed(10)]);
-        Widget::render(&table, area, &mut buf);
+        Widget::render(&table, area, &mut frame);
 
         // Spinner
         use ftui_widgets::spinner::{Spinner, SpinnerState};
         let spinner = Spinner::new();
         let mut state = SpinnerState::default();
-        StatefulWidget::render(&spinner, area, &mut buf, &mut state);
+        StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
         // ProgressBar
         use ftui_widgets::progress::ProgressBar;
-        ProgressBar::new().ratio(0.5).render(area, &mut buf);
+        ProgressBar::new().ratio(0.5).render(area, &mut frame);
 
         // Rule
         use ftui_widgets::rule::Rule;
-        Rule::new().render(area, &mut buf);
+        Rule::new().render(area, &mut frame);
 
         // Scrollbar
         use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let mut sb_state = ScrollbarState::new(100, 0, 10);
-        StatefulWidget::render(&sb, area, &mut buf, &mut sb_state);
+        StatefulWidget::render(&sb, area, &mut frame, &mut sb_state);
 
         // List
         use ftui_widgets::list::{List, ListItem, ListState};
         let list = List::new([ListItem::new("item")]);
         let mut list_state = ListState::default();
-        StatefulWidget::render(&list, area, &mut buf, &mut list_state);
+        StatefulWidget::render(&list, area, &mut frame, &mut list_state);
 
         // TextInput
         use ftui_widgets::input::TextInput;
-        TextInput::new().with_value("hello").render(area, &mut buf);
+        TextInput::new().with_value("hello").render(area, &mut frame);
     });
 
     let spans = handle.spans();
