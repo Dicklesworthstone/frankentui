@@ -44,24 +44,34 @@ pub enum Direction {
 /// Alignment of items within the layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Alignment {
+    /// Align items to the start (left/top).
     #[default]
     Start,
+    /// Center items within available space.
     Center,
+    /// Align items to the end (right/bottom).
     End,
+    /// Distribute space evenly around each item.
     SpaceAround,
+    /// Distribute space evenly between items (no outer space).
     SpaceBetween,
 }
 
 /// Size negotiation hints for layout.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Measurement {
+    /// Minimum width in columns.
     pub min_width: u16,
+    /// Minimum height in rows.
     pub min_height: u16,
+    /// Maximum width (None = unbounded).
     pub max_width: Option<u16>,
+    /// Maximum height (None = unbounded).
     pub max_height: Option<u16>,
 }
 
 impl Measurement {
+    /// Create a fixed-size measurement (min == max).
     pub fn fixed(width: u16, height: u16) -> Self {
         Self {
             min_width: width,
@@ -71,6 +81,7 @@ impl Measurement {
         }
     }
 
+    /// Create a flexible measurement with minimum size and no maximum.
     pub fn flexible(min_width: u16, min_height: u16) -> Self {
         Self {
             min_width,

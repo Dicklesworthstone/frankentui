@@ -142,9 +142,13 @@ impl Rect {
 /// Sides for padding/margin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sides {
+    /// Top padding/margin in cells.
     pub top: u16,
+    /// Right padding/margin in cells.
     pub right: u16,
+    /// Bottom padding/margin in cells.
     pub bottom: u16,
+    /// Left padding/margin in cells.
     pub left: u16,
 }
 

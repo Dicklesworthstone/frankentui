@@ -180,6 +180,7 @@ pub struct Slide {
 }
 
 impl Slide {
+    /// Create a new slide animation from `from` to `to` over `duration`.
     pub fn new(from: i16, to: i16, duration: Duration) -> Self {
         Self {
             from,
@@ -194,6 +195,7 @@ impl Slide {
         }
     }
 
+    /// Set the easing function (builder).
     pub fn easing(mut self, easing: EasingFn) -> Self {
         self.easing = easing;
         self
@@ -301,6 +303,7 @@ pub struct Sequence<A, B> {
 }
 
 impl<A: Animation, B: Animation> Sequence<A, B> {
+    /// Create a new sequence that plays `first` then `second`.
     pub fn new(first: A, second: B) -> Self {
         Self {
             first,
@@ -368,6 +371,7 @@ pub struct Parallel<A, B> {
 }
 
 impl<A: Animation, B: Animation> Parallel<A, B> {
+    /// Create a new parallel animation that plays `a` and `b` simultaneously.
     pub fn new(a: A, b: B) -> Self {
         Self { a, b }
     }
@@ -421,6 +425,7 @@ pub struct Delayed<A> {
 }
 
 impl<A: Animation> Delayed<A> {
+    /// Create a delayed animation that waits `delay` before starting `inner`.
     pub fn new(delay: Duration, inner: A) -> Self {
         Self {
             delay,

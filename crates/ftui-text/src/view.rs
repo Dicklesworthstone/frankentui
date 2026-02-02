@@ -13,7 +13,9 @@ use std::ops::Range;
 /// Viewport size in terminal cells.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Viewport {
+    /// Width in terminal columns.
     pub width: usize,
+    /// Height in terminal rows.
     pub height: usize,
 }
 
