@@ -1,0 +1,210 @@
+# FrankenTUI CI/CD Pipeline
+# bd-xn2: Continuous integration for code quality and testing
+#
+# Runs on every PR and push to main branch.
+# Matrix tests across OS and Rust versions.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ==========================================================================
+  # Check Job: Format, Clippy, Tests
+  # ==========================================================================
+  check:
+    name: Check (${{ matrix.os }}, ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable, nightly]
+        include:
+          - os: windows-latest
+            rust: stable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Run tests
+        run: cargo test --workspace --lib
+
+      - name: Run tests (all features)
+        run: cargo test --workspace --all-features
+        if: matrix.rust == 'nightly'
+
+  # ==========================================================================
+  # Feature Combinations Job
+  # ==========================================================================
+  features:
+    name: Feature Combinations
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-features-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Test ftui-extras features
+        run: |
+          for feature in canvas charts forms markdown export clipboard syntax image; do
+            echo "Testing ftui-extras --features $feature"
+            cargo check -p ftui-extras --features "$feature"
+          done
+
+      - name: Test ftui-widgets features
+        run: cargo check -p ftui-widgets --features debug-overlay
+
+      - name: Test no default features
+        run: cargo check --workspace --no-default-features
+
+  # ==========================================================================
+  # Documentation Job
+  # ==========================================================================
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build documentation
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: target/doc
+          retention-days: 7
+
+  # ==========================================================================
+  # Widget API E2E Test Job
+  # ==========================================================================
+  e2e:
+    name: Widget API E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run E2E tests
+        run: ./scripts/widget_api_e2e.sh
+
+      - name: Upload E2E logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: /tmp/widget_api_e2e_*/
+          retention-days: 7
+
+  # ==========================================================================
+  # MSRV Check (Minimum Supported Rust Version)
+  # ==========================================================================
+  msrv:
+    name: MSRV Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Using nightly as MSRV since project requires edition 2024
+          toolchain: nightly
+
+      - name: Check MSRV
+        run: cargo check --workspace
+
+# ==========================================================================
+# Future jobs (blocked by dependencies):
+# - coverage: Requires cargo-llvm-cov setup (bd-2vr)
+# - benchmarks: Requires benchmark suite (bd-19x)
+# - full-e2e: Requires PTY test framework (bd-10i.11.2)
+# ==========================================================================
