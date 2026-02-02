@@ -256,8 +256,12 @@ impl Help {
             }
 
             // Draw separator
-            if i > 0 && deg.apply_styling() {
-                x = draw_text_span(frame, x, y, &self.separator, self.separator_style, max_x);
+            if i > 0 {
+                if deg.apply_styling() {
+                    x = draw_text_span(frame, x, y, &self.separator, self.separator_style, max_x);
+                } else {
+                    x = draw_text_span(frame, x, y, &self.separator, Style::default(), max_x);
+                }
             }
 
             // Draw key
@@ -266,7 +270,6 @@ impl Help {
                 x = draw_text_span(frame, x, y, " ", self.desc_style, max_x);
                 x = draw_text_span(frame, x, y, &entry.desc, self.desc_style, max_x);
             } else {
-                // Minimal rendering: just key desc
                 let text = format!("{} {}", entry.key, entry.desc);
                 x = draw_text_span(frame, x, y, &text, Style::default(), max_x);
             }

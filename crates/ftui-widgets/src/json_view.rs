@@ -198,7 +198,7 @@ impl JsonView {
                         chars.next();
                         current_line.push(JsonToken::Punctuation(": ".to_string()));
                         skip_ws(&mut chars);
-                        } else {
+                    } else {
                         current_line.push(JsonToken::StringVal(s));
                         // Check for comma
                         skip_ws(&mut chars);
@@ -207,7 +207,7 @@ impl JsonView {
                             current_line.push(JsonToken::Punctuation(",".to_string()));
                             lines.push(current_line);
                             current_line = vec![JsonToken::Whitespace(make_indent(depth, self.indent))];
-                                }
+                        }
                     }
                 }
                 ',' => {
