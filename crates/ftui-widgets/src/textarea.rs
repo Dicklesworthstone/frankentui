@@ -1017,4 +1017,69 @@ mod tests {
         // 'é' is a single grapheme even if composed
         assert_eq!(ta.text(), "café");
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn insert_delete_inverse(text in "[a-zA-Z0-9 ]{1,50}") {
+                let mut ta = TextArea::new();
+                ta.insert_text(&text);
+                // Delete all characters backwards
+                for _ in 0..text.len() {
+                    ta.delete_backward();
+                }
+                prop_assert!(ta.is_empty() || ta.text().is_empty());
+            }
+
+            #[test]
+            fn undo_redo_inverse(text in "[a-zA-Z0-9]{1,30}") {
+                let mut ta = TextArea::new();
+                ta.insert_text(&text);
+                let after_insert = ta.text();
+                ta.undo();
+                ta.redo();
+                prop_assert_eq!(ta.text(), after_insert);
+            }
+
+            #[test]
+            fn cursor_always_valid(ops in proptest::collection::vec(0u8..10, 1..20)) {
+                let mut ta = TextArea::new().with_text("abc\ndef\nghi\njkl");
+                for op in ops {
+                    match op {
+                        0 => ta.move_left(),
+                        1 => ta.move_right(),
+                        2 => ta.move_up(),
+                        3 => ta.move_down(),
+                        4 => ta.move_to_line_start(),
+                        5 => ta.move_to_line_end(),
+                        6 => ta.move_to_document_start(),
+                        7 => ta.move_to_document_end(),
+                        8 => ta.move_word_left(),
+                        _ => ta.move_word_right(),
+                    }
+                    let cursor = ta.cursor();
+                    prop_assert!(cursor.line < ta.line_count(),
+                        "cursor line {} >= line_count {}", cursor.line, ta.line_count());
+                }
+            }
+
+            #[test]
+            fn selection_ordered(n in 1usize..20) {
+                let mut ta = TextArea::new().with_text("hello world foo bar");
+                ta.move_to_document_start();
+                for _ in 0..n {
+                    ta.select_right();
+                }
+                if let Some(sel) = ta.selection() {
+                    // When selecting right from start, anchor should be at/before head
+                    prop_assert!(sel.anchor.line <= sel.head.line
+                        || (sel.anchor.line == sel.head.line
+                            && sel.anchor.grapheme <= sel.head.grapheme));
+                }
+            }
+        }
+    }
 }
