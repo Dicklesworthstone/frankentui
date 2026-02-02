@@ -245,7 +245,7 @@ impl<T> Virtualized<T> {
     pub fn render_range(&self, viewport_height: u16) -> Range<usize> {
         let visible = self.visible_range(viewport_height);
         let start = visible.start.saturating_sub(self.overscan);
-        let end = (visible.end + self.overscan).min(self.len());
+        let end = visible.end.saturating_add(self.overscan).min(self.len());
         start..end
     }
 
