@@ -34,10 +34,18 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::time::Duration;
 
+// Imports for future rendering support (currently unused but planned)
+#[allow(unused_imports)]
 use crate::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+#[allow(unused_imports)]
 use crate::{set_style_area, StatefulWidget};
+#[allow(unused_imports)]
 use ftui_core::geometry::Rect;
+#[allow(unused_imports)]
+use ftui_render::cell::Cell;
+#[allow(unused_imports)]
 use ftui_render::frame::Frame;
+#[allow(unused_imports)]
 use ftui_style::Style;
 
 /// A virtualized content container that tracks scroll state and computes visible ranges.
@@ -413,6 +421,410 @@ impl HeightCache {
     }
 }
 
+// ============================================================================
+// VirtualizedList Widget
+// ============================================================================
+
+/// Trait for items that can render themselves.
+///
+/// Implement this trait for item types that should render in a `VirtualizedList`.
+pub trait RenderItem {
+    /// Render the item into the frame at the given area.
+    fn render(&self, area: Rect, frame: &mut Frame, selected: bool);
+
+    /// Height of this item in terminal rows.
+    fn height(&self) -> u16 {
+        1
+    }
+}
+
+/// State for the VirtualizedList widget.
+#[derive(Debug, Clone)]
+pub struct VirtualizedListState {
+    /// Currently selected index.
+    pub selected: Option<usize>,
+    /// Scroll offset.
+    scroll_offset: usize,
+    /// Visible count (from last render).
+    visible_count: usize,
+    /// Overscan amount.
+    overscan: usize,
+    /// Whether follow mode is enabled.
+    follow_mode: bool,
+    /// Scroll velocity for momentum.
+    scroll_velocity: f32,
+}
+
+impl Default for VirtualizedListState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VirtualizedListState {
+    /// Create a new state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            selected: None,
+            scroll_offset: 0,
+            visible_count: 0,
+            overscan: 2,
+            follow_mode: false,
+            scroll_velocity: 0.0,
+        }
+    }
+
+    /// Create with overscan.
+    #[must_use]
+    pub fn with_overscan(mut self, overscan: usize) -> Self {
+        self.overscan = overscan;
+        self
+    }
+
+    /// Create with follow mode enabled.
+    #[must_use]
+    pub fn with_follow(mut self, follow: bool) -> Self {
+        self.follow_mode = follow;
+        self
+    }
+
+    /// Get current scroll offset.
+    #[must_use]
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Get visible item count (from last render).
+    #[must_use]
+    pub fn visible_count(&self) -> usize {
+        self.visible_count
+    }
+
+    /// Scroll by delta (positive = down).
+    pub fn scroll(&mut self, delta: i32, total_items: usize) {
+        if total_items == 0 {
+            return;
+        }
+        let new_offset = (self.scroll_offset as i64 + delta as i64)
+            .max(0)
+            .min(total_items.saturating_sub(1) as i64);
+        self.scroll_offset = new_offset as usize;
+
+        if delta != 0 {
+            self.follow_mode = false;
+        }
+    }
+
+    /// Scroll to specific index.
+    pub fn scroll_to(&mut self, idx: usize, total_items: usize) {
+        self.scroll_offset = idx.min(total_items.saturating_sub(1));
+        self.follow_mode = false;
+    }
+
+    /// Scroll to top.
+    pub fn scroll_to_top(&mut self) {
+        self.scroll_offset = 0;
+        self.follow_mode = false;
+    }
+
+    /// Scroll to bottom.
+    pub fn scroll_to_bottom(&mut self, total_items: usize) {
+        if total_items > self.visible_count && self.visible_count > 0 {
+            self.scroll_offset = total_items - self.visible_count;
+        } else {
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// Select an item.
+    pub fn select(&mut self, index: Option<usize>) {
+        self.selected = index;
+    }
+
+    /// Select previous item.
+    pub fn select_previous(&mut self, total_items: usize) {
+        if total_items == 0 {
+            self.selected = None;
+            return;
+        }
+        self.selected = Some(match self.selected {
+            Some(i) if i > 0 => i - 1,
+            Some(_) => 0,
+            None => 0,
+        });
+    }
+
+    /// Select next item.
+    pub fn select_next(&mut self, total_items: usize) {
+        if total_items == 0 {
+            self.selected = None;
+            return;
+        }
+        self.selected = Some(match self.selected {
+            Some(i) if i < total_items - 1 => i + 1,
+            Some(i) => i,
+            None => 0,
+        });
+    }
+
+    /// Check if at bottom.
+    #[must_use]
+    pub fn is_at_bottom(&self, total_items: usize) -> bool {
+        if total_items <= self.visible_count {
+            true
+        } else {
+            self.scroll_offset >= total_items - self.visible_count
+        }
+    }
+
+    /// Enable/disable follow mode.
+    pub fn set_follow(&mut self, follow: bool, total_items: usize) {
+        self.follow_mode = follow;
+        if follow {
+            self.scroll_to_bottom(total_items);
+        }
+    }
+
+    /// Check if follow mode is enabled.
+    #[must_use]
+    pub fn follow_mode(&self) -> bool {
+        self.follow_mode
+    }
+
+    /// Start momentum scroll.
+    pub fn fling(&mut self, velocity: f32) {
+        self.scroll_velocity = velocity;
+    }
+
+    /// Apply momentum scrolling tick.
+    pub fn tick(&mut self, dt: Duration, total_items: usize) {
+        if self.scroll_velocity.abs() > 0.1 {
+            let delta = (self.scroll_velocity * dt.as_secs_f32()) as i32;
+            if delta != 0 {
+                self.scroll(delta, total_items);
+            }
+            self.scroll_velocity *= 0.95;
+        } else {
+            self.scroll_velocity = 0.0;
+        }
+    }
+}
+
+/// A virtualized list widget that renders only visible items.
+///
+/// This widget efficiently renders large lists by only drawing items
+/// that are currently visible in the viewport, with optional overscan
+/// for smooth scrolling.
+#[derive(Debug)]
+pub struct VirtualizedList<'a, T> {
+    /// Items to render.
+    items: &'a [T],
+    /// Base style.
+    style: Style,
+    /// Style for selected item.
+    highlight_style: Style,
+    /// Whether to show scrollbar.
+    show_scrollbar: bool,
+    /// Fixed item height.
+    fixed_height: u16,
+}
+
+impl<'a, T> VirtualizedList<'a, T> {
+    /// Create a new virtualized list.
+    #[must_use]
+    pub fn new(items: &'a [T]) -> Self {
+        Self {
+            items,
+            style: Style::default(),
+            highlight_style: Style::default(),
+            show_scrollbar: true,
+            fixed_height: 1,
+        }
+    }
+
+    /// Set base style.
+    #[must_use]
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Set highlight style for selected item.
+    #[must_use]
+    pub fn highlight_style(mut self, style: Style) -> Self {
+        self.highlight_style = style;
+        self
+    }
+
+    /// Enable/disable scrollbar.
+    #[must_use]
+    pub fn show_scrollbar(mut self, show: bool) -> Self {
+        self.show_scrollbar = show;
+        self
+    }
+
+    /// Set fixed item height.
+    #[must_use]
+    pub fn fixed_height(mut self, height: u16) -> Self {
+        self.fixed_height = height;
+        self
+    }
+}
+
+impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
+    type State = VirtualizedListState;
+
+    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
+        #[cfg(feature = "tracing")]
+        let _span = tracing::debug_span!(
+            "widget_render",
+            widget = "VirtualizedList",
+            x = area.x,
+            y = area.y,
+            w = area.width,
+            h = area.height,
+            items = self.items.len()
+        )
+        .entered();
+
+        if area.is_empty() {
+            return;
+        }
+
+        // Apply base style
+        set_style_area(&mut frame.buffer, area, self.style);
+
+        let total_items = self.items.len();
+        if total_items == 0 {
+            return;
+        }
+
+        // Reserve space for scrollbar if needed
+        let items_per_viewport = (area.height / self.fixed_height) as usize;
+        let needs_scrollbar = self.show_scrollbar && total_items > items_per_viewport;
+        let content_width = if needs_scrollbar {
+            area.width.saturating_sub(1)
+        } else {
+            area.width
+        };
+
+        // Ensure selection is within bounds
+        if let Some(selected) = state.selected
+            && selected >= total_items
+        {
+            state.selected = Some(total_items - 1);
+        }
+
+        // Ensure visible range includes selected item
+        if let Some(selected) = state.selected {
+            if selected >= state.scroll_offset + items_per_viewport {
+                state.scroll_offset = selected.saturating_sub(items_per_viewport - 1);
+            } else if selected < state.scroll_offset {
+                state.scroll_offset = selected;
+            }
+        }
+
+        // Clamp scroll offset
+        let max_offset = total_items.saturating_sub(items_per_viewport);
+        state.scroll_offset = state.scroll_offset.min(max_offset);
+
+        // Update visible count
+        state.visible_count = items_per_viewport.min(total_items);
+
+        // Calculate render range with overscan
+        let render_start = state.scroll_offset.saturating_sub(state.overscan);
+        let render_end = (state.scroll_offset + items_per_viewport + state.overscan).min(total_items);
+
+        // Render visible items
+        for idx in render_start..render_end {
+            // Calculate Y position relative to viewport
+            let relative_idx = idx as i32 - state.scroll_offset as i32;
+            let y_offset = relative_idx * self.fixed_height as i32;
+
+            // Skip items above viewport
+            if y_offset + self.fixed_height as i32 <= 0 {
+                continue;
+            }
+
+            // Stop if below viewport
+            if y_offset >= area.height as i32 {
+                break;
+            }
+
+            // Calculate actual render area
+            let y = area.y.saturating_add_signed(y_offset as i16);
+            if y >= area.bottom() {
+                break;
+            }
+
+            let visible_height = self.fixed_height.min(area.bottom().saturating_sub(y));
+            if visible_height == 0 {
+                continue;
+            }
+
+            let row_area = Rect::new(area.x, y, content_width, visible_height);
+
+            let is_selected = state.selected == Some(idx);
+
+            // Apply highlight style to selected row
+            if is_selected {
+                set_style_area(&mut frame.buffer, row_area, self.highlight_style);
+            }
+
+            // Render the item
+            self.items[idx].render(row_area, frame, is_selected);
+        }
+
+        // Render scrollbar
+        if needs_scrollbar {
+            let scrollbar_area = Rect::new(
+                area.right().saturating_sub(1),
+                area.y,
+                1,
+                area.height,
+            );
+
+            let mut scrollbar_state = ScrollbarState::new(
+                total_items,
+                state.scroll_offset,
+                items_per_viewport,
+            );
+
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            scrollbar.render(scrollbar_area, frame, &mut scrollbar_state);
+        }
+    }
+}
+
+// ============================================================================
+// Simple RenderItem implementations for common types
+// ============================================================================
+
+impl RenderItem for String {
+    fn render(&self, area: Rect, frame: &mut Frame, _selected: bool) {
+        if area.is_empty() {
+            return;
+        }
+        let max_chars = area.width as usize;
+        for (i, ch) in self.chars().take(max_chars).enumerate() {
+            frame.buffer.set(area.x + i as u16, area.y, Cell::from_char(ch));
+        }
+    }
+}
+
+impl RenderItem for &str {
+    fn render(&self, area: Rect, frame: &mut Frame, _selected: bool) {
+        if area.is_empty() {
+            return;
+        }
+        let max_chars = area.width as usize;
+        for (i, ch) in self.chars().take(max_chars).enumerate() {
+            frame.buffer.set(area.x + i as u16, area.y, Cell::from_char(ch));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +995,82 @@ mod tests {
 
         // Should have scrolled
         assert!(virt.scroll_offset() > 0);
+    }
+
+    // ========================================================================
+    // VirtualizedListState tests
+    // ========================================================================
+
+    #[test]
+    fn test_virtualized_list_state_new() {
+        let state = VirtualizedListState::new();
+        assert_eq!(state.selected, None);
+        assert_eq!(state.scroll_offset(), 0);
+        assert_eq!(state.visible_count(), 0);
+    }
+
+    #[test]
+    fn test_virtualized_list_state_select_next() {
+        let mut state = VirtualizedListState::new();
+
+        state.select_next(10);
+        assert_eq!(state.selected, Some(0));
+
+        state.select_next(10);
+        assert_eq!(state.selected, Some(1));
+
+        // At last item, stays there
+        state.selected = Some(9);
+        state.select_next(10);
+        assert_eq!(state.selected, Some(9));
+    }
+
+    #[test]
+    fn test_virtualized_list_state_select_previous() {
+        let mut state = VirtualizedListState::new();
+        state.selected = Some(5);
+
+        state.select_previous(10);
+        assert_eq!(state.selected, Some(4));
+
+        state.selected = Some(0);
+        state.select_previous(10);
+        assert_eq!(state.selected, Some(0));
+    }
+
+    #[test]
+    fn test_virtualized_list_state_scroll() {
+        let mut state = VirtualizedListState::new();
+
+        state.scroll(5, 20);
+        assert_eq!(state.scroll_offset(), 5);
+
+        state.scroll(-3, 20);
+        assert_eq!(state.scroll_offset(), 2);
+
+        // Can't scroll negative
+        state.scroll(-100, 20);
+        assert_eq!(state.scroll_offset(), 0);
+
+        // Can't scroll past end
+        state.scroll(100, 20);
+        assert_eq!(state.scroll_offset(), 19);
+    }
+
+    #[test]
+    fn test_virtualized_list_state_follow_mode() {
+        let mut state = VirtualizedListState::new().with_follow(true);
+        assert!(state.follow_mode());
+
+        // Manual scroll disables follow
+        state.scroll(5, 20);
+        assert!(!state.follow_mode());
+    }
+
+    #[test]
+    fn test_render_item_string() {
+        // Verify String implements RenderItem
+        let s = String::from("hello");
+        assert_eq!(s.height(), 1);
     }
 }

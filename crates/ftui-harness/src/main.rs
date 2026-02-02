@@ -34,7 +34,7 @@ use ftui_widgets::block::Block;
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
 use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
-use ftui_widgets::spinner::{Spinner, SpinnerState, DOTS};
+use ftui_widgets::spinner::{DOTS, Spinner, SpinnerState};
 use ftui_widgets::status_line::{StatusItem, StatusLine};
 use ftui_widgets::{StatefulWidget, Widget};
 
@@ -137,8 +137,7 @@ impl AgentHarness {
                 let command = self.input.value().to_string();
                 if !command.is_empty() {
                     self.command_count += 1;
-                    self.log_viewer
-                        .push(format!("> {}", command));
+                    self.log_viewer.push(format!("> {}", command));
                     self.input.clear();
 
                     // Simulate different commands
@@ -255,7 +254,7 @@ impl Model for AgentHarness {
         let chunks = Flex::vertical()
             .constraints([
                 Constraint::Fixed(1), // Status bar
-                Constraint::Min(3),    // Log viewer
+                Constraint::Min(3),   // Log viewer
                 Constraint::Fixed(3), // Input with border
             ])
             .split(area);
@@ -314,10 +313,9 @@ impl Model for AgentHarness {
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
         // Tick every 100ms for spinner animation
-        vec![Box::new(Every::new(
-            Duration::from_millis(100),
-            || Msg::SpinnerTick,
-        ))]
+        vec![Box::new(Every::new(Duration::from_millis(100), || {
+            Msg::SpinnerTick
+        }))]
     }
 }
 
