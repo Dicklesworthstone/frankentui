@@ -140,6 +140,7 @@ pub mod spinner;
 pub mod status_line;
 pub mod table;
 pub mod textarea;
+pub mod tree;
 pub mod virtualized;
 
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
