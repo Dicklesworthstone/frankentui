@@ -73,6 +73,7 @@ use std::io::{self, Write};
 
 use ftui_style::Style;
 use ftui_text::Segment;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[cfg(test)]
@@ -422,16 +423,16 @@ impl Console {
                     remaining = &remaining[fits.len()..];
                 } else {
                     // First character is too wide to fit - push it anyway to avoid infinite loop
-                    let first_char_end = word
-                        .char_indices()
+                    let first_grapheme_end = word
+                        .grapheme_indices(true)
                         .nth(1)
                         .map(|(i, _)| i)
                         .unwrap_or(word.len());
                     self.current_line
-                        .push(&word[..first_char_end], style.clone());
+                        .push(&word[..first_grapheme_end], style.clone());
                     self.flush_line();
                     // Continue after the first char (in remaining, not word, to preserve rest)
-                    remaining = &remaining[first_char_end..];
+                    remaining = &remaining[first_grapheme_end..];
                 }
             } else {
                 // Word doesn't fit - wrap to next line
@@ -461,14 +462,14 @@ impl Console {
                 // If line is empty and still can't fit, push it anyway to avoid infinite loop
                 if self.current_line.is_empty() {
                     // Push first char even if too wide
-                    let first_char_end = remaining
-                        .char_indices()
+                    let first_grapheme_end = remaining
+                        .grapheme_indices(true)
                         .nth(1)
                         .map(|(i, _)| i)
                         .unwrap_or(remaining.len());
                     self.current_line
-                        .push(&remaining[..first_char_end], style.clone());
-                    remaining = &remaining[first_char_end..];
+                        .push(&remaining[..first_grapheme_end], style.clone());
+                    remaining = &remaining[first_grapheme_end..];
                 }
                 self.flush_line();
             }
@@ -620,13 +621,13 @@ fn split_at_width(text: &str, max_width: usize) -> (&str, &str) {
     let mut width = 0;
     let mut split_idx = 0;
 
-    for (idx, ch) in text.char_indices() {
-        let ch_width = ch.width().unwrap_or(0);
-        if width + ch_width > max_width {
+    for grapheme in text.graphemes(true) {
+        let g_width = grapheme.width();
+        if width + g_width > max_width {
             break;
         }
-        width += ch_width;
-        split_idx = idx + ch.len_utf8();
+        width += g_width;
+        split_idx += grapheme.len();
     }
 
     (&text[..split_idx], &text[split_idx..])

@@ -173,13 +173,12 @@ impl LogViewer {
         let text: Text = line.into();
 
         // Update filter index if active
-        if let Some(ref filter) = self.filter {
+        if let Some(filter) = self.filter.as_ref()
+            && text.to_plain_text().contains(filter.as_str())
+            && let Some(indices) = self.filtered_indices.as_mut()
+        {
             let idx = self.virt.len();
-            if text.to_plain_text().contains(filter.as_str()) {
-                if let Some(ref mut indices) = self.filtered_indices {
-                    indices.push(idx);
-                }
-            }
+            indices.push(idx);
         }
 
         self.virt.push(text);
@@ -315,10 +314,10 @@ impl LogViewer {
                 // Rebuild filtered indices
                 let mut indices = Vec::new();
                 for idx in 0..self.virt.len() {
-                    if let Some(item) = self.virt.get(idx) {
-                        if item.to_plain_text().contains(pat) {
-                            indices.push(idx);
-                        }
+                    if let Some(item) = self.virt.get(idx)
+                        && item.to_plain_text().contains(pat)
+                    {
+                        indices.push(idx);
                     }
                 }
                 self.filter = Some(pat.to_string());
@@ -342,10 +341,10 @@ impl LogViewer {
 
         let mut matches = Vec::new();
         for idx in 0..self.virt.len() {
-            if let Some(item) = self.virt.get(idx) {
-                if item.to_plain_text().contains(query) {
-                    matches.push(idx);
-                }
+            if let Some(item) = self.virt.get(idx)
+                && item.to_plain_text().contains(query)
+            {
+                matches.push(idx);
             }
         }
 
@@ -357,10 +356,10 @@ impl LogViewer {
         });
 
         // Jump to first match
-        if let Some(ref search) = self.search {
-            if let Some(&idx) = search.matches.first() {
-                self.virt.scroll_to(idx);
-            }
+        if let Some(ref search) = self.search
+            && let Some(&idx) = search.matches.first()
+        {
+            self.virt.scroll_to(idx);
         }
 
         count
@@ -368,27 +367,27 @@ impl LogViewer {
 
     /// Jump to next search match.
     pub fn next_match(&mut self) {
-        if let Some(ref mut search) = self.search {
-            if !search.matches.is_empty() {
-                search.current = (search.current + 1) % search.matches.len();
-                let idx = search.matches[search.current];
-                self.virt.scroll_to(idx);
-            }
+        if let Some(ref mut search) = self.search
+            && !search.matches.is_empty()
+        {
+            search.current = (search.current + 1) % search.matches.len();
+            let idx = search.matches[search.current];
+            self.virt.scroll_to(idx);
         }
     }
 
     /// Jump to previous search match.
     pub fn prev_match(&mut self) {
-        if let Some(ref mut search) = self.search {
-            if !search.matches.is_empty() {
-                search.current = if search.current == 0 {
-                    search.matches.len() - 1
-                } else {
-                    search.current - 1
-                };
-                let idx = search.matches[search.current];
-                self.virt.scroll_to(idx);
-            }
+        if let Some(ref mut search) = self.search
+            && !search.matches.is_empty()
+        {
+            search.current = if search.current == 0 {
+                search.matches.len() - 1
+            } else {
+                search.current - 1
+            };
+            let idx = search.matches[search.current];
+            self.virt.scroll_to(idx);
         }
     }
 
@@ -568,22 +567,22 @@ impl StatefulWidget for LogViewer {
         }
 
         // Render search indicator if active
-        if let Some((current, total)) = self.search_info() {
-            if area.width >= 10 {
-                let search_indicator = format!(" {}/{} ", current, total);
-                let ind_len = search_indicator.len() as u16;
-                if ind_len < area.width {
-                    let ind_x = area.x;
-                    let ind_y = area.bottom().saturating_sub(1);
-                    draw_text_span(
-                        frame,
-                        ind_x,
-                        ind_y,
-                        &search_indicator,
-                        Style::new().bold(),
-                        ind_x + ind_len,
-                    );
-                }
+        if let Some((current, total)) = self.search_info()
+            && area.width >= 10
+        {
+            let search_indicator = format!(" {}/{} ", current, total);
+            let ind_len = search_indicator.len() as u16;
+            if ind_len < area.width {
+                let ind_x = area.x;
+                let ind_y = area.bottom().saturating_sub(1);
+                draw_text_span(
+                    frame,
+                    ind_x,
+                    ind_y,
+                    &search_indicator,
+                    Style::new().bold(),
+                    ind_x + ind_len,
+                );
             }
         }
     }
