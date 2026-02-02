@@ -383,4 +383,341 @@ mod tests {
             prop_assert_eq!(rope.len_lines(), newlines + 1);
         }
     }
+
+    // ====== Empty rope tests ======
+
+    #[test]
+    fn empty_rope_properties() {
+        let rope = Rope::new();
+        assert!(rope.is_empty());
+        assert_eq!(rope.len_bytes(), 0);
+        assert_eq!(rope.len_chars(), 0);
+        assert_eq!(rope.len_lines(), 1); // ropey: empty string = 1 line
+        assert_eq!(rope.grapheme_count(), 0);
+        assert_eq!(rope.to_string(), "");
+    }
+
+    #[test]
+    fn empty_rope_line_access() {
+        let rope = Rope::new();
+        assert!(rope.line(0).is_some()); // empty string is line 0
+        assert!(rope.line(1).is_none());
+    }
+
+    #[test]
+    fn empty_rope_slice() {
+        let rope = Rope::new();
+        assert_eq!(rope.slice(0..0), "");
+        assert_eq!(rope.slice(..), "");
+    }
+
+    #[test]
+    fn empty_rope_conversions() {
+        let rope = Rope::new();
+        assert_eq!(rope.char_to_byte(0), 0);
+        assert_eq!(rope.byte_to_char(0), 0);
+        assert_eq!(rope.char_to_line(0), 0);
+        assert_eq!(rope.line_to_char(0), 0);
+    }
+
+    // ====== From impls ======
+
+    #[test]
+    fn from_str_impl() {
+        let rope: Rope = "hello".into();
+        assert_eq!(rope.to_string(), "hello");
+    }
+
+    #[test]
+    fn from_string_impl() {
+        let rope: Rope = String::from("hello").into();
+        assert_eq!(rope.to_string(), "hello");
+    }
+
+    #[test]
+    fn from_str_parse() {
+        let rope: Rope = "hello".parse().unwrap();
+        assert_eq!(rope.to_string(), "hello");
+    }
+
+    #[test]
+    fn display_impl() {
+        let rope = Rope::from("hello world");
+        assert_eq!(format!("{rope}"), "hello world");
+    }
+
+    // ====== Line access ======
+
+    #[test]
+    fn line_out_of_bounds() {
+        let rope = Rope::from("a\nb");
+        assert!(rope.line(0).is_some());
+        assert!(rope.line(1).is_some());
+        assert!(rope.line(2).is_none());
+        assert!(rope.line(100).is_none());
+    }
+
+    #[test]
+    fn trailing_newline_creates_empty_last_line() {
+        let rope = Rope::from("a\n");
+        assert_eq!(rope.len_lines(), 2);
+        assert_eq!(rope.line(0).unwrap(), "a\n");
+        assert_eq!(rope.line(1).unwrap(), "");
+    }
+
+    #[test]
+    fn multiple_newlines() {
+        let rope = Rope::from("\n\n\n");
+        assert_eq!(rope.len_lines(), 4);
+    }
+
+    #[test]
+    fn lines_iterator() {
+        let rope = Rope::from("a\nb\nc");
+        let lines: Vec<String> = rope.lines().map(|c| c.to_string()).collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "a\n");
+        assert_eq!(lines[1], "b\n");
+        assert_eq!(lines[2], "c");
+    }
+
+    // ====== Slice ======
+
+    #[test]
+    fn slice_basic() {
+        let rope = Rope::from("hello world");
+        assert_eq!(rope.slice(0..5), "hello");
+        assert_eq!(rope.slice(6..11), "world");
+        assert_eq!(rope.slice(6..), "world");
+        assert_eq!(rope.slice(..5), "hello");
+    }
+
+    #[test]
+    fn slice_out_of_bounds_returns_empty() {
+        let rope = Rope::from("hi");
+        assert_eq!(rope.slice(100..200), "");
+    }
+
+    // ====== Insert edge cases ======
+
+    #[test]
+    fn insert_at_beginning() {
+        let mut rope = Rope::from("world");
+        rope.insert(0, "hello ");
+        assert_eq!(rope.to_string(), "hello world");
+    }
+
+    #[test]
+    fn insert_at_end() {
+        let mut rope = Rope::from("hello");
+        rope.insert(5, " world");
+        assert_eq!(rope.to_string(), "hello world");
+    }
+
+    #[test]
+    fn insert_beyond_length_clamps() {
+        let mut rope = Rope::from("hi");
+        rope.insert(100, "!");
+        assert_eq!(rope.to_string(), "hi!");
+    }
+
+    #[test]
+    fn insert_empty_string() {
+        let mut rope = Rope::from("hello");
+        rope.insert(2, "");
+        assert_eq!(rope.to_string(), "hello");
+    }
+
+    // ====== Remove edge cases ======
+
+    #[test]
+    fn remove_empty_range() {
+        let mut rope = Rope::from("hello");
+        rope.remove(2..2);
+        assert_eq!(rope.to_string(), "hello");
+    }
+
+    #[test]
+    fn remove_entire_content() {
+        let mut rope = Rope::from("hello");
+        rope.remove(..);
+        assert!(rope.is_empty());
+    }
+
+    #[test]
+    fn remove_inverted_range_is_noop() {
+        let mut rope = Rope::from("hello");
+        rope.remove(3..1); // end < start
+        assert_eq!(rope.to_string(), "hello");
+    }
+
+    // ====== Grapheme operations ======
+
+    #[test]
+    fn grapheme_insert_at_beginning() {
+        let mut rope = Rope::from("bc");
+        rope.insert_grapheme(0, "a");
+        assert_eq!(rope.to_string(), "abc");
+    }
+
+    #[test]
+    fn grapheme_insert_with_combining() {
+        let mut rope = Rope::from("e\u{301}x"); // é x
+        assert_eq!(rope.grapheme_count(), 2);
+        rope.insert_grapheme(1, "y");
+        assert_eq!(rope.to_string(), "e\u{301}yx");
+    }
+
+    #[test]
+    fn grapheme_remove_range() {
+        let mut rope = Rope::from("abcd");
+        rope.remove_grapheme_range(1..3);
+        assert_eq!(rope.to_string(), "ad");
+    }
+
+    #[test]
+    fn grapheme_remove_empty_range() {
+        let mut rope = Rope::from("abc");
+        rope.remove_grapheme_range(1..1);
+        assert_eq!(rope.to_string(), "abc");
+    }
+
+    #[test]
+    fn graphemes_returns_correct_list() {
+        let rope = Rope::from("ae\u{301}b"); // a é b
+        let gs = rope.graphemes();
+        assert_eq!(gs.len(), 3);
+        assert_eq!(gs[0], "a");
+        assert_eq!(gs[1], "e\u{301}");
+        assert_eq!(gs[2], "b");
+    }
+
+    // ====== Char/byte/line conversions ======
+
+    #[test]
+    fn char_to_byte_with_multibyte() {
+        let rope = Rope::from("a\u{1F600}b"); // a 😀 b
+        assert_eq!(rope.char_to_byte(0), 0); // 'a'
+        assert_eq!(rope.char_to_byte(1), 1); // start of emoji
+        assert_eq!(rope.char_to_byte(2), 5); // 'b' (1 + 4 bytes for emoji)
+    }
+
+    #[test]
+    fn byte_to_char_clamps() {
+        let rope = Rope::from("hi");
+        assert_eq!(rope.byte_to_char(100), 2);
+    }
+
+    #[test]
+    fn char_to_byte_clamps() {
+        let rope = Rope::from("hi");
+        assert_eq!(rope.char_to_byte(100), 2);
+    }
+
+    #[test]
+    fn line_to_char_out_of_bounds() {
+        let rope = Rope::from("a\nb");
+        assert_eq!(rope.line_to_char(0), 0);
+        assert_eq!(rope.line_to_char(1), 2);
+        assert_eq!(rope.line_to_char(100), 3); // len_chars
+    }
+
+    #[test]
+    fn byte_to_line_col_basic() {
+        let rope = Rope::from("abc\ndef");
+        let (line, col) = rope.byte_to_line_col(5); // 'e' in "def"
+        assert_eq!(line, 1);
+        assert_eq!(col, 1);
+    }
+
+    #[test]
+    fn line_col_to_byte_basic() {
+        let rope = Rope::from("abc\ndef");
+        let byte = rope.line_col_to_byte(1, 1);
+        assert_eq!(byte, 5); // 'e'
+    }
+
+    // ====== Chars iterator ======
+
+    #[test]
+    fn chars_iterator() {
+        let rope = Rope::from("ab");
+        let chars: Vec<char> = rope.chars().collect();
+        assert_eq!(chars, vec!['a', 'b']);
+    }
+
+    // ====== normalize_range helper ======
+
+    #[test]
+    fn normalize_range_basic() {
+        assert_eq!(normalize_range(2..5, 10), (2, 5));
+        assert_eq!(normalize_range(0..10, 10), (0, 10));
+        assert_eq!(normalize_range(.., 10), (0, 10));
+    }
+
+    #[test]
+    fn normalize_range_clamps_to_max() {
+        assert_eq!(normalize_range(0..100, 5), (0, 5));
+        assert_eq!(normalize_range(50..100, 5), (5, 5));
+    }
+
+    #[test]
+    fn normalize_range_inverted_becomes_empty() {
+        assert_eq!(normalize_range(5..2, 10), (5, 5));
+    }
+
+    #[test]
+    fn normalize_range_inclusive() {
+        assert_eq!(normalize_range(1..=3, 10), (1, 4));
+    }
+
+    // ====== Property tests ======
+
+    proptest! {
+        #[test]
+        fn append_then_len_grows(s in "\\PC{0,50}", suffix in "\\PC{0,50}") {
+            let mut rope = Rope::from(s.as_str());
+            let before = rope.len_chars();
+            let suffix_len = suffix.chars().count();
+            rope.append(&suffix);
+            prop_assert_eq!(rope.len_chars(), before + suffix_len);
+        }
+
+        #[test]
+        fn replace_yields_new_content(s in "\\PC{0,50}", replacement in "\\PC{0,50}") {
+            let mut rope = Rope::from(s.as_str());
+            rope.replace(&replacement);
+            prop_assert_eq!(rope.to_string(), replacement);
+        }
+
+        #[test]
+        fn clear_always_empty(s in "\\PC{0,100}") {
+            let mut rope = Rope::from(s.as_str());
+            rope.clear();
+            prop_assert!(rope.is_empty());
+            prop_assert_eq!(rope.len_bytes(), 0);
+            prop_assert_eq!(rope.len_chars(), 0);
+        }
+
+        #[test]
+        fn display_matches_to_string(s in "\\PC{0,100}") {
+            let rope = Rope::from(s.as_str());
+            prop_assert_eq!(format!("{rope}"), rope.to_string());
+        }
+
+        #[test]
+        fn char_byte_roundtrip(s in "\\PC{1,50}", idx in 0usize..50) {
+            let rope = Rope::from(s.as_str());
+            let char_idx = idx.min(rope.len_chars());
+            let byte_idx = rope.char_to_byte(char_idx);
+            let back = rope.byte_to_char(byte_idx);
+            prop_assert_eq!(back, char_idx);
+        }
+
+        #[test]
+        fn grapheme_count_leq_char_count(s in "\\PC{0,100}") {
+            let rope = Rope::from(s.as_str());
+            prop_assert!(rope.grapheme_count() <= rope.len_chars());
+        }
+    }
 }

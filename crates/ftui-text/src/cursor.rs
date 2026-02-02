@@ -434,4 +434,393 @@ mod tests {
         assert_eq!(back.line, 1);
         assert_eq!(back.grapheme, 1);
     }
+
+    // ====== Empty text ======
+
+    #[test]
+    fn empty_text_navigation() {
+        let r = rope("");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 0);
+        assert_eq!(pos.line, 0);
+        assert_eq!(pos.grapheme, 0);
+        assert_eq!(pos.visual_col, 0);
+    }
+
+    #[test]
+    fn empty_text_move_left_is_noop() {
+        let r = rope("");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 0);
+        let moved = nav.move_left(pos);
+        assert_eq!(moved, pos);
+    }
+
+    #[test]
+    fn empty_text_move_right_is_noop() {
+        let r = rope("");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 0);
+        let moved = nav.move_right(pos);
+        assert_eq!(moved, pos);
+    }
+
+    #[test]
+    fn empty_text_document_start_end() {
+        let r = rope("");
+        let nav = CursorNavigator::new(&r);
+        let start = nav.document_start();
+        let end = nav.document_end();
+        assert_eq!(start, end);
+        assert_eq!(start.line, 0);
+        assert_eq!(start.grapheme, 0);
+    }
+
+    // ====== Clamping ======
+
+    #[test]
+    fn clamp_out_of_bounds_line() {
+        let r = rope("abc");
+        let nav = CursorNavigator::new(&r);
+        let pos = CursorPosition::new(100, 0, 0);
+        let clamped = nav.clamp(pos);
+        assert_eq!(clamped.line, 0);
+    }
+
+    #[test]
+    fn clamp_out_of_bounds_grapheme() {
+        let r = rope("abc");
+        let nav = CursorNavigator::new(&r);
+        let pos = CursorPosition::new(0, 100, 0);
+        let clamped = nav.clamp(pos);
+        assert_eq!(clamped.grapheme, 3);
+        assert_eq!(clamped.visual_col, 3);
+    }
+
+    #[test]
+    fn clamp_multiline_out_of_bounds() {
+        let r = rope("abc\ndef");
+        let nav = CursorNavigator::new(&r);
+        let pos = CursorPosition::new(5, 50, 0);
+        let clamped = nav.clamp(pos);
+        assert_eq!(clamped.line, 1);
+        assert_eq!(clamped.grapheme, 3);
+    }
+
+    // ====== Line start/end ======
+
+    #[test]
+    fn line_start_moves_to_column_zero() {
+        let r = rope("hello world");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 5);
+        let start = nav.line_start(pos);
+        assert_eq!(start.grapheme, 0);
+        assert_eq!(start.visual_col, 0);
+    }
+
+    #[test]
+    fn line_end_moves_to_last_grapheme() {
+        let r = rope("hello");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 0);
+        let end = nav.line_end(pos);
+        assert_eq!(end.grapheme, 5);
+        assert_eq!(end.visual_col, 5);
+    }
+
+    #[test]
+    fn line_start_end_multiline() {
+        let r = rope("abc\nde");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(1, 1);
+        let start = nav.line_start(pos);
+        assert_eq!(start.line, 1);
+        assert_eq!(start.grapheme, 0);
+        let end = nav.line_end(pos);
+        assert_eq!(end.line, 1);
+        assert_eq!(end.grapheme, 2);
+    }
+
+    // ====== Document start/end ======
+
+    #[test]
+    fn document_start_is_0_0() {
+        let r = rope("abc\ndef\nghi");
+        let nav = CursorNavigator::new(&r);
+        let start = nav.document_start();
+        assert_eq!(start.line, 0);
+        assert_eq!(start.grapheme, 0);
+        assert_eq!(start.visual_col, 0);
+    }
+
+    #[test]
+    fn document_end_is_last_line_last_grapheme() {
+        let r = rope("abc\ndef\nghi");
+        let nav = CursorNavigator::new(&r);
+        let end = nav.document_end();
+        assert_eq!(end.line, 2);
+        assert_eq!(end.grapheme, 3);
+        assert_eq!(end.visual_col, 3);
+    }
+
+    // ====== Cross-line movement ======
+
+    #[test]
+    fn move_left_wraps_to_previous_line() {
+        let r = rope("abc\ndef");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(1, 0);
+        let moved = nav.move_left(pos);
+        assert_eq!(moved.line, 0);
+        assert_eq!(moved.grapheme, 3);
+    }
+
+    #[test]
+    fn move_right_wraps_to_next_line() {
+        let r = rope("abc\ndef");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 3);
+        let moved = nav.move_right(pos);
+        assert_eq!(moved.line, 1);
+        assert_eq!(moved.grapheme, 0);
+    }
+
+    #[test]
+    fn move_left_at_document_start_is_noop() {
+        let r = rope("abc");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 0);
+        let moved = nav.move_left(pos);
+        assert_eq!(moved, pos);
+    }
+
+    #[test]
+    fn move_right_at_document_end_is_noop() {
+        let r = rope("abc");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 3);
+        let moved = nav.move_right(pos);
+        assert_eq!(moved, pos);
+    }
+
+    // ====== Up/down movement ======
+
+    #[test]
+    fn move_up_at_first_line_is_noop() {
+        let r = rope("abc\ndef");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 1);
+        let moved = nav.move_up(pos);
+        assert_eq!(moved, pos);
+    }
+
+    #[test]
+    fn move_down_at_last_line_is_noop() {
+        let r = rope("abc\ndef");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(1, 1);
+        let moved = nav.move_down(pos);
+        assert_eq!(moved, pos);
+    }
+
+    #[test]
+    fn move_down_shorter_line_clamps_grapheme() {
+        let r = rope("abcdef\nxy");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 5); // visual_col=5
+        let down = nav.move_down(pos);
+        assert_eq!(down.line, 1);
+        assert_eq!(down.grapheme, 2); // "xy" only has 2 graphemes
+        assert_eq!(down.visual_col, 2);
+    }
+
+    #[test]
+    fn move_up_shorter_line_clamps_grapheme() {
+        let r = rope("xy\nabcdef");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(1, 5); // visual_col=5
+        let up = nav.move_up(pos);
+        assert_eq!(up.line, 0);
+        assert_eq!(up.grapheme, 2);
+        assert_eq!(up.visual_col, 2);
+    }
+
+    // ====== Wide character visual column handling ======
+
+    #[test]
+    fn wide_char_visual_col() {
+        // CJK characters are 2 cells wide
+        let r = rope("\u{4E16}\u{754C}"); // "世界"
+        let nav = CursorNavigator::new(&r);
+        let pos0 = nav.from_line_grapheme(0, 0);
+        assert_eq!(pos0.visual_col, 0);
+        let pos1 = nav.from_line_grapheme(0, 1);
+        assert_eq!(pos1.visual_col, 2);
+        let pos2 = nav.from_line_grapheme(0, 2);
+        assert_eq!(pos2.visual_col, 4);
+    }
+
+    #[test]
+    fn from_visual_col_with_wide_chars() {
+        let r = rope("\u{4E16}\u{754C}x"); // "世界x"
+        let nav = CursorNavigator::new(&r);
+        // visual_col=1 falls inside first wide char -> snap to grapheme 0
+        let pos = nav.from_visual_col(0, 1);
+        assert_eq!(pos.grapheme, 0);
+        assert_eq!(pos.visual_col, 0);
+        // visual_col=2 starts at second char
+        let pos = nav.from_visual_col(0, 2);
+        assert_eq!(pos.grapheme, 1);
+        assert_eq!(pos.visual_col, 2);
+        // visual_col=4 is 'x'
+        let pos = nav.from_visual_col(0, 4);
+        assert_eq!(pos.grapheme, 2);
+        assert_eq!(pos.visual_col, 4);
+    }
+
+    // ====== Word movement ======
+
+    #[test]
+    fn word_right_from_start() {
+        let r = rope("hello world");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 0);
+        let moved = nav.move_word_right(pos);
+        assert_eq!(moved.grapheme, 5); // end of "hello"
+    }
+
+    #[test]
+    fn word_left_from_end() {
+        let r = rope("hello world");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 11);
+        let moved = nav.move_word_left(pos);
+        assert_eq!(moved.grapheme, 6); // start of "world"
+    }
+
+    #[test]
+    fn word_right_at_line_end_wraps() {
+        let r = rope("hello\nworld");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 5);
+        let moved = nav.move_word_right(pos);
+        assert_eq!(moved.line, 1);
+        assert_eq!(moved.grapheme, 0);
+    }
+
+    #[test]
+    fn word_left_at_line_start_wraps() {
+        let r = rope("hello\nworld");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(1, 0);
+        let moved = nav.move_word_left(pos);
+        assert_eq!(moved.line, 0);
+        // Should go to previous line end, finding word boundary
+        assert!(moved.grapheme <= 5);
+    }
+
+    #[test]
+    fn word_right_skips_punctuation() {
+        let r = rope("a!!b");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(0, 1);
+        let moved = nav.move_word_right(pos);
+        assert_eq!(moved.grapheme, 3); // skips "!!" (punctuation class)
+    }
+
+    #[test]
+    fn word_movement_at_document_boundaries() {
+        let r = rope("abc");
+        let nav = CursorNavigator::new(&r);
+        // word left at start is noop
+        let start = nav.from_line_grapheme(0, 0);
+        let left = nav.move_word_left(start);
+        assert_eq!(left, start);
+        // word right at end is noop
+        let end = nav.from_line_grapheme(0, 3);
+        let right = nav.move_word_right(end);
+        assert_eq!(right, end);
+    }
+
+    // ====== Byte index roundtrips ======
+
+    #[test]
+    fn byte_index_roundtrip_multibyte() {
+        let r = rope("a\u{1F600}b"); // a 😀 b
+        let nav = CursorNavigator::new(&r);
+        for g in 0..=3 {
+            let pos = nav.from_line_grapheme(0, g);
+            let byte = nav.to_byte_index(pos);
+            let back = nav.from_byte_index(byte);
+            assert_eq!(back.grapheme, pos.grapheme, "roundtrip failed for grapheme {g}");
+        }
+    }
+
+    #[test]
+    fn byte_index_roundtrip_multiline_unicode() {
+        let r = rope("ab\n\u{4E16}\u{754C}");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_line_grapheme(1, 1); // 界
+        let byte = nav.to_byte_index(pos);
+        let back = nav.from_byte_index(byte);
+        assert_eq!(back.line, 1);
+        assert_eq!(back.grapheme, 1);
+    }
+
+    // ====== from_visual_col edge cases ======
+
+    #[test]
+    fn from_visual_col_beyond_line_clamps() {
+        let r = rope("abc");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_visual_col(0, 100);
+        assert_eq!(pos.grapheme, 3);
+        assert_eq!(pos.visual_col, 3);
+    }
+
+    #[test]
+    fn from_visual_col_zero_on_empty_line() {
+        let r = rope("abc\n\ndef");
+        let nav = CursorNavigator::new(&r);
+        let pos = nav.from_visual_col(1, 5);
+        assert_eq!(pos.grapheme, 0);
+        assert_eq!(pos.visual_col, 0);
+    }
+
+    // ====== Internal helper tests ======
+
+    #[test]
+    fn grapheme_class_classification() {
+        use super::grapheme_class;
+        use super::GraphemeClass;
+        assert_eq!(grapheme_class(" "), GraphemeClass::Space);
+        assert_eq!(grapheme_class("\t"), GraphemeClass::Space);
+        assert_eq!(grapheme_class("a"), GraphemeClass::Word);
+        assert_eq!(grapheme_class("5"), GraphemeClass::Word);
+        assert_eq!(grapheme_class("!"), GraphemeClass::Punct);
+        assert_eq!(grapheme_class("."), GraphemeClass::Punct);
+    }
+
+    #[test]
+    fn move_word_left_in_line_edge_cases() {
+        use super::move_word_left_in_line;
+        // Already at start
+        assert_eq!(move_word_left_in_line("hello", 0), 0);
+        // Single word
+        assert_eq!(move_word_left_in_line("hello", 5), 0);
+        // Empty string
+        assert_eq!(move_word_left_in_line("", 0), 0);
+    }
+
+    #[test]
+    fn move_word_right_in_line_edge_cases() {
+        use super::move_word_right_in_line;
+        // Already at end
+        assert_eq!(move_word_right_in_line("hello", 5), 5);
+        // Single word from start
+        assert_eq!(move_word_right_in_line("hello", 0), 5);
+        // Empty string
+        assert_eq!(move_word_right_in_line("", 0), 0);
+    }
 }
