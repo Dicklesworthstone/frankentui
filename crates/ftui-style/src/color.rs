@@ -365,59 +365,12 @@ fn weighted_distance(a: Rgb, b: Rgb) -> u64 {
 mod tests {
     use super::*;
 
+    // --- ColorProfile tests ---
+
     #[test]
     fn truecolor_passthrough() {
         let color = Color::rgb(12, 34, 56);
         assert_eq!(color.downgrade(ColorProfile::TrueColor), color);
-    }
-
-    #[test]
-    fn rgb_to_256_grayscale_rules() {
-        assert_eq!(rgb_to_256(0, 0, 0), 16);
-        assert_eq!(rgb_to_256(8, 8, 8), 232);
-        assert_eq!(rgb_to_256(18, 18, 18), 233);
-        assert_eq!(rgb_to_256(249, 249, 249), 231);
-    }
-
-    #[test]
-    fn rgb_to_256_primary_red() {
-        assert_eq!(rgb_to_256(255, 0, 0), 196);
-    }
-
-    #[test]
-    fn ansi256_to_rgb_round_trip() {
-        let rgb = ansi256_to_rgb(196);
-        assert_eq!(rgb, Rgb::new(255, 0, 0));
-    }
-
-    #[test]
-    fn rgb_to_ansi16_basics() {
-        assert_eq!(rgb_to_ansi16(0, 0, 0), Ansi16::Black);
-        assert_eq!(rgb_to_ansi16(255, 0, 0), Ansi16::BrightRed);
-        assert_eq!(rgb_to_ansi16(0, 255, 0), Ansi16::BrightGreen);
-        // Note: Pure blue (0,0,255) is closer to Blue(0,0,238) than BrightBlue(92,92,255)
-        // because the weighted distance penalizes the red/green components of BrightBlue
-        assert_eq!(rgb_to_ansi16(0, 0, 255), Ansi16::Blue);
-    }
-
-    #[test]
-    fn mono_fallback() {
-        assert_eq!(rgb_to_mono(0, 0, 0), MonoColor::Black);
-        assert_eq!(rgb_to_mono(255, 255, 255), MonoColor::White);
-        assert_eq!(rgb_to_mono(200, 200, 200), MonoColor::White);
-        assert_eq!(rgb_to_mono(30, 30, 30), MonoColor::Black);
-    }
-
-    #[test]
-    fn cache_tracks_hits() {
-        let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 8);
-        let rgb = Rgb::new(10, 20, 30);
-        let _ = cache.downgrade_rgb(rgb);
-        let _ = cache.downgrade_rgb(rgb);
-        let stats = cache.stats();
-        assert_eq!(stats.hits, 1);
-        assert_eq!(stats.misses, 1);
-        assert_eq!(stats.size, 1);
     }
 
     #[test]
@@ -438,5 +391,288 @@ mod tests {
             ColorProfile::from_flags(false, false, false),
             ColorProfile::Ansi16
         );
+    }
+
+    #[test]
+    fn supports_true_color() {
+        assert!(ColorProfile::TrueColor.supports_true_color());
+        assert!(!ColorProfile::Ansi256.supports_true_color());
+        assert!(!ColorProfile::Ansi16.supports_true_color());
+        assert!(!ColorProfile::Mono.supports_true_color());
+    }
+
+    // --- Rgb tests ---
+
+    #[test]
+    fn rgb_as_key_is_unique() {
+        let a = Rgb::new(1, 2, 3);
+        let b = Rgb::new(3, 2, 1);
+        assert_ne!(a.as_key(), b.as_key());
+        assert_eq!(a.as_key(), Rgb::new(1, 2, 3).as_key());
+    }
+
+    #[test]
+    fn rgb_luminance_black_is_zero() {
+        assert_eq!(Rgb::new(0, 0, 0).luminance_u8(), 0);
+    }
+
+    #[test]
+    fn rgb_luminance_white_is_255() {
+        assert_eq!(Rgb::new(255, 255, 255).luminance_u8(), 255);
+    }
+
+    #[test]
+    fn rgb_luminance_green_is_brightest_channel() {
+        // Green has highest weight in BT.709 luma
+        let green_only = Rgb::new(0, 128, 0).luminance_u8();
+        let red_only = Rgb::new(128, 0, 0).luminance_u8();
+        let blue_only = Rgb::new(0, 0, 128).luminance_u8();
+        assert!(green_only > red_only);
+        assert!(green_only > blue_only);
+    }
+
+    #[test]
+    fn rgb_from_packed_rgba() {
+        let packed = PackedRgba::rgb(10, 20, 30);
+        let rgb: Rgb = packed.into();
+        assert_eq!(rgb, Rgb::new(10, 20, 30));
+    }
+
+    // --- Ansi16 tests ---
+
+    #[test]
+    fn ansi16_from_u8_valid_range() {
+        for i in 0..=15 {
+            assert!(Ansi16::from_u8(i).is_some());
+        }
+    }
+
+    #[test]
+    fn ansi16_from_u8_invalid() {
+        assert!(Ansi16::from_u8(16).is_none());
+        assert!(Ansi16::from_u8(255).is_none());
+    }
+
+    #[test]
+    fn ansi16_round_trip() {
+        for i in 0..=15 {
+            let color = Ansi16::from_u8(i).unwrap();
+            assert_eq!(color.as_u8(), i);
+        }
+    }
+
+    // --- rgb_to_256 tests ---
+
+    #[test]
+    fn rgb_to_256_grayscale_rules() {
+        assert_eq!(rgb_to_256(0, 0, 0), 16);
+        assert_eq!(rgb_to_256(8, 8, 8), 232);
+        assert_eq!(rgb_to_256(18, 18, 18), 233);
+        assert_eq!(rgb_to_256(249, 249, 249), 231);
+    }
+
+    #[test]
+    fn rgb_to_256_primary_red() {
+        assert_eq!(rgb_to_256(255, 0, 0), 196);
+    }
+
+    #[test]
+    fn rgb_to_256_primary_green() {
+        assert_eq!(rgb_to_256(0, 255, 0), 46);
+    }
+
+    #[test]
+    fn rgb_to_256_primary_blue() {
+        assert_eq!(rgb_to_256(0, 0, 255), 21);
+    }
+
+    // --- ansi256_to_rgb tests ---
+
+    #[test]
+    fn ansi256_to_rgb_round_trip() {
+        let rgb = ansi256_to_rgb(196);
+        assert_eq!(rgb, Rgb::new(255, 0, 0));
+    }
+
+    #[test]
+    fn ansi256_to_rgb_first_16_match_palette() {
+        for i in 0..16 {
+            let rgb = ansi256_to_rgb(i);
+            assert_eq!(rgb, ANSI16_PALETTE[i as usize]);
+        }
+    }
+
+    #[test]
+    fn ansi256_to_rgb_grayscale_ramp() {
+        // Index 232 = darkest gray (8,8,8), 255 = lightest (238,238,238)
+        let darkest = ansi256_to_rgb(232);
+        assert_eq!(darkest, Rgb::new(8, 8, 8));
+        let lightest = ansi256_to_rgb(255);
+        assert_eq!(lightest, Rgb::new(238, 238, 238));
+    }
+
+    #[test]
+    fn ansi256_color_cube_corners() {
+        // Index 16 = (0,0,0) in cube
+        assert_eq!(ansi256_to_rgb(16), Rgb::new(0, 0, 0));
+        // Index 231 = (255,255,255) in cube
+        assert_eq!(ansi256_to_rgb(231), Rgb::new(255, 255, 255));
+    }
+
+    // --- rgb_to_ansi16 tests ---
+
+    #[test]
+    fn rgb_to_ansi16_basics() {
+        assert_eq!(rgb_to_ansi16(0, 0, 0), Ansi16::Black);
+        assert_eq!(rgb_to_ansi16(255, 0, 0), Ansi16::BrightRed);
+        assert_eq!(rgb_to_ansi16(0, 255, 0), Ansi16::BrightGreen);
+        assert_eq!(rgb_to_ansi16(0, 0, 255), Ansi16::Blue);
+    }
+
+    #[test]
+    fn rgb_to_ansi16_white() {
+        assert_eq!(rgb_to_ansi16(255, 255, 255), Ansi16::BrightWhite);
+    }
+
+    // --- rgb_to_mono tests ---
+
+    #[test]
+    fn mono_fallback() {
+        assert_eq!(rgb_to_mono(0, 0, 0), MonoColor::Black);
+        assert_eq!(rgb_to_mono(255, 255, 255), MonoColor::White);
+        assert_eq!(rgb_to_mono(200, 200, 200), MonoColor::White);
+        assert_eq!(rgb_to_mono(30, 30, 30), MonoColor::Black);
+    }
+
+    #[test]
+    fn mono_boundary() {
+        // Luminance threshold is 128
+        assert_eq!(rgb_to_mono(128, 128, 128), MonoColor::White);
+        assert_eq!(rgb_to_mono(127, 127, 127), MonoColor::Black);
+    }
+
+    // --- Color downgrade chain tests ---
+
+    #[test]
+    fn downgrade_rgb_to_ansi256() {
+        let color = Color::rgb(255, 0, 0);
+        let downgraded = color.downgrade(ColorProfile::Ansi256);
+        assert!(matches!(downgraded, Color::Ansi256(_)));
+    }
+
+    #[test]
+    fn downgrade_rgb_to_ansi16() {
+        let color = Color::rgb(255, 0, 0);
+        let downgraded = color.downgrade(ColorProfile::Ansi16);
+        assert!(matches!(downgraded, Color::Ansi16(_)));
+    }
+
+    #[test]
+    fn downgrade_rgb_to_mono() {
+        let color = Color::rgb(255, 255, 255);
+        let downgraded = color.downgrade(ColorProfile::Mono);
+        assert_eq!(downgraded, Color::Mono(MonoColor::White));
+    }
+
+    #[test]
+    fn downgrade_ansi256_to_ansi16() {
+        let color = Color::Ansi256(196);
+        let downgraded = color.downgrade(ColorProfile::Ansi16);
+        assert!(matches!(downgraded, Color::Ansi16(_)));
+    }
+
+    #[test]
+    fn downgrade_ansi256_to_mono() {
+        let color = Color::Ansi256(232); // dark gray
+        let downgraded = color.downgrade(ColorProfile::Mono);
+        assert_eq!(downgraded, Color::Mono(MonoColor::Black));
+    }
+
+    #[test]
+    fn downgrade_ansi16_to_mono() {
+        let color = Color::Ansi16(Ansi16::BrightWhite);
+        let downgraded = color.downgrade(ColorProfile::Mono);
+        assert_eq!(downgraded, Color::Mono(MonoColor::White));
+    }
+
+    #[test]
+    fn downgrade_mono_stays_mono() {
+        let color = Color::Mono(MonoColor::Black);
+        assert_eq!(color.downgrade(ColorProfile::Mono), color);
+    }
+
+    #[test]
+    fn downgrade_ansi16_stays_at_ansi256() {
+        let color = Color::Ansi16(Ansi16::Red);
+        // Ansi16 should pass through at Ansi256 level
+        assert_eq!(color.downgrade(ColorProfile::Ansi256), color);
+    }
+
+    // --- Color::to_rgb tests ---
+
+    #[test]
+    fn color_to_rgb_all_variants() {
+        assert_eq!(Color::rgb(1, 2, 3).to_rgb(), Rgb::new(1, 2, 3));
+        assert_eq!(Color::Ansi256(196).to_rgb(), Rgb::new(255, 0, 0));
+        assert_eq!(Color::Ansi16(Ansi16::Black).to_rgb(), Rgb::new(0, 0, 0));
+        assert_eq!(
+            Color::Mono(MonoColor::White).to_rgb(),
+            Rgb::new(255, 255, 255)
+        );
+        assert_eq!(Color::Mono(MonoColor::Black).to_rgb(), Rgb::new(0, 0, 0));
+    }
+
+    // --- Color from PackedRgba ---
+
+    #[test]
+    fn color_from_packed_rgba() {
+        let packed = PackedRgba::rgb(42, 84, 126);
+        let color: Color = packed.into();
+        assert_eq!(color, Color::Rgb(Rgb::new(42, 84, 126)));
+    }
+
+    // --- ColorCache tests ---
+
+    #[test]
+    fn cache_tracks_hits() {
+        let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 8);
+        let rgb = Rgb::new(10, 20, 30);
+        let _ = cache.downgrade_rgb(rgb);
+        let _ = cache.downgrade_rgb(rgb);
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.size, 1);
+    }
+
+    #[test]
+    fn cache_clears_on_overflow() {
+        let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 2);
+        cache.downgrade_rgb(Rgb::new(1, 0, 0));
+        cache.downgrade_rgb(Rgb::new(2, 0, 0));
+        assert_eq!(cache.stats().size, 2);
+        // Third entry should trigger clear
+        cache.downgrade_rgb(Rgb::new(3, 0, 0));
+        assert_eq!(cache.stats().size, 1);
+    }
+
+    #[test]
+    fn cache_downgrade_packed() {
+        let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 8);
+        let packed = PackedRgba::rgb(255, 0, 0);
+        let result = cache.downgrade_packed(packed);
+        assert!(matches!(result, Color::Ansi16(_)));
+    }
+
+    #[test]
+    fn cache_default_capacity() {
+        let cache = ColorCache::new(ColorProfile::TrueColor);
+        assert_eq!(cache.stats().capacity, 4096);
+    }
+
+    #[test]
+    fn cache_minimum_capacity_is_one() {
+        let cache = ColorCache::with_capacity(ColorProfile::Ansi16, 0);
+        assert_eq!(cache.stats().capacity, 1);
     }
 }
