@@ -6,17 +6,17 @@ publish = false
 
 [features]
 default = []
-pty-capture = ["dep:ftui-extras", "dep:ftui-runtime", "dep:portable-pty"]
+pty-capture = ["dep:ftui-extras", "dep:portable-pty"]
 
 [dependencies]
 ftui-render = { path = "../ftui-render" }
 ftui-core = { path = "../ftui-core" }
-ftui-extras = { path = "../ftui-extras", features = ["pty-capture"], optional = true }
-ftui-runtime = { path = "../ftui-runtime", optional = true }
-portable-pty = { version = "0.8.1", optional = true }
-
-[dev-dependencies]
+ftui-runtime = { path = "../ftui-runtime" }
 ftui-widgets = { path = "../ftui-widgets" }
 ftui-style = { path = "../ftui-style" }
 ftui-text = { path = "../ftui-text" }
 ftui-layout = { path = "../ftui-layout" }
+ftui-extras = { path = "../ftui-extras", features = ["pty-capture"], optional = true }
+portable-pty = { version = "0.8.1", optional = true }
+
+[dev-dependencies]
