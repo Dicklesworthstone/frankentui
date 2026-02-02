@@ -126,6 +126,7 @@ pub mod error_boundary;
 pub mod input;
 pub mod layout_debugger;
 pub mod list;
+pub mod log_viewer;
 pub mod padding;
 pub mod panel;
 pub mod paragraph;
@@ -145,6 +146,7 @@ pub use debug_overlay::{
     DebugOverlayStatefulState,
 };
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
+pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode};
 pub use panel::Panel;
 pub use status_line::{StatusItem, StatusLine};
 
@@ -349,6 +351,7 @@ pub(crate) fn draw_text_span(
 }
 
 /// Draw a text span with horizontal scrolling (skip first `scroll_x` visual cells).
+#[allow(dead_code)] // Reserved for upcoming scrollable text widgets.
 pub(crate) fn draw_text_span_scrolled(
     frame: &mut Frame,
     mut x: u16,
