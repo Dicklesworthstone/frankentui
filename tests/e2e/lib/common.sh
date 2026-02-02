@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$E2E_ROOT/../.." && pwd)"
 
-require_command() {
+require_cmd() {
     local cmd="$1"
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "Missing required command: $cmd" >&2
@@ -12,13 +12,20 @@ require_command() {
     fi
 }
 
-ensure_log_dir() {
-    mkdir -p "$LOG_DIR"
+resolve_python() {
+    if command -v python3 >/dev/null 2>&1; then
+        echo "python3"
+        return 0
+    fi
+    if command -v python >/dev/null 2>&1; then
+        echo "python"
+        return 0
+    fi
+    echo "" >&2
+    return 1
 }
 
-now_ms() {
-    python3 - <<'PY'
-import time
-print(int(time.time() * 1000))
-PY
-}
+E2E_PYTHON="${E2E_PYTHON:-}"
+if [[ -z "$E2E_PYTHON" ]]; then
+    E2E_PYTHON="$(resolve_python)" || true
+fi

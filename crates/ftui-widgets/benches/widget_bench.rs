@@ -13,8 +13,12 @@ use ftui_text::Text;
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::Borders;
+use ftui_widgets::log_ring::LogRing;
+use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::table::{Row, Table};
+use ftui_widgets::virtualized::Virtualized;
+use ftui_widgets::StatefulWidget;
 use std::hint::black_box;
 
 // ============================================================================
@@ -160,8 +164,131 @@ fn bench_table_render(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("render", label), &table, |b, table| {
             b.iter(|| {
                 frame.buffer.clear();
-                table.render(area, &mut frame);
+                Widget::render(table, area, &mut frame);
                 black_box(&frame.buffer);
+            })
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Virtualization benchmarks (bd-uo6v)
+// ============================================================================
+
+fn bench_log_ring_push(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtualized/log_ring_push");
+
+    for (capacity, label) in [(1_000, "1K"), (10_000, "10K"), (100_000, "100K")] {
+        let mut ring: LogRing<String> = LogRing::new(capacity);
+
+        group.bench_function(BenchmarkId::new("push", label), |b| {
+            b.iter(|| {
+                ring.push(black_box("Log line: operation completed successfully".to_string()));
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_log_ring_push_at_capacity(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtualized/log_ring_push_full");
+
+    for (capacity, label) in [(1_000, "1K"), (10_000, "10K")] {
+        // Pre-fill to capacity
+        let mut ring: LogRing<String> = LogRing::new(capacity);
+        for i in 0..capacity {
+            ring.push(format!("Line {}", i));
+        }
+
+        group.bench_function(BenchmarkId::new("push_evict", label), |b| {
+            b.iter(|| {
+                ring.push(black_box("New line replacing oldest".to_string()));
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_virtualized_scroll(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtualized/scroll");
+
+    for (count, label) in [(1_000, "1K"), (10_000, "10K"), (100_000, "100K")] {
+        let mut virt: Virtualized<i32> = Virtualized::new(count);
+        for i in 0..count {
+            virt.push(i as i32);
+        }
+        virt.set_visible_count(24);
+
+        group.bench_function(BenchmarkId::new("scroll_one", label), |b| {
+            b.iter(|| {
+                virt.scroll(black_box(1));
+                black_box(virt.scroll_offset());
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("page_down", label), |b| {
+            b.iter(|| {
+                virt.page_down();
+                black_box(virt.scroll_offset());
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("visible_range", label), |b| {
+            b.iter(|| {
+                black_box(virt.visible_range(24));
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_log_viewer_render(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtualized/log_viewer_render");
+
+    for (count, label) in [(100, "100"), (1_000, "1K"), (10_000, "10K"), (100_000, "100K")] {
+        let mut viewer = LogViewer::new(count);
+        for i in 0..count {
+            viewer.push(format!("[{:>6}] INFO  app::module: Processing request #{}", i, i));
+        }
+
+        let area = Rect::from_size(80, 24);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        let mut state = LogViewerState::default();
+
+        group.bench_function(BenchmarkId::new("render", label), |b| {
+            b.iter(|| {
+                frame.buffer.clear();
+                viewer.render(area, &mut frame, &mut state);
+                black_box(&frame.buffer);
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_log_viewer_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("virtualized/log_viewer_search");
+
+    for (count, label) in [(1_000, "1K"), (10_000, "10K")] {
+        let mut viewer = LogViewer::new(count);
+        for i in 0..count {
+            if i % 100 == 0 {
+                viewer.push(format!("[{:>6}] ERROR app::handler: Request failed", i));
+            } else {
+                viewer.push(format!("[{:>6}] INFO  app::handler: Request OK", i));
+            }
+        }
+
+        group.bench_function(BenchmarkId::new("search", label), |b| {
+            b.iter(|| {
+                black_box(viewer.search(black_box("ERROR")));
             })
         });
     }
@@ -175,6 +302,11 @@ criterion_group!(
     bench_paragraph_render,
     bench_paragraph_wrapped,
     bench_table_render,
+    bench_log_ring_push,
+    bench_log_ring_push_at_capacity,
+    bench_virtualized_scroll,
+    bench_log_viewer_render,
+    bench_log_viewer_search,
 );
 
 criterion_main!(benches);

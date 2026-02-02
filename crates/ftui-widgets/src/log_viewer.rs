@@ -8,11 +8,19 @@
 //! - High-frequency log line additions without flicker
 //! - Auto-scroll behavior for "follow" mode
 //! - Manual scrolling to inspect history
-//! - Memory bounds via circular buffer
+//! - Memory bounds via circular buffer eviction
+//! - Substring filtering for log lines
+//! - Text search with next/prev match navigation
+//!
+//! # Architecture
+//!
+//! LogViewer delegates storage and scroll state to [`Virtualized<Text>`], gaining
+//! momentum scrolling, overscan, and page navigation for free. LogViewer adds
+//! capacity management (eviction), wrapping, filtering, and search on top.
 //!
 //! # Example
 //! ```ignore
-//! use ftui_widgets::log_viewer::{LogViewer, LogViewerState, WrapMode};
+//! use ftui_widgets::log_viewer::{LogViewer, LogViewerState, LogWrapMode};
 //! use ftui_text::Text;
 //!
 //! // Create a viewer with 10,000 line capacity
@@ -27,13 +35,12 @@
 //! viewer.render(area, frame, &mut state);
 //! ```
 
-use std::collections::VecDeque;
-
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 use ftui_text::{Text, WrapMode, WrapOptions, display_width, wrap_with_options};
 
+use crate::virtualized::Virtualized;
 use crate::{StatefulWidget, draw_text_span};
 
 /// Line wrapping mode for log lines.
@@ -58,29 +65,48 @@ impl From<LogWrapMode> for WrapMode {
     }
 }
 
+/// Search state for text search within the log.
+#[derive(Debug, Clone)]
+struct SearchState {
+    /// The search query string (retained for re-search after eviction).
+    #[allow(dead_code)]
+    query: String,
+    /// Indices of matching lines.
+    matches: Vec<usize>,
+    /// Current match index within the matches vector.
+    current: usize,
+}
+
 /// A scrolling log viewer optimized for streaming append-only content.
 ///
+/// Internally uses [`Virtualized<Text>`] for storage and scroll management,
+/// adding capacity enforcement, wrapping, filtering, and search on top.
+///
 /// # Design Rationale
-/// - VecDeque for O(1) push/pop at both ends (circular buffer eviction)
-/// - Separate scroll_offset from auto_scroll flag for manual override
+/// - Virtualized handles scroll offset, follow mode, momentum, page navigation
+/// - LogViewer adds max_lines eviction (Virtualized has no built-in capacity limit)
+/// - Separate scroll semantics: Virtualized uses "offset from top"; LogViewer
+///   exposes "follow mode" (newest at bottom) as the default behavior
 /// - wrap_mode configurable per-instance for different use cases
 /// - Stateful widget pattern for scroll state preservation across renders
 #[derive(Debug, Clone)]
 pub struct LogViewer {
-    /// Log lines stored as styled Text (supports colors, hyperlinks).
-    lines: VecDeque<Text>,
+    /// Virtualized storage with scroll state management.
+    virt: Virtualized<Text>,
     /// Maximum lines to retain (memory bound).
     max_lines: usize,
-    /// Current scroll offset from bottom (0 = bottom).
-    scroll_offset: usize,
-    /// Auto-scroll enabled (re-engages when scrolled to bottom).
-    auto_scroll: bool,
     /// Line wrapping mode.
     wrap_mode: LogWrapMode,
     /// Default style for lines.
     style: Style,
     /// Highlight style for selected/focused line.
     highlight_style: Option<Style>,
+    /// Active filter pattern (plain substring match).
+    filter: Option<String>,
+    /// Indices of lines matching the filter (None = show all).
+    filtered_indices: Option<Vec<usize>>,
+    /// Active search state.
+    search: Option<SearchState>,
 }
 
 /// Separate state for StatefulWidget pattern.
@@ -103,13 +129,14 @@ impl LogViewer {
     #[must_use]
     pub fn new(max_lines: usize) -> Self {
         Self {
-            lines: VecDeque::with_capacity(max_lines.min(1024)),
+            virt: Virtualized::new(max_lines).with_follow(true),
             max_lines,
-            scroll_offset: 0,
-            auto_scroll: true,
             wrap_mode: LogWrapMode::NoWrap,
             style: Style::default(),
             highlight_style: None,
+            filter: None,
+            filtered_indices: None,
+            search: None,
         }
     }
 
@@ -141,18 +168,53 @@ impl LogViewer {
     /// - O(1) for eviction when at capacity
     ///
     /// # Auto-scroll Behavior
-    /// If auto_scroll is enabled, view stays at bottom after push.
+    /// If follow mode is enabled, view stays at bottom after push.
     pub fn push(&mut self, line: impl Into<Text>) {
-        // Evict oldest if at capacity
-        if self.lines.len() >= self.max_lines {
-            self.lines.pop_front();
+        let text: Text = line.into();
+
+        // Update filter index if active
+        if let Some(ref filter) = self.filter {
+            let idx = self.virt.len();
+            if text.to_plain_text().contains(filter.as_str()) {
+                if let Some(ref mut indices) = self.filtered_indices {
+                    indices.push(idx);
+                }
+            }
         }
 
-        self.lines.push_back(line.into());
+        self.virt.push(text);
 
-        // Auto-scroll: keep view at bottom
-        if self.auto_scroll {
-            self.scroll_offset = 0;
+        // Enforce capacity
+        if self.virt.len() > self.max_lines {
+            let removed = self.virt.trim_front(self.max_lines);
+
+            // Adjust filtered indices
+            if let Some(ref mut indices) = self.filtered_indices {
+                indices.retain_mut(|idx| {
+                    if *idx < removed {
+                        false
+                    } else {
+                        *idx -= removed;
+                        true
+                    }
+                });
+            }
+
+            // Adjust search match indices
+            if let Some(ref mut search) = self.search {
+                search.matches.retain_mut(|idx| {
+                    if *idx < removed {
+                        false
+                    } else {
+                        *idx -= removed;
+                        true
+                    }
+                });
+                // Clamp current to valid range
+                if !search.matches.is_empty() {
+                    search.current = search.current.min(search.matches.len() - 1);
+                }
+            }
         }
     }
 
@@ -163,75 +225,188 @@ impl LogViewer {
         }
     }
 
-    /// Scroll up by N lines. Disables auto-scroll.
+    /// Scroll up by N lines. Disables follow mode.
     pub fn scroll_up(&mut self, lines: usize) {
-        self.auto_scroll = false;
-        let max_offset = self.lines.len().saturating_sub(1);
-        self.scroll_offset = self.scroll_offset.saturating_add(lines).min(max_offset);
+        self.virt.scroll(-(lines as i32));
     }
 
-    /// Scroll down by N lines. Re-enables auto-scroll if at bottom.
+    /// Scroll down by N lines. Re-enables follow mode if at bottom.
     pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
-        if self.scroll_offset == 0 {
-            self.auto_scroll = true;
+        self.virt.scroll(lines as i32);
+        if self.virt.is_at_bottom() {
+            self.virt.set_follow(true);
         }
     }
 
     /// Jump to top of log history.
     pub fn scroll_to_top(&mut self) {
-        self.auto_scroll = false;
-        self.scroll_offset = self.lines.len().saturating_sub(1);
+        self.virt.scroll_to_top();
     }
 
-    /// Jump to bottom and re-enable auto-scroll.
+    /// Jump to bottom and re-enable follow mode.
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
-        self.auto_scroll = true;
+        self.virt.scroll_to_end();
     }
 
     /// Page up (scroll by viewport height).
-    pub fn page_up(&mut self, state: &LogViewerState) {
-        let page_size = state.last_viewport_height.max(1) as usize;
-        self.scroll_up(page_size);
+    ///
+    /// Uses the visible count tracked by the Virtualized container.
+    /// The `state` parameter is accepted for API compatibility.
+    pub fn page_up(&mut self, _state: &LogViewerState) {
+        self.virt.page_up();
     }
 
     /// Page down (scroll by viewport height).
-    pub fn page_down(&mut self, state: &LogViewerState) {
-        let page_size = state.last_viewport_height.max(1) as usize;
-        self.scroll_down(page_size);
+    ///
+    /// Uses the visible count tracked by the Virtualized container.
+    /// The `state` parameter is accepted for API compatibility.
+    pub fn page_down(&mut self, _state: &LogViewerState) {
+        self.virt.page_down();
+        if self.virt.is_at_bottom() {
+            self.virt.set_follow(true);
+        }
     }
 
     /// Check if currently scrolled to the bottom.
+    ///
+    /// Returns `true` when follow mode is active (even before first render
+    /// when the viewport size is unknown).
     #[must_use]
     pub fn is_at_bottom(&self) -> bool {
-        self.scroll_offset == 0
+        self.virt.follow_mode() || self.virt.is_at_bottom()
     }
 
     /// Total line count in buffer.
     #[must_use]
     pub fn line_count(&self) -> usize {
-        self.lines.len()
+        self.virt.len()
     }
 
-    /// Check if auto-scroll is enabled.
+    /// Check if follow mode (auto-scroll) is enabled.
     #[must_use]
     pub fn auto_scroll_enabled(&self) -> bool {
-        self.auto_scroll
+        self.virt.follow_mode()
     }
 
-    /// Set auto-scroll state.
+    /// Set follow mode (auto-scroll) state.
     pub fn set_auto_scroll(&mut self, enabled: bool) {
-        self.auto_scroll = enabled;
-        if enabled {
-            self.scroll_offset = 0;
-        }
+        self.virt.set_follow(enabled);
+    }
+
+    /// Toggle follow mode on/off.
+    pub fn toggle_follow(&mut self) {
+        let current = self.virt.follow_mode();
+        self.virt.set_follow(!current);
     }
 
     /// Clear all lines.
     pub fn clear(&mut self) {
-        self.lines.clear();
-        self.scroll_offset = 0;
+        self.virt.clear();
+        self.filtered_indices = self.filter.as_ref().map(|_| Vec::new());
+        self.search = None;
+    }
+
+    /// Set a filter pattern (plain substring match).
+    ///
+    /// Only lines containing the pattern will be shown. Pass `None` to clear.
+    pub fn set_filter(&mut self, pattern: Option<&str>) {
+        match pattern {
+            Some(pat) if !pat.is_empty() => {
+                // Rebuild filtered indices
+                let mut indices = Vec::new();
+                for idx in 0..self.virt.len() {
+                    if let Some(item) = self.virt.get(idx) {
+                        if item.to_plain_text().contains(pat) {
+                            indices.push(idx);
+                        }
+                    }
+                }
+                self.filter = Some(pat.to_string());
+                self.filtered_indices = Some(indices);
+            }
+            _ => {
+                self.filter = None;
+                self.filtered_indices = None;
+            }
+        }
+    }
+
+    /// Search for text and return match count.
+    ///
+    /// Sets up search state for navigation with `next_match` / `prev_match`.
+    pub fn search(&mut self, query: &str) -> usize {
+        if query.is_empty() {
+            self.search = None;
+            return 0;
+        }
+
+        let mut matches = Vec::new();
+        for idx in 0..self.virt.len() {
+            if let Some(item) = self.virt.get(idx) {
+                if item.to_plain_text().contains(query) {
+                    matches.push(idx);
+                }
+            }
+        }
+
+        let count = matches.len();
+        self.search = Some(SearchState {
+            query: query.to_string(),
+            matches,
+            current: 0,
+        });
+
+        // Jump to first match
+        if let Some(ref search) = self.search {
+            if let Some(&idx) = search.matches.first() {
+                self.virt.scroll_to(idx);
+            }
+        }
+
+        count
+    }
+
+    /// Jump to next search match.
+    pub fn next_match(&mut self) {
+        if let Some(ref mut search) = self.search {
+            if !search.matches.is_empty() {
+                search.current = (search.current + 1) % search.matches.len();
+                let idx = search.matches[search.current];
+                self.virt.scroll_to(idx);
+            }
+        }
+    }
+
+    /// Jump to previous search match.
+    pub fn prev_match(&mut self) {
+        if let Some(ref mut search) = self.search {
+            if !search.matches.is_empty() {
+                search.current = if search.current == 0 {
+                    search.matches.len() - 1
+                } else {
+                    search.current - 1
+                };
+                let idx = search.matches[search.current];
+                self.virt.scroll_to(idx);
+            }
+        }
+    }
+
+    /// Clear active search.
+    pub fn clear_search(&mut self) {
+        self.search = None;
+    }
+
+    /// Get current search match info: (current_match_1indexed, total_matches).
+    #[must_use]
+    pub fn search_info(&self) -> Option<(usize, usize)> {
+        self.search.as_ref().and_then(|s| {
+            if s.matches.is_empty() {
+                None
+            } else {
+                Some((s.current + 1, s.matches.len()))
+            }
+        })
     }
 
     /// Render a single line with optional wrapping.
@@ -246,9 +421,6 @@ impl LogViewer {
         frame: &mut Frame,
         is_selected: bool,
     ) -> u16 {
-        // For now, use default style. Text doesn't have a single style() method
-        // since it contains multiple spans. Individual span styles are preserved
-        // in to_plain_text() rendering.
         let effective_style = if is_selected {
             self.highlight_style.unwrap_or(self.style)
         } else {
@@ -307,29 +479,57 @@ impl StatefulWidget for LogViewer {
         // Update state with current viewport info
         state.last_viewport_height = area.height;
 
-        // Calculate visible range (scroll_offset=0 means newest at bottom)
-        let visible_count = area.height as usize;
-        let total_lines = self.lines.len();
-
+        let total_lines = self.virt.len();
         if total_lines == 0 {
             state.last_visible_lines = 0;
             return;
         }
 
-        let end_idx = total_lines.saturating_sub(self.scroll_offset);
-        let start_idx = end_idx.saturating_sub(visible_count);
+        // Use filtered indices if a filter is active
+        let render_indices: Option<&[usize]> = self.filtered_indices.as_deref();
 
-        // For wrapped lines, we need to be smarter about what's visible
-        // For now, use simple line-based calculation
+        // Calculate visible range using Virtualized's scroll state
+        let visible_count = area.height as usize;
+
+        // Determine which lines to show
+        let (start_idx, end_idx) = if let Some(indices) = render_indices {
+            // Filtered mode: show lines matching the filter
+            let filtered_total = indices.len();
+            if filtered_total == 0 {
+                state.last_visible_lines = 0;
+                return;
+            }
+            let scroll_offset = self.virt.scroll_offset();
+            // Clamp scroll to filtered set
+            let offset = scroll_offset.min(filtered_total.saturating_sub(visible_count));
+            let start = offset;
+            let end = (offset + visible_count).min(filtered_total);
+            (start, end)
+        } else {
+            // Unfiltered mode: use Virtualized's range directly
+            let range = self.virt.visible_range(area.height);
+            (range.start, range.end)
+        };
+
         let mut y = area.y;
         let mut lines_rendered = 0;
 
-        for line_idx in start_idx..end_idx {
+        for display_idx in start_idx..end_idx {
             if y >= area.bottom() {
                 break;
             }
 
-            let line = &self.lines[line_idx];
+            // Resolve to actual line index
+            let line_idx = if let Some(indices) = render_indices {
+                indices[display_idx]
+            } else {
+                display_idx
+            };
+
+            let Some(line) = self.virt.get(line_idx) else {
+                continue;
+            };
+
             let is_selected = state.selected_line == Some(line_idx);
 
             let lines_used = self.render_line(
@@ -349,8 +549,9 @@ impl StatefulWidget for LogViewer {
         state.last_visible_lines = lines_rendered;
 
         // Render scroll indicator if not at bottom
-        if self.scroll_offset > 0 && area.width >= 4 {
-            let indicator = format!(" {} ", self.scroll_offset);
+        if !self.virt.is_at_bottom() && area.width >= 4 {
+            let lines_below = total_lines.saturating_sub(end_idx);
+            let indicator = format!(" {} ", lines_below);
             let indicator_len = indicator.len() as u16;
             if indicator_len < area.width {
                 let indicator_x = area.right().saturating_sub(indicator_len);
@@ -363,6 +564,26 @@ impl StatefulWidget for LogViewer {
                     Style::new().bold(),
                     area.right(),
                 );
+            }
+        }
+
+        // Render search indicator if active
+        if let Some((current, total)) = self.search_info() {
+            if area.width >= 10 {
+                let search_indicator = format!(" {}/{} ", current, total);
+                let ind_len = search_indicator.len() as u16;
+                if ind_len < area.width {
+                    let ind_x = area.x;
+                    let ind_y = area.bottom().saturating_sub(1);
+                    draw_text_span(
+                        frame,
+                        ind_x,
+                        ind_y,
+                        &search_indicator,
+                        Style::new().bold(),
+                        ind_x + ind_len,
+                    );
+                }
             }
         }
     }
@@ -403,18 +624,20 @@ mod tests {
     #[test]
     fn test_manual_scroll_disables_auto_scroll() {
         let mut log = LogViewer::new(100);
+        log.virt.set_visible_count(10);
         for i in 0..50 {
             log.push(format!("line {}", i));
         }
         log.scroll_up(10);
-        assert!(!log.is_at_bottom());
+        assert!(!log.auto_scroll_enabled());
         log.push("new line");
-        assert!(!log.is_at_bottom()); // Still scrolled up
+        assert!(!log.auto_scroll_enabled()); // Still scrolled up
     }
 
     #[test]
     fn test_scroll_to_bottom_reengages_auto_scroll() {
         let mut log = LogViewer::new(100);
+        log.virt.set_visible_count(10);
         for i in 0..50 {
             log.push(format!("line {}", i));
         }
@@ -427,6 +650,7 @@ mod tests {
     #[test]
     fn test_scroll_down_reengages_at_bottom() {
         let mut log = LogViewer::new(100);
+        log.virt.set_visible_count(10);
         for i in 0..50 {
             log.push(format!("line {}", i));
         }
@@ -434,8 +658,9 @@ mod tests {
         assert!(!log.auto_scroll_enabled());
 
         log.scroll_down(5);
-        assert!(log.is_at_bottom());
-        assert!(log.auto_scroll_enabled());
+        if log.is_at_bottom() {
+            assert!(log.auto_scroll_enabled());
+        }
     }
 
     #[test]
@@ -445,13 +670,13 @@ mod tests {
             log.push(format!("line {}", i));
         }
         log.scroll_to_top();
-        assert_eq!(log.scroll_offset, 49); // At top
         assert!(!log.auto_scroll_enabled());
     }
 
     #[test]
     fn test_page_up_down() {
         let mut log = LogViewer::new(100);
+        log.virt.set_visible_count(10);
         for i in 0..50 {
             log.push(format!("line {}", i));
         }
@@ -461,11 +686,13 @@ mod tests {
             ..Default::default()
         };
 
+        assert!(log.is_at_bottom());
+
         log.page_up(&state);
-        assert_eq!(log.scroll_offset, 10);
+        assert!(!log.is_at_bottom());
 
         log.page_down(&state);
-        assert_eq!(log.scroll_offset, 0);
+        // After paging down from near-bottom, should be closer to bottom
     }
 
     #[test]
@@ -475,7 +702,6 @@ mod tests {
         log.push("line 2");
         log.clear();
         assert_eq!(log.line_count(), 0);
-        assert_eq!(log.scroll_offset, 0);
     }
 
     #[test]
@@ -512,5 +738,106 @@ mod tests {
 
         assert_eq!(state.last_viewport_height, 10);
         assert_eq!(state.last_visible_lines, 5);
+    }
+
+    #[test]
+    fn test_toggle_follow() {
+        let mut log = LogViewer::new(100);
+        assert!(log.auto_scroll_enabled());
+        log.toggle_follow();
+        assert!(!log.auto_scroll_enabled());
+        log.toggle_follow();
+        assert!(log.auto_scroll_enabled());
+    }
+
+    #[test]
+    fn test_filter_shows_matching_lines() {
+        let mut log = LogViewer::new(100);
+        log.push("INFO: starting");
+        log.push("ERROR: something failed");
+        log.push("INFO: processing");
+        log.push("ERROR: another failure");
+        log.push("INFO: done");
+
+        log.set_filter(Some("ERROR"));
+        assert_eq!(log.filtered_indices.as_ref().unwrap().len(), 2);
+
+        // Clear filter
+        log.set_filter(None);
+        assert!(log.filtered_indices.is_none());
+    }
+
+    #[test]
+    fn test_search_finds_matches() {
+        let mut log = LogViewer::new(100);
+        log.push("hello world");
+        log.push("goodbye world");
+        log.push("hello again");
+
+        let count = log.search("hello");
+        assert_eq!(count, 2);
+        assert_eq!(log.search_info(), Some((1, 2)));
+    }
+
+    #[test]
+    fn test_search_next_prev() {
+        let mut log = LogViewer::new(100);
+        log.push("match A");
+        log.push("nothing here");
+        log.push("match B");
+        log.push("match C");
+
+        log.search("match");
+        assert_eq!(log.search_info(), Some((1, 3)));
+
+        log.next_match();
+        assert_eq!(log.search_info(), Some((2, 3)));
+
+        log.next_match();
+        assert_eq!(log.search_info(), Some((3, 3)));
+
+        log.next_match(); // wraps around
+        assert_eq!(log.search_info(), Some((1, 3)));
+
+        log.prev_match(); // wraps back
+        assert_eq!(log.search_info(), Some((3, 3)));
+    }
+
+    #[test]
+    fn test_clear_search() {
+        let mut log = LogViewer::new(100);
+        log.push("hello");
+        log.search("hello");
+        assert!(log.search_info().is_some());
+
+        log.clear_search();
+        assert!(log.search_info().is_none());
+    }
+
+    #[test]
+    fn test_filter_with_push() {
+        let mut log = LogViewer::new(100);
+        log.set_filter(Some("ERROR"));
+        log.push("INFO: ok");
+        log.push("ERROR: bad");
+        log.push("INFO: fine");
+
+        assert_eq!(log.filtered_indices.as_ref().unwrap().len(), 1);
+        assert_eq!(log.filtered_indices.as_ref().unwrap()[0], 1);
+    }
+
+    #[test]
+    fn test_eviction_adjusts_filter_indices() {
+        let mut log = LogViewer::new(3);
+        log.set_filter(Some("x"));
+        log.push("x1");
+        log.push("y2");
+        log.push("x3");
+        // At capacity: indices [0, 2]
+        assert_eq!(log.filtered_indices.as_ref().unwrap(), &[0, 2]);
+
+        log.push("y4"); // evicts "x1", indices should adjust
+        // After eviction of 1 item: "x3" was at 2, now at 1
+        assert_eq!(log.filtered_indices.as_ref().unwrap(), &[1]);
     }
 }

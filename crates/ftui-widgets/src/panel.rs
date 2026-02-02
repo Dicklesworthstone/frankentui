@@ -386,10 +386,22 @@ impl<W: Widget> Widget for Panel<'_, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::frame::Frame;
+    use ftui_render::grapheme_pool::GraphemePool;
+
+    fn panel_stub() -> Panel<'static, crate::block::Block<'static>> {
+        Panel::new(crate::block::Block::default())
+    }
+
+    fn cell_char(frame: &Frame, x: u16, y: u16) -> Option<char> {
+        frame.buffer.get(x, y).and_then(|c| c.content.as_char())
+    }
+
+    // --- ellipsize tests ---
 
     #[test]
     fn ellipsize_short_is_borrowed() {
-        let panel = Panel::new(crate::block::Block::default());
+        let panel = panel_stub();
         let out = panel.ellipsize("abc", 3);
         assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
         assert_eq!(out, "abc");
@@ -397,8 +409,353 @@ mod tests {
 
     #[test]
     fn ellipsize_truncates_with_ellipsis() {
-        let panel = Panel::new(crate::block::Block::default());
+        let panel = panel_stub();
         let out = panel.ellipsize("abcdef", 4);
         assert_eq!(out, "abc…");
+    }
+
+    #[test]
+    fn ellipsize_zero_width_returns_empty() {
+        let panel = panel_stub();
+        let out = panel.ellipsize("abc", 0);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn ellipsize_width_one_returns_ellipsis() {
+        let panel = panel_stub();
+        let out = panel.ellipsize("abc", 1);
+        assert_eq!(out, "…");
+    }
+
+    #[test]
+    fn ellipsize_exact_fit_is_borrowed() {
+        let panel = panel_stub();
+        let out = panel.ellipsize("hello", 5);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn ellipsize_one_over_truncates() {
+        let panel = panel_stub();
+        let out = panel.ellipsize("hello", 4);
+        assert_eq!(out, "hel…");
+    }
+
+    // --- inner() calculation tests ---
+
+    #[test]
+    fn inner_all_borders() {
+        let panel = panel_stub().borders(Borders::ALL);
+        let area = Rect::new(0, 0, 10, 10);
+        assert_eq!(panel.inner(area), Rect::new(1, 1, 8, 8));
+    }
+
+    #[test]
+    fn inner_no_borders() {
+        let panel = panel_stub().borders(Borders::NONE);
+        let area = Rect::new(0, 0, 10, 10);
+        assert_eq!(panel.inner(area), area);
+    }
+
+    #[test]
+    fn inner_top_and_left_only() {
+        let panel = panel_stub().borders(Borders::TOP | Borders::LEFT);
+        let area = Rect::new(0, 0, 10, 10);
+        assert_eq!(panel.inner(area), Rect::new(1, 1, 9, 9));
+    }
+
+    #[test]
+    fn inner_right_and_bottom_only() {
+        let panel = panel_stub().borders(Borders::RIGHT | Borders::BOTTOM);
+        let area = Rect::new(0, 0, 10, 10);
+        assert_eq!(panel.inner(area), Rect::new(0, 0, 9, 9));
+    }
+
+    #[test]
+    fn inner_with_offset_area() {
+        let panel = panel_stub().borders(Borders::ALL);
+        let area = Rect::new(5, 3, 10, 8);
+        assert_eq!(panel.inner(area), Rect::new(6, 4, 8, 6));
+    }
+
+    #[test]
+    fn inner_zero_size_saturates() {
+        let panel = panel_stub().borders(Borders::ALL);
+        let area = Rect::new(0, 0, 1, 1);
+        let inner = panel.inner(area);
+        assert_eq!(inner.width, 0);
+        assert_eq!(inner.height, 0);
+    }
+
+    // --- render border tests ---
+
+    #[test]
+    fn render_borders_square() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Square);
+        let area = Rect::new(0, 0, 5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        assert_eq!(cell_char(&frame, 0, 0), Some('┌'));
+        assert_eq!(cell_char(&frame, 4, 0), Some('┐'));
+        assert_eq!(cell_char(&frame, 0, 2), Some('└'));
+        assert_eq!(cell_char(&frame, 4, 2), Some('┘'));
+        assert_eq!(cell_char(&frame, 2, 0), Some('─'));
+        assert_eq!(cell_char(&frame, 0, 1), Some('│'));
+    }
+
+    #[test]
+    fn render_borders_rounded() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        let area = Rect::new(0, 0, 5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        assert_eq!(cell_char(&frame, 0, 0), Some('╭'));
+        assert_eq!(cell_char(&frame, 4, 0), Some('╮'));
+        assert_eq!(cell_char(&frame, 0, 2), Some('╰'));
+        assert_eq!(cell_char(&frame, 4, 2), Some('╯'));
+    }
+
+    #[test]
+    fn render_empty_area_does_not_panic() {
+        let panel = panel_stub().borders(Borders::ALL);
+        let area = Rect::new(0, 0, 0, 0);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        panel.render(area, &mut frame);
+    }
+
+    // --- title rendering tests ---
+
+    #[test]
+    fn render_title_left_aligned() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Square)
+            .title("Hi")
+            .title_alignment(Alignment::Left);
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // Title starts at x=1 (after left border)
+        assert_eq!(cell_char(&frame, 1, 0), Some('H'));
+        assert_eq!(cell_char(&frame, 2, 0), Some('i'));
+    }
+
+    #[test]
+    fn render_title_right_aligned() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Square)
+            .title("Hi")
+            .title_alignment(Alignment::Right);
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // "Hi" is 2 chars, right edge is 9, so title at 9-1-2=6..8
+        // right() = 10, sub 1 = 9, sub 2 = 7
+        assert_eq!(cell_char(&frame, 7, 0), Some('H'));
+        assert_eq!(cell_char(&frame, 8, 0), Some('i'));
+    }
+
+    #[test]
+    fn render_title_center_aligned() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Square)
+            .title("AB")
+            .title_alignment(Alignment::Center);
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // available_width = 10-2 = 8, display_width = 2
+        // x = 0 + 1 + (8-2)/2 = 1 + 3 = 4
+        assert_eq!(cell_char(&frame, 4, 0), Some('A'));
+        assert_eq!(cell_char(&frame, 5, 0), Some('B'));
+    }
+
+    #[test]
+    fn render_title_no_top_border_skips_title() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+            .title("Hi");
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // Title should NOT appear on row 0 since no top border
+        assert_ne!(cell_char(&frame, 1, 0), Some('H'));
+    }
+
+    #[test]
+    fn render_title_truncated_with_ellipsis() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Square)
+            .title("LongTitle")
+            .title_alignment(Alignment::Left);
+        // Width 6: available = 6-2 = 4, "LongTitle" (9 chars) -> "Lon…"
+        let area = Rect::new(0, 0, 6, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        assert_eq!(cell_char(&frame, 1, 0), Some('L'));
+        assert_eq!(cell_char(&frame, 2, 0), Some('o'));
+        assert_eq!(cell_char(&frame, 3, 0), Some('n'));
+        assert_eq!(cell_char(&frame, 4, 0), Some('…'));
+    }
+
+    // --- subtitle rendering tests ---
+
+    #[test]
+    fn render_subtitle_left_aligned() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Square)
+            .subtitle("Lo")
+            .subtitle_alignment(Alignment::Left);
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // Subtitle on bottom row (y=2), starting at x=1
+        assert_eq!(cell_char(&frame, 1, 2), Some('L'));
+        assert_eq!(cell_char(&frame, 2, 2), Some('o'));
+    }
+
+    #[test]
+    fn render_subtitle_no_bottom_border_skips() {
+        let child = crate::block::Block::default();
+        let panel = Panel::new(child)
+            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+            .subtitle("Lo");
+        let area = Rect::new(0, 0, 10, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // Subtitle should not appear since no bottom border
+        assert_ne!(cell_char(&frame, 1, 2), Some('L'));
+    }
+
+    // --- padding tests ---
+
+    #[test]
+    fn inner_with_padding_reduces_area() {
+        let panel = panel_stub().borders(Borders::ALL).padding(Sides::all(1));
+        let area = Rect::new(0, 0, 10, 10);
+        // inner from borders = (1,1,8,8), then padding of 1 on each side = (2,2,6,6)
+        let inner_from_borders = panel.inner(area);
+        let padded = inner_from_borders.inner(Sides::all(1));
+        assert_eq!(padded, Rect::new(2, 2, 6, 6));
+    }
+
+    // --- child rendering tests ---
+
+    /// A simple test widget that writes 'X' at (0,0) relative to its area.
+    struct MarkerWidget;
+
+    impl Widget for MarkerWidget {
+        fn render(&self, area: Rect, frame: &mut Frame) {
+            if !area.is_empty() {
+                let mut cell = Cell::from_char('X');
+                apply_style(&mut cell, Style::default());
+                frame.buffer.set(area.x, area.y, cell);
+            }
+        }
+    }
+
+    #[test]
+    fn child_rendered_inside_borders() {
+        let panel = Panel::new(MarkerWidget).borders(Borders::ALL);
+        let area = Rect::new(0, 0, 5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // Child area starts at (1,1) for ALL borders
+        assert_eq!(cell_char(&frame, 1, 1), Some('X'));
+    }
+
+    #[test]
+    fn child_rendered_with_padding_offset() {
+        let panel = Panel::new(MarkerWidget)
+            .borders(Borders::ALL)
+            .padding(Sides::new(1, 1, 0, 1));
+        let area = Rect::new(0, 0, 10, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+
+        panel.render(area, &mut frame);
+
+        // borders inner = (1,1,8,8), padding top=1 left=1 -> child at (2,2)
+        assert_eq!(cell_char(&frame, 2, 2), Some('X'));
+    }
+
+    #[test]
+    fn child_not_rendered_when_padding_consumes_all_space() {
+        let panel = Panel::new(MarkerWidget)
+            .borders(Borders::ALL)
+            .padding(Sides::all(10));
+        let area = Rect::new(0, 0, 5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+
+        // Should not panic even though padding exceeds available space
+        panel.render(area, &mut frame);
+    }
+
+    // --- builder chain test ---
+
+    #[test]
+    fn builder_chain_compiles() {
+        let _panel = Panel::new(crate::block::Block::default())
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::new().bold())
+            .title("Title")
+            .title_alignment(Alignment::Center)
+            .title_style(Style::new().italic())
+            .subtitle("Sub")
+            .subtitle_alignment(Alignment::Right)
+            .subtitle_style(Style::new())
+            .style(Style::new())
+            .padding(Sides::all(1));
     }
 }

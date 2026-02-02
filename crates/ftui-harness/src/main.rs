@@ -22,6 +22,7 @@
 //! - Page Up/Down: Scroll log viewer
 //! - Escape: Clear input
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
@@ -43,7 +44,7 @@ struct AgentHarness {
     /// Log viewer for streaming output.
     log_viewer: LogViewer,
     /// State for log viewer scrolling.
-    log_state: LogViewerState,
+    log_state: RefCell<LogViewerState>,
     /// Text input for user commands.
     input: TextInput,
     /// Spinner state for animation.
@@ -58,6 +59,8 @@ struct AgentHarness {
     task_running: bool,
     /// Tick counter for simulated task progress.
     task_tick_count: u32,
+    /// Optional auto-quit countdown in spinner ticks (100ms each).
+    auto_quit_ticks: Option<u32>,
 }
 
 /// Messages for the agent harness.
@@ -102,9 +105,29 @@ impl AgentHarness {
         log_viewer.push("Type a command and press Enter. Use Ctrl+C to quit.");
         log_viewer.push("");
 
+        let extra_logs = std::env::var("FTUI_HARNESS_LOG_LINES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        for idx in 1..=extra_logs {
+            log_viewer.push(format!("Log line {}", idx));
+        }
+
+        let auto_quit_ticks = std::env::var("FTUI_HARNESS_EXIT_AFTER_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .and_then(|ms| {
+                if ms == 0 {
+                    None
+                } else {
+                    Some(ms.div_ceil(100) as u32)
+                }
+            });
+
         Self {
             log_viewer,
-            log_state: LogViewerState::default(),
+            log_state: RefCell::new(LogViewerState::default()),
             input: TextInput::new()
                 .with_placeholder("Enter command...")
                 .with_style(Style::new())
@@ -115,6 +138,7 @@ impl AgentHarness {
             command_count: 0,
             task_running: false,
             task_tick_count: 0,
+            auto_quit_ticks,
         }
     }
 
@@ -187,10 +211,12 @@ impl AgentHarness {
                 self.input.clear();
             }
             KeyCode::PageUp => {
-                self.log_viewer.page_up(&self.log_state);
+                let log_state = self.log_state.borrow();
+                self.log_viewer.page_up(&log_state);
             }
             KeyCode::PageDown => {
-                self.log_viewer.page_down(&self.log_state);
+                let log_state = self.log_state.borrow();
+                self.log_viewer.page_down(&log_state);
             }
             _ => {
                 // Forward to input widget
@@ -215,6 +241,16 @@ impl Model for AgentHarness {
             Msg::Key(key) => self.handle_key(key),
             Msg::SpinnerTick => {
                 self.spinner_state.tick();
+
+                if let Some(ticks) = self.auto_quit_ticks.as_mut() {
+                    if *ticks > 0 {
+                        *ticks = ticks.saturating_sub(1);
+                    }
+
+                    if *ticks == 0 {
+                        return Cmd::Quit;
+                    }
+                }
 
                 // Simulate task progress
                 if self.task_running {
@@ -282,7 +318,7 @@ impl Model for AgentHarness {
         log_block.render(chunks[1], frame);
 
         // Render log viewer (need mutable state)
-        let mut log_state = self.log_state.clone();
+        let mut log_state = self.log_state.borrow_mut();
         self.log_viewer.render(inner, frame, &mut log_state);
 
         // --- Input Line ---
@@ -320,8 +356,19 @@ impl Model for AgentHarness {
 }
 
 fn main() -> std::io::Result<()> {
+    let ui_height = std::env::var("FTUI_HARNESS_UI_HEIGHT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(10);
+
+    let screen_mode = match std::env::var("FTUI_HARNESS_SCREEN_MODE") {
+        Ok(value) => match value.to_ascii_lowercase().as_str() {
+            "alt" | "altscreen" | "alt-screen" | "alt_screen" => ScreenMode::AltScreen,
+            _ => ScreenMode::Inline { ui_height },
+        },
+        Err(_) => ScreenMode::Inline { ui_height },
+    };
+
     // Run the agent harness in inline mode
-    App::new(AgentHarness::new())
-        .screen_mode(ScreenMode::Inline { ui_height: 10 })
-        .run()
+    App::new(AgentHarness::new()).screen_mode(screen_mode).run()
 }

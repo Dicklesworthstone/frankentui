@@ -779,6 +779,8 @@ impl Widget for LineChart<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::frame::Frame;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     // ===== Helper =====
 
@@ -825,30 +827,33 @@ mod tests {
     #[test]
     fn sparkline_empty_data_noop() {
         let area = Rect::new(0, 0, 10, 1);
-        let mut buf = Buffer::new(10, 1);
-        Sparkline::new(&[]).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        Sparkline::new(&[]).render(area, &mut frame);
         // All cells should be empty.
         for x in 0..10 {
-            assert!(buf.get(x, 0).unwrap().is_empty());
+            assert!(frame.buffer.get(x, 0).unwrap().is_empty());
         }
     }
 
     #[test]
     fn sparkline_empty_area_noop() {
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
-        Sparkline::new(&[1.0, 2.0]).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Sparkline::new(&[1.0, 2.0]).render(area, &mut frame);
     }
 
     #[test]
     fn sparkline_all_same_values() {
         let data = [5.0, 5.0, 5.0];
         let area = Rect::new(0, 0, 3, 1);
-        let mut buf = Buffer::new(3, 1);
-        Sparkline::new(&data).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 1, &mut pool);
+        Sparkline::new(&data).render(area, &mut frame);
         // All same -> normalized = 1.0 -> full block.
         for x in 0..3 {
-            assert_eq!(char_at(&buf, x, 0), Some('█'));
+            assert_eq!(char_at(&frame.buffer, x, 0), Some('█'));
         }
     }
 
@@ -857,39 +862,42 @@ mod tests {
         // min=0, max=8 => each step = 1 bar level
         let data = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let area = Rect::new(0, 0, 9, 1);
-        let mut buf = Buffer::new(9, 1);
-        Sparkline::new(&data).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(9, 1, &mut pool);
+        Sparkline::new(&data).render(area, &mut frame);
 
         // value 0 => bar_idx 0 => space (not rendered)
-        assert!(buf.get(0, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
         // value 8 => bar_idx 8 => '█'
-        assert_eq!(char_at(&buf, 8, 0), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 8, 0), Some('█'));
         // value 4 => normalized=0.5 => bar_idx=4 => '▄'
-        assert_eq!(char_at(&buf, 4, 0), Some('▄'));
+        assert_eq!(char_at(&frame.buffer, 4, 0), Some('▄'));
     }
 
     #[test]
     fn sparkline_explicit_bounds() {
         let data = [5.0];
         let area = Rect::new(0, 0, 1, 1);
-        let mut buf = Buffer::new(1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
         Sparkline::new(&data)
             .min(0.0)
             .max(10.0)
-            .render(area, &mut buf);
+            .render(area, &mut frame);
         // 5/10 = 0.5 => bar_idx = 4 => '▄'
-        assert_eq!(char_at(&buf, 0, 0), Some('▄'));
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('▄'));
     }
 
     #[test]
     fn sparkline_truncates_to_area_width() {
         let data = [8.0; 20]; // 20 values
         let area = Rect::new(0, 0, 5, 1); // only 5 columns
-        let mut buf = Buffer::new(5, 1);
-        Sparkline::new(&data).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        Sparkline::new(&data).render(area, &mut frame);
         // Should only render first 5 values.
         for x in 0..5 {
-            assert_eq!(char_at(&buf, x, 0), Some('█'));
+            assert_eq!(char_at(&frame.buffer, x, 0), Some('█'));
         }
     }
 
@@ -897,13 +905,14 @@ mod tests {
     fn sparkline_renders_on_last_row() {
         let data = [8.0, 8.0];
         let area = Rect::new(0, 0, 2, 3); // height=3
-        let mut buf = Buffer::new(2, 3);
-        Sparkline::new(&data).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 3, &mut pool);
+        Sparkline::new(&data).render(area, &mut frame);
         // Top rows empty.
-        assert!(buf.get(0, 0).unwrap().is_empty());
-        assert!(buf.get(0, 1).unwrap().is_empty());
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(0, 1).unwrap().is_empty());
         // Last row has bars.
-        assert_eq!(char_at(&buf, 0, 2), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 0, 2), Some('█'));
     }
 
     #[test]
@@ -912,13 +921,14 @@ mod tests {
         let high = PackedRgba::rgb(255, 255, 255);
         let data = [0.0, 10.0];
         let area = Rect::new(0, 0, 2, 1);
-        let mut buf = Buffer::new(2, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 1, &mut pool);
         Sparkline::new(&data)
             .gradient(low, high)
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
         // Second bar (value 10, max) should have high color.
-        let cell = buf.get(1, 0).unwrap();
+        let cell = frame.buffer.get(1, 0).unwrap();
         assert_eq!(cell.fg, high);
     }
 
@@ -927,11 +937,12 @@ mod tests {
     #[test]
     fn barchart_empty_groups_noop() {
         let area = Rect::new(0, 0, 10, 5);
-        let mut buf = Buffer::new(10, 5);
-        BarChart::new(vec![]).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        BarChart::new(vec![]).render(area, &mut frame);
         for x in 0..10 {
             for y in 0..5 {
-                assert!(buf.get(x, y).unwrap().is_empty());
+                assert!(frame.buffer.get(x, y).unwrap().is_empty());
             }
         }
     }
@@ -940,90 +951,96 @@ mod tests {
     fn barchart_vertical_single_bar() {
         let groups = vec![BarGroup::new("A", vec![10.0])];
         let area = Rect::new(0, 0, 3, 6); // 5 rows for chart + 1 for label
-        let mut buf = Buffer::new(3, 6);
-        BarChart::new(groups).bar_width(1).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 6, &mut pool);
+        BarChart::new(groups).bar_width(1).render(area, &mut frame);
 
         // Full-height bar at x=0. Bar should fill rows 0..5, label at row 5.
-        assert_eq!(char_at(&buf, 0, 0), Some('█'));
-        assert_eq!(char_at(&buf, 0, 4), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 0, 4), Some('█'));
         // Label row.
-        assert_eq!(char_at(&buf, 0, 5), Some('A'));
+        assert_eq!(char_at(&frame.buffer, 0, 5), Some('A'));
     }
 
     #[test]
     fn barchart_vertical_grouped() {
         let groups = vec![BarGroup::new("G", vec![5.0, 10.0])];
         let area = Rect::new(0, 0, 4, 6);
-        let mut buf = Buffer::new(4, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 6, &mut pool);
         BarChart::new(groups)
             .bar_width(1)
             .bar_gap(0)
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
         // Second bar (value=10, max=10) should be full height.
-        assert_eq!(char_at(&buf, 1, 0), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 1, 0), Some('█'));
         // First bar (value=5, half height) should have partial fill.
         // 5/10 * 5 rows = 2.5 rows. So 2 full rows + fractional.
-        assert_eq!(char_at(&buf, 0, 4), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 0, 4), Some('█'));
     }
 
     #[test]
     fn barchart_vertical_stacked() {
         let groups = vec![BarGroup::new("S", vec![5.0, 5.0])];
         let area = Rect::new(0, 0, 3, 6);
-        let mut buf = Buffer::new(3, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 6, &mut pool);
         BarChart::new(groups)
             .bar_width(1)
             .mode(BarMode::Stacked)
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
         // Stacked: total=10, max=10. Full height.
         // Both segments should fill the chart area.
-        assert_eq!(char_at(&buf, 0, 0), Some('█'));
-        assert_eq!(char_at(&buf, 0, 4), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 0, 4), Some('█'));
     }
 
     #[test]
     fn barchart_horizontal_single_bar() {
         let groups = vec![BarGroup::new("A", vec![10.0])];
         let area = Rect::new(0, 0, 12, 3);
-        let mut buf = Buffer::new(12, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 3, &mut pool);
         BarChart::new(groups)
             .direction(BarDirection::Horizontal)
             .bar_width(1)
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
         // Label at x=0.
-        assert_eq!(char_at(&buf, 0, 0), Some('A'));
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('A'));
         // Bar fills from x=2 rightward (label_width=2).
-        assert_eq!(char_at(&buf, 2, 0), Some('█'));
-        assert_eq!(char_at(&buf, 11, 0), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 2, 0), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 11, 0), Some('█'));
     }
 
     #[test]
     fn barchart_horizontal_stacked() {
         let groups = vec![BarGroup::new("X", vec![5.0, 5.0])];
         let area = Rect::new(0, 0, 12, 3);
-        let mut buf = Buffer::new(12, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 3, &mut pool);
         BarChart::new(groups)
             .direction(BarDirection::Horizontal)
             .mode(BarMode::Stacked)
             .bar_width(1)
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
         // Both segments should fill the bar (total=10, max=10).
-        assert_eq!(char_at(&buf, 2, 0), Some('█'));
+        assert_eq!(char_at(&frame.buffer, 2, 0), Some('█'));
     }
 
     #[test]
     fn barchart_zero_values_noop() {
         let groups = vec![BarGroup::new("Z", vec![0.0])];
         let area = Rect::new(0, 0, 5, 5);
-        let mut buf = Buffer::new(5, 5);
-        BarChart::new(groups).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+        BarChart::new(groups).render(area, &mut frame);
         // max_val = 0 -> early return; no bars rendered.
         // Only the label might be rendered, but since we return early, nothing.
-        assert!(buf.get(0, 0).unwrap().is_empty());
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
     }
 
     #[test]
@@ -1031,13 +1048,14 @@ mod tests {
         let red = PackedRgba::rgb(255, 0, 0);
         let groups = vec![BarGroup::new("C", vec![10.0])];
         let area = Rect::new(0, 0, 3, 3);
-        let mut buf = Buffer::new(3, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 3, &mut pool);
         BarChart::new(groups)
             .bar_width(1)
             .colors(vec![red])
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
-        let cell = buf.get(0, 0).unwrap();
+        let cell = frame.buffer.get(0, 0).unwrap();
         assert_eq!(cell.fg, red);
     }
 
@@ -1046,8 +1064,9 @@ mod tests {
     #[test]
     fn linechart_empty_series_noop() {
         let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::new(20, 10);
-        LineChart::new(vec![]).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(vec![]).render(area, &mut frame);
     }
 
     #[test]
@@ -1055,8 +1074,9 @@ mod tests {
         let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 1.0)];
         let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
         let area = Rect::new(0, 0, 2, 2); // too small after axis reservation
-        let mut buf = Buffer::new(2, 2);
-        LineChart::new(series).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 2, &mut pool);
+        LineChart::new(series).render(area, &mut frame);
     }
 
     #[test]
@@ -1064,15 +1084,16 @@ mod tests {
         let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
         let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
         let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::new(20, 10);
-        LineChart::new(series).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(series).render(area, &mut frame);
 
         // Y axis line at x=0, rows 0..9.
-        assert_eq!(char_at(&buf, 0, 0), Some('│'));
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('│'));
         // X axis line at y=9, x=1..20.
-        assert_eq!(char_at(&buf, 1, 9), Some('─'));
+        assert_eq!(char_at(&frame.buffer, 1, 9), Some('─'));
         // Corner.
-        assert_eq!(char_at(&buf, 0, 9), Some('└'));
+        assert_eq!(char_at(&frame.buffer, 0, 9), Some('└'));
     }
 
     #[test]
@@ -1080,20 +1101,21 @@ mod tests {
         let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
         let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
         let area = Rect::new(0, 0, 30, 12);
-        let mut buf = Buffer::new(30, 12);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 12, &mut pool);
         LineChart::new(series)
             .y_labels(vec!["10", "0"])
             .x_labels(vec!["0", "10"])
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
         // Y labels: "10" at top, "0" at bottom of chart area.
         // y_axis_width = 3 (max_label_len=2 + 1).
-        assert_eq!(char_at(&buf, 0, 0), Some('1'));
-        assert_eq!(char_at(&buf, 1, 0), Some('0'));
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('1'));
+        assert_eq!(char_at(&frame.buffer, 1, 0), Some('0'));
         // X labels below axis.
         // x_axis at y=10 (area.height - x_axis_height = 12 - 2 = 10).
         // x_label at y=11.
-        assert_eq!(char_at(&buf, 3, 11), Some('0'));
+        assert_eq!(char_at(&frame.buffer, 3, 11), Some('0'));
     }
 
     #[test]
@@ -1107,14 +1129,15 @@ mod tests {
             Series::new("blue", &data2, blue),
         ];
         let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::new(20, 10);
-        LineChart::new(series).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(series).render(area, &mut frame);
 
         // Both series should draw some braille characters in the chart area.
         let mut found_braille = false;
         for y in 0..9 {
             for x in 1..20 {
-                if let Some(ch) = char_at(&buf, x, y) {
+                if let Some(ch) = char_at(&frame.buffer, x, y) {
                     if ('\u{2800}'..='\u{28FF}').contains(&ch) {
                         found_braille = true;
                     }
@@ -1133,13 +1156,14 @@ mod tests {
         let red = PackedRgba::rgb(255, 0, 0);
         let series = vec![Series::new("test", &data, red)];
         let area = Rect::new(0, 0, 30, 10);
-        let mut buf = Buffer::new(30, 10);
-        LineChart::new(series).legend(true).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        LineChart::new(series).legend(true).render(area, &mut frame);
 
         // Legend marker '■' should appear somewhere in top-right area.
         let mut found_legend = false;
         for x in 20..30 {
-            if char_at(&buf, x, 0) == Some('■') {
+            if char_at(&frame.buffer, x, 0) == Some('■') {
                 found_legend = true;
                 break;
             }
@@ -1152,9 +1176,10 @@ mod tests {
         let data: Vec<(f64, f64)> = vec![(5.0, 5.0)];
         let series = vec![Series::new("pt", &data, PackedRgba::WHITE)];
         let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::new(20, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
         // Single point with same min/max -> x_range=0, y_range=0 -> early return.
-        LineChart::new(series).render(area, &mut buf);
+        LineChart::new(series).render(area, &mut frame);
         // Should not panic; renders axis lines but no data.
     }
 
@@ -1163,14 +1188,15 @@ mod tests {
         let data: Vec<(f64, f64)> = vec![(2.0, 3.0), (8.0, 7.0)];
         let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
         let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::new(20, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
         LineChart::new(series)
             .x_bounds(0.0, 10.0)
             .y_bounds(0.0, 10.0)
-            .render(area, &mut buf);
+            .render(area, &mut frame);
 
         // Should render without panic.
-        assert_eq!(char_at(&buf, 0, 0), Some('│'));
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('│'));
     }
 
     #[test]
@@ -1178,14 +1204,15 @@ mod tests {
         let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (5.0, 10.0), (10.0, 0.0)];
         let series = vec![Series::new("m", &data, PackedRgba::WHITE).markers(true)];
         let area = Rect::new(0, 0, 20, 10);
-        let mut buf = Buffer::new(20, 10);
-        LineChart::new(series).render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(series).render(area, &mut frame);
 
         // Should render braille chars with marker emphasis.
         let mut found_braille = false;
         for y in 0..9 {
             for x in 1..20 {
-                if let Some(ch) = char_at(&buf, x, y) {
+                if let Some(ch) = char_at(&frame.buffer, x, y) {
                     if ('\u{2800}'..='\u{28FF}').contains(&ch) {
                         found_braille = true;
                     }

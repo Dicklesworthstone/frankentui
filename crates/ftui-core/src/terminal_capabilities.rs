@@ -458,6 +458,29 @@ mod tests {
         assert!(caps.mouse_sgr, "WT_SESSION should not be treated as dumb");
     }
 
+    #[test]
+    fn no_color_disables_color_and_links() {
+        let env = DetectInputs {
+            no_color: true,
+            term: "xterm-256color".to_string(),
+            term_program: "WezTerm".to_string(),
+            colorterm: "truecolor".to_string(),
+            in_tmux: false,
+            in_screen: false,
+            in_zellij: false,
+            kitty_window_id: false,
+            wt_session: false,
+        };
+
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(!caps.true_color, "NO_COLOR must disable true color");
+        assert!(!caps.colors_256, "NO_COLOR must disable 256-color");
+        assert!(
+            !caps.osc8_hyperlinks,
+            "NO_COLOR must disable OSC 8 hyperlinks"
+        );
+    }
+
     // --- Mux-aware policy tests ---
 
     #[test]
