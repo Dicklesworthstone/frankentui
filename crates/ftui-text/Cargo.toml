@@ -8,6 +8,8 @@ publish = false
 default = []
 thread_local_cache = []
 markup = ["dep:ftui-render"]
+bidi = ["dep:unicode-bidi"]
+normalization = ["dep:unicode-normalization"]
 
 [dependencies]
 ftui-layout = { path = "../ftui-layout" }
@@ -20,6 +22,8 @@ tracing = "0.1"
 lru = "0.12"
 rustc-hash = "2"
 ropey = "1.6"
+unicode-bidi = { version = "0.3", optional = true }
+unicode-normalization = { version = "0.1", optional = true }
 
 [dev-dependencies]
 proptest = "1"
