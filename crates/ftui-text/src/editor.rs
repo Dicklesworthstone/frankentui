@@ -62,7 +62,8 @@ pub struct Selection {
 
 impl Selection {
     /// Byte range of the selection (start, end) where start <= end.
-    fn byte_range(&self, nav: &CursorNavigator<'_>) -> (usize, usize) {
+    #[must_use]
+    pub fn byte_range(&self, nav: &CursorNavigator<'_>) -> (usize, usize) {
         let a = nav.to_byte_index(self.anchor);
         let b = nav.to_byte_index(self.head);
         if a <= b { (a, b) } else { (b, a) }
