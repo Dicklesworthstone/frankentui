@@ -971,6 +971,48 @@ mod tests {
     }
 
     #[test]
+    fn test_scroll_to_start_and_end() {
+        let mut virt: Virtualized<i32> = Virtualized::new(100);
+        virt.set_visible_count(5);
+        for i in 0..20 {
+            virt.push(i);
+        }
+
+        // scroll_to_start goes to top and disables follow
+        virt.scroll_to(10);
+        virt.set_follow(true);
+        virt.scroll_to_start();
+        assert_eq!(virt.scroll_offset(), 0);
+        assert!(!virt.follow_mode());
+
+        // scroll_to_end goes to bottom and enables follow
+        virt.scroll_to_end();
+        assert!(virt.is_at_bottom());
+        assert!(virt.follow_mode());
+    }
+
+    #[test]
+    fn test_virtualized_page_navigation() {
+        let mut virt: Virtualized<i32> = Virtualized::new(100);
+        virt.set_visible_count(5);
+        for i in 0..30 {
+            virt.push(i);
+        }
+
+        virt.scroll_to(15);
+        virt.page_up();
+        assert_eq!(virt.scroll_offset(), 10);
+
+        virt.page_down();
+        assert_eq!(virt.scroll_offset(), 15);
+
+        // Page up at start clamps to 0
+        virt.scroll_to(2);
+        virt.page_up();
+        assert_eq!(virt.scroll_offset(), 0);
+    }
+
+    #[test]
     fn test_height_cache() {
         let mut cache = HeightCache::new(1, 100);
 
