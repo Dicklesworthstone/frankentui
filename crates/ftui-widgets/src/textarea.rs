@@ -400,10 +400,14 @@ impl TextArea {
         if !self.show_line_numbers {
             return 0;
         }
-        let digits = if self.line_count() == 0 {
-            1
-        } else {
-            (self.line_count() as f64).log10().floor() as u16 + 1
+        let digits = {
+            let mut count = self.line_count().max(1);
+            let mut d: u16 = 0;
+            while count > 0 {
+                d += 1;
+                count /= 10;
+            }
+            d
         };
         digits + 2 // digit width + space + separator
     }
