@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 use crate::block::{Alignment, Block};
-use crate::{Widget, draw_text_span, draw_text_span_scrolled, draw_text_span_with_link, set_style_area};
+use crate::{
+    Widget, draw_text_span, draw_text_span_scrolled, draw_text_span_with_link, set_style_area,
+};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -205,36 +207,36 @@ impl Widget for Paragraph<'_> {
                     style // Style::default() at NoStyling
                 };
 
-                                if local_scroll > 0 {
-                                    draw_text_span_scrolled(
-                                        frame,
-                                        draw_x,
-                                        y,
-                                        span.content.as_ref(),
-                                        span_style,
-                                        text_area.right(),
-                                        local_scroll,
-                                        span.link.as_deref(),
-                                    );
-                                } else {
-                                    draw_text_span_with_link(
-                                        frame,
-                                        draw_x,
-                                        y,
-                                        span.content.as_ref(),
-                                        span_style,
-                                        text_area.right(),
-                                        span.link.as_deref(),
-                                    );
-                                }
-                                
-                                span_visual_offset += span_width as u16;
-                            }
-                            y += 1;
-                            current_visual_line += 1;
-                        }
-                    }
+                if local_scroll > 0 {
+                    draw_text_span_scrolled(
+                        frame,
+                        draw_x,
+                        y,
+                        span.content.as_ref(),
+                        span_style,
+                        text_area.right(),
+                        local_scroll,
+                        span.link.as_deref(),
+                    );
+                } else {
+                    draw_text_span_with_link(
+                        frame,
+                        draw_x,
+                        y,
+                        span.content.as_ref(),
+                        span_style,
+                        text_area.right(),
+                        span.link.as_deref(),
+                    );
                 }
+
+                span_visual_offset += span_width as u16;
+            }
+            y += 1;
+            current_visual_line += 1;
+        }
+    }
+}
 /// Calculate the starting x position for a line given alignment.
 fn align_x(area: Rect, line_width: usize, alignment: Alignment) -> u16 {
     let line_width_u16 = u16::try_from(line_width).unwrap_or(u16::MAX);

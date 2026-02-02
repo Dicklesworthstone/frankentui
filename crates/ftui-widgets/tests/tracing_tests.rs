@@ -412,7 +412,9 @@ fn tracing_subscriber_receives_all_spans() {
 
         // TextInput
         use ftui_widgets::input::TextInput;
-        TextInput::new().with_value("hello").render(area, &mut frame);
+        TextInput::new()
+            .with_value("hello")
+            .render(area, &mut frame);
     });
 
     let spans = handle.spans();
@@ -455,8 +457,6 @@ fn real_render_loop_traced() {
 
         // Simulate a real render loop: widget render → diff
         let current = Buffer::new(40, 10);
-        let mut next = Buffer::new(40, 10);
-
         // Render widgets into the next buffer via Frame
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(40, 10, &mut pool);
@@ -470,8 +470,8 @@ fn real_render_loop_traced() {
 
         Widget::render(&table, area, &mut frame);
 
-        // Copy frame buffer into next for diffing
-        next = frame.buffer;
+        // Use frame buffer as next for diffing
+        let next = frame.buffer;
 
         // Compute diff (has tracing spans in ftui-render via feature propagation)
         let diff = BufferDiff::compute(&current, &next);

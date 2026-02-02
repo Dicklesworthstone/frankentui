@@ -336,11 +336,11 @@ impl Clipboard {
         match self.backend {
             ClipboardBackend::Osc52 => {
                 let result = self.write_osc52(content, selection, writer);
-                if result.is_err() {
-                    if let Some(fallback) = self.fallback {
-                        log_fallback(self.backend, ClipboardBackend::External(fallback), "osc52");
-                        return set_external_backend(fallback, content, selection);
-                    }
+                if result.is_err()
+                    && let Some(fallback) = self.fallback
+                {
+                    log_fallback(self.backend, ClipboardBackend::External(fallback), "osc52");
+                    return set_external_backend(fallback, content, selection);
                 }
                 log_write(self.backend, content.len());
                 result

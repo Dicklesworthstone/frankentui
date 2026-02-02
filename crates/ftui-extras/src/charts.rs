@@ -389,12 +389,13 @@ impl BarChart<'_> {
             // Group label (truncated to bar group width).
             let group_width = x_cursor.saturating_sub(group_start_x);
             let label_x = group_start_x + group_width.saturating_sub(1) / 2;
-            if let Some(ch) = group.label.chars().next() {
-                if label_x < area.right() && label_y < area.bottom() {
-                    let mut cell = Cell::from_char(ch);
-                    style_cell(&mut cell, self.style);
-                    buf.set(label_x, label_y, cell);
-                }
+            if let Some(ch) = group.label.chars().next()
+                && label_x < area.right()
+                && label_y < area.bottom()
+            {
+                let mut cell = Cell::from_char(ch);
+                style_cell(&mut cell, self.style);
+                buf.set(label_x, label_y, cell);
             }
         }
     }
@@ -1137,10 +1138,10 @@ mod tests {
         let mut found_braille = false;
         for y in 0..9 {
             for x in 1..20 {
-                if let Some(ch) = char_at(&frame.buffer, x, y) {
-                    if ('\u{2800}'..='\u{28FF}').contains(&ch) {
-                        found_braille = true;
-                    }
+                if let Some(ch) = char_at(&frame.buffer, x, y)
+                    && ('\u{2800}'..='\u{28FF}').contains(&ch)
+                {
+                    found_braille = true;
                 }
             }
         }
@@ -1212,10 +1213,10 @@ mod tests {
         let mut found_braille = false;
         for y in 0..9 {
             for x in 1..20 {
-                if let Some(ch) = char_at(&frame.buffer, x, y) {
-                    if ('\u{2800}'..='\u{28FF}').contains(&ch) {
-                        found_braille = true;
-                    }
+                if let Some(ch) = char_at(&frame.buffer, x, y)
+                    && ('\u{2800}'..='\u{28FF}').contains(&ch)
+                {
+                    found_braille = true;
                 }
             }
         }

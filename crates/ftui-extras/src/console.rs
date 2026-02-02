@@ -74,7 +74,7 @@ use std::io::{self, Write};
 use ftui_style::Style;
 use ftui_text::Segment;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
 use ftui_render::cell::PackedRgba;
@@ -253,7 +253,7 @@ impl ConsoleBuffer {
                 .iter()
                 .map(|s| CapturedSegment {
                     text: s.text.clone(),
-                    style: s.style.clone(),
+                    style: s.style,
                 })
                 .collect(),
         }
@@ -402,7 +402,7 @@ impl Console {
             if word.is_empty() {
                 // Only whitespace left
                 if !rest.is_empty() {
-                    self.current_line.push(rest, style.clone());
+                    self.current_line.push(rest, style);
                 }
                 break;
             }
@@ -411,13 +411,13 @@ impl Console {
 
             if word_width <= remaining_width {
                 // Word fits on current line
-                self.current_line.push(word, style.clone());
+                self.current_line.push(word, style);
                 remaining = rest;
             } else if self.current_line.is_empty() {
                 // Word doesn't fit but line is empty - char wrap
                 let (fits, _overflow) = split_at_width(word, remaining_width);
                 if !fits.is_empty() {
-                    self.current_line.push(fits, style.clone());
+                    self.current_line.push(fits, style);
                     self.flush_line();
                     // Continue with overflow + rest (everything after fits)
                     remaining = &remaining[fits.len()..];
@@ -428,8 +428,7 @@ impl Console {
                         .nth(1)
                         .map(|(i, _)| i)
                         .unwrap_or(word.len());
-                    self.current_line
-                        .push(&word[..first_grapheme_end], style.clone());
+                    self.current_line.push(&word[..first_grapheme_end], style);
                     self.flush_line();
                     // Continue after the first char (in remaining, not word, to preserve rest)
                     remaining = &remaining[first_grapheme_end..];
@@ -455,7 +454,7 @@ impl Console {
 
             let (fits, overflow) = split_at_width(remaining, remaining_width);
             if !fits.is_empty() {
-                self.current_line.push(fits, style.clone());
+                self.current_line.push(fits, style);
                 remaining = overflow;
             } else {
                 // First character is too wide to fit - flush and try again
@@ -468,7 +467,7 @@ impl Console {
                         .map(|(i, _)| i)
                         .unwrap_or(remaining.len());
                     self.current_line
-                        .push(&remaining[..first_grapheme_end], style.clone());
+                        .push(&remaining[..first_grapheme_end], style);
                     remaining = &remaining[first_grapheme_end..];
                 }
                 self.flush_line();
@@ -523,7 +522,7 @@ impl Console {
     /// Print a horizontal rule.
     pub fn rule(&mut self, char: char) {
         self.flush_line();
-        let rule_text: String = std::iter::repeat(char).take(self.width).collect();
+        let rule_text: String = std::iter::repeat_n(char, self.width).collect();
         self.current_line.push(&rule_text, self.current_style());
         self.flush_line();
     }
