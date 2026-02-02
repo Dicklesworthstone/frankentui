@@ -48,3 +48,4 @@
 - [x] **Paragraph Scrolling**: Fixed horizontal scrolling implementation.
 - [x] **Link Rendering**: Updated `draw_text_span` signature and logic (call sites pending).
 - [x] **Call Site Updates**: Propagated `link_url` argument to all widget renderers.
+- [x] **Console Wrapping**: Fixed grapheme splitting bug in `Console` wrapping logic.
