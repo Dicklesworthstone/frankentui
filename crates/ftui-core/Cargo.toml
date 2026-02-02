@@ -20,7 +20,7 @@ crossterm = "0.28"
 
 # Unix-only signal handling for cleanup on SIGINT/SIGTERM.
 [target.'cfg(unix)'.dependencies]
-signal-hook = { version = "0.3.18", features = ["iterator"] }
+signal-hook = { version = "0.4.3", features = ["iterator"] }
 
 # Optional tracing support
 tracing = { version = "0.1", optional = true }
