@@ -184,7 +184,7 @@ jobs:
           cargo bench -p ftui-text --bench width_bench -- --output-format bencher | tee -a bench-output.txt
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: benchmark-results
           path: bench-output.txt
@@ -221,7 +221,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Upload docs artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: documentation
           path: target/doc
@@ -257,7 +257,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: widget-api-e2e-logs
           path: /tmp/widget_api_e2e_*/
@@ -297,7 +297,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: demo-showcase-e2e-logs
           path: /tmp/ftui-demo-e2e-*/
@@ -342,7 +342,7 @@ jobs:
 
       - name: Upload E2E logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-pty-logs-${{ matrix.os }}
           path: /tmp/ftui_e2e_*/
@@ -350,7 +350,7 @@ jobs:
 
       - name: Upload test summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-pty-summary-${{ matrix.os }}
           path: /tmp/ftui_e2e_*/results/summary.json
