@@ -44,6 +44,8 @@ pub struct Span<'a> {
     pub content: Cow<'a, str>,
     /// Optional style for this span.
     pub style: Option<Style>,
+    /// Optional hyperlink URL (OSC 8).
+    pub link: Option<Cow<'a, str>>,
 }
 
 impl<'a> Span<'a> {
@@ -54,6 +56,7 @@ impl<'a> Span<'a> {
         Self {
             content: content.into(),
             style: None,
+            link: None,
         }
     }
 
@@ -64,7 +67,16 @@ impl<'a> Span<'a> {
         Self {
             content: content.into(),
             style: Some(style),
+            link: None,
         }
+    }
+
+    /// Set the hyperlink URL for this span.
+    #[inline]
+    #[must_use]
+    pub fn link(mut self, link: impl Into<Cow<'a, str>>) -> Self {
+        self.link = Some(link.into());
+        self
     }
 
     /// Get the text content.
@@ -110,6 +122,8 @@ impl<'a> Span<'a> {
     #[inline]
     #[must_use]
     pub fn into_segment(self) -> Segment<'a> {
+        // Segments don't support links yet, so we ignore it.
+        // TODO: Add link support to Segment if needed for lower-level handling.
         match self.style {
             Some(style) => Segment::styled(self.content, style),
             None => Segment::text(self.content),
@@ -122,6 +136,7 @@ impl<'a> Span<'a> {
         Span {
             content: Cow::Owned(self.content.into_owned()),
             style: self.style,
+            link: self.link.map(|l| Cow::Owned(l.into_owned())),
         }
     }
 }
@@ -143,6 +158,7 @@ impl<'a> From<Segment<'a>> for Span<'a> {
         Self {
             content: seg.text,
             style: seg.style,
+            link: None,
         }
     }
 }
@@ -570,6 +586,7 @@ impl Text {
                         new_spans.push(Span {
                             content: Cow::Owned(truncated.to_string()),
                             style: span.style,
+                            link: span.link.clone(),
                         });
                     }
                     remaining = 0;

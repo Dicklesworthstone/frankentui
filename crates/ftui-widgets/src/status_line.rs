@@ -151,14 +151,34 @@ impl<'a> StatusLine<'a> {
         self
     }
 
-    /// Calculate total width needed for a list of items.
-    fn items_width(&self, items: &[StatusItem]) -> usize {
-        if items.is_empty() {
-            return 0;
-        }
+    /// Calculate total fixed width (non-spacers, with separators between non-spacers).
+    fn items_fixed_width(&self, items: &[StatusItem]) -> usize {
         let sep_width = UnicodeWidthStr::width(self.separator);
-        items.iter().map(|item| item.width()).sum::<usize>()
-            + sep_width * items.len().saturating_sub(1)
+        let mut width = 0usize;
+        let mut prev_item = false;
+
+        for item in items {
+            if matches!(item, StatusItem::Spacer) {
+                prev_item = false;
+                continue;
+            }
+
+            if prev_item {
+                width += sep_width;
+            }
+            width += item.width();
+            prev_item = true;
+        }
+
+        width
+    }
+
+    /// Count flexible spacers in an item list.
+    fn spacer_count(&self, items: &[StatusItem]) -> usize {
+        items
+            .iter()
+            .filter(|item| matches!(item, StatusItem::Spacer))
+            .count()
     }
 
     /// Render a list of items starting at x position.
@@ -171,27 +191,42 @@ impl<'a> StatusLine<'a> {
         max_x: u16,
         style: Style,
     ) -> u16 {
-        for (i, item) in items.iter().enumerate() {
+        let available = max_x.saturating_sub(x) as usize;
+        let fixed_width = self.items_fixed_width(items);
+        let spacers = self.spacer_count(items);
+        let extra = available.saturating_sub(fixed_width);
+        let per_spacer = if spacers > 0 { extra / spacers } else { 0 };
+        let mut remainder = if spacers > 0 { extra % spacers } else { 0 };
+        let mut prev_item = false;
+
+        for item in items {
             if x >= max_x {
                 break;
             }
 
-            // Add separator between items
-            if i > 0 && !self.separator.is_empty() {
-                x = draw_text_span(frame, x, y, self.separator, style, max_x);
-            }
-
-            if x >= max_x {
-                break;
-            }
-
-            // Skip spacers in rendering (they're only for layout calculation)
             if matches!(item, StatusItem::Spacer) {
+                let mut space = per_spacer;
+                if remainder > 0 {
+                    space += 1;
+                    remainder -= 1;
+                }
+                let advance = (space as u16).min(max_x.saturating_sub(x));
+                x = x.saturating_add(advance);
+                prev_item = false;
                 continue;
+            }
+
+            // Add separator between non-spacer items
+            if prev_item && !self.separator.is_empty() {
+                x = draw_text_span(frame, x, y, self.separator, style, max_x);
+                if x >= max_x {
+                    break;
+                }
             }
 
             let text = item.render_to_string();
             x = draw_text_span(frame, x, y, &text, style, max_x);
+            prev_item = true;
         }
 
         x
@@ -236,29 +271,40 @@ impl Widget for StatusLine<'_> {
         }
 
         let width = area.width as usize;
-        let left_width = self.items_width(&self.left);
-        let center_width = self.items_width(&self.center);
-        let right_width = self.items_width(&self.right);
+        let left_width = self.items_fixed_width(&self.left);
+        let center_width = self.items_fixed_width(&self.center);
+        let right_width = self.items_fixed_width(&self.right);
+        let center_spacers = self.spacer_count(&self.center);
 
         // Calculate positions
         let left_x = area.x;
         let right_x = area.right().saturating_sub(right_width as u16);
-        let center_x = if center_width > 0 {
+        let available_center = width.saturating_sub(left_width).saturating_sub(right_width);
+        let center_target_width = if center_width > 0 && center_spacers > 0 {
+            available_center
+        } else {
+            center_width
+        };
+        let center_x = if center_width > 0 || center_spacers > 0 {
             // Center the center items in the available space
-            let available_center = width.saturating_sub(left_width).saturating_sub(right_width);
-            let center_start = left_width + available_center.saturating_sub(center_width) / 2;
+            let center_start =
+                left_width + available_center.saturating_sub(center_target_width) / 2;
             area.x.saturating_add(center_start as u16)
         } else {
             area.x
         };
 
+        let center_can_render = (center_width > 0 || center_spacers > 0)
+            && center_x + center_target_width as u16 <= right_x;
+        let left_max_x = if center_can_render { center_x } else { right_x };
+
         // Render left items
         if !self.left.is_empty() {
-            self.render_items(frame, &self.left, left_x, area.y, area.right(), style);
+            self.render_items(frame, &self.left, left_x, area.y, left_max_x, style);
         }
 
         // Render center items (if they fit)
-        if !self.center.is_empty() && center_x + (center_width as u16) <= right_x {
+        if center_can_render {
             self.render_items(frame, &self.center, center_x, area.y, right_x, style);
         }
 
@@ -290,6 +336,16 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    fn row_full(buf: &Buffer, y: u16, width: u16) -> String {
+        (0..width)
+            .map(|x| {
+                buf.get(x, y)
+                    .and_then(|c| c.content.as_char())
+                    .unwrap_or(' ')
+            })
+            .collect()
     }
 
     #[test]
@@ -413,6 +469,25 @@ mod tests {
 
         let s = row_string(&frame.buffer, 0, 20);
         assert!(s.contains("A | B"), "Got: '{s}'");
+    }
+
+    #[test]
+    fn spacer_expands_and_skips_separators() {
+        let status = StatusLine::new()
+            .separator(" | ")
+            .left(StatusItem::text("L"))
+            .left(StatusItem::spacer())
+            .left(StatusItem::text("R"));
+        let area = Rect::new(0, 0, 10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        status.render(area, &mut frame);
+
+        let row = row_full(&frame.buffer, 0, 10);
+        let chars: Vec<char> = row.chars().collect();
+        assert_eq!(chars[0], 'L');
+        assert_eq!(chars[9], 'R');
+        assert!(!row.contains('|'), "Spacer should skip separators, got: '{row}'");
     }
 
     #[test]

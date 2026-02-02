@@ -373,7 +373,7 @@ impl ResizeDebouncer {
 }
 
 /// The program runtime that manages the update/view loop.
-pub struct Program<M: Model, W: Write = Stdout> {
+pub struct Program<M: Model, W: Write + Send = Stdout> {
     /// The application model.
     model: M,
     /// Terminal output coordinator.
@@ -465,7 +465,7 @@ impl<M: Model> Program<M, Stdout> {
     }
 }
 
-impl<M: Model, W: Write> Program<M, W> {
+impl<M: Model, W: Write + Send> Program<M, W> {
     /// Run the main event loop.
     ///
     /// This is the main entry point. It handles:
@@ -668,18 +668,20 @@ impl<M: Model, W: Write> Program<M, W> {
             return Ok(());
         }
 
-        // Create new frame with current degradation level
-        // Note: Frame borrows the pool from writer, so we must drop frame
-        // before calling present_ui (which also borrows writer).
-        let mut frame = Frame::new(self.width, self.height, self.writer.pool_mut());
-        frame.set_degradation(self.budget.degradation());
-
         // --- Render phase ---
         let render_start = Instant::now();
-        {
+        let buffer = {
+            // Note: Frame borrows the pool and links from writer.
+            // We scope it so it drops before we call present_ui (which needs exclusive writer access).
+            let mut frame = Frame::new(self.width, self.height, self.writer.pool_mut());
+            frame.set_degradation(self.budget.degradation());
+            frame.set_links(self.writer.links_mut());
+
             let _view_span = debug_span!("model_view").entered();
             self.model.view(&mut frame);
-        }
+
+            frame.buffer
+        };
         let render_elapsed = render_start.elapsed();
 
         // Check if render phase overspent its budget
@@ -698,9 +700,6 @@ impl<M: Model, W: Write> Program<M, W> {
 
         // --- Present phase ---
         if !self.budget.exhausted() {
-            // Extract buffer to release borrow on pool
-            let buffer = frame.buffer;
-
             let present_start = Instant::now();
             {
                 let _present_span = debug_span!("frame_present").entered();

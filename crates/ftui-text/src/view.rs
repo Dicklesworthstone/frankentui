@@ -6,6 +6,7 @@
 //! perform deterministic viewport math (scroll by line/page, map source lines
 //! to wrapped lines, and compute visible ranges) without duplicating logic.
 
+use crate::rope::Rope;
 use crate::wrap::{WrapMode, WrapOptions, display_width, wrap_with_options};
 use std::ops::Range;
 
@@ -40,7 +41,7 @@ pub struct ViewLine {
 /// A scrollable, wrapped view over a text buffer.
 #[derive(Debug, Clone)]
 pub struct TextView {
-    text: String,
+    text: Rope,
     wrap: WrapMode,
     width: usize,
     lines: Vec<ViewLine>,
@@ -51,7 +52,7 @@ pub struct TextView {
 impl TextView {
     /// Build a view from raw text, wrap mode, and viewport width.
     #[must_use]
-    pub fn new(text: impl Into<String>, width: usize, wrap: WrapMode) -> Self {
+    pub fn new(text: impl Into<Rope>, width: usize, wrap: WrapMode) -> Self {
         let mut view = Self {
             text: text.into(),
             wrap,
@@ -65,7 +66,7 @@ impl TextView {
     }
 
     /// Replace the text and recompute layout.
-    pub fn set_text(&mut self, text: impl Into<String>) {
+    pub fn set_text(&mut self, text: impl Into<Rope>) {
         self.text = text.into();
         self.rebuild();
     }
@@ -150,6 +151,19 @@ impl TextView {
         scroll_y.min(max_scroll)
     }
 
+    /// Maximum scroll offset for the given viewport height.
+    #[must_use]
+    pub fn max_scroll(&self, viewport_height: usize) -> usize {
+        let total = self.lines.len();
+        if total == 0 {
+            return 0;
+        }
+        if viewport_height == 0 {
+            return total;
+        }
+        total.saturating_sub(viewport_height)
+    }
+
     /// Compute the visible virtual line range for a scroll offset + viewport height.
     #[must_use]
     pub fn visible_range(&self, scroll_y: usize, viewport_height: usize) -> Range<usize> {
@@ -175,6 +189,18 @@ impl TextView {
     pub fn scroll_to_line(&self, source_line: usize, viewport_height: usize) -> Option<usize> {
         let virtual_line = self.source_to_virtual(source_line)?;
         Some(self.clamp_scroll(virtual_line, viewport_height))
+    }
+
+    /// Scroll to the top of the view.
+    #[must_use]
+    pub fn scroll_to_top(&self) -> usize {
+        0
+    }
+
+    /// Scroll to the bottom of the view.
+    #[must_use]
+    pub fn scroll_to_bottom(&self, viewport_height: usize) -> usize {
+        self.max_scroll(viewport_height)
     }
 
     /// Scroll by a line delta (positive or negative).
@@ -208,10 +234,14 @@ impl TextView {
 
         let mut source_lines = 0;
 
-        for (source_line, line) in self.text.split('\n').enumerate() {
+        for (source_line, line) in self.text.lines().enumerate() {
             source_lines += 1;
+            let mut line_text = line.to_string();
+            if line_text.ends_with('\n') {
+                line_text.pop();
+            }
 
-            let wrapped = wrap_with_options(line, &options);
+            let wrapped = wrap_with_options(&line_text, &options);
             if wrapped.is_empty() {
                 let width = 0;
                 self.lines.push(ViewLine {
@@ -288,6 +318,15 @@ mod tests {
         assert_eq!(scroll, 2);
         let back = view.scroll_by_pages(scroll, -1, 2);
         assert_eq!(back, 0);
+    }
+
+    #[test]
+    fn scroll_to_bottom_respects_viewport() {
+        let view = TextView::new("a\nb\nc\nd", 10, WrapMode::None);
+        let bottom = view.scroll_to_bottom(2);
+        assert_eq!(bottom, 2);
+        let top = view.scroll_to_top();
+        assert_eq!(top, 0);
     }
 
     #[test]

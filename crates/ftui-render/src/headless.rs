@@ -514,11 +514,13 @@ mod tests {
     fn export_to_file() {
         use std::time::{SystemTime, UNIX_EPOCH};
         // Use unique directory name to prevent race conditions in parallel tests
-        let unique_id = SystemTime::now()
+        // Combine timestamp with thread ID for guaranteed uniqueness
+        let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("ftui_headless_test_{unique_id}"));
+        let thread_id = format!("{:?}", std::thread::current().id());
+        let dir = std::env::temp_dir().join(format!("ftui_headless_test_{timestamp}_{thread_id}"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("export_test.txt");
 

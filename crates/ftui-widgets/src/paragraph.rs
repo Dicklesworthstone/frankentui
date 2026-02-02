@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use crate::block::{Alignment, Block};
-use crate::{Widget, draw_text_span, set_style_area};
+use crate::{Widget, draw_text_span, draw_text_span_scrolled, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -205,16 +205,26 @@ impl Widget for Paragraph<'_> {
                     style // Style::default() at NoStyling
                 };
 
-                // TODO: handle local_scroll for partial span rendering
-                let _ = local_scroll; // Currently unused, will be used for partial span clipping
-                draw_text_span(
-                    frame,
-                    draw_x,
-                    y,
-                    span.content.as_ref(),
-                    span_style,
-                    text_area.right(),
-                );
+                if local_scroll > 0 {
+                    draw_text_span_scrolled(
+                        frame,
+                        draw_x,
+                        y,
+                        span.content.as_ref(),
+                        span_style,
+                        text_area.right(),
+                        local_scroll as u16,
+                    );
+                } else {
+                    draw_text_span(
+                        frame,
+                        draw_x,
+                        y,
+                        span.content.as_ref(),
+                        span_style,
+                        text_area.right(),
+                    );
+                }
 
                 span_visual_offset += span_width as u16;
             }

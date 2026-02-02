@@ -218,6 +218,8 @@ impl HitGrid {
     }
 }
 
+use crate::link_registry::LinkRegistry;
+
 /// Frame = Buffer + metadata for a render pass.
 ///
 /// The Frame is passed to `Model::view()` and contains everything needed
@@ -235,6 +237,9 @@ pub struct Frame<'a> {
 
     /// Reference to the grapheme pool for interning strings.
     pub pool: &'a mut GraphemePool,
+
+    /// Optional reference to link registry for hyperlinks.
+    pub links: Option<&'a mut LinkRegistry>,
 
     /// Optional hit grid for mouse hit testing.
     ///
@@ -265,6 +270,7 @@ impl<'a> Frame<'a> {
         Self {
             buffer: Buffer::new(width, height),
             pool,
+            links: None,
             hit_grid: None,
             cursor_position: None,
             cursor_visible: true,
@@ -279,10 +285,27 @@ impl<'a> Frame<'a> {
         Self {
             buffer: Buffer::new(width, height),
             pool,
+            links: None,
             hit_grid: Some(HitGrid::new(width, height)),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
+        }
+    }
+
+    /// Set the link registry for this frame.
+    pub fn set_links(&mut self, links: &'a mut LinkRegistry) {
+        self.links = Some(links);
+    }
+
+    /// Register a hyperlink URL and return its ID.
+    ///
+    /// Returns 0 if link registry is not available or full.
+    pub fn register_link(&mut self, url: &str) -> u32 {
+        if let Some(ref mut links) = self.links {
+            links.register(url)
+        } else {
+            0
         }
     }
 

@@ -349,7 +349,6 @@ pub(crate) fn draw_text_span(
 }
 
 /// Draw a text span with horizontal scrolling (skip first `scroll_x` visual cells).
-#[allow(dead_code)] // TODO: will be used for partial span clipping in Paragraph
 pub(crate) fn draw_text_span_scrolled(
     frame: &mut Frame,
     mut x: u16,
