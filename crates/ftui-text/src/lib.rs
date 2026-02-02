@@ -11,6 +11,7 @@
 //! - [`Text`] - multi-line styled text
 //! - [`Rope`] - rope-backed text storage
 //! - [`CursorPosition`] / [`CursorNavigator`] - text cursor utilities
+//! - [`Editor`] - core text editing operations (insert, delete, cursor movement)
 //! - [`WidthCache`] - LRU cache for text width measurements
 //!
 //! # Example
@@ -43,6 +44,7 @@
 //! ```
 
 pub mod cursor;
+pub mod editor;
 pub mod rope;
 pub mod segment;
 pub mod text;
@@ -52,6 +54,9 @@ pub mod wrap;
 
 #[cfg(feature = "markup")]
 pub mod markup;
+
+#[cfg(feature = "normalization")]
+pub mod normalization;
 
 /// Bounds-based text measurement for layout negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -101,6 +106,7 @@ impl TextMeasurement {
 }
 
 pub use cursor::{CursorNavigator, CursorPosition};
+pub use editor::{Editor, Selection};
 pub use rope::Rope;
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
 pub use text::{Line, Span, Text};
@@ -114,6 +120,9 @@ pub use wrap::{
 
 #[cfg(feature = "markup")]
 pub use markup::{MarkupError, MarkupParser, parse_markup};
+
+#[cfg(feature = "normalization")]
+pub use normalization::{NormForm, eq_normalized, is_normalized, normalize, normalize_for_search};
 
 #[cfg(test)]
 mod measurement_tests {
