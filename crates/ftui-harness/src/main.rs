@@ -34,15 +34,15 @@ use ftui_render::frame::Frame;
 use ftui_runtime::{Cmd, Every, Model, Program, ProgramConfig, ScreenMode, Subscription};
 use ftui_style::Style;
 use ftui_text::WrapMode;
-use ftui_widgets::block::Block;
 use ftui_widgets::block::Alignment;
+use ftui_widgets::block::Block;
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
+use ftui_widgets::list::{List, ListState};
 use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::spinner::{DOTS, Spinner, SpinnerState};
 use ftui_widgets::status_line::{StatusItem, StatusLine};
-use ftui_widgets::list::{List, ListState};
 use ftui_widgets::table::{Row, Table, TableState};
 use ftui_widgets::{StatefulWidget, Widget};
 
@@ -349,13 +349,15 @@ impl Model for AgentHarness {
                 Cmd::None
             }
             Msg::Paste(paste) => {
-                self.log_viewer
-                    .push(format!("Paste: {}", paste.text));
+                self.log_viewer.push(format!("Paste: {}", paste.text));
                 Cmd::None
             }
             Msg::Focus(focused) => {
-                self.log_viewer
-                    .push(if focused { "Focus: gained" } else { "Focus: lost" });
+                self.log_viewer.push(if focused {
+                    "Focus: gained"
+                } else {
+                    "Focus: lost"
+                });
                 Cmd::None
             }
             Msg::ToolStart(name) => {
@@ -565,11 +567,10 @@ impl AgentHarness {
         let inner = block.inner(area);
         block.render(area, frame);
 
-        let paragraph = Paragraph::new(
-            "This paragraph wraps long text across multiple lines for testing.",
-        )
-        .wrap(WrapMode::Word)
-        .alignment(Alignment::Left);
+        let paragraph =
+            Paragraph::new("This paragraph wraps long text across multiple lines for testing.")
+                .wrap(WrapMode::Word)
+                .alignment(Alignment::Left);
         paragraph.render(inner, frame);
     }
 
@@ -581,15 +582,18 @@ impl AgentHarness {
             Row::new(["Gamma", "3"]),
         ];
         let header = Row::new(["Name", "Value"]).style(Style::new().bold());
-        let table = Table::new(rows, [Constraint::Percentage(70.0), Constraint::Percentage(30.0)])
-            .header(header)
-            .block(
-                Block::new()
-                    .title(" Table ")
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded),
-            )
-            .highlight_style(Style::new().bold());
+        let table = Table::new(
+            rows,
+            [Constraint::Percentage(70.0), Constraint::Percentage(30.0)],
+        )
+        .header(header)
+        .block(
+            Block::new()
+                .title(" Table ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded),
+        )
+        .highlight_style(Style::new().bold());
 
         let mut state = TableState::default();
         state.select(Some(1));
@@ -665,10 +669,12 @@ fn main() -> std::io::Result<()> {
         .ok()
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
-    let mut config = ProgramConfig::default();
-    config.screen_mode = screen_mode;
-    config.mouse = enable_mouse;
-    config.focus_reporting = enable_focus;
+    let config = ProgramConfig {
+        screen_mode,
+        mouse: enable_mouse,
+        focus_reporting: enable_focus,
+        ..Default::default()
+    };
 
     // Run the agent harness in inline mode
     let mut program = Program::with_config(AgentHarness::new(view_mode), config)?;

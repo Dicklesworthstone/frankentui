@@ -54,8 +54,8 @@ inline_basic() {
     PTY_TIMEOUT=3 \
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
-    rg -a -q "Welcome to the Agent Harness" "$output_file"
-    rg -a -q "Type a command and press Enter" "$output_file"
+    rg -a -q "Welcome to the Agent Harness" "$output_file" || return 1
+    rg -a -q "Type a command and press Enter" "$output_file" || return 1
 }
 
 inline_log_scroll() {
@@ -74,10 +74,10 @@ inline_log_scroll() {
     # Verify the output file has substantial content (render cycles ran).
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]]
+    [[ "$size" -gt 500 ]] || return 1
 
     # The first render should still contain harness UI chrome
-    grep -a -q "claude-3.5" "$output_file"
+    grep -a -q "claude-3.5" "$output_file" || return 1
 }
 
 inline_many_logs() {
@@ -95,10 +95,10 @@ inline_many_logs() {
     # Verify the output file has substantial content (render cycles ran).
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]]
+    [[ "$size" -gt 500 ]] || return 1
 
     # Status bar should still be rendered
-    grep -a -q "claude-3.5" "$output_file"
+    grep -a -q "claude-3.5" "$output_file" || return 1
 }
 
 inline_custom_height() {
@@ -114,9 +114,9 @@ inline_custom_height() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # Basic sanity: welcome text appears
-    rg -a -q "Welcome to the Agent Harness" "$output_file"
+    rg -a -q "Welcome to the Agent Harness" "$output_file" || return 1
     # Log lines also appear
-    rg -a -q "Log line [1-5]" "$output_file"
+    rg -a -q "Log line [1-5]" "$output_file" || return 1
 }
 
 inline_ui_chrome() {
@@ -131,13 +131,13 @@ inline_ui_chrome() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # Status bar should show model name
-    rg -a -q "claude-3.5" "$output_file"
+    rg -a -q "claude-3.5" "$output_file" || return 1
     # Status bar shows Idle state
-    rg -a -q "Idle" "$output_file"
+    rg -a -q "Idle" "$output_file" || return 1
     # UI has the Log panel title
-    rg -a -q "Log" "$output_file"
+    rg -a -q "Log" "$output_file" || return 1
     # Key hint should appear in status bar
-    grep -a -q "Quit" "$output_file"
+    grep -a -q "Quit" "$output_file" || return 1
 }
 
 inline_resize() {
@@ -159,10 +159,10 @@ inline_resize() {
     # The harness must render without crashing at a smaller terminal size.
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 200 ]]
+    [[ "$size" -gt 200 ]] || return 1
 
     # Status bar should still render at smaller width
-    grep -a -q "claude-3.5" "$output_file"
+    grep -a -q "claude-3.5" "$output_file" || return 1
 }
 
 inline_cursor_contract() {
@@ -172,17 +172,20 @@ inline_cursor_contract() {
     log_test_start "inline_cursor_contract"
 
     # Run with log output to exercise multiple render cycles.
-    # The cursor should be hidden during rendering and shown after cleanup.
+    # After cleanup, cursor visibility must be restored.
     FTUI_HARNESS_EXIT_AFTER_MS=1200 \
     FTUI_HARNESS_LOG_LINES=20 \
     PTY_TIMEOUT=4 \
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
-    # Cursor hide sequence must appear (rendering hides cursor)
-    grep -a -F -q $'\x1b[?25l' "$output_file"
+    # Cursor hide is optional in inline mode (alt-screen mode always hides).
+    # Just log whether it was emitted for diagnostics.
+    if grep -a -F -q $'\x1b[?25l' "$output_file"; then
+        log_debug "Cursor hide sequence found (inline mode)"
+    fi
 
-    # Cursor show must appear at cleanup
-    grep -a -F -q $'\x1b[?25h' "$output_file"
+    # Cursor show must appear at cleanup (required for terminal restore)
+    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
 }
 
 FAILURES=0

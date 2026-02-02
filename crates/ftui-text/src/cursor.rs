@@ -753,7 +753,10 @@ mod tests {
             let pos = nav.from_line_grapheme(0, g);
             let byte = nav.to_byte_index(pos);
             let back = nav.from_byte_index(byte);
-            assert_eq!(back.grapheme, pos.grapheme, "roundtrip failed for grapheme {g}");
+            assert_eq!(
+                back.grapheme, pos.grapheme,
+                "roundtrip failed for grapheme {g}"
+            );
         }
     }
 
@@ -792,8 +795,8 @@ mod tests {
 
     #[test]
     fn grapheme_class_classification() {
-        use super::grapheme_class;
         use super::GraphemeClass;
+        use super::grapheme_class;
         assert_eq!(grapheme_class(" "), GraphemeClass::Space);
         assert_eq!(grapheme_class("\t"), GraphemeClass::Space);
         assert_eq!(grapheme_class("a"), GraphemeClass::Word);

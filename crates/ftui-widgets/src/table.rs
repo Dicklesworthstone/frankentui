@@ -231,22 +231,22 @@ impl<'a> StatefulWidget for Table<'a> {
                 if selected > last_visible {
                     // Selected is below viewport. Find new offset to make it visible at bottom.
                     let mut new_offset = selected;
-                    let mut accumulated_height: u16 = 0;
+                    let mut accumulated_height = 0;
                     let available_height = rows_height;
 
-                    // Iterate backwards from selected
+                    // Iterate backwards from selected to find the earliest start row that fits
                     for i in (0..=selected).rev() {
                         let row = &self.rows[i];
                         let total_row_height = row.height + row.bottom_margin;
 
-                        if accumulated_height + row.height > available_height {
-                            // This row doesn't fit fully.
-                            // If it's the selected row itself, we must show it (at top).
-                            // Otherwise, the *next* row (i+1) is our start.
-                            if i < selected {
-                                new_offset = i + 1;
-                            } else {
+                        if accumulated_height + total_row_height > available_height {
+                            // Cannot fit this row (i) along with subsequent rows up to selected.
+                            // So the previous row (i+1) was the earliest possible start offset.
+                            // If selected itself doesn't fit (accumulated_height == 0), we must show it anyway (at top).
+                            if i == selected {
                                 new_offset = selected;
+                            } else {
+                                new_offset = i + 1;
                             }
                             break;
                         }

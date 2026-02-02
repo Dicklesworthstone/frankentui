@@ -62,11 +62,11 @@ input_typing_stable() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # App should have rendered initial UI
-    grep -a -q "Welcome" "$output_file"
+    grep -a -q "Welcome" "$output_file" || return 1
     # Output file should have content (multiple render cycles ran)
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]]
+    [[ "$size" -gt 500 ]] || return 1
 }
 
 input_enter_stable() {
@@ -83,11 +83,11 @@ input_enter_stable() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # App should have rendered initial content
-    grep -a -q "claude-3.5" "$output_file"
+    grep -a -q "claude-3.5" "$output_file" || return 1
     # Output should be substantial (app continued rendering after input)
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]]
+    [[ "$size" -gt 500 ]] || return 1
 }
 
 input_ctrl_c_quit() {
@@ -104,13 +104,13 @@ input_ctrl_c_quit() {
         pty_run "$output_file" "$E2E_HARNESS_BIN" || true
 
     # App should have rendered something before the Ctrl+C
-    [[ -f "$output_file" ]]
+    [[ -f "$output_file" ]] || return 1
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 100 ]]
+    [[ "$size" -gt 100 ]] || return 1
 
     # Cursor should be restored on cleanup
-    grep -a -F -q $'\x1b[?25h' "$output_file"
+    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
 }
 
 input_quit_command() {
@@ -127,13 +127,13 @@ input_quit_command() {
         pty_run "$output_file" "$E2E_HARNESS_BIN" || true
 
     # The app should have rendered content before quitting
-    grep -a -q "Welcome" "$output_file"
+    grep -a -q "Welcome" "$output_file" || return 1
 
     # Output file should exist and have reasonable size
-    [[ -f "$output_file" ]]
+    [[ -f "$output_file" ]] || return 1
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 100 ]]
+    [[ "$size" -gt 100 ]] || return 1
 }
 
 input_multi_keystrokes() {
@@ -150,13 +150,13 @@ input_multi_keystrokes() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # App should handle multiple inputs without crashing
-    [[ -f "$output_file" ]]
+    [[ -f "$output_file" ]] || return 1
     local size
     size=$(wc -c < "$output_file" | tr -d ' ')
-    [[ "$size" -gt 500 ]]
+    [[ "$size" -gt 500 ]] || return 1
 
     # Initial UI content should be present
-    grep -a -q "claude-3.5" "$output_file"
+    grep -a -q "claude-3.5" "$output_file" || return 1
 }
 
 FAILURES=0

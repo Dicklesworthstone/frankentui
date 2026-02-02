@@ -1,9 +1,9 @@
-# Fixes Summary - Session 2026-02-01 (Part 18)
+# Fixes Summary - Session 2026-02-01 (Part 20)
 
-## 46. Console Grapheme Splitting
-**File:** `crates/ftui-extras/src/console.rs`
-**Issue:** `Console` wrapping logic (`split_at_width` and fallbacks in `print_word_wrapped`/`print_char_wrapped`) used `char_indices` to split strings. This would break multi-codepoint graphemes (like emojis, ZWJ sequences, or combining characters) in the middle, resulting in invalid UTF-8 rendering or corrupted glyphs when wrapping tightly.
-**Fix:** Updated all splitting logic to use `unicode_segmentation::graphemes` (via `grapheme_indices`), ensuring splits always happen at valid user-perceived character boundaries.
+## 51. Table Scrolling Logic
+**File:** `crates/ftui-widgets/src/table.rs`
+**Issue:** The logic for scrolling to keep a selected row visible at the bottom of the viewport was flawed. It iterated backwards but didn't correctly account for the fact that `accumulated_height` should represent the sum of heights *from the candidate start index to the selected index*. The old logic checked `accumulated_height + row.height > available_height` in a way that didn't guarantee the selected row was actually visible if the loop terminated early.
+**Fix:** Rewrote the scrolling loop to iterate `new_offset` candidates from `selected` down to 0. For each candidate, it adds that row's height to the total required height. If the total exceeds available height, it stops, picking the *previous* candidate as the optimal offset. This ensures the maximum number of context rows above the selected row are shown while keeping the selected row visible at the bottom.
 
-## 47. Verification
-Verified logic for `split_next_word` (preserves whitespace correctly) and updated splitting logic to be Unicode-safe. The `Console` widget is now robust against complex text input.
+## 52. Next Steps
+Review `ftui-runtime/src/input_macro.rs` for timing robustness.

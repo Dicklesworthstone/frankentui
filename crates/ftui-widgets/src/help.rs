@@ -231,26 +231,16 @@ impl Help {
             let space_left = (max_x as usize).saturating_sub(x as usize);
             if total_item_w > space_left {
                 // Try to fit ellipsis
-                let ell_total = if i > 0 { 1 + ellipsis_width } else { ellipsis_width };
+                let ell_total = if i > 0 {
+                    1 + ellipsis_width
+                } else {
+                    ellipsis_width
+                };
                 if ell_total <= space_left && deg.apply_styling() {
                     if i > 0 {
-                        x = draw_text_span(
-                            frame,
-                            x,
-                            y,
-                            " ",
-                            self.separator_style,
-                            max_x,
-                        );
+                        x = draw_text_span(frame, x, y, " ", self.separator_style, max_x);
                     }
-                    draw_text_span(
-                        frame,
-                        x,
-                        y,
-                        &self.ellipsis,
-                        self.separator_style,
-                        max_x,
-                    );
+                    draw_text_span(frame, x, y, &self.ellipsis, self.separator_style, max_x);
                 }
                 break;
             }
@@ -358,9 +348,7 @@ mod tests {
 
     #[test]
     fn entry_builder() {
-        let help = Help::new()
-            .entry("q", "quit")
-            .entry("^s", "save");
+        let help = Help::new().entry("q", "quit").entry("^s", "save");
         assert_eq!(help.entries().len(), 2);
         assert_eq!(help.entries()[0].key, "q");
         assert_eq!(help.entries()[0].desc, "quit");
@@ -403,9 +391,7 @@ mod tests {
 
     #[test]
     fn render_short_basic() {
-        let help = Help::new()
-            .entry("q", "quit")
-            .entry("^s", "save");
+        let help = Help::new().entry("q", "quit").entry("^s", "save");
 
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(40, 1, &mut pool);
@@ -465,7 +451,9 @@ mod tests {
         assert!(cell.content.as_char() == Some(' ') || cell.content.as_char() == Some('q'));
         // Second row should have "^s" key (right-padded: " ^s")
         let cell_row2 = frame.buffer.get(0, 1).unwrap();
-        assert!(cell_row2.content.as_char() == Some('^') || cell_row2.content.as_char() == Some(' '));
+        assert!(
+            cell_row2.content.as_char() == Some('^') || cell_row2.content.as_char() == Some(' ')
+        );
     }
 
     #[test]

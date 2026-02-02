@@ -111,8 +111,7 @@ mod align_tests {
     fn align_zero_area_no_panic() {
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(1, 1, &mut pool);
-        Align::new(Paragraph::new("test"))
-            .render(Rect::new(0, 0, 0, 0), &mut frame);
+        Align::new(Paragraph::new("test")).render(Rect::new(0, 0, 0, 0), &mut frame);
     }
 }
 
@@ -316,7 +315,10 @@ mod json_view_tests {
         widget.render(area, &mut frame);
 
         // Should still render something (error display), not crash
-        assert!(has_content(&frame, area), "invalid JSON should still render");
+        assert!(
+            has_content(&frame, area),
+            "invalid JSON should still render"
+        );
     }
 
     #[test]
@@ -358,7 +360,11 @@ mod padding_tests {
 
         // (0,0) should NOT have X due to padding
         let c00 = frame.buffer.get(0, 0).unwrap().content.as_char();
-        assert_ne!(c00, Some('X'), "padding should offset content from top-left");
+        assert_ne!(
+            c00,
+            Some('X'),
+            "padding should offset content from top-left"
+        );
 
         // X should appear at offset (left=1, top=2)
         let cx = frame.buffer.get(1, 2).unwrap().content.as_char();
@@ -367,10 +373,7 @@ mod padding_tests {
 
     #[test]
     fn padding_inner_area_calculation() {
-        let padding = Padding::new(
-            Paragraph::new("test"),
-            Sides::new(1, 1, 1, 1),
-        );
+        let padding = Padding::new(Paragraph::new("test"), Sides::new(1, 1, 1, 1));
         let inner = padding.inner_area(Rect::new(0, 0, 10, 10));
         assert_eq!(inner.x, 1);
         assert_eq!(inner.y, 1);
@@ -384,10 +387,7 @@ mod padding_tests {
         let mut frame = Frame::new(3, 3, &mut pool);
 
         // Padding larger than the area
-        let widget = Padding::new(
-            Paragraph::new("X"),
-            Sides::new(5, 5, 5, 5),
-        );
+        let widget = Padding::new(Paragraph::new("X"), Sides::new(5, 5, 5, 5));
         widget.render(Rect::new(0, 0, 3, 3), &mut frame);
         // Should not panic, child just gets zero area
     }
@@ -447,13 +447,15 @@ mod panel_tests {
 
         // Title should appear on the top border row
         let top_row = row_text(&frame, 0, 20);
-        assert!(top_row.contains("Title"), "top border should contain title, got: {top_row:?}");
+        assert!(
+            top_row.contains("Title"),
+            "top border should contain title, got: {top_row:?}"
+        );
     }
 
     #[test]
     fn panel_inner_area() {
-        let panel = Panel::new(Paragraph::new(""))
-            .borders(Borders::ALL);
+        let panel = Panel::new(Paragraph::new("")).borders(Borders::ALL);
         let inner = panel.inner(Rect::new(0, 0, 10, 10));
         // Borders take 1 cell each side
         assert_eq!(inner.x, 1);
@@ -490,7 +492,10 @@ mod pretty_tests {
         let widget = Pretty::new(&data);
         widget.render(area, &mut frame);
 
-        assert!(has_content(&frame, area), "Pretty should render debug output");
+        assert!(
+            has_content(&frame, area),
+            "Pretty should render debug output"
+        );
     }
 
     #[test]
@@ -499,7 +504,10 @@ mod pretty_tests {
         let p = Pretty::new(&data).with_compact(true);
         let text = p.formatted_text();
         // Compact mode uses {:?} which is single-line
-        assert!(!text.contains('\n'), "compact mode should be single line, got: {text:?}");
+        assert!(
+            !text.contains('\n'),
+            "compact mode should be single line, got: {text:?}"
+        );
     }
 
     #[test]
@@ -549,13 +557,14 @@ mod rule_tests {
         let mut frame = Frame::new(20, 1, &mut pool);
         let area = Rect::new(0, 0, 20, 1);
 
-        let widget = Rule::new()
-            .title("Section")
-            .border_type(BorderType::Ascii);
+        let widget = Rule::new().title("Section").border_type(BorderType::Ascii);
         widget.render(area, &mut frame);
 
         let text = row_text(&frame, 0, 20);
-        assert!(text.contains("Section"), "rule should contain title, got: {text:?}");
+        assert!(
+            text.contains("Section"),
+            "rule should contain title, got: {text:?}"
+        );
     }
 
     #[test]
@@ -591,7 +600,10 @@ mod tree_tests {
 
         // Look for root label
         let line0 = row_text(&frame, 0, 30);
-        assert!(line0.contains("root"), "first line should contain root label, got: {line0:?}");
+        assert!(
+            line0.contains("root"),
+            "first line should contain root label, got: {line0:?}"
+        );
     }
 
     #[test]
@@ -600,8 +612,7 @@ mod tree_tests {
         let mut frame = Frame::new(30, 5, &mut pool);
         let area = Rect::new(0, 0, 30, 5);
 
-        let root = TreeNode::new("root")
-            .child(TreeNode::new("child1"));
+        let root = TreeNode::new("root").child(TreeNode::new("child1"));
         let widget = Tree::new(root)
             .with_show_root(false)
             .with_guides(TreeGuides::Ascii);
@@ -609,18 +620,23 @@ mod tree_tests {
         widget.render(area, &mut frame);
 
         let line0 = row_text(&frame, 0, 30);
-        assert!(!line0.contains("root"), "root should be hidden, got: {line0:?}");
-        assert!(line0.contains("child1"), "child should be visible, got: {line0:?}");
+        assert!(
+            !line0.contains("root"),
+            "root should be hidden, got: {line0:?}"
+        );
+        assert!(
+            line0.contains("child1"),
+            "child should be visible, got: {line0:?}"
+        );
     }
 
     #[test]
     fn tree_collapsed_node_hides_children() {
-        let root = TreeNode::new("root")
-            .child(
-                TreeNode::new("parent")
-                    .with_expanded(false)
-                    .child(TreeNode::new("hidden_child")),
-            );
+        let root = TreeNode::new("root").child(
+            TreeNode::new("parent")
+                .with_expanded(false)
+                .child(TreeNode::new("hidden_child")),
+        );
         // Collapsed parent: visible_count should not include hidden_child
         let count = root.visible_count();
         // root(1) + parent(1) = 2 (hidden_child not counted)
@@ -639,8 +655,7 @@ mod tree_tests {
     fn tree_zero_area_no_panic() {
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(1, 1, &mut pool);
-        Tree::new(TreeNode::new("r"))
-            .render(Rect::new(0, 0, 0, 0), &mut frame);
+        Tree::new(TreeNode::new("r")).render(Rect::new(0, 0, 0, 0), &mut frame);
     }
 }
 
@@ -672,7 +687,10 @@ mod table_tests {
         assert!(has_content(&frame, area), "table should render content");
 
         let line0 = row_text(&frame, 0, 20);
-        assert!(line0.contains("Name"), "first row should contain 'Name', got: {line0:?}");
+        assert!(
+            line0.contains("Name"),
+            "first row should contain 'Name', got: {line0:?}"
+        );
     }
 
     #[test]
@@ -717,18 +735,18 @@ mod table_tests {
 
         ftui_widgets::StatefulWidget::render(&widget, area, &mut frame, &mut state);
 
-        assert!(has_content(&frame, area), "table with selection should render");
+        assert!(
+            has_content(&frame, area),
+            "table with selection should render"
+        );
     }
 
     #[test]
     fn table_zero_area_no_panic() {
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(1, 1, &mut pool);
-        Table::new(
-            [Row::new(["x"])],
-            [Constraint::Fixed(1)],
-        )
-        .render(Rect::new(0, 0, 0, 0), &mut frame);
+        Table::new([Row::new(["x"])], [Constraint::Fixed(1)])
+            .render(Rect::new(0, 0, 0, 0), &mut frame);
     }
 }
 
@@ -738,9 +756,9 @@ mod table_tests {
 
 mod composition_tests {
     use super::*;
+    use ftui_widgets::borders::Borders;
     use ftui_widgets::padding::Padding;
     use ftui_widgets::panel::Panel;
-    use ftui_widgets::borders::Borders;
     use ftui_widgets::paragraph::Paragraph;
 
     #[test]
@@ -823,7 +841,10 @@ mod composition_tests {
                 break;
             }
         }
-        assert!(found_right_corner, "right panel border should appear in second half");
+        assert!(
+            found_right_corner,
+            "right panel border should appear in second half"
+        );
     }
 }
 
@@ -840,11 +861,11 @@ fn all_renderables_survive_zero_area() {
     use ftui_widgets::json_view::JsonView;
     use ftui_widgets::padding::Padding;
     use ftui_widgets::panel::Panel;
+    use ftui_widgets::paragraph::Paragraph;
     use ftui_widgets::pretty::Pretty;
     use ftui_widgets::rule::Rule;
-    use ftui_widgets::tree::{Tree, TreeNode};
-    use ftui_widgets::paragraph::Paragraph;
     use ftui_widgets::table::{Row, Table};
+    use ftui_widgets::tree::{Tree, TreeNode};
 
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(1, 1, &mut pool);

@@ -37,10 +37,8 @@ done
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 E2E_LOG_DIR="${E2E_LOG_DIR:-/tmp/ftui_e2e_${TIMESTAMP}}"
-E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$E2E_LOG_DIR/results}"
-LOG_FILE="$E2E_LOG_DIR/e2e.log"
-
 E2E_RESULTS_DIR="$E2E_LOG_DIR/results"
+LOG_FILE="$E2E_LOG_DIR/e2e.log"
 
 export E2E_LOG_DIR E2E_RESULTS_DIR LOG_FILE LOG_LEVEL
 export E2E_RUN_START_MS="$(date +%s%3N)"

@@ -545,6 +545,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::reversed_empty_ranges)]
     fn remove_inverted_range_is_noop() {
         let mut rope = Rope::from("hello");
         rope.remove(3..1); // end < start
@@ -662,6 +663,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::reversed_empty_ranges)]
     fn normalize_range_inverted_becomes_empty() {
         assert_eq!(normalize_range(5..2, 10), (5, 5));
     }

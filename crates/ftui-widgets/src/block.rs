@@ -608,7 +608,10 @@ mod tests {
         assert_eq!(buf.get(2, 0).unwrap().content.as_char(), Some('─'));
         assert_eq!(buf.get(2, 2).unwrap().content.as_char(), Some('─'));
         // Left edge should be empty (no vertical border)
-        assert!(buf.get(0, 1).unwrap().is_empty() || buf.get(0, 1).unwrap().content.as_char() == Some(' '));
+        assert!(
+            buf.get(0, 1).unwrap().is_empty()
+                || buf.get(0, 1).unwrap().content.as_char() == Some(' ')
+        );
     }
 
     #[test]

@@ -20,7 +20,6 @@ use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 
-
 /// A classified JSON token for rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JsonToken {
@@ -206,7 +205,8 @@ impl JsonView {
                             chars.next();
                             current_line.push(JsonToken::Punctuation(",".to_string()));
                             lines.push(current_line);
-                            current_line = vec![JsonToken::Whitespace(make_indent(depth, self.indent))];
+                            current_line =
+                                vec![JsonToken::Whitespace(make_indent(depth, self.indent))];
                         }
                     }
                 }
@@ -284,7 +284,15 @@ fn read_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
 fn read_literal(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
     let mut s = String::new();
     while let Some(&ch) = chars.peek() {
-        if ch == ',' || ch == '}' || ch == ']' || ch == ':' || ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t' {
+        if ch == ','
+            || ch == '}'
+            || ch == ']'
+            || ch == ':'
+            || ch == ' '
+            || ch == '\n'
+            || ch == '\r'
+            || ch == '\t'
+        {
             break;
         }
         s.push(ch);
@@ -298,7 +306,10 @@ fn classify_literal(s: &str) -> JsonToken {
         "true" | "false" | "null" => JsonToken::Literal(s.to_string()),
         _ => {
             // Try as number
-            if s.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b'-' || b == b'+' || b == b'e' || b == b'E') && !s.is_empty() {
+            if s.bytes().all(|b| {
+                b.is_ascii_digit() || b == b'.' || b == b'-' || b == b'+' || b == b'e' || b == b'E'
+            }) && !s.is_empty()
+            {
                 JsonToken::Number(s.to_string())
             } else {
                 JsonToken::Error(s.to_string())
@@ -405,7 +416,8 @@ mod tests {
         let lines = view.formatted_lines();
         // Should contain StringVal token with quoted string
         let has_string = lines.iter().any(|line| {
-            line.iter().any(|t| matches!(t, JsonToken::StringVal(s) if s.contains("hello")))
+            line.iter()
+                .any(|t| matches!(t, JsonToken::StringVal(s) if s.contains("hello")))
         });
         assert!(has_string);
     }
@@ -415,7 +427,8 @@ mod tests {
         let view = JsonView::new(r#"{"a": true, "b": false, "c": null}"#);
         let lines = view.formatted_lines();
         let has_literal = lines.iter().any(|line| {
-            line.iter().any(|t| matches!(t, JsonToken::Literal(s) if s == "true"))
+            line.iter()
+                .any(|t| matches!(t, JsonToken::Literal(s) if s == "true"))
         });
         assert!(has_literal);
     }
@@ -425,7 +438,8 @@ mod tests {
         let view = JsonView::new(r#"{"x": 42, "y": -3.14}"#);
         let lines = view.formatted_lines();
         let has_number = lines.iter().any(|line| {
-            line.iter().any(|t| matches!(t, JsonToken::Number(s) if s == "42"))
+            line.iter()
+                .any(|t| matches!(t, JsonToken::Number(s) if s == "42"))
         });
         assert!(has_number);
     }
@@ -435,7 +449,8 @@ mod tests {
         let view = JsonView::new(r#"{"msg": "hello \"world\""}"#);
         let lines = view.formatted_lines();
         let has_escaped = lines.iter().any(|line| {
-            line.iter().any(|t| matches!(t, JsonToken::StringVal(s) if s.contains("\\\"")))
+            line.iter()
+                .any(|t| matches!(t, JsonToken::StringVal(s) if s.contains("\\\"")))
         });
         assert!(has_escaped);
     }
@@ -445,7 +460,8 @@ mod tests {
         let view = JsonView::new(r#"{"a": 1}"#).with_indent(4);
         let lines = view.formatted_lines();
         let has_4_indent = lines.iter().any(|line| {
-            line.iter().any(|t| matches!(t, JsonToken::Whitespace(s) if s == "    "))
+            line.iter()
+                .any(|t| matches!(t, JsonToken::Whitespace(s) if s == "    "))
         });
         assert!(has_4_indent);
     }
@@ -508,11 +524,23 @@ mod tests {
 
     #[test]
     fn classify_literal_types() {
-        assert_eq!(classify_literal("true"), JsonToken::Literal("true".to_string()));
-        assert_eq!(classify_literal("false"), JsonToken::Literal("false".to_string()));
-        assert_eq!(classify_literal("null"), JsonToken::Literal("null".to_string()));
+        assert_eq!(
+            classify_literal("true"),
+            JsonToken::Literal("true".to_string())
+        );
+        assert_eq!(
+            classify_literal("false"),
+            JsonToken::Literal("false".to_string())
+        );
+        assert_eq!(
+            classify_literal("null"),
+            JsonToken::Literal("null".to_string())
+        );
         assert_eq!(classify_literal("42"), JsonToken::Number("42".to_string()));
-        assert_eq!(classify_literal("-3.14"), JsonToken::Number("-3.14".to_string()));
+        assert_eq!(
+            classify_literal("-3.14"),
+            JsonToken::Number("-3.14".to_string())
+        );
         assert!(matches!(classify_literal("invalid!"), JsonToken::Error(_)));
     }
 }

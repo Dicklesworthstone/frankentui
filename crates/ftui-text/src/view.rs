@@ -408,7 +408,7 @@ mod tests {
         let view = TextView::new("abcde", 3, WrapMode::Char);
         let lines = view.lines();
         assert!(!lines[0].is_wrap); // first segment is NOT a wrap
-        assert!(lines[1].is_wrap);  // second segment IS a wrap continuation
+        assert!(lines[1].is_wrap); // second segment IS a wrap continuation
     }
 
     // ====== set_text / set_wrap / set_width ======
@@ -591,7 +591,10 @@ mod tests {
     #[test]
     fn scroll_by_pages_forward() {
         // 10 lines, viewport 3: pages move by 3
-        let text = (0..10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let text = (0..10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let view = TextView::new(text.as_str(), 100, WrapMode::None);
         assert_eq!(view.scroll_by_pages(0, 1, 3), 3);
         assert_eq!(view.scroll_by_pages(0, 2, 3), 6);
@@ -599,7 +602,10 @@ mod tests {
 
     #[test]
     fn scroll_by_pages_backward() {
-        let text = (0..10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let text = (0..10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let view = TextView::new(text.as_str(), 100, WrapMode::None);
         assert_eq!(view.scroll_by_pages(6, -1, 3), 3);
         assert_eq!(view.scroll_by_pages(6, -3, 3), 0); // clamps to 0

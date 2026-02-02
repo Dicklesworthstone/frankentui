@@ -157,7 +157,6 @@ pub mod virtualized;
 
 pub use align::{Align, VerticalAlignment};
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
-pub use group::Group;
 pub use columns::{Column, Columns};
 pub use constraint_overlay::{ConstraintOverlay, ConstraintOverlayStyle};
 #[cfg(feature = "debug-overlay")]
@@ -165,6 +164,7 @@ pub use debug_overlay::{
     DebugOverlay, DebugOverlayOptions, DebugOverlayState, DebugOverlayStateful,
     DebugOverlayStatefulState,
 };
+pub use group::Group;
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 pub use log_ring::LogRing;
 pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode};

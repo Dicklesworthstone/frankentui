@@ -23,7 +23,6 @@ use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 
-
 /// Guide character styles for tree rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TreeGuides {
@@ -362,9 +361,11 @@ mod tests {
 
     fn simple_tree() -> TreeNode {
         TreeNode::new("root")
-            .child(TreeNode::new("a")
-                .child(TreeNode::new("a1"))
-                .child(TreeNode::new("a2")))
+            .child(
+                TreeNode::new("a")
+                    .child(TreeNode::new("a1"))
+                    .child(TreeNode::new("a2")),
+            )
             .child(TreeNode::new("b"))
     }
 
@@ -394,9 +395,12 @@ mod tests {
     #[test]
     fn tree_node_collapsed() {
         let root = TreeNode::new("root")
-            .child(TreeNode::new("a").with_expanded(false)
-                .child(TreeNode::new("a1"))
-                .child(TreeNode::new("a2")))
+            .child(
+                TreeNode::new("a")
+                    .with_expanded(false)
+                    .child(TreeNode::new("a1"))
+                    .child(TreeNode::new("a2")),
+            )
             .child(TreeNode::new("b"));
         // root + a (collapsed, so no a1/a2) + b = 3
         assert_eq!(root.visible_count(), 3);
@@ -429,7 +433,13 @@ mod tests {
 
     #[test]
     fn tree_guides_width() {
-        for g in [TreeGuides::Ascii, TreeGuides::Unicode, TreeGuides::Bold, TreeGuides::Double, TreeGuides::Rounded] {
+        for g in [
+            TreeGuides::Ascii,
+            TreeGuides::Unicode,
+            TreeGuides::Bold,
+            TreeGuides::Double,
+            TreeGuides::Rounded,
+        ] {
             assert_eq!(g.width(), 4);
         }
     }
@@ -494,8 +504,9 @@ mod tests {
         let tree = Tree::new(
             TreeNode::new("root")
                 .child(TreeNode::new("a"))
-                .child(TreeNode::new("b"))
-        ).with_guides(TreeGuides::Ascii);
+                .child(TreeNode::new("b")),
+        )
+        .with_guides(TreeGuides::Ascii);
 
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(40, 10, &mut pool);
