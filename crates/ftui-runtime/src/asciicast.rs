@@ -254,6 +254,17 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    fn make_recorder(width: u16, height: u16) -> AsciicastRecorder<Cursor<Vec<u8>>> {
+        AsciicastRecorder::with_writer(Cursor::new(Vec::new()), width, height, 0).unwrap()
+    }
+
+    fn output_string(recorder: AsciicastRecorder<Cursor<Vec<u8>>>) -> String {
+        let cursor = recorder.finish().unwrap();
+        String::from_utf8(cursor.into_inner()).unwrap()
+    }
+
+    // --- Header tests ---
+
     #[test]
     fn header_and_output_are_written() {
         let cursor = Cursor::new(Vec::new());
@@ -272,6 +283,86 @@ mod tests {
     }
 
     #[test]
+    fn header_contains_version_2() {
+        let recorder = make_recorder(40, 10);
+        let output = output_string(recorder);
+        let header = output.lines().next().unwrap();
+        assert!(header.contains("\"version\":2"));
+    }
+
+    #[test]
+    fn header_contains_dimensions() {
+        let recorder = make_recorder(120, 50);
+        let output = output_string(recorder);
+        let header = output.lines().next().unwrap();
+        assert!(header.contains("\"width\":120"));
+        assert!(header.contains("\"height\":50"));
+    }
+
+    // --- Event recording tests ---
+
+    #[test]
+    fn record_output_creates_output_event() {
+        let mut recorder = make_recorder(80, 24);
+        recorder.record_output(b"hello").unwrap();
+        let output = output_string(recorder);
+        let event = output.lines().nth(1).unwrap();
+        assert!(event.starts_with('['));
+        assert!(event.contains("\"o\""));
+        assert!(event.contains("hello"));
+    }
+
+    #[test]
+    fn record_input_creates_input_event() {
+        let mut recorder = make_recorder(80, 24);
+        recorder.record_input(b"key").unwrap();
+        let output = output_string(recorder);
+        let event = output.lines().nth(1).unwrap();
+        assert!(event.contains("\"i\""));
+        assert!(event.contains("key"));
+    }
+
+    #[test]
+    fn multiple_events_are_sequential() {
+        let mut recorder = make_recorder(80, 24);
+        recorder.record_output(b"first").unwrap();
+        recorder.record_output(b"second").unwrap();
+        recorder.record_input(b"third").unwrap();
+        let output = output_string(recorder);
+        let lines: Vec<&str> = output.lines().collect();
+        // header + 3 events
+        assert_eq!(lines.len(), 4);
+        assert!(lines[1].contains("first"));
+        assert!(lines[2].contains("second"));
+        assert!(lines[3].contains("third"));
+    }
+
+    #[test]
+    fn event_count_tracks_events() {
+        let mut recorder = make_recorder(80, 24);
+        assert_eq!(recorder.event_count(), 0);
+        recorder.record_output(b"a").unwrap();
+        assert_eq!(recorder.event_count(), 1);
+        recorder.record_input(b"b").unwrap();
+        assert_eq!(recorder.event_count(), 2);
+    }
+
+    #[test]
+    fn accessor_methods_return_dimensions() {
+        let recorder = make_recorder(132, 43);
+        assert_eq!(recorder.width(), 132);
+        assert_eq!(recorder.height(), 43);
+    }
+
+    #[test]
+    fn duration_is_non_negative() {
+        let recorder = make_recorder(80, 24);
+        assert!(recorder.duration().as_secs_f64() >= 0.0);
+    }
+
+    // --- JSON escaping tests ---
+
+    #[test]
     fn json_escape_controls() {
         let cursor = Cursor::new(Vec::new());
         let mut recorder = AsciicastRecorder::with_writer(cursor, 1, 1, 0).unwrap();
@@ -280,5 +371,83 @@ mod tests {
         let output = String::from_utf8(cursor.into_inner()).unwrap();
         let event = output.lines().nth(1).unwrap();
         assert!(event.contains("\\\"\\\\\\\\\\n"));
+    }
+
+    #[test]
+    fn escape_json_handles_all_special_chars() {
+        assert_eq!(escape_json("\""), "\\\"");
+        assert_eq!(escape_json("\\"), "\\\\");
+        assert_eq!(escape_json("\n"), "\\n");
+        assert_eq!(escape_json("\r"), "\\r");
+        assert_eq!(escape_json("\t"), "\\t");
+        assert_eq!(escape_json("\u{08}"), "\\b");
+        assert_eq!(escape_json("\u{0C}"), "\\f");
+    }
+
+    #[test]
+    fn escape_json_passes_normal_text() {
+        assert_eq!(escape_json("hello world"), "hello world");
+        assert_eq!(escape_json(""), "");
+    }
+
+    #[test]
+    fn escape_json_handles_low_control_chars() {
+        let result = escape_json("\x01\x02");
+        assert!(result.contains("\\u0001"));
+        assert!(result.contains("\\u0002"));
+    }
+
+    // --- AsciicastWriter tests ---
+
+    #[test]
+    fn writer_mirrors_output_to_recorder() {
+        let output = Cursor::new(Vec::new());
+        let recorder = make_recorder(80, 24);
+        let mut writer = AsciicastWriter::new(output, recorder);
+
+        writer.write_all(b"test data").unwrap();
+        writer.flush().unwrap();
+
+        let (output, recording) = writer.finish().unwrap();
+        let output_str = String::from_utf8(output.into_inner()).unwrap();
+        let recording_str = String::from_utf8(recording.into_inner()).unwrap();
+
+        assert_eq!(output_str, "test data");
+        assert!(recording_str.contains("test data"));
+    }
+
+    #[test]
+    fn writer_record_input_works() {
+        let output = Cursor::new(Vec::new());
+        let recorder = make_recorder(80, 24);
+        let mut writer = AsciicastWriter::new(output, recorder);
+
+        writer.record_input(b"key press").unwrap();
+
+        let (_, recording) = writer.finish().unwrap();
+        let recording_str = String::from_utf8(recording.into_inner()).unwrap();
+        assert!(recording_str.contains("\"i\""));
+        assert!(recording_str.contains("key press"));
+    }
+
+    #[test]
+    fn writer_recorder_mut_accessible() {
+        let output = Cursor::new(Vec::new());
+        let recorder = make_recorder(80, 24);
+        let mut writer = AsciicastWriter::new(output, recorder);
+
+        assert_eq!(writer.recorder_mut().event_count(), 0);
+        writer.write_all(b"x").unwrap();
+        assert_eq!(writer.recorder_mut().event_count(), 1);
+    }
+
+    // --- Empty recording test ---
+
+    #[test]
+    fn finish_with_no_events_produces_header_only() {
+        let recorder = make_recorder(80, 24);
+        let output = output_string(recorder);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 1); // header only
     }
 }
