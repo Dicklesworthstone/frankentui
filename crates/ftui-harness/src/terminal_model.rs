@@ -243,7 +243,7 @@ impl TerminalModel {
                 // TAB: advance to next 8-column tab stop
                 self.cursor_x = ((self.cursor_x / 8) + 1) * 8;
                 if self.cursor_x >= self.width {
-                    self.cursor_x = self.width - 1;
+                    self.cursor_x = self.width.saturating_sub(1);
                 }
             }
             0x20..=0x7e => {
@@ -298,13 +298,13 @@ impl TerminalModel {
             b'B' => {
                 self.csi_params.push(self.csi_current);
                 let n = self.param(0, 1);
-                self.cursor_y = (self.cursor_y + n).min(self.height - 1);
+                self.cursor_y = (self.cursor_y + n).min(self.height.saturating_sub(1));
                 self.state = ParserState::Ground;
             }
             b'C' => {
                 self.csi_params.push(self.csi_current);
                 let n = self.param(0, 1);
-                self.cursor_x = (self.cursor_x + n).min(self.width - 1);
+                self.cursor_x = (self.cursor_x + n).min(self.width.saturating_sub(1));
                 self.state = ParserState::Ground;
             }
             b'D' => {
@@ -318,8 +318,8 @@ impl TerminalModel {
                 self.csi_params.push(self.csi_current);
                 let row = self.param(0, 1);
                 let col = self.param(1, 1);
-                self.cursor_y = row.saturating_sub(1).min(self.height - 1);
-                self.cursor_x = col.saturating_sub(1).min(self.width - 1);
+                self.cursor_y = row.saturating_sub(1).min(self.height.saturating_sub(1));
+                self.cursor_x = col.saturating_sub(1).min(self.width.saturating_sub(1));
                 self.state = ParserState::Ground;
             }
             b'J' => {

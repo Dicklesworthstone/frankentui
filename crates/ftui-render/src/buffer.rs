@@ -168,7 +168,10 @@ impl Buffer {
             // Actually, `set` overwrites `cells[idx]` immediately after.
             // But we must clear the tails.
             for i in 1..width {
-                if let Some(tail_idx) = self.index(x + i as u16, y)
+                let Some(cx) = x.checked_add(i as u16) else {
+                    break;
+                };
+                if let Some(tail_idx) = self.index(cx, y)
                     && self.cells[tail_idx].is_continuation()
                 {
                     self.cells[tail_idx] = Cell::default();
@@ -193,7 +196,10 @@ impl Buffer {
                             // Clear all its tails (except the one we're about to write, effectively)
                             // We just iterate 1..width and clear CONTs.
                             for i in 1..width {
-                                if let Some(tail_idx) = self.index(back_x + i as u16, y) {
+                                let Some(cx) = back_x.checked_add(i as u16) else {
+                                    break;
+                                };
+                                if let Some(tail_idx) = self.index(cx, y) {
                                     // Note: tail_idx might be our current `idx`.
                                     // We can clear it; `set` will overwrite it in a moment.
                                     if self.cells[tail_idx].is_continuation() {
@@ -263,7 +269,9 @@ impl Buffer {
         // Ensure ALL cells (head + tail) are within bounds and scissor
         let scissor = self.current_scissor();
         for i in 0..width {
-            let cx = x + i as u16;
+            let Some(cx) = x.checked_add(i as u16) else {
+                return;
+            };
             // Check bounds
             if cx >= self.width || y >= self.height {
                 return;
@@ -279,6 +287,7 @@ impl Buffer {
         // Cleanup overlaps for all cells
         self.cleanup_overlap(x, y, &cell);
         for i in 1..width {
+            // Safe: atomicity check above verified x + i fits in u16
             self.cleanup_overlap(x + i as u16, y, &Cell::CONTINUATION);
         }
 
