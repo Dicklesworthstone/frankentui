@@ -36,6 +36,10 @@ live = ["console"]
 logging = ["console", "dep:tracing", "dep:tracing-subscriber"]
 syntax = ["dep:ftui-render", "dep:ftui-style", "dep:ftui-text"]
 filepicker = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-text", "dep:unicode-width"]
+traceback = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:unicode-width"]
+filesize = []
+stopwatch = []
+timer = []
 
 [dev-dependencies]
 tracing = "0.1"

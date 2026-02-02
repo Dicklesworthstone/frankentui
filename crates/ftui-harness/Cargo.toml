@@ -14,7 +14,7 @@ ftui-core = { path = "../ftui-core" }
 ftui-runtime = { path = "../ftui-runtime" }
 ftui-widgets = { path = "../ftui-widgets" }
 ftui-style = { path = "../ftui-style" }
-ftui-text = { path = "../ftui-text" }
+ftui-text = { path = "../ftui-text", features = ["markup"] }
 ftui-layout = { path = "../ftui-layout" }
 ftui-extras = { path = "../ftui-extras", features = ["pty-capture"], optional = true }
 portable-pty = { version = "0.8.1", optional = true }

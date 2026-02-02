@@ -648,11 +648,11 @@ mod tests {
     #[test]
     fn cache_clears_on_overflow() {
         let mut cache = ColorCache::with_capacity(ColorProfile::Ansi16, 2);
-        cache.downgrade_rgb(Rgb::new(1, 0, 0));
-        cache.downgrade_rgb(Rgb::new(2, 0, 0));
+        let _ = cache.downgrade_rgb(Rgb::new(1, 0, 0));
+        let _ = cache.downgrade_rgb(Rgb::new(2, 0, 0));
         assert_eq!(cache.stats().size, 2);
         // Third entry should trigger clear
-        cache.downgrade_rgb(Rgb::new(3, 0, 0));
+        let _ = cache.downgrade_rgb(Rgb::new(3, 0, 0));
         assert_eq!(cache.stats().size, 1);
     }
 

@@ -522,15 +522,8 @@ impl<'a> Draw for Frame<'a> {
         self.buffer.draw_border(rect, chars, base_cell);
     }
 
-    fn draw_box(
-        &mut self,
-        rect: Rect,
-        chars: BorderChars,
-        border_cell: Cell,
-        fill_cell: Cell,
-    ) {
-        self.buffer
-            .draw_box(rect, chars, border_cell, fill_cell);
+    fn draw_box(&mut self, rect: Rect, chars: BorderChars, border_cell: Cell, fill_cell: Cell) {
+        self.buffer.draw_box(rect, chars, border_cell, fill_cell);
     }
 
     fn paint_area(

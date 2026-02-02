@@ -206,7 +206,10 @@ impl<T> LogRing<T> {
     /// Iterate over items with their absolute indices.
     pub fn iter_indexed(&self) -> impl DoubleEndedIterator<Item = (usize, &T)> {
         let start = self.first_index();
-        self.ring.iter().enumerate().map(move |(i, item)| (start + i, item))
+        self.ring
+            .iter()
+            .enumerate()
+            .map(move |(i, item)| (start + i, item))
     }
 
     /// Drain all items from the ring.

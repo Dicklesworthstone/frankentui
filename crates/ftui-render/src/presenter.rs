@@ -688,6 +688,127 @@ mod tests {
 
         // Let's rely on the fix verification instead.
     }
+
+    #[test]
+    fn hyperlink_emitted_with_registry() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(10, 1);
+        let mut links = LinkRegistry::new();
+
+        let link_id = links.register("https://example.com");
+        let cell = Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id));
+        buffer.set_raw(0, 0, cell);
+
+        let old = Buffer::new(10, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter
+            .present_with_pool(&buffer, &diff, None, Some(&links))
+            .unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        // OSC 8 open with URL
+        assert!(
+            output_str.contains("\x1b]8;;https://example.com\x1b\\"),
+            "Expected OSC 8 open, got: {:?}",
+            output_str
+        );
+        // OSC 8 close (empty URL)
+        assert!(
+            output_str.contains("\x1b]8;;\x1b\\"),
+            "Expected OSC 8 close, got: {:?}",
+            output_str
+        );
+    }
+
+    #[test]
+    fn hyperlink_not_emitted_without_registry() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(10, 1);
+
+        // Set a link ID without providing a registry
+        let cell = Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), 1));
+        buffer.set_raw(0, 0, cell);
+
+        let old = Buffer::new(10, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        // Present without link registry
+        presenter.present(&buffer, &diff).unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        // No OSC 8 sequences should appear
+        assert!(
+            !output_str.contains("\x1b]8;"),
+            "OSC 8 should not appear without registry, got: {:?}",
+            output_str
+        );
+    }
+
+    #[test]
+    fn hyperlink_closed_at_frame_end() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(10, 1);
+        let mut links = LinkRegistry::new();
+
+        let link_id = links.register("https://example.com");
+        // Set all cells with the same link
+        for x in 0..5 {
+            buffer.set_raw(x, 0, Cell::from_char('A').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)));
+        }
+
+        let old = Buffer::new(10, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter
+            .present_with_pool(&buffer, &diff, None, Some(&links))
+            .unwrap();
+        let output = get_output(presenter);
+
+        // The close sequence should appear (frame end cleanup)
+        let close_seq = b"\x1b]8;;\x1b\\";
+        assert!(
+            output.windows(close_seq.len()).any(|w| w == close_seq),
+            "Link must be closed at frame end"
+        );
+    }
+
+    #[test]
+    fn hyperlink_transitions_between_links() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(10, 1);
+        let mut links = LinkRegistry::new();
+
+        let link_a = links.register("https://a.com");
+        let link_b = links.register("https://b.com");
+
+        buffer.set_raw(0, 0, Cell::from_char('A').with_attrs(CellAttrs::new(StyleFlags::empty(), link_a)));
+        buffer.set_raw(1, 0, Cell::from_char('B').with_attrs(CellAttrs::new(StyleFlags::empty(), link_b)));
+        buffer.set_raw(2, 0, Cell::from_char('C')); // no link
+
+        let old = Buffer::new(10, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter
+            .present_with_pool(&buffer, &diff, None, Some(&links))
+            .unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Both links should appear
+        assert!(output_str.contains("https://a.com"));
+        assert!(output_str.contains("https://b.com"));
+
+        // Close sequence must appear at least once (transition or frame end)
+        let close_count = output_str.matches("\x1b]8;;\x1b\\").count();
+        assert!(
+            close_count >= 2,
+            "Expected at least 2 link close sequences (transition + frame end), got {}",
+            close_count
+        );
+    }
 }
 
 #[cfg(test)]

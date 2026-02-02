@@ -301,6 +301,11 @@ impl TokenizerRegistry {
     pub fn is_empty(&self) -> bool {
         self.tokenizers.is_empty()
     }
+
+    /// Get all registered tokenizer names.
+    pub fn names(&self) -> Vec<&str> {
+        self.tokenizers.iter().map(|t| t.name()).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1212,744 @@ impl HighlightThemeBuilder {
 }
 
 // ---------------------------------------------------------------------------
+// SyntaxHighlighter
+// ---------------------------------------------------------------------------
+
+use ftui_text::{Line, Span, Text};
+
+/// High-level syntax highlighter that converts code into styled [`Text`].
+///
+/// Combines tokenizer registry + theme to produce highlighted output.
+///
+/// # Example
+/// ```ignore
+/// use ftui_extras::syntax::SyntaxHighlighter;
+///
+/// let hl = SyntaxHighlighter::new();
+/// let text = hl.highlight("let x = 42;", "rs");
+/// // `text` is a styled Text with colored spans
+/// ```
+pub struct SyntaxHighlighter {
+    registry: TokenizerRegistry,
+    theme: HighlightTheme,
+}
+
+impl Default for SyntaxHighlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SyntaxHighlighter {
+    /// Create a highlighter with all built-in tokenizers and the dark theme.
+    #[must_use]
+    pub fn new() -> Self {
+        let mut registry = TokenizerRegistry::new();
+        registry.register(Box::new(rust_tokenizer()));
+        registry.register(Box::new(python_tokenizer()));
+        registry.register(Box::new(javascript_tokenizer()));
+        registry.register(Box::new(JsonTokenizer));
+        registry.register(Box::new(TomlTokenizer));
+        registry.register(Box::new(MarkdownTokenizer));
+        registry.register(Box::new(PlainTokenizer));
+        Self {
+            registry,
+            theme: HighlightTheme::dark(),
+        }
+    }
+
+    /// Create a highlighter with a custom theme and the default tokenizers.
+    #[must_use]
+    pub fn with_theme(theme: HighlightTheme) -> Self {
+        let mut hl = Self::new();
+        hl.theme = theme;
+        hl
+    }
+
+    /// Set the theme.
+    pub fn set_theme(&mut self, theme: HighlightTheme) {
+        self.theme = theme;
+    }
+
+    /// Get a reference to the current theme.
+    #[must_use]
+    pub fn theme(&self) -> &HighlightTheme {
+        &self.theme
+    }
+
+    /// Register an additional tokenizer.
+    pub fn register_tokenizer(&mut self, tokenizer: Box<dyn Tokenizer>) {
+        self.registry.register(tokenizer);
+    }
+
+    /// Get the list of supported languages (tokenizer names).
+    #[must_use]
+    pub fn languages(&self) -> Vec<&str> {
+        self.registry.names()
+    }
+
+    /// Highlight code using a language identifier (extension or name).
+    ///
+    /// Falls back to plain text if the language is not recognized.
+    #[must_use]
+    pub fn highlight(&self, code: &str, lang: &str) -> Text {
+        let tokenizer = self
+            .registry
+            .for_extension(lang)
+            .or_else(|| self.registry.by_name(lang))
+            .unwrap_or_else(|| self.registry.for_extension("txt").expect("PlainTokenizer"));
+
+        let mut lines = Vec::new();
+        let mut state = LineState::Normal;
+
+        for source_line in code.split('\n') {
+            let (tokens, next_state) = tokenizer.tokenize_line(source_line, state);
+            state = next_state;
+
+            let spans = self.tokens_to_spans(source_line, &tokens);
+            lines.push(Line::from_spans(spans));
+        }
+
+        Text::from_lines(lines)
+    }
+
+    /// Highlight code with line numbers prepended.
+    #[must_use]
+    pub fn highlight_numbered(&self, code: &str, lang: &str, start_line: usize) -> Text {
+        let tokenizer = self
+            .registry
+            .for_extension(lang)
+            .or_else(|| self.registry.by_name(lang))
+            .unwrap_or_else(|| self.registry.for_extension("txt").expect("PlainTokenizer"));
+
+        let source_lines: Vec<&str> = code.split('\n').collect();
+        let total = source_lines.len() + start_line;
+        let gutter_width = total.to_string().len();
+
+        let mut lines = Vec::new();
+        let mut state = LineState::Normal;
+        let gutter_style = self.theme.punctuation;
+
+        for (i, source_line) in source_lines.iter().enumerate() {
+            let line_num = start_line + i + 1;
+            let gutter = format!("{:>width$} ", line_num, width = gutter_width);
+
+            let (tokens, next_state) = tokenizer.tokenize_line(source_line, state);
+            state = next_state;
+
+            let mut spans = vec![Span::styled(gutter, gutter_style)];
+            spans.extend(self.tokens_to_spans(source_line, &tokens));
+            lines.push(Line::from_spans(spans));
+        }
+
+        Text::from_lines(lines)
+    }
+
+    /// Convert tokens into styled spans for a single line.
+    fn tokens_to_spans<'a>(&self, source: &'a str, tokens: &[Token]) -> Vec<Span<'a>> {
+        let mut spans = Vec::with_capacity(tokens.len());
+        let mut last_end = 0;
+
+        for token in tokens {
+            // Fill gaps between tokens with unstyled text
+            if token.range.start > last_end
+                && let Some(gap) = source.get(last_end..token.range.start)
+            {
+                spans.push(Span::raw(gap));
+            }
+
+            let style = self.theme.style_for(token.kind);
+            if let Some(text) = source.get(token.range.clone()) {
+                spans.push(Span::styled(text, style));
+            }
+            last_end = token.range.end;
+        }
+
+        // Trailing text after last token
+        if last_end < source.len()
+            && let Some(tail) = source.get(last_end..)
+        {
+            spans.push(Span::raw(tail));
+        }
+
+        spans
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON Tokenizer
+// ---------------------------------------------------------------------------
+
+/// Tokenizer for JSON files.
+///
+/// Handles: strings, numbers, booleans, null, structural punctuation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JsonTokenizer;
+
+impl Tokenizer for JsonTokenizer {
+    fn name(&self) -> &'static str {
+        "JSON"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["json", "jsonl", "geojson"]
+    }
+
+    fn tokenize_line(&self, line: &str, state: LineState) -> (Vec<Token>, LineState) {
+        let bytes = line.as_bytes();
+        let len = bytes.len();
+        let mut tokens = Vec::new();
+        let mut pos = 0;
+        let mut current_state = state;
+
+        while pos < len {
+            match current_state {
+                LineState::InString(StringKind::Double) => {
+                    let start = pos;
+                    while pos < len {
+                        if bytes[pos] == b'\\' && pos + 1 < len {
+                            // Skip escape sequence
+                            pos += 2;
+                        } else if bytes[pos] == b'"' {
+                            pos += 1;
+                            current_state = LineState::Normal;
+                            break;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+                    tokens.push(Token::new(TokenKind::String, start..pos));
+                }
+                _ => {
+                    let b = bytes[pos];
+                    match b {
+                        b' ' | b'\t' | b'\r' => {
+                            let start = pos;
+                            while pos < len
+                                && (bytes[pos] == b' '
+                                    || bytes[pos] == b'\t'
+                                    || bytes[pos] == b'\r')
+                            {
+                                pos += 1;
+                            }
+                            tokens.push(Token::new(TokenKind::Whitespace, start..pos));
+                        }
+                        b'"' => {
+                            let start = pos;
+                            pos += 1; // skip opening quote
+                            while pos < len {
+                                if bytes[pos] == b'\\' && pos + 1 < len {
+                                    pos += 2;
+                                } else if bytes[pos] == b'"' {
+                                    pos += 1;
+                                    break;
+                                } else {
+                                    pos += 1;
+                                }
+                            }
+                            if pos <= len && pos > start + 1 && bytes[pos - 1] == b'"' {
+                                tokens.push(Token::new(TokenKind::String, start..pos));
+                            } else {
+                                // Unterminated string continues on next line
+                                tokens.push(Token::new(TokenKind::String, start..pos));
+                                current_state = LineState::InString(StringKind::Double);
+                            }
+                        }
+                        b'{' | b'}' | b'[' | b']' => {
+                            tokens.push(Token::new(TokenKind::Delimiter, pos..pos + 1));
+                            pos += 1;
+                        }
+                        b':' | b',' => {
+                            tokens.push(Token::new(TokenKind::Punctuation, pos..pos + 1));
+                            pos += 1;
+                        }
+                        b'-' | b'0'..=b'9' => {
+                            let start = pos;
+                            if b == b'-' {
+                                pos += 1;
+                            }
+                            while pos < len && bytes[pos].is_ascii_digit() {
+                                pos += 1;
+                            }
+                            // Decimal part
+                            if pos < len && bytes[pos] == b'.' {
+                                pos += 1;
+                                while pos < len && bytes[pos].is_ascii_digit() {
+                                    pos += 1;
+                                }
+                            }
+                            // Exponent
+                            if pos < len && (bytes[pos] == b'e' || bytes[pos] == b'E') {
+                                pos += 1;
+                                if pos < len && (bytes[pos] == b'+' || bytes[pos] == b'-') {
+                                    pos += 1;
+                                }
+                                while pos < len && bytes[pos].is_ascii_digit() {
+                                    pos += 1;
+                                }
+                            }
+                            tokens.push(Token::new(TokenKind::Number, start..pos));
+                        }
+                        b't' if line.get(pos..pos + 4) == Some("true") => {
+                            tokens.push(Token::new(TokenKind::Boolean, pos..pos + 4));
+                            pos += 4;
+                        }
+                        b'f' if line.get(pos..pos + 5) == Some("false") => {
+                            tokens.push(Token::new(TokenKind::Boolean, pos..pos + 5));
+                            pos += 5;
+                        }
+                        b'n' if line.get(pos..pos + 4) == Some("null") => {
+                            tokens.push(Token::new(TokenKind::Constant, pos..pos + 4));
+                            pos += 4;
+                        }
+                        _ => {
+                            tokens.push(Token::new(TokenKind::Error, pos..pos + 1));
+                            pos += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        (tokens, current_state)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TOML Tokenizer
+// ---------------------------------------------------------------------------
+
+/// Tokenizer for TOML files.
+///
+/// Handles: table headers, keys, strings (basic/literal), numbers,
+/// booleans, dates, comments.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TomlTokenizer;
+
+impl Tokenizer for TomlTokenizer {
+    fn name(&self) -> &'static str {
+        "TOML"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["toml"]
+    }
+
+    fn tokenize_line(&self, line: &str, state: LineState) -> (Vec<Token>, LineState) {
+        let bytes = line.as_bytes();
+        let len = bytes.len();
+        let mut tokens = Vec::new();
+        let mut pos = 0;
+        let mut current_state = state;
+
+        // Handle multi-line string continuation
+        match current_state {
+            LineState::InString(StringKind::Triple) => {
+                let start = pos;
+                while pos < len {
+                    if bytes[pos] == b'\\' && pos + 1 < len {
+                        pos += 2;
+                    } else if pos + 2 < len
+                        && bytes[pos] == b'"'
+                        && bytes[pos + 1] == b'"'
+                        && bytes[pos + 2] == b'"'
+                    {
+                        pos += 3;
+                        current_state = LineState::Normal;
+                        break;
+                    } else {
+                        pos += 1;
+                    }
+                }
+                tokens.push(Token::new(TokenKind::String, start..pos));
+                if matches!(current_state, LineState::InString(_)) {
+                    return (tokens, current_state);
+                }
+            }
+            LineState::InString(StringKind::Single) => {
+                // Multi-line literal string (''')
+                let start = pos;
+                while pos < len {
+                    if pos + 2 < len
+                        && bytes[pos] == b'\''
+                        && bytes[pos + 1] == b'\''
+                        && bytes[pos + 2] == b'\''
+                    {
+                        pos += 3;
+                        current_state = LineState::Normal;
+                        break;
+                    } else {
+                        pos += 1;
+                    }
+                }
+                tokens.push(Token::new(TokenKind::String, start..pos));
+                if matches!(current_state, LineState::InString(_)) {
+                    return (tokens, current_state);
+                }
+            }
+            _ => {}
+        }
+
+        while pos < len {
+            let b = bytes[pos];
+            match b {
+                b' ' | b'\t' | b'\r' => {
+                    let start = pos;
+                    while pos < len
+                        && (bytes[pos] == b' ' || bytes[pos] == b'\t' || bytes[pos] == b'\r')
+                    {
+                        pos += 1;
+                    }
+                    tokens.push(Token::new(TokenKind::Whitespace, start..pos));
+                }
+                b'#' => {
+                    tokens.push(Token::new(TokenKind::Comment, pos..len));
+                    pos = len;
+                }
+                b'[' => {
+                    // Table header or array of tables
+                    let start = pos;
+                    if pos + 1 < len && bytes[pos + 1] == b'[' {
+                        // Array of tables [[...]]
+                        pos += 2;
+                        while pos + 1 < len && !(bytes[pos] == b']' && bytes[pos + 1] == b']') {
+                            pos += 1;
+                        }
+                        if pos + 1 < len {
+                            pos += 2; // skip ]]
+                        }
+                    } else {
+                        pos += 1;
+                        while pos < len && bytes[pos] != b']' {
+                            pos += 1;
+                        }
+                        if pos < len {
+                            pos += 1; // skip ]
+                        }
+                    }
+                    tokens.push(Token::new(TokenKind::Heading, start..pos));
+                }
+                b'"' => {
+                    let start = pos;
+                    if pos + 2 < len && bytes[pos + 1] == b'"' && bytes[pos + 2] == b'"' {
+                        // Multi-line basic string
+                        pos += 3;
+                        while pos < len {
+                            if bytes[pos] == b'\\' && pos + 1 < len {
+                                pos += 2;
+                            } else if pos + 2 < len
+                                && bytes[pos] == b'"'
+                                && bytes[pos + 1] == b'"'
+                                && bytes[pos + 2] == b'"'
+                            {
+                                pos += 3;
+                                break;
+                            } else {
+                                pos += 1;
+                            }
+                        }
+                        if pos >= len
+                            && (pos < 3
+                                || bytes[pos.saturating_sub(1)] != b'"'
+                                || bytes[pos.saturating_sub(2)] != b'"'
+                                || bytes[pos.saturating_sub(3)] != b'"')
+                        {
+                            current_state = LineState::InString(StringKind::Triple);
+                        }
+                        tokens.push(Token::new(TokenKind::String, start..pos));
+                    } else {
+                        // Basic string
+                        pos += 1;
+                        while pos < len {
+                            if bytes[pos] == b'\\' && pos + 1 < len {
+                                pos += 2;
+                            } else if bytes[pos] == b'"' {
+                                pos += 1;
+                                break;
+                            } else {
+                                pos += 1;
+                            }
+                        }
+                        tokens.push(Token::new(TokenKind::String, start..pos));
+                    }
+                }
+                b'\'' => {
+                    let start = pos;
+                    if pos + 2 < len && bytes[pos + 1] == b'\'' && bytes[pos + 2] == b'\'' {
+                        // Multi-line literal string
+                        pos += 3;
+                        while pos < len {
+                            if pos + 2 < len
+                                && bytes[pos] == b'\''
+                                && bytes[pos + 1] == b'\''
+                                && bytes[pos + 2] == b'\''
+                            {
+                                pos += 3;
+                                break;
+                            } else {
+                                pos += 1;
+                            }
+                        }
+                        if pos >= len
+                            && (pos < 3
+                                || bytes[pos.saturating_sub(1)] != b'\''
+                                || bytes[pos.saturating_sub(2)] != b'\''
+                                || bytes[pos.saturating_sub(3)] != b'\'')
+                        {
+                            current_state = LineState::InString(StringKind::Single);
+                        }
+                        tokens.push(Token::new(TokenKind::String, start..pos));
+                    } else {
+                        // Literal string (no escapes)
+                        pos += 1;
+                        while pos < len && bytes[pos] != b'\'' {
+                            pos += 1;
+                        }
+                        if pos < len {
+                            pos += 1;
+                        }
+                        tokens.push(Token::new(TokenKind::String, start..pos));
+                    }
+                }
+                b'=' => {
+                    tokens.push(Token::new(TokenKind::Operator, pos..pos + 1));
+                    pos += 1;
+                }
+                b',' => {
+                    tokens.push(Token::new(TokenKind::Punctuation, pos..pos + 1));
+                    pos += 1;
+                }
+                b'{' | b'}' => {
+                    tokens.push(Token::new(TokenKind::Delimiter, pos..pos + 1));
+                    pos += 1;
+                }
+                b't' if line.get(pos..pos + 4) == Some("true")
+                    && !Self::continues_ident(bytes, pos + 4) =>
+                {
+                    tokens.push(Token::new(TokenKind::Boolean, pos..pos + 4));
+                    pos += 4;
+                }
+                b'f' if line.get(pos..pos + 5) == Some("false")
+                    && !Self::continues_ident(bytes, pos + 5) =>
+                {
+                    tokens.push(Token::new(TokenKind::Boolean, pos..pos + 5));
+                    pos += 5;
+                }
+                b'-' | b'+' | b'0'..=b'9' => {
+                    let start = pos;
+                    // Could be number or date
+                    if b == b'-' || b == b'+' {
+                        pos += 1;
+                    }
+                    while pos < len
+                        && (bytes[pos].is_ascii_alphanumeric()
+                            || bytes[pos] == b'_'
+                            || bytes[pos] == b'.'
+                            || bytes[pos] == b'-'
+                            || bytes[pos] == b'+'
+                            || bytes[pos] == b':'
+                            || bytes[pos] == b'T'
+                            || bytes[pos] == b'Z')
+                    {
+                        pos += 1;
+                    }
+                    tokens.push(Token::new(TokenKind::Number, start..pos));
+                }
+                _ if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' => {
+                    let start = pos;
+                    while pos < len
+                        && (bytes[pos].is_ascii_alphanumeric()
+                            || bytes[pos] == b'_'
+                            || bytes[pos] == b'-'
+                            || bytes[pos] == b'.')
+                    {
+                        pos += 1;
+                    }
+                    tokens.push(Token::new(TokenKind::Identifier, start..pos));
+                }
+                _ => {
+                    tokens.push(Token::new(TokenKind::Text, pos..pos + 1));
+                    pos += 1;
+                }
+            }
+        }
+
+        (tokens, current_state)
+    }
+}
+
+impl TomlTokenizer {
+    fn continues_ident(bytes: &[u8], pos: usize) -> bool {
+        pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_')
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Markdown Tokenizer
+// ---------------------------------------------------------------------------
+
+/// Tokenizer for Markdown files.
+///
+/// Handles: headings, emphasis, links, code spans, code fences, lists.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MarkdownTokenizer;
+
+impl Tokenizer for MarkdownTokenizer {
+    fn name(&self) -> &'static str {
+        "Markdown"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["md", "markdown", "mdx"]
+    }
+
+    fn tokenize_line(&self, line: &str, state: LineState) -> (Vec<Token>, LineState) {
+        let bytes = line.as_bytes();
+        let len = bytes.len();
+        let mut tokens = Vec::new();
+        let mut pos = 0;
+        // Handle fenced code block continuation
+        if matches!(state, LineState::InComment(CommentKind::Block)) {
+            // Check if this line closes the fence
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                tokens.push(Token::new(TokenKind::Delimiter, 0..len));
+                return (tokens, LineState::Normal);
+            }
+            tokens.push(Token::new(TokenKind::String, 0..len));
+            return (tokens, state);
+        }
+
+        // Check for fenced code block start
+        {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                tokens.push(Token::new(TokenKind::Delimiter, 0..len));
+                return (tokens, LineState::InComment(CommentKind::Block));
+            }
+        }
+
+        // Check for ATX heading at start of line
+        if pos < len && bytes[pos] == b'#' {
+            let start = pos;
+            while pos < len && bytes[pos] == b'#' {
+                pos += 1;
+            }
+            if pos < len && bytes[pos] == b' ' {
+                tokens.push(Token::new(TokenKind::Heading, start..len));
+                return (tokens, state);
+            }
+            // Not a valid heading, reset
+            pos = start;
+        }
+
+        // Inline tokenization
+        while pos < len {
+            let b = bytes[pos];
+            match b {
+                b'`' => {
+                    // Code span
+                    let start = pos;
+                    pos += 1;
+                    while pos < len && bytes[pos] != b'`' {
+                        pos += 1;
+                    }
+                    if pos < len {
+                        pos += 1; // closing backtick
+                    }
+                    tokens.push(Token::new(TokenKind::String, start..pos));
+                }
+                b'*' | b'_' => {
+                    // Emphasis marker
+                    let start = pos;
+                    let marker = b;
+                    while pos < len && bytes[pos] == marker {
+                        pos += 1;
+                    }
+                    tokens.push(Token::new(TokenKind::Emphasis, start..pos));
+                }
+                b'[' => {
+                    // Possible link: [text](url) or [text][ref]
+                    let start = pos;
+                    pos += 1;
+                    while pos < len && bytes[pos] != b']' {
+                        pos += 1;
+                    }
+                    if pos < len {
+                        pos += 1; // skip ]
+                    }
+                    if pos < len && (bytes[pos] == b'(' || bytes[pos] == b'[') {
+                        let close = if bytes[pos] == b'(' { b')' } else { b']' };
+                        pos += 1;
+                        while pos < len && bytes[pos] != close {
+                            pos += 1;
+                        }
+                        if pos < len {
+                            pos += 1;
+                        }
+                        tokens.push(Token::new(TokenKind::Link, start..pos));
+                    } else {
+                        tokens.push(Token::new(TokenKind::Text, start..pos));
+                    }
+                }
+                b'!' if pos + 1 < len && bytes[pos + 1] == b'[' => {
+                    // Image: ![alt](url)
+                    let start = pos;
+                    pos += 2; // skip ![
+                    while pos < len && bytes[pos] != b']' {
+                        pos += 1;
+                    }
+                    if pos < len {
+                        pos += 1;
+                    }
+                    if pos < len && bytes[pos] == b'(' {
+                        pos += 1;
+                        while pos < len && bytes[pos] != b')' {
+                            pos += 1;
+                        }
+                        if pos < len {
+                            pos += 1;
+                        }
+                    }
+                    tokens.push(Token::new(TokenKind::Link, start..pos));
+                }
+                b'-' | b'+' if pos == 0 && pos + 1 < len && bytes[pos + 1] == b' ' => {
+                    // List item marker
+                    tokens.push(Token::new(TokenKind::Punctuation, pos..pos + 1));
+                    pos += 1;
+                }
+                b'>' if pos == 0 => {
+                    // Block quote
+                    tokens.push(Token::new(TokenKind::Punctuation, pos..pos + 1));
+                    pos += 1;
+                }
+                _ => {
+                    // Regular text
+                    let start = pos;
+                    while pos < len {
+                        let c = bytes[pos];
+                        if c == b'`'
+                            || c == b'*'
+                            || c == b'_'
+                            || c == b'['
+                            || (c == b'!' && pos + 1 < len && bytes[pos + 1] == b'[')
+                        {
+                            break;
+                        }
+                        pos += 1;
+                    }
+                    if pos > start {
+                        tokens.push(Token::new(TokenKind::Text, start..pos));
+                    }
+                }
+            }
+        }
+
+        (tokens, state)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1895,5 +2638,508 @@ fn main() {
             // Style shouldn't panic
             let _ = style;
         }
+    }
+
+    // -- JSON Tokenizer -------------------------------------------------------
+
+    #[test]
+    fn json_tokenizes_object() {
+        let t = JsonTokenizer;
+        let tokens = t.tokenize(r#"{"key": "value"}"#);
+        assert!(validate_tokens(r#"{"key": "value"}"#, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Delimiter));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::String));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Punctuation));
+    }
+
+    #[test]
+    fn json_tokenizes_numbers() {
+        let t = JsonTokenizer;
+        for input in ["42", "-3.14", "1e10", "2.5E-3"] {
+            let tokens = t.tokenize(input);
+            assert!(validate_tokens(input, &tokens));
+            assert!(
+                tokens.iter().any(|t| t.kind == TokenKind::Number),
+                "Expected Number token for: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_tokenizes_booleans_and_null() {
+        let t = JsonTokenizer;
+        let tokens = t.tokenize("[true, false, null]");
+        assert!(validate_tokens("[true, false, null]", &tokens));
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Boolean)
+                .count(),
+            2
+        );
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Constant)); // null
+    }
+
+    #[test]
+    fn json_string_with_escapes() {
+        let t = JsonTokenizer;
+        let input = r#""hello \"world\" \n""#;
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::String));
+    }
+
+    #[test]
+    fn json_nested_structure() {
+        let t = JsonTokenizer;
+        let input = r#"{"a": [1, {"b": true}]}"#;
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        // Should not panic on complex nesting
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn json_empty_input() {
+        let t = JsonTokenizer;
+        let tokens = t.tokenize("");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn json_malformed_no_panic() {
+        let t = JsonTokenizer;
+        for input in ["{invalid}", "{{{}}}!!!", "[,,,]", "trufalse"] {
+            let tokens = t.tokenize(input);
+            assert!(
+                validate_tokens(input, &tokens),
+                "Invalid tokens for: {input}"
+            );
+        }
+    }
+
+    // -- TOML Tokenizer -------------------------------------------------------
+
+    #[test]
+    fn toml_table_header() {
+        let t = TomlTokenizer;
+        let tokens = t.tokenize("[package]");
+        assert!(validate_tokens("[package]", &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Heading));
+    }
+
+    #[test]
+    fn toml_array_of_tables() {
+        let t = TomlTokenizer;
+        let tokens = t.tokenize("[[dependencies]]");
+        assert!(validate_tokens("[[dependencies]]", &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Heading));
+    }
+
+    #[test]
+    fn toml_key_value_string() {
+        let t = TomlTokenizer;
+        let input = r#"name = "ftui-text""#;
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Identifier)); // key
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Operator)); // =
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::String)); // value
+    }
+
+    #[test]
+    fn toml_booleans() {
+        let t = TomlTokenizer;
+        let input = "flag = true";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Boolean));
+    }
+
+    #[test]
+    fn toml_comment() {
+        let t = TomlTokenizer;
+        let input = "# This is a comment";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Comment));
+    }
+
+    #[test]
+    fn toml_number() {
+        let t = TomlTokenizer;
+        let input = "port = 8080";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Number));
+    }
+
+    #[test]
+    fn toml_literal_string() {
+        let t = TomlTokenizer;
+        let input = "path = 'C:\\Users\\me'";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::String));
+    }
+
+    #[test]
+    fn toml_inline_table() {
+        let t = TomlTokenizer;
+        let input = r#"dep = { version = "1.0", features = ["a"] }"#;
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Delimiter));
+    }
+
+    #[test]
+    fn toml_multiline_basic_string() {
+        let t = TomlTokenizer;
+        let lines = [r#"desc = """"#, "hello", "world", r#"""""#];
+        let mut state = LineState::Normal;
+        for line in &lines {
+            let (tokens, new_state) = t.tokenize_line(line, state);
+            assert!(validate_tokens(line, &tokens));
+            state = new_state;
+        }
+        assert!(
+            matches!(state, LineState::Normal),
+            "Should end in Normal state"
+        );
+    }
+
+    #[test]
+    fn toml_malformed_no_panic() {
+        let t = TomlTokenizer;
+        for input in ["[[[nested]]]", "===", "true_ish", ""] {
+            let tokens = t.tokenize(input);
+            assert!(
+                validate_tokens(input, &tokens),
+                "Invalid tokens for: {input}"
+            );
+        }
+    }
+
+    // -- Markdown Tokenizer ---------------------------------------------------
+
+    #[test]
+    fn markdown_heading() {
+        let t = MarkdownTokenizer;
+        let input = "# Hello World";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Heading));
+    }
+
+    #[test]
+    fn markdown_h2_heading() {
+        let t = MarkdownTokenizer;
+        let input = "## Section Two";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Heading));
+    }
+
+    #[test]
+    fn markdown_emphasis() {
+        let t = MarkdownTokenizer;
+        let input = "some *bold* text";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Emphasis));
+    }
+
+    #[test]
+    fn markdown_inline_code() {
+        let t = MarkdownTokenizer;
+        let input = "use `println!` here";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::String));
+    }
+
+    #[test]
+    fn markdown_link() {
+        let t = MarkdownTokenizer;
+        let input = "click [here](https://example.com)";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Link));
+    }
+
+    #[test]
+    fn markdown_image() {
+        let t = MarkdownTokenizer;
+        let input = "![alt](image.png)";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Link));
+    }
+
+    #[test]
+    fn markdown_fenced_code_block() {
+        let t = MarkdownTokenizer;
+        let lines = ["```rust", "fn main() {}", "```"];
+        let mut state = LineState::Normal;
+        for line in &lines {
+            let (tokens, new_state) = t.tokenize_line(line, state);
+            assert!(validate_tokens(line, &tokens), "Failed for line: {line}");
+            state = new_state;
+        }
+        assert!(
+            matches!(state, LineState::Normal),
+            "Should end in Normal after closing fence"
+        );
+    }
+
+    #[test]
+    fn markdown_code_block_state_tracking() {
+        let t = MarkdownTokenizer;
+        let (_, state) = t.tokenize_line("```", LineState::Normal);
+        assert!(matches!(state, LineState::InComment(CommentKind::Block)));
+
+        let (tokens, state) = t.tokenize_line("code here", state);
+        assert!(matches!(state, LineState::InComment(CommentKind::Block)));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::String));
+
+        let (_, state) = t.tokenize_line("```", state);
+        assert!(matches!(state, LineState::Normal));
+    }
+
+    #[test]
+    fn markdown_list_item() {
+        let t = MarkdownTokenizer;
+        let input = "- item one";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Punctuation));
+    }
+
+    #[test]
+    fn markdown_blockquote() {
+        let t = MarkdownTokenizer;
+        let input = "> quoted text";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Punctuation));
+    }
+
+    #[test]
+    fn markdown_empty_input() {
+        let t = MarkdownTokenizer;
+        let tokens = t.tokenize("");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn markdown_plain_text() {
+        let t = MarkdownTokenizer;
+        let input = "Just plain text here.";
+        let tokens = t.tokenize(input);
+        assert!(validate_tokens(input, &tokens));
+        assert!(tokens.iter().all(|t| t.kind == TokenKind::Text));
+    }
+
+    #[test]
+    fn markdown_malformed_no_panic() {
+        let t = MarkdownTokenizer;
+        for input in ["[unclosed link", "![broken", "***", "```"] {
+            let tokens = t.tokenize(input);
+            assert!(
+                validate_tokens(input, &tokens),
+                "Invalid tokens for: {input}"
+            );
+        }
+    }
+
+    // -- Cross-tokenizer registry integration ---------------------------------
+
+    #[test]
+    fn registry_with_all_tokenizers() {
+        let mut reg = TokenizerRegistry::new();
+        reg.register(Box::new(rust_tokenizer()));
+        reg.register(Box::new(python_tokenizer()));
+        reg.register(Box::new(javascript_tokenizer()));
+        reg.register(Box::new(JsonTokenizer));
+        reg.register(Box::new(TomlTokenizer));
+        reg.register(Box::new(MarkdownTokenizer));
+        reg.register(Box::new(PlainTokenizer));
+
+        assert!(reg.for_extension("rs").is_some());
+        assert!(reg.for_extension("py").is_some());
+        assert!(reg.for_extension("js").is_some());
+        assert!(reg.for_extension("json").is_some());
+        assert!(reg.for_extension("toml").is_some());
+        assert!(reg.for_extension("md").is_some());
+        assert!(reg.for_extension("txt").is_some());
+        assert_eq!(reg.len(), 7);
+    }
+
+    // -- Token range validation across all tokenizers -------------------------
+
+    #[test]
+    fn all_tokenizers_produce_valid_ranges() {
+        let snippets: &[(&str, &dyn Tokenizer)] = &[
+            (r#"{"a": 1, "b": [true, null]}"#, &JsonTokenizer),
+            (
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"",
+                &TomlTokenizer,
+            ),
+            (
+                "# Heading\n\n```rust\nlet x = 1;\n```\n\n[link](url)",
+                &MarkdownTokenizer,
+            ),
+            ("fn main() { let x = 42; }", &rust_tokenizer()),
+            ("def foo():\n    return 42", &python_tokenizer()),
+            (
+                "const x = async () => await fetch()",
+                &javascript_tokenizer(),
+            ),
+        ];
+
+        for (source, tokenizer) in snippets {
+            let tokens = tokenizer.tokenize(source);
+            assert!(
+                validate_tokens(source, &tokens),
+                "Invalid token ranges for {} tokenizer on: {}",
+                tokenizer.name(),
+                source
+            );
+        }
+    }
+
+    // -- SyntaxHighlighter ---------------------------------------------------
+
+    #[test]
+    fn highlighter_creates_with_defaults() {
+        let hl = SyntaxHighlighter::new();
+        let langs = hl.languages();
+        assert!(langs.contains(&"Rust"));
+        assert!(langs.contains(&"Python"));
+        assert!(langs.contains(&"JavaScript"));
+        assert!(langs.contains(&"JSON"));
+        assert!(langs.contains(&"TOML"));
+        assert!(langs.contains(&"Markdown"));
+        assert!(langs.contains(&"Plain"));
+    }
+
+    #[test]
+    fn highlighter_rust_code() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight("fn main() {\n    let x = 42;\n}", "rs");
+        assert_eq!(text.height(), 3);
+        let plain = text.to_plain_text();
+        assert!(plain.contains("fn main()"));
+        assert!(plain.contains("let x = 42"));
+    }
+
+    #[test]
+    fn highlighter_python_code() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight("def hello():\n    return 42", "py");
+        assert_eq!(text.height(), 2);
+        let plain = text.to_plain_text();
+        assert!(plain.contains("def hello()"));
+    }
+
+    #[test]
+    fn highlighter_json() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight(r#"{"key": "value", "num": 42}"#, "json");
+        assert_eq!(text.height(), 1);
+    }
+
+    #[test]
+    fn highlighter_unknown_language_falls_back() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight("just some text", "zzz_unknown_zzz");
+        assert_eq!(text.height(), 1);
+        assert_eq!(text.to_plain_text(), "just some text");
+    }
+
+    #[test]
+    fn highlighter_by_name_works() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight("let x = 1;", "Rust");
+        let plain = text.to_plain_text();
+        assert!(plain.contains("let x = 1;"));
+    }
+
+    #[test]
+    fn highlighter_with_line_numbers() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight_numbered("line one\nline two\nline three", "txt", 0);
+        assert_eq!(text.height(), 3);
+        let plain = text.to_plain_text();
+        assert!(plain.contains("1 "));
+        assert!(plain.contains("2 "));
+        assert!(plain.contains("3 "));
+    }
+
+    #[test]
+    fn highlighter_numbered_with_offset() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight_numbered("a\nb", "txt", 98);
+        let plain = text.to_plain_text();
+        assert!(plain.contains("99"));
+        assert!(plain.contains("100"));
+    }
+
+    #[test]
+    fn highlighter_theme_switching() {
+        let mut hl = SyntaxHighlighter::new();
+        let dark = hl.highlight("let x = 1;", "rs");
+
+        hl.set_theme(HighlightTheme::light());
+        let light = hl.highlight("let x = 1;", "rs");
+
+        // Both should produce valid text with same content
+        assert_eq!(dark.to_plain_text(), light.to_plain_text());
+    }
+
+    #[test]
+    fn highlighter_empty_input() {
+        let hl = SyntaxHighlighter::new();
+        let text = hl.highlight("", "rs");
+        assert_eq!(text.height(), 1); // One empty line
+    }
+
+    #[test]
+    fn highlighter_multiline_preserves_content() {
+        let hl = SyntaxHighlighter::new();
+        let code = "fn foo() {}\nfn bar() {}\nfn baz() {}";
+        let text = hl.highlight(code, "rs");
+        assert_eq!(text.height(), 3);
+        assert_eq!(text.to_plain_text(), code);
+    }
+
+    #[test]
+    fn highlighter_custom_theme() {
+        let theme = HighlightThemeBuilder::from_theme(HighlightTheme::dark())
+            .keyword(Style::new().bold())
+            .build();
+        let hl = SyntaxHighlighter::with_theme(theme);
+        let text = hl.highlight("let x = 1;", "rs");
+        assert!(!text.to_plain_text().is_empty());
+    }
+
+    #[test]
+    fn highlighter_register_custom_tokenizer() {
+        let mut hl = SyntaxHighlighter::new();
+        hl.register_tokenizer(Box::new(PlainTokenizer));
+        // Should still work
+        let text = hl.highlight("hello", "txt");
+        assert_eq!(text.to_plain_text(), "hello");
+    }
+
+    #[test]
+    fn registry_names_returns_all() {
+        let mut reg = TokenizerRegistry::new();
+        reg.register(Box::new(rust_tokenizer()));
+        reg.register(Box::new(PlainTokenizer));
+        let names = reg.names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"Rust"));
+        assert!(names.contains(&"Plain"));
     }
 }
