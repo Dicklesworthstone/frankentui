@@ -129,15 +129,15 @@ impl Style {
 
     /// Set foreground color.
     #[inline]
-    pub const fn fg(mut self, color: PackedRgba) -> Self {
-        self.fg = Some(color);
+    pub fn fg<C: Into<PackedRgba>>(mut self, color: C) -> Self {
+        self.fg = Some(color.into());
         self
     }
 
     /// Set background color.
     #[inline]
-    pub const fn bg(mut self, color: PackedRgba) -> Self {
-        self.bg = Some(color);
+    pub fn bg<C: Into<PackedRgba>>(mut self, color: C) -> Self {
+        self.bg = Some(color.into());
         self
     }
 

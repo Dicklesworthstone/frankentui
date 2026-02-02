@@ -238,6 +238,26 @@ impl Form {
         self
     }
 
+    /// Update base style in place.
+    pub fn set_style(&mut self, style: Style) {
+        self.style = style;
+    }
+
+    /// Update label style in place.
+    pub fn set_label_style(&mut self, style: Style) {
+        self.label_style = style;
+    }
+
+    /// Update focused field style in place.
+    pub fn set_focused_style(&mut self, style: Style) {
+        self.focused_style = style;
+    }
+
+    /// Update error message style in place.
+    pub fn set_error_style(&mut self, style: Style) {
+        self.error_style = style;
+    }
+
     /// Set fixed label width (0 = auto-detect from longest label).
     pub fn label_width(mut self, width: u16) -> Self {
         self.label_width = width;
