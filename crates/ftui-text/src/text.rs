@@ -471,6 +471,18 @@ impl Text {
         &self.lines
     }
 
+    /// Get the style of the first span, if any.
+    ///
+    /// Returns `None` if the text is empty or has no styled spans.
+    #[inline]
+    #[must_use]
+    pub fn style(&self) -> Option<Style> {
+        self.lines
+            .first()
+            .and_then(|line| line.spans().first())
+            .and_then(|span| span.style)
+    }
+
     /// Add a line.
     #[inline]
     pub fn push_line(&mut self, line: Line) {
