@@ -416,10 +416,10 @@ fn cell_content_str(content: CellContent, pool: &GraphemePool) -> String {
         return c.to_string();
     }
 
-    if let Some(id) = content.grapheme_id() {
-        if let Some(s) = pool.get(id) {
-            return s.to_string();
-        }
+    if let Some(id) = content.grapheme_id()
+        && let Some(s) = pool.get(id)
+    {
+        return s.to_string();
     }
 
     String::new()

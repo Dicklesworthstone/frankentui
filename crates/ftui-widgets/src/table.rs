@@ -340,13 +340,14 @@ fn render_row(row: &Row, col_rects: &[Rect], frame: &mut Frame, y: u16, style: S
                 } else {
                     Style::default()
                 };
-                x = crate::draw_text_span(
+                x = crate::draw_text_span_with_link(
                     frame,
                     x,
                     cell_area.y + line_idx as u16,
                     &span.content,
                     span_style,
                     cell_area.right(),
+                    span.link.as_deref(),
                 );
                 if x >= cell_area.right() {
                     break;

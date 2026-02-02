@@ -433,6 +433,8 @@ impl Widget for Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::frame::Frame;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     #[test]
     fn mode_dimensions() {
@@ -630,10 +632,11 @@ mod tests {
 
         let canvas = Canvas::from_painter(&painter);
         let area = Rect::new(0, 0, 2, 2);
-        let mut buf = Buffer::new(2, 2);
-        canvas.render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 2, &mut pool);
+        canvas.render(area, &mut frame);
 
-        let cell = buf.get(0, 0).unwrap();
+        let cell = frame.buffer.get(0, 0).unwrap();
         assert_eq!(cell.content.as_char(), Some('\u{28FF}'));
     }
 
@@ -642,8 +645,9 @@ mod tests {
         let painter = Painter::new(4, 8, Mode::Braille);
         let canvas = Canvas::from_painter(&painter);
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
-        canvas.render(area, &mut buf);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        canvas.render(area, &mut frame);
     }
 
     #[test]

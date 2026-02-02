@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use crate::block::{Alignment, Block};
-use crate::{Widget, draw_text_span, set_style_area};
+use crate::{Widget, draw_text_span, draw_text_span_scrolled, draw_text_span_with_link, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -205,56 +205,36 @@ impl Widget for Paragraph<'_> {
                     style // Style::default() at NoStyling
                 };
 
-                if local_scroll > 0 {
-                    // Manual horizontal scrolling implementation
-                    use unicode_segmentation::UnicodeSegmentation;
-                    use unicode_width::UnicodeWidthStr;
-
-                    let mut current_scroll = 0;
-                    let mut visible_content = String::new();
-
-                    for grapheme in span.content.as_ref().graphemes(true) {
-                        let w = UnicodeWidthStr::width(grapheme);
-                        if current_scroll + w as u16 <= local_scroll {
-                            current_scroll += w as u16;
-                        } else if current_scroll < local_scroll {
-                            // Partial overlap (wide char) - skip it entirely
-                            current_scroll += w as u16;
-                        } else {
-                            // Visible
-                            visible_content.push_str(grapheme);
+                                if local_scroll > 0 {
+                                    draw_text_span_scrolled(
+                                        frame,
+                                        draw_x,
+                                        y,
+                                        span.content.as_ref(),
+                                        span_style,
+                                        text_area.right(),
+                                        local_scroll,
+                                        span.link.as_deref(),
+                                    );
+                                } else {
+                                    draw_text_span_with_link(
+                                        frame,
+                                        draw_x,
+                                        y,
+                                        span.content.as_ref(),
+                                        span_style,
+                                        text_area.right(),
+                                        span.link.as_deref(),
+                                    );
+                                }
+                                
+                                span_visual_offset += span_width as u16;
+                            }
+                            y += 1;
+                            current_visual_line += 1;
                         }
                     }
-
-                    if !visible_content.is_empty() {
-                        draw_text_span(
-                            frame,
-                            draw_x,
-                            y,
-                            &visible_content,
-                            span_style,
-                            text_area.right(),
-                        );
-                    }
-                } else {
-                    draw_text_span(
-                        frame,
-                        draw_x,
-                        y,
-                        span.content.as_ref(),
-                        span_style,
-                        text_area.right(),
-                    );
                 }
-
-                span_visual_offset += span_width as u16;
-            }
-            y += 1;
-            current_visual_line += 1;
-        }
-    }
-}
-
 /// Calculate the starting x position for a line given alignment.
 fn align_x(area: Rect, line_width: usize, alignment: Alignment) -> u16 {
     let line_width_u16 = u16::try_from(line_width).unwrap_or(u16::MAX);

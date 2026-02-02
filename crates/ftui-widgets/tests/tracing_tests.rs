@@ -17,6 +17,8 @@ use std::time::Instant;
 
 use ftui_core::geometry::Rect;
 use ftui_layout::Constraint;
+#[cfg(feature = "tracing")]
+use ftui_render::buffer::Buffer;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 #[cfg(feature = "tracing")]
@@ -455,7 +457,10 @@ fn real_render_loop_traced() {
         let current = Buffer::new(40, 10);
         let mut next = Buffer::new(40, 10);
 
-        // Render widgets into the next buffer
+        // Render widgets into the next buffer via Frame
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+
         let table = Table::new(
             [Row::new(["Name", "Value"]), Row::new(["foo", "42"])],
             [Constraint::Fixed(15), Constraint::Fixed(15)],
@@ -463,7 +468,10 @@ fn real_render_loop_traced() {
         .header(Row::new(["Col A", "Col B"]))
         .block(Block::bordered());
 
-        Widget::render(&table, area, &mut next);
+        Widget::render(&table, area, &mut frame);
+
+        // Copy frame buffer into next for diffing
+        next = frame.buffer;
 
         // Compute diff (has tracing spans in ftui-render via feature propagation)
         let diff = BufferDiff::compute(&current, &next);
@@ -514,9 +522,10 @@ fn real_render_loop_traced() {
 fn span_fields_contain_area_dimensions() {
     let handle = with_captured_spans(|| {
         let area = Rect::new(5, 10, 30, 15);
-        let mut buf = Buffer::new(40, 30);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 30, &mut pool);
 
-        Block::bordered().render(area, &mut buf);
+        Block::bordered().render(area, &mut frame);
     });
 
     let spans = handle.spans();

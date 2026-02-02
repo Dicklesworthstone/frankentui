@@ -357,6 +357,20 @@ pub(crate) fn draw_text_span(
     x
 }
 
+/// Draw a text span, optionally attaching a hyperlink.
+#[allow(dead_code)]
+pub(crate) fn draw_text_span_with_link(
+    frame: &mut Frame,
+    x: u16,
+    y: u16,
+    content: &str,
+    style: Style,
+    max_x: u16,
+    link_url: Option<&str>,
+) -> u16 {
+    draw_text_span_scrolled(frame, x, y, content, style, max_x, 0, link_url)
+}
+
 /// Draw a text span with horizontal scrolling (skip first `scroll_x` visual cells).
 #[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn draw_text_span_scrolled(

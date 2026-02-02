@@ -382,6 +382,20 @@ impl<T> Virtualized<T> {
         self.scroll_offset = 0;
     }
 
+    /// Trim items from the front to keep at most `max` items (owned storage only).
+    ///
+    /// Returns the number of items removed.
+    pub fn trim_front(&mut self, max: usize) -> usize {
+        if let VirtualizedStorage::Owned(items) = &mut self.storage && items.len() > max {
+            let to_remove = items.len() - max;
+            items.drain(..to_remove);
+            // Adjust scroll_offset if it was pointing beyond the new start
+            self.scroll_offset = self.scroll_offset.saturating_sub(to_remove);
+            return to_remove;
+        }
+        0
+    }
+
     /// Iterate over items (owned storage only).
     /// Returns empty iterator for external storage.
     pub fn iter(&self) -> Box<dyn Iterator<Item = &T> + '_> {
@@ -1185,6 +1199,142 @@ mod tests {
         // Page up at top stays at 0
         virt.page_up();
         assert_eq!(virt.scroll_offset(), 0);
+    }
+
+    // ========================================================================
+    // Performance invariant tests (bd-uo6v)
+    // ========================================================================
+
+    #[test]
+    fn test_render_scales_with_visible_not_total() {
+        use std::time::Instant;
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        // Setup: VirtualizedList with 1K items
+        let small_items: Vec<String> = (0..1_000).map(|i| format!("Line {}", i)).collect();
+        let small_list = VirtualizedList::new(&small_items);
+        let mut small_state = VirtualizedListState::new();
+
+        let area = Rect::new(0, 0, 80, 24);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+
+        // Warm up
+        small_list.render(area, &mut frame, &mut small_state);
+
+        let start = Instant::now();
+        for _ in 0..100 {
+            frame.buffer.clear();
+            small_list.render(area, &mut frame, &mut small_state);
+        }
+        let small_time = start.elapsed();
+
+        // Setup: VirtualizedList with 100K items
+        let large_items: Vec<String> = (0..100_000).map(|i| format!("Line {}", i)).collect();
+        let large_list = VirtualizedList::new(&large_items);
+        let mut large_state = VirtualizedListState::new();
+
+        // Warm up
+        large_list.render(area, &mut frame, &mut large_state);
+
+        let start = Instant::now();
+        for _ in 0..100 {
+            frame.buffer.clear();
+            large_list.render(area, &mut frame, &mut large_state);
+        }
+        let large_time = start.elapsed();
+
+        // 100K should be within 3x of 1K (both render ~24 items)
+        assert!(
+            large_time < small_time * 3,
+            "Render does not scale O(visible): 1K={:?}, 100K={:?}",
+            small_time,
+            large_time
+        );
+    }
+
+    #[test]
+    fn test_scroll_is_constant_time() {
+        use std::time::Instant;
+
+        let mut small: Virtualized<i32> = Virtualized::new(1_000);
+        for i in 0..1_000 {
+            small.push(i);
+        }
+        small.set_visible_count(24);
+
+        let mut large: Virtualized<i32> = Virtualized::new(100_000);
+        for i in 0..100_000 {
+            large.push(i);
+        }
+        large.set_visible_count(24);
+
+        let iterations = 10_000;
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            small.scroll(1);
+            small.scroll(-1);
+        }
+        let small_time = start.elapsed();
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            large.scroll(1);
+            large.scroll(-1);
+        }
+        let large_time = start.elapsed();
+
+        // Should be within 3x (both are O(1) operations)
+        assert!(
+            large_time < small_time * 3,
+            "Scroll is not O(1): 1K={:?}, 100K={:?}",
+            small_time,
+            large_time
+        );
+    }
+
+    #[test]
+    fn test_memory_bounded_by_ring_capacity() {
+        use crate::log_ring::LogRing;
+
+        let mut ring: LogRing<String> = LogRing::new(1_000);
+
+        // Add 100K items
+        for i in 0..100_000 {
+            ring.push(format!("Line {}", i));
+        }
+
+        // Only 1K in memory
+        assert_eq!(ring.len(), 1_000);
+        assert_eq!(ring.total_count(), 100_000);
+        assert_eq!(ring.first_index(), 99_000);
+
+        // Can still access recent items
+        assert!(ring.get(99_999).is_some());
+        assert!(ring.get(99_000).is_some());
+        // Old items evicted
+        assert!(ring.get(0).is_none());
+        assert!(ring.get(98_999).is_none());
+    }
+
+    #[test]
+    fn test_visible_range_constant_regardless_of_total() {
+        let mut small: Virtualized<i32> = Virtualized::new(100);
+        for i in 0..100 {
+            small.push(i);
+        }
+        let small_range = small.visible_range(24);
+
+        let mut large: Virtualized<i32> = Virtualized::new(100_000);
+        for i in 0..100_000 {
+            large.push(i);
+        }
+        let large_range = large.visible_range(24);
+
+        // Both should return exactly 24 visible items
+        assert_eq!(small_range.end - small_range.start, 24);
+        assert_eq!(large_range.end - large_range.start, 24);
     }
 
     #[test]

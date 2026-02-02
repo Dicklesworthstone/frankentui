@@ -13,7 +13,6 @@ use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
-use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::Style;
 use ftui_widgets::{StatefulWidget, Widget};
 
@@ -584,14 +583,9 @@ impl FormState {
 
     fn handle_text_char(&mut self, form: &mut Form, c: char) -> bool {
         if let Some(FormField::Text { value, .. }) = form.fields.get_mut(self.focused) {
-            let old_count = grapheme_count(value);
             let byte_offset = grapheme_byte_offset(value, self.text_cursor);
             value.insert(byte_offset, c);
-
-            let new_count = grapheme_count(value);
-            if new_count > old_count {
-                self.text_cursor += 1;
-            }
+            self.text_cursor += 1;
             return true;
         }
         false
@@ -776,9 +770,10 @@ impl Form {
                 }
                 // Draw cursor if focused
                 if is_focused {
+                    let buf = &mut frame.buffer;
                     let cursor_x = x + state.text_cursor.min(width as usize) as u16;
                     if cursor_x < x + width {
-                        if let Some(cell) = frame.buffer.get_mut(cursor_x, y) {
+                        if let Some(cell) = buf.get_mut(cursor_x, y) {
                             use ftui_render::cell::StyleFlags;
                             let flags = cell.attrs.flags();
                             cell.attrs = cell.attrs.with_flags(flags ^ StyleFlags::REVERSE);
@@ -940,7 +935,14 @@ impl StatefulWidget for ConfirmDialog {
 
         // Draw message on first row(s)
         let msg_y = area.y;
-        draw_str(frame, area.x, msg_y, &self.message, self.style, area.width);
+        draw_str(
+            frame,
+            area.x,
+            msg_y,
+            &self.message,
+            self.style,
+            area.width,
+        );
 
         // Draw buttons on last row
         let btn_y = if area.height > 1 {
@@ -1012,7 +1014,7 @@ fn set_style_area(buf: &mut Buffer, area: Rect, style: Style) {
     }
 }
 
-/// Draw a string into the buffer, clamped to `max_width` visual columns.
+/// Draw a string into the frame, clamped to `max_width` visual columns.
 fn draw_str(frame: &mut Frame, x: u16, y: u16, s: &str, style: Style, max_width: u16) {
     let mut col = 0u16;
     for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(s, true) {
@@ -1039,7 +1041,10 @@ fn draw_str(frame: &mut Frame, x: u16, y: u16, s: &str, style: Style, max_width:
 
         let mut cell = Cell::new(cell_content);
         apply_style(&mut cell, style);
+        
+        // Use set() which handles multi-width characters (atomic writes)
         frame.buffer.set(x + col, y, cell);
+        
         col += w;
     }
 }
@@ -1065,6 +1070,7 @@ fn grapheme_byte_offset(s: &str, grapheme_idx: usize) -> usize {
 mod tests {
     use super::*;
     use ftui_core::event::{KeyEvent, KeyEventKind};
+    use ftui_render::grapheme_pool::GraphemePool;
 
     fn press(code: KeyCode) -> Event {
         Event::Key(KeyEvent {
@@ -1629,21 +1635,11 @@ mod tests {
         // After label "Accept: ", should show "[x]"
         let label_end = "Accept".len() + 2; // ": "
         assert_eq!(
-            frame
-                .buffer
-                .get(label_end as u16, 0)
-                .unwrap()
-                .content
-                .as_char(),
+            frame.buffer.get(label_end as u16, 0).unwrap().content.as_char(),
             Some('[')
         );
         assert_eq!(
-            frame
-                .buffer
-                .get(label_end as u16 + 1, 0)
-                .unwrap()
-                .content
-                .as_char(),
+            frame.buffer.get(label_end as u16 + 1, 0).unwrap().content.as_char(),
             Some('x')
         );
     }

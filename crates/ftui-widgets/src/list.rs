@@ -5,7 +5,7 @@
 //! A widget to display a list of items with selection support.
 
 use crate::block::Block;
-use crate::{StatefulWidget, Widget, draw_text_span, set_style_area};
+use crate::{StatefulWidget, Widget, draw_text_span, draw_text_span_with_link, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
@@ -218,7 +218,15 @@ impl<'a> StatefulWidget for List<'a> {
                         Some(s) => s.merge(&item_style),
                         None => item_style,
                     };
-                    x = draw_text_span(frame, x, y, &span.content, span_style, list_area.right());
+                    x = draw_text_span_with_link(
+                        frame,
+                        x,
+                        y,
+                        &span.content,
+                        span_style,
+                        list_area.right(),
+                        span.link.as_deref(),
+                    );
                     if x >= list_area.right() {
                         break;
                     }
