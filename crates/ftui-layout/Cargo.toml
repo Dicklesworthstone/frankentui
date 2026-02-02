@@ -8,7 +8,7 @@ publish = false
 ftui-core = { path = "../ftui-core" }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "layout_bench"
