@@ -357,10 +357,10 @@ mod tests {
         pager.render(area, &mut frame);
         let mut text = String::new();
         for x in 0..10u16 {
-            if let Some(cell) = frame.buffer.get(x, 0) {
-                if let Some(ch) = cell.content.as_char() {
-                    text.push(ch);
-                }
+            if let Some(cell) = frame.buffer.get(x, 0)
+                && let Some(ch) = cell.content.as_char()
+            {
+                text.push(ch);
             }
         }
         assert!(text.starts_with("2/5"), "got: {text}");
