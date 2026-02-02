@@ -129,6 +129,7 @@ pub mod list;
 pub mod log_ring;
 pub mod log_viewer;
 pub mod padding;
+pub mod paginator;
 pub mod panel;
 pub mod paragraph;
 pub mod progress;
@@ -137,6 +138,7 @@ pub mod scrollbar;
 pub mod spinner;
 pub mod status_line;
 pub mod table;
+pub mod textarea;
 pub mod virtualized;
 
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
@@ -150,6 +152,7 @@ pub use debug_overlay::{
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 pub use log_ring::LogRing;
 pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode};
+pub use paginator::{Paginator, PaginatorMode};
 pub use panel::Panel;
 pub use status_line::{StatusItem, StatusLine};
 pub use virtualized::{
