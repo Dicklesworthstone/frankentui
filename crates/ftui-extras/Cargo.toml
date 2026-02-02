@@ -32,8 +32,10 @@ markdown = ["dep:pulldown-cmark", "dep:ftui-render", "dep:ftui-style", "dep:ftui
 export = ["dep:ftui-render"]
 forms = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-widgets", "dep:unicode-segmentation", "dep:unicode-width"]
 pty-capture = ["dep:portable-pty"]
+live = ["console"]
 logging = ["console", "dep:tracing", "dep:tracing-subscriber"]
 syntax = ["dep:ftui-render", "dep:ftui-style", "dep:ftui-text"]
+filepicker = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-text", "dep:unicode-width"]
 
 [dev-dependencies]
 tracing = "0.1"

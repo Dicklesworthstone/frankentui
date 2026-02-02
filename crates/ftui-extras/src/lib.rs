@@ -21,6 +21,9 @@ pub mod forms;
 #[cfg(feature = "image")]
 pub mod image;
 
+#[cfg(feature = "live")]
+pub mod live;
+
 #[cfg(feature = "logging")]
 pub mod logging;
 
@@ -32,3 +35,6 @@ pub mod pty_capture;
 
 #[cfg(feature = "syntax")]
 pub mod syntax;
+
+#[cfg(feature = "filepicker")]
+pub mod filepicker;

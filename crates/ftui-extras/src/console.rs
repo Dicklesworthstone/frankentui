@@ -184,6 +184,17 @@ pub struct CapturedLine {
 }
 
 impl CapturedLine {
+    /// Create a captured line from plain (unstyled) text.
+    #[must_use]
+    pub fn from_plain(text: &str) -> Self {
+        Self {
+            segments: vec![CapturedSegment {
+                text: text.to_string(),
+                style: Style::default(),
+            }],
+        }
+    }
+
     /// Get the plain text of this line.
     #[must_use]
     pub fn plain_text(&self) -> String {
