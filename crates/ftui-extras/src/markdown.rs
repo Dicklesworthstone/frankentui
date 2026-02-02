@@ -576,8 +576,10 @@ mod tests {
 
     #[test]
     fn custom_theme() {
-        let mut theme = MarkdownTheme::default();
-        theme.h1 = Style::new().fg(PackedRgba::rgb(255, 0, 0));
+        let theme = MarkdownTheme {
+            h1: Style::new().fg(PackedRgba::rgb(255, 0, 0)),
+            ..Default::default()
+        };
         let renderer = MarkdownRenderer::new(theme);
         let text = renderer.render("# Red Title");
         assert!(!text.is_empty());

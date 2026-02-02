@@ -436,7 +436,7 @@ pub(crate) fn draw_text_span_scrolled(
 
         let mut cell = Cell::new(cell_content);
         apply_style(&mut cell, style);
-        
+
         // Apply link ID if present
         if link_id != 0 {
             cell.attrs = cell.attrs.with_link(link_id);
