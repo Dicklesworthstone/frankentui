@@ -244,10 +244,10 @@ fn hash_text(text: &str) -> u64 {
     hasher.finish()
 }
 
-/// Thread-local width cache for convenience.
-///
-/// This provides a global cache that is thread-local, avoiding the need
-/// to pass a cache around explicitly.
+// Thread-local width cache for convenience.
+//
+// This provides a global cache that is thread-local, avoiding the need
+// to pass a cache around explicitly.
 #[cfg(feature = "thread_local_cache")]
 thread_local! {
     static THREAD_CACHE: std::cell::RefCell<WidthCache> =

@@ -276,6 +276,31 @@ impl<T> Virtualized<T> {
         self.follow_mode = false;
     }
 
+    /// Alias for scroll_to_top (Home key).
+    pub fn scroll_to_start(&mut self) {
+        self.scroll_to_top();
+    }
+
+    /// Scroll to bottom and enable follow mode (End key).
+    pub fn scroll_to_end(&mut self) {
+        self.scroll_to_bottom();
+        self.follow_mode = true;
+    }
+
+    /// Page up (scroll by visible count).
+    pub fn page_up(&mut self) {
+        if self.visible_count > 0 {
+            self.scroll(-(self.visible_count as i32));
+        }
+    }
+
+    /// Page down (scroll by visible count).
+    pub fn page_down(&mut self) {
+        if self.visible_count > 0 {
+            self.scroll(self.visible_count as i32);
+        }
+    }
+
     /// Set follow mode.
     pub fn set_follow(&mut self, follow: bool) {
         self.follow_mode = follow;
@@ -534,6 +559,20 @@ impl VirtualizedListState {
             self.scroll_offset = total_items - self.visible_count;
         } else {
             self.scroll_offset = 0;
+        }
+    }
+
+    /// Page up (scroll by visible count).
+    pub fn page_up(&mut self, total_items: usize) {
+        if self.visible_count > 0 {
+            self.scroll(-(self.visible_count as i32), total_items);
+        }
+    }
+
+    /// Page down (scroll by visible count).
+    pub fn page_down(&mut self, total_items: usize) {
+        if self.visible_count > 0 {
+            self.scroll(self.visible_count as i32, total_items);
         }
     }
 

@@ -78,11 +78,12 @@ impl DebugOverlayState {
 
     /// Toggle overlay when F12 is pressed.
     pub fn toggle_on_f12(&self, event: &Event) -> bool {
-        if let Event::Key(key) = event {
-            if matches!(key.code, KeyCode::F(12)) && key.kind == KeyEventKind::Press {
-                self.toggle();
-                return true;
-            }
+        if let Event::Key(key) = event
+            && matches!(key.code, KeyCode::F(12))
+            && key.kind == KeyEventKind::Press
+        {
+            self.toggle();
+            return true;
         }
         false
     }
@@ -438,7 +439,6 @@ fn env_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_render::buffer::Buffer;
     use ftui_render::grapheme_pool::GraphemePool;
 
     struct StubWidget;
@@ -485,9 +485,11 @@ mod tests {
         state.set_enabled(true);
         state.record(WidgetDebugInfo::new("Stub", Rect::new(0, 0, 4, 3)));
 
-        let mut options = DebugOverlayOptions::default();
-        options.show_names = false;
-        options.show_render_times = false;
+        let options = DebugOverlayOptions {
+            show_names: false,
+            show_render_times: false,
+            ..Default::default()
+        };
         let overlay = DebugOverlay::new(state).options(options);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(6, 4, &mut pool);
@@ -509,8 +511,10 @@ mod tests {
         state.set_enabled(true);
         state.record(WidgetDebugInfo::new("Hi", Rect::new(0, 0, 4, 3)));
 
-        let mut options = DebugOverlayOptions::default();
-        options.show_render_times = false;
+        let options = DebugOverlayOptions {
+            show_render_times: false,
+            ..Default::default()
+        };
         let overlay = DebugOverlay::new(state).options(options);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(6, 4, &mut pool);
@@ -530,11 +534,13 @@ mod tests {
         info.hit_areas = vec![Rect::new(2, 2, 1, 1)];
         state.record(info);
 
-        let mut options = DebugOverlayOptions::default();
-        options.show_boundaries = false;
-        options.show_names = false;
-        options.show_render_times = false;
-        options.show_hit_areas = true;
+        let options = DebugOverlayOptions {
+            show_boundaries: false,
+            show_names: false,
+            show_render_times: false,
+            show_hit_areas: true,
+            ..Default::default()
+        };
         let expected = options.palette.hit_hot_color;
 
         let overlay = DebugOverlay::new(state).options(options);
