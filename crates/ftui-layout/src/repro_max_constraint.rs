@@ -40,4 +40,24 @@ mod tests {
         // If it fails, it confirms the "bug".
         assert_eq!(rects[1].width, 80, "Item 2 should take remaining space");
     }
+
+    #[test]
+    fn max_constraint_redistributes_to_other_grow_items() {
+        // Scenario: Available width 100.
+        // Item 1: Max(20) should cap.
+        // Item 2: Min(10) grows.
+        // Item 3: Min(10) grows.
+        // Expected: Item 1 takes 20. Remaining 80 is split evenly -> 40, 40.
+        let flex = Flex::horizontal().constraints([
+            Constraint::Max(20),
+            Constraint::Min(10),
+            Constraint::Min(10),
+        ]);
+
+        let rects = flex.split(Rect::new(0, 0, 100, 10));
+
+        assert_eq!(rects[0].width, 20, "Max item should cap at 20");
+        assert_eq!(rects[1].width, 40, "Min item should take half of remaining");
+        assert_eq!(rects[2].width, 40, "Min item should take half of remaining");
+    }
 }
