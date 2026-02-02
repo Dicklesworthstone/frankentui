@@ -259,4 +259,80 @@ mod tests {
         let rect = a_rects.borrow()[0];
         assert_eq!(rect, Rect::new(1, 1, 4, 1));
     }
+
+    #[test]
+    fn empty_columns_does_not_panic() {
+        let columns = Columns::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        columns.render(Rect::new(0, 0, 10, 5), &mut frame);
+    }
+
+    #[test]
+    fn zero_area_does_not_panic() {
+        let (a, a_rects) = Record::new();
+        let columns = Columns::new().add(a);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        columns.render(Rect::new(0, 0, 0, 0), &mut frame);
+        assert!(a_rects.borrow().is_empty());
+    }
+
+    #[test]
+    fn single_column_gets_full_width() {
+        let (a, a_rects) = Record::new();
+        let columns = Columns::new().column(a, Constraint::Min(0));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 3, &mut pool);
+        columns.render(Rect::new(0, 0, 20, 3), &mut frame);
+
+        let rect = a_rects.borrow()[0];
+        assert_eq!(rect.width, 20);
+        assert_eq!(rect.height, 3);
+    }
+
+    #[test]
+    fn fixed_and_fill_columns() {
+        let (a, a_rects) = Record::new();
+        let (b, b_rects) = Record::new();
+
+        let columns = Columns::new()
+            .column(a, Constraint::Fixed(5))
+            .column(b, Constraint::Min(0));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        columns.render(Rect::new(0, 0, 20, 1), &mut frame);
+
+        let a = a_rects.borrow()[0];
+        let b = b_rects.borrow()[0];
+        assert_eq!(a.width, 5);
+        assert_eq!(b.width, 15);
+    }
+
+    #[test]
+    fn is_essential_delegates_to_children() {
+        struct Essential;
+        impl Widget for Essential {
+            fn render(&self, _area: Rect, _frame: &mut Frame) {}
+            fn is_essential(&self) -> bool {
+                true
+            }
+        }
+
+        let columns = Columns::new().add(Essential);
+        assert!(columns.is_essential());
+
+        let (non_essential, _) = Record::new();
+        let columns2 = Columns::new().add(non_essential);
+        assert!(!columns2.is_essential());
+    }
+
+    #[test]
+    fn column_constraint_setter() {
+        let (a, _) = Record::new();
+        let col = Column::new(a, Constraint::Fixed(5)).constraint(Constraint::Fixed(10));
+        assert_eq!(col.constraint, Constraint::Fixed(10));
+    }
 }
