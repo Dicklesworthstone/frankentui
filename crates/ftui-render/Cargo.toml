@@ -12,6 +12,7 @@ tracing = ["ftui-core/tracing", "dep:tracing"]
 [dependencies]
 bitflags = "2.10.0"
 memchr = "2"
+smallvec = "1.13.2"
 unicode-width = "0.2"
 unicode-segmentation = "1.11"
 ftui-core = { path = "../ftui-core" }

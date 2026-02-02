@@ -126,6 +126,7 @@ pub mod error_boundary;
 pub mod input;
 pub mod layout_debugger;
 pub mod list;
+pub mod log_ring;
 pub mod log_viewer;
 pub mod padding;
 pub mod panel;
@@ -147,10 +148,14 @@ pub use debug_overlay::{
     DebugOverlayStatefulState,
 };
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
+pub use log_ring::LogRing;
 pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode};
 pub use panel::Panel;
 pub use status_line::{StatusItem, StatusLine};
-pub use virtualized::{HeightCache, ItemHeight, Virtualized, VirtualizedStorage};
+pub use virtualized::{
+    HeightCache, ItemHeight, RenderItem, Virtualized, VirtualizedList, VirtualizedListState,
+    VirtualizedStorage,
+};
 
 use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
@@ -353,7 +358,7 @@ pub(crate) fn draw_text_span(
 }
 
 /// Draw a text span with horizontal scrolling (skip first `scroll_x` visual cells).
-#[allow(dead_code)] // Reserved for upcoming scrollable text widgets.
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn draw_text_span_scrolled(
     frame: &mut Frame,
     mut x: u16,
@@ -362,9 +367,17 @@ pub(crate) fn draw_text_span_scrolled(
     style: Style,
     max_x: u16,
     scroll_x: u16,
+    link_url: Option<&str>,
 ) -> u16 {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
+
+    // Register link if present
+    let link_id = if let Some(url) = link_url {
+        frame.register_link(url)
+    } else {
+        0
+    };
 
     let mut visual_pos = 0;
 
@@ -409,6 +422,11 @@ pub(crate) fn draw_text_span_scrolled(
 
         let mut cell = Cell::new(cell_content);
         apply_style(&mut cell, style);
+        
+        // Apply link ID if present
+        if link_id != 0 {
+            cell.attrs = cell.attrs.with_link(link_id);
+        }
 
         frame.buffer.set(x, y, cell);
 

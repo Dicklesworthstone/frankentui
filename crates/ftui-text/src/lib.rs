@@ -10,6 +10,7 @@
 //! - [`Line`] - a line of styled spans
 //! - [`Text`] - multi-line styled text
 //! - [`Rope`] - rope-backed text storage
+//! - [`CursorPosition`] / [`CursorNavigator`] - text cursor utilities
 //! - [`WidthCache`] - LRU cache for text width measurements
 //!
 //! # Example
@@ -41,6 +42,7 @@
 //! assert_eq!(width, 13);
 //! ```
 
+pub mod cursor;
 pub mod rope;
 pub mod segment;
 pub mod text;
@@ -98,6 +100,7 @@ impl TextMeasurement {
     }
 }
 
+pub use cursor::{CursorNavigator, CursorPosition};
 pub use rope::Rope;
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
 pub use text::{Line, Span, Text};

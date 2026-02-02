@@ -45,3 +45,6 @@
 - [x] **Text Helpers**: Added `height_as_u16` for safer layout math.
 - [x] **PTY Safety**: Added backpressure to `PtyCapture` to prevent OOM.
 - [x] **Link Support**: Added infrastructure for hyperlinks in `Span` and `Frame`.
+- [x] **Paragraph Scrolling**: Fixed horizontal scrolling implementation.
+- [x] **Link Rendering**: Updated `draw_text_span` signature and logic (call sites pending).
+- [ ] **Call Site Updates**: Propagate `link_url` argument to all widget renderers.

@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use crate::block::{Alignment, Block};
-use crate::{Widget, draw_text_span, draw_text_span_scrolled, set_style_area};
+use crate::{Widget, draw_text_span, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -206,15 +206,36 @@ impl Widget for Paragraph<'_> {
                 };
 
                 if local_scroll > 0 {
-                    draw_text_span_scrolled(
-                        frame,
-                        draw_x,
-                        y,
-                        span.content.as_ref(),
-                        span_style,
-                        text_area.right(),
-                        local_scroll,
-                    );
+                    // Manual horizontal scrolling implementation
+                    use unicode_segmentation::UnicodeSegmentation;
+                    use unicode_width::UnicodeWidthStr;
+
+                    let mut current_scroll = 0;
+                    let mut visible_content = String::new();
+
+                    for grapheme in span.content.as_ref().graphemes(true) {
+                        let w = UnicodeWidthStr::width(grapheme);
+                        if current_scroll + w as u16 <= local_scroll {
+                            current_scroll += w as u16;
+                        } else if current_scroll < local_scroll {
+                            // Partial overlap (wide char) - skip it entirely
+                            current_scroll += w as u16;
+                        } else {
+                            // Visible
+                            visible_content.push_str(grapheme);
+                        }
+                    }
+
+                    if !visible_content.is_empty() {
+                        draw_text_span(
+                            frame,
+                            draw_x,
+                            y,
+                            &visible_content,
+                            span_style,
+                            text_area.right(),
+                        );
+                    }
                 } else {
                     draw_text_span(
                         frame,

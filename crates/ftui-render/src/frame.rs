@@ -31,7 +31,8 @@
 
 use crate::budget::DegradationLevel;
 use crate::buffer::Buffer;
-use crate::cell::GraphemeId;
+use crate::cell::{Cell, CellContent, GraphemeId};
+use crate::drawing::{BorderChars, Draw};
 use crate::grapheme_pool::GraphemePool;
 use ftui_core::geometry::Rect;
 
@@ -278,6 +279,27 @@ impl<'a> Frame<'a> {
         }
     }
 
+    /// Create a new frame with grapheme pool and link registry.
+    ///
+    /// This avoids double-borrowing issues when both pool and links
+    /// come from the same parent struct.
+    pub fn with_links(
+        width: u16,
+        height: u16,
+        pool: &'a mut GraphemePool,
+        links: &'a mut LinkRegistry,
+    ) -> Self {
+        Self {
+            buffer: Buffer::new(width, height),
+            pool,
+            links: Some(links),
+            hit_grid: None,
+            cursor_position: None,
+            cursor_visible: true,
+            degradation: DegradationLevel::Full,
+        }
+    }
+
     /// Create a frame with hit testing enabled.
     ///
     /// The hit grid allows widgets to register clickable regions.
@@ -422,6 +444,102 @@ impl<'a> Frame<'a> {
     /// Register a hit region with default metadata (Content, data=0).
     pub fn register_hit_region(&mut self, rect: Rect, id: HitId) -> bool {
         self.register_hit(rect, id, HitRegion::Content, 0)
+    }
+}
+
+impl<'a> Draw for Frame<'a> {
+    fn draw_horizontal_line(&mut self, x: u16, y: u16, width: u16, cell: Cell) {
+        self.buffer.draw_horizontal_line(x, y, width, cell);
+    }
+
+    fn draw_vertical_line(&mut self, x: u16, y: u16, height: u16, cell: Cell) {
+        self.buffer.draw_vertical_line(x, y, height, cell);
+    }
+
+    fn draw_rect_filled(&mut self, rect: Rect, cell: Cell) {
+        self.buffer.draw_rect_filled(rect, cell);
+    }
+
+    fn draw_rect_outline(&mut self, rect: Rect, cell: Cell) {
+        self.buffer.draw_rect_outline(rect, cell);
+    }
+
+    fn print_text(&mut self, x: u16, y: u16, text: &str, base_cell: Cell) -> u16 {
+        self.print_text_clipped(x, y, text, base_cell, self.width())
+    }
+
+    fn print_text_clipped(
+        &mut self,
+        x: u16,
+        y: u16,
+        text: &str,
+        base_cell: Cell,
+        max_x: u16,
+    ) -> u16 {
+        use unicode_segmentation::UnicodeSegmentation;
+        use unicode_width::UnicodeWidthStr;
+
+        let mut cx = x;
+        for grapheme in text.graphemes(true) {
+            let width = UnicodeWidthStr::width(grapheme);
+            if width == 0 {
+                continue;
+            }
+
+            if cx >= max_x {
+                break;
+            }
+
+            // Don't start a wide char if it won't fit
+            if cx + width as u16 > max_x {
+                break;
+            }
+
+            // Intern grapheme if needed (unlike Buffer::print_text, we have the pool!)
+            let content = if width > 1 || grapheme.chars().count() > 1 {
+                let id = self.intern_with_width(grapheme, width as u8);
+                CellContent::from_grapheme(id)
+            } else if let Some(c) = grapheme.chars().next() {
+                CellContent::from_char(c)
+            } else {
+                continue;
+            };
+
+            let cell = Cell {
+                content,
+                fg: base_cell.fg,
+                bg: base_cell.bg,
+                attrs: base_cell.attrs,
+            };
+            self.buffer.set(cx, y, cell);
+
+            cx = cx.saturating_add(width as u16);
+        }
+        cx
+    }
+
+    fn draw_border(&mut self, rect: Rect, chars: BorderChars, base_cell: Cell) {
+        self.buffer.draw_border(rect, chars, base_cell);
+    }
+
+    fn draw_box(
+        &mut self,
+        rect: Rect,
+        chars: BorderChars,
+        border_cell: Cell,
+        fill_cell: Cell,
+    ) {
+        self.buffer
+            .draw_box(rect, chars, border_cell, fill_cell);
+    }
+
+    fn paint_area(
+        &mut self,
+        rect: Rect,
+        fg: Option<crate::cell::PackedRgba>,
+        bg: Option<crate::cell::PackedRgba>,
+    ) {
+        self.buffer.paint_area(rect, fg, bg);
     }
 }
 
@@ -826,5 +944,23 @@ mod tests {
     fn hit_id_large_value() {
         let id = HitId::new(u32::MAX);
         assert_eq!(id.id(), u32::MAX);
+    }
+
+    #[test]
+    fn frame_print_text_interns_complex_graphemes() {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+
+        // Flag emoji (complex grapheme)
+        let flag = "🇺🇸";
+        assert!(flag.chars().count() > 1);
+
+        frame.print_text(0, 0, flag, Cell::default());
+
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert!(cell.content.is_grapheme());
+
+        let id = cell.content.grapheme_id().unwrap();
+        assert_eq!(frame.pool.get(id), Some(flag));
     }
 }

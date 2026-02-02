@@ -146,6 +146,10 @@ pub struct TerminalModel {
     csi_intermediate: Vec<u8>,
     /// OSC accumulator.
     osc_buffer: Vec<u8>,
+    /// Pending UTF-8 bytes for multibyte characters.
+    utf8_pending: Vec<u8>,
+    /// Expected UTF-8 sequence length (None if not in a sequence).
+    utf8_expected: Option<usize>,
     /// Bytes processed (for debugging).
     bytes_processed: usize,
 }
@@ -168,6 +172,8 @@ impl TerminalModel {
             csi_params: Vec::with_capacity(16),
             csi_intermediate: Vec::with_capacity(4),
             osc_buffer: Vec::with_capacity(256),
+            utf8_pending: Vec::with_capacity(4),
+            utf8_expected: None,
             bytes_processed: 0,
         }
     }
@@ -270,6 +276,8 @@ impl TerminalModel {
         self.csi_params.clear();
         self.csi_intermediate.clear();
         self.osc_buffer.clear();
+        self.utf8_pending.clear();
+        self.utf8_expected = None;
     }
 
     /// Process a byte sequence, updating the terminal state.
@@ -296,15 +304,17 @@ impl TerminalModel {
         match b {
             0x1B => {
                 // ESC
+                self.flush_pending_utf8_invalid();
                 self.parse_state = ParseState::Escape;
             }
             0x00..=0x1A | 0x1C..=0x1F => {
                 // C0 controls (mostly ignored)
+                self.flush_pending_utf8_invalid();
                 self.handle_c0(b);
             }
             _ => {
-                // Printable character
-                self.put_char(b as char);
+                // Printable character (UTF-8 aware)
+                self.handle_printable(b);
             }
         }
     }
@@ -461,6 +471,80 @@ impl TerminalModel {
             }
             _ => {} // Other C0 controls ignored
         }
+    }
+
+    fn handle_printable(&mut self, b: u8) {
+        if self.utf8_expected.is_none() {
+            if b < 0x80 {
+                self.put_char(b as char);
+                return;
+            }
+            if let Some(expected) = Self::utf8_expected_len(b) {
+                self.utf8_pending.clear();
+                self.utf8_pending.push(b);
+                self.utf8_expected = Some(expected);
+                if expected == 1 {
+                    self.flush_utf8_sequence();
+                }
+            } else {
+                self.put_char('\u{FFFD}');
+            }
+            return;
+        }
+
+        if !Self::is_utf8_continuation(b) {
+            self.flush_pending_utf8_invalid();
+            self.handle_printable(b);
+            return;
+        }
+
+        self.utf8_pending.push(b);
+        if let Some(expected) = self.utf8_expected {
+            if self.utf8_pending.len() == expected {
+                self.flush_utf8_sequence();
+            } else if self.utf8_pending.len() > expected {
+                self.flush_pending_utf8_invalid();
+            }
+        }
+    }
+
+    fn flush_utf8_sequence(&mut self) {
+        // Collect chars first to avoid borrow conflict with put_char.
+        // UTF-8 sequences are at most 4 bytes, so this is small.
+        let chars: Vec<char> = std::str::from_utf8(&self.utf8_pending)
+            .map(|text| text.chars().collect())
+            .unwrap_or_else(|_| vec!['\u{FFFD}']);
+        self.utf8_pending.clear();
+        self.utf8_expected = None;
+        for ch in chars {
+            self.put_char(ch);
+        }
+    }
+
+    fn flush_pending_utf8_invalid(&mut self) {
+        if self.utf8_expected.is_some() {
+            self.put_char('\u{FFFD}');
+            self.utf8_pending.clear();
+            self.utf8_expected = None;
+        }
+    }
+
+    fn utf8_expected_len(first: u8) -> Option<usize> {
+        if first < 0x80 {
+            Some(1)
+        } else if (0xC2..=0xDF).contains(&first) {
+            Some(2)
+        } else if (0xE0..=0xEF).contains(&first) {
+            Some(3)
+        } else if (0xF0..=0xF4).contains(&first) {
+            Some(4)
+        } else {
+            None
+        }
+    }
+
+    fn is_utf8_continuation(byte: u8) -> bool {
+        (0x80..=0xBF).contains(&byte)
     }
 
     fn put_char(&mut self, ch: char) {
@@ -1078,6 +1162,29 @@ mod tests {
 
         model.process(b"\x1b[?2026l"); // End sync
         assert!(model.sync_output_balanced());
+    }
+
+    #[test]
+    fn utf8_multibyte_stream_is_decoded() {
+        let mut model = TerminalModel::new(10, 1);
+        let text = "a\u{00E9}\u{4E2D}\u{1F600}";
+        model.process(text.as_bytes());
+
+        assert_eq!(model.row_text(0).as_deref(), Some(text));
+        assert_eq!(model.cursor(), (6, 0));
+    }
+
+    #[test]
+    fn utf8_sequence_can_span_process_calls() {
+        let mut model = TerminalModel::new(10, 1);
+        let text = "\u{00E9}";
+        let bytes = text.as_bytes();
+
+        model.process(&bytes[..1]);
+        assert_eq!(model.row_text(0).as_deref(), Some(""));
+
+        model.process(&bytes[1..]);
+        assert_eq!(model.row_text(0).as_deref(), Some(text));
     }
 
     #[test]
