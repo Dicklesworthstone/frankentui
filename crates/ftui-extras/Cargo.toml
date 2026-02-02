@@ -16,6 +16,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "gif"
 pulldown-cmark = { version = "0.12", default-features = false, optional = true }
 portable-pty = { version = "0.8.1", optional = true }
 tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
 unicode-segmentation = { version = "1", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
@@ -23,7 +24,7 @@ unicode-width = { version = "0.2", optional = true }
 canvas = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-widgets"]
 charts = ["canvas"]
 clipboard = ["dep:base64", "dep:ftui-core"]
-console = ["dep:ftui-render", "dep:ftui-style", "dep:ftui-text", "dep:unicode-width"]
+console = ["dep:ftui-render", "dep:ftui-style", "dep:ftui-text", "dep:unicode-segmentation", "dep:unicode-width"]
 clipboard-fallback = ["clipboard"]
 clipboard-logging = ["clipboard", "dep:tracing"]
 image = ["dep:base64", "dep:ftui-core", "dep:image"]
@@ -31,6 +32,9 @@ markdown = ["dep:pulldown-cmark", "dep:ftui-render", "dep:ftui-style", "dep:ftui
 export = ["dep:ftui-render"]
 forms = ["dep:ftui-core", "dep:ftui-render", "dep:ftui-style", "dep:ftui-widgets", "dep:unicode-segmentation", "dep:unicode-width"]
 pty-capture = ["dep:portable-pty"]
-syntax = ["dep:ftui-render", "dep:ftui-style"]
+logging = ["console", "dep:tracing", "dep:tracing-subscriber"]
+syntax = ["dep:ftui-render", "dep:ftui-style", "dep:ftui-text"]
 
 [dev-dependencies]
+tracing = "0.1"
+tracing-subscriber = "0.3"

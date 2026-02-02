@@ -21,6 +21,9 @@ pub mod forms;
 #[cfg(feature = "image")]
 pub mod image;
 
+#[cfg(feature = "logging")]
+pub mod logging;
+
 #[cfg(feature = "markdown")]
 pub mod markdown;
 
