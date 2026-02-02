@@ -115,6 +115,7 @@
 //! [`Frame`]: ftui_render::frame::Frame
 //! [`Buffer`]: ftui_render::buffer::Buffer
 
+pub mod align;
 pub mod block;
 pub mod borders;
 pub mod cached;
@@ -125,6 +126,7 @@ pub mod debug_overlay;
 pub mod error_boundary;
 pub mod help;
 pub mod input;
+pub mod json_view;
 pub mod layout_debugger;
 pub mod list;
 pub mod log_ring;
@@ -138,11 +140,13 @@ pub mod rule;
 pub mod scrollbar;
 pub mod spinner;
 pub mod status_line;
+pub mod stopwatch;
 pub mod table;
 pub mod textarea;
 pub mod tree;
 pub mod virtualized;
 
+pub use align::{Align, VerticalAlignment};
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
 pub use columns::{Column, Columns};
 pub use constraint_overlay::{ConstraintOverlay, ConstraintOverlayStyle};
