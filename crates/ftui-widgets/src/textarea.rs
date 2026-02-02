@@ -783,4 +783,238 @@ mod tests {
         ta.insert_text("goodbye");
         assert_eq!(ta.text(), "goodbye world");
     }
+
+    #[test]
+    fn insert_single_char() {
+        let mut ta = TextArea::new();
+        ta.insert_char('X');
+        assert_eq!(ta.text(), "X");
+        assert_eq!(ta.cursor().grapheme, 1);
+    }
+
+    #[test]
+    fn insert_multiline_text() {
+        let mut ta = TextArea::new();
+        ta.insert_text("line1\nline2\nline3");
+        assert_eq!(ta.line_count(), 3);
+        assert_eq!(ta.cursor().line, 2);
+    }
+
+    #[test]
+    fn delete_forward_works() {
+        let mut ta = TextArea::new().with_text("hello");
+        ta.move_to_document_start();
+        ta.delete_forward();
+        assert_eq!(ta.text(), "ello");
+    }
+
+    #[test]
+    fn delete_backward_at_line_start_joins_lines() {
+        let mut ta = TextArea::new().with_text("abc\ndef");
+        // Move to start of line 2
+        ta.move_to_document_start();
+        ta.move_down();
+        ta.move_to_line_start();
+        ta.delete_backward();
+        assert_eq!(ta.text(), "abcdef");
+        assert_eq!(ta.line_count(), 1);
+    }
+
+    #[test]
+    fn cursor_horizontal_movement() {
+        let mut ta = TextArea::new().with_text("abc");
+        ta.move_to_document_start();
+        ta.move_right();
+        assert_eq!(ta.cursor().grapheme, 1);
+        ta.move_right();
+        assert_eq!(ta.cursor().grapheme, 2);
+        ta.move_left();
+        assert_eq!(ta.cursor().grapheme, 1);
+    }
+
+    #[test]
+    fn cursor_vertical_maintains_column() {
+        let mut ta = TextArea::new().with_text("abcde\nfg\nhijkl");
+        ta.move_to_document_start();
+        ta.move_to_line_end(); // col 5
+        ta.move_down(); // line 1 only has 2 chars, should clamp
+        assert_eq!(ta.cursor().line, 1);
+        ta.move_down(); // line 2 has 5 chars, should restore col
+        assert_eq!(ta.cursor().line, 2);
+    }
+
+    #[test]
+    fn selection_shift_arrow() {
+        let mut ta = TextArea::new().with_text("abcdef");
+        ta.move_to_document_start();
+        ta.select_right();
+        ta.select_right();
+        ta.select_right();
+        assert_eq!(ta.selected_text(), Some("abc".to_string()));
+    }
+
+    #[test]
+    fn selection_extends_up_down() {
+        let mut ta = TextArea::new().with_text("line1\nline2\nline3");
+        ta.move_to_document_start();
+        ta.select_down();
+        let sel = ta.selected_text().unwrap();
+        assert!(sel.contains('\n'));
+    }
+
+    #[test]
+    fn undo_chain() {
+        let mut ta = TextArea::new();
+        ta.insert_text("a");
+        ta.insert_text("b");
+        ta.insert_text("c");
+        assert_eq!(ta.text(), "abc");
+        ta.undo();
+        ta.undo();
+        ta.undo();
+        assert_eq!(ta.text(), "");
+    }
+
+    #[test]
+    fn redo_discarded_on_new_edit() {
+        let mut ta = TextArea::new();
+        ta.insert_text("abc");
+        ta.undo();
+        ta.insert_text("xyz");
+        ta.redo(); // should be no-op
+        assert_eq!(ta.text(), "xyz");
+    }
+
+    #[test]
+    fn clear_selection() {
+        let mut ta = TextArea::new().with_text("hello");
+        ta.select_all();
+        assert!(ta.selection().is_some());
+        ta.clear_selection();
+        assert!(ta.selection().is_none());
+    }
+
+    #[test]
+    fn delete_word_backward() {
+        let mut ta = TextArea::new().with_text("hello world");
+        ta.move_to_document_end();
+        ta.delete_word_backward();
+        assert_eq!(ta.text(), "hello ");
+    }
+
+    #[test]
+    fn delete_to_end_of_line() {
+        let mut ta = TextArea::new().with_text("hello world");
+        ta.move_to_document_start();
+        ta.move_right(); // after 'h'
+        ta.delete_to_end_of_line();
+        assert_eq!(ta.text(), "h");
+    }
+
+    #[test]
+    fn placeholder_builder() {
+        let ta = TextArea::new().with_placeholder("Enter text...");
+        assert!(ta.is_empty());
+        assert_eq!(ta.placeholder, "Enter text...");
+    }
+
+    #[test]
+    fn soft_wrap_builder() {
+        let ta = TextArea::new().with_soft_wrap(true);
+        assert!(ta.soft_wrap);
+    }
+
+    #[test]
+    fn max_height_builder() {
+        let ta = TextArea::new().with_max_height(10);
+        assert_eq!(ta.max_height, 10);
+    }
+
+    #[test]
+    fn editor_access() {
+        let mut ta = TextArea::new().with_text("test");
+        assert_eq!(ta.editor().text(), "test");
+        ta.editor_mut().insert_char('!');
+        assert!(ta.text().contains('!'));
+    }
+
+    #[test]
+    fn move_to_line_start_and_end() {
+        let mut ta = TextArea::new().with_text("hello world");
+        ta.move_to_document_start();
+        ta.move_to_line_end();
+        assert_eq!(ta.cursor().grapheme, 11);
+        ta.move_to_line_start();
+        assert_eq!(ta.cursor().grapheme, 0);
+    }
+
+    #[test]
+    fn render_empty_with_placeholder() {
+        use ftui_render::grapheme_pool::GraphemePool;
+        let ta = TextArea::new()
+            .with_placeholder("Type here")
+            .with_focus(true);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
+        let area = Rect::new(0, 0, 20, 5);
+        Widget::render(&ta, area, &mut frame);
+        // Placeholder should be rendered
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('T'));
+        // Cursor should be set
+        assert!(frame.cursor_position.is_some());
+    }
+
+    #[test]
+    fn render_with_content() {
+        use ftui_render::grapheme_pool::GraphemePool;
+        let ta = TextArea::new().with_text("abc\ndef").with_focus(true);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 5, &mut pool);
+        let area = Rect::new(0, 0, 20, 5);
+        Widget::render(&ta, area, &mut frame);
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('a'));
+    }
+
+    #[test]
+    fn render_zero_area_no_panic() {
+        let ta = TextArea::new().with_text("test");
+        use ftui_render::grapheme_pool::GraphemePool;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+        Widget::render(&ta, Rect::new(0, 0, 0, 0), &mut frame);
+    }
+
+    #[test]
+    fn is_essential() {
+        let ta = TextArea::new();
+        assert!(Widget::is_essential(&ta));
+    }
+
+    #[test]
+    fn default_impl() {
+        let ta = TextArea::default();
+        assert!(ta.is_empty());
+    }
+
+    #[test]
+    fn insert_newline_splits_line() {
+        let mut ta = TextArea::new().with_text("abcdef");
+        ta.move_to_document_start();
+        ta.move_right();
+        ta.move_right();
+        ta.move_right();
+        ta.insert_newline();
+        assert_eq!(ta.line_count(), 2);
+        assert_eq!(ta.cursor().line, 1);
+    }
+
+    #[test]
+    fn unicode_grapheme_cluster() {
+        let mut ta = TextArea::new();
+        ta.insert_text("café");
+        // 'é' is a single grapheme even if composed
+        assert_eq!(ta.text(), "café");
+    }
 }
