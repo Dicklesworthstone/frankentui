@@ -13,7 +13,7 @@ ftui-style = { path = "../ftui-style", optional = true }
 ftui-text = { path = "../ftui-text", optional = true }
 base64 = { version = "0.22.1", optional = true }
 image = { version = "0.25.9", default-features = false, features = ["png", "gif", "jpeg"], optional = true }
-pulldown-cmark = { version = "0.12", default-features = false, optional = true }
+pulldown-cmark = { version = "0.13", default-features = false, optional = true }
 portable-pty = { version = "0.8.1", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
