@@ -150,11 +150,11 @@ fn render_loop<W: Write + Send>(
         // 3. If we have no logs but have a render, present it.
 
         if logs.is_empty() {
-            if let Some(buffer) = &latest_render {
-                if let Err(e) = writer.present_ui(buffer) {
-                    let _ = err_tx.try_send(e);
-                    return;
-                }
+            if let Some(buffer) = &latest_render
+                && let Err(e) = writer.present_ui(buffer)
+            {
+                let _ = err_tx.try_send(e);
+                return;
             }
         } else {
             let mut log_iter = logs.into_iter();
@@ -174,11 +174,11 @@ fn render_loop<W: Write + Send>(
                 }
 
                 // Interleaved render
-                if let Some(buffer) = &latest_render {
-                    if let Err(e) = writer.present_ui(buffer) {
-                        let _ = err_tx.try_send(e);
-                        return;
-                    }
+                if let Some(buffer) = &latest_render
+                    && let Err(e) = writer.present_ui(buffer)
+                {
+                    let _ = err_tx.try_send(e);
+                    return;
                 }
             }
         }
