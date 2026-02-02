@@ -154,7 +154,12 @@ echo ""
 echo "Project root: $PROJECT_ROOT"
 echo "Log directory: $LOG_DIR"
 echo "Started at: $(date -Iseconds)"
-echo "Mode: ${QUICK:+quick}${VERBOSE:+verbose}${QUICK:-${VERBOSE:-normal}}"
+# Determine mode string
+MODE=""
+if $QUICK; then MODE="${MODE}quick "; fi
+if $VERBOSE; then MODE="${MODE}verbose "; fi
+MODE="${MODE:-normal}"
+echo "Mode: ${MODE% }"
 
 mkdir -p "$LOG_DIR"
 cd "$PROJECT_ROOT"
