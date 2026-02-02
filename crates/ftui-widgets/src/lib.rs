@@ -136,6 +136,7 @@ pub mod padding;
 pub mod paginator;
 pub mod panel;
 pub mod paragraph;
+pub mod pretty;
 pub mod progress;
 pub mod rule;
 pub mod scrollbar;
