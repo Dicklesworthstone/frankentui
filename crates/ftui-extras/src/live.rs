@@ -437,7 +437,10 @@ mod tests {
         let live = Live::new(Box::new(w.clone()), 80);
         live.start().unwrap();
         assert!(live.is_started());
-        assert!(w.output().contains("\x1b[?25l"), "Should contain hide cursor");
+        assert!(
+            w.output().contains("\x1b[?25l"),
+            "Should contain hide cursor"
+        );
         live.stop().unwrap();
     }
 
@@ -449,7 +452,10 @@ mod tests {
         w.clear();
         live.stop().unwrap();
         assert!(!live.is_started());
-        assert!(w.output().contains("\x1b[?25h"), "Should contain show cursor");
+        assert!(
+            w.output().contains("\x1b[?25h"),
+            "Should contain show cursor"
+        );
     }
 
     #[test]
@@ -459,7 +465,11 @@ mod tests {
         live.start().unwrap();
         let first_output = w.output();
         live.start().unwrap(); // Should be no-op
-        assert_eq!(w.output(), first_output, "Second start should not write anything");
+        assert_eq!(
+            w.output(),
+            first_output,
+            "Second start should not write anything"
+        );
         live.stop().unwrap();
     }
 
@@ -471,7 +481,10 @@ mod tests {
         live.stop().unwrap();
         w.clear();
         live.stop().unwrap(); // Should be no-op
-        assert!(w.output().is_empty(), "Second stop should not write anything");
+        assert!(
+            w.output().is_empty(),
+            "Second stop should not write anything"
+        );
     }
 
     #[test]

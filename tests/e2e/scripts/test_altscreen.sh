@@ -55,9 +55,9 @@ altscreen_enter_exit() {
     PTY_TIMEOUT=3 \
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
-    grep -a -F -q $'\x1b[?1049h' "$output_file"
-    grep -a -F -q $'\x1b[?1049l' "$output_file"
-    grep -a -F -q $'\x1b[?25h' "$output_file"
+    grep -a -F -q $'\x1b[?1049h' "$output_file" || return 1
+    grep -a -F -q $'\x1b[?1049l' "$output_file" || return 1
+    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
 }
 
 altscreen_content() {
@@ -73,9 +73,9 @@ altscreen_content() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # Verify rendering content appears in alt-screen output
-    grep -a -q "Welcome to the Agent Harness" "$output_file"
-    grep -a -q "claude-3.5" "$output_file"
-    grep -a -q "Log line" "$output_file"
+    grep -a -q "Welcome to the Agent Harness" "$output_file" || return 1
+    grep -a -q "claude-3.5" "$output_file" || return 1
+    grep -a -q "Log line" "$output_file" || return 1
 }
 
 altscreen_cursor_restore() {
@@ -91,9 +91,9 @@ altscreen_cursor_restore() {
         pty_run "$output_file" "$E2E_HARNESS_BIN"
 
     # After exit, cursor should be visible (DECTCEM set)
-    grep -a -F -q $'\x1b[?25h' "$output_file"
+    grep -a -F -q $'\x1b[?25h' "$output_file" || return 1
     # Alt screen should be exited (DECSET 1049 off)
-    grep -a -F -q $'\x1b[?1049l' "$output_file"
+    grep -a -F -q $'\x1b[?1049l' "$output_file" || return 1
 }
 
 FAILURES=0

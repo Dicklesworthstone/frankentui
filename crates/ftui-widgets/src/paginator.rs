@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn dots_first_page() {
         let pager = Paginator::with_pages(1, 5).mode(PaginatorMode::Dots);
-        assert_eq!(pager.format_for_width(10), "*...." );
+        assert_eq!(pager.format_for_width(10), "*....");
     }
 
     #[test]

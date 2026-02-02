@@ -188,10 +188,7 @@ mod tests {
         let text = "Hello \u{05E9}\u{05DC}\u{05D5}\u{05DD} World";
         let result = reorder(text, ParagraphDirection::Ltr);
         // LTR paragraph: "Hello" stays, Hebrew reversed, "World" stays
-        assert_eq!(
-            result,
-            "Hello \u{05DD}\u{05D5}\u{05DC}\u{05E9} World"
-        );
+        assert_eq!(result, "Hello \u{05DD}\u{05D5}\u{05DC}\u{05E9} World");
     }
 
     #[test]

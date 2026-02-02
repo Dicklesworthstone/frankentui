@@ -527,13 +527,14 @@ impl Widget for TextArea {
             // Cursor line highlight
             if line_idx == cursor.line
                 && let Some(cl_style) = self.cursor_line_style
-                    && deg.apply_styling() {
-                        for cx in text_area_x..area.right() {
-                            if let Some(cell) = frame.buffer.get_mut(cx, y) {
-                                apply_style(cell, cl_style);
-                            }
-                        }
+                && deg.apply_styling()
+            {
+                for cx in text_area_x..area.right() {
+                    if let Some(cell) = frame.buffer.get_mut(cx, y) {
+                        apply_style(cell, cl_style);
                     }
+                }
+            }
 
             // Get line text
             let line_text = rope
@@ -542,8 +543,7 @@ impl Widget for TextArea {
             let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
 
             // Calculate line byte offset for selection mapping
-            let line_start_byte =
-                nav.to_byte_index(nav.from_line_grapheme(line_idx, 0));
+            let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(line_idx, 0));
 
             // Render each grapheme
             let mut visual_x: usize = 0;
@@ -573,11 +573,11 @@ impl Widget for TextArea {
                 let mut g_style = self.style;
                 if let Some((sel_start, sel_end)) = sel_range
                     && grapheme_byte_offset >= sel_start
-                        && grapheme_byte_offset < sel_end
-                        && deg.apply_styling()
-                    {
-                        g_style = g_style.merge(&self.selection_style);
-                    }
+                    && grapheme_byte_offset < sel_end
+                    && deg.apply_styling()
+                {
+                    g_style = g_style.merge(&self.selection_style);
+                }
 
                 // Write grapheme to buffer
                 if g_width > 0 {

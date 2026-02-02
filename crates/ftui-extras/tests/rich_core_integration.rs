@@ -43,9 +43,18 @@ fn one_writer_styled_segments_captured() {
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].plain_text(), "bold text");
     // Style is preserved in captured segments - at least one segment should have non-default style
-    assert!(!lines[0].segments.is_empty(), "should have at least one segment");
-    let has_styled = lines[0].segments.iter().any(|s| s.style != Style::default());
-    assert!(has_styled, "at least one segment should have bold style applied");
+    assert!(
+        !lines[0].segments.is_empty(),
+        "should have at least one segment"
+    );
+    let has_styled = lines[0]
+        .segments
+        .iter()
+        .any(|s| s.style != Style::default());
+    assert!(
+        has_styled,
+        "at least one segment should have bold style applied"
+    );
 }
 
 #[test]
@@ -61,7 +70,10 @@ fn one_writer_no_raw_writes_leak() {
     console.newline();
 
     let output = console.into_captured();
-    assert!(output.contains("ABC"), "captured output should contain ABC, got: {output:?}");
+    assert!(
+        output.contains("ABC"),
+        "captured output should contain ABC, got: {output:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +258,14 @@ fn console_blank_line_empty() {
 fn text_measurement_union_max_bounds() {
     use ftui_text::TextMeasurement;
 
-    let a = TextMeasurement { minimum: 5, maximum: 10 };
-    let b = TextMeasurement { minimum: 3, maximum: 15 };
+    let a = TextMeasurement {
+        minimum: 5,
+        maximum: 10,
+    };
+    let b = TextMeasurement {
+        minimum: 3,
+        maximum: 15,
+    };
     let union = a.union(b);
     assert_eq!(union.minimum, 5); // max of mins
     assert_eq!(union.maximum, 15); // max of maxes
@@ -257,8 +275,14 @@ fn text_measurement_union_max_bounds() {
 fn text_measurement_stack_adds_bounds() {
     use ftui_text::TextMeasurement;
 
-    let a = TextMeasurement { minimum: 5, maximum: 10 };
-    let b = TextMeasurement { minimum: 3, maximum: 8 };
+    let a = TextMeasurement {
+        minimum: 5,
+        maximum: 10,
+    };
+    let b = TextMeasurement {
+        minimum: 3,
+        maximum: 8,
+    };
     let stacked = a.stack(b);
     assert_eq!(stacked.minimum, 8); // sum of mins
     assert_eq!(stacked.maximum, 18); // sum of maxes
@@ -268,7 +292,10 @@ fn text_measurement_stack_adds_bounds() {
 fn text_measurement_clamp_enforces_bounds() {
     use ftui_text::TextMeasurement;
 
-    let m = TextMeasurement { minimum: 5, maximum: 20 };
+    let m = TextMeasurement {
+        minimum: 5,
+        maximum: 20,
+    };
     let clamped = m.clamp(Some(10), Some(15));
     assert_eq!(clamped.minimum, 10);
     assert_eq!(clamped.maximum, 15);
@@ -300,7 +327,10 @@ fn border_presets_have_distinct_chars() {
 
     // ASCII should use only ASCII characters
     let ascii = BorderChars::ASCII;
-    assert!(ascii.horizontal.is_ascii(), "ASCII horizontal should be ASCII");
+    assert!(
+        ascii.horizontal.is_ascii(),
+        "ASCII horizontal should be ASCII"
+    );
     assert!(ascii.vertical.is_ascii(), "ASCII vertical should be ASCII");
     assert!(ascii.top_left.is_ascii(), "ASCII top_left should be ASCII");
 }
@@ -370,9 +400,18 @@ mod live_tests {
     #[test]
     fn live_config_overflow_variants() {
         let configs = [
-            LiveConfig { overflow: VerticalOverflow::Crop, ..Default::default() },
-            LiveConfig { overflow: VerticalOverflow::Ellipsis, ..Default::default() },
-            LiveConfig { overflow: VerticalOverflow::Visible, ..Default::default() },
+            LiveConfig {
+                overflow: VerticalOverflow::Crop,
+                ..Default::default()
+            },
+            LiveConfig {
+                overflow: VerticalOverflow::Ellipsis,
+                ..Default::default()
+            },
+            LiveConfig {
+                overflow: VerticalOverflow::Visible,
+                ..Default::default()
+            },
         ];
         for config in configs {
             let writer: Box<dyn std::io::Write + Send> = Box::new(Cursor::new(Vec::new()));
@@ -406,9 +445,15 @@ fn full_pipeline_styled_multiline_output() {
     // Body with mixed styles
     console.push_style(body_style);
     console.print(Segment::text("Tests: "));
-    console.print(Segment::styled("31 passed", Style::new().fg(PackedRgba::rgb(0, 255, 0))));
+    console.print(Segment::styled(
+        "31 passed",
+        Style::new().fg(PackedRgba::rgb(0, 255, 0)),
+    ));
     console.print(Segment::text(", "));
-    console.print(Segment::styled("0 failed", Style::new().fg(PackedRgba::rgb(255, 0, 0))));
+    console.print(Segment::styled(
+        "0 failed",
+        Style::new().fg(PackedRgba::rgb(255, 0, 0)),
+    ));
     console.newline();
     console.pop_style();
 
@@ -426,7 +471,10 @@ fn full_pipeline_styled_multiline_output() {
 
     // Verify header has bold+green style applied
     assert_ne!(lines[0].segments[0].style, Style::default());
-    assert!(lines[1].segments.len() >= 3, "body line should have multiple styled segments");
+    assert!(
+        lines[1].segments.len() >= 3,
+        "body line should have multiple styled segments"
+    );
 }
 
 #[test]
@@ -435,7 +483,9 @@ fn full_pipeline_wrapping_preserves_styles() {
     let mut console = Console::with_options(25, sink, WrapMode::Word);
 
     console.push_style(Style::new().bold());
-    console.print(Segment::text("This bold text wraps at word boundaries cleanly"));
+    console.print(Segment::text(
+        "This bold text wraps at word boundaries cleanly",
+    ));
     console.newline();
     console.pop_style();
 

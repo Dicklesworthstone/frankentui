@@ -250,20 +250,24 @@ impl GraphemePool {
         }
 
         // 3. Sweep
-        // We collect indices first to avoid borrow conflicts with self.lookup
-        let mut to_free = Vec::new();
-        for (idx, slot_opt) in self.slots.iter().enumerate() {
-            if let Some(slot) = slot_opt
-                && slot.refcount == 0
-            {
-                to_free.push((idx, slot.text.clone()));
+        // We collect keys to remove to avoid borrow conflicts with self.lookup
+        let mut keys_to_remove = Vec::new();
+
+        for (idx, slot_opt) in self.slots.iter_mut().enumerate() {
+            // Check refcount without holding a mutable borrow for too long
+            let should_free = slot_opt.as_ref().is_some_and(|s| s.refcount == 0);
+
+            if should_free {
+                // Take the slot to own the string (no clone needed)
+                if let Some(dead_slot) = slot_opt.take() {
+                    keys_to_remove.push(dead_slot.text);
+                    self.free_list.push(idx as u32);
+                }
             }
         }
 
-        for (idx, text) in to_free {
+        for text in keys_to_remove {
             self.lookup.remove(&text);
-            self.slots[idx] = None;
-            self.free_list.push(idx as u32);
         }
     }
 }

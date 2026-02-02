@@ -756,7 +756,11 @@ mod tests {
         let link_id = links.register("https://example.com");
         // Set all cells with the same link
         for x in 0..5 {
-            buffer.set_raw(x, 0, Cell::from_char('A').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)));
+            buffer.set_raw(
+                x,
+                0,
+                Cell::from_char('A').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)),
+            );
         }
 
         let old = Buffer::new(10, 1);
@@ -784,8 +788,16 @@ mod tests {
         let link_a = links.register("https://a.com");
         let link_b = links.register("https://b.com");
 
-        buffer.set_raw(0, 0, Cell::from_char('A').with_attrs(CellAttrs::new(StyleFlags::empty(), link_a)));
-        buffer.set_raw(1, 0, Cell::from_char('B').with_attrs(CellAttrs::new(StyleFlags::empty(), link_b)));
+        buffer.set_raw(
+            0,
+            0,
+            Cell::from_char('A').with_attrs(CellAttrs::new(StyleFlags::empty(), link_a)),
+        );
+        buffer.set_raw(
+            1,
+            0,
+            Cell::from_char('B').with_attrs(CellAttrs::new(StyleFlags::empty(), link_b)),
+        );
         buffer.set_raw(2, 0, Cell::from_char('C')); // no link
 
         let old = Buffer::new(10, 1);

@@ -129,6 +129,7 @@ mod tests {
     }
 
     #[derive(Debug)]
+    #[allow(dead_code)]
     struct TestStruct {
         name: String,
         value: i32,

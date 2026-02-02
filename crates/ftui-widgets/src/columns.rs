@@ -335,4 +335,60 @@ mod tests {
         let col = Column::new(a, Constraint::Fixed(5)).constraint(Constraint::Fixed(10));
         assert_eq!(col.constraint, Constraint::Fixed(10));
     }
+
+    #[test]
+    fn all_columns_receive_same_height() {
+        let (a, a_rects) = Record::new();
+        let (b, b_rects) = Record::new();
+        let (c, c_rects) = Record::new();
+
+        let columns = Columns::new().add(a).add(b).add(c);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 5, &mut pool);
+        columns.render(Rect::new(0, 0, 12, 5), &mut frame);
+
+        let a = a_rects.borrow()[0];
+        let b = b_rects.borrow()[0];
+        let c = c_rects.borrow()[0];
+
+        assert_eq!(a.height, 5);
+        assert_eq!(b.height, 5);
+        assert_eq!(c.height, 5);
+    }
+
+    #[test]
+    fn many_columns_with_gap() {
+        let mut rects_all = Vec::new();
+        let mut cols = Columns::new().gap(1);
+        for _ in 0..5 {
+            let (rec, rects) = Record::new();
+            rects_all.push(rects);
+            cols = cols.column(rec, Constraint::Fixed(2));
+        }
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        cols.render(Rect::new(0, 0, 20, 1), &mut frame);
+
+        // 5 fixed cols of width 2 with gap 1 between them
+        for (i, rects) in rects_all.iter().enumerate() {
+            let r = rects.borrow()[0];
+            assert_eq!(r.width, 2, "column {i} should be width 2");
+        }
+
+        // Ensure no overlap
+        for i in 0..4 {
+            let a = rects_all[i].borrow()[0];
+            let b = rects_all[i + 1].borrow()[0];
+            assert!(
+                b.x >= a.right(),
+                "column {} (right={}) overlaps column {} (x={})",
+                i,
+                a.right(),
+                i + 1,
+                b.x
+            );
+        }
+    }
 }

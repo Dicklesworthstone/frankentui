@@ -645,7 +645,10 @@ mod tests {
         env.kitty_window_id = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.true_color, "Kitty supports truecolor");
-        assert!(caps.kitty_keyboard, "Kitty supports kitty keyboard protocol");
+        assert!(
+            caps.kitty_keyboard,
+            "Kitty supports kitty keyboard protocol"
+        );
         assert!(caps.sync_output, "Kitty supports sync output");
     }
 
@@ -740,7 +743,10 @@ mod tests {
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.in_zellij);
         assert!(caps.in_any_mux());
-        assert!(!caps.needs_passthrough_wrap(), "Zellij handles passthrough natively");
+        assert!(
+            !caps.needs_passthrough_wrap(),
+            "Zellij handles passthrough natively"
+        );
         assert!(!caps.osc52_clipboard, "clipboard disabled in mux");
     }
 
@@ -780,7 +786,10 @@ mod tests {
     fn unknown_term_program() {
         let env = make_env("xterm", "SomeUnknownTerminal", "");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(!caps.true_color, "unknown terminal should not assume truecolor");
+        assert!(
+            !caps.true_color,
+            "unknown terminal should not assume truecolor"
+        );
         assert!(!caps.osc8_hyperlinks);
         // But basic features still work
         assert!(caps.bracketed_paste);

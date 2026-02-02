@@ -29,8 +29,8 @@ use ftui_style::Style;
 use ftui_text::Segment;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 use crate::console::Console;
 
