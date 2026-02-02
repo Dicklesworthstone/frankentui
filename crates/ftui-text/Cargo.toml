@@ -19,6 +19,7 @@ smallvec = "1.13"
 tracing = "0.1"
 lru = "0.12"
 rustc-hash = "2"
+ropey = "1.6"
 
 [dev-dependencies]
 proptest = "1"

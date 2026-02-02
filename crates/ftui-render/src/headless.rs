@@ -512,7 +512,13 @@ mod tests {
 
     #[test]
     fn export_to_file() {
-        let dir = std::env::temp_dir().join("ftui_headless_test");
+        use std::time::{SystemTime, UNIX_EPOCH};
+        // Use unique directory name to prevent race conditions in parallel tests
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("ftui_headless_test_{unique_id}"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("export_test.txt");
 

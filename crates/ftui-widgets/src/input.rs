@@ -265,15 +265,25 @@ impl TextInput {
     // --- Editing operations ---
 
     fn insert_char(&mut self, c: char) {
+        // Optimization: calculate count once
+        let old_count = self.grapheme_count();
+
         if let Some(max) = self.max_length
-            && self.grapheme_count() >= max
+            && old_count >= max
         {
             return;
         }
 
         let byte_offset = self.grapheme_byte_offset(self.cursor);
         self.value.insert(byte_offset, c);
-        self.cursor += 1;
+
+        // Only advance cursor if we added a new grapheme.
+        // If we inserted a combining char that merged with the previous one,
+        // the count stays the same, and the cursor should stay after that merged grapheme (same index).
+        let new_count = self.grapheme_count();
+        if new_count > old_count {
+            self.cursor += 1;
+        }
     }
 
     fn delete_char_back(&mut self) {
@@ -675,7 +685,8 @@ mod tests {
 
     #[test]
     fn test_with_value() {
-        let input = TextInput::new().with_value("hello");
+        let mut input = TextInput::new().with_value("hello");
+        input.set_focused(true);
         assert_eq!(input.value(), "hello");
         assert_eq!(input.cursor(), 5);
     }
@@ -692,6 +703,7 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut input = TextInput::new().with_value("hello");
+        input.set_focused(true);
         input.clear();
         assert!(input.value().is_empty());
         assert_eq!(input.cursor(), 0);
@@ -1058,7 +1070,7 @@ mod tests {
         use ftui_render::frame::Frame;
         use ftui_render::grapheme_pool::GraphemePool;
 
-        let input = TextInput::new().with_value("hello");
+        let input = TextInput::new().with_value("hello").with_focused(true);
         let area = Rect::new(5, 3, 20, 1);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(30, 10, &mut pool);
@@ -1075,7 +1087,7 @@ mod tests {
         use ftui_render::frame::Frame;
         use ftui_render::grapheme_pool::GraphemePool;
 
-        let mut input = TextInput::new().with_value("hello");
+        let mut input = TextInput::new().with_value("hello").with_focused(true);
         input.cursor = 2; // After "he"
         let area = Rect::new(0, 0, 20, 1);
         let mut pool = GraphemePool::new();

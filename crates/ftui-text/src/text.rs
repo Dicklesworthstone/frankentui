@@ -425,6 +425,13 @@ impl Text {
         self.lines.len()
     }
 
+    /// Get the number of lines as u16, saturating at u16::MAX.
+    #[inline]
+    #[must_use]
+    pub fn height_as_u16(&self) -> u16 {
+        self.lines.len().try_into().unwrap_or(u16::MAX)
+    }
+
     /// Get the maximum width across all lines.
     #[must_use]
     pub fn width(&self) -> usize {

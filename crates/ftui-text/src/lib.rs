@@ -9,6 +9,7 @@
 //! - [`Span`] - styled text span for ergonomic construction
 //! - [`Line`] - a line of styled spans
 //! - [`Text`] - multi-line styled text
+//! - [`Rope`] - rope-backed text storage
 //! - [`WidthCache`] - LRU cache for text width measurements
 //!
 //! # Example
@@ -40,8 +41,10 @@
 //! assert_eq!(width, 13);
 //! ```
 
+pub mod rope;
 pub mod segment;
 pub mod text;
+pub mod view;
 pub mod width_cache;
 pub mod wrap;
 
@@ -95,8 +98,10 @@ impl TextMeasurement {
     }
 }
 
+pub use rope::Rope;
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
 pub use text::{Line, Span, Text};
+pub use view::{TextView, ViewLine, Viewport};
 pub use width_cache::{CacheStats, DEFAULT_CACHE_CAPACITY, WidthCache};
 pub use wrap::{
     WrapMode, WrapOptions, ascii_width, display_width, grapheme_count, graphemes, has_wide_chars,

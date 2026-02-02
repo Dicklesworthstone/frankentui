@@ -170,6 +170,30 @@ impl<'a> StatefulWidget for Table<'a> {
             set_style_area(&mut frame.buffer, table_area, self.style);
         }
 
+        let header_height = self
+            .header
+            .as_ref()
+            .map(|h| h.height + h.bottom_margin)
+            .unwrap_or(0);
+
+        if let Some(header) = &self.header
+            && header.height > table_area.height
+        {
+            return;
+        }
+
+        let rows_top = table_area.y.saturating_add(header_height);
+        let rows_max_y = table_area.bottom();
+        let rows_height = rows_max_y.saturating_sub(rows_top);
+
+        if let Some(selected) = state.selected {
+            if self.rows.is_empty() {
+                state.selected = None;
+            } else if selected >= self.rows.len() {
+                state.selected = Some(self.rows.len() - 1);
+            }
+        }
+
         // Ensure visible range includes selected item
         if let Some(selected) = state.selected {
             if selected < state.offset {
@@ -177,8 +201,8 @@ impl<'a> StatefulWidget for Table<'a> {
             } else {
                 // Check if selected is visible; if not, scroll down
                 // 1. Find the index of the last currently visible row
-                let mut current_y = table_area.y;
-                let max_y = table_area.bottom();
+                let mut current_y = rows_top;
+                let max_y = rows_max_y;
                 let mut last_visible = state.offset;
 
                 // Iterate forward to find visibility boundary
@@ -193,8 +217,8 @@ impl<'a> StatefulWidget for Table<'a> {
                 if selected > last_visible {
                     // Selected is below viewport. Find new offset to make it visible at bottom.
                     let mut new_offset = selected;
-                    let mut accumulated_height = 0;
-                    let available_height = table_area.height;
+                    let mut accumulated_height: u16 = 0;
+                    let available_height = rows_height;
 
                     // Iterate backwards from selected
                     for i in (0..=selected).rev() {
@@ -517,6 +541,39 @@ mod tests {
 
         // Offset should have been adjusted down to selected
         assert_eq!(state.offset, 2);
+    }
+
+    #[test]
+    fn selection_out_of_bounds_clamps_to_last_row() {
+        let table = Table::new([Row::new(["A"]), Row::new(["B"])], [Constraint::Fixed(5)]);
+        let area = Rect::new(0, 0, 5, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 2, &mut pool);
+        let mut state = TableState {
+            offset: 0,
+            selected: Some(99),
+        };
+
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+        assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn selection_with_header_accounts_for_header_height() {
+        let header = Row::new(["H"]);
+        let table =
+            Table::new([Row::new(["A"]), Row::new(["B"])], [Constraint::Fixed(5)]).header(header);
+
+        let area = Rect::new(0, 0, 5, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 2, &mut pool);
+        let mut state = TableState {
+            offset: 0,
+            selected: Some(1),
+        };
+
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+        assert_eq!(state.offset, 1);
     }
 
     #[test]

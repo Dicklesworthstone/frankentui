@@ -13,6 +13,7 @@ use ftui_core::geometry::Rect;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
+use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::Style;
 use ftui_widgets::{StatefulWidget, Widget};
 
@@ -583,9 +584,14 @@ impl FormState {
 
     fn handle_text_char(&mut self, form: &mut Form, c: char) -> bool {
         if let Some(FormField::Text { value, .. }) = form.fields.get_mut(self.focused) {
+            let old_count = grapheme_count(value);
             let byte_offset = grapheme_byte_offset(value, self.text_cursor);
             value.insert(byte_offset, c);
-            self.text_cursor += 1;
+
+            let new_count = grapheme_count(value);
+            if new_count > old_count {
+                self.text_cursor += 1;
+            }
             return true;
         }
         false
@@ -652,13 +658,12 @@ impl StatefulWidget for Form {
     type State = FormState;
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
-        let buf = &mut frame.buffer;
         if area.is_empty() || self.fields.is_empty() {
             return;
         }
 
         // Apply base style
-        set_style_area(buf, area, self.style);
+        set_style_area(&mut frame.buffer, area, self.style);
 
         let label_w = self.effective_label_width();
         let value_x = area.x.saturating_add(label_w);
@@ -704,7 +709,7 @@ impl StatefulWidget for Form {
 
             let label = field.label();
             draw_str(
-                buf,
+                frame,
                 area.x,
                 y,
                 label,
@@ -714,7 +719,7 @@ impl StatefulWidget for Form {
 
             // Draw ": " separator
             let sep_x = area.x + label.len().min((label_w.saturating_sub(2)) as usize) as u16;
-            draw_str(buf, sep_x, y, ": ", label_style, 2);
+            draw_str(frame, sep_x, y, ": ", label_style, 2);
 
             // Draw field value
             let field_style = if is_focused {
@@ -724,7 +729,7 @@ impl StatefulWidget for Form {
             };
 
             self.render_field(
-                buf,
+                frame,
                 field,
                 value_x,
                 y,
@@ -739,7 +744,7 @@ impl StatefulWidget for Form {
                 // Show error after value if space allows
                 let err_x = value_x + value_width.saturating_sub(msg.len() as u16 + 2);
                 if err_x > value_x {
-                    draw_str(buf, err_x, y, msg, self.error_style, value_width);
+                    draw_str(frame, err_x, y, msg, self.error_style, value_width);
                 }
             }
         }
@@ -749,7 +754,7 @@ impl StatefulWidget for Form {
 impl Form {
     fn render_field(
         &self,
-        buf: &mut Buffer,
+        frame: &mut Frame,
         field: &FormField,
         x: u16,
         y: u16,
@@ -764,16 +769,16 @@ impl Form {
             } => {
                 if value.is_empty() {
                     if let Some(ph) = placeholder {
-                        draw_str(buf, x, y, ph, self.label_style, width);
+                        draw_str(frame, x, y, ph, self.label_style, width);
                     }
                 } else {
-                    draw_str(buf, x, y, value, style, width);
+                    draw_str(frame, x, y, value, style, width);
                 }
                 // Draw cursor if focused
                 if is_focused {
                     let cursor_x = x + state.text_cursor.min(width as usize) as u16;
                     if cursor_x < x + width {
-                        if let Some(cell) = buf.get_mut(cursor_x, y) {
+                        if let Some(cell) = frame.buffer.get_mut(cursor_x, y) {
                             use ftui_render::cell::StyleFlags;
                             let flags = cell.attrs.flags();
                             cell.attrs = cell.attrs.with_flags(flags ^ StyleFlags::REVERSE);
@@ -783,14 +788,14 @@ impl Form {
             }
             FormField::Checkbox { checked, .. } => {
                 let indicator = if *checked { "[x]" } else { "[ ]" };
-                draw_str(buf, x, y, indicator, style, width);
+                draw_str(frame, x, y, indicator, style, width);
             }
             FormField::Radio {
                 options, selected, ..
             } => {
                 if let Some(opt) = options.get(*selected) {
                     let display = format!("({}) {}", selected + 1, opt);
-                    draw_str(buf, x, y, &display, style, width);
+                    draw_str(frame, x, y, &display, style, width);
                 }
             }
             FormField::Select {
@@ -800,7 +805,7 @@ impl Form {
                     let prefix = if is_focused { "< " } else { "  " };
                     let suffix = if is_focused { " >" } else { "  " };
                     let display = format!("{prefix}{opt}{suffix}");
-                    draw_str(buf, x, y, &display, style, width);
+                    draw_str(frame, x, y, &display, style, width);
                 }
             }
             FormField::Number { value, .. } => {
@@ -809,7 +814,7 @@ impl Form {
                 } else {
                     format!("  {value}  ")
                 };
-                draw_str(buf, x, y, &display, style, width);
+                draw_str(frame, x, y, &display, style, width);
             }
         }
     }
@@ -927,16 +932,15 @@ impl StatefulWidget for ConfirmDialog {
     type State = ConfirmDialogState;
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
-        let buf = &mut frame.buffer;
         if area.is_empty() {
             return;
         }
 
-        set_style_area(buf, area, self.style);
+        set_style_area(&mut frame.buffer, area, self.style);
 
         // Draw message on first row(s)
         let msg_y = area.y;
-        draw_str(buf, area.x, msg_y, &self.message, self.style, area.width);
+        draw_str(frame, area.x, msg_y, &self.message, self.style, area.width);
 
         // Draw buttons on last row
         let btn_y = if area.height > 1 {
@@ -963,9 +967,9 @@ impl StatefulWidget for ConfirmDialog {
             .x
             .saturating_add(area.width.saturating_sub(total_btn_width as u16) / 2);
 
-        draw_str(buf, start_x, btn_y, &yes_str, yes_style, area.width);
+        draw_str(frame, start_x, btn_y, &yes_str, yes_style, area.width);
         let no_x = start_x + yes_str.len() as u16 + 2;
-        draw_str(buf, no_x, btn_y, &no_str, no_style, area.width);
+        draw_str(frame, no_x, btn_y, &no_str, no_style, area.width);
     }
 }
 
@@ -1009,23 +1013,33 @@ fn set_style_area(buf: &mut Buffer, area: Rect, style: Style) {
 }
 
 /// Draw a string into the buffer, clamped to `max_width` visual columns.
-fn draw_str(buf: &mut Buffer, x: u16, y: u16, s: &str, style: Style, max_width: u16) {
+fn draw_str(frame: &mut Frame, x: u16, y: u16, s: &str, style: Style, max_width: u16) {
     let mut col = 0u16;
     for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(s, true) {
         if col >= max_width {
             break;
         }
         let w = unicode_width::UnicodeWidthStr::width(grapheme) as u16;
+        if w == 0 {
+            continue;
+        }
         if col + w > max_width {
             break;
         }
 
-        // Use first char as fallback for multi-char graphemes (since widgets can't intern)
-        if let Some(ch) = grapheme.chars().next() {
-            let mut cell = Cell::from_char(ch);
-            apply_style(&mut cell, style);
-            buf.set(x + col, y, cell);
-        }
+        // Intern grapheme if needed
+        let cell_content = if w > 1 || grapheme.chars().count() > 1 {
+            let id = frame.intern_with_width(grapheme, w as u8);
+            ftui_render::cell::CellContent::from_grapheme(id)
+        } else if let Some(c) = grapheme.chars().next() {
+            ftui_render::cell::CellContent::from_char(c)
+        } else {
+            continue;
+        };
+
+        let mut cell = Cell::new(cell_content);
+        apply_style(&mut cell, style);
+        frame.buffer.set(x + col, y, cell);
         col += w;
     }
 }
@@ -1574,48 +1588,62 @@ mod tests {
             FormField::number("Age", 25),
         ]);
         let area = Rect::new(0, 0, 40, 5);
-        let mut buf = Buffer::new(40, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 5, &mut pool);
         let mut state = FormState::default();
-        StatefulWidget::render(&form, area, &mut buf, &mut state);
+        StatefulWidget::render(&form, area, &mut frame, &mut state);
     }
 
     #[test]
     fn render_form_zero_area() {
         let form = Form::new(vec![FormField::text("Name")]);
         let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::new(1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
         let mut state = FormState::default();
-        StatefulWidget::render(&form, area, &mut buf, &mut state);
+        StatefulWidget::render(&form, area, &mut frame, &mut state);
     }
 
     #[test]
     fn render_form_shows_label() {
         let form = Form::new(vec![FormField::text_with_value("Name", "Alice")]);
         let area = Rect::new(0, 0, 30, 1);
-        let mut buf = Buffer::new(30, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 1, &mut pool);
         let mut state = FormState::default();
-        StatefulWidget::render(&form, area, &mut buf, &mut state);
+        StatefulWidget::render(&form, area, &mut frame, &mut state);
 
         // First cell should be 'N' from "Name"
-        assert_eq!(buf.get(0, 0).unwrap().content.as_char(), Some('N'));
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('N'));
     }
 
     #[test]
     fn render_checkbox_shows_indicator() {
         let form = Form::new(vec![FormField::checkbox("Accept", true)]);
         let area = Rect::new(0, 0, 30, 1);
-        let mut buf = Buffer::new(30, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 1, &mut pool);
         let mut state = FormState::default();
-        StatefulWidget::render(&form, area, &mut buf, &mut state);
+        StatefulWidget::render(&form, area, &mut frame, &mut state);
 
         // After label "Accept: ", should show "[x]"
         let label_end = "Accept".len() + 2; // ": "
         assert_eq!(
-            buf.get(label_end as u16, 0).unwrap().content.as_char(),
+            frame
+                .buffer
+                .get(label_end as u16, 0)
+                .unwrap()
+                .content
+                .as_char(),
             Some('[')
         );
         assert_eq!(
-            buf.get(label_end as u16 + 1, 0).unwrap().content.as_char(),
+            frame
+                .buffer
+                .get(label_end as u16 + 1, 0)
+                .unwrap()
+                .content
+                .as_char(),
             Some('x')
         );
     }
@@ -1680,9 +1708,10 @@ mod tests {
     fn confirm_dialog_render_no_panic() {
         let dialog = ConfirmDialog::new("Are you sure?");
         let area = Rect::new(0, 0, 30, 3);
-        let mut buf = Buffer::new(30, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 3, &mut pool);
         let mut state = ConfirmDialogState::default();
-        StatefulWidget::render(&dialog, area, &mut buf, &mut state);
+        StatefulWidget::render(&dialog, area, &mut frame, &mut state);
     }
 
     #[test]
@@ -1775,11 +1804,12 @@ mod tests {
 
         // Viewport of 2 rows
         let area = Rect::new(0, 0, 30, 2);
-        let mut buf = Buffer::new(30, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 2, &mut pool);
 
         // Focus on last field
         state.focused = 4;
-        StatefulWidget::render(&form, area, &mut buf, &mut state);
+        StatefulWidget::render(&form, area, &mut frame, &mut state);
         assert!(state.scroll >= 3); // Must scroll to show field 4
     }
 

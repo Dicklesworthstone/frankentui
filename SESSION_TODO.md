@@ -41,4 +41,11 @@
 - [x] **Sanitization**: Hardened escape sequence parser against log-swallowing attacks in `sanitize.rs`.
 - [x] **Unicode Rendering**: Refactored `Widget` trait to use `Frame` for correct grapheme handling.
 - [x] **Core Widget Updates**: Updated `Block`, `Paragraph`, `List`, `Table`, `Input`, `Progress`, `Scrollbar`, `Spinner`.
-- [ ] **Extras Widget Updates**: Update `Canvas`, `Charts`, `Forms` in `ftui-extras`.
+- [x] **Extras Widget Updates**: Updated `Canvas`, `Charts`, `Forms` in `ftui-extras`.
+- [x] **Text Helpers**: Added `height_as_u16` for safer layout math.
+
+## 8. Test Suite Fixes (IvoryBeacon Session)
+- [x] **Event Coalescer**: Fixed scroll coalescing bug in `flush()` - was unrolling instead of coalescing.
+- [x] **Rope Module**: Made `Rope::from_str` public, fixed `From` implementations.
+- [x] **Form Test**: Added feature gate to `form_combining_repro.rs`.
+- [x] **Verification**: All 1,800+ tests passing, 0 failures. Clippy clean, format clean.

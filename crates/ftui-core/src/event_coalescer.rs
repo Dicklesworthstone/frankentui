@@ -171,11 +171,6 @@ impl EventCoalescer {
     }
 
     /// Convert scroll state to an event.
-    ///
-    /// For coalesced scrolls, we emit the scroll event N times where N is
-    /// the accumulated count. However, since most applications process
-    /// scroll events one at a time, we return a single event and the caller
-    /// can check `pending_scroll_count()` if they want to handle batched scrolls.
     fn scroll_to_event(&self, state: ScrollState) -> Event {
         let kind = match state.direction {
             ScrollDirection::Up => MouseEventKind::ScrollUp,
@@ -190,8 +185,8 @@ impl EventCoalescer {
     /// Flush all pending coalesced events.
     ///
     /// Returns a vector of events that were pending. The order is:
-    /// 1. Pending scroll event (if any)
-    /// 2. Pending mouse move (if any)
+    /// 1. Pending scroll event (single coalesced event)
+    /// 2. Pending mouse move (latest position)
     ///
     /// After calling `flush()`, the coalescer is empty.
     ///
@@ -202,9 +197,9 @@ impl EventCoalescer {
     /// end of each event batch to process any remaining pending events.
     #[must_use]
     pub fn flush(&mut self) -> Vec<Event> {
-        let mut events = Vec::with_capacity(2);
+        let mut events = Vec::new();
 
-        // Scroll first (older)
+        // Scroll first (older) - return single coalesced event
         if let Some(scroll) = self.pending_scroll.take() {
             events.push(self.scroll_to_event(scroll));
         }

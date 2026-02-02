@@ -112,7 +112,6 @@ impl<'a> Sparkline<'a> {
 
 impl Widget for Sparkline<'_> {
     fn render(&self, area: Rect, frame: &mut Frame) {
-        let buf = &mut frame.buffer;
         if area.is_empty() || self.data.is_empty() {
             return;
         }
@@ -147,7 +146,7 @@ impl Widget for Sparkline<'_> {
                 cell.fg = lerp_color(low, high, normalized);
             }
 
-            buf.set(x, y, cell);
+            frame.buffer.set(x, y, cell);
         }
     }
 }
@@ -287,7 +286,6 @@ impl<'a> BarChart<'a> {
 
 impl Widget for BarChart<'_> {
     fn render(&self, area: Rect, frame: &mut Frame) {
-        let buf = &mut frame.buffer;
         if area.is_empty() || self.groups.is_empty() {
             return;
         }
@@ -298,8 +296,8 @@ impl Widget for BarChart<'_> {
         }
 
         match self.direction {
-            BarDirection::Vertical => self.render_vertical(area, buf, max_val),
-            BarDirection::Horizontal => self.render_horizontal(area, buf, max_val),
+            BarDirection::Vertical => self.render_vertical(area, &mut frame.buffer, max_val),
+            BarDirection::Horizontal => self.render_horizontal(area, &mut frame.buffer, max_val),
         }
     }
 }
@@ -678,16 +676,13 @@ impl Widget for LineChart<'_> {
         let canvas = crate::canvas::Canvas::from_painter(&painter).style(self.style);
         canvas.render(chart_area, frame);
 
-        // Get buffer reference for remaining rendering
-        let buf = &mut frame.buffer;
-
         // Y axis line.
         let axis_x = chart_area.x.saturating_sub(1);
         if axis_x >= area.x {
             for y in chart_area.y..chart_area.bottom() {
                 let mut cell = Cell::from_char('│');
                 style_cell(&mut cell, self.style);
-                buf.set(axis_x, y, cell);
+                frame.buffer.set(axis_x, y, cell);
             }
         }
 
@@ -697,13 +692,13 @@ impl Widget for LineChart<'_> {
             for x in chart_area.x..chart_area.right() {
                 let mut cell = Cell::from_char('─');
                 style_cell(&mut cell, self.style);
-                buf.set(x, axis_y, cell);
+                frame.buffer.set(x, axis_y, cell);
             }
             // Corner.
             if axis_x >= area.x {
                 let mut cell = Cell::from_char('└');
                 style_cell(&mut cell, self.style);
-                buf.set(axis_x, axis_y, cell);
+                frame.buffer.set(axis_x, axis_y, cell);
             }
         }
 
@@ -725,7 +720,7 @@ impl Widget for LineChart<'_> {
                 for (j, ch) in label.chars().enumerate().take(label_len) {
                     let mut cell = Cell::from_char(ch);
                     style_cell(&mut cell, self.style);
-                    buf.set(start_x + j as u16, y, cell);
+                    frame.buffer.set(start_x + j as u16, y, cell);
                 }
             }
         }
@@ -747,7 +742,7 @@ impl Widget for LineChart<'_> {
                     if lx < area.right() {
                         let mut cell = Cell::from_char(ch);
                         style_cell(&mut cell, self.style);
-                        buf.set(lx, text_y, cell);
+                        frame.buffer.set(lx, text_y, cell);
                     }
                 }
             }
@@ -766,14 +761,14 @@ impl Widget for LineChart<'_> {
                 }
                 let mut marker = Cell::from_char('■');
                 marker.fg = series.color;
-                buf.set(legend_x, y, marker);
+                frame.buffer.set(legend_x, y, marker);
 
                 for (j, ch) in series.name.chars().enumerate() {
                     let x = legend_x + 2 + j as u16;
                     if x < area.right() {
                         let mut cell = Cell::from_char(ch);
                         style_cell(&mut cell, self.style);
-                        buf.set(x, y, cell);
+                        frame.buffer.set(x, y, cell);
                     }
                 }
             }

@@ -228,11 +228,14 @@ impl InputParser {
                 self.buffer.clear();
                 None
             }
-            // Another ESC - emit Alt+Escape and stay in Escape state
+            // Another ESC - emit Alt+Escape and reset to ground
             // (or treat as start of new sequence - but ESC ESC is usually Alt+ESC)
-            0x1B => Some(Event::Key(
-                KeyEvent::new(KeyCode::Escape).with_modifiers(Modifiers::ALT),
-            )),
+            0x1B => {
+                self.state = ParserState::Ground;
+                Some(Event::Key(
+                    KeyEvent::new(KeyCode::Escape).with_modifiers(Modifiers::ALT),
+                ))
+            }
             // Alt+letter or Alt+char
             0x20..=0x7E => {
                 self.state = ParserState::Ground;
@@ -1041,6 +1044,23 @@ mod tests {
         assert!(matches!(
             events.first(),
             Some(Event::Key(k)) if k.code == KeyCode::Char('a') && k.modifiers.contains(Modifiers::ALT)
+        ));
+    }
+
+    #[test]
+    fn escape_escape_resets_state() {
+        let mut parser = InputParser::new();
+
+        let events = parser.parse(b"\x1b\x1b");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Escape && k.modifiers.contains(Modifiers::ALT)
+        ));
+
+        let events = parser.parse(b"a");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Char('a') && k.modifiers == Modifiers::NONE
         ));
     }
 
