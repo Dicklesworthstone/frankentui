@@ -97,7 +97,7 @@ jobs:
 
       - name: Test ftui-extras features
         run: |
-          for feature in canvas charts forms markdown export clipboard syntax image; do
+          for feature in canvas charts forms markdown export clipboard syntax image live logging filepicker; do
             echo "Testing ftui-extras --features $feature"
             cargo check -p ftui-extras --features "$feature"
           done
@@ -107,6 +107,88 @@ jobs:
 
       - name: Test no default features
         run: cargo check --workspace --no-default-features
+
+  # ==========================================================================
+  # Coverage Job
+  # ==========================================================================
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ==========================================================================
+  # Benchmarks Job (push to main only)
+  # ==========================================================================
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run benchmarks
+        run: |
+          cargo bench -p ftui-render --bench cell_bench -- --output-format bencher | tee bench-output.txt
+          cargo bench -p ftui-render --bench diff_bench -- --output-format bencher | tee -a bench-output.txt
+          cargo bench -p ftui-render --bench buffer_bench -- --output-format bencher | tee -a bench-output.txt
+          cargo bench -p ftui-render --bench presenter_bench -- --output-format bencher | tee -a bench-output.txt
+          cargo bench -p ftui-layout --bench layout_bench -- --output-format bencher | tee -a bench-output.txt
+          cargo bench -p ftui-text --bench width_bench -- --output-format bencher | tee -a bench-output.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: bench-output.txt
+          retention-days: 30
 
   # ==========================================================================
   # Documentation Job
@@ -148,7 +230,7 @@ jobs:
   # ==========================================================================
   # Widget API E2E Test Job
   # ==========================================================================
-  e2e:
+  e2e-widget-api:
     name: Widget API E2E
     runs-on: ubuntu-latest
 
@@ -160,7 +242,6 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
-          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -169,18 +250,109 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-e2e-widget-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run E2E tests
+      - name: Run Widget API E2E tests
         run: ./scripts/widget_api_e2e.sh
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: widget-api-e2e-logs
+          path: /tmp/widget_api_e2e_*/
+          retention-days: 7
+
+  # ==========================================================================
+  # PTY E2E Test Job (harness + terminal tests)
+  # ==========================================================================
+  e2e-pty:
+    name: PTY E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-e2e-pty-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run PTY E2E tests
+        run: ./scripts/e2e_test.sh
 
       - name: Upload E2E logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-logs
-          path: /tmp/widget_api_e2e_*/
+          name: e2e-pty-logs-${{ matrix.os }}
+          path: /tmp/ftui_e2e_*/
           retention-days: 7
+
+      - name: Upload test summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-pty-summary-${{ matrix.os }}
+          path: /tmp/ftui_e2e_*/results/summary.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
+  # Fuzz Build Check
+  # ==========================================================================
+  fuzz:
+    name: Fuzz Build Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build fuzz targets
+        run: cargo fuzz build
+
+      - name: Quick fuzz run (60s per target)
+        run: |
+          cargo fuzz run fuzz_input_parser -- -max_len=4096 -max_total_time=20
+          cargo fuzz run fuzz_input_parser_structured -- -max_len=4096 -max_total_time=20
+          cargo fuzz run fuzz_input_parser_long_seq -- -max_total_time=20
 
   # ==========================================================================
   # MSRV Check (Minimum Supported Rust Version)
@@ -201,10 +373,3 @@ jobs:
 
       - name: Check MSRV
         run: cargo check --workspace
-
-# ==========================================================================
-# Future jobs (blocked by dependencies):
-# - coverage: Requires cargo-llvm-cov setup (bd-2vr)
-# - benchmarks: Requires benchmark suite (bd-19x)
-# - full-e2e: Requires PTY test framework (bd-10i.11.2)
-# ==========================================================================
