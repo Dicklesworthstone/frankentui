@@ -197,7 +197,7 @@ impl Widget for Stopwatch<'_> {
 }
 
 /// Formats a duration according to the given format.
-fn format_duration(d: std::time::Duration, fmt: StopwatchFormat) -> String {
+pub(crate) fn format_duration(d: std::time::Duration, fmt: StopwatchFormat) -> String {
     match fmt {
         StopwatchFormat::Human => format_human(d),
         StopwatchFormat::Digital => format_digital(d),

@@ -123,6 +123,7 @@ pub mod columns;
 pub mod constraint_overlay;
 #[cfg(feature = "debug-overlay")]
 pub mod debug_overlay;
+pub mod emoji;
 pub mod error_boundary;
 pub mod group;
 pub mod help;
@@ -145,6 +146,7 @@ pub mod status_line;
 pub mod stopwatch;
 pub mod table;
 pub mod textarea;
+pub mod timer;
 pub mod tree;
 pub mod virtualized;
 
