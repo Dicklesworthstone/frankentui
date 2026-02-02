@@ -28,5 +28,5 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"], optio
 
 [dev-dependencies]
 # For spike PTY tests
-portable-pty = "0.8"
+portable-pty = "0.9"
 proptest = "1"
