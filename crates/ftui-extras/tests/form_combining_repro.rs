@@ -16,8 +16,10 @@ mod tests {
     #[test]
     fn test_form_combining_char_bug() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "e")]);
-        let mut state = FormState::default();
-        state.text_cursor = 1; // After 'e'
+        let mut state = FormState {
+            text_cursor: 1, // After 'e'
+            ..Default::default()
+        };
 
         // Insert combining acute accent (U+0301)
         state.handle_event(&mut form, &press(KeyCode::Char('\u{0301}')));

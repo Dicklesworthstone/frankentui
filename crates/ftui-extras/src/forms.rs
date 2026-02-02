@@ -301,13 +301,13 @@ impl Form {
     pub fn validate_all(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         for (i, (field, validator)) in self.fields.iter().zip(self.validators.iter()).enumerate() {
-            if let Some(vf) = validator {
-                if let Some(msg) = vf(field) {
-                    errors.push(ValidationError {
-                        field: i,
-                        message: msg,
-                    });
-                }
+            if let Some(vf) = validator
+                && let Some(msg) = vf(field)
+            {
+                errors.push(ValidationError {
+                    field: i,
+                    message: msg,
+                });
             }
         }
         errors
@@ -592,14 +592,14 @@ impl FormState {
     }
 
     fn handle_text_backspace(&mut self, form: &mut Form) -> bool {
-        if let Some(FormField::Text { value, .. }) = form.fields.get_mut(self.focused) {
-            if self.text_cursor > 0 {
-                let byte_start = grapheme_byte_offset(value, self.text_cursor - 1);
-                let byte_end = grapheme_byte_offset(value, self.text_cursor);
-                value.drain(byte_start..byte_end);
-                self.text_cursor -= 1;
-                return true;
-            }
+        if let Some(FormField::Text { value, .. }) = form.fields.get_mut(self.focused)
+            && self.text_cursor > 0
+        {
+            let byte_start = grapheme_byte_offset(value, self.text_cursor - 1);
+            let byte_end = grapheme_byte_offset(value, self.text_cursor);
+            value.drain(byte_start..byte_end);
+            self.text_cursor -= 1;
+            return true;
         }
         false
     }
@@ -746,6 +746,7 @@ impl StatefulWidget for Form {
 }
 
 impl Form {
+    #[allow(clippy::too_many_arguments)]
     fn render_field(
         &self,
         frame: &mut Frame,
@@ -772,12 +773,12 @@ impl Form {
                 if is_focused {
                     let buf = &mut frame.buffer;
                     let cursor_x = x + state.text_cursor.min(width as usize) as u16;
-                    if cursor_x < x + width {
-                        if let Some(cell) = buf.get_mut(cursor_x, y) {
-                            use ftui_render::cell::StyleFlags;
-                            let flags = cell.attrs.flags();
-                            cell.attrs = cell.attrs.with_flags(flags ^ StyleFlags::REVERSE);
-                        }
+                    if cursor_x < x + width
+                        && let Some(cell) = buf.get_mut(cursor_x, y)
+                    {
+                        use ftui_render::cell::StyleFlags;
+                        let flags = cell.attrs.flags();
+                        cell.attrs = cell.attrs.with_flags(flags ^ StyleFlags::REVERSE);
                     }
                 }
             }
@@ -935,14 +936,7 @@ impl StatefulWidget for ConfirmDialog {
 
         // Draw message on first row(s)
         let msg_y = area.y;
-        draw_str(
-            frame,
-            area.x,
-            msg_y,
-            &self.message,
-            self.style,
-            area.width,
-        );
+        draw_str(frame, area.x, msg_y, &self.message, self.style, area.width);
 
         // Draw buttons on last row
         let btn_y = if area.height > 1 {
@@ -1041,10 +1035,10 @@ fn draw_str(frame: &mut Frame, x: u16, y: u16, s: &str, style: Style, max_width:
 
         let mut cell = Cell::new(cell_content);
         apply_style(&mut cell, style);
-        
+
         // Use set() which handles multi-width characters (atomic writes)
         frame.buffer.set(x + col, y, cell);
-        
+
         col += w;
     }
 }
@@ -1080,6 +1074,7 @@ mod tests {
         })
     }
 
+    #[allow(dead_code)]
     fn press_shift(code: KeyCode) -> Event {
         Event::Key(KeyEvent {
             code,
@@ -1247,10 +1242,10 @@ mod tests {
         let form = Form::new(vec![FormField::text("Name")]).validate(
             0,
             Box::new(|f| {
-                if let FormField::Text { value, .. } = f {
-                    if value.is_empty() {
-                        return Some("Required".into());
-                    }
+                if let FormField::Text { value, .. } = f
+                    && value.is_empty()
+                {
+                    return Some("Required".into());
                 }
                 None
             }),
@@ -1267,10 +1262,10 @@ mod tests {
         let form = Form::new(vec![FormField::text_with_value("Name", "Alice")]).validate(
             0,
             Box::new(|f| {
-                if let FormField::Text { value, .. } = f {
-                    if value.is_empty() {
-                        return Some("Required".into());
-                    }
+                if let FormField::Text { value, .. } = f
+                    && value.is_empty()
+                {
+                    return Some("Required".into());
                 }
                 None
             }),
@@ -1456,8 +1451,10 @@ mod tests {
     #[test]
     fn text_backspace() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "abc")]);
-        let mut state = FormState::default();
-        state.text_cursor = 3;
+        let mut state = FormState {
+            text_cursor: 3,
+            ..Default::default()
+        };
 
         state.handle_event(&mut form, &press(KeyCode::Backspace));
         if let FormField::Text { value, .. } = &form.fields[0] {
@@ -1469,8 +1466,10 @@ mod tests {
     #[test]
     fn text_delete() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "abc")]);
-        let mut state = FormState::default();
-        state.text_cursor = 0;
+        let mut state = FormState {
+            text_cursor: 0,
+            ..Default::default()
+        };
 
         state.handle_event(&mut form, &press(KeyCode::Delete));
         if let FormField::Text { value, .. } = &form.fields[0] {
@@ -1482,8 +1481,10 @@ mod tests {
     #[test]
     fn text_cursor_movement() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "hello")]);
-        let mut state = FormState::default();
-        state.text_cursor = 3;
+        let mut state = FormState {
+            text_cursor: 3,
+            ..Default::default()
+        };
 
         state.handle_event(&mut form, &press(KeyCode::Left));
         assert_eq!(state.text_cursor, 2);
@@ -1501,8 +1502,10 @@ mod tests {
     #[test]
     fn text_backspace_at_start_noop() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "abc")]);
-        let mut state = FormState::default();
-        state.text_cursor = 0;
+        let mut state = FormState {
+            text_cursor: 0,
+            ..Default::default()
+        };
 
         state.handle_event(&mut form, &press(KeyCode::Backspace));
         if let FormField::Text { value, .. } = &form.fields[0] {
@@ -1513,8 +1516,10 @@ mod tests {
     #[test]
     fn text_delete_at_end_noop() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "abc")]);
-        let mut state = FormState::default();
-        state.text_cursor = 3;
+        let mut state = FormState {
+            text_cursor: 3,
+            ..Default::default()
+        };
 
         state.handle_event(&mut form, &press(KeyCode::Delete));
         if let FormField::Text { value, .. } = &form.fields[0] {
@@ -1539,10 +1544,10 @@ mod tests {
         let mut form = Form::new(vec![FormField::text("Name")]).validate(
             0,
             Box::new(|f| {
-                if let FormField::Text { value, .. } = f {
-                    if value.is_empty() {
-                        return Some("Required".into());
-                    }
+                if let FormField::Text { value, .. } = f
+                    && value.is_empty()
+                {
+                    return Some("Required".into());
                 }
                 None
             }),
@@ -1567,8 +1572,10 @@ mod tests {
     #[test]
     fn events_ignored_after_submit() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "Alice")]);
-        let mut state = FormState::default();
-        state.submitted = true;
+        let mut state = FormState {
+            submitted: true,
+            ..Default::default()
+        };
 
         let changed = state.handle_event(&mut form, &press(KeyCode::Tab));
         assert!(!changed);
@@ -1577,8 +1584,10 @@ mod tests {
     #[test]
     fn events_ignored_after_cancel() {
         let mut form = Form::new(vec![FormField::text("Name")]);
-        let mut state = FormState::default();
-        state.cancelled = true;
+        let mut state = FormState {
+            cancelled: true,
+            ..Default::default()
+        };
 
         let changed = state.handle_event(&mut form, &press(KeyCode::Tab));
         assert!(!changed);
@@ -1635,11 +1644,21 @@ mod tests {
         // After label "Accept: ", should show "[x]"
         let label_end = "Accept".len() + 2; // ": "
         assert_eq!(
-            frame.buffer.get(label_end as u16, 0).unwrap().content.as_char(),
+            frame
+                .buffer
+                .get(label_end as u16, 0)
+                .unwrap()
+                .content
+                .as_char(),
             Some('[')
         );
         assert_eq!(
-            frame.buffer.get(label_end as u16 + 1, 0).unwrap().content.as_char(),
+            frame
+                .buffer
+                .get(label_end as u16 + 1, 0)
+                .unwrap()
+                .content
+                .as_char(),
             Some('x')
         );
     }
@@ -1665,8 +1684,10 @@ mod tests {
 
     #[test]
     fn confirm_dialog_enter_confirms() {
-        let mut state = ConfirmDialogState::default();
-        state.selected_yes = true;
+        let mut state = ConfirmDialogState {
+            selected_yes: true,
+            ..Default::default()
+        };
         state.handle_event(&press(KeyCode::Enter));
         assert_eq!(state.confirmed, Some(true));
     }
@@ -1694,8 +1715,10 @@ mod tests {
 
     #[test]
     fn confirm_dialog_events_ignored_after_confirm() {
-        let mut state = ConfirmDialogState::default();
-        state.confirmed = Some(true);
+        let mut state = ConfirmDialogState {
+            confirmed: Some(true),
+            ..Default::default()
+        };
         let changed = state.handle_event(&press(KeyCode::Left));
         assert!(!changed);
     }
@@ -1789,22 +1812,22 @@ mod tests {
 
     #[test]
     fn scroll_follows_focus() {
-        let mut form = Form::new(vec![
+        let form = Form::new(vec![
             FormField::text("A"),
             FormField::text("B"),
             FormField::text("C"),
             FormField::text("D"),
             FormField::text("E"),
         ]);
-        let mut state = FormState::default();
+        let mut state = FormState {
+            focused: 4,
+            ..Default::default()
+        };
 
         // Viewport of 2 rows
         let area = Rect::new(0, 0, 30, 2);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(30, 2, &mut pool);
-
-        // Focus on last field
-        state.focused = 4;
         StatefulWidget::render(&form, area, &mut frame, &mut state);
         assert!(state.scroll >= 3); // Must scroll to show field 4
     }
@@ -1814,8 +1837,10 @@ mod tests {
     #[test]
     fn space_inserts_into_text() {
         let mut form = Form::new(vec![FormField::text_with_value("Name", "AB")]);
-        let mut state = FormState::default();
-        state.text_cursor = 1;
+        let mut state = FormState {
+            text_cursor: 1,
+            ..Default::default()
+        };
 
         state.handle_event(&mut form, &press(KeyCode::Char(' ')));
         if let FormField::Text { value, .. } = &form.fields[0] {
