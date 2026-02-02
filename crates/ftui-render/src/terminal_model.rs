@@ -69,8 +69,11 @@ impl ModelCell {
 /// Current SGR (style) state for the terminal model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SgrState {
+    /// Current foreground color.
     pub fg: PackedRgba,
+    /// Current background color.
     pub bg: PackedRgba,
+    /// Current text attribute flags.
     pub flags: StyleFlags,
 }
 
@@ -85,6 +88,7 @@ impl Default for SgrState {
 }
 
 impl SgrState {
+    /// Reset all fields to defaults (white fg, transparent bg, no flags).
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -102,6 +106,7 @@ pub struct ModeFlags {
 }
 
 impl ModeFlags {
+    /// Create default mode flags (cursor visible, main screen, sync=0).
     pub fn new() -> Self {
         Self {
             cursor_visible: true,

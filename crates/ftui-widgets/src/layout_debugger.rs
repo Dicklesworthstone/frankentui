@@ -17,13 +17,18 @@ use tracing::{debug, warn};
 /// Constraint bounds for a widget's layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutConstraints {
+    /// Minimum allowed width.
     pub min_width: u16,
+    /// Maximum allowed width (0 = unconstrained).
     pub max_width: u16,
+    /// Minimum allowed height.
     pub min_height: u16,
+    /// Maximum allowed height (0 = unconstrained).
     pub max_height: u16,
 }
 
 impl LayoutConstraints {
+    /// Create constraints with the given bounds.
     pub fn new(min_width: u16, max_width: u16, min_height: u16, max_height: u16) -> Self {
         Self {
             min_width,
@@ -33,6 +38,7 @@ impl LayoutConstraints {
         }
     }
 
+    /// Create unconstrained (all-zero) bounds.
     pub fn unconstrained() -> Self {
         Self {
             min_width: 0,
@@ -62,14 +68,20 @@ impl LayoutConstraints {
 /// Layout record for a single widget.
 #[derive(Debug, Clone)]
 pub struct LayoutRecord {
+    /// Name of the widget this record describes.
     pub widget_name: String,
+    /// Area originally requested by the widget.
     pub area_requested: Rect,
+    /// Area actually received after layout.
     pub area_received: Rect,
+    /// Constraint bounds applied during layout.
     pub constraints: LayoutConstraints,
+    /// Child layout records for nested widgets.
     pub children: Vec<LayoutRecord>,
 }
 
 impl LayoutRecord {
+    /// Create a new layout record for the given widget.
     pub fn new(
         name: impl Into<String>,
         area_requested: Rect,
@@ -85,6 +97,7 @@ impl LayoutRecord {
         }
     }
 
+    /// Add a child record to this layout record.
     pub fn with_child(mut self, child: LayoutRecord) -> Self {
         self.children.push(child);
         self
@@ -109,6 +122,7 @@ pub struct LayoutDebugger {
 }
 
 impl LayoutDebugger {
+    /// Create a new disabled layout debugger.
     pub fn new() -> Self {
         Self {
             enabled: false,
@@ -116,18 +130,22 @@ impl LayoutDebugger {
         }
     }
 
+    /// Enable or disable the debugger.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
+    /// Returns whether the debugger is enabled.
     pub fn enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Clear all recorded layout data.
     pub fn clear(&mut self) {
         self.records.clear();
     }
 
+    /// Record a layout computation result.
     pub fn record(&mut self, record: LayoutRecord) {
         if !self.enabled {
             return;
@@ -152,6 +170,7 @@ impl LayoutDebugger {
         self.records.push(record);
     }
 
+    /// Get the recorded layout data.
     pub fn records(&self) -> &[LayoutRecord] {
         &self.records
     }

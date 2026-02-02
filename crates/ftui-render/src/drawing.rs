@@ -19,11 +19,17 @@ use ftui_core::geometry::Rect;
 /// Higher-level crates (e.g. ftui-widgets) provide presets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BorderChars {
+    /// Top-left corner character.
     pub top_left: char,
+    /// Top-right corner character.
     pub top_right: char,
+    /// Bottom-left corner character.
     pub bottom_left: char,
+    /// Bottom-right corner character.
     pub bottom_right: char,
+    /// Horizontal line character.
     pub horizontal: char,
+    /// Vertical line character.
     pub vertical: char,
 }
 

@@ -12,10 +12,14 @@ use ftui_style::Style;
 /// Scrollbar orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScrollbarOrientation {
+    /// Vertical scrollbar on the right side.
     #[default]
     VerticalRight,
+    /// Vertical scrollbar on the left side.
     VerticalLeft,
+    /// Horizontal scrollbar on the bottom.
     HorizontalBottom,
+    /// Horizontal scrollbar on the top.
     HorizontalTop,
 }
 
@@ -32,6 +36,7 @@ pub struct Scrollbar<'a> {
 }
 
 impl<'a> Scrollbar<'a> {
+    /// Create a new scrollbar with the given orientation.
     pub fn new(orientation: ScrollbarOrientation) -> Self {
         Self {
             orientation,
@@ -44,16 +49,19 @@ impl<'a> Scrollbar<'a> {
         }
     }
 
+    /// Set the style for the thumb (draggable indicator).
     pub fn thumb_style(mut self, style: Style) -> Self {
         self.thumb_style = style;
         self
     }
 
+    /// Set the style for the track background.
     pub fn track_style(mut self, style: Style) -> Self {
         self.track_style = style;
         self
     }
 
+    /// Set custom symbols for track, thumb, begin, and end markers.
     pub fn symbols(
         mut self,
         track: &'a str,
@@ -69,14 +77,19 @@ impl<'a> Scrollbar<'a> {
     }
 }
 
+/// Mutable state for a [`Scrollbar`] widget.
 #[derive(Debug, Clone, Default)]
 pub struct ScrollbarState {
+    /// Total number of scrollable content units.
     pub content_length: usize,
+    /// Current scroll position within the content.
     pub position: usize,
+    /// Number of content units visible in the viewport.
     pub viewport_length: usize,
 }
 
 impl ScrollbarState {
+    /// Create a new scrollbar state with given content, position, and viewport sizes.
     pub fn new(content_length: usize, position: usize, viewport_length: usize) -> Self {
         Self {
             content_length,

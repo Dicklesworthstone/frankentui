@@ -50,14 +50,21 @@ pub struct SgrCodes {
     pub off: u8,
 }
 
-/// Map StyleFlags to SGR codes.
+/// SGR codes for bold (on=1, off=22).
 pub const SGR_BOLD: SgrCodes = SgrCodes { on: 1, off: 22 };
+/// SGR codes for dim (on=2, off=22).
 pub const SGR_DIM: SgrCodes = SgrCodes { on: 2, off: 22 };
+/// SGR codes for italic (on=3, off=23).
 pub const SGR_ITALIC: SgrCodes = SgrCodes { on: 3, off: 23 };
+/// SGR codes for underline (on=4, off=24).
 pub const SGR_UNDERLINE: SgrCodes = SgrCodes { on: 4, off: 24 };
+/// SGR codes for blink (on=5, off=25).
 pub const SGR_BLINK: SgrCodes = SgrCodes { on: 5, off: 25 };
+/// SGR codes for reverse video (on=7, off=27).
 pub const SGR_REVERSE: SgrCodes = SgrCodes { on: 7, off: 27 };
+/// SGR codes for hidden text (on=8, off=28).
 pub const SGR_HIDDEN: SgrCodes = SgrCodes { on: 8, off: 28 };
+/// SGR codes for strikethrough (on=9, off=29).
 pub const SGR_STRIKETHROUGH: SgrCodes = SgrCodes { on: 9, off: 29 };
 
 /// Get SGR codes for a style flag.

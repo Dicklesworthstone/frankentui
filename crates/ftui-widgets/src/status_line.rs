@@ -32,9 +32,19 @@ pub enum StatusItem<'a> {
     /// A spinner showing activity (references spinner state by index).
     Spinner(usize),
     /// A progress indicator showing current/total.
-    Progress { current: u64, total: u64 },
+    Progress {
+        /// Current progress value.
+        current: u64,
+        /// Total progress value.
+        total: u64,
+    },
     /// A key hint showing a key and its action.
-    KeyHint { key: &'a str, action: &'a str },
+    KeyHint {
+        /// Key binding label.
+        key: &'a str,
+        /// Description of the action.
+        action: &'a str,
+    },
     /// A flexible spacer that expands to fill available space.
     Spacer,
 }

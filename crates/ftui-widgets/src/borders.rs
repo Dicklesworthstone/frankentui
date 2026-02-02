@@ -3,16 +3,27 @@
 /// Border characters for drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BorderSet {
+    /// Vertical border character.
     pub vertical: char,
+    /// Horizontal border character.
     pub horizontal: char,
+    /// Top-left corner character.
     pub top_left: char,
+    /// Top-right corner character.
     pub top_right: char,
+    /// Bottom-left corner character.
     pub bottom_left: char,
+    /// Bottom-right corner character.
     pub bottom_right: char,
+    /// Upward tee junction character.
     pub tee_up: char,
+    /// Downward tee junction character.
     pub tee_down: char,
+    /// Leftward tee junction character.
     pub tee_left: char,
+    /// Rightward tee junction character.
     pub tee_right: char,
+    /// Cross junction character.
     pub cross: char,
 }
 
@@ -111,6 +122,7 @@ pub enum BorderType {
 }
 
 impl BorderType {
+    /// Convert this border type to its corresponding border character set.
     pub fn to_border_set(&self) -> BorderSet {
         match self {
             BorderType::Square => BorderSet::SQUARE,
@@ -365,11 +377,17 @@ bitflags::bitflags! {
     /// Bitflags for which borders to render.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct Borders: u8 {
+        /// No borders.
         const NONE   = 0b0000;
+        /// Top border.
         const TOP    = 0b0001;
+        /// Right border.
         const RIGHT  = 0b0010;
+        /// Bottom border.
         const BOTTOM = 0b0100;
+        /// Left border.
         const LEFT   = 0b1000;
+        /// All four borders.
         const ALL    = Self::TOP.bits() | Self::RIGHT.bits() | Self::BOTTOM.bits() | Self::LEFT.bits();
     }
 }

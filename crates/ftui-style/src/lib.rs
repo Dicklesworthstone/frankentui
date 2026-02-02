@@ -8,9 +8,13 @@
 //! - [`Theme`] for semantic color slots with light/dark mode support
 //! - Color types and downgrade utilities
 
+/// Color types, profiles, and downgrade utilities.
 pub mod color;
+/// Style types with CSS-like cascading semantics.
 pub mod style;
+/// StyleSheet registry for named styles.
 pub mod stylesheet;
+/// Theme system with semantic color slots.
 pub mod theme;
 
 pub use color::{Ansi16, Color, ColorCache, ColorProfile, MonoColor, Rgb};

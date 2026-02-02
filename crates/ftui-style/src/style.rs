@@ -14,16 +14,27 @@ use tracing::{instrument, trace};
 pub struct StyleFlags(pub u16);
 
 impl StyleFlags {
+    /// No attributes set.
     pub const NONE: Self = Self(0);
+    /// Bold / increased intensity.
     pub const BOLD: Self = Self(1 << 0);
+    /// Dim / decreased intensity.
     pub const DIM: Self = Self(1 << 1);
+    /// Italic text.
     pub const ITALIC: Self = Self(1 << 2);
+    /// Single underline.
     pub const UNDERLINE: Self = Self(1 << 3);
+    /// Blinking text.
     pub const BLINK: Self = Self(1 << 4);
+    /// Reverse video (swap fg/bg).
     pub const REVERSE: Self = Self(1 << 5);
+    /// Hidden / invisible text.
     pub const HIDDEN: Self = Self(1 << 6);
+    /// Strikethrough text.
     pub const STRIKETHROUGH: Self = Self(1 << 7);
+    /// Double underline (extended attribute).
     pub const DOUBLE_UNDERLINE: Self = Self(1 << 8);
+    /// Curly / wavy underline (extended attribute).
     pub const CURLY_UNDERLINE: Self = Self(1 << 9);
 
     /// Check if this flags set contains another flags set.

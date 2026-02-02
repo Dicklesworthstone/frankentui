@@ -1,3 +1,5 @@
+//! Color types, profiles, and downgrade utilities.
+
 use std::collections::HashMap;
 
 use ftui_render::cell::PackedRgba;
@@ -5,9 +7,13 @@ use ftui_render::cell::PackedRgba;
 /// Terminal color profile used for downgrade decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorProfile {
+    /// No color output.
     Mono,
+    /// Standard 16 ANSI colors.
     Ansi16,
+    /// Extended 256-color palette.
     Ansi256,
+    /// Full 24-bit RGB color.
     TrueColor,
 }
 
@@ -28,6 +34,7 @@ impl ColorProfile {
         }
     }
 
+    /// Check if this profile supports 24-bit true color.
     #[must_use]
     pub const fn supports_true_color(self) -> bool {
         matches!(self, Self::TrueColor)
@@ -37,22 +44,28 @@ impl ColorProfile {
 /// RGB color (opaque).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb {
+    /// Red channel (0–255).
     pub r: u8,
+    /// Green channel (0–255).
     pub g: u8,
+    /// Blue channel (0–255).
     pub b: u8,
 }
 
 impl Rgb {
+    /// Create a new RGB color.
     #[must_use]
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
 
+    /// Pack into a `u32` key for use in hash maps.
     #[must_use]
     pub const fn as_key(self) -> u32 {
         ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
     }
 
+    /// Compute perceived luminance (BT.709) as a `u8` (0 = black, 255 = white).
     #[must_use]
     pub fn luminance_u8(self) -> u8 {
         // ITU-R BT.709 luma: 0.2126 R + 0.7152 G + 0.0722 B
@@ -74,30 +87,48 @@ impl From<PackedRgba> for Rgb {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Ansi16 {
+    /// Black (index 0).
     Black = 0,
+    /// Red (index 1).
     Red = 1,
+    /// Green (index 2).
     Green = 2,
+    /// Yellow (index 3).
     Yellow = 3,
+    /// Blue (index 4).
     Blue = 4,
+    /// Magenta (index 5).
     Magenta = 5,
+    /// Cyan (index 6).
     Cyan = 6,
+    /// White (index 7).
     White = 7,
+    /// Bright black (index 8).
     BrightBlack = 8,
+    /// Bright red (index 9).
     BrightRed = 9,
+    /// Bright green (index 10).
     BrightGreen = 10,
+    /// Bright yellow (index 11).
     BrightYellow = 11,
+    /// Bright blue (index 12).
     BrightBlue = 12,
+    /// Bright magenta (index 13).
     BrightMagenta = 13,
+    /// Bright cyan (index 14).
     BrightCyan = 14,
+    /// Bright white (index 15).
     BrightWhite = 15,
 }
 
 impl Ansi16 {
+    /// Return the raw ANSI index (0–15).
     #[must_use]
     pub const fn as_u8(self) -> u8 {
         self as u8
     }
 
+    /// Convert a `u8` index to an `Ansi16` variant, returning `None` if out of range.
     #[must_use]
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
@@ -125,25 +156,33 @@ impl Ansi16 {
 /// Monochrome output selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MonoColor {
+    /// Black (dark).
     Black,
+    /// White (light).
     White,
 }
 
 /// A color value at varying fidelity levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
+    /// True-color RGB value.
     Rgb(Rgb),
+    /// 256-color palette index.
     Ansi256(u8),
+    /// Standard 16-color ANSI value.
     Ansi16(Ansi16),
+    /// Monochrome (black or white).
     Mono(MonoColor),
 }
 
 impl Color {
+    /// Create a true-color RGB value.
     #[must_use]
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self::Rgb(Rgb::new(r, g, b))
     }
 
+    /// Convert this color to an RGB triplet regardless of its fidelity level.
     #[must_use]
     pub fn to_rgb(self) -> Rgb {
         match self {
@@ -155,6 +194,7 @@ impl Color {
         }
     }
 
+    /// Downgrade this color to fit the given color profile.
     #[must_use]
     pub fn downgrade(self, profile: ColorProfile) -> Self {
         match profile {
@@ -190,11 +230,16 @@ impl From<PackedRgba> for Color {
     }
 }
 
+/// Statistics for a [`ColorCache`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheStats {
+    /// Number of cache hits.
     pub hits: u64,
+    /// Number of cache misses.
     pub misses: u64,
+    /// Current number of entries.
     pub size: usize,
+    /// Maximum number of entries before eviction.
     pub capacity: usize,
 }
 
@@ -209,11 +254,13 @@ pub struct ColorCache {
 }
 
 impl ColorCache {
+    /// Create a new cache with default capacity (4096 entries).
     #[must_use]
     pub fn new(profile: ColorProfile) -> Self {
         Self::with_capacity(profile, 4096)
     }
 
+    /// Create a new cache with the given maximum entry count.
     #[must_use]
     pub fn with_capacity(profile: ColorProfile, max_entries: usize) -> Self {
         let max_entries = max_entries.max(1);
@@ -226,6 +273,7 @@ impl ColorCache {
         }
     }
 
+    /// Downgrade an RGB color through the cache, returning the cached result.
     #[must_use]
     pub fn downgrade_rgb(&mut self, rgb: Rgb) -> Color {
         let key = rgb.as_key();
@@ -242,11 +290,13 @@ impl ColorCache {
         downgraded
     }
 
+    /// Downgrade a [`PackedRgba`] color through the cache.
     #[must_use]
     pub fn downgrade_packed(&mut self, color: PackedRgba) -> Color {
         self.downgrade_rgb(Rgb::from(color))
     }
 
+    /// Return current cache statistics.
     #[must_use]
     pub fn stats(&self) -> CacheStats {
         CacheStats {
@@ -277,11 +327,13 @@ const ANSI16_PALETTE: [Rgb; 16] = [
     Rgb::new(255, 255, 255), // Bright White
 ];
 
+/// Convert an ANSI 16-color value to its canonical RGB representation.
 #[must_use]
 pub fn ansi16_to_rgb(color: Ansi16) -> Rgb {
     ANSI16_PALETTE[color.as_u8() as usize]
 }
 
+/// Convert an RGB color to the nearest ANSI 256-color index.
 #[must_use]
 pub fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
     if r == g && g == b {
@@ -301,6 +353,7 @@ pub fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
     16 + 36 * r6 + 6 * g6 + b6
 }
 
+/// Convert an ANSI 256-color index to its RGB representation.
 #[must_use]
 pub fn ansi256_to_rgb(index: u8) -> Rgb {
     if index < 16 {
@@ -318,6 +371,7 @@ pub fn ansi256_to_rgb(index: u8) -> Rgb {
     Rgb::new(LEVELS[r as usize], LEVELS[g as usize], LEVELS[b as usize])
 }
 
+/// Convert an RGB color to the nearest ANSI 16-color value.
 #[must_use]
 pub fn rgb_to_ansi16(r: u8, g: u8, b: u8) -> Ansi16 {
     let target = Rgb::new(r, g, b);
@@ -335,12 +389,14 @@ pub fn rgb_to_ansi16(r: u8, g: u8, b: u8) -> Ansi16 {
     best
 }
 
+/// Convert an ANSI 256-color index to the nearest ANSI 16-color value.
 #[must_use]
 pub fn rgb_to_ansi16_from_ansi256(index: u8) -> Ansi16 {
     let rgb = ansi256_to_rgb(index);
     rgb_to_ansi16(rgb.r, rgb.g, rgb.b)
 }
 
+/// Convert an RGB color to monochrome (black or white) based on luminance.
 #[must_use]
 pub fn rgb_to_mono(r: u8, g: u8, b: u8) -> MonoColor {
     let luma = Rgb::new(r, g, b).luminance_u8();

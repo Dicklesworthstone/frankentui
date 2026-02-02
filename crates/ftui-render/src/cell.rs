@@ -427,38 +427,50 @@ impl core::fmt::Debug for Cell {
 pub struct PackedRgba(pub u32);
 
 impl PackedRgba {
+    /// Fully transparent (alpha = 0).
     pub const TRANSPARENT: Self = Self(0);
+    /// Opaque black.
     pub const BLACK: Self = Self::rgb(0, 0, 0);
+    /// Opaque white.
     pub const WHITE: Self = Self::rgb(255, 255, 255);
+    /// Opaque red.
     pub const RED: Self = Self::rgb(255, 0, 0);
+    /// Opaque green.
     pub const GREEN: Self = Self::rgb(0, 255, 0);
+    /// Opaque blue.
     pub const BLUE: Self = Self::rgb(0, 0, 255);
 
+    /// Create an opaque RGB color (alpha = 255).
     #[inline]
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self::rgba(r, g, b, 255)
     }
 
+    /// Create an RGBA color with explicit alpha.
     #[inline]
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self(((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | (a as u32))
     }
 
+    /// Red channel.
     #[inline]
     pub const fn r(self) -> u8 {
         (self.0 >> 24) as u8
     }
 
+    /// Green channel.
     #[inline]
     pub const fn g(self) -> u8 {
         (self.0 >> 16) as u8
     }
 
+    /// Blue channel.
     #[inline]
     pub const fn b(self) -> u8 {
         (self.0 >> 8) as u8
     }
 
+    /// Alpha channel.
     #[inline]
     pub const fn a(self) -> u8 {
         self.0 as u8
@@ -530,13 +542,21 @@ bitflags::bitflags! {
     /// 8-bit cell style flags.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct StyleFlags: u8 {
+        /// Bold / increased intensity.
         const BOLD          = 0b0000_0001;
+        /// Dim / decreased intensity.
         const DIM           = 0b0000_0010;
+        /// Italic text.
         const ITALIC        = 0b0000_0100;
+        /// Underlined text.
         const UNDERLINE     = 0b0000_1000;
+        /// Blinking text.
         const BLINK         = 0b0001_0000;
+        /// Reverse video (swap fg/bg).
         const REVERSE       = 0b0010_0000;
+        /// Strikethrough text.
         const STRIKETHROUGH = 0b0100_0000;
+        /// Hidden / invisible text.
         const HIDDEN        = 0b1000_0000;
     }
 }
@@ -549,11 +569,15 @@ bitflags::bitflags! {
 pub struct CellAttrs(u32);
 
 impl CellAttrs {
+    /// No attributes or link.
     pub const NONE: Self = Self(0);
 
+    /// Sentinel value for "no hyperlink".
     pub const LINK_ID_NONE: u32 = 0;
+    /// Maximum link ID (24-bit range).
     pub const LINK_ID_MAX: u32 = 0x00FF_FFFE;
 
+    /// Create attributes from flags and a hyperlink ID.
     #[inline]
     pub fn new(flags: StyleFlags, link_id: u32) -> Self {
         debug_assert!(
@@ -564,21 +588,25 @@ impl CellAttrs {
         Self(((flags.bits() as u32) << 24) | (link_id & 0x00FF_FFFF))
     }
 
+    /// Extract the style flags.
     #[inline]
     pub fn flags(self) -> StyleFlags {
         StyleFlags::from_bits_truncate((self.0 >> 24) as u8)
     }
 
+    /// Extract the hyperlink ID.
     #[inline]
     pub fn link_id(self) -> u32 {
         self.0 & 0x00FF_FFFF
     }
 
+    /// Return a copy with different style flags.
     #[inline]
     pub fn with_flags(self, flags: StyleFlags) -> Self {
         Self((self.0 & 0x00FF_FFFF) | ((flags.bits() as u32) << 24))
     }
 
+    /// Return a copy with a different hyperlink ID.
     #[inline]
     pub fn with_link(self, link_id: u32) -> Self {
         debug_assert!(
@@ -589,6 +617,7 @@ impl CellAttrs {
         Self((self.0 & 0xFF00_0000) | (link_id & 0x00FF_FFFF))
     }
 
+    /// Check whether a specific flag is set.
     #[inline]
     pub fn has_flag(self, flag: StyleFlags) -> bool {
         self.flags().contains(flag)

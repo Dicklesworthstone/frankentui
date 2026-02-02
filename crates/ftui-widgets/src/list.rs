@@ -20,6 +20,7 @@ pub struct ListItem<'a> {
 }
 
 impl<'a> ListItem<'a> {
+    /// Create a new list item with the given content.
     pub fn new(content: impl Into<Text>) -> Self {
         Self {
             content: content.into(),
@@ -28,11 +29,13 @@ impl<'a> ListItem<'a> {
         }
     }
 
+    /// Set the style for this list item.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    /// Set a prefix marker string for this item.
     pub fn marker(mut self, marker: &'a str) -> Self {
         self.marker = marker;
         self
@@ -59,6 +62,7 @@ pub struct List<'a> {
 }
 
 impl<'a> List<'a> {
+    /// Create a new list from the given items.
     pub fn new(items: impl IntoIterator<Item = impl Into<ListItem<'a>>>) -> Self {
         Self {
             block: None,
@@ -70,21 +74,25 @@ impl<'a> List<'a> {
         }
     }
 
+    /// Wrap the list in a decorative block.
     pub fn block(mut self, block: Block<'a>) -> Self {
         self.block = Some(block);
         self
     }
 
+    /// Set the base style for the list area.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    /// Set the style applied to the selected item.
     pub fn highlight_style(mut self, style: Style) -> Self {
         self.highlight_style = style;
         self
     }
 
+    /// Set a symbol displayed before the selected item.
     pub fn highlight_symbol(mut self, symbol: &'a str) -> Self {
         self.highlight_symbol = Some(symbol);
         self
@@ -101,13 +109,17 @@ impl<'a> List<'a> {
     }
 }
 
+/// Mutable state for a [`List`] widget tracking selection and scroll offset.
 #[derive(Debug, Clone, Default)]
 pub struct ListState {
+    /// Index of the currently selected item, if any.
     pub selected: Option<usize>,
+    /// Scroll offset (first visible item index).
     pub offset: usize,
 }
 
 impl ListState {
+    /// Set the selected item index, or `None` to deselect.
     pub fn select(&mut self, index: Option<usize>) {
         self.selected = index;
         if index.is_none() {
@@ -115,6 +127,7 @@ impl ListState {
         }
     }
 
+    /// Return the currently selected item index.
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }

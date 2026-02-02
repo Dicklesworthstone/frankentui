@@ -1,6 +1,6 @@
 //! Multi-line text editing widget.
 //!
-//! [`TextArea`] wraps [`Editor`](ftui_text::Editor) for text manipulation and
+//! [`TextArea`] wraps [`Editor`] for text manipulation and
 //! provides Frame-based rendering with viewport scrolling and cursor display.
 //!
 //! # Example
@@ -543,7 +543,7 @@ impl Widget for TextArea {
 
             // Calculate line byte offset for selection mapping
             let line_start_byte =
-                nav.to_byte_index(CursorNavigator::new(rope).from_line_grapheme(line_idx, 0));
+                nav.to_byte_index(nav.from_line_grapheme(line_idx, 0));
 
             // Render each grapheme
             let mut visual_x: usize = 0;

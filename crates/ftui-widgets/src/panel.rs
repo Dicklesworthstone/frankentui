@@ -31,6 +31,7 @@ pub struct Panel<'a, W> {
 }
 
 impl<'a, W> Panel<'a, W> {
+    /// Create a new panel wrapping the given child widget.
     pub fn new(child: W) -> Self {
         Self {
             child,
@@ -54,51 +55,61 @@ impl<'a, W> Panel<'a, W> {
         self
     }
 
+    /// Set the style applied to the border lines.
     pub fn border_style(mut self, style: Style) -> Self {
         self.border_style = style;
         self
     }
 
+    /// Set the border line type (e.g. square, rounded, double).
     pub fn border_type(mut self, border_type: BorderType) -> Self {
         self.border_type = border_type;
         self
     }
 
+    /// Set the title text displayed on the top border.
     pub fn title(mut self, title: &'a str) -> Self {
         self.title = Some(title);
         self
     }
 
+    /// Set the horizontal alignment of the title.
     pub fn title_alignment(mut self, alignment: Alignment) -> Self {
         self.title_alignment = alignment;
         self
     }
 
+    /// Set the style applied to the title text.
     pub fn title_style(mut self, style: Style) -> Self {
         self.title_style = style;
         self
     }
 
+    /// Set the subtitle text displayed on the bottom border.
     pub fn subtitle(mut self, subtitle: &'a str) -> Self {
         self.subtitle = Some(subtitle);
         self
     }
 
+    /// Set the horizontal alignment of the subtitle.
     pub fn subtitle_alignment(mut self, alignment: Alignment) -> Self {
         self.subtitle_alignment = alignment;
         self
     }
 
+    /// Set the style applied to the subtitle text.
     pub fn subtitle_style(mut self, style: Style) -> Self {
         self.subtitle_style = style;
         self
     }
 
+    /// Set the base style for the entire panel area.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    /// Set inner padding between the border and child content.
     pub fn padding(mut self, padding: impl Into<Sides>) -> Self {
         self.padding = padding.into();
         self

@@ -16,6 +16,7 @@ pub struct Row {
 }
 
 impl Row {
+    /// Create a new row from an iterator of cell contents.
     pub fn new(cells: impl IntoIterator<Item = impl Into<Text>>) -> Self {
         Self {
             cells: cells.into_iter().map(|c| c.into()).collect(),
@@ -25,16 +26,19 @@ impl Row {
         }
     }
 
+    /// Set the row height in lines.
     pub fn height(mut self, height: u16) -> Self {
         self.height = height;
         self
     }
 
+    /// Set the row style.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    /// Set the bottom margin after this row.
     pub fn bottom_margin(mut self, margin: u16) -> Self {
         self.bottom_margin = margin;
         self
@@ -57,6 +61,7 @@ pub struct Table<'a> {
 }
 
 impl<'a> Table<'a> {
+    /// Create a new table with the given rows and column width constraints.
     pub fn new(
         rows: impl IntoIterator<Item = Row>,
         widths: impl IntoIterator<Item = Constraint>,
@@ -73,26 +78,31 @@ impl<'a> Table<'a> {
         }
     }
 
+    /// Set the header row.
     pub fn header(mut self, header: Row) -> Self {
         self.header = Some(header);
         self
     }
 
+    /// Set the surrounding block.
     pub fn block(mut self, block: Block<'a>) -> Self {
         self.block = Some(block);
         self
     }
 
+    /// Set the base table style.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    /// Set the style for the selected row.
     pub fn highlight_style(mut self, style: Style) -> Self {
         self.highlight_style = style;
         self
     }
 
+    /// Set the spacing between columns.
     pub fn column_spacing(mut self, spacing: u16) -> Self {
         self.column_spacing = spacing;
         self
@@ -116,13 +126,17 @@ impl<'a> Widget for Table<'a> {
     }
 }
 
+/// Mutable state for a [`Table`] widget.
 #[derive(Debug, Clone, Default)]
 pub struct TableState {
+    /// Index of the currently selected row, if any.
     pub selected: Option<usize>,
+    /// Scroll offset (first visible row index).
     pub offset: usize,
 }
 
 impl TableState {
+    /// Set the selected row index, resetting offset on deselect.
     pub fn select(&mut self, index: Option<usize>) {
         self.selected = index;
         if index.is_none() {

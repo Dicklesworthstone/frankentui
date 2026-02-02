@@ -24,12 +24,16 @@ pub struct Block<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Alignment {
     #[default]
+    /// Align text to the left.
     Left,
+    /// Center text horizontally.
     Center,
+    /// Align text to the right.
     Right,
 }
 
 impl<'a> Block<'a> {
+    /// Create a new block with default settings.
     pub fn new() -> Self {
         Self::default()
     }
@@ -39,31 +43,37 @@ impl<'a> Block<'a> {
         Self::default().borders(Borders::ALL)
     }
 
+    /// Set which borders to render.
     pub fn borders(mut self, borders: Borders) -> Self {
         self.borders = borders;
         self
     }
 
+    /// Set the style applied to border characters.
     pub fn border_style(mut self, style: Style) -> Self {
         self.border_style = style;
         self
     }
 
+    /// Set the border character set (e.g. square, rounded, double).
     pub fn border_type(mut self, border_type: BorderType) -> Self {
         self.border_type = border_type;
         self
     }
 
+    /// Set the block title displayed on the top border.
     pub fn title(mut self, title: &'a str) -> Self {
         self.title = Some(title);
         self
     }
 
+    /// Set the horizontal alignment of the title.
     pub fn title_alignment(mut self, alignment: Alignment) -> Self {
         self.title_alignment = alignment;
         self
     }
 
+    /// Set the background style for the entire block area.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self

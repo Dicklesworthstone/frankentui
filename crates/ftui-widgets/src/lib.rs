@@ -116,6 +116,7 @@
 //! [`Buffer`]: ftui_render::buffer::Buffer
 
 pub mod align;
+/// Block widget with borders, titles, and padding.
 pub mod block;
 pub mod borders;
 pub mod cached;
@@ -138,6 +139,7 @@ pub mod log_viewer;
 pub mod padding;
 pub mod paginator;
 pub mod panel;
+/// Multi-line styled text paragraph widget.
 pub mod paragraph;
 pub mod pretty;
 pub mod progress;
@@ -146,6 +148,7 @@ pub mod scrollbar;
 pub mod spinner;
 pub mod status_line;
 pub mod stopwatch;
+/// Table widget with rows, columns, and selection.
 pub mod table;
 pub mod textarea;
 pub mod timer;

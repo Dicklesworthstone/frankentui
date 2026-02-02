@@ -61,7 +61,9 @@ pub enum ErrorBoundaryState {
     Failed(CapturedError),
     /// Attempting recovery after failure.
     Recovering {
+        /// Number of recovery attempts so far.
         attempts: u32,
+        /// The error that triggered recovery.
         last_error: CapturedError,
     },
 }

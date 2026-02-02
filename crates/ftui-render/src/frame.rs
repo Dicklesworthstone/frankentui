@@ -84,8 +84,11 @@ pub enum HitRegion {
 /// A single hit cell in the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HitCell {
+    /// Widget that registered this cell, if any.
     pub widget_id: Option<HitId>,
+    /// Region tag for the hit area.
     pub region: HitRegion,
+    /// Extra data attached to this hit cell.
     pub data: HitData,
 }
 

@@ -221,24 +221,43 @@ impl Theme {
 /// This is the result of calling `Theme::resolve()` with a specific mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedTheme {
+    /// Primary accent color.
     pub primary: Color,
+    /// Secondary accent color.
     pub secondary: Color,
+    /// Tertiary accent color.
     pub accent: Color,
+    /// Main background color.
     pub background: Color,
+    /// Surface color (cards, panels).
     pub surface: Color,
+    /// Overlay color (dialogs, dropdowns).
     pub overlay: Color,
+    /// Primary text color.
     pub text: Color,
+    /// Muted text color.
     pub text_muted: Color,
+    /// Subtle text color (hints, placeholders).
     pub text_subtle: Color,
+    /// Success color.
     pub success: Color,
+    /// Warning color.
     pub warning: Color,
+    /// Error color.
     pub error: Color,
+    /// Info color.
     pub info: Color,
+    /// Default border color.
     pub border: Color,
+    /// Focused element border.
     pub border_focused: Color,
+    /// Selection background.
     pub selection_bg: Color,
+    /// Selection foreground.
     pub selection_fg: Color,
+    /// Scrollbar track color.
     pub scrollbar_track: Color,
+    /// Scrollbar thumb color.
     pub scrollbar_thumb: Color,
 }
 

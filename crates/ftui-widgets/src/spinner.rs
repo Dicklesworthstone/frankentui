@@ -8,7 +8,9 @@ use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 
+/// Braille dot spinner animation frames.
 pub const DOTS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// ASCII line spinner animation frames.
 pub const LINE: &[&str] = &["|", "/", "-", "\\"];
 
 /// A widget to display a spinner.
@@ -21,6 +23,7 @@ pub struct Spinner<'a> {
 }
 
 impl<'a> Spinner<'a> {
+    /// Create a new spinner with default dot frames.
     pub fn new() -> Self {
         Self {
             block: None,
@@ -30,33 +33,40 @@ impl<'a> Spinner<'a> {
         }
     }
 
+    /// Wrap the spinner in a [`Block`] container.
     pub fn block(mut self, block: Block<'a>) -> Self {
         self.block = Some(block);
         self
     }
 
+    /// Set the base style for the spinner.
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    /// Set the animation frame characters.
     pub fn frames(mut self, frames: &'a [&'a str]) -> Self {
         self.frames = frames;
         self
     }
 
+    /// Set a text label displayed next to the spinner.
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
         self
     }
 }
 
+/// Mutable state for a [`Spinner`] widget.
 #[derive(Debug, Clone, Default)]
 pub struct SpinnerState {
+    /// Index of the currently displayed animation frame.
     pub current_frame: usize,
 }
 
 impl SpinnerState {
+    /// Advance to the next animation frame.
     pub fn tick(&mut self) {
         self.current_frame = self.current_frame.wrapping_add(1);
     }
