@@ -673,9 +673,10 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         let buffer = {
             // Note: Frame borrows the pool and links from writer.
             // We scope it so it drops before we call present_ui (which needs exclusive writer access).
-            let mut frame = Frame::new(self.width, self.height, self.writer.pool_mut());
+            let (pool, links) = self.writer.pool_and_links_mut();
+            let mut frame = Frame::new(self.width, self.height, pool);
             frame.set_degradation(self.budget.degradation());
-            frame.set_links(self.writer.links_mut());
+            frame.set_links(links);
 
             let _view_span = debug_span!("model_view").entered();
             self.model.view(&mut frame);

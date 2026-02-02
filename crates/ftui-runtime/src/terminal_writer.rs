@@ -653,6 +653,13 @@ impl<W: Write> TerminalWriter<W> {
         &mut self.links
     }
 
+    /// Borrow the grapheme pool and link registry together.
+    ///
+    /// This avoids double-borrowing `self` at call sites that need both.
+    pub fn pool_and_links_mut(&mut self) -> (&mut GraphemePool, &mut LinkRegistry) {
+        (&mut self.pool, &mut self.links)
+    }
+
     /// Get the terminal capabilities.
     pub fn capabilities(&self) -> &TerminalCapabilities {
         &self.capabilities
