@@ -108,7 +108,7 @@ impl PtyCapture {
         let mut reader = pair.master.try_clone_reader().map_err(portable_pty_error)?;
         let writer = pair.master.take_writer().map_err(portable_pty_error)?;
 
-        let (tx, rx) = mpsc::channel::<ReaderMsg>();
+        let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(1024);
         let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -118,7 +118,9 @@ impl PtyCapture {
                         break;
                     }
                     Ok(n) => {
-                        let _ = tx.send(ReaderMsg::Data(buf[..n].to_vec()));
+                        if tx.send(ReaderMsg::Data(buf[..n].to_vec())).is_err() {
+                            break;
+                        }
                     }
                     Err(err) => {
                         let _ = tx.send(ReaderMsg::Err(err));

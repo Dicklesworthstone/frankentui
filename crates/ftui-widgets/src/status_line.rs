@@ -195,8 +195,8 @@ impl<'a> StatusLine<'a> {
         let fixed_width = self.items_fixed_width(items);
         let spacers = self.spacer_count(items);
         let extra = available.saturating_sub(fixed_width);
-        let per_spacer = if spacers > 0 { extra / spacers } else { 0 };
-        let mut remainder = if spacers > 0 { extra % spacers } else { 0 };
+        let per_spacer = extra.checked_div(spacers).unwrap_or(0);
+        let mut remainder = extra.checked_rem(spacers).unwrap_or(0);
         let mut prev_item = false;
 
         for item in items {
@@ -487,7 +487,10 @@ mod tests {
         let chars: Vec<char> = row.chars().collect();
         assert_eq!(chars[0], 'L');
         assert_eq!(chars[9], 'R');
-        assert!(!row.contains('|'), "Spacer should skip separators, got: '{row}'");
+        assert!(
+            !row.contains('|'),
+            "Spacer should skip separators, got: '{row}'"
+        );
     }
 
     #[test]

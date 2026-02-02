@@ -213,7 +213,7 @@ impl Widget for Paragraph<'_> {
                         span.content.as_ref(),
                         span_style,
                         text_area.right(),
-                        local_scroll as u16,
+                        local_scroll,
                     );
                 } else {
                     draw_text_span(

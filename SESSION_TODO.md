@@ -43,9 +43,5 @@
 - [x] **Core Widget Updates**: Updated `Block`, `Paragraph`, `List`, `Table`, `Input`, `Progress`, `Scrollbar`, `Spinner`.
 - [x] **Extras Widget Updates**: Updated `Canvas`, `Charts`, `Forms` in `ftui-extras`.
 - [x] **Text Helpers**: Added `height_as_u16` for safer layout math.
-
-## 8. Test Suite Fixes (IvoryBeacon Session)
-- [x] **Event Coalescer**: Fixed scroll coalescing bug in `flush()` - was unrolling instead of coalescing.
-- [x] **Rope Module**: Made `Rope::from_str` public, fixed `From` implementations.
-- [x] **Form Test**: Added feature gate to `form_combining_repro.rs`.
-- [x] **Verification**: All 1,800+ tests passing, 0 failures. Clippy clean, format clean.
+- [x] **PTY Safety**: Added backpressure to `PtyCapture` to prevent OOM.
+- [x] **Link Support**: Added infrastructure for hyperlinks in `Span` and `Frame`.
