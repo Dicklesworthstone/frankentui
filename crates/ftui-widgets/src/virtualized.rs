@@ -38,7 +38,7 @@ use std::time::Duration;
 #[allow(unused_imports)]
 use crate::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 #[allow(unused_imports)]
-use crate::{set_style_area, StatefulWidget};
+use crate::{StatefulWidget, set_style_area};
 #[allow(unused_imports)]
 use ftui_core::geometry::Rect;
 #[allow(unused_imports)]
@@ -131,7 +131,10 @@ impl<T> Virtualized<T> {
     #[must_use]
     pub fn external(len: usize, cache_capacity: usize) -> Self {
         Self {
-            storage: VirtualizedStorage::External { len, cache_capacity },
+            storage: VirtualizedStorage::External {
+                len,
+                cache_capacity,
+            },
             scroll_offset: 0,
             visible_count: 0,
             overscan: 2,
@@ -386,7 +389,9 @@ impl<T> Virtualized<T> {
     ///
     /// Returns the number of items removed.
     pub fn trim_front(&mut self, max: usize) -> usize {
-        if let VirtualizedStorage::Owned(items) = &mut self.storage && items.len() > max {
+        if let VirtualizedStorage::Owned(items) = &mut self.storage
+            && items.len() > max
+        {
             let to_remove = items.len() - max;
             items.drain(..to_remove);
             // Adjust scroll_offset if it was pointing beyond the new start
@@ -436,7 +441,10 @@ impl HeightCache {
     /// Get height for item, returning default if not cached.
     #[must_use]
     pub fn get(&self, idx: usize) -> u16 {
-        self.cache.get(idx).and_then(|h| *h).unwrap_or(self.default_height)
+        self.cache
+            .get(idx)
+            .and_then(|h| *h)
+            .unwrap_or(self.default_height)
     }
 
     /// Set height for item.
@@ -787,7 +795,8 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 
         // Calculate render range with overscan
         let render_start = state.scroll_offset.saturating_sub(state.overscan);
-        let render_end = (state.scroll_offset + items_per_viewport + state.overscan).min(total_items);
+        let render_end =
+            (state.scroll_offset + items_per_viewport + state.overscan).min(total_items);
 
         // Render visible items
         for idx in render_start..render_end {
@@ -831,18 +840,10 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 
         // Render scrollbar
         if needs_scrollbar {
-            let scrollbar_area = Rect::new(
-                area.right().saturating_sub(1),
-                area.y,
-                1,
-                area.height,
-            );
+            let scrollbar_area = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
 
-            let mut scrollbar_state = ScrollbarState::new(
-                total_items,
-                state.scroll_offset,
-                items_per_viewport,
-            );
+            let mut scrollbar_state =
+                ScrollbarState::new(total_items, state.scroll_offset, items_per_viewport);
 
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
             scrollbar.render(scrollbar_area, frame, &mut scrollbar_state);
@@ -861,7 +862,9 @@ impl RenderItem for String {
         }
         let max_chars = area.width as usize;
         for (i, ch) in self.chars().take(max_chars).enumerate() {
-            frame.buffer.set(area.x + i as u16, area.y, Cell::from_char(ch));
+            frame
+                .buffer
+                .set(area.x + i as u16, area.y, Cell::from_char(ch));
         }
     }
 }
@@ -873,7 +876,9 @@ impl RenderItem for &str {
         }
         let max_chars = area.width as usize;
         for (i, ch) in self.chars().take(max_chars).enumerate() {
-            frame.buffer.set(area.x + i as u16, area.y, Cell::from_char(ch));
+            frame
+                .buffer
+                .set(area.x + i as u16, area.y, Cell::from_char(ch));
         }
     }
 }
@@ -923,9 +928,8 @@ mod tests {
 
     #[test]
     fn test_render_range_with_overscan() {
-        let mut virt: Virtualized<i32> = Virtualized::new(100)
-            .with_fixed_height(1)
-            .with_overscan(2);
+        let mut virt: Virtualized<i32> =
+            Virtualized::new(100).with_fixed_height(1).with_overscan(2);
         for i in 0..50 {
             virt.push(i);
         }
@@ -1207,8 +1211,8 @@ mod tests {
 
     #[test]
     fn test_render_scales_with_visible_not_total() {
-        use std::time::Instant;
         use ftui_render::grapheme_pool::GraphemePool;
+        use std::time::Instant;
 
         // Setup: VirtualizedList with 1K items
         let small_items: Vec<String> = (0..1_000).map(|i| format!("Line {}", i)).collect();

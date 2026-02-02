@@ -33,6 +33,7 @@
 //! crate's `CARGO_MANIFEST_DIR`.
 
 pub mod asciicast;
+pub mod terminal_model;
 pub mod time_travel;
 pub mod time_travel_inspector;
 

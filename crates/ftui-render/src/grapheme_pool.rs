@@ -420,6 +420,159 @@ mod tests {
         assert!(pool.is_empty());
     }
 
+    mod gc_tests {
+        use super::*;
+        use crate::buffer::Buffer;
+        use crate::cell::{Cell, CellContent};
+
+        /// Helper: create a buffer with a grapheme cell at (0,0).
+        fn buf_with_grapheme(id: GraphemeId) -> Buffer {
+            let mut buf = Buffer::new(4, 1);
+            let content = CellContent::from_grapheme(id);
+            buf.set(0, 0, Cell::new(content));
+            buf
+        }
+
+        #[test]
+        fn gc_retains_referenced_grapheme() {
+            let mut pool = GraphemePool::new();
+            let id = pool.intern("🚀", 2);
+
+            let buf = buf_with_grapheme(id);
+            pool.gc(&[&buf]);
+
+            assert_eq!(pool.get(id), Some("🚀"));
+            assert_eq!(pool.refcount(id), 1);
+        }
+
+        #[test]
+        fn gc_frees_unreferenced_grapheme() {
+            let mut pool = GraphemePool::new();
+            let id = pool.intern("🚀", 2);
+
+            // Empty buffer — no references
+            let buf = Buffer::new(4, 1);
+            pool.gc(&[&buf]);
+
+            assert_eq!(pool.get(id), None);
+            assert_eq!(pool.refcount(id), 0);
+            assert!(pool.is_empty());
+        }
+
+        #[test]
+        fn gc_with_multiple_buffers() {
+            let mut pool = GraphemePool::new();
+            let id1 = pool.intern("🎉", 2);
+            let id2 = pool.intern("🧪", 2);
+            let id3 = pool.intern("🔥", 2);
+
+            // buf1 references id1, buf2 references id3
+            let buf1 = buf_with_grapheme(id1);
+            let buf2 = buf_with_grapheme(id3);
+
+            pool.gc(&[&buf1, &buf2]);
+
+            assert_eq!(pool.get(id1), Some("🎉"));
+            assert_eq!(pool.get(id2), None); // freed
+            assert_eq!(pool.get(id3), Some("🔥"));
+            assert_eq!(pool.len(), 2);
+        }
+
+        #[test]
+        fn gc_with_multiple_references_in_buffer() {
+            let mut pool = GraphemePool::new();
+            let id = pool.intern("👨‍👩‍👧", 2);
+
+            // Buffer with the same grapheme in two cells
+            let mut buf = Buffer::new(4, 1);
+            let content = CellContent::from_grapheme(id);
+            buf.set(0, 0, Cell::new(content));
+            buf.set(2, 0, Cell::new(content));
+
+            pool.gc(&[&buf]);
+
+            assert_eq!(pool.get(id), Some("👨‍👩‍👧"));
+            assert_eq!(pool.refcount(id), 2);
+        }
+
+        #[test]
+        fn gc_with_empty_pool() {
+            let mut pool = GraphemePool::new();
+            let buf = Buffer::new(4, 1);
+            pool.gc(&[&buf]); // should not panic
+            assert!(pool.is_empty());
+        }
+
+        #[test]
+        fn gc_with_no_buffers() {
+            let mut pool = GraphemePool::new();
+            let id = pool.intern("test", 1);
+            pool.gc(&[]);
+            // No buffers means no references — everything freed
+            assert_eq!(pool.get(id), None);
+            assert!(pool.is_empty());
+        }
+
+        #[test]
+        fn gc_freed_slots_are_reusable() {
+            let mut pool = GraphemePool::new();
+            let id1 = pool.intern("A", 1);
+            let _id2 = pool.intern("B", 1);
+            let slot1 = id1.slot();
+
+            // Keep only id1
+            let buf = buf_with_grapheme(id1);
+            pool.gc(&[&buf]);
+
+            // B was freed, its slot should be reusable
+            let id3 = pool.intern("C", 1);
+            // The freed slot from B should be reused (it was at slot index 1)
+            assert_eq!(pool.get(id3), Some("C"));
+            assert_eq!(pool.len(), 2); // A and C
+
+            // id1 should still work
+            assert_eq!(pool.get(id1), Some("A"));
+            assert_eq!(id1.slot(), slot1);
+        }
+
+        #[test]
+        fn gc_resets_refcounts_accurately() {
+            let mut pool = GraphemePool::new();
+            let id = pool.intern("🚀", 2);
+
+            // Artificially inflate refcount
+            pool.retain(id);
+            pool.retain(id);
+            assert_eq!(pool.refcount(id), 3);
+
+            // Buffer has one reference
+            let buf = buf_with_grapheme(id);
+            pool.gc(&[&buf]);
+
+            // GC resets then counts actual references
+            assert_eq!(pool.refcount(id), 1);
+        }
+
+        #[test]
+        fn gc_lookup_table_stays_consistent() {
+            let mut pool = GraphemePool::new();
+            let _id1 = pool.intern("A", 1);
+            let id2 = pool.intern("B", 1);
+
+            // Keep only B
+            let buf = buf_with_grapheme(id2);
+            pool.gc(&[&buf]);
+
+            // A was freed from lookup, so interning A again should work
+            let id_new = pool.intern("A", 1);
+            assert_eq!(pool.get(id_new), Some("A"));
+
+            // B should still be deduped
+            let id_b2 = pool.intern("B", 1);
+            assert_eq!(id_b2, id2);
+        }
+    }
+
     mod property {
         use super::*;
         use proptest::prelude::*;

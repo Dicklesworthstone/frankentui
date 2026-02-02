@@ -38,3 +38,15 @@ pub mod syntax;
 
 #[cfg(feature = "filepicker")]
 pub mod filepicker;
+
+#[cfg(feature = "filesize")]
+pub mod filesize;
+
+#[cfg(feature = "traceback")]
+pub mod traceback;
+
+#[cfg(feature = "stopwatch")]
+pub mod stopwatch;
+
+#[cfg(feature = "timer")]
+pub mod timer;

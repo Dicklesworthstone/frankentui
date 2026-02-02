@@ -25,18 +25,25 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseEvent, MouseEventKind, PasteEvent,
+};
 use ftui_core::geometry::Rect;
-use ftui_layout::{Constraint, Flex};
+use ftui_layout::{Constraint, Flex, Grid, GridArea};
 use ftui_render::frame::Frame;
-use ftui_runtime::{App, Cmd, Every, Model, ScreenMode, Subscription};
+use ftui_runtime::{Cmd, Every, Model, Program, ProgramConfig, ScreenMode, Subscription};
 use ftui_style::Style;
+use ftui_text::WrapMode;
 use ftui_widgets::block::Block;
+use ftui_widgets::block::Alignment;
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
 use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
+use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::spinner::{DOTS, Spinner, SpinnerState};
 use ftui_widgets::status_line::{StatusItem, StatusLine};
+use ftui_widgets::list::{List, ListState};
+use ftui_widgets::table::{Row, Table, TableState};
 use ftui_widgets::{StatefulWidget, Widget};
 
 /// Application state for the agent harness.
@@ -61,6 +68,8 @@ struct AgentHarness {
     task_tick_count: u32,
     /// Optional auto-quit countdown in spinner ticks (100ms each).
     auto_quit_ticks: Option<u32>,
+    /// Which view layout to render.
+    view_mode: HarnessView,
 }
 
 /// Messages for the agent harness.
@@ -73,6 +82,14 @@ enum Msg {
     SpinnerTick,
     /// A log line was received.
     LogLine(String),
+    /// Terminal resized.
+    Resize { width: u16, height: u16 },
+    /// Mouse event observed.
+    Mouse(MouseEvent),
+    /// Paste event observed.
+    Paste(PasteEvent),
+    /// Focus changed.
+    Focus(bool),
     /// Simulated tool started.
     ToolStart(String),
     /// Simulated tool finished.
@@ -87,23 +104,65 @@ impl From<Event> for Msg {
     fn from(event: Event) -> Self {
         match event {
             Event::Key(key) => Msg::Key(key),
+            Event::Resize { width, height } => Msg::Resize { width, height },
+            Event::Mouse(mouse) => Msg::Mouse(mouse),
+            Event::Paste(paste) => Msg::Paste(paste),
+            Event::Focus(focused) => Msg::Focus(focused),
             _ => Msg::Noop,
         }
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum HarnessView {
+    Default,
+    LayoutFlexRow,
+    LayoutFlexCol,
+    LayoutGrid,
+    LayoutNested,
+    WidgetBlock,
+    WidgetParagraph,
+    WidgetTable,
+    WidgetList,
+    WidgetInput,
+}
+
 impl AgentHarness {
-    fn new() -> Self {
+    fn new(view_mode: HarnessView) -> Self {
+        let suppress_welcome = std::env::var("FTUI_HARNESS_SUPPRESS_WELCOME")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         let mut log_viewer = LogViewer::new(10_000);
-        log_viewer.push("Welcome to the Agent Harness Reference Application");
-        log_viewer.push("---");
-        log_viewer.push("This demonstrates FrankenTUI's inline mode with:");
-        log_viewer.push("  - Streaming log output without flicker");
-        log_viewer.push("  - Stable UI chrome (status bar, input line)");
-        log_viewer.push("  - Elm/Bubbletea-style architecture");
-        log_viewer.push("---");
-        log_viewer.push("Type a command and press Enter. Use Ctrl+C to quit.");
-        log_viewer.push("");
+        if !suppress_welcome {
+            log_viewer.push("Welcome to the Agent Harness Reference Application");
+            log_viewer.push("---");
+            log_viewer.push("This demonstrates FrankenTUI's inline mode with:");
+            log_viewer.push("  - Streaming log output without flicker");
+            log_viewer.push("  - Stable UI chrome (status bar, input line)");
+            log_viewer.push("  - Elm/Bubbletea-style architecture");
+            log_viewer.push("---");
+            log_viewer.push("Type a command and press Enter. Use Ctrl+C to quit.");
+            log_viewer.push("");
+        }
+
+        let markup_enabled = std::env::var("FTUI_HARNESS_LOG_MARKUP")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+        if let Ok(path) = std::env::var("FTUI_HARNESS_LOG_FILE")
+            && let Ok(contents) = std::fs::read_to_string(path)
+        {
+            for line in contents.lines() {
+                if markup_enabled {
+                    match ftui_text::markup::parse_markup(line) {
+                        Ok(text) => log_viewer.push(text),
+                        Err(_) => log_viewer.push(line),
+                    }
+                } else {
+                    log_viewer.push(line);
+                }
+            }
+        }
 
         let extra_logs = std::env::var("FTUI_HARNESS_LOG_LINES")
             .ok()
@@ -139,6 +198,7 @@ impl AgentHarness {
             task_running: false,
             task_tick_count: 0,
             auto_quit_ticks,
+            view_mode,
         }
     }
 
@@ -268,6 +328,36 @@ impl Model for AgentHarness {
                 self.log_viewer.push(line);
                 Cmd::None
             }
+            Msg::Resize { width, height } => {
+                self.log_viewer
+                    .push(format!("Resize: {}x{}", width, height));
+                Cmd::None
+            }
+            Msg::Mouse(mouse) => {
+                let kind = match mouse.kind {
+                    MouseEventKind::Down(button) => format!("Down({button:?})"),
+                    MouseEventKind::Up(button) => format!("Up({button:?})"),
+                    MouseEventKind::Drag(button) => format!("Drag({button:?})"),
+                    MouseEventKind::Moved => "Moved".to_string(),
+                    MouseEventKind::ScrollUp => "ScrollUp".to_string(),
+                    MouseEventKind::ScrollDown => "ScrollDown".to_string(),
+                    MouseEventKind::ScrollLeft => "ScrollLeft".to_string(),
+                    MouseEventKind::ScrollRight => "ScrollRight".to_string(),
+                };
+                self.log_viewer
+                    .push(format!("Mouse: {} @ {},{}", kind, mouse.x, mouse.y));
+                Cmd::None
+            }
+            Msg::Paste(paste) => {
+                self.log_viewer
+                    .push(format!("Paste: {}", paste.text));
+                Cmd::None
+            }
+            Msg::Focus(focused) => {
+                self.log_viewer
+                    .push(if focused { "Focus: gained" } else { "Focus: lost" });
+                Cmd::None
+            }
             Msg::ToolStart(name) => {
                 self.current_tool = Some(name);
                 self.task_running = true;
@@ -284,6 +374,30 @@ impl Model for AgentHarness {
     }
 
     fn view(&self, frame: &mut Frame) {
+        match self.view_mode {
+            HarnessView::Default => self.view_default(frame),
+            HarnessView::LayoutFlexRow => self.view_layout_flex_row(frame),
+            HarnessView::LayoutFlexCol => self.view_layout_flex_col(frame),
+            HarnessView::LayoutGrid => self.view_layout_grid(frame),
+            HarnessView::LayoutNested => self.view_layout_nested(frame),
+            HarnessView::WidgetBlock => self.view_widget_block(frame),
+            HarnessView::WidgetParagraph => self.view_widget_paragraph(frame),
+            HarnessView::WidgetTable => self.view_widget_table(frame),
+            HarnessView::WidgetList => self.view_widget_list(frame),
+            HarnessView::WidgetInput => self.view_widget_input(frame),
+        }
+    }
+
+    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
+        // Tick every 100ms for spinner animation
+        vec![Box::new(Every::new(Duration::from_millis(100), || {
+            Msg::SpinnerTick
+        }))]
+    }
+}
+
+impl AgentHarness {
+    fn view_default(&self, frame: &mut Frame) {
         let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
 
         // Layout: Status bar (1), Log viewer (fill), Input (3)
@@ -347,11 +461,168 @@ impl Model for AgentHarness {
         }
     }
 
-    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
-        // Tick every 100ms for spinner animation
-        vec![Box::new(Every::new(Duration::from_millis(100), || {
-            Msg::SpinnerTick
-        }))]
+    fn render_label_block(&self, frame: &mut Frame, area: Rect, title: &str, body: &str) {
+        let block = Block::new()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        let paragraph = Paragraph::new(body)
+            .alignment(Alignment::Center)
+            .wrap(WrapMode::Word);
+        paragraph.render(inner, frame);
+    }
+
+    fn view_layout_flex_row(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let chunks = Flex::horizontal()
+            .constraints([
+                Constraint::Percentage(30.0),
+                Constraint::Percentage(40.0),
+                Constraint::Percentage(30.0),
+            ])
+            .split(area);
+
+        self.render_label_block(frame, chunks[0], " Left ", "LEFT");
+        self.render_label_block(frame, chunks[1], " Center ", "CENTER");
+        self.render_label_block(frame, chunks[2], " Right ", "RIGHT");
+    }
+
+    fn view_layout_flex_col(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let chunks = Flex::vertical()
+            .constraints([
+                Constraint::Fixed(3),
+                Constraint::Min(3),
+                Constraint::Fixed(3),
+            ])
+            .split(area);
+
+        self.render_label_block(frame, chunks[0], " Top ", "TOP");
+        self.render_label_block(frame, chunks[1], " Middle ", "MIDDLE");
+        self.render_label_block(frame, chunks[2], " Bottom ", "BOTTOM");
+    }
+
+    fn view_layout_grid(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let grid = Grid::new()
+            .rows([
+                Constraint::Fixed(3),
+                Constraint::Min(4),
+                Constraint::Fixed(3),
+            ])
+            .columns([Constraint::Percentage(30.0), Constraint::Min(10)])
+            .row_gap(0)
+            .col_gap(1)
+            .area("header", GridArea::span(0, 0, 1, 2))
+            .area("sidebar", GridArea::cell(1, 0))
+            .area("content", GridArea::cell(1, 1))
+            .area("footer", GridArea::span(2, 0, 1, 2));
+
+        let layout = grid.split(area);
+        if let Some(area) = layout.area("header") {
+            self.render_label_block(frame, area, " Header ", "HEADER");
+        }
+        if let Some(area) = layout.area("sidebar") {
+            self.render_label_block(frame, area, " Sidebar ", "SIDEBAR");
+        }
+        if let Some(area) = layout.area("content") {
+            self.render_label_block(frame, area, " Content ", "CONTENT");
+        }
+        if let Some(area) = layout.area("footer") {
+            self.render_label_block(frame, area, " Footer ", "FOOTER");
+        }
+    }
+
+    fn view_layout_nested(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let outer = Flex::vertical()
+            .constraints([Constraint::Percentage(60.0), Constraint::Percentage(40.0)])
+            .split(area);
+
+        let top = Flex::horizontal()
+            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .split(outer[0]);
+
+        self.render_label_block(frame, top[0], " A ", "LEFT");
+        self.render_label_block(frame, top[1], " B ", "RIGHT");
+        self.render_label_block(frame, outer[1], " Bottom ", "BOTTOM");
+    }
+
+    fn view_widget_block(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        self.render_label_block(frame, area, " Block ", "BLOCK");
+    }
+
+    fn view_widget_paragraph(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let block = Block::new()
+            .title(" Paragraph ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        let paragraph = Paragraph::new(
+            "This paragraph wraps long text across multiple lines for testing.",
+        )
+        .wrap(WrapMode::Word)
+        .alignment(Alignment::Left);
+        paragraph.render(inner, frame);
+    }
+
+    fn view_widget_table(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let rows = vec![
+            Row::new(["Alpha", "1"]),
+            Row::new(["Beta", "2"]),
+            Row::new(["Gamma", "3"]),
+        ];
+        let header = Row::new(["Name", "Value"]).style(Style::new().bold());
+        let table = Table::new(rows, [Constraint::Percentage(70.0), Constraint::Percentage(30.0)])
+            .header(header)
+            .block(
+                Block::new()
+                    .title(" Table ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded),
+            )
+            .highlight_style(Style::new().bold());
+
+        let mut state = TableState::default();
+        state.select(Some(1));
+        StatefulWidget::render(&table, area, frame, &mut state);
+    }
+
+    fn view_widget_list(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let items = vec!["Item one", "Item two", "Item three", "Item four"];
+        let list = List::new(items)
+            .block(
+                Block::new()
+                    .title(" List ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded),
+            )
+            .highlight_style(Style::new().bold())
+            .highlight_symbol("> ");
+
+        let mut state = ListState::default();
+        state.select(Some(2));
+        StatefulWidget::render(&list, area, frame, &mut state);
+    }
+
+    fn view_widget_input(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let block = Block::new()
+            .title(" Input ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        let inner = block.inner(area);
+        block.render(area, frame);
+        self.input.render(inner, frame);
     }
 }
 
@@ -369,6 +640,37 @@ fn main() -> std::io::Result<()> {
         Err(_) => ScreenMode::Inline { ui_height },
     };
 
+    let view_mode = match std::env::var("FTUI_HARNESS_VIEW")
+        .unwrap_or_else(|_| "default".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "layout-flex-row" | "layout_flex_row" | "flex_row" => HarnessView::LayoutFlexRow,
+        "layout-flex-col" | "layout_flex_col" | "flex_col" => HarnessView::LayoutFlexCol,
+        "layout-grid" | "layout_grid" | "grid" => HarnessView::LayoutGrid,
+        "layout-nested" | "layout_nested" | "nested" => HarnessView::LayoutNested,
+        "widget-block" | "widget_block" | "block" => HarnessView::WidgetBlock,
+        "widget-paragraph" | "widget_paragraph" | "paragraph" => HarnessView::WidgetParagraph,
+        "widget-table" | "widget_table" | "table" => HarnessView::WidgetTable,
+        "widget-list" | "widget_list" | "list" => HarnessView::WidgetList,
+        "widget-input" | "widget_input" | "input" => HarnessView::WidgetInput,
+        _ => HarnessView::Default,
+    };
+
+    let enable_mouse = std::env::var("FTUI_HARNESS_ENABLE_MOUSE")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let enable_focus = std::env::var("FTUI_HARNESS_ENABLE_FOCUS")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let mut config = ProgramConfig::default();
+    config.screen_mode = screen_mode;
+    config.mouse = enable_mouse;
+    config.focus_reporting = enable_focus;
+
     // Run the agent harness in inline mode
-    App::new(AgentHarness::new()).screen_mode(screen_mode).run()
+    let mut program = Program::with_config(AgentHarness::new(view_mode), config)?;
+    program.run()
 }

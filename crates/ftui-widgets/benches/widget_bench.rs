@@ -10,6 +10,7 @@ use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::Style;
 use ftui_text::Text;
+use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::Borders;
@@ -18,7 +19,6 @@ use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::table::{Row, Table};
 use ftui_widgets::virtualized::Virtualized;
-use ftui_widgets::StatefulWidget;
 use std::hint::black_box;
 
 // ============================================================================
@@ -185,7 +185,9 @@ fn bench_log_ring_push(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("push", label), |b| {
             b.iter(|| {
-                ring.push(black_box("Log line: operation completed successfully".to_string()));
+                ring.push(black_box(
+                    "Log line: operation completed successfully".to_string(),
+                ));
             })
         });
     }
@@ -250,10 +252,18 @@ fn bench_virtualized_scroll(c: &mut Criterion) {
 fn bench_log_viewer_render(c: &mut Criterion) {
     let mut group = c.benchmark_group("virtualized/log_viewer_render");
 
-    for (count, label) in [(100, "100"), (1_000, "1K"), (10_000, "10K"), (100_000, "100K")] {
+    for (count, label) in [
+        (100, "100"),
+        (1_000, "1K"),
+        (10_000, "10K"),
+        (100_000, "100K"),
+    ] {
         let mut viewer = LogViewer::new(count);
         for i in 0..count {
-            viewer.push(format!("[{:>6}] INFO  app::module: Processing request #{}", i, i));
+            viewer.push(format!(
+                "[{:>6}] INFO  app::module: Processing request #{}",
+                i, i
+            ));
         }
 
         let area = Rect::from_size(80, 24);
