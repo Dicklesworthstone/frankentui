@@ -124,6 +124,7 @@ pub mod constraint_overlay;
 #[cfg(feature = "debug-overlay")]
 pub mod debug_overlay;
 pub mod error_boundary;
+pub mod group;
 pub mod help;
 pub mod input;
 pub mod json_view;
@@ -148,6 +149,7 @@ pub mod virtualized;
 
 pub use align::{Align, VerticalAlignment};
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
+pub use group::Group;
 pub use columns::{Column, Columns};
 pub use constraint_overlay::{ConstraintOverlay, ConstraintOverlayStyle};
 #[cfg(feature = "debug-overlay")]
