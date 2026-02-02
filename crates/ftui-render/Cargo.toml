@@ -23,7 +23,7 @@ tracing = { version = "0.1", optional = true }
 # ftui-text = { path = "../ftui-text" }      # TODO: Add when needed
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 ftui-core = { path = "../ftui-core" }
 ftui-layout = { path = "../ftui-layout" }
 ftui-style = { path = "../ftui-style" }
