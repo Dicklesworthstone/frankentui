@@ -62,7 +62,7 @@ pub use allocation_budget::{
 pub use eprocess_throttle::{
     EProcessThrottle, ThrottleConfig, ThrottleDecision, ThrottleLog, ThrottleStats,
 };
-pub use reactive::{BatchScope, Computed, Observable};
+pub use reactive::{BatchScope, Binding, Computed, Observable, TwoWayBinding};
 pub use resize_coalescer::{
     CoalesceAction, CoalescerConfig, CoalescerStats, DecisionLog, Regime, ResizeCoalescer,
 };

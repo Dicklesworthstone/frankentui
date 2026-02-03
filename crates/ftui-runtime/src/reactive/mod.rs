@@ -37,9 +37,11 @@
 //!    are deferred until the outermost scope exits.
 
 pub mod batch;
+pub mod binding;
 pub mod computed;
 pub mod observable;
 
 pub use batch::BatchScope;
+pub use binding::{Binding, TwoWayBinding, bind_mapped, bind_mapped2, bind_observable};
 pub use computed::Computed;
 pub use observable::{Observable, Subscription};
