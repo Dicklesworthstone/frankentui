@@ -9,6 +9,10 @@
 ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝   ╚═╝    ╚═════╝ ╚═╝
 ```
 
+<div align="center">
+  <img src="frankentui_illustration.webp" alt="FrankenTUI - Minimal, high-performance terminal UI kernel">
+</div>
+
 Minimal, high‑performance terminal UI kernel focused on correctness, determinism, and clean architecture.
 
 ![status](https://img.shields.io/badge/status-WIP-yellow)
@@ -158,6 +162,19 @@ ftui = { path = "../frankentui/crates/ftui" }
    ```bash
    cargo run -p ftui-harness
    ```
+
+---
+
+## Telemetry (Optional)
+
+Telemetry is opt‑in. Enable the `telemetry` feature on `ftui-runtime` and set
+OTEL env vars (for example, `OTEL_EXPORTER_OTLP_ENDPOINT`) to export spans.
+
+When the feature is **off**, telemetry code and dependencies are excluded.
+When the feature is **on** but env vars are unset, overhead is a single
+startup check.
+
+See `docs/telemetry.md` for integration patterns and trace‑parent attachment.
 
 ---
 
@@ -338,6 +355,9 @@ BLESS=1 cargo test -p ftui-harness
 - `docs/adr/README.md`
 - `docs/concepts/screen-modes.md`
 - `docs/spec/state-machines.md`
+- `docs/telemetry.md`
+- `docs/spec/telemetry.md`
+- `docs/spec/telemetry-events.md`
 - `docs/testing/coverage-matrix.md`
 - `docs/testing/coverage-playbook.md`
 - `docs/one-writer-rule.md`

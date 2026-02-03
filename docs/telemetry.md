@@ -20,6 +20,18 @@ Add the `telemetry` feature to your Cargo dependency:
 ftui-runtime = { version = "0.1", features = ["telemetry"] }
 ```
 
+> Note: `TelemetryConfig` lives in `ftui-runtime` and is **not** re-exported
+> from the `ftui` facade crate yet. If you depend on `ftui`, add a direct
+> dependency on `ftui-runtime` with the `telemetry` feature as shown above.
+
+Optional: enable richer span emission in runtime + widgets:
+
+```toml
+[dependencies]
+ftui-runtime = { version = "0.1", features = ["telemetry", "tracing"] }
+ftui-widgets = { version = "0.1", features = ["tracing"] }
+```
+
 ### 2. Configure Environment
 
 Set the OTLP endpoint:
@@ -73,9 +85,26 @@ FrankenTUI supports the standard OpenTelemetry environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FTUI_OTEL_HTTP_ENDPOINT` | unset | Convenience override for HTTP endpoint |
+| `FTUI_OTEL_SPAN_PROCESSOR` | `batch` | `batch` (default) or `simple` for synchronous export in tests |
 | `OTEL_TRACE_ID` | unset | 32 hex chars to attach to parent trace |
 | `OTEL_PARENT_SPAN_ID` | unset | 16 hex chars for parent span |
 | `FTUI_TELEMETRY_VERBOSE` | `false` | Enable verbose field emission |
+
+---
+
+## Enablement Rules
+
+Telemetry is **disabled by default**. It is enabled only when:
+
+1. `OTEL_SDK_DISABLED` is **not** `true`
+2. `OTEL_TRACES_EXPORTER` is **not** `none`
+3. One of the following is set:
+   - `OTEL_TRACES_EXPORTER=otlp`
+   - `OTEL_EXPORTER_OTLP_ENDPOINT`
+   - `FTUI_OTEL_HTTP_ENDPOINT`
+
+If none of the enablement conditions are met, FrankenTUI stays disabled and
+returns a no-op guard.
 
 ---
 
@@ -148,6 +177,34 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="http://collector:4318"
 
 If either value is missing or invalid, FrankenTUI creates a new root trace
 (fail-open behavior).
+
+---
+
+## Invariants + Failure Modes
+
+### Invariants
+
+- Telemetry is **off by default** unless the `telemetry` feature is enabled and
+  one of the enablement env vars is set.
+- Env parsing is deterministic and order-independent.
+- When disabled, overhead is a single boolean check at startup.
+- Invalid trace/span ids never crash the runtime.
+
+### Failure Modes (Fail-Open)
+
+- **Invalid trace/span IDs**: ignored; new root trace is created.
+- **Exporter init failure**: telemetry is disabled for the session.
+- **Global subscriber already set**: `install()` returns
+  `TelemetryError::SubscriberAlreadySet`; use `build_layer()` instead.
+
+### Evidence Ledger (Explainable Decisions)
+
+Use `TelemetryConfig::evidence_ledger()` to inspect the decision path:
+
+- `enabled_reason` (why telemetry is on/off)
+- `endpoint_source` (traces endpoint, FTUI override, or base endpoint)
+- `protocol` (grpc vs http/protobuf)
+- `trace_context_source` (explicit vs new)
 
 ---
 
@@ -235,6 +292,83 @@ in tests via `handle_resize_at` / `tick_at`).
 
 ---
 
+## Performance Budget + JSONL Perf Log
+
+FrankenTUI includes a lightweight perf gate to prevent telemetry regressions.
+
+### Microbench Test
+
+```
+perf_telemetry_config_jsonl_budget
+```
+
+This test emits JSONL lines and asserts p95/p99 budgets.
+
+### Budgets
+
+| Path | Debug p95 | Release p95 | Notes |
+|------|-----------|-------------|-------|
+| `from_env` disabled | ≤ 200µs | ≤ 5µs | No env vars set |
+| `from_env` enabled | ≤ 400µs | ≤ 20µs | Endpoint + service name set |
+
+p99 is enforced at **≤ 2× p95 budget** to catch long‑tail regressions.
+
+### JSONL Schema
+
+Each line is a single run:
+
+```json
+{
+  "test": "telemetry_config",
+  "case": "disabled|enabled_endpoint",
+  "elapsed_ns": 12345,
+  "enabled": true,
+  "enabled_reason": "ExplicitOtlp",
+  "endpoint_source": "BaseEndpoint",
+  "protocol": "HttpProtobuf",
+  "trace_context_source": "New",
+  "checksum": "a1b2c3d4e5f60789"
+}
+```
+
+### Baseline Command (Hyperfine)
+
+```
+hyperfine --warmup 3 --min-runs 20 \
+  "cargo test -p ftui-runtime --features telemetry perf_telemetry_config_jsonl_budget -- --nocapture"
+```
+
+Raw output (2026-02-03):
+
+```
+Benchmark 1: cargo test -p ftui-runtime --features telemetry perf_telemetry_config_jsonl_budget -- --nocapture
+  Time (mean ± σ):     207.6 ms ±   9.1 ms    [User: 125.1 ms, System: 84.0 ms]
+  Range (min … max):   195.7 ms … 231.4 ms    20 runs
+```
+
+Derived percentiles: p50=205.9ms p95=228.3ms p99=231.4ms (n=20).
+
+Flamegraph attempt:
+- `cargo flamegraph -p ftui-runtime --bench telemetry_bench --features telemetry -o /tmp/bd-1z02.11.flamegraph.svg --`
+- **Failed** due to `perf_event_paranoid=4` (no perf access). Logged in `docs/testing/perf-baselines.jsonl`.
+
+---
+
+## Opportunity Matrix (Telemetry)
+
+Scored by **Impact × Confidence / Effort**. Threshold for action: **≥ 2.0**.
+
+| ID | Opportunity | Impact | Confidence | Effort | Score | Recommendation |
+|----|-------------|-------:|-----------:|-------:|------:|----------------|
+| T1 | Cache parsed env in static (avoid repeat parsing) | 2 | 6 | 4 | 3.0 | **Skip** (from_env called once) |
+| T2 | Pre-allocate kv list parsing | 3 | 5 | 4 | 3.8 | **Skip** (only on enabled path) |
+| T3 | Reduce redaction string allocations | 2 | 4 | 5 | 1.6 | **Skip** (below threshold) |
+
+No perf‑sensitive code changes applied in this bead. Determinism is enforced via
+checksums in the JSONL perf test.
+
+---
+
 ## Redaction Policy
 
 FrankenTUI follows a conservative redaction policy:
@@ -293,6 +427,12 @@ instead of `install()`.
 
 Trace IDs must be 32 lowercase hex characters. Check your orchestrator
 is passing valid IDs.
+
+**"TelemetryConfig not found / compile error"**
+
+Make sure the `telemetry` feature is enabled on `ftui-runtime` and that you
+depend on `ftui-runtime` directly (the `ftui` facade does not re-export
+`TelemetryConfig` yet).
 
 ---
 

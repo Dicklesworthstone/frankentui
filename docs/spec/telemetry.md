@@ -51,6 +51,7 @@ semantics, failure modes, and test requirements for bd-1z02.2.
 | Var | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `FTUI_OTEL_HTTP_ENDPOINT` | URL | unset | Convenience override for HTTP OTLP endpoint. |
+| `FTUI_OTEL_SPAN_PROCESSOR` | string | `batch` | `batch` (default) or `simple` for synchronous export in tests. |
 | `OTEL_TRACE_ID` | 32 hex | unset | Optional explicit trace id. |
 | `OTEL_PARENT_SPAN_ID` | 16 hex | unset | Optional explicit parent span id. |
 
