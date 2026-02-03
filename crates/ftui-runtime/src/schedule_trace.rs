@@ -33,6 +33,9 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::time::Instant;
+
+use crate::voi_sampling::{VoiConfig, VoiSampler, VoiSummary};
 
 // =============================================================================
 // Event Types
@@ -233,6 +236,10 @@ pub struct TraceConfig {
     pub max_entries: usize,
     /// Include queue snapshots after each event.
     pub auto_snapshot: bool,
+    /// Optional VOI sampling policy for queue snapshots.
+    pub snapshot_sampling: Option<VoiConfig>,
+    /// Minimum absolute queue delta to mark a snapshot as "violated".
+    pub snapshot_change_threshold: usize,
     /// Seed for deterministic tie-breaking.
     pub seed: u64,
 }
@@ -242,6 +249,8 @@ impl Default for TraceConfig {
         Self {
             max_entries: 10_000,
             auto_snapshot: false,
+            snapshot_sampling: None,
+            snapshot_change_threshold: 1,
             seed: 0,
         }
     }
@@ -258,6 +267,10 @@ pub struct ScheduleTrace {
     seq: u64,
     /// Current logical tick.
     tick: u64,
+    /// Optional VOI sampler for queue snapshots.
+    snapshot_sampler: Option<VoiSampler>,
+    /// Last recorded queue snapshot (queued, running).
+    last_snapshot: Option<(usize, usize)>,
 }
 
 impl ScheduleTrace {
@@ -275,11 +288,14 @@ impl ScheduleTrace {
         } else {
             1024
         };
+        let snapshot_sampler = config.snapshot_sampling.clone().map(VoiSampler::new);
         Self {
             config,
             entries: VecDeque::with_capacity(capacity),
             seq: 0,
             tick: 0,
+            snapshot_sampler,
+            last_snapshot: None,
         }
     }
 
@@ -314,6 +330,51 @@ impl ScheduleTrace {
         }
 
         self.entries.push_back(entry);
+    }
+
+    /// Record an event with queue state and optional auto-snapshot.
+    pub fn record_with_queue_state(&mut self, event: TaskEvent, queued: usize, running: usize) {
+        self.record_with_queue_state_at(event, queued, running, Instant::now());
+    }
+
+    /// Record an event with queue state at a specific time (deterministic tests).
+    pub fn record_with_queue_state_at(
+        &mut self,
+        event: TaskEvent,
+        queued: usize,
+        running: usize,
+        now: Instant,
+    ) {
+        self.record(event);
+        if self.config.auto_snapshot {
+            self.maybe_snapshot(queued, running, now);
+        }
+    }
+
+    /// Decide whether to record a queue snapshot and update VOI evidence.
+    fn maybe_snapshot(&mut self, queued: usize, running: usize, now: Instant) {
+        let should_sample = if let Some(ref mut sampler) = self.snapshot_sampler {
+            let decision = sampler.decide(now);
+            if !decision.should_sample {
+                return;
+            }
+            let violated = self
+                .last_snapshot
+                .map(|(prev_q, prev_r)| {
+                    let delta = prev_q.abs_diff(queued) + prev_r.abs_diff(running);
+                    delta >= self.config.snapshot_change_threshold
+                })
+                .unwrap_or(false);
+            sampler.observe_at(violated, now);
+            true
+        } else {
+            true
+        };
+
+        if should_sample {
+            self.record(TaskEvent::QueueSnapshot { queued, running });
+            self.last_snapshot = Some((queued, running));
+        }
     }
 
     /// Record a spawn event.
@@ -362,6 +423,25 @@ impl ScheduleTrace {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.seq = 0;
+        self.last_snapshot = None;
+        if let Some(ref mut sampler) = self.snapshot_sampler {
+            let config = sampler.config().clone();
+            *sampler = VoiSampler::new(config);
+        }
+    }
+
+    /// Snapshot sampling summary, if enabled.
+    #[must_use]
+    pub fn snapshot_sampling_summary(&self) -> Option<VoiSummary> {
+        self.snapshot_sampler.as_ref().map(VoiSampler::summary)
+    }
+
+    /// Snapshot sampling logs rendered as JSONL, if enabled.
+    #[must_use]
+    pub fn snapshot_sampling_logs_jsonl(&self) -> Option<String> {
+        self.snapshot_sampler
+            .as_ref()
+            .map(VoiSampler::logs_to_jsonl)
     }
 
     /// Export to JSONL format.
@@ -856,6 +936,28 @@ mod tests {
         assert!(jsonl.contains("\"reason\":\"timer\""));
         assert!(jsonl.contains("\"reason\":\"dependency:1\""));
         assert!(jsonl.contains("\"reason\":\"io_ready\""));
+    }
+
+    #[test]
+    fn unit_auto_snapshot_with_sampling_records_queue() {
+        let config = TraceConfig {
+            auto_snapshot: true,
+            snapshot_sampling: Some(VoiConfig {
+                max_interval_events: 1,
+                sample_cost: 1.0,
+                ..Default::default()
+            }),
+            snapshot_change_threshold: 1,
+            ..Default::default()
+        };
+        let mut trace = ScheduleTrace::with_config(config);
+        let now = Instant::now();
+
+        trace.record_with_queue_state_at(TaskEvent::Spawn { task_id: 1, priority: 0, name: None }, 3, 1, now);
+
+        assert!(trace.entries().iter().any(|entry| matches!(entry.event, TaskEvent::QueueSnapshot { .. })));
+        let summary = trace.snapshot_sampling_summary().expect("sampling enabled");
+        assert_eq!(summary.total_samples, 1);
     }
 
     #[test]

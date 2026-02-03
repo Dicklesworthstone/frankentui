@@ -1044,7 +1044,10 @@ mod tests {
             (120, 40, "sparse_update", 0xBE4C_0004u64),
         ];
 
-        let iterations = 50u32;
+        let iterations = std::env::var("FTUI_DIFF_BENCH_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(50u32);
 
         for &(width, height, scene_type, seed) in scenarios {
             let old = Buffer::new(width, height);
