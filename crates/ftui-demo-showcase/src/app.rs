@@ -1026,7 +1026,9 @@ impl Model for AppModel {
         if self.exit_after_ms > 0 {
             let ms = self.exit_after_ms;
             Cmd::Task(Box::new(move || {
+                eprintln!("DEBUG: Auto-exit timer started: {}ms", ms);
                 std::thread::sleep(Duration::from_millis(ms));
+                eprintln!("DEBUG: Auto-exit timer expired, sending Quit");
                 AppMsg::Quit
             }))
         } else {

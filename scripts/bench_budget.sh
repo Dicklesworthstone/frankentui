@@ -54,6 +54,41 @@ declare -A BUDGETS=(
     ["widget/block/bordered/80x24"]=100000     # <100us
     ["widget/paragraph/no_wrap/200ch"]=500000  # <500us
     ["widget/table/render/10x3"]=500000        # <500us
+
+    # Telemetry config parsing (ftui-runtime)
+    ["telemetry/config/from_env_disabled"]=500           # <500ns
+    ["telemetry/config/from_env_enabled_endpoint"]=2000  # <2us
+    ["telemetry/config/from_env_explicit_otlp"]=2000     # <2us
+    ["telemetry/config/from_env_sdk_disabled"]=200       # <200ns
+    ["telemetry/config/from_env_exporter_none"]=200      # <200ns
+    ["telemetry/config/from_env_full_config"]=5000       # <5us
+    ["telemetry/config/is_enabled_check"]=5              # <5ns
+
+    # Telemetry ID parsing
+    ["telemetry/id_parsing/trace_id_valid"]=200          # <200ns
+    ["telemetry/id_parsing/span_id_valid"]=100           # <100ns
+
+    # Telemetry redaction + validation
+    ["telemetry/redaction/redact_path"]=50
+    ["telemetry/redaction/redact_content"]=50
+    ["telemetry/redaction/redact_env_var"]=50
+    ["telemetry/redaction/redact_username"]=50
+    ["telemetry/redaction/redact_count_10"]=50
+    ["telemetry/redaction/redact_count_1000"]=50
+    ["telemetry/redaction/redact_bytes_small"]=50
+    ["telemetry/redaction/redact_bytes_large"]=50
+    ["telemetry/redaction/redact_duration_us"]=50
+    ["telemetry/redaction/redact_dimensions"]=50
+    ["telemetry/redaction/is_verbose_check"]=5
+    ["telemetry/redaction/is_safe_env_var_otel"]=50
+    ["telemetry/redaction/is_safe_env_var_ftui"]=50
+    ["telemetry/redaction/is_safe_env_var_unsafe"]=50
+    ["telemetry/redaction/is_valid_custom_field_app"]=50
+    ["telemetry/redaction/is_valid_custom_field_invalid"]=50
+    ["telemetry/redaction/contains_sensitive_clean"]=500
+    ["telemetry/redaction/contains_sensitive_password"]=500
+    ["telemetry/redaction/contains_sensitive_url"]=500
+    ["telemetry/redaction/contains_sensitive_long_clean"]=500
 )
 
 # PANIC threshold multiplier (2x budget = hard failure)
@@ -131,13 +166,20 @@ run_benchmarks() {
             "ftui-widgets:widget_bench"
             "ftui-layout:layout_bench"
             "ftui-text:width_bench"
+            "ftui-runtime:telemetry_bench:telemetry"
         )
     fi
 
     for bench_spec in "${benches[@]}"; do
-        IFS=':' read -r pkg bench <<< "$bench_spec"
+        IFS=':' read -r pkg bench features <<< "$bench_spec"
         log "  Running $pkg/$bench..."
-        cargo bench -p "$pkg" --bench "$bench" -- --noplot 2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt" || true
+        if [[ -n "${features:-}" ]]; then
+            cargo bench -p "$pkg" --bench "$bench" --features "$features" -- --noplot \
+                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt" || true
+        else
+            cargo bench -p "$pkg" --bench "$bench" -- --noplot \
+                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt" || true
+        fi
     done
 }
 
@@ -198,6 +240,7 @@ check_budgets() {
             diff/*) result_file="${RESULTS_DIR}/diff_bench.txt" ;;
             present/*|pipeline/*) result_file="${RESULTS_DIR}/presenter_bench.txt" ;;
             widget/*) result_file="${RESULTS_DIR}/widget_bench.txt" ;;
+            telemetry/*) result_file="${RESULTS_DIR}/telemetry_bench.txt" ;;
             *) result_file="" ;;
         esac
 
