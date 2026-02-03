@@ -820,6 +820,12 @@ impl DoubleBuffer {
         &self.buffers[(1 - self.current_idx) as usize]
     }
 
+    /// Mutable reference to the previous (last-presented) frame buffer.
+    #[inline]
+    pub fn previous_mut(&mut self) -> &mut Buffer {
+        &mut self.buffers[(1 - self.current_idx) as usize]
+    }
+
     /// Width of both buffers.
     #[inline]
     pub fn width(&self) -> u16 {
@@ -1007,7 +1013,7 @@ impl AdaptiveDoubleBuffer {
             // Reuse existing capacity - just update logical dimensions
             // Clear both buffers to avoid stale content outside new bounds
             self.inner.current_mut().clear();
-            // Note: previous buffer will be cleared after next swap
+            self.inner.previous_mut().clear();
             self.stats.resize_avoided += 1;
         }
 
@@ -2757,6 +2763,19 @@ mod tests {
             adb.current().get(0, 0).unwrap().content.as_char(),
             Some('X')
         );
+    }
+
+    #[test]
+    fn adaptive_buffer_resize_within_capacity_clears_previous() {
+        let mut adb = AdaptiveDoubleBuffer::new(10, 5);
+        adb.current_mut().set(9, 4, Cell::from_char('X'));
+        adb.swap();
+
+        // Shrink within capacity (no reallocation expected)
+        assert!(adb.resize(8, 4));
+
+        // Previous buffer should be cleared to avoid stale content outside bounds.
+        assert!(adb.previous().get(9, 4).unwrap().is_empty());
     }
 
     // Property tests for AdaptiveDoubleBuffer invariants
