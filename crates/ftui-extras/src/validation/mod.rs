@@ -7,6 +7,7 @@
 //! - Built-in validators for common patterns (required, min/max length, email, URL)
 //! - Composable validators (And, Or, Not) for complex rules
 //! - Error messages with parameter interpolation for i18n support
+//! - Async validation deadline controller with survival analysis (bd-32x8)
 //!
 //! # Example
 //!
@@ -26,6 +27,7 @@
 //!
 //! Feature-gated under `validation`.
 
+pub mod deadline;
 mod validators;
 
 pub use validators::{
