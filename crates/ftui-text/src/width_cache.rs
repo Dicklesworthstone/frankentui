@@ -734,6 +734,246 @@ mod tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// W-TinyLFU Admission Components (bd-4kq0.6.1)
+// ---------------------------------------------------------------------------
+//
+// # Design
+//
+// W-TinyLFU augments LRU eviction with a frequency-based admission filter:
+//
+// 1. **Count-Min Sketch (CMS)**: Approximate frequency counter.
+//    - Parameters: width `w`, depth `d`.
+//    - Error bound: estimated count <= true count + epsilon * N
+//      with probability >= 1 - delta, where:
+//        epsilon = e / w  (e = Euler's number ≈ 2.718)
+//        delta   = (1/2)^d
+//    - Chosen defaults: w=1024 (epsilon ≈ 0.0027), d=4 (delta ≈ 0.0625).
+//    - Counter width: 4 bits (saturating at 15). Periodic halving (aging)
+//      every `reset_interval` increments to prevent staleness.
+//
+// 2. **Doorkeeper**: 1-bit Bloom filter (single hash, `doorkeeper_bits` entries).
+//    - Filters one-hit wonders before they reach the CMS.
+//    - On first access: set doorkeeper bit. On second access in the same
+//      epoch: increment CMS. Cleared on CMS reset.
+//    - Default: 2048 bits (256 bytes).
+//
+// 3. **Admission rule**: When evicting, compare frequencies:
+//    - `freq(candidate) > freq(victim)` → admit candidate, evict victim.
+//    - `freq(candidate) <= freq(victim)` → reject candidate, keep victim.
+//
+// 4. **Fingerprint guard**: The CMS stores 64-bit hashes. Since the main
+//    cache also keys by 64-bit hash, a collision means two distinct strings
+//    share the same key. The fingerprint guard adds a secondary hash
+//    (different seed) stored alongside the value. On lookup, if the
+//    secondary hash mismatches, the entry is treated as a miss and evicted.
+//
+// # Failure Modes
+// - CMS overcounting: bounded by epsilon * N; aging limits staleness.
+// - Doorkeeper false positives: one-hit items may leak to CMS. Bounded
+//   by Bloom FP rate ≈ (1 - e^{-k*n/m})^k with k=1.
+// - Fingerprint collision (secondary hash): probability ~2^{-64}; negligible.
+// - Reset storm: halving all counters is O(w*d). With w=1024, d=4 this is
+//   4096 operations — negligible vs. rendering cost.
+
+/// Count-Min Sketch for approximate frequency estimation.
+///
+/// Uses `depth` independent hash functions (derived from a single hash via
+/// mixing) and `width` counters per row. Each counter is a `u8` saturating
+/// at [`CountMinSketch::MAX_COUNT`] (15 by default, representing 4-bit counters).
+///
+/// # Error Bounds
+///
+/// For a sketch with width `w` and depth `d`, after `N` total increments:
+/// - `estimate(x) <= true_count(x) + epsilon * N` with probability `>= 1 - delta`
+/// - where `epsilon = e / w` and `delta = (1/2)^d`
+#[derive(Debug, Clone)]
+pub struct CountMinSketch {
+    /// Counter matrix: `depth` rows of `width` counters each.
+    counters: Vec<Vec<u8>>,
+    /// Number of hash functions (rows).
+    depth: usize,
+    /// Number of counters per row.
+    width: usize,
+    /// Total number of increments since last reset.
+    total_increments: u64,
+    /// Increment count at which to halve all counters.
+    reset_interval: u64,
+}
+
+/// Maximum counter value (4-bit saturation).
+const CMS_MAX_COUNT: u8 = 15;
+
+/// Default CMS width. epsilon = e/1024 ≈ 0.0027.
+const CMS_DEFAULT_WIDTH: usize = 1024;
+
+/// Default CMS depth. delta = (1/2)^4 = 0.0625.
+const CMS_DEFAULT_DEPTH: usize = 4;
+
+/// Default reset interval (halve counters after this many increments).
+const CMS_DEFAULT_RESET_INTERVAL: u64 = 8192;
+
+impl CountMinSketch {
+    /// Create a new Count-Min Sketch with the given dimensions.
+    pub fn new(width: usize, depth: usize, reset_interval: u64) -> Self {
+        let width = width.max(1);
+        let depth = depth.max(1);
+        Self {
+            counters: vec![vec![0u8; width]; depth],
+            depth,
+            width,
+            total_increments: 0,
+            reset_interval: reset_interval.max(1),
+        }
+    }
+
+    /// Create a sketch with default parameters (w=1024, d=4, reset=8192).
+    pub fn with_defaults() -> Self {
+        Self::new(
+            CMS_DEFAULT_WIDTH,
+            CMS_DEFAULT_DEPTH,
+            CMS_DEFAULT_RESET_INTERVAL,
+        )
+    }
+
+    /// Increment the count for a key.
+    pub fn increment(&mut self, hash: u64) {
+        for row in 0..self.depth {
+            let idx = self.index(hash, row);
+            self.counters[row][idx] = self.counters[row][idx].saturating_add(1).min(CMS_MAX_COUNT);
+        }
+        self.total_increments += 1;
+
+        if self.total_increments >= self.reset_interval {
+            self.halve();
+        }
+    }
+
+    /// Estimate the frequency of a key (minimum across all rows).
+    pub fn estimate(&self, hash: u64) -> u8 {
+        let mut min = u8::MAX;
+        for row in 0..self.depth {
+            let idx = self.index(hash, row);
+            min = min.min(self.counters[row][idx]);
+        }
+        min
+    }
+
+    /// Total number of increments since creation or last reset.
+    pub fn total_increments(&self) -> u64 {
+        self.total_increments
+    }
+
+    /// Halve all counters (aging). Resets the increment counter.
+    fn halve(&mut self) {
+        for row in &mut self.counters {
+            for c in row.iter_mut() {
+                *c /= 2;
+            }
+        }
+        self.total_increments = 0;
+    }
+
+    /// Clear all counters to zero.
+    pub fn clear(&mut self) {
+        for row in &mut self.counters {
+            row.fill(0);
+        }
+        self.total_increments = 0;
+    }
+
+    /// Compute the column index for a given hash and row.
+    #[inline]
+    fn index(&self, hash: u64, row: usize) -> usize {
+        // Mix the hash with the row index for independent hash functions.
+        let mixed = hash
+            .wrapping_mul(0x517c_c1b7_2722_0a95)
+            .wrapping_add(row as u64);
+        let mixed = mixed ^ (mixed >> 32);
+        (mixed as usize) % self.width
+    }
+}
+
+/// 1-bit Bloom filter used as a doorkeeper to filter one-hit wonders.
+///
+/// On first access within an epoch, the doorkeeper sets a bit. Only on
+/// the second access does the item get promoted to the Count-Min Sketch.
+/// The doorkeeper is cleared whenever the CMS resets (halves).
+#[derive(Debug, Clone)]
+pub struct Doorkeeper {
+    bits: Vec<u64>,
+    num_bits: usize,
+}
+
+/// Default doorkeeper size in bits.
+const DOORKEEPER_DEFAULT_BITS: usize = 2048;
+
+impl Doorkeeper {
+    /// Create a new doorkeeper with the specified number of bits.
+    pub fn new(num_bits: usize) -> Self {
+        let num_bits = num_bits.max(64);
+        let num_words = num_bits.div_ceil(64);
+        Self {
+            bits: vec![0u64; num_words],
+            num_bits,
+        }
+    }
+
+    /// Create a doorkeeper with the default size (2048 bits).
+    pub fn with_defaults() -> Self {
+        Self::new(DOORKEEPER_DEFAULT_BITS)
+    }
+
+    /// Check if a key has been seen. Returns true if the bit was already set.
+    pub fn check_and_set(&mut self, hash: u64) -> bool {
+        let idx = (hash as usize) % self.num_bits;
+        let word = idx / 64;
+        let bit = idx % 64;
+        let was_set = (self.bits[word] >> bit) & 1 == 1;
+        self.bits[word] |= 1 << bit;
+        was_set
+    }
+
+    /// Check if a key has been seen without setting.
+    pub fn contains(&self, hash: u64) -> bool {
+        let idx = (hash as usize) % self.num_bits;
+        let word = idx / 64;
+        let bit = idx % 64;
+        (self.bits[word] >> bit) & 1 == 1
+    }
+
+    /// Clear all bits.
+    pub fn clear(&mut self) {
+        self.bits.fill(0);
+    }
+}
+
+/// Compute a secondary fingerprint hash for collision guard.
+///
+/// Uses a different multiplicative constant than FxHash to produce
+/// an independent 64-bit fingerprint.
+#[inline]
+pub fn fingerprint_hash(text: &str) -> u64 {
+    // Simple but effective: fold bytes with a different constant than FxHash.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+    for &b in text.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3); // FNV prime
+    }
+    h
+}
+
+/// Evaluate the TinyLFU admission rule.
+///
+/// Returns `true` if the candidate should be admitted (replacing the victim).
+///
+/// # Rule
+/// Admit if `freq(candidate) > freq(victim)`. On tie, reject (keep victim).
+#[inline]
+pub fn tinylfu_admit(candidate_freq: u8, victim_freq: u8) -> bool {
+    candidate_freq > victim_freq
+}
+
 #[cfg(test)]
 mod proptests {
     use super::*;
@@ -789,5 +1029,323 @@ mod proptests {
             // Should be a hit (preloaded)
             prop_assert_eq!(stats_after.hits, stats_before.hits + 1);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TinyLFU Spec Tests (bd-4kq0.6.1)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tinylfu_tests {
+    use super::*;
+
+    // --- Count-Min Sketch ---
+
+    #[test]
+    fn unit_cms_single_key_count() {
+        let mut cms = CountMinSketch::with_defaults();
+        let h = hash_text("hello");
+
+        for _ in 0..5 {
+            cms.increment(h);
+        }
+        assert_eq!(cms.estimate(h), 5);
+    }
+
+    #[test]
+    fn unit_cms_unseen_key_is_zero() {
+        let cms = CountMinSketch::with_defaults();
+        assert_eq!(cms.estimate(hash_text("never_seen")), 0);
+    }
+
+    #[test]
+    fn unit_cms_saturates_at_max() {
+        let mut cms = CountMinSketch::with_defaults();
+        let h = hash_text("hot");
+
+        for _ in 0..100 {
+            cms.increment(h);
+        }
+        assert_eq!(cms.estimate(h), CMS_MAX_COUNT);
+    }
+
+    #[test]
+    fn unit_cms_bounds() {
+        // Error bound: estimate(x) <= true_count(x) + epsilon * N.
+        // With w=1024, epsilon = e/1024 ~ 0.00266.
+        let mut cms = CountMinSketch::new(1024, 4, u64::MAX); // no reset
+        let n: u64 = 1000;
+
+        // Insert 1000 unique keys
+        for i in 0..n {
+            cms.increment(i.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1));
+        }
+
+        // Check a target key inserted exactly 5 times
+        let target = 0xDEAD_BEEF_u64;
+        for _ in 0..5 {
+            cms.increment(target);
+        }
+
+        let est = cms.estimate(target);
+        let epsilon = std::f64::consts::E / 1024.0;
+        let upper_bound = 5.0 + epsilon * (n + 5) as f64;
+
+        assert!(
+            (est as f64) <= upper_bound,
+            "estimate {} exceeds bound {:.1} (epsilon={:.5}, N={})",
+            est,
+            upper_bound,
+            epsilon,
+            n + 5,
+        );
+        assert!(est >= 5, "estimate {} should be >= true count 5", est);
+    }
+
+    #[test]
+    fn unit_cms_bounds_mass_test() {
+        let mut cms = CountMinSketch::new(1024, 4, u64::MAX);
+        let n = 2000u64;
+
+        let mut true_counts = vec![0u8; n as usize];
+        for i in 0..n {
+            let count = (i % 10 + 1) as u8;
+            true_counts[i as usize] = count;
+            for _ in 0..count {
+                cms.increment(i);
+            }
+        }
+
+        let total = cms.total_increments();
+        let epsilon = std::f64::consts::E / 1024.0;
+        let mut violations = 0u32;
+
+        for i in 0..n {
+            let est = cms.estimate(i);
+            let true_c = true_counts[i as usize];
+            let upper = true_c as f64 + epsilon * total as f64;
+            if est as f64 > upper + 0.5 {
+                violations += 1;
+            }
+            assert!(
+                est >= true_c,
+                "key {}: estimate {} < true count {}",
+                i,
+                est,
+                true_c
+            );
+        }
+
+        // delta = (1/2)^4 = 0.0625; allow generous threshold
+        let violation_rate = violations as f64 / n as f64;
+        assert!(
+            violation_rate <= 0.10,
+            "violation rate {:.3} exceeds delta threshold",
+            violation_rate,
+        );
+    }
+
+    #[test]
+    fn unit_cms_halving_ages_counts() {
+        let mut cms = CountMinSketch::new(64, 2, 100);
+
+        let h = hash_text("test");
+        for _ in 0..10 {
+            cms.increment(h);
+        }
+        assert_eq!(cms.estimate(h), 10);
+
+        // Trigger reset by reaching reset_interval
+        for _ in 10..100 {
+            cms.increment(hash_text("noise"));
+        }
+
+        let est = cms.estimate(h);
+        assert!(est <= 5, "After halving, estimate {} should be <= 5", est);
+    }
+
+    #[test]
+    fn unit_cms_monotone() {
+        let mut cms = CountMinSketch::with_defaults();
+        let h = hash_text("key");
+
+        let mut prev_est = 0u8;
+        for _ in 0..CMS_MAX_COUNT {
+            cms.increment(h);
+            let est = cms.estimate(h);
+            assert!(est >= prev_est, "estimate should be monotone");
+            prev_est = est;
+        }
+    }
+
+    // --- Doorkeeper ---
+
+    #[test]
+    fn unit_doorkeeper_first_access_returns_false() {
+        let mut dk = Doorkeeper::with_defaults();
+        assert!(!dk.check_and_set(hash_text("new")));
+    }
+
+    #[test]
+    fn unit_doorkeeper_second_access_returns_true() {
+        let mut dk = Doorkeeper::with_defaults();
+        let h = hash_text("key");
+        dk.check_and_set(h);
+        assert!(dk.check_and_set(h));
+    }
+
+    #[test]
+    fn unit_doorkeeper_contains() {
+        let mut dk = Doorkeeper::with_defaults();
+        let h = hash_text("key");
+        assert!(!dk.contains(h));
+        dk.check_and_set(h);
+        assert!(dk.contains(h));
+    }
+
+    #[test]
+    fn unit_doorkeeper_clear_resets() {
+        let mut dk = Doorkeeper::with_defaults();
+        let h = hash_text("key");
+        dk.check_and_set(h);
+        dk.clear();
+        assert!(!dk.contains(h));
+        assert!(!dk.check_and_set(h));
+    }
+
+    #[test]
+    fn unit_doorkeeper_false_positive_rate() {
+        let mut dk = Doorkeeper::new(2048);
+        let n = 100u64;
+
+        for i in 0..n {
+            dk.check_and_set(i * 0x9E37_79B9 + 1);
+        }
+
+        let mut false_positives = 0u32;
+        for i in 0..1000 {
+            let h = (i + 100_000) * 0x6A09_E667 + 7;
+            if dk.contains(h) {
+                false_positives += 1;
+            }
+        }
+
+        // k=1, m=2048, n=100: FP rate ~ 1 - e^{-100/2048} ~ 0.048
+        let fp_rate = false_positives as f64 / 1000.0;
+        assert!(
+            fp_rate < 0.15,
+            "FP rate {:.3} too high (expected < 0.15)",
+            fp_rate,
+        );
+    }
+
+    // --- Admission Rule ---
+
+    #[test]
+    fn unit_admission_rule() {
+        assert!(tinylfu_admit(5, 3)); // candidate > victim -> admit
+        assert!(!tinylfu_admit(3, 5)); // candidate < victim -> reject
+        assert!(!tinylfu_admit(3, 3)); // tie -> reject (keep victim)
+    }
+
+    #[test]
+    fn unit_admission_rule_extremes() {
+        assert!(tinylfu_admit(1, 0));
+        assert!(!tinylfu_admit(0, 0));
+        assert!(!tinylfu_admit(0, 1));
+        assert!(tinylfu_admit(CMS_MAX_COUNT, CMS_MAX_COUNT - 1));
+        assert!(!tinylfu_admit(CMS_MAX_COUNT, CMS_MAX_COUNT));
+    }
+
+    // --- Fingerprint Guard ---
+
+    #[test]
+    fn unit_fingerprint_guard() {
+        let fp1 = fingerprint_hash("hello");
+        let fp2 = fingerprint_hash("world");
+        let fp3 = fingerprint_hash("hello");
+
+        assert_ne!(
+            fp1, fp2,
+            "Different strings should have different fingerprints"
+        );
+        assert_eq!(fp1, fp3, "Same string should have same fingerprint");
+    }
+
+    #[test]
+    fn unit_fingerprint_guard_collision_rate() {
+        let mut fps = std::collections::HashSet::new();
+        let n = 10_000;
+
+        for i in 0..n {
+            let s = format!("string_{}", i);
+            fps.insert(fingerprint_hash(&s));
+        }
+
+        let collisions = n - fps.len();
+        assert!(
+            collisions == 0,
+            "Expected 0 collisions in 10k items, got {}",
+            collisions,
+        );
+    }
+
+    #[test]
+    fn unit_fingerprint_independent_of_primary_hash() {
+        let text = "test_string";
+        let primary = hash_text(text);
+        let secondary = fingerprint_hash(text);
+
+        assert_ne!(
+            primary, secondary,
+            "Fingerprint and primary hash should differ"
+        );
+    }
+
+    // --- Integration: Doorkeeper + CMS pipeline ---
+
+    #[test]
+    fn unit_doorkeeper_cms_pipeline() {
+        let mut dk = Doorkeeper::with_defaults();
+        let mut cms = CountMinSketch::with_defaults();
+        let h = hash_text("item");
+
+        // First access: doorkeeper records
+        assert!(!dk.check_and_set(h));
+        assert_eq!(cms.estimate(h), 0);
+
+        // Second access: doorkeeper confirms, CMS incremented
+        assert!(dk.check_and_set(h));
+        cms.increment(h);
+        assert_eq!(cms.estimate(h), 1);
+
+        // Third access
+        assert!(dk.check_and_set(h));
+        cms.increment(h);
+        assert_eq!(cms.estimate(h), 2);
+    }
+
+    #[test]
+    fn unit_doorkeeper_filters_one_hit_wonders() {
+        let mut dk = Doorkeeper::with_defaults();
+        let mut cms = CountMinSketch::with_defaults();
+
+        // 100 one-hit items
+        for i in 0u64..100 {
+            let h = i * 0x9E37_79B9 + 1;
+            let seen = dk.check_and_set(h);
+            if seen {
+                cms.increment(h);
+            }
+        }
+
+        assert_eq!(cms.total_increments(), 0);
+
+        // Access one again -> passes doorkeeper
+        let h = 0 * 0x9E37_79B9 + 1;
+        assert!(dk.check_and_set(h));
+        cms.increment(h);
+        assert_eq!(cms.total_increments(), 1);
     }
 }
