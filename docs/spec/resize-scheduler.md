@@ -145,6 +145,73 @@ Use the same parametric form as in Section 3.2, but maintain **sufficient
 stats per run length** (e.g., exponential rate for `dt`, Laplace scale
 for `dv`). This keeps updates O(k) with a fixed truncation window.
 
+### 6.1) Sufficient Stats (Deterministic, O(1) per run length)
+We track minimal stats per run length to keep computation stable and cheap.
+All updates are deterministic and bounded.
+
+**`dt` (time between events)** — Exponential with Gamma prior.
+- Prior: `lambda ~ Gamma(alpha0, beta0)`
+- Stats per run length: `n_dt`, `sum_dt`
+- MAP estimate: `lambda_hat = (alpha0 + n_dt - 1) / (beta0 + sum_dt)`
+- Predictive likelihood (fast): `p(dt) = lambda_hat * exp(-lambda_hat * dt)`
+
+**`dv` (area delta)** — Laplace with EMA scale.
+- Track `mean_dv` via EMA and `mad_dv` = EMA of `|dv - mean_dv|`.
+- Scale estimate: `b_hat = max(mad_dv, b_floor)`
+- Likelihood: `p(dv) = (1 / (2 * b_hat)) * exp(-|dv - mean_dv| / b_hat)`
+
+**`v` (event rate EMA)** — Gaussian with EMA mean/variance.
+- Track `mu_v` and `var_v` via EMA (variance floor `var_floor`).
+- Likelihood: `p(v) = Normal(mu_v, var_v)`
+
+Defaults (documented + logged):
+- `alpha0 = 2.0`, `beta0 = 0.5`
+- `b_floor = 0.5`
+- `var_floor = 1e-4`
+- EMA decay `gamma = 0.1`
+
+### 6.2) BOCPD Update (Log-Space, Truncated)
+We maintain `log_runlen[r] = log P(r_t = r | x_1:t)` for `r in [0..R_max]`.
+
+```
+for r in 0..=R_max:
+  log_pred[r] = log_likelihood(x_t | stats[r])
+
+log_growth[r+1] = log_runlen[r] + log(1 - H(r)) + log_pred[r]
+log_cp[0]       = logsumexp_r( log_runlen[r] + log(H(r)) + log_pred[r] )
+
+log_runlen' = normalize( [log_cp[0], log_growth[1..]] )
+```
+
+Normalization is done via `logsumexp` to avoid underflow. We store only
+`R_max + 1` entries to guarantee bounded cost.
+
+### 6.3) Truncation + Pruning Strategy
+To preserve determinism and O(R_max):
+- Hard truncate at `R_max`.
+- Optional top‑K pruning (if enabled) must be deterministic:
+  - stable sort by `log_runlen` (tie‑break by smaller r)
+  - renormalize after pruning
+
+Recommended: disable top‑K and rely on `R_max = 200` unless profiling
+shows need for pruning.
+
+### 6.4) Change‑Point Signal
+We compute:
+- `p_change = P(r_t = 0 | x_1:t)`
+- `conf_burst = P(B | x_1:t)`
+
+Decision remains:
+- If `conf_burst >= tau_burst` OR `p_change >= tau_change` ⇒ regime `B`
+- Else ⇒ regime `S`
+
+### 6.5) BOCPD Evidence Ledger Fields
+Add these fields to the per‑decision log:
+- `r_max`, `p_change`, `top_runlen`, `runlen_entropy`
+- `alpha0`, `beta0`, `lambda_hat`
+- `mean_dv`, `mad_dv`, `b_hat`
+- `mu_v`, `var_v`
+
 ### Regime Label + Confidence
 We derive a regime label and confidence from the run-length posterior:
 - **Change probability**: `p_change = P(r_t = 0 | x_1:t)`
