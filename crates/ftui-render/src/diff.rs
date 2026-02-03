@@ -154,6 +154,25 @@ impl BufferDiff {
         }
     }
 
+    /// Create a diff that marks every cell as changed.
+    ///
+    /// Useful for full-screen redraws where the previous buffer is unknown
+    /// (e.g., after resize or initial present).
+    pub fn full(width: u16, height: u16) -> Self {
+        if width == 0 || height == 0 {
+            return Self::new();
+        }
+
+        let total = width as usize * height as usize;
+        let mut changes = Vec::with_capacity(total);
+        for y in 0..height {
+            for x in 0..width {
+                changes.push((x, y));
+            }
+        }
+        Self { changes }
+    }
+
     /// Compute the diff between two buffers.
     ///
     /// Uses row-major scan for cache efficiency. Both buffers must have
@@ -359,6 +378,14 @@ mod tests {
 
         assert!(diff.is_empty());
         assert_eq!(diff.len(), 0);
+    }
+
+    #[test]
+    fn full_diff_marks_all_cells() {
+        let diff = BufferDiff::full(3, 2);
+        assert_eq!(diff.len(), 6);
+        assert_eq!(diff.changes()[0], (0, 0));
+        assert_eq!(diff.changes()[5], (2, 1));
     }
 
     #[test]
@@ -1073,9 +1100,10 @@ mod tests {
             }
 
             times_us.sort();
-            let p50 = times_us[times_us.len() / 2];
-            let p95 = times_us[(times_us.len() as f64 * 0.95) as usize];
-            let p99 = times_us[(times_us.len() as f64 * 0.99) as usize];
+            let len = times_us.len();
+            let p50 = times_us[len / 2];
+            let p95 = times_us[((len as f64 * 0.95) as usize).min(len.saturating_sub(1))];
+            let p99 = times_us[((len as f64 * 0.99) as usize).min(len.saturating_sub(1))];
 
             // JSONL log line (captured by --nocapture or CI artifact)
             eprintln!(
@@ -1116,6 +1144,114 @@ mod tests {
                     "WARN: {scene_type} {width}x{height} p95={p95}µs exceeds budget {budget_us}µs"
                 );
             }
+        }
+    }
+
+    // =========================================================================
+    // Dirty vs Full Diff Regression Gate (bd-3e1t.1.6)
+    // =========================================================================
+
+    #[test]
+    fn perf_dirty_diff_large_screen_regression() {
+        use std::time::Instant;
+
+        let iterations = std::env::var("FTUI_DIFF_BENCH_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(50u32);
+
+        let max_slowdown = std::env::var("FTUI_DIRTY_DIFF_MAX_SLOWDOWN")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(2.0);
+
+        let cases: &[(u16, u16, &str, f64)] = &[
+            (200, 60, "sparse_5pct", 5.0),
+            (240, 80, "sparse_5pct", 5.0),
+            (200, 60, "single_row", 0.0),
+            (240, 80, "single_row", 0.0),
+        ];
+
+        for &(width, height, pattern, pct) in cases {
+            let old = Buffer::new(width, height);
+            let mut new = old.clone();
+
+            if pattern == "single_row" {
+                for x in 0..width {
+                    new.set_raw(x, 0, Cell::from_char('X'));
+                }
+            } else {
+                let total = width as usize * height as usize;
+                let to_change = ((total as f64) * pct / 100.0) as usize;
+                for i in 0..to_change {
+                    let x = (i * 7 + 3) as u16 % width;
+                    let y = (i * 11 + 5) as u16 % height;
+                    let ch = char::from_u32(('A' as u32) + (i as u32 % 26)).unwrap();
+                    new.set_raw(x, y, Cell::from_char(ch));
+                }
+            }
+
+            // Sanity: dirty and full diffs must agree.
+            let full = BufferDiff::compute(&old, &new);
+            let dirty = BufferDiff::compute_dirty(&old, &new);
+            let change_count = full.len();
+            let dirty_rows = new.dirty_row_count();
+            assert_eq!(
+                full.changes(),
+                dirty.changes(),
+                "dirty diff must match full diff for {width}x{height} {pattern}"
+            );
+
+            let mut full_times = Vec::with_capacity(iterations as usize);
+            let mut dirty_times = Vec::with_capacity(iterations as usize);
+
+            for _ in 0..iterations {
+                let start = Instant::now();
+                let diff = BufferDiff::compute(&old, &new);
+                std::hint::black_box(diff.len());
+                full_times.push(start.elapsed().as_micros() as u64);
+
+                let start = Instant::now();
+                let diff = BufferDiff::compute_dirty(&old, &new);
+                std::hint::black_box(diff.len());
+                dirty_times.push(start.elapsed().as_micros() as u64);
+            }
+
+            full_times.sort();
+            dirty_times.sort();
+
+            let len = full_times.len();
+            let p50_idx = len / 2;
+            let p95_idx = ((len as f64 * 0.95) as usize).min(len.saturating_sub(1));
+
+            let full_p50 = full_times[p50_idx];
+            let full_p95 = full_times[p95_idx];
+            let dirty_p50 = dirty_times[p50_idx];
+            let dirty_p95 = dirty_times[p95_idx];
+
+            let denom = full_p50.max(1) as f64;
+            let ratio = dirty_p50 as f64 / denom;
+
+            eprintln!(
+                "{{\"ts\":\"2026-02-03T00:00:00Z\",\"event\":\"diff_regression\",\"width\":{},\"height\":{},\"pattern\":\"{}\",\"iterations\":{},\"changes\":{},\"dirty_rows\":{},\"full_p50_us\":{},\"full_p95_us\":{},\"dirty_p50_us\":{},\"dirty_p95_us\":{},\"slowdown_ratio\":{:.3},\"max_slowdown\":{}}}",
+                width,
+                height,
+                pattern,
+                iterations,
+                change_count,
+                dirty_rows,
+                full_p50,
+                full_p95,
+                dirty_p50,
+                dirty_p95,
+                ratio,
+                max_slowdown
+            );
+
+            assert!(
+                ratio <= max_slowdown,
+                "dirty diff regression: {width}x{height} {pattern} ratio {ratio:.2} exceeds {max_slowdown}"
+            );
         }
     }
 }

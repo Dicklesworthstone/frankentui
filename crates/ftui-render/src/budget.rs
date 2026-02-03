@@ -527,6 +527,14 @@ impl BudgetController {
         self.eprocess.e_value
     }
 
+    /// Get the current e-process sigma estimate (ms).
+    #[inline]
+    pub fn eprocess_sigma_ms(&self) -> f64 {
+        self.eprocess
+            .sigma_ema
+            .max(self.config.eprocess.sigma_floor_ms)
+    }
+
     /// Get the current PID integral term (for diagnostics/logging).
     #[inline]
     pub fn pid_integral(&self) -> f64 {

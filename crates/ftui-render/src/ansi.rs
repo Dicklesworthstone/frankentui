@@ -25,6 +25,7 @@
 //! | DEC | `ESC 7` / `ESC 8` | Cursor save/restore (DECSC/DECRC) |
 
 use std::io::{self, Write};
+use std::sync::OnceLock;
 
 use crate::cell::{PackedRgba, StyleFlags};
 
@@ -92,20 +93,7 @@ pub fn sgr_flags<W: Write>(w: &mut W, flags: StyleFlags) -> io::Result<()> {
         return Ok(());
     }
 
-    w.write_all(b"\x1b[")?;
-    let mut first = true;
-
-    for (flag, codes) in FLAG_TABLE {
-        if flags.contains(flag) {
-            if !first {
-                w.write_all(b";")?;
-            }
-            write!(w, "{}", codes.on)?;
-            first = false;
-        }
-    }
-
-    w.write_all(b"m")
+    w.write_all(sgr_flags_cached(flags))
 }
 
 /// Ordered table of (flag, on/off codes) for iteration.
@@ -119,6 +107,57 @@ pub const FLAG_TABLE: [(StyleFlags, SgrCodes); 8] = [
     (StyleFlags::HIDDEN, SGR_HIDDEN),
     (StyleFlags::STRIKETHROUGH, SGR_STRIKETHROUGH),
 ];
+
+static SGR_FLAGS_CACHE: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+
+#[inline]
+fn sgr_flags_cached(flags: StyleFlags) -> &'static [u8] {
+    let cache = SGR_FLAGS_CACHE.get_or_init(build_sgr_flags_cache);
+    &cache[flags.bits() as usize]
+}
+
+fn build_sgr_flags_cache() -> Vec<Vec<u8>> {
+    let mut cache = Vec::with_capacity(256);
+    for mask in 0u16..=0xFF {
+        let flags = StyleFlags::from_bits_truncate(mask as u8);
+        if flags.is_empty() {
+            cache.push(Vec::new());
+            continue;
+        }
+
+        let mut buf = Vec::with_capacity(16);
+        buf.extend_from_slice(b"\x1b[");
+        let mut first = true;
+
+        for (flag, codes) in FLAG_TABLE {
+            if flags.contains(flag) {
+                if !first {
+                    buf.push(b';');
+                }
+                write_u8_dec(&mut buf, codes.on);
+                first = false;
+            }
+        }
+
+        buf.push(b'm');
+        cache.push(buf);
+    }
+    cache
+}
+
+#[inline]
+fn write_u8_dec(buf: &mut Vec<u8>, value: u8) {
+    if value >= 100 {
+        buf.push(b'0' + (value / 100));
+        buf.push(b'0' + ((value / 10) % 10));
+        buf.push(b'0' + (value % 10));
+    } else if value >= 10 {
+        buf.push(b'0' + (value / 10));
+        buf.push(b'0' + (value % 10));
+    } else {
+        buf.push(b'0' + value);
+    }
+}
 
 /// Write SGR sequence to turn off specific style flags.
 ///

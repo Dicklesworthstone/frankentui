@@ -601,15 +601,15 @@ impl Buffer {
                 continue;
             };
 
-            let mut dx = 0;
+            let mut dx = 0u16;
             while dx < src_rect.width {
                 // Compute coordinates with overflow checks
                 let Some(target_x) = dst_x.checked_add(dx) else {
-                    dx += 1;
+                    dx = dx.saturating_add(1);
                     continue;
                 };
                 let Some(sx) = src_rect.x.checked_add(dx) else {
-                    dx += 1;
+                    dx = dx.saturating_add(1);
                     continue;
                 };
 
@@ -617,7 +617,7 @@ impl Buffer {
                     // Handle dangling tail at start of copy region
                     if dx == 0 && cell.is_continuation() {
                         self.set(target_x, target_y, Cell::default());
-                        dx += 1;
+                        dx = dx.saturating_add(1);
                         continue;
                     }
 
@@ -626,14 +626,15 @@ impl Buffer {
 
                     // If it was a wide char, skip the tails in the source iteration
                     // because `set` already handled them (or rejected the whole char).
+                    // Use saturating_add to prevent infinite loop on overflow.
                     let width = cell.content.width();
                     if width > 1 {
-                        dx += width as u16;
+                        dx = dx.saturating_add(width as u16);
                     } else {
-                        dx += 1;
+                        dx = dx.saturating_add(1);
                     }
                 } else {
-                    dx += 1;
+                    dx = dx.saturating_add(1);
                 }
             }
         }
