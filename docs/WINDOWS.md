@@ -6,6 +6,15 @@ known limitations. Behavior varies by terminal emulator and by backend.
 Status note: This project is still early. The items below are the **targeted**
 v1 behavior, not a guarantee for every Windows terminal.
 
+## CI Validation (2026-02-03)
+
+- CI check job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest`
+  (see `.github/workflows/ci.yml`).
+- Platform-specific capability detection tests run under `cfg(target_os)` on
+  Windows/macOS.
+- Manual spot checks are still required for terminal-specific quirks
+  (Terminal.app, iTerm2, Windows Terminal).
+
 ## Supported Features (v1 target)
 
 - Raw mode enter/exit with cleanup on panic (best effort via the backend)

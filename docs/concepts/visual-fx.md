@@ -17,6 +17,11 @@ All visual FX APIs are opt-in via `ftui-extras` Cargo features:
 - `visual-fx-plasma`: Plasma effect (depends on `visual-fx`).
 - `fx-gpu`: Optional GPU acceleration (strictly opt-in; no GPU deps unless enabled).
 
+### GPU Runtime Flags
+
+- `FTUI_FX_GPU_DISABLE=1` disables GPU usage even when `fx-gpu` is enabled.
+- `FTUI_FX_GPU_FORCE_FAIL=1` forces GPU init failure (test hook) and verifies silent CPU fallback.
+
 ## Core API
 
 Core types live in `ftui_extras::visual_fx`:
@@ -37,4 +42,3 @@ See: `crates/ftui-extras/src/visual_fx.rs`.
 - Theme conversions (`ThemePalette` / `ResolvedTheme` -> `ThemeInputs`): tracked in `bd-l8x9.1.2`.
 - Budget/degradation mapping (`DegradationLevel` -> `FxQuality`): tracked in `bd-l8x9.1.3`.
 - Backdrop widget + scrim policies: tracked in `bd-l8x9.2.*`.
-
