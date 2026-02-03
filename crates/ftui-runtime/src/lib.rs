@@ -35,6 +35,7 @@ pub mod undo;
 pub mod validation_pipeline;
 
 pub mod reactive;
+pub mod schedule_trace;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 
@@ -86,8 +87,13 @@ pub use state_persistence::{
     StoredEntry,
 };
 
+pub use schedule_trace::{
+    CancelReason, GoldenCompareResult, IsomorphismProof, ScheduleTrace, SchedulerPolicy, TaskEvent,
+    TraceConfig, TraceEntry, TraceSummary, WakeupReason, compare_golden,
+};
+
 #[cfg(feature = "telemetry")]
 pub use telemetry::{
-    redact, DecisionEvidence, EnabledReason, EndpointSource, EvidenceLedger, Protocol, SpanId,
-    TelemetryConfig, TelemetryError, TelemetryGuard, TraceContextSource, TraceId, SCHEMA_VERSION,
+    DecisionEvidence, EnabledReason, EndpointSource, EvidenceLedger, Protocol, SCHEMA_VERSION,
+    SpanId, TelemetryConfig, TelemetryError, TelemetryGuard, TraceContextSource, TraceId, redact,
 };
