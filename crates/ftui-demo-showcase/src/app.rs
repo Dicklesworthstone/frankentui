@@ -222,22 +222,22 @@ impl A11yTelemetryHooks {
             hook(event);
         }
         match event.kind {
-            A11yEventKind::PanelToggled => {
+            A11yEventKind::Panel => {
                 if let Some(ref hook) = self.on_panel_toggle {
                     hook(event);
                 }
             }
-            A11yEventKind::HighContrastToggled => {
+            A11yEventKind::HighContrast => {
                 if let Some(ref hook) = self.on_high_contrast {
                     hook(event);
                 }
             }
-            A11yEventKind::ReducedMotionToggled => {
+            A11yEventKind::ReducedMotion => {
                 if let Some(ref hook) = self.on_reduced_motion {
                     hook(event);
                 }
             }
-            A11yEventKind::LargeTextToggled => {
+            A11yEventKind::LargeText => {
                 if let Some(ref hook) = self.on_large_text {
                     hook(event);
                 }
