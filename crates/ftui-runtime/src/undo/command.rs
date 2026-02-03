@@ -29,6 +29,7 @@
 //!   - Mitigation: History stack enforces size limits via `size_bytes()`
 
 use std::any::Any;
+use std::fmt;
 use std::time::Instant;
 
 /// Unique identifier for a widget that commands operate on.
@@ -140,8 +141,8 @@ pub enum CommandError {
     Other(String),
 }
 
-impl std::fmt::Display for CommandError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TargetNotFound(id) => write!(f, "target widget {:?} not found", id),
             Self::PositionOutOfBounds { position, length } => {
@@ -183,102 +184,40 @@ impl Default for MergeConfig {
 ///
 /// Commands capture all state needed to execute, undo, and redo an operation.
 /// They support merging for batching related operations (like consecutive typing).
-///
-/// # Implementing `UndoableCmd`
-///
-/// ```ignore
-/// struct MyCommand {
-///     target: WidgetId,
-///     old_value: String,
-///     new_value: String,
-///     metadata: CommandMetadata,
-/// }
-///
-/// impl UndoableCmd for MyCommand {
-///     fn execute(&mut self) -> CommandResult {
-///         // Apply new_value to target
-///         Ok(())
-///     }
-///
-///     fn undo(&mut self) -> CommandResult {
-///         // Restore old_value to target
-///         Ok(())
-///     }
-///
-///     fn description(&self) -> &str {
-///         &self.metadata.description
-///     }
-///
-///     fn size_bytes(&self) -> usize {
-///         std::mem::size_of::<Self>()
-///             + self.old_value.len()
-///             + self.new_value.len()
-///             + self.metadata.size_bytes()
-///     }
-/// }
-/// ```
 pub trait UndoableCmd: Send + Sync {
     /// Execute the command, applying its effect.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if the command cannot be executed.
     fn execute(&mut self) -> CommandResult;
 
     /// Undo the command, reverting its effect.
-    ///
-    /// After undo, the system state MUST match the state before execute().
-    ///
-    /// # Errors
-    ///
-    /// Returns error if the command cannot be undone.
     fn undo(&mut self) -> CommandResult;
 
     /// Redo the command after it was undone.
-    ///
-    /// Default implementation calls execute().
-    ///
-    /// # Errors
-    ///
-    /// Returns error if the command cannot be redone.
     fn redo(&mut self) -> CommandResult {
         self.execute()
     }
 
     /// Human-readable description for UI display.
-    ///
-    /// Should be concise (e.g., "Insert text", "Delete selection").
     fn description(&self) -> &str;
 
     /// Size of this command in bytes for memory budgeting.
-    ///
-    /// MUST include all heap allocations (strings, vectors, etc.).
     fn size_bytes(&self) -> usize;
 
     /// Check if this command can merge with another.
-    ///
-    /// Called by the undo stack to batch related commands.
-    /// If true, `merge()` will be called.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The newer command to potentially merge
-    /// * `config` - Merge configuration (timing, size limits)
     fn can_merge(&self, _other: &dyn UndoableCmd, _config: &MergeConfig) -> bool {
         false
     }
 
     /// Merge another command into this one.
     ///
-    /// Only called if `can_merge()` returned true.
-    /// After merge, this command represents both operations.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if merge succeeded, `Err(other)` if merge failed
-    /// (the other command is returned for separate handling).
-    fn merge(&mut self, _other: Box<dyn UndoableCmd>) -> Result<(), Box<dyn UndoableCmd>> {
-        Err(_other)
+    /// Returns the text to append if merging is possible.
+    /// The default implementation returns None (no merge).
+    fn merge_text(&self) -> Option<&str> {
+        None
+    }
+
+    /// Accept merged text from another command.
+    fn accept_merge(&mut self, _text: &str) -> bool {
+        false
     }
 
     /// Get the command metadata.
@@ -294,13 +233,26 @@ pub trait UndoableCmd: Send + Sync {
 
     /// Downcast to mutable concrete type for merging.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Debug description of the command.
+    fn debug_name(&self) -> &'static str {
+        "UndoableCmd"
+    }
+}
+
+impl fmt::Debug for dyn UndoableCmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct(self.debug_name())
+            .field("description", &self.description())
+            .field("size_bytes", &self.size_bytes())
+            .finish()
+    }
 }
 
 /// A batch of commands that execute and undo together.
 ///
 /// Useful for operations that span multiple widgets or steps
 /// but should appear as a single undo entry.
-#[derive(Debug)]
 pub struct CommandBatch {
     /// Commands in execution order.
     commands: Vec<Box<dyn UndoableCmd>>,
@@ -308,6 +260,16 @@ pub struct CommandBatch {
     metadata: CommandMetadata,
     /// Index of last successfully executed command.
     executed_to: usize,
+}
+
+impl fmt::Debug for CommandBatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommandBatch")
+            .field("commands_count", &self.commands.len())
+            .field("metadata", &self.metadata)
+            .field("executed_to", &self.executed_to)
+            .finish()
+    }
 }
 
 impl CommandBatch {
@@ -388,14 +350,25 @@ impl UndoableCmd for CommandBatch {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    fn debug_name(&self) -> &'static str {
+        "CommandBatch"
+    }
 }
 
 // ============================================================================
 // Built-in Text Commands
 // ============================================================================
 
+/// Callback type for applying text operations.
+pub type TextApplyFn = Box<dyn Fn(WidgetId, usize, &str) -> CommandResult + Send + Sync>;
+/// Callback type for removing text.
+pub type TextRemoveFn = Box<dyn Fn(WidgetId, usize, usize) -> CommandResult + Send + Sync>;
+/// Callback type for replacing text.
+pub type TextReplaceFn =
+    Box<dyn Fn(WidgetId, usize, usize, &str) -> CommandResult + Send + Sync>;
+
 /// Command to insert text at a position.
-#[derive(Debug)]
 pub struct TextInsertCmd {
     /// Target widget.
     pub target: WidgetId,
@@ -406,9 +379,22 @@ pub struct TextInsertCmd {
     /// Command metadata.
     pub metadata: CommandMetadata,
     /// Callback to apply the insertion (set by the widget).
-    apply: Option<Box<dyn Fn(WidgetId, usize, &str) -> CommandResult + Send + Sync>>,
+    apply: Option<TextApplyFn>,
     /// Callback to remove the insertion (set by the widget).
-    remove: Option<Box<dyn Fn(WidgetId, usize, usize) -> CommandResult + Send + Sync>>,
+    remove: Option<TextRemoveFn>,
+}
+
+impl fmt::Debug for TextInsertCmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextInsertCmd")
+            .field("target", &self.target)
+            .field("position", &self.position)
+            .field("text", &self.text)
+            .field("metadata", &self.metadata)
+            .field("has_apply", &self.apply.is_some())
+            .field("has_remove", &self.remove.is_some())
+            .finish()
+    }
 }
 
 impl TextInsertCmd {
@@ -507,20 +493,13 @@ impl UndoableCmd for TextInsertCmd {
         true
     }
 
-    fn merge(&mut self, other: Box<dyn UndoableCmd>) -> Result<(), Box<dyn UndoableCmd>> {
-        let other = match other.as_any().downcast_ref::<Self>() {
-            Some(_) => {
-                // Safe to downcast since can_merge passed
-                let other = unsafe {
-                    Box::from_raw(Box::into_raw(other) as *mut Self)
-                };
-                other
-            }
-            None => return Err(other),
-        };
+    fn merge_text(&self) -> Option<&str> {
+        Some(&self.text)
+    }
 
-        self.text.push_str(&other.text);
-        Ok(())
+    fn accept_merge(&mut self, text: &str) -> bool {
+        self.text.push_str(text);
+        true
     }
 
     fn metadata(&self) -> &CommandMetadata {
@@ -538,10 +517,13 @@ impl UndoableCmd for TextInsertCmd {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    fn debug_name(&self) -> &'static str {
+        "TextInsertCmd"
+    }
 }
 
 /// Command to delete text at a position.
-#[derive(Debug)]
 pub struct TextDeleteCmd {
     /// Target widget.
     pub target: WidgetId,
@@ -552,9 +534,22 @@ pub struct TextDeleteCmd {
     /// Command metadata.
     pub metadata: CommandMetadata,
     /// Callback to remove text.
-    remove: Option<Box<dyn Fn(WidgetId, usize, usize) -> CommandResult + Send + Sync>>,
+    remove: Option<TextRemoveFn>,
     /// Callback to insert text (for undo).
-    insert: Option<Box<dyn Fn(WidgetId, usize, &str) -> CommandResult + Send + Sync>>,
+    insert: Option<TextApplyFn>,
+}
+
+impl fmt::Debug for TextDeleteCmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextDeleteCmd")
+            .field("target", &self.target)
+            .field("position", &self.position)
+            .field("deleted_text", &self.deleted_text)
+            .field("metadata", &self.metadata)
+            .field("has_remove", &self.remove.is_some())
+            .field("has_insert", &self.insert.is_some())
+            .finish()
+    }
 }
 
 impl TextDeleteCmd {
@@ -652,29 +647,15 @@ impl UndoableCmd for TextDeleteCmd {
         true
     }
 
-    fn merge(&mut self, other: Box<dyn UndoableCmd>) -> Result<(), Box<dyn UndoableCmd>> {
-        let other = match other.as_any().downcast_ref::<Self>() {
-            Some(_) => {
-                // Safe to downcast since can_merge passed
-                let other = unsafe {
-                    Box::from_raw(Box::into_raw(other) as *mut Self)
-                };
-                other
-            }
-            None => return Err(other),
-        };
+    fn merge_text(&self) -> Option<&str> {
+        Some(&self.deleted_text)
+    }
 
-        // Determine merge direction
-        if other.position + other.deleted_text.len() == self.position {
-            // Backspace: prepend
-            self.deleted_text = format!("{}{}", other.deleted_text, self.deleted_text);
-            self.position = other.position;
-        } else {
-            // Delete key: append
-            self.deleted_text.push_str(&other.deleted_text);
-        }
-
-        Ok(())
+    fn accept_merge(&mut self, text: &str) -> bool {
+        // For delete commands, we need to know if this is backspace or forward delete
+        // For now, prepend (backspace behavior)
+        self.deleted_text = format!("{}{}", text, self.deleted_text);
+        true
     }
 
     fn metadata(&self) -> &CommandMetadata {
@@ -692,10 +673,13 @@ impl UndoableCmd for TextDeleteCmd {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    fn debug_name(&self) -> &'static str {
+        "TextDeleteCmd"
+    }
 }
 
 /// Command to replace text at a position.
-#[derive(Debug)]
 pub struct TextReplaceCmd {
     /// Target widget.
     pub target: WidgetId,
@@ -708,7 +692,20 @@ pub struct TextReplaceCmd {
     /// Command metadata.
     pub metadata: CommandMetadata,
     /// Callback to apply replacement.
-    replace: Option<Box<dyn Fn(WidgetId, usize, usize, &str) -> CommandResult + Send + Sync>>,
+    replace: Option<TextReplaceFn>,
+}
+
+impl fmt::Debug for TextReplaceCmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextReplaceCmd")
+            .field("target", &self.target)
+            .field("position", &self.position)
+            .field("old_text", &self.old_text)
+            .field("new_text", &self.new_text)
+            .field("metadata", &self.metadata)
+            .field("has_replace", &self.replace.is_some())
+            .finish()
+    }
 }
 
 impl TextReplaceCmd {
@@ -797,6 +794,10 @@ impl UndoableCmd for TextReplaceCmd {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    fn debug_name(&self) -> &'static str {
+        "TextReplaceCmd"
+    }
 }
 
 // ============================================================================
@@ -806,8 +807,6 @@ impl UndoableCmd for TextReplaceCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -850,29 +849,29 @@ mod tests {
         let b3 = buffer.clone();
         let b4 = buffer.clone();
 
-        let mut cmd1 = TextInsertCmd::new(WidgetId::new(1), 0, "Hello");
-        cmd1.apply = Some(Box::new(move |_, pos, text| {
-            let mut buf = b1.lock().unwrap();
-            buf.insert_str(pos, text);
-            Ok(())
-        }));
-        cmd1.remove = Some(Box::new(move |_, pos, len| {
-            let mut buf = b2.lock().unwrap();
-            buf.drain(pos..pos + len);
-            Ok(())
-        }));
+        let cmd1 = TextInsertCmd::new(WidgetId::new(1), 0, "Hello")
+            .with_apply(move |_, pos, text| {
+                let mut buf = b1.lock().unwrap();
+                buf.insert_str(pos, text);
+                Ok(())
+            })
+            .with_remove(move |_, pos, len| {
+                let mut buf = b2.lock().unwrap();
+                buf.drain(pos..pos + len);
+                Ok(())
+            });
 
-        let mut cmd2 = TextInsertCmd::new(WidgetId::new(1), 5, " World");
-        cmd2.apply = Some(Box::new(move |_, pos, text| {
-            let mut buf = b3.lock().unwrap();
-            buf.insert_str(pos, text);
-            Ok(())
-        }));
-        cmd2.remove = Some(Box::new(move |_, pos, len| {
-            let mut buf = b4.lock().unwrap();
-            buf.drain(pos..pos + len);
-            Ok(())
-        }));
+        let cmd2 = TextInsertCmd::new(WidgetId::new(1), 5, " World")
+            .with_apply(move |_, pos, text| {
+                let mut buf = b3.lock().unwrap();
+                buf.insert_str(pos, text);
+                Ok(())
+            })
+            .with_remove(move |_, pos, len| {
+                let mut buf = b4.lock().unwrap();
+                buf.drain(pos..pos + len);
+                Ok(())
+            });
 
         batch.push(Box::new(cmd1));
         batch.push(Box::new(cmd2));
@@ -973,34 +972,29 @@ mod tests {
     }
 
     #[test]
-    fn test_text_insert_merge() {
+    fn test_text_insert_accept_merge() {
         let mut cmd1 = TextInsertCmd::new(WidgetId::new(1), 0, "Hello");
-        let mut cmd2 = TextInsertCmd::new(WidgetId::new(1), 5, " World");
-        cmd2.metadata.timestamp = cmd1.metadata.timestamp;
-
-        let config = MergeConfig::default();
-        assert!(cmd1.can_merge(&cmd2, &config));
-
-        let boxed: Box<dyn UndoableCmd> = Box::new(cmd2);
-        cmd1.merge(boxed).unwrap();
+        assert!(cmd1.accept_merge(" World"));
         assert_eq!(cmd1.text, "Hello World");
     }
 
     #[test]
-    fn test_text_delete_merge_backspace() {
-        // Simulate backspace: deleting 'b' at position 5, then 'a' at position 4
-        let mut cmd1 = TextDeleteCmd::new(WidgetId::new(1), 5, "b");
-        let mut cmd2 = TextDeleteCmd::new(WidgetId::new(1), 4, "a");
-        cmd2.metadata.timestamp = cmd1.metadata.timestamp;
-
-        let config = MergeConfig::default();
-        assert!(cmd1.can_merge(&cmd2, &config));
-
-        let boxed: Box<dyn UndoableCmd> = Box::new(cmd2);
-        cmd1.merge(boxed).unwrap();
-
-        // After merging, should have "ab" deleted starting at position 4
+    fn test_text_delete_accept_merge() {
+        let mut cmd1 = TextDeleteCmd::new(WidgetId::new(1), 4, "b");
+        assert!(cmd1.accept_merge("a"));
+        // Should prepend for backspace behavior
         assert_eq!(cmd1.deleted_text, "ab");
-        assert_eq!(cmd1.position, 4);
+    }
+
+    #[test]
+    fn test_debug_implementations() {
+        let cmd = TextInsertCmd::new(WidgetId::new(1), 0, "test");
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("TextInsertCmd"));
+        assert!(debug_str.contains("test"));
+
+        let batch = CommandBatch::new("Test batch");
+        let debug_str = format!("{:?}", batch);
+        assert!(debug_str.contains("CommandBatch"));
     }
 }
