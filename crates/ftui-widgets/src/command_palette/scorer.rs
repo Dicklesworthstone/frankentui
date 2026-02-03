@@ -672,7 +672,7 @@ impl BayesianScorer {
         evidence.add(
             EvidenceKind::MatchType,
             prior_odds,
-            match_type.description().to_string(),
+            EvidenceDescription::Static(match_type.description()),
         );
 
         // Position bonus: matches at start are better
@@ -681,7 +681,7 @@ impl BayesianScorer {
             evidence.add(
                 EvidenceKind::Position,
                 position_factor,
-                format!("first match at position {}", first_pos),
+                EvidenceDescription::FirstMatchPos { pos: first_pos },
             );
         }
 
@@ -692,7 +692,9 @@ impl BayesianScorer {
             evidence.add(
                 EvidenceKind::WordBoundary,
                 boundary_factor,
-                format!("{} word boundary matches", word_boundary_count),
+                EvidenceDescription::WordBoundaryCount {
+                    count: word_boundary_count,
+                },
             );
         }
 
@@ -703,7 +705,7 @@ impl BayesianScorer {
             evidence.add(
                 EvidenceKind::GapPenalty,
                 gap_factor,
-                format!("total gap of {} characters", total_gap),
+                EvidenceDescription::GapTotal { total: total_gap },
             );
         }
 
@@ -712,10 +714,9 @@ impl BayesianScorer {
         evidence.add(
             EvidenceKind::TitleLength,
             length_factor,
-            format!(
-                "query covers {:.0}% of title",
-                (query.len() as f64 / title.len() as f64) * 100.0
-            ),
+            EvidenceDescription::CoveragePercent {
+                percent: (query.len() as f64 / title.len() as f64) * 100.0,
+            },
         );
 
         let score = evidence.posterior_probability();
