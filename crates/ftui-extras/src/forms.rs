@@ -196,7 +196,11 @@ pub struct Form {
     label_style: Style,
     focused_style: Style,
     error_style: Style,
+    success_style: Style,
+    disabled_style: Style,
+    required_style: Style,
     label_width: u16,
+    required: Vec<bool>,
 }
 
 impl Form {
@@ -210,7 +214,11 @@ impl Form {
             label_style: Style::default(),
             focused_style: Style::default(),
             error_style: Style::default(),
+            success_style: Style::default(),
+            disabled_style: Style::default(),
+            required_style: Style::default(),
             label_width: 0, // auto-detect
+            required: vec![false; count],
         }
     }
 

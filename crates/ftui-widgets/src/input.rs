@@ -631,7 +631,7 @@ impl Widget for TextInput {
                     continue;
                 };
                 crate::apply_style(&mut cell, placeholder_style);
-                
+
                 frame
                     .buffer
                     .set(area.x.saturating_add(rel_x as u16), y, cell);
