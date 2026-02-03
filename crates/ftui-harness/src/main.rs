@@ -381,7 +381,11 @@ impl AgentHarness {
                                 self.model_name,
                                 self.command_count,
                                 if self.task_running { "Running" } else { "Idle" },
-                                if self.tree_view_open { "Open" } else { "Closed" }
+                                if self.tree_view_open {
+                                    "Open"
+                                } else {
+                                    "Closed"
+                                }
                             ));
                         }
                         "clear" => {
@@ -917,6 +921,93 @@ impl AgentHarness {
         let inner = block.inner(area);
         block.render(area, frame);
         self.input.render(inner, frame);
+    }
+
+    /// Render the tree view overlay (toggled via Esc Esc).
+    fn view_tree_overlay(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+
+        // Layout: Tree view (70%), Info panel (30%)
+        let chunks = Flex::horizontal()
+            .constraints([Constraint::Percentage(70.0), Constraint::Percentage(30.0)])
+            .split(area);
+
+        // Create a demo tree representing the harness state
+        let tree_root = TreeNode::new("Harness State")
+            .expanded(true)
+            .child(
+                TreeNode::new("Model")
+                    .expanded(true)
+                    .child(TreeNode::new(&format!("name: {}", self.model_name)))
+                    .child(TreeNode::new(&format!("commands: {}", self.command_count))),
+            )
+            .child(
+                TreeNode::new("Task")
+                    .expanded(true)
+                    .child(TreeNode::new(&format!(
+                        "running: {}",
+                        self.task_running
+                    )))
+                    .child(TreeNode::new(&format!(
+                        "tool: {}",
+                        self.current_tool.as_deref().unwrap_or("none")
+                    ))),
+            )
+            .child(
+                TreeNode::new("View")
+                    .expanded(true)
+                    .child(TreeNode::new(&format!("mode: {:?}", self.view_mode)))
+                    .child(TreeNode::new("tree_open: true")),
+            )
+            .child(
+                TreeNode::new("Input")
+                    .expanded(true)
+                    .child(TreeNode::new(&format!(
+                        "value: \"{}\"",
+                        self.input.value()
+                    )))
+                    .child(TreeNode::new(&format!(
+                        "cursor: {}",
+                        self.input.cursor_position()
+                    ))),
+            );
+
+        let tree = Tree::new(tree_root).block(
+            Block::new()
+                .title(" Tree View (Esc Esc to close) ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .style(Style::new().bg(theme::alpha::SURFACE))
+                .border_style(Style::new().fg(theme::accent::SECONDARY)),
+        );
+
+        tree.render(chunks[0], frame);
+
+        // Info panel
+        let info_text = format!(
+            "Tree View Overlay\n\n\
+             Press Esc Esc to toggle\n\n\
+             This shows the harness state:\n\
+             - Model configuration\n\
+             - Task status\n\
+             - View mode\n\
+             - Input state\n\n\
+             Log lines: {}",
+            self.log_viewer.len()
+        );
+
+        let info_block = Block::new()
+            .title(" Info ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(Style::new().bg(theme::alpha::SURFACE))
+            .border_style(Style::new().fg(theme::fg::MUTED));
+        let info_inner = info_block.inner(chunks[1]);
+        info_block.render(chunks[1], frame);
+
+        let info_paragraph =
+            Paragraph::new(info_text).wrap(WrapMode::Word).alignment(Alignment::Left);
+        info_paragraph.render(info_inner, frame);
     }
 }
 

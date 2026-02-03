@@ -469,6 +469,15 @@ mod tests {
         }
     }
 
+    fn hash_pixels(pixels: &[PackedRgba]) -> u64 {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for px in pixels {
+            hash ^= px.0 as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
     #[test]
     fn deterministic_for_fixed_inputs() {
         let theme = ThemeInputs::default_dark();
@@ -478,7 +487,9 @@ mod tests {
         let mut out2 = vec![PackedRgba::TRANSPARENT; ctx.len()];
         fx.render(ctx, &mut out1);
         fx.render(ctx, &mut out2);
-        assert_eq!(out1, out2);
+        let h1 = hash_pixels(&out1);
+        let h2 = hash_pixels(&out2);
+        assert_eq!(out1, out2, "hash1={h1:#x} hash2={h2:#x}");
     }
 
     #[test]
@@ -494,6 +505,24 @@ mod tests {
             theme: &theme,
         };
         fx.render(ctx, &mut []);
+    }
+
+    #[test]
+    fn tiny_area_safe_small_dims() {
+        let theme = ThemeInputs::default_dark();
+        let mut fx = MetaballsFx::default();
+        for (width, height) in [(1, 1), (2, 1), (1, 2), (2, 2)] {
+            let ctx = FxContext {
+                width,
+                height,
+                frame: 0,
+                time_seconds: 0.0,
+                quality: FxQuality::Minimal,
+                theme: &theme,
+            };
+            let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+            fx.render(ctx, &mut out);
+        }
     }
 
     #[test]
@@ -550,5 +579,55 @@ mod tests {
             out.iter().all(|&px| px == sentinel),
             "Off quality should leave buffer unchanged"
         );
+    }
+
+    #[test]
+    fn presets_are_within_bounds() {
+        let presets = [
+            MetaballsParams::default(),
+            MetaballsParams::aurora(),
+            MetaballsParams::lava(),
+            MetaballsParams::ocean(),
+        ];
+
+        for params in presets {
+            assert!(
+                params.bounds_min <= params.bounds_max,
+                "bounds_min > bounds_max: {} > {}",
+                params.bounds_min,
+                params.bounds_max
+            );
+            assert!(
+                params.radius_min <= params.radius_max,
+                "radius_min > radius_max: {} > {}",
+                params.radius_min,
+                params.radius_max
+            );
+            assert!(
+                params.glow_threshold <= params.threshold,
+                "glow_threshold > threshold: {} > {}",
+                params.glow_threshold,
+                params.threshold
+            );
+
+            for ball in &params.balls {
+                assert!(
+                    (0.0..=1.0).contains(&ball.x),
+                    "ball.x out of range: {}",
+                    ball.x
+                );
+                assert!(
+                    (0.0..=1.0).contains(&ball.y),
+                    "ball.y out of range: {}",
+                    ball.y
+                );
+                assert!(ball.radius >= 0.0, "ball.radius negative: {}", ball.radius);
+                assert!(
+                    (0.0..=1.0).contains(&ball.hue),
+                    "ball.hue out of range: {}",
+                    ball.hue
+                );
+            }
+        }
     }
 }

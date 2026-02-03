@@ -4440,6 +4440,27 @@ mod tests {
     }
 
     #[test]
+    fn test_cursor_after_reveal_with_reveal_effect() {
+        // Cursor with AfterReveal should also work with TextEffect::Reveal
+        let text = StyledText::new("Hello World") // 11 chars
+            .effect(TextEffect::Reveal {
+                mode: RevealMode::LeftToRight,
+                progress: 0.5, // 50% revealed = ~5 chars
+                seed: 0,
+            })
+            .effect(TextEffect::Cursor {
+                style: CursorStyle::Block,
+                blink_speed: 0.0,
+                position: CursorPosition::AfterReveal,
+            })
+            .time(0.0);
+
+        // Cursor should be at index 5 (0.5 * 11 = 5.5 → 5)
+        let cursor_idx = text.cursor_index();
+        assert_eq!(cursor_idx, Some(5));
+    }
+
+    #[test]
     fn test_cursor_custom_char() {
         // Custom cursor should use the specified character
         let custom_char = '▌';
