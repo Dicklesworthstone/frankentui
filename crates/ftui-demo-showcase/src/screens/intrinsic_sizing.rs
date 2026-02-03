@@ -11,7 +11,6 @@
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
@@ -160,21 +159,23 @@ impl IntrinsicSizingDemo {
         if use_horizontal {
             // Side-by-side cards
             let chunks = Flex::horizontal()
-                .constraints([Constraint::Percentage(40.0), Constraint::Percentage(60.0)])
-                .spacing(1)
+                .constraints([
+                    Constraint::Percentage(40.0),
+                    Constraint::Fixed(1),
+                    Constraint::Percentage(60.0),
+                ])
                 .split(area);
 
             self.render_user_card(frame, chunks[0]);
-            self.render_stats_card(frame, chunks[1]);
+            self.render_stats_card(frame, chunks[2]);
         } else {
             // Stacked cards
             let chunks = Flex::vertical()
-                .constraints([Constraint::Fixed(6), Constraint::Fill])
-                .spacing(1)
+                .constraints([Constraint::Fixed(6), Constraint::Fixed(1), Constraint::Fill])
                 .split(area);
 
             self.render_user_card(frame, chunks[0]);
-            self.render_stats_card(frame, chunks[1]);
+            self.render_stats_card(frame, chunks[2]);
         }
     }
 
@@ -309,27 +310,36 @@ impl IntrinsicSizingDemo {
 
             // Row 1: Name + Email
             let cols1 = Flex::horizontal()
-                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
-                .spacing(1)
+                .constraints([
+                    Constraint::Percentage(50.0),
+                    Constraint::Fixed(1),
+                    Constraint::Percentage(50.0),
+                ])
                 .split(rows[0]);
             self.render_field("Name", "Alice Smith", frame, cols1[0]);
-            self.render_field("Email", "alice@example.com", frame, cols1[1]);
+            self.render_field("Email", "alice@example.com", frame, cols1[2]);
 
             // Row 2: Phone + Location
             let cols2 = Flex::horizontal()
-                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
-                .spacing(1)
+                .constraints([
+                    Constraint::Percentage(50.0),
+                    Constraint::Fixed(1),
+                    Constraint::Percentage(50.0),
+                ])
                 .split(rows[1]);
             self.render_field("Phone", "+1 555-0123", frame, cols2[0]);
-            self.render_field("Location", "San Francisco", frame, cols2[1]);
+            self.render_field("Location", "San Francisco", frame, cols2[2]);
 
             // Row 3: Department + Role
             let cols3 = Flex::horizontal()
-                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
-                .spacing(1)
+                .constraints([
+                    Constraint::Percentage(50.0),
+                    Constraint::Fixed(1),
+                    Constraint::Percentage(50.0),
+                ])
                 .split(rows[2]);
             self.render_field("Department", "Engineering", frame, cols3[0]);
-            self.render_field("Role", "Senior Developer", frame, cols3[1]);
+            self.render_field("Role", "Senior Developer", frame, cols3[2]);
 
             // Info row
             let info = format!("Wide layout ({}w) - 2 columns", area.width);
@@ -369,10 +379,11 @@ impl IntrinsicSizingDemo {
             return;
         }
 
+        let title = format!(" {label} ");
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(format!(" {label} "))
+            .title(&title)
             .style(Style::new().fg(theme::accent::ACCENT_6));
 
         let inner = block.inner(area);

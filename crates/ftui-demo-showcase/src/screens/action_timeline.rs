@@ -180,6 +180,129 @@ impl ActionTimeline {
         timeline
     }
 
+    pub fn record_input_event(
+        &mut self,
+        tick: u64,
+        event: &Event,
+        source: &'static str,
+        screen: &'static str,
+    ) {
+        let (summary, mut fields, severity) = match event {
+            Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind,
+            }) => {
+                let summary = format!("Key {}", Self::format_key_code(*code));
+                let fields = vec![
+                    ("code".to_string(), format!("{code:?}")),
+                    ("modifiers".to_string(), Self::format_modifiers(*modifiers)),
+                    ("kind".to_string(), format!("{kind:?}")),
+                ];
+                (summary, fields, Severity::Info)
+            }
+            Event::Mouse(mouse) => {
+                let summary = format!("Mouse {:?}", mouse.kind);
+                let fields = vec![
+                    ("kind".to_string(), format!("{:?}", mouse.kind)),
+                    ("x".to_string(), mouse.x.to_string()),
+                    ("y".to_string(), mouse.y.to_string()),
+                    (
+                        "modifiers".to_string(),
+                        Self::format_modifiers(mouse.modifiers),
+                    ),
+                ];
+                (summary, fields, Severity::Debug)
+            }
+            Event::Paste(paste) => {
+                let char_count = paste.text.chars().count();
+                let summary = format!("Paste {char_count} chars");
+                let fields = vec![
+                    ("chars".to_string(), char_count.to_string()),
+                    ("bracketed".to_string(), paste.bracketed.to_string()),
+                ];
+                (summary, fields, Severity::Info)
+            }
+            Event::Focus(gained) => {
+                let summary = if *gained {
+                    "Focus gained".to_string()
+                } else {
+                    "Focus lost".to_string()
+                };
+                let fields = vec![("focused".to_string(), gained.to_string())];
+                (summary, fields, Severity::Debug)
+            }
+            Event::Clipboard(clipboard) => {
+                let summary = "Clipboard data received".to_string();
+                let fields = vec![(
+                    "chars".to_string(),
+                    clipboard.text.chars().count().to_string(),
+                )];
+                (summary, fields, Severity::Info)
+            }
+            Event::Resize { width, height } => {
+                let summary = "Terminal resized".to_string();
+                let fields = vec![
+                    ("width".to_string(), width.to_string()),
+                    ("height".to_string(), height.to_string()),
+                ];
+                (summary, fields, Severity::Debug)
+            }
+            Event::Tick => {
+                let summary = "Runtime tick".to_string();
+                let fields = vec![("tick".to_string(), tick.to_string())];
+                (summary, fields, Severity::Trace)
+            }
+        };
+
+        fields.push(("source".to_string(), source.to_string()));
+        fields.push(("screen".to_string(), screen.to_string()));
+
+        self.push_custom_event(
+            tick,
+            severity,
+            Component::Runtime,
+            EventKind::Input,
+            summary,
+            fields,
+            None,
+        );
+    }
+
+    pub fn record_command_event(
+        &mut self,
+        tick: u64,
+        summary: impl Into<String>,
+        fields: Vec<(String, String)>,
+    ) {
+        self.push_custom_event(
+            tick,
+            Severity::Info,
+            Component::Runtime,
+            EventKind::Command,
+            summary.into(),
+            fields,
+            None,
+        );
+    }
+
+    pub fn record_capability_event(
+        &mut self,
+        tick: u64,
+        summary: impl Into<String>,
+        fields: Vec<(String, String)>,
+    ) {
+        self.push_custom_event(
+            tick,
+            Severity::Debug,
+            Component::Core,
+            EventKind::Capability,
+            summary.into(),
+            fields,
+            Some("evidence: terminal metadata change".to_string()),
+        );
+    }
+
     fn push_event(&mut self, event: TimelineEvent) {
         if self.events.len() == MAX_EVENTS {
             self.events.pop_front();
@@ -244,6 +367,83 @@ impl ActionTimeline {
             }
         }
         indices
+    }
+
+    fn push_custom_event(
+        &mut self,
+        tick: u64,
+        severity: Severity,
+        component: Component,
+        kind: EventKind,
+        summary: String,
+        fields: Vec<(String, String)>,
+        evidence: Option<String>,
+    ) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.push_event(TimelineEvent {
+            id,
+            tick,
+            severity,
+            component,
+            kind,
+            summary,
+            fields,
+            evidence,
+        });
+        self.sync_selection();
+    }
+
+    fn record_follow_drop_decision(&mut self, trigger: &'static str) {
+        let fields = vec![
+            (
+                "rule".to_string(),
+                "manual navigation disables follow mode".to_string(),
+            ),
+            ("evidence".to_string(), trigger.to_string()),
+            ("action".to_string(), "follow=false".to_string()),
+            (
+                "intuition".to_string(),
+                "user intent is to inspect history without auto-scroll".to_string(),
+            ),
+        ];
+        self.push_custom_event(
+            self.tick_count,
+            Severity::Info,
+            Component::Runtime,
+            EventKind::Command,
+            "Auto-follow disabled".to_string(),
+            fields,
+            Some("decision: follow guard".to_string()),
+        );
+    }
+
+    fn format_modifiers(modifiers: Modifiers) -> String {
+        let mut parts = Vec::new();
+        if modifiers.contains(Modifiers::CTRL) {
+            parts.push("CTRL");
+        }
+        if modifiers.contains(Modifiers::ALT) {
+            parts.push("ALT");
+        }
+        if modifiers.contains(Modifiers::SHIFT) {
+            parts.push("SHIFT");
+        }
+        if modifiers.contains(Modifiers::SUPER) {
+            parts.push("SUPER");
+        }
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join("+")
+        }
+    }
+
+    fn format_key_code(code: KeyCode) -> String {
+        match code {
+            KeyCode::Char(ch) => format!("'{ch}'"),
+            _ => format!("{code:?}"),
+        }
     }
 
     fn ensure_selection(&mut self, filtered_len: usize) {
@@ -800,7 +1000,10 @@ mod tests {
         assert_eq!(timeline.filter_component, Some(Component::Widgets));
 
         timeline.cycle_component();
-        assert!(timeline.filter_component.is_none(), "Should cycle back to None");
+        assert!(
+            timeline.filter_component.is_none(),
+            "Should cycle back to None"
+        );
     }
 
     #[test]

@@ -276,7 +276,7 @@ pub fn accent_for(id: ScreenId) -> theme::ColorToken {
         ScreenId::LogSearch => theme::screen_accent::LOG_SEARCH,
         ScreenId::Notifications => theme::screen_accent::ADVANCED,
         ScreenId::ActionTimeline => theme::screen_accent::ACTION_TIMELINE,
-        ScreenId::IntrinsicSizing => theme::screen_accent::LAYOUT_LAB,
+        ScreenId::IntrinsicSizing => theme::screen_accent::INTRINSIC_SIZING,
     }
 }
 
