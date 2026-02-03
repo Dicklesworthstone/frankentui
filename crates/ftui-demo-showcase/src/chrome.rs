@@ -546,6 +546,7 @@ pub fn accent_for(id: ScreenId) -> theme::ColorToken {
         ScreenId::TerminalCapabilities => theme::screen_accent::PERFORMANCE,
         ScreenId::SnapshotPlayer => theme::screen_accent::PERFORMANCE,
         ScreenId::PerformanceHud => theme::screen_accent::PERFORMANCE,
+        ScreenId::I18nDemo => theme::screen_accent::ADVANCED,
     }
 }
 

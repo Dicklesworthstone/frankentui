@@ -1520,6 +1520,7 @@ impl AppModel {
             ScreenId::ThemeStudio => self.screens.theme_studio.keybindings(),
             ScreenId::SnapshotPlayer => self.screens.snapshot_player.keybindings(),
             ScreenId::PerformanceHud => self.screens.performance_hud.keybindings(),
+            ScreenId::I18nDemo => self.screens.i18n_demo.keybindings(),
         };
         // Convert screens::HelpEntry to chrome::HelpEntry (same struct, different module).
         entries

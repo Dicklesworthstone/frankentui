@@ -34,8 +34,8 @@
 //! ```
 
 use ftui_core::capability_override::{
-    clear_all_overrides, has_active_overrides, override_depth, push_override,
-    with_capability_override, CapabilityOverride,
+    CapabilityOverride, clear_all_overrides, has_active_overrides, override_depth, push_override,
+    with_capability_override,
 };
 use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
 use std::io::Write;
@@ -91,7 +91,10 @@ impl CapSimLogger {
     fn log_invariant(&mut self, id: &str, passed: bool, detail: &str) {
         self.log_event(
             "invariant",
-            &format!(r#"{{"id":"{}","passed":{},"detail":"{}"}}"#, id, passed, detail),
+            &format!(
+                r#"{{"id":"{}","passed":{},"detail":"{}"}}"#,
+                id, passed, detail
+            ),
         );
     }
 
@@ -162,12 +165,24 @@ fn capability_sim_profile_modern() {
     assert!(caps.true_color, "PROF-1: modern should have true color");
     assert!(caps.colors_256, "PROF-1: modern should have 256 colors");
     assert!(caps.sync_output, "PROF-1: modern should have sync output");
-    assert!(caps.osc8_hyperlinks, "PROF-1: modern should have hyperlinks");
-    assert!(caps.scroll_region, "PROF-1: modern should have scroll region");
+    assert!(
+        caps.osc8_hyperlinks,
+        "PROF-1: modern should have hyperlinks"
+    );
+    assert!(
+        caps.scroll_region,
+        "PROF-1: modern should have scroll region"
+    );
     assert!(!caps.in_any_mux(), "PROF-1: modern should not be in mux");
-    assert!(caps.kitty_keyboard, "PROF-1: modern should have kitty keyboard");
+    assert!(
+        caps.kitty_keyboard,
+        "PROF-1: modern should have kitty keyboard"
+    );
     assert!(caps.focus_events, "PROF-1: modern should have focus events");
-    assert!(caps.bracketed_paste, "PROF-1: modern should have bracketed paste");
+    assert!(
+        caps.bracketed_paste,
+        "PROF-1: modern should have bracketed paste"
+    );
     assert!(caps.mouse_sgr, "PROF-1: modern should have mouse sgr");
     assert!(caps.osc52_clipboard, "PROF-1: modern should have clipboard");
 
@@ -355,7 +370,10 @@ fn capability_sim_color_depth_all_profiles() {
 
         // Verify depth consistency with flags
         match depth {
-            "truecolor" => assert!(caps.true_color, "{profile:?}: truecolor but true_color=false"),
+            "truecolor" => assert!(
+                caps.true_color,
+                "{profile:?}: truecolor but true_color=false"
+            ),
             "256" => {
                 assert!(!caps.true_color, "{profile:?}: 256 but true_color=true");
                 assert!(caps.colors_256, "{profile:?}: 256 but colors_256=false");
@@ -383,7 +401,10 @@ fn capability_sim_override_apply_single() {
     let override_cfg = CapabilityOverride::new().true_color(Some(false));
     let result = override_cfg.apply_to(base);
 
-    assert!(!result.true_color, "OVER-1: override should disable true color");
+    assert!(
+        !result.true_color,
+        "OVER-1: override should disable true color"
+    );
     // Other fields should remain from base
     assert!(result.colors_256, "OVER-1: unoverridden field preserved");
     assert!(result.sync_output, "OVER-1: unoverridden field preserved");
@@ -401,7 +422,10 @@ fn capability_sim_override_stacking_precedence() {
     // First override: enable true color
     let over1 = CapabilityOverride::new().true_color(Some(true));
     let after1 = over1.apply_to(base);
-    assert!(after1.true_color, "OVER-1: first override enables true color");
+    assert!(
+        after1.true_color,
+        "OVER-1: first override enables true color"
+    );
 
     // Second override: disable it again
     let over2 = CapabilityOverride::new().true_color(Some(false));
@@ -487,11 +511,17 @@ fn capability_sim_override_tmux_simulation() {
     assert!(result.in_tmux, "OVER-1: tmux override enables in_tmux");
     assert!(!result.sync_output, "OVER-1: tmux disables sync output");
     assert!(!result.osc8_hyperlinks, "OVER-1: tmux disables hyperlinks");
-    assert!(!result.kitty_keyboard, "OVER-1: tmux disables kitty keyboard");
+    assert!(
+        !result.kitty_keyboard,
+        "OVER-1: tmux disables kitty keyboard"
+    );
     assert!(result.colors_256, "OVER-1: tmux enables 256 colors");
     assert!(result.bracketed_paste, "OVER-1: tmux keeps bracketed paste");
     // true_color is None in tmux override, so inherits from base (modern = true)
-    assert!(result.true_color, "OVER-1: tmux inherits true_color from base");
+    assert!(
+        result.true_color,
+        "OVER-1: tmux inherits true_color from base"
+    );
 
     logger.log_invariant("OVER-1", true, "tmux_simulation");
     logger.log_complete(true, 7);
@@ -532,7 +562,10 @@ fn capability_sim_override_guard_cleanup() {
 
     {
         let _guard = push_override(CapabilityOverride::dumb());
-        assert!(has_active_overrides(), "OVER-2: guard should activate override");
+        assert!(
+            has_active_overrides(),
+            "OVER-2: guard should activate override"
+        );
         assert_eq!(override_depth(), 1, "OVER-2: depth should be 1");
     }
     // Guard dropped
@@ -717,7 +750,10 @@ fn capability_sim_tmux_disables_advanced_features() {
     let caps = TerminalCapabilities::tmux();
 
     // tmux limitations
-    assert!(!caps.sync_output, "QUIRK-1: tmux no sync (passthrough unreliable)");
+    assert!(
+        !caps.sync_output,
+        "QUIRK-1: tmux no sync (passthrough unreliable)"
+    );
     assert!(!caps.osc8_hyperlinks, "QUIRK-1: tmux no hyperlinks");
     assert!(!caps.kitty_keyboard, "QUIRK-1: tmux no kitty keyboard");
     assert!(!caps.focus_events, "QUIRK-1: tmux no focus events");
@@ -793,7 +829,10 @@ fn capability_sim_linux_console_quirks() {
     assert!(!caps.true_color, "QUIRK-1: linux console no true color");
     assert!(!caps.colors_256, "QUIRK-1: linux console no 256 colors");
     assert!(!caps.has_color(), "QUIRK-1: linux console no color");
-    assert!(caps.scroll_region, "QUIRK-1: linux console has scroll region");
+    assert!(
+        caps.scroll_region,
+        "QUIRK-1: linux console has scroll region"
+    );
     assert!(caps.bracketed_paste, "QUIRK-1: linux console has paste");
     assert!(caps.mouse_sgr, "QUIRK-1: linux console has mouse");
 
@@ -952,11 +991,7 @@ fn capability_sim_mux_feature_subset() {
             effective <= modern_effective,
             "INT-2: {profile:?} effective features ({effective}) should <= modern ({modern_effective})"
         );
-        logger.log_invariant(
-            "INT-2",
-            true,
-            &format!("{profile:?}_effective={effective}"),
-        );
+        logger.log_invariant("INT-2", true, &format!("{profile:?}_effective={effective}"));
     }
 
     logger.log_complete(true, mux_profiles.len());
@@ -1043,7 +1078,10 @@ fn capability_sim_override_on_each_profile() {
         let base = TerminalCapabilities::from_profile(*profile);
         let result = override_cfg.apply_to(base);
 
-        assert!(result.true_color, "Override should enable true_color on {profile:?}");
+        assert!(
+            result.true_color,
+            "Override should enable true_color on {profile:?}"
+        );
         assert!(
             !result.mouse_sgr,
             "Override should disable mouse_sgr on {profile:?}"
@@ -1083,7 +1121,10 @@ fn capability_sim_mux_override_chain() {
 
     // Policies should gate features
     assert!(!result.use_sync_output(), "DEG-1: mux disables sync policy");
-    assert!(!result.use_scroll_region(), "DEG-1: mux disables scroll policy");
+    assert!(
+        !result.use_scroll_region(),
+        "DEG-1: mux disables scroll policy"
+    );
 
     // But the raw flags might differ from policy
     // (scroll_region raw = true from tmux override, but policy = false)
