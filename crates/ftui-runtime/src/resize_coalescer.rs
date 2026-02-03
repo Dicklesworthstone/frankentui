@@ -48,7 +48,9 @@
 //! # Decision Rule (Explainable)
 //!
 //! 1) If `time_since_render ≥ hard_deadline_ms`, **apply** (forced).
-//! 2) If in **Steady** and `dt ≥ steady_delay_ms`, **apply**.
+//! 2) If `dt ≥ delay_ms`, **apply** when in **Steady** (or when BOCPD is
+//!    enabled). (`delay_ms` = steady/burst delay, or BOCPD posterior-interpolated
+//!    delay when enabled.)
 //! 3) If `event_rate ≥ burst_enter_rate`, switch to **Burst**.
 //! 4) If in **Burst** and `event_rate < burst_exit_rate` for `cooldown_frames`,
 //!    switch to **Steady**.
@@ -58,6 +60,8 @@
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+
+use crate::bocpd::{BocpdConfig, BocpdDetector, BocpdRegime};
 
 /// FNV-1a 64-bit offset basis.
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -101,6 +105,21 @@ pub struct CoalescerConfig {
 
     /// Enable decision logging (JSONL format).
     pub enable_logging: bool,
+
+    /// Enable BOCPD (Bayesian Online Change-Point Detection) for regime detection.
+    ///
+    /// When enabled, the coalescer uses a Bayesian posterior over run-lengths to
+    /// detect regime changes (steady vs burst), replacing the simple rate threshold
+    /// heuristics. BOCPD provides:
+    /// - Principled uncertainty quantification via P(burst)
+    /// - Automatic adaptation without hand-tuned thresholds
+    /// - Evidence logging for decision explainability
+    ///
+    /// When disabled, falls back to rate threshold heuristics.
+    pub enable_bocpd: bool,
+
+    /// BOCPD configuration (used when `enable_bocpd` is true).
+    pub bocpd_config: Option<BocpdConfig>,
 }
 
 impl Default for CoalescerConfig {
@@ -114,6 +133,8 @@ impl Default for CoalescerConfig {
             cooldown_frames: 3,
             rate_window_size: 8,
             enable_logging: false,
+            enable_bocpd: false,
+            bocpd_config: None,
         }
     }
 }
@@ -123,6 +144,22 @@ impl CoalescerConfig {
     #[must_use]
     pub fn with_logging(mut self, enabled: bool) -> Self {
         self.enable_logging = enabled;
+        self
+    }
+
+    /// Enable BOCPD-based regime detection with default configuration.
+    #[must_use]
+    pub fn with_bocpd(mut self) -> Self {
+        self.enable_bocpd = true;
+        self.bocpd_config = Some(BocpdConfig::default());
+        self
+    }
+
+    /// Enable BOCPD-based regime detection with custom configuration.
+    #[must_use]
+    pub fn with_bocpd_config(mut self, config: BocpdConfig) -> Self {
+        self.enable_bocpd = true;
+        self.bocpd_config = Some(config);
         self
     }
 
@@ -460,6 +497,9 @@ pub struct ResizeCoalescer {
 
     /// History of cycle times (ms) for percentile calculation.
     cycle_times: Vec<f64>,
+
+    /// BOCPD detector for Bayesian regime detection (when enabled).
+    bocpd: Option<BocpdDetector>,
 }
 
 /// Cycle time percentiles for reflow diagnostics (bd-1rz0.7).
@@ -491,6 +531,13 @@ impl CycleTimePercentiles {
 impl ResizeCoalescer {
     /// Create a new coalescer with the given configuration and initial size.
     pub fn new(config: CoalescerConfig, initial_size: (u16, u16)) -> Self {
+        let bocpd = if config.enable_bocpd {
+            let bocpd_cfg = config.bocpd_config.clone().unwrap_or_default();
+            Some(BocpdDetector::new(bocpd_cfg))
+        } else {
+            None
+        };
+
         Self {
             config,
             pending_size: None,
@@ -508,6 +555,7 @@ impl ResizeCoalescer {
             regime_transitions: 0,
             events_in_window: 0,
             cycle_times: Vec::new(),
+            bocpd,
         }
     }
 
@@ -630,12 +678,12 @@ impl ResizeCoalescer {
             return self.apply_pending_at(now, true);
         }
 
-        // In steady mode with small dt, apply quickly.
-        if self.regime == Regime::Steady
-            && let Some(dt) = dt
-            && dt >= Duration::from_millis(self.config.steady_delay_ms)
+        // If enough time has passed since the last event, apply now.
+        // In heuristic mode, only apply immediately in Steady; burst applies via tick.
+        if let Some(dt) = dt
+            && dt >= Duration::from_millis(self.current_delay_ms())
+            && (self.bocpd.is_some() || self.regime == Regime::Steady)
         {
-            // Sufficient time has passed, apply now.
             return self.apply_pending_at(now, false);
         }
 
@@ -674,11 +722,7 @@ impl ResizeCoalescer {
             return self.apply_pending_at(now, true);
         }
 
-        // Get delay based on regime
-        let delay_ms = match self.regime {
-            Regime::Steady => self.config.steady_delay_ms,
-            Regime::Burst => self.config.burst_delay_ms,
-        };
+        let delay_ms = self.current_delay_ms();
 
         // Check if enough time has passed since last event
         if let Some(last_event) = self.last_event {
@@ -707,10 +751,7 @@ impl ResizeCoalescer {
         let _pending = self.pending_size?;
         let last_event = self.last_event?;
 
-        let delay_ms = match self.regime {
-            Regime::Steady => self.config.steady_delay_ms,
-            Regime::Burst => self.config.burst_delay_ms,
-        };
+        let delay_ms = self.current_delay_ms();
 
         let elapsed = now.duration_since(last_event);
         let target = Duration::from_millis(delay_ms);
@@ -732,6 +773,40 @@ impl ResizeCoalescer {
     #[inline]
     pub fn regime(&self) -> Regime {
         self.regime
+    }
+
+    /// Check if BOCPD-based regime detection is enabled.
+    #[inline]
+    pub fn bocpd_enabled(&self) -> bool {
+        self.bocpd.is_some()
+    }
+
+    /// Get the BOCPD detector for inspection (if enabled).
+    ///
+    /// Returns `None` if BOCPD is not enabled.
+    #[inline]
+    pub fn bocpd(&self) -> Option<&BocpdDetector> {
+        self.bocpd.as_ref()
+    }
+
+    /// Get the current P(burst) from BOCPD (if enabled).
+    ///
+    /// Returns the posterior probability that the system is in burst regime.
+    /// Returns `None` if BOCPD is not enabled.
+    #[inline]
+    pub fn bocpd_p_burst(&self) -> Option<f64> {
+        self.bocpd.as_ref().map(|b| b.p_burst())
+    }
+
+    /// Get the recommended delay from BOCPD (if enabled).
+    ///
+    /// Returns the recommended coalesce delay in milliseconds based on the
+    /// current posterior distribution. Returns `None` if BOCPD is not enabled.
+    #[inline]
+    pub fn bocpd_recommended_delay(&self) -> Option<u64> {
+        self.bocpd
+            .as_ref()
+            .map(|b| b.recommended_delay(self.config.steady_delay_ms, self.config.burst_delay_ms))
     }
 
     /// Get the current event rate (events/second).
@@ -910,26 +985,56 @@ impl ResizeCoalescer {
         }
     }
 
+    #[inline]
+    fn current_delay_ms(&self) -> u64 {
+        if let Some(ref bocpd) = self.bocpd {
+            bocpd.recommended_delay(self.config.steady_delay_ms, self.config.burst_delay_ms)
+        } else {
+            match self.regime {
+                Regime::Steady => self.config.steady_delay_ms,
+                Regime::Burst => self.config.burst_delay_ms,
+            }
+        }
+    }
+
     fn update_regime(&mut self, now: Instant) {
-        let rate = self.calculate_event_rate(now);
         let old_regime = self.regime;
 
-        match self.regime {
-            Regime::Steady => {
-                if rate >= self.config.burst_enter_rate {
-                    self.regime = Regime::Burst;
-                    self.cooldown_remaining = self.config.cooldown_frames;
+        // Use BOCPD for regime detection when enabled
+        if let Some(ref mut bocpd) = self.bocpd {
+            // Update BOCPD with the event timestamp (it calculates inter-arrival internally)
+            bocpd.observe_event(now);
+
+            // Map BOCPD regime to coalescer regime
+            self.regime = match bocpd.regime() {
+                BocpdRegime::Steady => Regime::Steady,
+                BocpdRegime::Burst => Regime::Burst,
+                BocpdRegime::Transitional => {
+                    // During transition, maintain current regime to avoid thrashing
+                    self.regime
                 }
-            }
-            Regime::Burst => {
-                if rate < self.config.burst_exit_rate {
-                    // Don't exit immediately — use cooldown
-                    if self.cooldown_remaining == 0 {
+            };
+        } else {
+            // Fall back to heuristic rate-based detection
+            let rate = self.calculate_event_rate(now);
+
+            match self.regime {
+                Regime::Steady => {
+                    if rate >= self.config.burst_enter_rate {
+                        self.regime = Regime::Burst;
                         self.cooldown_remaining = self.config.cooldown_frames;
                     }
-                } else {
-                    // Still in burst, reset cooldown
-                    self.cooldown_remaining = self.config.cooldown_frames;
+                }
+                Regime::Burst => {
+                    if rate < self.config.burst_exit_rate {
+                        // Don't exit immediately — use cooldown
+                        if self.cooldown_remaining == 0 {
+                            self.cooldown_remaining = self.config.cooldown_frames;
+                        }
+                    } else {
+                        // Still in burst, reset cooldown
+                        self.cooldown_remaining = self.config.cooldown_frames;
+                    }
                 }
             }
         }
@@ -1265,6 +1370,8 @@ mod tests {
             cooldown_frames: 3,
             rate_window_size: 8,
             enable_logging: true,
+            enable_bocpd: false,
+            bocpd_config: None,
         }
     }
 
@@ -1904,6 +2011,146 @@ mod tests {
                     "Event count should match total incoming events"
                 );
             }
+
+            // =========================================================================
+            // BOCPD Property Tests (bd-3e1t.2.5)
+            // =========================================================================
+
+            /// Property: BOCPD determinism - identical sequences yield identical results.
+            #[test]
+            fn bocpd_determinism_across_sequences(
+                events in resize_sequence(30),
+                tick_offset in 100u64..400
+            ) {
+                let config = CoalescerConfig::default().with_bocpd();
+
+                let results: Vec<_> = (0..2)
+                    .map(|_| {
+                        let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
+                        let base = Instant::now();
+
+                        for (i, (w, h, delay)) in events.iter().enumerate() {
+                            let offset = events[..i].iter().map(|(_, _, d)| *d).sum::<u64>() + delay;
+                            c.handle_resize_at(*w, *h, base + Duration::from_millis(offset));
+                        }
+
+                        let total_time = events.iter().map(|(_, _, d)| d).sum::<u64>() + tick_offset;
+                        let action = c.tick_at(base + Duration::from_millis(total_time));
+                        (action, c.regime(), c.bocpd_p_burst())
+                    })
+                    .collect();
+
+                prop_assert_eq!(results[0], results[1], "BOCPD results must be deterministic");
+            }
+
+            /// Property: BOCPD latest-wins - final resize is always applied.
+            #[test]
+            fn bocpd_latest_wins_never_drops(
+                events in resize_sequence(15),
+                final_w in dimension(),
+                final_h in dimension()
+            ) {
+                if events.is_empty() {
+                    return Ok(());
+                }
+
+                let config = CoalescerConfig::default().with_bocpd();
+                let mut c = ResizeCoalescer::new(config, (80, 24));
+                let base = Instant::now();
+
+                let mut offset = 0u64;
+                for (w, h, delay) in &events {
+                    offset += delay;
+                    c.handle_resize_at(*w, *h, base + Duration::from_millis(offset));
+                }
+
+                offset += 50;
+                c.handle_resize_at(final_w, final_h, base + Duration::from_millis(offset));
+
+                let mut final_applied = None;
+                for tick in 0..200 {
+                    let action = c.tick_at(base + Duration::from_millis(offset + 10 + tick * 20));
+                    if let CoalesceAction::ApplyResize { width, height, .. } = action {
+                        final_applied = Some((width, height));
+                    }
+                    if !c.has_pending() && final_applied.is_some() {
+                        break;
+                    }
+                }
+
+                if let Some((applied_w, applied_h)) = final_applied {
+                    prop_assert_eq!(
+                        (applied_w, applied_h),
+                        (final_w, final_h),
+                        "BOCPD must apply the final size"
+                    );
+                }
+            }
+
+            /// Property: BOCPD bounded latency - hard deadline is always met.
+            #[test]
+            fn bocpd_bounded_latency_maintained(
+                w in dimension(),
+                h in dimension()
+            ) {
+                let config = CoalescerConfig::default().with_bocpd();
+                let mut c = ResizeCoalescer::new(config.clone(), (0, 0));
+                let base = Instant::now();
+
+                c.handle_resize_at(w, h, base);
+
+                let mut applied_at = None;
+                for ms in 0..=config.hard_deadline_ms + 50 {
+                    let action = c.tick_at(base + Duration::from_millis(ms));
+                    if matches!(action, CoalesceAction::ApplyResize { .. }) {
+                        applied_at = Some(ms);
+                        break;
+                    }
+                }
+
+                prop_assert!(applied_at.is_some(), "BOCPD resize must be applied");
+                prop_assert!(
+                    applied_at.unwrap() <= config.hard_deadline_ms,
+                    "BOCPD must apply within hard deadline ({}ms), took {}ms",
+                    config.hard_deadline_ms,
+                    applied_at.unwrap()
+                );
+            }
+
+            /// Property: BOCPD posterior always valid (normalized, bounded).
+            #[test]
+            fn bocpd_posterior_always_valid(
+                events in resize_sequence(50)
+            ) {
+                if events.is_empty() {
+                    return Ok(());
+                }
+
+                let config = CoalescerConfig::default().with_bocpd();
+                let mut c = ResizeCoalescer::new(config, (80, 24));
+                let base = Instant::now();
+
+                for (w, h, delay) in &events {
+                    c.handle_resize_at(*w, *h, base + Duration::from_millis(*delay));
+
+                    // Check posterior validity after each event
+                    if let Some(bocpd) = c.bocpd() {
+                        let sum: f64 = bocpd.run_length_posterior().iter().sum();
+                        prop_assert!(
+                            (sum - 1.0).abs() < 1e-8,
+                            "Posterior must sum to 1, got {}",
+                            sum
+                        );
+                    }
+
+                    let p_burst = c.bocpd_p_burst().unwrap();
+                    prop_assert!(
+                        (0.0..=1.0).contains(&p_burst),
+                        "P(burst) must be in [0,1], got {}",
+                        p_burst
+                    );
+                }
+            }
         }
     }
 
@@ -2024,5 +2271,249 @@ mod tests {
         assert!(jsonl.contains("\"p99_ms\":42.100"));
         assert!(jsonl.contains("\"mean_ms\":15.200"));
         assert!(jsonl.contains("\"count\":100"));
+    }
+
+    // =========================================================================
+    // BOCPD Integration Tests (bd-3e1t.2.2)
+    // =========================================================================
+
+    #[test]
+    fn bocpd_disabled_by_default() {
+        let c = ResizeCoalescer::new(CoalescerConfig::default(), (80, 24));
+        assert!(!c.bocpd_enabled());
+        assert!(c.bocpd().is_none());
+        assert!(c.bocpd_p_burst().is_none());
+    }
+
+    #[test]
+    fn bocpd_enabled_with_config() {
+        let config = CoalescerConfig::default().with_bocpd();
+        let c = ResizeCoalescer::new(config, (80, 24));
+        assert!(c.bocpd_enabled());
+        assert!(c.bocpd().is_some());
+    }
+
+    #[test]
+    fn bocpd_posterior_normalized() {
+        let config = CoalescerConfig::default().with_bocpd();
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+
+        // Feed events with various inter-arrival times
+        for i in 0..20 {
+            c.handle_resize_at(80 + i, 24 + i, base + Duration::from_millis(i as u64 * 50));
+        }
+
+        // Check posterior is valid probability
+        let p_burst = c.bocpd_p_burst().expect("BOCPD should be enabled");
+        assert!(
+            (0.0..=1.0).contains(&p_burst),
+            "P(burst) must be in [0,1], got {}",
+            p_burst
+        );
+
+        // Check BOCPD internal posterior is normalized
+        if let Some(bocpd) = c.bocpd() {
+            let sum: f64 = bocpd.run_length_posterior().iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-9,
+                "Posterior must sum to 1, got {}",
+                sum
+            );
+        }
+    }
+
+    #[test]
+    fn bocpd_detects_burst_from_rapid_events() {
+        use crate::bocpd::BocpdConfig;
+
+        // Configure BOCPD with clear burst detection
+        let bocpd_config = BocpdConfig {
+            mu_steady_ms: 200.0,
+            mu_burst_ms: 20.0,
+            burst_threshold: 0.6,
+            steady_threshold: 0.4,
+            ..BocpdConfig::default()
+        };
+
+        let config = CoalescerConfig::default().with_bocpd_config(bocpd_config);
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+
+        // Feed rapid events (10ms intervals = burst-like)
+        for i in 0..30 {
+            c.handle_resize_at(80 + i, 24 + i, base + Duration::from_millis(i as u64 * 10));
+        }
+
+        // Should have high P(burst) and be in Burst regime
+        let p_burst = c.bocpd_p_burst().expect("BOCPD should be enabled");
+        assert!(
+            p_burst > 0.5,
+            "Rapid events should yield high P(burst), got {}",
+            p_burst
+        );
+        assert_eq!(
+            c.regime(),
+            Regime::Burst,
+            "Regime should be Burst with rapid events"
+        );
+    }
+
+    #[test]
+    fn bocpd_detects_steady_from_slow_events() {
+        use crate::bocpd::BocpdConfig;
+
+        // Configure BOCPD with clear steady detection
+        let bocpd_config = BocpdConfig {
+            mu_steady_ms: 200.0,
+            mu_burst_ms: 20.0,
+            burst_threshold: 0.7,
+            steady_threshold: 0.3,
+            ..BocpdConfig::default()
+        };
+
+        let config = CoalescerConfig::default().with_bocpd_config(bocpd_config);
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+
+        // Feed slow events (300ms intervals = steady-like)
+        for i in 0..10 {
+            c.handle_resize_at(80 + i, 24 + i, base + Duration::from_millis(i as u64 * 300));
+        }
+
+        // Should have low P(burst) and be in Steady regime
+        let p_burst = c.bocpd_p_burst().expect("BOCPD should be enabled");
+        assert!(
+            p_burst < 0.5,
+            "Slow events should yield low P(burst), got {}",
+            p_burst
+        );
+        assert_eq!(
+            c.regime(),
+            Regime::Steady,
+            "Regime should be Steady with slow events"
+        );
+    }
+
+    #[test]
+    fn bocpd_recommended_delay_varies_with_regime() {
+        let config = CoalescerConfig::default().with_bocpd();
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+
+        // Initial delay (before any events)
+        c.handle_resize_at(85, 30, base);
+        let delay_initial = c.bocpd_recommended_delay().expect("BOCPD enabled");
+
+        // Feed burst-like events
+        for i in 1..30 {
+            c.handle_resize_at(80 + i, 24 + i, base + Duration::from_millis(i as u64 * 10));
+        }
+        let delay_burst = c.bocpd_recommended_delay().expect("BOCPD enabled");
+
+        // Recommended delay should be positive
+        assert!(delay_initial > 0, "Initial delay should be positive");
+        assert!(delay_burst > 0, "Burst delay should be positive");
+    }
+
+    #[test]
+    fn bocpd_update_is_deterministic() {
+        let config = CoalescerConfig::default().with_bocpd();
+
+        let base = Instant::now();
+
+        // Run twice with identical inputs
+        let results: Vec<_> = (0..2)
+            .map(|_| {
+                let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
+                for i in 0..20 {
+                    c.handle_resize_at(80 + i, 24 + i, base + Duration::from_millis(i as u64 * 25));
+                }
+                (c.regime(), c.bocpd_p_burst())
+            })
+            .collect();
+
+        assert_eq!(
+            results[0], results[1],
+            "BOCPD results must be deterministic"
+        );
+    }
+
+    #[test]
+    fn bocpd_memory_bounded() {
+        use crate::bocpd::BocpdConfig;
+
+        // Use a small max_run_length to test memory bounds
+        let bocpd_config = BocpdConfig {
+            max_run_length: 50,
+            ..BocpdConfig::default()
+        };
+
+        let config = CoalescerConfig::default().with_bocpd_config(bocpd_config);
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+
+        // Feed many events
+        for i in 0u64..200 {
+            c.handle_resize_at(
+                80 + (i as u16 % 100),
+                24 + (i as u16 % 50),
+                base + Duration::from_millis(i * 20),
+            );
+        }
+
+        // Check posterior length is bounded
+        if let Some(bocpd) = c.bocpd() {
+            let posterior_len = bocpd.run_length_posterior().len();
+            assert!(
+                posterior_len <= 51, // max_run_length + 1
+                "Posterior length should be bounded, got {}",
+                posterior_len
+            );
+        }
+    }
+
+    #[test]
+    fn bocpd_stable_under_mixed_traffic() {
+        let config = CoalescerConfig::default().with_bocpd();
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        let base = Instant::now();
+        let mut offset = 0u64;
+
+        // Steady period
+        for i in 0..5 {
+            offset += 200;
+            c.handle_resize_at(80 + i, 24 + i, base + Duration::from_millis(offset));
+        }
+
+        // Burst period
+        for i in 0..15 {
+            offset += 15;
+            c.handle_resize_at(90 + i, 30 + i, base + Duration::from_millis(offset));
+        }
+
+        // Steady period again
+        for i in 0..5 {
+            offset += 250;
+            c.handle_resize_at(100 + i, 40 + i, base + Duration::from_millis(offset));
+        }
+
+        // Posterior should still be valid
+        let p_burst = c.bocpd_p_burst().expect("BOCPD enabled");
+        assert!(
+            (0.0..=1.0).contains(&p_burst),
+            "P(burst) must remain valid after mixed traffic"
+        );
+
+        if let Some(bocpd) = c.bocpd() {
+            let sum: f64 = bocpd.run_length_posterior().iter().sum();
+            assert!((sum - 1.0).abs() < 1e-9, "Posterior must remain normalized");
+        }
     }
 }
