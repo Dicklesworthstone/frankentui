@@ -178,10 +178,10 @@ impl Screen for WidgetGallery {
         }) = event
         {
             match code {
-                KeyCode::Char('j') | KeyCode::Right => {
+                KeyCode::Char('j') | KeyCode::Right | KeyCode::Down => {
                     self.current_section = (self.current_section + 1) % SECTION_COUNT;
                 }
-                KeyCode::Char('k') | KeyCode::Left => {
+                KeyCode::Char('k') | KeyCode::Left | KeyCode::Up => {
                     self.current_section = if self.current_section == 0 {
                         SECTION_COUNT - 1
                     } else {
@@ -223,11 +223,11 @@ impl Screen for WidgetGallery {
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
-                key: "j/→",
+                key: "j/↓/→",
                 action: "Next section",
             },
             HelpEntry {
-                key: "k/←",
+                key: "k/↑/←",
                 action: "Previous section",
             },
         ]
@@ -813,17 +813,54 @@ impl WidgetGallery {
     // Section A: Inputs
     // -----------------------------------------------------------------------
     fn render_inputs(&self, frame: &mut Frame, area: Rect) {
-        let rows = Flex::vertical()
+        let cols = Flex::horizontal()
             .constraints([
-                Constraint::Fixed(3),
-                Constraint::Fixed(6),
-                Constraint::Min(3),
+                Constraint::Percentage(38.0),
+                Constraint::Percentage(32.0),
+                Constraint::Percentage(30.0),
             ])
             .split(area);
 
-        self.render_text_inputs(frame, rows[0]);
-        self.render_text_area(frame, rows[1]);
-        self.render_input_controls(frame, rows[2]);
+        let left_rows = Flex::vertical()
+            .constraints([
+                Constraint::Percentage(20.0),
+                Constraint::Percentage(45.0),
+                Constraint::Percentage(35.0),
+            ])
+            .split(cols[0]);
+        self.render_text_inputs(frame, left_rows[0]);
+        self.render_text_area(frame, left_rows[1]);
+        let left_bottom = Flex::horizontal()
+            .constraints([Constraint::Percentage(55.0), Constraint::Percentage(45.0)])
+            .split(left_rows[2]);
+        self.render_input_controls(frame, left_bottom[0]);
+        self.render_validation_timer_demo(frame, left_bottom[1]);
+
+        let mid_rows = Flex::vertical()
+            .constraints([
+                Constraint::Percentage(36.0),
+                Constraint::Percentage(34.0),
+                Constraint::Percentage(30.0),
+            ])
+            .split(cols[1]);
+        self.render_command_palette_demo(frame, mid_rows[0]);
+        self.render_file_picker_demo(frame, mid_rows[1]);
+        self.render_notification_stack_demo(frame, mid_rows[2]);
+
+        let right_rows = Flex::vertical()
+            .constraints([
+                Constraint::Percentage(40.0),
+                Constraint::Percentage(25.0),
+                Constraint::Percentage(35.0),
+            ])
+            .split(cols[2]);
+        self.render_log_viewer_demo(frame, right_rows[0]);
+        self.render_progress_bars(frame, right_rows[1]);
+        let right_bottom = Flex::vertical()
+            .constraints([Constraint::Fixed(3), Constraint::Min(1)])
+            .split(right_rows[2]);
+        self.render_spinners(frame, right_bottom[0]);
+        self.render_toast_demo(frame, right_bottom[1]);
     }
 
     fn render_text_inputs(&self, frame: &mut Frame, area: Rect) {
@@ -1928,6 +1965,28 @@ mod tests {
         });
         gallery.update(&ev_back);
         assert_eq!(gallery.current_section, 1);
+    }
+
+    #[test]
+    fn gallery_section_navigation_arrows() {
+        let mut gallery = WidgetGallery::new();
+        assert_eq!(gallery.current_section, 0);
+
+        let ev_down = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: Default::default(),
+            kind: KeyEventKind::Press,
+        });
+        gallery.update(&ev_down);
+        assert_eq!(gallery.current_section, 1);
+
+        let ev_up = Event::Key(KeyEvent {
+            code: KeyCode::Up,
+            modifiers: Default::default(),
+            kind: KeyEventKind::Press,
+        });
+        gallery.update(&ev_up);
+        assert_eq!(gallery.current_section, 0);
     }
 
     #[test]

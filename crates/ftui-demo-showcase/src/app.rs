@@ -21,7 +21,9 @@ use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::Cell as RenderCell;
 use ftui_render::frame::Frame;
 use ftui_runtime::undo::HistoryManager;
-use ftui_runtime::{Cmd, Every, Model, Subscription};
+use ftui_runtime::{
+    Cmd, Every, InlineAutoRemeasureConfig, Model, Subscription, VoiLogEntry, VoiSampler,
+};
 use ftui_style::Style;
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
@@ -853,6 +855,8 @@ pub struct AppModel {
     pub perf_hud_visible: bool,
     /// Whether the evidence ledger (Galaxy-Brain) overlay is visible.
     pub evidence_ledger_visible: bool,
+    /// VOI sampler driving the evidence ledger overlay.
+    pub voi_sampler: VoiSampler,
     /// Accessibility settings (high contrast, reduced motion, large text).
     pub a11y: theme::A11ySettings,
     /// Whether the accessibility panel is visible.
@@ -911,6 +915,10 @@ impl AppModel {
         }
         let mut palette = CommandPalette::new().with_max_visible(12);
         Self::register_palette_actions(&mut palette);
+        let mut voi_config = InlineAutoRemeasureConfig::default().voi;
+        voi_config.enable_logging = true;
+        voi_config.max_log_entries = 96;
+        let voi_sampler = VoiSampler::new(voi_config);
         Self {
             current_screen: ScreenId::Dashboard,
             screens: ScreenStates::default(),
@@ -918,6 +926,7 @@ impl AppModel {
             debug_visible: false,
             perf_hud_visible: false,
             evidence_ledger_visible: false,
+            voi_sampler,
             a11y: theme::A11ySettings::default(),
             a11y_panel_visible: false,
             base_theme,
@@ -1241,6 +1250,7 @@ impl AppModel {
                 self.tick_count += 1;
                 self.tick_last_seen = Some(Instant::now());
                 self.record_tick_timing();
+                self.update_voi_ledger();
                 if !self.a11y.reduced_motion {
                     self.screens.tick(self.current_screen, self.tick_count);
                 }
@@ -1781,6 +1791,17 @@ impl AppModel {
                 fps_status,
                 "Performance HUD stats"
             );
+        }
+    }
+
+    /// Update the VOI sampler that powers the Galaxy-Brain evidence ledger.
+    fn update_voi_ledger(&mut self) {
+        let now = Instant::now();
+        let decision = self.voi_sampler.decide(now);
+        if decision.should_sample {
+            // Deterministic, visible pattern for demo purposes.
+            let violated = (self.tick_count % 23) < 4;
+            self.voi_sampler.observe_at(violated, now);
         }
     }
 
