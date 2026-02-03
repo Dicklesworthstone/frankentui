@@ -17,7 +17,7 @@ use std::cell::Cell as StdCell;
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::canvas::{Canvas, Mode, Painter};
 use ftui_extras::charts::{
@@ -110,7 +110,9 @@ impl<T: Send + Sync + 'static> Model for App<T> {
     fn view(&self, frame: &mut Frame) {
         let label = format!("frames={} size={:?}", self.frames, self.last_size);
         for (i, ch) in label.chars().enumerate() {
-            frame.buffer.set_raw(i as u16, 0, Cell::from_char(ch));
+            frame
+                .buffer
+                .set_raw(i as u16, 0, RenderCell::from_char(ch));
         }
     }
 }
@@ -1509,13 +1511,13 @@ impl Dashboard {
             effect_index: 0,
             chart_mode: ChartMode::Pulse,
             focus: DashboardFocus::Code,
-            layout_plasma: Cell::new(Rect::default()),
-            layout_charts: Cell::new(Rect::default()),
-            layout_code: Cell::new(Rect::default()),
-            layout_info: Cell::new(Rect::default()),
-            layout_text_fx: Cell::new(Rect::default()),
-            layout_activity: Cell::new(Rect::default()),
-            layout_markdown: Cell::new(Rect::default()),
+            layout_plasma: StdCell::new(Rect::default()),
+            layout_charts: StdCell::new(Rect::default()),
+            layout_code: StdCell::new(Rect::default()),
+            layout_info: StdCell::new(Rect::default()),
+            layout_text_fx: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
+            layout_markdown: StdCell::new(Rect::default()),
         }
     }
 
