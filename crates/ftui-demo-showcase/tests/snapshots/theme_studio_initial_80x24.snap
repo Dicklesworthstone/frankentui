@@ -1,24 +1,24 @@
 ╭ ► Presets ────────────╮ ╭   Token Inspector ─────────────────────────────────╮
-│  Cyberpunk Aurora     │ │     fg::PRIMARY          #1F2933  13.0:1 AAA       │
-│  Darcula              │ │     fg::SECONDARY        #3E4C59  7.8:1  AAA       │
-│▶ Lumen Light          │ │     fg::MUTED            #7B8794  3.2:1  AA Large  │
-│  Nordic Frost         │ │     fg::DISABLED         #A0ACB5  2.0:1  Fail      │
-│  High Contrast        │ │     bg::DEEP             #F8F9FB  1.1:1  Fail      │
-│                       │ │     bg::BASE             #EEF1F5  1.0:1  Fail      │
-│                       │ │     bg::SURFACE          #E6EBF1  1.1:1  Fail      │
-│                       │ │     bg::OVERLAY          #DCE3EC  1.1:1  Fail      │
-│                       │ │     bg::HIGHLIGHT        #D0D9E4  1.3:1  Fail      │
-│                       │ │     accent::PRIMARY      #2563EB  4.6:1  AA        │
-│                       │ │     accent::SECONDARY    #7C3AED  5.0:1  AA        │
-│                       │ │     accent::SUCCESS      #0F7837  4.9:1  AA        │
-│                       │ │     accent::WARNING      #B45309  4.4:1  AA Large  │
-│                       │ │     accent::ERROR        #B91C1C  5.7:1  AA        │
-│                       │ │     accent::INFO         #0284C7  3.6:1  AA Large  │
-│                       │ │     accent::LINK         #2563EB  4.6:1  AA        │
-│                       │ │     StatusOpen           #0F7837  4.9:1  AA        │
-│                       │ │     StatusInProgress     #0872A9  4.6:1  AA        │
-│                       │ │     StatusBlocked        #B91C1C  5.7:1  AA        │
-│                       │ │     StatusClosed         #5F6B77  4.8:1  AA        │
-│                       │ │     PriorityP0           #B91C1C  5.7:1  AA        │
+│▶ Cyberpunk Aurora     │ │     fg::PRIMARY          #B3F4FF  13.6:1 AAA       │
+│  Darcula              │ │     fg::SECONDARY        #C7D5E0  11.0:1 AAA       │
+│  Lumen Light          │ │     fg::MUTED            #8CA0B4  6.1:1  AA        │
+│  Nordic Frost         │ │     fg::DISABLED         #3D4F5F  2.0:1  Fail      │
+│  High Contrast        │ │     bg::DEEP             #0A0E14  1.2:1  Fail      │
+│                       │ │     bg::BASE             #1A1F29  1.0:1  Fail      │
+│                       │ │     bg::SURFACE          #1E2430  1.1:1  Fail      │
+│                       │ │     bg::OVERLAY          #2D3746  1.4:1  Fail      │
+│                       │ │     bg::HIGHLIGHT        #3D4F5F  2.0:1  Fail      │
+│                       │ │     accent::PRIMARY      #00AAFF  6.4:1  AA        │
+│                       │ │     accent::SECONDARY    #FF00FF  5.3:1  AA        │
+│                       │ │     accent::SUCCESS      #6EFFC8  13.2:1 AAA       │
+│                       │ │     accent::WARNING      #FFE566  13.1:1 AAA       │
+│                       │ │     accent::ERROR        #FF3C6E  4.8:1  AA        │
+│                       │ │     accent::INFO         #00FFFF  13.2:1 AAA       │
+│                       │ │     accent::LINK         #66CCFF  9.2:1  AAA       │
+│                       │ │     StatusOpen           #6EFFC8  13.2:1 AAA       │
+│                       │ │     StatusInProgress     #00FFFF  13.2:1 AAA       │
+│                       │ │     StatusBlocked        #FF3C6E  4.8:1  AA        │
+│                       │ │     StatusClosed         #8CA0B4  6.1:1  AA        │
+│                       │ │     PriorityP0           #FF3C6E  4.8:1  AA        │
 ╰───────────────────────╯ ╰────────────────────────────────────────────────────╯
 Press E to export theme                                                         

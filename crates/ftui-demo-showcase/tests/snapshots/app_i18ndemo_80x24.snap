@@ -1,0 +1,24 @@
+ 1: Dash │ 2: Shakes │ 3: Code │ 4: Widgets │ 5: Layout │ 6: Forms │ 7: DataViz 
+╭──────────────────────────────────i18n Demo───────────────────────────────────╮
+│            [English]  Español  Français  Русский  العربية  ???            │
+│                                                                              │
+│──────────────────────────────────────────────────────────────────────────────│
+│╭String Lookup────────────────────────╮ ╭Coverage Report─────────────────────╮│
+││--- Internationalization ---         │ │--- Coverage Report ---             ││
+││                                     │ │                                    ││
+││  Hello!                             │ │  Total keys: 6                     ││
+││  Welcome, Alice!                    │ │  Locales: 6                        ││
+││                                     │ │                                    ││
+││  Locale: English (English)          │ │  ar 100% (6/6)                     ││
+││  Direction: Left-to-Right           │ │  en 100% (6/6) <--                 ││
+││  Flow: Ltr                          │ │  es 100% (6/6)                     ││
+││                                     │ │  fr 100% (6/6)                     ││
+││                                     │ │  ja 100% (6/6)                     ││
+││                                     │ │  ru 100% (6/6)                     ││
+││                                     │ │                                    ││
+││                                     │ │  Fallback chain: en                ││
+││                                     │ │                                    ││
+│╰─────────────────────────────────────╯ ╰────────────────────────────────────╯│
+│ Tab/1-3: panels (Overview)  L/R: locale  Up/Down: count  Current: English (en│
+╰──────────────────────────────────────────────────────────────────────────────╯
+ i18n Demo [28/28]  Cyberpunk Aurora           tick:0 frm:0           0x0 00:00 

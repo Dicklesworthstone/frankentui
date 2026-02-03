@@ -1,7 +1,7 @@
 ╭ ► Presets ╮ ╭   Token Inspector ─────╮
-│  Cyberpunk│ │     fg::PRIMARY        │
+│▶ Cyberpunk│ │     fg::PRIMARY        │
 │  Darcula  │ │     fg::SECONDARY      │
-│▶ Lumen Lig│ │     fg::MUTED          │
+│  Lumen Lig│ │     fg::MUTED          │
 │  Nordic Fr│ │     fg::DISABLED       │
 │  High Cont│ │     bg::DEEP           │
 │           │ │     bg::BASE           │

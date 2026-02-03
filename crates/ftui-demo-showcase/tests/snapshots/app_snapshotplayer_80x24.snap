@@ -16,9 +16,9 @@
 ││                                             ││                             ││
 ││                                             ││── Controls ──               ││
 ││                                             ││Space: Play/Pause            ││
-││                                             ││←/→: Step                    ││
-││█                                            ││Home/End: First/Last         ││
+││                                             ││←/→ or h/l: Step             ││
+││█                                            ││Home/End or g/G: First/Last  ││
 ││                                             ││M: Toggle marker             ││
 │╰─────────────────────────────────────────────╯╰─────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Snapshot Player [26/26]  Cyberpunk Aurora        tick:0 frm:0        0x0 00:00 
+ Snapshot Player [26/28]  Cyberpunk Aurora        tick:0 frm:0        0x0 00:00 

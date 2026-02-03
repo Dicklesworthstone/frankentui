@@ -1,0 +1,24 @@
+ 1: Dash │ 2: Shakes │ 3: Code │ 4: Widgets │ 5: Layout │ 6: Forms │ 7: DataViz 
+╭───────────────────────────────Performance HUD────────────────────────────────╮
+│PERFORMANCE HUD + RENDER BUDGET VISUALIZER                                    │
+│╭──────Real-Time Metrics───────╮╭Tick Intervals (µs╮╭─────Render Budget──────╮│
+││  Est. FPS:        0.0        ││                  ││  Budget: 16.67ms (60fps││
+││  Tick Rate:       0.0 tps    ││                  ││  Actual: 0.00ms avg    ││
+││                              ││                  ││  Usage:  0%            ││
+││  Latency (ms)                ││                  ││                        ││
+││  avg:      0.00              ││                  ││  Budget Bar            ││
+││  p50:      0.00              ││                  ││  ░░░░░░░░░░|░░░░░░░░░  ││
+││  p95:      0.00              ││                  ││                        ││
+││  p99:      0.00              ││                  ││                        ││
+││  min:      0.00              ││                  ││  Degradation Tier      ││
+││  max:      0.00              ││                  ││  █░░░ SAFETY MODE      ││
+││                              ││                  ││                        ││
+││  Counters                    ││                  ││  Thresholds            ││
+││  Views:             1        ││                  ││  ◇ Full     ≥50fps     ││
+││  Ticks:             0        ││                  ││  ◇ Reduced  20–49fps   ││
+││  Samples:           0        ││                  ││  ◇ Minimal  5–19fps    ││
+││  V/Tick:         0.00        ││                  ││  ◆ Safety   <5fps      ││
+│╰──────────────────────────────╯╰──────────────────╯╰────────────────────────╯│
+│r:reset | p:pause | m:mode(intervals) | samples:0/120                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ Performance HUD [27/28]  Cyberpunk Aurora        tick:0 frm:0        0x0 00:00 
