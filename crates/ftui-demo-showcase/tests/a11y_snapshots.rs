@@ -205,8 +205,9 @@ impl A11yTestContext {
         let setup_elapsed = self.setup_start.elapsed();
 
         // Always set theme state explicitly for test isolation
+        // Use HighContrast theme to match app behavior in apply_a11y_settings()
         let theme_id = if self.app.a11y.high_contrast {
-            theme::ThemeId::Darcula
+            theme::ThemeId::HighContrast
         } else {
             theme::ThemeId::CyberpunkAurora
         };
@@ -264,7 +265,7 @@ fn render_screen_with_a11y<S: Screen>(
     let _guard = a11y_guard();
     // Always set theme state explicitly for test isolation
     let theme_id = if a11y.high_contrast {
-        theme::ThemeId::Darcula
+        theme::ThemeId::HighContrast
     } else {
         theme::ThemeId::CyberpunkAurora
     };
@@ -293,7 +294,7 @@ fn render_transition_step(
     let render_start = Instant::now();
 
     let theme_id = if app.a11y.high_contrast {
-        theme::ThemeId::Darcula
+        theme::ThemeId::HighContrast
     } else {
         theme::ThemeId::CyberpunkAurora
     };
@@ -682,7 +683,7 @@ fn a11y_dashboard_screen_reduced_motion_80x24() {
 #[test]
 fn a11y_zero_area_high_contrast() {
     let _guard = a11y_guard();
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::Darcula);
+    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     let mut app = AppModel::new();
     app.a11y.high_contrast = true;
     let mut pool = GraphemePool::new();
@@ -706,7 +707,7 @@ fn a11y_zero_area_large_text() {
 #[test]
 fn a11y_zero_area_all_modes() {
     let _guard = a11y_guard();
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::Darcula);
+    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     let mut app = AppModel::new();
     app.a11y = theme::A11ySettings::all();
     theme::set_motion_scale(0.0);
@@ -1060,7 +1061,7 @@ fn a11y_panel_visible_120x40() {
 #[test]
 fn a11y_panel_with_high_contrast_120x40() {
     // Acquire scoped theme lock for test isolation in parallel test execution
-    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::Darcula);
+    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::HighContrast);
     theme::set_motion_scale(1.0);
     theme::set_large_text(false);
     let mut app = AppModel::new();
@@ -1075,7 +1076,7 @@ fn a11y_panel_with_high_contrast_120x40() {
 #[test]
 fn a11y_panel_with_all_modes_120x40() {
     // Acquire scoped theme lock for test isolation in parallel test execution
-    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::Darcula);
+    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::HighContrast);
     theme::set_large_text(true);
     theme::set_motion_scale(0.0);
     let mut app = AppModel::new();
@@ -1094,7 +1095,7 @@ fn a11y_panel_with_all_modes_120x40() {
 #[test]
 fn a11y_determinism_high_contrast() {
     let _guard = a11y_guard();
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::Darcula);
+    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     // Render twice and verify identical output
     let mut app1 = AppModel::new();
     app1.a11y.high_contrast = true;
@@ -1119,7 +1120,7 @@ fn a11y_determinism_high_contrast() {
 #[test]
 fn a11y_determinism_all_modes() {
     let _guard = a11y_guard();
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::Darcula);
+    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
     // Render twice with all a11y modes and verify identical output
     let mut app1 = AppModel::new();
     app1.a11y = theme::A11ySettings::all();
