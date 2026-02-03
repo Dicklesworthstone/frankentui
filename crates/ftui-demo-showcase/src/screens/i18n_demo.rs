@@ -148,7 +148,7 @@ impl I18nDemo {
         let cols = Flex::horizontal()
             .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
             .flow_direction(flow)
-            .gap(1)
+            .gap(theme::spacing::INLINE)
             .split(area);
         {
             let title = self
@@ -303,7 +303,7 @@ impl I18nDemo {
                 Constraint::Percentage(30.0),
             ])
             .flow_direction(flow)
-            .gap(1)
+            .gap(theme::spacing::INLINE)
             .split(inner);
         let labels = ["Sidebar", "Content", "Panel"];
         let fgs = [

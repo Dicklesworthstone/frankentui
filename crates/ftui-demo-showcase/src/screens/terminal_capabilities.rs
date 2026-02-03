@@ -1579,6 +1579,11 @@ mod tests {
 
     #[test]
     fn render_modes_are_deterministic_with_env_override() {
+        // Acquire combined render lock BEFORE creating the screen to prevent race with
+        // parallel tests that mutate global theme/accessibility state.
+        let _render_guard =
+            theme::ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
+
         let mut screen = TerminalCapabilitiesScreen::with_profile(TerminalProfile::Modern);
         screen.set_env_override(EnvSnapshot::from_values(
             "xterm-256color",
@@ -1595,10 +1600,8 @@ mod tests {
         for view in [ViewMode::Matrix, ViewMode::Evidence, ViewMode::Simulation] {
             screen.view = view;
             let area = Rect::new(0, 0, 120, 40);
-            // Pin theme to prevent race with parallel WCAG contrast tests
-            // that mutate the global CURRENT_THEME via set_theme().
+
             let checksum_first = {
-                theme::set_theme(theme::ThemeId::CyberpunkAurora);
                 let mut pool = GraphemePool::new();
                 let mut frame = Frame::new(120, 40, &mut pool);
                 screen.view(&mut frame, area);
@@ -1606,7 +1609,6 @@ mod tests {
             };
 
             let checksum_second = {
-                theme::set_theme(theme::ThemeId::CyberpunkAurora);
                 let mut pool = GraphemePool::new();
                 let mut frame = Frame::new(120, 40, &mut pool);
                 screen.view(&mut frame, area);

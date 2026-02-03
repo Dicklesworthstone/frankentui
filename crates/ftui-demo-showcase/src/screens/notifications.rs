@@ -205,7 +205,7 @@ impl Screen for Notifications {
 
         // Render the notification stack overlay on the right portion
         NotificationStack::new(&self.queue)
-            .margin(1)
+            .margin(theme::spacing::INLINE)
             .render(chunks[1], frame);
     }
 
