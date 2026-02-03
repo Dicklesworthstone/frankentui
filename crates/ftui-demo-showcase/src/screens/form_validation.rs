@@ -58,9 +58,9 @@ impl ValidationMode {
 /// Form Validation demo screen state.
 pub struct FormValidationDemo {
     /// The registration form with all field types and validators.
-    form: Form,
+    pub form: Form,
     /// Mutable form state (RefCell for view access).
-    form_state: RefCell<FormState>,
+    pub form_state: RefCell<FormState>,
     /// Current validation mode.
     validation_mode: ValidationMode,
     /// Notification queue for success/error toasts.
@@ -284,7 +284,7 @@ impl FormValidationDemo {
     }
 
     /// Run validation (either real-time or on-submit based on mode).
-    fn run_validation(&mut self) {
+    pub fn run_validation(&mut self) {
         let mut errors = self.form.validate_all();
 
         // Add password match validation

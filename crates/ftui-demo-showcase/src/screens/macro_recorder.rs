@@ -166,11 +166,17 @@ impl MacroRecorderScreen {
 
     fn start_playback(&mut self, tick_count: u64) {
         let Some(macro_data) = &self.macro_data else {
+            tracing::warn!(macro_event = "playback_error", reason = "no_macro",);
             self.state =
                 UiState::Error("No macro recorded — press 'r' to start recording".to_string());
             return;
         };
         if macro_data.is_empty() {
+            tracing::warn!(
+                macro_event = "playback_error",
+                reason = "macro_empty",
+                name = %macro_data.metadata().name,
+            );
             self.state =
                 UiState::Error("Macro is empty — record some keystrokes first".to_string());
             return;
@@ -191,6 +197,14 @@ impl MacroRecorderScreen {
     }
 
     fn stop_playback(&mut self) {
+        if let Some(macro_data) = &self.macro_data {
+            tracing::info!(
+                macro_event = "playback_stop",
+                reason = "manual",
+                name = %macro_data.metadata().name,
+                events = macro_data.len(),
+            );
+        }
         self.playback = None;
         self.playback_last_tick = None;
         self.state = UiState::Stopped;

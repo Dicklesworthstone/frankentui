@@ -25,6 +25,43 @@ use ftui_widgets::textarea::TextArea;
 use super::{HelpEntry, Screen};
 use crate::theme;
 
+use std::collections::VecDeque;
+
+const UNDO_HISTORY_LIMIT: usize = 64;
+
+#[derive(Debug, Clone, Copy)]
+struct KeyChord {
+    code: KeyCode,
+    modifiers: Modifiers,
+}
+
+impl KeyChord {
+    const fn new(code: KeyCode, modifiers: Modifiers) -> Self {
+        Self { code, modifiers }
+    }
+
+    fn matches(self, code: KeyCode, modifiers: Modifiers) -> bool {
+        self.code == code && self.modifiers == modifiers
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UndoKeybindings {
+    undo: KeyChord,
+    redo_primary: KeyChord,
+    redo_secondary: KeyChord,
+}
+
+impl Default for UndoKeybindings {
+    fn default() -> Self {
+        Self {
+            undo: KeyChord::new(KeyCode::Char('z'), Modifiers::CTRL),
+            redo_primary: KeyChord::new(KeyCode::Char('y'), Modifiers::CTRL),
+            redo_secondary: KeyChord::new(KeyCode::Char('Z'), Modifiers::CTRL | Modifiers::SHIFT),
+        }
+    }
+}
+
 /// Focus state for the editor screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -72,6 +109,14 @@ pub struct AdvancedTextEditor {
     current_match: Option<usize>,
     /// Status message displayed at the bottom.
     status: String,
+    /// Undo history (most recent at the back).
+    undo_stack: VecDeque<String>,
+    /// Redo history (most recent at the back).
+    redo_stack: VecDeque<String>,
+    /// Whether the undo history panel is visible.
+    undo_panel_visible: bool,
+    /// Undo/redo keybindings.
+    undo_keys: UndoKeybindings,
 }
 
 impl Default for AdvancedTextEditor {
@@ -130,7 +175,18 @@ and proper Unicode handling throughout.
             search_results: Vec::new(),
             current_match: None,
             status: "Ready | Ctrl+F: Search | Ctrl+H: Replace | ?: Help".into(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+            undo_panel_visible: false,
+            undo_keys: UndoKeybindings::default(),
         }
+    }
+
+    /// Configure undo/redo keybindings (customization support).
+    #[allow(dead_code)]
+    fn with_undo_keybindings(mut self, bindings: UndoKeybindings) -> Self {
+        self.undo_keys = bindings;
+        self
     }
 
     /// Apply the current theme to all widgets.
@@ -366,12 +422,25 @@ and proper Unicode handling throughout.
             String::new()
         };
 
+        let undo_info = format!(
+            "Undo:{} Redo:{}",
+            self.undo_stack.len(),
+            self.redo_stack.len()
+        );
+        let history_hint = if self.undo_panel_visible {
+            "Ctrl+U: Hide history"
+        } else {
+            "Ctrl+U: Show history"
+        };
+
         self.status = format!(
-            "Ln {}, Col {}{}{}",
+            "Ln {}, Col {}{}{} | {} | {}",
             cursor.line + 1,
             cursor.grapheme + 1,
             sel_info,
-            match_info
+            match_info,
+            undo_info,
+            history_hint
         );
     }
 
@@ -395,6 +464,38 @@ and proper Unicode handling throughout.
         }
 
         Widget::render(&self.editor, inner, frame);
+    }
+
+    fn render_undo_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Undo History ")
+            .title_alignment(Alignment::Center)
+            .style(Style::new().fg(theme::accent::INFO));
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("Undo ({})", self.undo_stack.len()));
+        for entry in self.undo_stack.iter().rev().take(6) {
+            lines.push(format!("  • {entry}"));
+        }
+
+        lines.push(String::new());
+        lines.push(format!("Redo ({})", self.redo_stack.len()));
+        for entry in self.redo_stack.iter().rev().take(6) {
+            lines.push(format!("  • {entry}"));
+        }
+
+        Paragraph::new(lines.join("\n"))
+            .style(theme::body())
+            .render(inner, frame);
     }
 
     /// Render the search/replace panel.
@@ -467,6 +568,31 @@ and proper Unicode handling throughout.
                 .render(rows[2], frame);
         }
     }
+
+    fn record_undo(&mut self, description: &str) {
+        self.undo_stack.push_back(description.to_string());
+        self.redo_stack.clear();
+
+        while self.undo_stack.len() > UNDO_HISTORY_LIMIT {
+            self.undo_stack.pop_front();
+        }
+    }
+
+    fn perform_undo(&mut self) {
+        if self.undo_stack.pop_back().is_some() {
+            self.editor.undo();
+            self.redo_stack.push_back("Redo edit".to_string());
+        }
+        self.update_status();
+    }
+
+    fn perform_redo(&mut self) {
+        if self.redo_stack.pop_back().is_some() {
+            self.editor.redo();
+            self.undo_stack.push_back("Edit text".to_string());
+        }
+        self.update_status();
+    }
 }
 
 impl Screen for AdvancedTextEditor {
@@ -509,10 +635,27 @@ impl Screen for AdvancedTextEditor {
             ..
         }) = event
         {
+            if self.undo_keys.undo.matches(*code, *modifiers) {
+                self.perform_undo();
+                return Cmd::None;
+            }
+            if self.undo_keys.redo_primary.matches(*code, *modifiers)
+                || self.undo_keys.redo_secondary.matches(*code, *modifiers)
+            {
+                self.perform_redo();
+                return Cmd::None;
+            }
+
             let ctrl = modifiers.contains(Modifiers::CTRL);
             let shift = modifiers.contains(Modifiers::SHIFT);
 
             match (*code, ctrl, shift) {
+                // Ctrl+U: Toggle undo history panel
+                (KeyCode::Char('u'), true, false) => {
+                    self.undo_panel_visible = !self.undo_panel_visible;
+                    self.update_status();
+                    return Cmd::None;
+                }
                 // Ctrl+F: Toggle search panel and focus search input
                 (KeyCode::Char('f'), true, false) => {
                     self.search_visible = true;
@@ -556,7 +699,12 @@ impl Screen for AdvancedTextEditor {
         // Route events to focused widget
         match self.focus {
             Focus::Editor => {
+                let before = self.editor.text();
                 self.editor.handle_event(event);
+                let after = self.editor.text();
+                if before != after {
+                    self.record_undo("Edit text");
+                }
                 self.update_status();
             }
             Focus::Search => {
@@ -638,8 +786,16 @@ impl Screen for AdvancedTextEditor {
                 .split(area)
         };
 
-        // Editor panel
-        self.render_editor_panel(frame, chunks[0]);
+        // Editor panel (optionally split with undo history)
+        if self.undo_panel_visible {
+            let cols = Flex::horizontal()
+                .constraints([Constraint::Min(50), Constraint::Fixed(28)])
+                .split(chunks[0]);
+            self.render_editor_panel(frame, cols[0]);
+            self.render_undo_panel(frame, cols[1]);
+        } else {
+            self.render_editor_panel(frame, chunks[0]);
+        }
 
         // Search panel (if visible)
         if self.search_visible && chunks.len() > 2 {
@@ -680,6 +836,14 @@ impl Screen for AdvancedTextEditor {
                 action: "Redo",
             },
             HelpEntry {
+                key: "Ctrl+Shift+Z",
+                action: "Redo (alt)",
+            },
+            HelpEntry {
+                key: "Ctrl+U",
+                action: "Toggle history panel",
+            },
+            HelpEntry {
                 key: "Shift+Arrow",
                 action: "Select text",
             },
@@ -696,6 +860,28 @@ impl Screen for AdvancedTextEditor {
                 action: "Close search / Clear selection",
             },
         ]
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    fn next_undo_description(&self) -> Option<&str> {
+        self.undo_stack.back().map(String::as_str)
+    }
+
+    fn undo(&mut self) -> bool {
+        self.perform_undo();
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        self.perform_redo();
+        true
     }
 
     fn title(&self) -> &'static str {
@@ -766,6 +952,18 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_u_toggles_history_panel() {
+        let mut screen = AdvancedTextEditor::new();
+        assert!(!screen.undo_panel_visible);
+
+        screen.update(&ctrl_press(KeyCode::Char('u')));
+        assert!(screen.undo_panel_visible);
+
+        screen.update(&ctrl_press(KeyCode::Char('u')));
+        assert!(!screen.undo_panel_visible);
+    }
+
+    #[test]
     fn focus_cycles_with_ctrl_arrows() {
         let mut screen = AdvancedTextEditor::new();
         screen.search_visible = true;
@@ -793,6 +991,25 @@ mod tests {
             kind: KeyEventKind::Press,
         }));
         assert_eq!(screen.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn undo_redo_updates_history() {
+        let mut screen = AdvancedTextEditor::new();
+        assert_eq!(screen.undo_stack.len(), 0);
+        assert_eq!(screen.redo_stack.len(), 0);
+
+        screen.update(&press(KeyCode::Char('a')));
+        assert_eq!(screen.undo_stack.len(), 1);
+        assert_eq!(screen.redo_stack.len(), 0);
+
+        screen.update(&ctrl_press(KeyCode::Char('z')));
+        assert_eq!(screen.undo_stack.len(), 0);
+        assert_eq!(screen.redo_stack.len(), 1);
+
+        screen.update(&ctrl_press(KeyCode::Char('y')));
+        assert_eq!(screen.undo_stack.len(), 1);
+        assert_eq!(screen.redo_stack.len(), 0);
     }
 
     #[test]

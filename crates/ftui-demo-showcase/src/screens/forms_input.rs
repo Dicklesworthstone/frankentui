@@ -9,20 +9,22 @@
 //! - Panel-based focus management
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
-use ftui_extras::forms::{Form, FormField, FormState};
+use ftui_extras::forms::{Form, FormField, FormState, FormValue, ValidationError};
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
+use ftui_text::CursorPosition;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::textarea::TextArea;
-use ftui_widgets::{StatefulWidget, Widget};
+use ftui_widgets::{StatefulWidget, TextInputUndoExt, Widget};
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -56,6 +58,73 @@ impl FocusPanel {
     }
 }
 
+const UNDO_HISTORY_LIMIT: usize = 50;
+
+#[derive(Debug, Clone, Copy)]
+struct KeyChord {
+    code: KeyCode,
+    modifiers: Modifiers,
+}
+
+impl KeyChord {
+    const fn new(code: KeyCode, modifiers: Modifiers) -> Self {
+        Self { code, modifiers }
+    }
+
+    fn matches(self, code: KeyCode, modifiers: Modifiers) -> bool {
+        self.code == code && self.modifiers == modifiers
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UndoKeybindings {
+    undo: KeyChord,
+    redo_primary: KeyChord,
+    redo_secondary: KeyChord,
+}
+
+impl Default for UndoKeybindings {
+    fn default() -> Self {
+        Self {
+            undo: KeyChord::new(KeyCode::Char('z'), Modifiers::CTRL),
+            redo_primary: KeyChord::new(KeyCode::Char('y'), Modifiers::CTRL),
+            redo_secondary: KeyChord::new(KeyCode::Char('Z'), Modifiers::CTRL | Modifiers::SHIFT),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FormsInputSnapshot {
+    focus: FocusPanel,
+    form_values: Vec<(String, FormValue)>,
+    form_focused: usize,
+    form_text_cursor: usize,
+    form_submitted: bool,
+    form_cancelled: bool,
+    form_errors: Vec<ValidationError>,
+    search_value: String,
+    search_cursor: usize,
+    password_value: String,
+    password_cursor: usize,
+    textarea_text: String,
+    textarea_cursor: CursorPosition,
+}
+
+impl FormsInputSnapshot {
+    fn is_equivalent(&self, other: &Self) -> bool {
+        self.form_values == other.form_values
+            && self.search_value == other.search_value
+            && self.password_value == other.password_value
+            && self.textarea_text == other.textarea_text
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UndoEntry {
+    description: String,
+    snapshot: FormsInputSnapshot,
+}
+
 pub struct FormsInput {
     focus: FocusPanel,
     form: Form,
@@ -66,6 +135,10 @@ pub struct FormsInput {
     password_input: TextInput,
     textarea: TextArea,
     status_text: String,
+    undo_stack: VecDeque<UndoEntry>,
+    redo_stack: VecDeque<UndoEntry>,
+    undo_panel_visible: bool,
+    undo_keys: UndoKeybindings,
 }
 
 impl Default for FormsInput {
@@ -131,9 +204,20 @@ impl FormsInput {
             password_input,
             textarea,
             status_text: "Ctrl+\u{2190}/\u{2192}: switch panels | Form: Tab/\u{2191}/\u{2193} navigate, Space toggle, Enter submit".into(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+            undo_panel_visible: false,
+            undo_keys: UndoKeybindings::default(),
         };
         state.apply_theme();
         state
+    }
+
+    /// Configure undo/redo keybindings (customization support).
+    #[allow(dead_code)]
+    fn with_undo_keybindings(mut self, bindings: UndoKeybindings) -> Self {
+        self.undo_keys = bindings;
+        self
     }
 
     pub fn apply_theme(&mut self) {
@@ -186,7 +270,7 @@ impl FormsInput {
 
     fn update_status(&mut self) {
         let form_state = self.form_state.borrow();
-        self.status_text = match self.focus {
+        let base = match self.focus {
             FocusPanel::Form => {
                 if form_state.submitted {
                     let data = self.form.data();
@@ -231,6 +315,214 @@ impl FormsInput {
                 )
             }
         };
+        let undo_info = format!(
+            "Undo:{} Redo:{}",
+            self.undo_stack.len(),
+            self.redo_stack.len()
+        );
+        let history_hint = if self.undo_panel_visible {
+            "Ctrl+U: Hide history"
+        } else {
+            "Ctrl+U: Show history"
+        };
+        self.status_text = format!("{base} | {undo_info} | {history_hint}");
+    }
+
+    fn snapshot(&self) -> FormsInputSnapshot {
+        let form_state = self.form_state.borrow();
+        FormsInputSnapshot {
+            focus: self.focus,
+            form_values: self.form.data().values,
+            form_focused: form_state.focused,
+            form_text_cursor: form_state.text_cursor,
+            form_submitted: form_state.submitted,
+            form_cancelled: form_state.cancelled,
+            form_errors: form_state.errors.clone(),
+            search_value: self.search_input.value().to_string(),
+            search_cursor: self.search_input.cursor(),
+            password_value: self.password_input.value().to_string(),
+            password_cursor: self.password_input.cursor(),
+            textarea_text: self.textarea.text(),
+            textarea_cursor: self.textarea.cursor(),
+        }
+    }
+
+    fn restore_snapshot(&mut self, snapshot: &FormsInputSnapshot) {
+        self.focus = snapshot.focus;
+
+        for idx in 0..self.form.field_count() {
+            let Some(field) = self.form.field_mut(idx) else {
+                continue;
+            };
+            let Some((_, value)) = snapshot
+                .form_values
+                .iter()
+                .find(|(label, _)| label == field.label())
+            else {
+                continue;
+            };
+
+            match (field, value) {
+                (FormField::Text { value: text, .. }, FormValue::Text(next)) => {
+                    *text = next.clone();
+                }
+                (FormField::Checkbox { checked, .. }, FormValue::Bool(next)) => {
+                    *checked = *next;
+                }
+                (
+                    FormField::Radio {
+                        options, selected, ..
+                    },
+                    FormValue::Choice { index, .. },
+                )
+                | (
+                    FormField::Select {
+                        options, selected, ..
+                    },
+                    FormValue::Choice { index, .. },
+                ) => {
+                    if !options.is_empty() {
+                        *selected = (*index).min(options.len().saturating_sub(1));
+                    } else {
+                        *selected = 0;
+                    }
+                }
+                (
+                    FormField::Number {
+                        value, min, max, ..
+                    },
+                    FormValue::Number(next),
+                ) => {
+                    let mut clamped = *next;
+                    if let Some(min) = min {
+                        clamped = clamped.max(*min);
+                    }
+                    if let Some(max) = max {
+                        clamped = clamped.min(*max);
+                    }
+                    *value = clamped;
+                }
+                _ => {}
+            }
+        }
+
+        {
+            let mut state = self.form_state.borrow_mut();
+            state.focused = snapshot
+                .form_focused
+                .min(self.form.field_count().saturating_sub(1));
+            state.text_cursor = snapshot.form_text_cursor;
+            state.submitted = snapshot.form_submitted;
+            state.cancelled = snapshot.form_cancelled;
+            state.errors = snapshot.form_errors.clone();
+            state.scroll = 0;
+            state.reset_dirty(&self.form);
+        } // Drop state borrow before calling self methods
+
+        self.search_input.set_value(snapshot.search_value.clone());
+        self.search_input
+            .set_cursor_position(snapshot.search_cursor);
+        self.password_input
+            .set_value(snapshot.password_value.clone());
+        self.password_input
+            .set_cursor_position(snapshot.password_cursor);
+
+        self.textarea.set_text(&snapshot.textarea_text);
+        self.textarea.set_cursor_position(snapshot.textarea_cursor);
+
+        self.update_focus_states();
+        self.update_status();
+    }
+
+    fn undo_description_for_focus(&self) -> &'static str {
+        match self.focus {
+            FocusPanel::Form => "Edit form",
+            FocusPanel::SearchInput => "Edit search input",
+            FocusPanel::PasswordInput => "Edit password input",
+            FocusPanel::TextEditor => "Edit text area",
+        }
+    }
+
+    fn record_undo(&mut self, description: &str, snapshot: FormsInputSnapshot) {
+        self.undo_stack.push_back(UndoEntry {
+            description: description.to_string(),
+            snapshot,
+        });
+        self.redo_stack.clear();
+
+        while self.undo_stack.len() > UNDO_HISTORY_LIMIT {
+            self.undo_stack.pop_front();
+        }
+    }
+
+    fn undo_description(&self) -> Option<&str> {
+        self.undo_stack
+            .back()
+            .map(|entry| entry.description.as_str())
+    }
+
+    fn perform_undo(&mut self) {
+        let Some(entry) = self.undo_stack.pop_back() else {
+            self.update_status();
+            return;
+        };
+
+        let current = self.snapshot();
+        self.redo_stack.push_back(UndoEntry {
+            description: entry.description.clone(),
+            snapshot: current,
+        });
+        self.restore_snapshot(&entry.snapshot);
+    }
+
+    fn perform_redo(&mut self) {
+        let Some(entry) = self.redo_stack.pop_back() else {
+            self.update_status();
+            return;
+        };
+
+        let current = self.snapshot();
+        self.undo_stack.push_back(UndoEntry {
+            description: entry.description.clone(),
+            snapshot: current,
+        });
+        self.restore_snapshot(&entry.snapshot);
+    }
+
+    fn render_undo_panel(&self, frame: &mut Frame, area: Rect) {
+        if area.height < 4 || area.width < 12 {
+            return;
+        }
+
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Undo History ")
+            .title_alignment(Alignment::Center)
+            .style(Style::new().fg(theme::accent::INFO));
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("Undo ({})", self.undo_stack.len()));
+        for entry in self.undo_stack.iter().rev().take(4) {
+            lines.push(format!("  • {}", entry.description));
+        }
+
+        lines.push(String::new());
+        lines.push(format!("Redo ({})", self.redo_stack.len()));
+        for entry in self.redo_stack.iter().rev().take(4) {
+            lines.push(format!("  • {}", entry.description));
+        }
+
+        Paragraph::new(lines.join("\n"))
+            .style(theme::body())
+            .render(inner, frame);
     }
 
     fn render_form_panel(&self, frame: &mut Frame, area: Rect) {
@@ -355,6 +647,33 @@ impl Screen for FormsInput {
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
         if let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            if self.undo_keys.undo.matches(*code, *modifiers) {
+                self.perform_undo();
+                return Cmd::None;
+            }
+            if self.undo_keys.redo_primary.matches(*code, *modifiers)
+                || self.undo_keys.redo_secondary.matches(*code, *modifiers)
+            {
+                self.perform_redo();
+                return Cmd::None;
+            }
+
+            if *code == KeyCode::Char('u') && modifiers.contains(Modifiers::CTRL) {
+                self.undo_panel_visible = !self.undo_panel_visible;
+                self.update_status();
+                return Cmd::None;
+            }
+        }
+
+        let before = self.snapshot();
+
+        if let Event::Key(KeyEvent {
             code: KeyCode::Right,
             modifiers,
             kind: KeyEventKind::Press,
@@ -397,6 +716,11 @@ impl Screen for FormsInput {
             }
         }
 
+        let after = self.snapshot();
+        if !before.is_equivalent(&after) {
+            let description = self.undo_description_for_focus();
+            self.record_undo(description, before);
+        }
         self.update_status();
         Cmd::None
     }
@@ -416,12 +740,24 @@ impl Screen for FormsInput {
 
         self.render_form_panel(frame, content_chunks[0]);
 
-        let right_chunks = Flex::vertical()
-            .constraints([Constraint::Fixed(5), Constraint::Min(5)])
-            .split(content_chunks[1]);
-
-        self.render_input_panel(frame, right_chunks[0]);
-        self.render_editor_panel(frame, right_chunks[1]);
+        if self.undo_panel_visible {
+            let right_chunks = Flex::vertical()
+                .constraints([
+                    Constraint::Fixed(5),
+                    Constraint::Fixed(6),
+                    Constraint::Min(5),
+                ])
+                .split(content_chunks[1]);
+            self.render_input_panel(frame, right_chunks[0]);
+            self.render_undo_panel(frame, right_chunks[1]);
+            self.render_editor_panel(frame, right_chunks[2]);
+        } else {
+            let right_chunks = Flex::vertical()
+                .constraints([Constraint::Fixed(5), Constraint::Min(5)])
+                .split(content_chunks[1]);
+            self.render_input_panel(frame, right_chunks[0]);
+            self.render_editor_panel(frame, right_chunks[1]);
+        }
 
         Paragraph::new(&*self.status_text)
             .style(Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE))
@@ -433,6 +769,22 @@ impl Screen for FormsInput {
             HelpEntry {
                 key: "Ctrl+\u{2190}/\u{2192}",
                 action: "Switch panel",
+            },
+            HelpEntry {
+                key: "Ctrl+Z",
+                action: "Undo",
+            },
+            HelpEntry {
+                key: "Ctrl+Y",
+                action: "Redo",
+            },
+            HelpEntry {
+                key: "Ctrl+Shift+Z",
+                action: "Redo (alt)",
+            },
+            HelpEntry {
+                key: "Ctrl+U",
+                action: "Toggle undo history",
             },
             HelpEntry {
                 key: "Tab/S-Tab",
@@ -457,6 +809,28 @@ impl Screen for FormsInput {
         ]
     }
 
+    fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    fn next_undo_description(&self) -> Option<&str> {
+        self.undo_description()
+    }
+
+    fn undo(&mut self) -> bool {
+        self.perform_undo();
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        self.perform_redo();
+        true
+    }
+
     fn title(&self) -> &'static str {
         "Forms and Input"
     }
@@ -469,6 +843,7 @@ impl Screen for FormsInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::Screen;
 
     fn press(code: KeyCode) -> Event {
         Event::Key(KeyEvent {
@@ -562,5 +937,25 @@ mod tests {
     fn keybindings_non_empty() {
         let screen = FormsInput::new();
         assert!(!screen.keybindings().is_empty());
+    }
+
+    #[test]
+    fn undo_redo_restores_textarea() {
+        let mut screen = FormsInput::new();
+        // Switch to text editor panel.
+        screen.update(&ctrl_press(KeyCode::Right));
+        screen.update(&ctrl_press(KeyCode::Right));
+        screen.update(&ctrl_press(KeyCode::Right));
+        assert_eq!(screen.focus, FocusPanel::TextEditor);
+
+        let before = screen.textarea.text();
+        screen.update(&press(KeyCode::Char('X')));
+        assert_ne!(screen.textarea.text(), before);
+
+        Screen::undo(&mut screen);
+        assert_eq!(screen.textarea.text(), before);
+
+        Screen::redo(&mut screen);
+        assert_ne!(screen.textarea.text(), before);
     }
 }
