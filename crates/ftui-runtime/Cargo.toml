@@ -13,6 +13,8 @@ render-thread = []
 # Best-effort stdio capture to prevent accidental println! from corrupting
 # inline mode. See stdio_capture module docs for limitations.
 stdio-capture = []
+# Enable tracing instrumentation for runtime internals.
+tracing = []
 
 [dependencies]
 ftui-core = { path = "../ftui-core" }
@@ -24,3 +26,6 @@ crossterm = "0.29.0"
 tracing = "0.1"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.2"
+
+[dev-dependencies]
+proptest = "1"

@@ -435,7 +435,13 @@ impl<'a> MacroPlayback<'a> {
 
     /// Check if playback is complete (non-looping).
     pub fn is_done(&self) -> bool {
-        !self.looping && self.position >= self.input_macro.len()
+        if self.input_macro.is_empty() {
+            return true;
+        }
+        if self.looping && self.input_macro.total_duration() > Duration::ZERO {
+            return false;
+        }
+        self.position >= self.input_macro.len()
     }
 
     /// Reset playback to the beginning.
@@ -834,6 +840,7 @@ mod tests {
     use crate::simulator::ProgramSimulator;
     use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
     use ftui_render::frame::Frame;
+    use proptest::prelude::*;
 
     // ---------- Test model ----------
 
@@ -1576,5 +1583,86 @@ mod tests {
         rec.record(&key_event('x'));
         let m = rec.finish();
         assert_eq!(m.metadata().terminal_size, (200, 60));
+    }
+
+    // ---------- Property tests ----------
+
+    #[derive(Default)]
+    struct EventSink {
+        events: Vec<Event>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct EventMsg(Event);
+
+    impl From<Event> for EventMsg {
+        fn from(event: Event) -> Self {
+            Self(event)
+        }
+    }
+
+    impl Model for EventSink {
+        type Message = EventMsg;
+
+        fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+            self.events.push(msg.0);
+            Cmd::none()
+        }
+
+        fn view(&self, _frame: &mut Frame) {}
+    }
+
+    proptest! {
+        #[test]
+        fn recorder_with_explicit_delays_roundtrips(pairs in proptest::collection::vec((0u8..=25, 0u16..=2000), 0..32)) {
+            let mut recorder = MacroRecorder::new("prop").with_terminal_size(80, 24);
+            let mut expected_total = Duration::ZERO;
+            let mut expected_events = Vec::with_capacity(pairs.len());
+
+            for (ch_idx, delay_ms) in &pairs {
+                let ch = char::from(b'a' + *ch_idx);
+                let delay = Duration::from_millis(*delay_ms as u64);
+                expected_total += delay;
+                let ev = key_event(ch);
+                expected_events.push(ev.clone());
+                recorder.record_event_with_delay(ev, delay);
+            }
+
+            let m = recorder.finish();
+            prop_assert_eq!(m.len(), pairs.len());
+            prop_assert_eq!(m.metadata().terminal_size, (80, 24));
+            prop_assert_eq!(m.total_duration(), expected_total);
+            prop_assert_eq!(m.bare_events(), expected_events);
+        }
+
+        #[test]
+        fn player_replays_events_in_order(pairs in proptest::collection::vec((0u8..=25, 0u16..=2000), 0..32)) {
+            let mut timed = Vec::with_capacity(pairs.len());
+            let mut total = Duration::ZERO;
+            let mut expected_events = Vec::with_capacity(pairs.len());
+
+            for (ch_idx, delay_ms) in &pairs {
+                let ch = char::from(b'a' + *ch_idx);
+                let delay = Duration::from_millis(*delay_ms as u64);
+                total += delay;
+                let ev = key_event(ch);
+                expected_events.push(ev.clone());
+                timed.push(TimedEvent::new(ev, delay));
+            }
+
+            let m = InputMacro::new(timed, MacroMetadata {
+                name: "prop".to_string(),
+                terminal_size: (80, 24),
+                total_duration: total,
+            });
+
+            let mut sim = ProgramSimulator::new(EventSink::default());
+            sim.init();
+            let mut player = MacroPlayer::new(&m);
+            player.replay_all(&mut sim);
+
+            prop_assert_eq!(sim.model().events, expected_events);
+            prop_assert_eq!(player.elapsed(), total);
+        }
     }
 }
