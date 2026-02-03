@@ -829,7 +829,7 @@ pub fn python_tokenizer() -> GenericTokenizer {
 pub fn javascript_tokenizer() -> GenericTokenizer {
     GenericTokenizer::new(GenericTokenizerConfig {
         name: "JavaScript",
-        extensions: &["js", "jsx", "ts", "tsx", "mjs", "cjs"],
+        extensions: &["js", "jsx", "mjs", "cjs"],
         keywords: &[
             "function",
             "var",
@@ -874,6 +874,915 @@ pub fn javascript_tokenizer() -> GenericTokenizer {
         line_comment: "//",
         block_comment_start: "/*",
         block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for C++.
+pub fn cpp_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "C++",
+        extensions: &["cpp", "cc", "cxx", "hpp", "hxx", "hh"],
+        keywords: &[
+            "namespace",
+            "using",
+            "class",
+            "struct",
+            "template",
+            "typename",
+            "constexpr",
+            "consteval",
+            "constinit",
+            "auto",
+            "decltype",
+            "noexcept",
+            "friend",
+            "public",
+            "private",
+            "protected",
+            "virtual",
+            "override",
+            "final",
+            "operator",
+            "new",
+            "delete",
+            "this",
+            "sizeof",
+            "alignof",
+            "static_assert",
+            "mutable",
+            "volatile",
+            "explicit",
+            "inline",
+            "concept",
+            "requires",
+            "co_await",
+            "co_yield",
+            "co_return",
+            "import",
+            "module",
+            "export",
+        ],
+        control_keywords: &[
+            "if", "else", "switch", "case", "for", "while", "do", "break", "continue", "return",
+            "try", "catch", "throw", "goto",
+        ],
+        type_keywords: &[
+            "int",
+            "long",
+            "short",
+            "float",
+            "double",
+            "char",
+            "bool",
+            "void",
+            "wchar_t",
+            "char16_t",
+            "char32_t",
+            "size_t",
+            "string",
+            "vector",
+            "map",
+            "unordered_map",
+            "optional",
+            "variant",
+            "span",
+            "unique_ptr",
+            "shared_ptr",
+            "weak_ptr",
+            "nullptr_t",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for Bash.
+pub fn bash_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Bash",
+        extensions: &["sh", "bash", "zsh"],
+        keywords: &[
+            "if", "then", "fi", "for", "in", "do", "done", "case", "esac", "while", "until",
+            "function", "select", "time", "coproc", "local", "export", "readonly", "declare",
+            "typeset", "unset", "shift", "break", "continue", "return", "trap", "source", "eval",
+        ],
+        control_keywords: &[],
+        type_keywords: &[],
+        line_comment: "#",
+        block_comment_start: "",
+        block_comment_end: "",
+    })
+}
+
+/// Create a generic tokenizer configured for Kotlin.
+pub fn kotlin_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Kotlin",
+        extensions: &["kt", "kts"],
+        keywords: &[
+            "package",
+            "import",
+            "class",
+            "interface",
+            "object",
+            "fun",
+            "val",
+            "var",
+            "typealias",
+            "data",
+            "sealed",
+            "enum",
+            "annotation",
+            "inline",
+            "reified",
+            "companion",
+            "override",
+            "open",
+            "final",
+            "internal",
+            "public",
+            "private",
+            "protected",
+            "tailrec",
+            "suspend",
+            "operator",
+            "infix",
+            "this",
+            "super",
+            "where",
+            "by",
+            "constructor",
+            "init",
+            "as",
+            "is",
+            "when",
+        ],
+        control_keywords: &[
+            "if", "else", "for", "while", "do", "break", "continue", "return", "throw", "try",
+            "catch", "finally", "yield",
+        ],
+        type_keywords: &[
+            "Int",
+            "Long",
+            "Short",
+            "Float",
+            "Double",
+            "Char",
+            "Boolean",
+            "Unit",
+            "Any",
+            "Nothing",
+            "String",
+            "List",
+            "Map",
+            "Set",
+            "Array",
+            "MutableList",
+            "MutableMap",
+            "MutableSet",
+            "Sequence",
+            "Result",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for PowerShell.
+pub fn powershell_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "PowerShell",
+        extensions: &["ps1", "psm1", "psd1"],
+        keywords: &[
+            "function",
+            "param",
+            "begin",
+            "process",
+            "end",
+            "class",
+            "enum",
+            "interface",
+            "using",
+            "module",
+            "import",
+            "export",
+        ],
+        control_keywords: &[
+            "if", "elseif", "else", "switch", "for", "foreach", "while", "do", "until", "break",
+            "continue", "return", "throw", "try", "catch", "finally", "in",
+        ],
+        type_keywords: &[
+            "string",
+            "int",
+            "int64",
+            "bool",
+            "datetime",
+            "guid",
+            "hashtable",
+            "psobject",
+        ],
+        line_comment: "#",
+        block_comment_start: "",
+        block_comment_end: "",
+    })
+}
+
+/// Create a generic tokenizer configured for C#.
+pub fn csharp_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "C#",
+        extensions: &["cs"],
+        keywords: &[
+            "namespace",
+            "using",
+            "class",
+            "struct",
+            "record",
+            "interface",
+            "enum",
+            "public",
+            "private",
+            "protected",
+            "internal",
+            "static",
+            "readonly",
+            "volatile",
+            "async",
+            "await",
+            "var",
+            "new",
+            "override",
+            "virtual",
+            "sealed",
+            "partial",
+            "unsafe",
+            "fixed",
+            "stackalloc",
+            "nameof",
+            "typeof",
+            "is",
+            "as",
+            "switch",
+            "case",
+            "default",
+            "when",
+            "yield",
+            "get",
+            "set",
+            "init",
+        ],
+        control_keywords: &[
+            "if", "else", "for", "foreach", "while", "do", "break", "continue", "return", "try",
+            "catch", "finally", "throw", "lock",
+        ],
+        type_keywords: &[
+            "int",
+            "long",
+            "short",
+            "float",
+            "double",
+            "decimal",
+            "bool",
+            "char",
+            "string",
+            "object",
+            "byte",
+            "uint",
+            "ulong",
+            "ushort",
+            "sbyte",
+            "nint",
+            "nuint",
+            "Task",
+            "ValueTask",
+            "List",
+            "Dictionary",
+            "Span",
+            "ReadOnlySpan",
+            "Guid",
+            "DateTime",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for Ruby.
+pub fn ruby_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Ruby",
+        extensions: &["rb"],
+        keywords: &[
+            "def",
+            "class",
+            "module",
+            "require",
+            "include",
+            "extend",
+            "attr_reader",
+            "attr_writer",
+            "attr_accessor",
+            "private",
+            "protected",
+            "public",
+            "yield",
+            "self",
+            "super",
+            "alias",
+            "undef",
+            "begin",
+            "rescue",
+            "ensure",
+            "end",
+            "return",
+            "lambda",
+        ],
+        control_keywords: &[
+            "if", "elsif", "else", "unless", "case", "when", "while", "until", "for", "break",
+            "next", "redo", "retry", "in",
+        ],
+        type_keywords: &[
+            "String",
+            "Array",
+            "Hash",
+            "Symbol",
+            "Integer",
+            "Float",
+            "Time",
+            "Regexp",
+            "Proc",
+            "NilClass",
+            "TrueClass",
+            "FalseClass",
+        ],
+        line_comment: "#",
+        block_comment_start: "",
+        block_comment_end: "",
+    })
+}
+
+/// Create a generic tokenizer configured for Java.
+pub fn java_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Java",
+        extensions: &["java"],
+        keywords: &[
+            "package",
+            "import",
+            "class",
+            "interface",
+            "enum",
+            "record",
+            "public",
+            "private",
+            "protected",
+            "static",
+            "final",
+            "abstract",
+            "sealed",
+            "non-sealed",
+            "extends",
+            "implements",
+            "new",
+            "this",
+            "super",
+            "synchronized",
+            "volatile",
+            "transient",
+            "native",
+            "strictfp",
+            "throws",
+            "module",
+            "requires",
+            "exports",
+            "opens",
+        ],
+        control_keywords: &[
+            "if", "else", "switch", "case", "for", "while", "do", "break", "continue", "return",
+            "throw", "try", "catch", "finally", "yield",
+        ],
+        type_keywords: &[
+            "int",
+            "long",
+            "short",
+            "byte",
+            "float",
+            "double",
+            "boolean",
+            "char",
+            "void",
+            "String",
+            "Object",
+            "List",
+            "Map",
+            "Set",
+            "Optional",
+            "Stream",
+            "CompletableFuture",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for C.
+pub fn c_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "C",
+        extensions: &["c"],
+        keywords: &[
+            "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
+            "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long",
+            "register", "restrict", "return", "short", "signed", "sizeof", "static", "struct",
+            "switch", "typedef", "union", "unsigned", "void", "volatile", "while",
+        ],
+        control_keywords: &[
+            "if", "else", "switch", "case", "for", "while", "do", "break",
+        ],
+        type_keywords: &[
+            "int",
+            "long",
+            "short",
+            "float",
+            "double",
+            "char",
+            "size_t",
+            "ptrdiff_t",
+            "uint8_t",
+            "uint32_t",
+            "uint64_t",
+            "int8_t",
+            "int32_t",
+            "int64_t",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for Swift.
+pub fn swift_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Swift",
+        extensions: &["swift"],
+        keywords: &[
+            "import",
+            "class",
+            "struct",
+            "enum",
+            "protocol",
+            "extension",
+            "func",
+            "let",
+            "var",
+            "public",
+            "private",
+            "fileprivate",
+            "internal",
+            "open",
+            "static",
+            "final",
+            "mutating",
+            "nonmutating",
+            "override",
+            "lazy",
+            "init",
+            "deinit",
+            "associatedtype",
+            "where",
+            "as",
+            "is",
+            "try",
+            "await",
+            "async",
+            "throws",
+            "rethrows",
+            "some",
+            "any",
+        ],
+        control_keywords: &[
+            "if", "else", "switch", "case", "for", "while", "repeat", "break", "continue",
+            "return", "throw", "do", "catch", "guard", "defer",
+        ],
+        type_keywords: &[
+            "Int",
+            "Int64",
+            "UInt",
+            "Double",
+            "Float",
+            "Bool",
+            "String",
+            "Character",
+            "Array",
+            "Dictionary",
+            "Set",
+            "Optional",
+            "Result",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for PHP.
+pub fn php_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "PHP",
+        extensions: &["php"],
+        keywords: &[
+            "namespace",
+            "use",
+            "class",
+            "interface",
+            "trait",
+            "function",
+            "public",
+            "private",
+            "protected",
+            "static",
+            "final",
+            "abstract",
+            "extends",
+            "implements",
+            "new",
+            "clone",
+            "yield",
+            "include",
+            "require",
+            "declare",
+            "global",
+            "const",
+            "return",
+        ],
+        control_keywords: &[
+            "if", "elseif", "else", "switch", "case", "for", "foreach", "while", "do", "break",
+            "continue", "try", "catch", "finally", "throw",
+        ],
+        type_keywords: &[
+            "int", "float", "string", "bool", "array", "callable", "iterable", "object", "mixed",
+            "void", "never",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for HTML.
+pub fn html_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "HTML",
+        extensions: &["html", "htm"],
+        keywords: &[
+            "doctype", "html", "head", "body", "meta", "link", "script", "style", "div", "span",
+            "section", "header", "footer", "nav", "main", "button", "input", "form", "label",
+            "canvas",
+        ],
+        control_keywords: &[],
+        type_keywords: &[],
+        line_comment: "",
+        block_comment_start: "<!--",
+        block_comment_end: "-->",
+    })
+}
+
+/// Create a generic tokenizer configured for CSS.
+pub fn css_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "CSS",
+        extensions: &["css"],
+        keywords: &[
+            "@media",
+            "@supports",
+            "@keyframes",
+            "@layer",
+            "@import",
+            "@font-face",
+            "display",
+            "position",
+            "grid",
+            "flex",
+            "transform",
+            "transition",
+            "animation",
+            "color",
+            "background",
+            "border",
+            "padding",
+            "margin",
+            "font",
+            "opacity",
+        ],
+        control_keywords: &[],
+        type_keywords: &[],
+        line_comment: "",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for Fish shell.
+pub fn fish_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Fish",
+        extensions: &["fish"],
+        keywords: &[
+            "function",
+            "set",
+            "set_color",
+            "if",
+            "else",
+            "end",
+            "for",
+            "in",
+            "while",
+            "switch",
+            "case",
+            "break",
+            "continue",
+            "return",
+            "and",
+            "or",
+            "not",
+            "begin",
+        ],
+        control_keywords: &[],
+        type_keywords: &[],
+        line_comment: "#",
+        block_comment_start: "",
+        block_comment_end: "",
+    })
+}
+
+/// Create a generic tokenizer configured for Lua.
+pub fn lua_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Lua",
+        extensions: &["lua"],
+        keywords: &[
+            "function", "local", "end", "then", "elseif", "for", "in", "do", "repeat", "until",
+            "return", "break", "goto",
+        ],
+        control_keywords: &[
+            "if", "else", "while", "for", "repeat", "until", "break", "return",
+        ],
+        type_keywords: &["nil", "true", "false"],
+        line_comment: "--",
+        block_comment_start: "--[[",
+        block_comment_end: "]]",
+    })
+}
+
+/// Create a generic tokenizer configured for R.
+pub fn r_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "R",
+        extensions: &["r"],
+        keywords: &[
+            "function", "library", "require", "data", "set.seed", "if", "else", "for", "while",
+            "repeat", "break", "next", "return", "TRUE", "FALSE", "NULL",
+        ],
+        control_keywords: &[
+            "if", "else", "for", "while", "repeat", "break", "next", "return",
+        ],
+        type_keywords: &[
+            "numeric",
+            "integer",
+            "character",
+            "logical",
+            "list",
+            "data.frame",
+        ],
+        line_comment: "#",
+        block_comment_start: "",
+        block_comment_end: "",
+    })
+}
+
+/// Create a generic tokenizer configured for TypeScript.
+pub fn typescript_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "TypeScript",
+        extensions: &["ts", "tsx"],
+        keywords: &[
+            "function",
+            "var",
+            "let",
+            "const",
+            "class",
+            "new",
+            "delete",
+            "typeof",
+            "instanceof",
+            "void",
+            "this",
+            "super",
+            "import",
+            "export",
+            "default",
+            "from",
+            "as",
+            "of",
+            "in",
+            "async",
+            "await",
+            "interface",
+            "type",
+            "implements",
+            "extends",
+            "enum",
+            "namespace",
+            "module",
+            "declare",
+            "readonly",
+            "public",
+            "private",
+            "protected",
+            "abstract",
+            "override",
+            "satisfies",
+            "keyof",
+            "infer",
+            "asserts",
+        ],
+        control_keywords: &[
+            "if", "else", "switch", "case", "for", "while", "do", "break", "continue", "return",
+            "throw", "try", "catch", "finally", "yield",
+        ],
+        type_keywords: &[
+            "number",
+            "string",
+            "boolean",
+            "object",
+            "symbol",
+            "bigint",
+            "undefined",
+            "null",
+            "unknown",
+            "never",
+            "any",
+            "void",
+            "Array",
+            "ReadonlyArray",
+            "Promise",
+            "Map",
+            "Set",
+            "Record",
+            "Partial",
+            "Required",
+            "Pick",
+            "Omit",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for Go.
+pub fn go_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Go",
+        extensions: &["go"],
+        keywords: &[
+            "package",
+            "import",
+            "func",
+            "var",
+            "const",
+            "type",
+            "struct",
+            "interface",
+            "map",
+            "chan",
+            "go",
+            "defer",
+            "range",
+            "select",
+            "switch",
+            "case",
+            "default",
+            "fallthrough",
+        ],
+        control_keywords: &["if", "else", "for", "break", "continue", "return"],
+        type_keywords: &[
+            "string",
+            "bool",
+            "int",
+            "int64",
+            "uint64",
+            "float64",
+            "byte",
+            "rune",
+            "error",
+            "uintptr",
+            "any",
+            "comparable",
+            "context",
+        ],
+        line_comment: "//",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for SQL.
+pub fn sql_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "SQL",
+        extensions: &["sql"],
+        keywords: &[
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "JOIN",
+            "LEFT",
+            "RIGHT",
+            "INNER",
+            "OUTER",
+            "FULL",
+            "CROSS",
+            "ON",
+            "WITH",
+            "AS",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "VALUES",
+            "INTO",
+            "CREATE",
+            "ALTER",
+            "DROP",
+            "TABLE",
+            "VIEW",
+            "INDEX",
+            "AND",
+            "OR",
+            "NOT",
+            "NULL",
+            "IS",
+            "IN",
+            "EXISTS",
+            "DISTINCT",
+            "GROUP",
+            "BY",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "OFFSET",
+            "UNION",
+            "ALL",
+            "CASE",
+            "WHEN",
+            "THEN",
+            "ELSE",
+            "END",
+            "OVER",
+            "PARTITION",
+            "WINDOW",
+            "FILTER",
+            "LATERAL",
+            "RETURNING",
+            "COALESCE",
+            "CAST",
+        ],
+        control_keywords: &["BEGIN", "COMMIT", "ROLLBACK"],
+        type_keywords: &[
+            "INT",
+            "BIGINT",
+            "SMALLINT",
+            "TEXT",
+            "UUID",
+            "JSON",
+            "JSONB",
+            "TIMESTAMP",
+            "DATE",
+            "BOOLEAN",
+            "NUMERIC",
+        ],
+        line_comment: "--",
+        block_comment_start: "/*",
+        block_comment_end: "*/",
+    })
+}
+
+/// Create a generic tokenizer configured for YAML.
+pub fn yaml_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "YAML",
+        extensions: &["yaml", "yml"],
+        keywords: &["null", "NULL", "yes", "no", "on", "off"],
+        control_keywords: &[],
+        type_keywords: &[],
+        line_comment: "#",
+        block_comment_start: "",
+        block_comment_end: "",
     })
 }
 
@@ -1250,6 +2159,25 @@ impl SyntaxHighlighter {
         registry.register(Box::new(rust_tokenizer()));
         registry.register(Box::new(python_tokenizer()));
         registry.register(Box::new(javascript_tokenizer()));
+        registry.register(Box::new(typescript_tokenizer()));
+        registry.register(Box::new(go_tokenizer()));
+        registry.register(Box::new(sql_tokenizer()));
+        registry.register(Box::new(yaml_tokenizer()));
+        registry.register(Box::new(bash_tokenizer()));
+        registry.register(Box::new(cpp_tokenizer()));
+        registry.register(Box::new(kotlin_tokenizer()));
+        registry.register(Box::new(powershell_tokenizer()));
+        registry.register(Box::new(csharp_tokenizer()));
+        registry.register(Box::new(ruby_tokenizer()));
+        registry.register(Box::new(java_tokenizer()));
+        registry.register(Box::new(c_tokenizer()));
+        registry.register(Box::new(swift_tokenizer()));
+        registry.register(Box::new(php_tokenizer()));
+        registry.register(Box::new(html_tokenizer()));
+        registry.register(Box::new(css_tokenizer()));
+        registry.register(Box::new(fish_tokenizer()));
+        registry.register(Box::new(lua_tokenizer()));
+        registry.register(Box::new(r_tokenizer()));
         registry.register(Box::new(JsonTokenizer));
         registry.register(Box::new(TomlTokenizer));
         registry.register(Box::new(MarkdownTokenizer));
@@ -2962,6 +3890,25 @@ fn main() {
         reg.register(Box::new(rust_tokenizer()));
         reg.register(Box::new(python_tokenizer()));
         reg.register(Box::new(javascript_tokenizer()));
+        reg.register(Box::new(typescript_tokenizer()));
+        reg.register(Box::new(go_tokenizer()));
+        reg.register(Box::new(sql_tokenizer()));
+        reg.register(Box::new(yaml_tokenizer()));
+        reg.register(Box::new(bash_tokenizer()));
+        reg.register(Box::new(cpp_tokenizer()));
+        reg.register(Box::new(kotlin_tokenizer()));
+        reg.register(Box::new(powershell_tokenizer()));
+        reg.register(Box::new(csharp_tokenizer()));
+        reg.register(Box::new(ruby_tokenizer()));
+        reg.register(Box::new(java_tokenizer()));
+        reg.register(Box::new(c_tokenizer()));
+        reg.register(Box::new(swift_tokenizer()));
+        reg.register(Box::new(php_tokenizer()));
+        reg.register(Box::new(html_tokenizer()));
+        reg.register(Box::new(css_tokenizer()));
+        reg.register(Box::new(fish_tokenizer()));
+        reg.register(Box::new(lua_tokenizer()));
+        reg.register(Box::new(r_tokenizer()));
         reg.register(Box::new(JsonTokenizer));
         reg.register(Box::new(TomlTokenizer));
         reg.register(Box::new(MarkdownTokenizer));
@@ -2970,11 +3917,30 @@ fn main() {
         assert!(reg.for_extension("rs").is_some());
         assert!(reg.for_extension("py").is_some());
         assert!(reg.for_extension("js").is_some());
+        assert!(reg.for_extension("ts").is_some());
+        assert!(reg.for_extension("go").is_some());
+        assert!(reg.for_extension("sql").is_some());
+        assert!(reg.for_extension("yaml").is_some());
+        assert!(reg.for_extension("sh").is_some());
+        assert!(reg.for_extension("cpp").is_some());
+        assert!(reg.for_extension("kt").is_some());
+        assert!(reg.for_extension("ps1").is_some());
+        assert!(reg.for_extension("cs").is_some());
+        assert!(reg.for_extension("rb").is_some());
+        assert!(reg.for_extension("java").is_some());
+        assert!(reg.for_extension("c").is_some());
+        assert!(reg.for_extension("swift").is_some());
+        assert!(reg.for_extension("php").is_some());
+        assert!(reg.for_extension("html").is_some());
+        assert!(reg.for_extension("css").is_some());
+        assert!(reg.for_extension("fish").is_some());
+        assert!(reg.for_extension("lua").is_some());
+        assert!(reg.for_extension("r").is_some());
         assert!(reg.for_extension("json").is_some());
         assert!(reg.for_extension("toml").is_some());
         assert!(reg.for_extension("md").is_some());
         assert!(reg.for_extension("txt").is_some());
-        assert_eq!(reg.len(), 7);
+        assert_eq!(reg.len(), 26);
     }
 
     // -- Token range validation across all tokenizers -------------------------
@@ -2997,6 +3963,55 @@ fn main() {
                 "const x = async () => await fetch()",
                 &javascript_tokenizer(),
             ),
+            (
+                "type Result<T> = { ok: true; value: T } | { ok: false; error: string };",
+                &typescript_tokenizer(),
+            ),
+            ("func Map[T any](in []T) []T { return in }", &go_tokenizer()),
+            (
+                "SELECT id FROM users WHERE active = true;",
+                &sql_tokenizer(),
+            ),
+            ("service:\n  enabled: true\n  retries: 3", &yaml_tokenizer()),
+            ("#!/usr/bin/env bash\nset -euo pipefail", &bash_tokenizer()),
+            (
+                "template <typename T> T add(T a, T b) { return a + b; }",
+                &cpp_tokenizer(),
+            ),
+            (
+                "data class User(val id: Int, val name: String)",
+                &kotlin_tokenizer(),
+            ),
+            ("$ErrorActionPreference = \"Stop\"", &powershell_tokenizer()),
+            ("record User(Guid Id, string Name);", &csharp_tokenizer()),
+            (
+                "class User; def initialize(id); @id = id; end; end",
+                &ruby_tokenizer(),
+            ),
+            (
+                "public record User(String id, int age) {}",
+                &java_tokenizer(),
+            ),
+            ("typedef struct { int id; } user_t;", &c_tokenizer()),
+            ("struct User: Codable { let id: UUID }", &swift_tokenizer()),
+            (
+                "<?php final class User { public function __construct(public string $id) {} }",
+                &php_tokenizer(),
+            ),
+            (
+                "<!doctype html><main><h1>Hello</h1></main>",
+                &html_tokenizer(),
+            ),
+            (
+                "@media (min-width: 768px) { .app { display: grid; } }",
+                &css_tokenizer(),
+            ),
+            ("function foo; set -l x 1; end", &fish_tokenizer()),
+            (
+                "local function add(a, b) return a + b end",
+                &lua_tokenizer(),
+            ),
+            ("x <- c(1, 2, 3); mean(x)", &r_tokenizer()),
         ];
 
         for (source, tokenizer) in snippets {
@@ -3019,6 +4034,25 @@ fn main() {
         assert!(langs.contains(&"Rust"));
         assert!(langs.contains(&"Python"));
         assert!(langs.contains(&"JavaScript"));
+        assert!(langs.contains(&"TypeScript"));
+        assert!(langs.contains(&"Go"));
+        assert!(langs.contains(&"SQL"));
+        assert!(langs.contains(&"YAML"));
+        assert!(langs.contains(&"Bash"));
+        assert!(langs.contains(&"C++"));
+        assert!(langs.contains(&"Kotlin"));
+        assert!(langs.contains(&"PowerShell"));
+        assert!(langs.contains(&"C#"));
+        assert!(langs.contains(&"Ruby"));
+        assert!(langs.contains(&"Java"));
+        assert!(langs.contains(&"C"));
+        assert!(langs.contains(&"Swift"));
+        assert!(langs.contains(&"PHP"));
+        assert!(langs.contains(&"HTML"));
+        assert!(langs.contains(&"CSS"));
+        assert!(langs.contains(&"Fish"));
+        assert!(langs.contains(&"Lua"));
+        assert!(langs.contains(&"R"));
         assert!(langs.contains(&"JSON"));
         assert!(langs.contains(&"TOML"));
         assert!(langs.contains(&"Markdown"));

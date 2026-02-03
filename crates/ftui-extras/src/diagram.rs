@@ -38,6 +38,7 @@
 //! 3. Pads shorter lines to align with the longest
 //! 4. Iterates until alignment converges
 
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 // ---------------------------------------------------------------------------
@@ -123,15 +124,30 @@ pub fn char_width(c: char) -> usize {
     c.width().unwrap_or(0)
 }
 
+/// Calculate the visual width of a single grapheme cluster.
+///
+/// Grapheme clusters can contain multiple code points (emoji sequences,
+/// combining marks, etc.). We treat the cluster as a single terminal glyph
+/// whose width is the maximum width of its constituent code points.
+#[inline]
+#[must_use]
+pub fn grapheme_width(grapheme: &str) -> usize {
+    grapheme.chars().map(char_width).max().unwrap_or(0)
+}
+
 /// Calculate the visual width of a string in terminal columns.
 ///
-/// Handles different character widths:
+/// Handles different character widths using grapheme cluster boundaries:
 /// - ASCII characters: 1 column each
 /// - CJK characters (Chinese, Japanese, Korean): 2 columns each
-/// - Emoji and other wide Unicode: 2 columns each
+/// - Emoji ZWJ/flag sequences: 2 columns (cluster width, not sum of code points)
 #[must_use]
 pub fn visual_width(s: &str) -> usize {
-    s.chars().map(char_width).sum()
+    if s.is_ascii() {
+        return s.len();
+    }
+
+    s.graphemes(true).map(grapheme_width).sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +524,9 @@ mod tests {
         assert_eq!(visual_width("你好"), 4); // CJK = 2 each
         assert_eq!(visual_width("Hi世界"), 6); // 2 ASCII + 2 CJK
         assert_eq!(visual_width("┌──┐"), 4); // Box drawing = 1 each
+        assert_eq!(visual_width("👍🏻"), 2); // Emoji + skin tone modifier = 2 cells
+        assert_eq!(visual_width("🇺🇸"), 2); // Flag emoji = 2 cells
+        assert_eq!(visual_width("👨‍👩‍👧"), 2); // ZWJ sequence = 2 cells
     }
 
     #[test]
