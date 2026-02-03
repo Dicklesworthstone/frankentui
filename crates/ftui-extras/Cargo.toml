@@ -77,6 +77,21 @@ name = "text_effects_bench"
 harness = false
 required-features = ["text-effects"]
 
+[[bench]]
+name = "metaballs_bench"
+harness = false
+required-features = ["visual-fx"]
+
+[[bench]]
+name = "visual_fx_bench"
+harness = false
+required-features = ["visual-fx"]
+
+[[bench]]
+name = "plasma_bench"
+harness = false
+required-features = ["visual-fx"]
+
 [[test]]
 name = "backdrop_composition_tests"
 required-features = ["visual-fx"]
