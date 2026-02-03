@@ -425,16 +425,28 @@ impl<W: Write> Presenter<W> {
         // Emit link changes if needed
         self.emit_link_changes(effective_cell, links)?;
 
-        // Emit the cell content
-        self.emit_content(effective_cell, pool)?;
+        // Calculate effective width and check for zero-width content (e.g. combining marks)
+        // stored as standalone cells. These must be replaced to maintain grid alignment.
+        let raw_width = effective_cell.content.width();
+        let is_zero_width_content =
+            raw_width == 0 && !effective_cell.is_empty() && !effective_cell.is_continuation();
+
+        if is_zero_width_content {
+            // Replace with U+FFFD Replacement Character (width 1)
+            self.writer.write_all(b"\xEF\xBF\xBD")?;
+        } else {
+            // Emit normal content
+            self.emit_content(effective_cell, pool)?;
+        }
 
         // Update cursor position (character output advances cursor)
         if let Some(cx) = self.cursor_x {
-            // Empty cells are emitted as spaces (width 1)
-            let width = if effective_cell.is_empty() {
+            // Empty cells are emitted as spaces (width 1).
+            // Zero-width content replaced by U+FFFD is width 1.
+            let width = if effective_cell.is_empty() || is_zero_width_content {
                 1
             } else {
-                effective_cell.content.width()
+                raw_width
             };
             self.cursor_x = Some(cx.saturating_add(width as u16));
         }
@@ -753,6 +765,7 @@ impl<W: Write> Presenter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::CellContent;
 
     fn test_presenter() -> Presenter<Vec<u8>> {
         let caps = TerminalCapabilities::basic();
@@ -2465,6 +2478,49 @@ mod tests {
         assert!(
             presenter.current_style.is_none(),
             "Style should be reset after frame end"
+        );
+    }
+
+    #[test]
+    fn zero_width_chars_replaced_with_placeholder() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(5, 1);
+
+        // U+0301 is COMBINING ACUTE ACCENT (width 0).
+        // It is not empty, not continuation, not grapheme (unless pooled).
+        // Storing it directly as a char means it's a standalone cell content.
+        let zw_char = '\u{0301}';
+        
+        // Ensure our assumption about width is correct for this environment
+        assert_eq!(Cell::from_char(zw_char).content.width(), 0);
+
+        buffer.set_raw(0, 0, Cell::from_char(zw_char));
+        buffer.set_raw(1, 0, Cell::from_char('A'));
+
+        let old = Buffer::new(5, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter.present(&buffer, &diff).unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Should contain U+FFFD (Replacement Character)
+        assert!(
+            output_str.contains("\u{FFFD}"),
+            "Expected replacement character for zero-width content, got: {:?}",
+            output_str
+        );
+
+        // Should NOT contain the raw combining mark
+        assert!(
+            !output_str.contains(zw_char),
+            "Should not contain raw zero-width char"
+        );
+        
+        // Should contain 'A' (verify cursor sync didn't swallow it)
+        assert!(
+            output_str.contains('A'),
+            "Should contain subsequent character 'A'"
         );
     }
 }

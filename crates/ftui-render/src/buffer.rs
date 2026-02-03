@@ -573,22 +573,39 @@ impl Buffer {
                 continue;
             };
 
-            for dx in 0..src_rect.width {
+            let mut dx = 0;
+            while dx < src_rect.width {
                 // Compute coordinates with overflow checks
                 let Some(target_x) = dst_x.checked_add(dx) else {
+                    dx += 1;
                     continue;
                 };
                 let Some(sx) = src_rect.x.checked_add(dx) else {
+                    dx += 1;
                     continue;
                 };
 
                 if let Some(cell) = src.get(sx, sy) {
-                    let cell_to_write = if dx == 0 && cell.is_continuation() {
-                        Cell::default()
+                    // Handle dangling tail at start of copy region
+                    if dx == 0 && cell.is_continuation() {
+                        self.set(target_x, target_y, Cell::default());
+                        dx += 1;
+                        continue;
+                    }
+
+                    // Write the cell
+                    self.set(target_x, target_y, *cell);
+
+                    // If it was a wide char, skip the tails in the source iteration
+                    // because `set` already handled them (or rejected the whole char).
+                    let width = cell.content.width();
+                    if width > 1 {
+                        dx += width as u16;
                     } else {
-                        *cell
-                    };
-                    self.set(target_x, target_y, cell_to_write);
+                        dx += 1;
+                    }
+                } else {
+                    dx += 1;
                 }
             }
         }
