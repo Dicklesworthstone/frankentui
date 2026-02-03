@@ -371,6 +371,42 @@ fn forms_input_tab_down_120x40() {
 }
 
 // ============================================================================
+// Form Validation Demo
+// ============================================================================
+
+#[test]
+fn form_validation_initial_120x40() {
+    let screen = ftui_demo_showcase::screens::form_validation::FormValidationDemo::new();
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("form_validation_initial_120x40", &frame.buffer);
+}
+
+#[test]
+fn form_validation_submit_errors_120x40() {
+    let mut screen = ftui_demo_showcase::screens::form_validation::FormValidationDemo::new();
+    screen.update(&press(KeyCode::Enter));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("form_validation_submit_errors_120x40", &frame.buffer);
+}
+
+#[test]
+fn form_validation_mode_toggle_80x24() {
+    let mut screen = ftui_demo_showcase::screens::form_validation::FormValidationDemo::new();
+    screen.update(&press(KeyCode::Char('m')));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    screen.view(&mut frame, area);
+    assert_snapshot!("form_validation_mode_toggle_80x24", &frame.buffer);
+}
+
+// ============================================================================
 // Data Viz
 // ============================================================================
 
