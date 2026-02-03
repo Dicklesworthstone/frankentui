@@ -257,7 +257,7 @@ impl Screen for MousePlayground {
             .title(" Hit-Test Targets ")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(theme::surface());
+            .style(Style::new().bg(theme::bg::SURFACE));
         let inner_left = left_block.inner(left_area);
         left_block.render(left_area, frame);
 
@@ -273,7 +273,7 @@ impl Screen for MousePlayground {
             .title(" Event Log ")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(theme::surface());
+            .style(Style::new().bg(theme::bg::SURFACE));
         let log_inner = log_block.inner(right_chunks[0]);
         log_block.render(right_chunks[0], frame);
         self.render_event_log(frame, log_inner);
@@ -283,7 +283,7 @@ impl Screen for MousePlayground {
             .title(" Stats ")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(theme::surface());
+            .style(Style::new().bg(theme::bg::SURFACE));
         let stats_inner = stats_block.inner(right_chunks[1]);
         stats_block.render(right_chunks[1], frame);
         self.render_stats(frame, stats_inner);
@@ -350,15 +350,15 @@ impl MousePlayground {
 
             // Style based on hover/click state
             let style = if target.hovered {
-                theme::accent().bg(theme::accent_color())
+                Style::new().fg(theme::accent::PRIMARY).bg(theme::accent::PRIMARY)
             } else {
-                theme::surface()
+                Style::new().bg(theme::bg::SURFACE)
             };
 
             let border_style = if target.hovered {
-                theme::accent()
+                Style::new().fg(theme::accent::PRIMARY)
             } else {
-                theme::border()
+                Style::new().fg(theme::fg::SECONDARY)
             };
 
             // Render target block
@@ -418,7 +418,7 @@ impl MousePlayground {
 
         let text = lines.join("\n");
         Paragraph::new(text)
-            .style(theme::text())
+            .style(Style::new().fg(theme::fg::PRIMARY))
             .render(area, frame);
     }
 
@@ -443,7 +443,7 @@ impl MousePlayground {
         );
 
         Paragraph::new(stats)
-            .style(theme::text())
+            .style(Style::new().fg(theme::fg::PRIMARY))
             .render(area, frame);
     }
 
@@ -454,7 +454,7 @@ impl MousePlayground {
         if let Some((x, y)) = self.last_mouse_pos {
             if x < area.x + area.width && y < area.y + area.height {
                 // Draw crosshair at mouse position
-                let crosshair_style = theme::accent();
+                let crosshair_style = Style::new().fg(theme::accent::PRIMARY);
 
                 // Horizontal line (within bounds)
                 let h_start = area.x;

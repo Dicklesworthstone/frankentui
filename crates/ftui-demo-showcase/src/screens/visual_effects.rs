@@ -20,7 +20,10 @@ use std::time::Instant;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::canvas::{CanvasRef, Mode, Painter};
-use ftui_extras::text_effects::{ColorGradient, TransitionState};
+use ftui_extras::text_effects::{
+    AsciiArtStyle, AsciiArtText, ColorGradient, Direction, Easing, Reflection, StyledText,
+    TextEffect, TransitionState,
+};
 use ftui_extras::visual_fx::{
     Backdrop, FxQuality, MetaballsFx, PlasmaFx, PlasmaPalette, ThemeInputs,
 };
@@ -93,6 +96,11 @@ pub struct VisualEffectsScreen {
     transition: TransitionState,
     /// Cached painter buffer (grow-only) for canvas rendering.
     painter: RefCell<Painter>,
+    // Text effects demo (bd-2b82)
+    /// Current demo mode: Canvas or TextEffects
+    demo_mode: DemoMode,
+    /// Text effects demo state
+    text_effects: TextEffectsDemo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +193,390 @@ impl EffectType {
             Self::WaveInterference => "Multiple wave sources creating interference patterns",
             Self::Spiral => "Logarithmic spiral galaxy with rotating star field",
             Self::SpinLattice => "Landau-Lifshitz spin dynamics on a magnetic lattice",
+        }
+    }
+}
+
+// =============================================================================
+// Text Effects Demo (bd-2b82)
+// =============================================================================
+
+/// Demo mode: Canvas-based effects vs Text effects
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum DemoMode {
+    /// Canvas-based visual effects (metaballs, plasma, etc.)
+    #[default]
+    Canvas,
+    /// Text effects demo (gradients, animations, typography)
+    TextEffects,
+}
+
+/// Text effects tab categories (1-6 keys to switch)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TextEffectsTab {
+    /// Horizontal, Vertical, Diagonal, Radial, Animated gradients
+    #[default]
+    Gradients,
+    /// Wave, Bounce, Shake, Cascade, Pulse, Breathing
+    Animations,
+    /// Shadow, Glow, Outline, Mirror, ASCII Art
+    Typography,
+    /// Glitch, Chromatic, Scanline, Matrix
+    SpecialFx,
+    /// Preset effect combinations (placeholder for bd-4r5h)
+    Presets,
+    /// User-toggleable effect combinations
+    Combinations,
+}
+
+impl TextEffectsTab {
+    const ALL: &[Self] = &[
+        Self::Gradients,
+        Self::Animations,
+        Self::Typography,
+        Self::SpecialFx,
+        Self::Presets,
+        Self::Combinations,
+    ];
+
+    fn from_key(n: u8) -> Option<Self> {
+        match n {
+            1 => Some(Self::Gradients),
+            2 => Some(Self::Animations),
+            3 => Some(Self::Typography),
+            4 => Some(Self::SpecialFx),
+            5 => Some(Self::Presets),
+            6 => Some(Self::Combinations),
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|&t| t == self).unwrap_or(0)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Gradients => "Gradients",
+            Self::Animations => "Animations",
+            Self::Typography => "Typography",
+            Self::SpecialFx => "Special FX",
+            Self::Presets => "Presets",
+            Self::Combinations => "Combos",
+        }
+    }
+
+    fn effect_count(self) -> usize {
+        match self {
+            Self::Gradients => 5,    // Horizontal, Vertical, Diagonal, Radial, Animated
+            Self::Animations => 6,   // Wave, Bounce, Shake, Cascade, Pulse, OrganicPulse
+            Self::Typography => 5,   // Shadow, Glow, Outline, Mirror, ASCII Art
+            Self::SpecialFx => 4,    // Glitch, Chromatic, Scanline, Matrix
+            Self::Presets => 3,      // Placeholder: neon, retro, elegant
+            Self::Combinations => 4, // Custom combo builder slots
+        }
+    }
+}
+
+/// State for the text effects demo
+#[derive(Debug)]
+struct TextEffectsDemo {
+    /// Current tab
+    tab: TextEffectsTab,
+    /// Current effect index within tab (0..tab.effect_count())
+    effect_idx: usize,
+    /// Animation time (0.0..1.0 cycles)
+    time: f64,
+    /// Easing comparison mode
+    easing_mode: bool,
+    /// Current easing function
+    easing: Easing,
+    /// Combination mode: which effects are enabled [gradient, animation, typography, specialfx]
+    combo_enabled: [bool; 4],
+    /// Demo text to display
+    demo_text: &'static str,
+    /// ASCII art cache
+    ascii_cache: Option<AsciiArtText>,
+}
+
+impl Default for TextEffectsDemo {
+    fn default() -> Self {
+        Self {
+            tab: TextEffectsTab::Gradients,
+            effect_idx: 0,
+            time: 0.0,
+            easing_mode: false,
+            easing: Easing::Linear,
+            combo_enabled: [true, false, false, false],
+            demo_text: "FrankenTUI",
+            ascii_cache: None,
+        }
+    }
+}
+
+impl TextEffectsDemo {
+    /// Get the current effect name
+    fn current_effect_name(&self) -> &'static str {
+        match self.tab {
+            TextEffectsTab::Gradients => match self.effect_idx {
+                0 => "Horizontal Gradient",
+                1 => "Vertical Gradient",
+                2 => "Diagonal Gradient",
+                3 => "Radial Gradient",
+                _ => "Animated Gradient",
+            },
+            TextEffectsTab::Animations => match self.effect_idx {
+                0 => "Wave",
+                1 => "Bounce",
+                2 => "Shake",
+                3 => "Cascade",
+                4 => "Pulse",
+                _ => "Organic Breathing",
+            },
+            TextEffectsTab::Typography => match self.effect_idx {
+                0 => "Shadow",
+                1 => "Glow",
+                2 => "Outline",
+                3 => "Mirror Reflection",
+                _ => "ASCII Art",
+            },
+            TextEffectsTab::SpecialFx => match self.effect_idx {
+                0 => "Glitch",
+                1 => "Chromatic Aberration",
+                2 => "Scanline",
+                _ => "Matrix Style",
+            },
+            TextEffectsTab::Presets => match self.effect_idx {
+                0 => "Neon Sign",
+                1 => "Retro Terminal",
+                _ => "Elegant Fade",
+            },
+            TextEffectsTab::Combinations => "Custom Combo",
+        }
+    }
+
+    /// Get description for current effect
+    fn current_effect_description(&self) -> &'static str {
+        match self.tab {
+            TextEffectsTab::Gradients => match self.effect_idx {
+                0 => "Rainbow colors flowing left to right",
+                1 => "Gradient transitioning from top to bottom",
+                2 => "45° diagonal color sweep",
+                3 => "Colors radiating from center outward",
+                _ => "Moving rainbow animation",
+            },
+            TextEffectsTab::Animations => match self.effect_idx {
+                0 => "Characters oscillate in a sine wave pattern",
+                1 => "Characters bounce with physics simulation",
+                2 => "Random jitter for emphasis or alerts",
+                3 => "Sequential reveal from direction",
+                4 => "Brightness pulsing at steady rate",
+                _ => "Natural breathing with asymmetric timing",
+            },
+            TextEffectsTab::Typography => match self.effect_idx {
+                0 => "Drop shadow for depth perception",
+                1 => "Neon-style glow around characters",
+                2 => "Bold outline for high contrast",
+                3 => "Reflected text below baseline",
+                _ => "Large block-style ASCII characters",
+            },
+            TextEffectsTab::SpecialFx => match self.effect_idx {
+                0 => "Random character corruption and flicker",
+                1 => "RGB channel separation for 3D effect",
+                2 => "CRT-style horizontal lines",
+                _ => "Digital rain character styling",
+            },
+            TextEffectsTab::Presets => match self.effect_idx {
+                0 => "Glowing neon with pulsing animation",
+                1 => "Green phosphor terminal aesthetic",
+                _ => "Subtle fade with smooth transitions",
+            },
+            TextEffectsTab::Combinations => "Mix and match effects with number keys",
+        }
+    }
+
+    /// Cycle to next effect within current tab
+    fn next_effect(&mut self) {
+        let count = self.tab.effect_count();
+        self.effect_idx = (self.effect_idx + 1) % count;
+    }
+
+    /// Build the current text effect
+    fn build_effect(&self) -> TextEffect {
+        match self.tab {
+            TextEffectsTab::Gradients => self.build_gradient_effect(),
+            TextEffectsTab::Animations => self.build_animation_effect(),
+            TextEffectsTab::Typography => self.build_typography_effect(),
+            TextEffectsTab::SpecialFx => self.build_special_fx_effect(),
+            TextEffectsTab::Presets => self.build_preset_effect(),
+            TextEffectsTab::Combinations => self.build_combo_effect(),
+        }
+    }
+
+    fn build_gradient_effect(&self) -> TextEffect {
+        match self.effect_idx {
+            0 => TextEffect::HorizontalGradient {
+                gradient: ColorGradient::rainbow(),
+            },
+            1 => TextEffect::VerticalGradient {
+                gradient: ColorGradient::sunset(),
+            },
+            2 => TextEffect::DiagonalGradient {
+                gradient: ColorGradient::ocean(),
+                angle: 45.0,
+            },
+            3 => TextEffect::RadialGradient {
+                gradient: ColorGradient::fire(),
+                center: (0.5, 0.5),
+                aspect: 1.5,
+            },
+            _ => TextEffect::AnimatedGradient {
+                gradient: ColorGradient::rainbow(),
+                speed: 0.5,
+            },
+        }
+    }
+
+    fn build_animation_effect(&self) -> TextEffect {
+        match self.effect_idx {
+            0 => TextEffect::Wave {
+                amplitude: 1.5,
+                wavelength: 8.0,
+                speed: 2.0,
+                direction: Direction::Vertical,
+            },
+            1 => TextEffect::Bounce {
+                height: 2.0,
+                speed: 1.5,
+                stagger: 0.1,
+                damping: 0.85,
+            },
+            2 => TextEffect::Shake {
+                intensity: 1.0,
+                speed: 15.0,
+                seed: 42,
+            },
+            3 => TextEffect::Cascade {
+                speed: 8.0,
+                direction: Direction::Right,
+                stagger: 0.1,
+            },
+            4 => TextEffect::Pulse {
+                speed: 1.5,
+                min_alpha: 0.3,
+            },
+            _ => TextEffect::OrganicPulse {
+                speed: 0.5,
+                min_brightness: 0.4,
+                asymmetry: 0.6,
+                phase_variation: 0.2,
+                seed: 42,
+            },
+        }
+    }
+
+    fn build_typography_effect(&self) -> TextEffect {
+        match self.effect_idx {
+            0 | 1 | 2 | 3 => {
+                // Shadow, Glow, Outline, Mirror are handled specially in render
+                TextEffect::None
+            }
+            _ => {
+                // ASCII Art is handled specially
+                TextEffect::None
+            }
+        }
+    }
+
+    fn build_special_fx_effect(&self) -> TextEffect {
+        match self.effect_idx {
+            0 => TextEffect::Glitch {
+                intensity: 0.3 + 0.2 * (self.time * TAU).sin(),
+            },
+            1 => TextEffect::ChromaticAberration {
+                offset: 2,
+                direction: Direction::Horizontal,
+                animated: true,
+                speed: 0.5,
+            },
+            2 | 3 => {
+                // Scanline and Matrix handled specially
+                TextEffect::None
+            }
+            _ => TextEffect::None,
+        }
+    }
+
+    fn build_preset_effect(&self) -> TextEffect {
+        // Presets will be implemented in bd-4r5h
+        // For now, provide simple demonstrations
+        match self.effect_idx {
+            0 => TextEffect::PulsingGlow {
+                color: PackedRgba::rgb(0, 255, 200),
+                speed: 2.0,
+            },
+            1 => TextEffect::HorizontalGradient {
+                gradient: ColorGradient::new(vec![
+                    PackedRgba::rgb(0, 180, 0),
+                    PackedRgba::rgb(0, 255, 0),
+                    PackedRgba::rgb(100, 255, 100),
+                ]),
+            },
+            _ => TextEffect::Pulse {
+                speed: 0.8,
+                min_alpha: 0.5,
+            },
+        }
+    }
+
+    fn build_combo_effect(&self) -> TextEffect {
+        // Combinations return the first enabled effect
+        // Multiple effects are composed in render
+        if self.combo_enabled[0] {
+            TextEffect::RainbowGradient { speed: 0.3 }
+        } else if self.combo_enabled[1] {
+            TextEffect::Wave {
+                amplitude: 1.0,
+                wavelength: 10.0,
+                speed: 1.5,
+                direction: Direction::Vertical,
+            }
+        } else if self.combo_enabled[2] {
+            TextEffect::Glow {
+                color: PackedRgba::rgb(100, 200, 255),
+                intensity: 0.8,
+            }
+        } else if self.combo_enabled[3] {
+            TextEffect::Glitch { intensity: 0.2 }
+        } else {
+            TextEffect::None
+        }
+    }
+
+    /// Update animation time
+    fn tick(&mut self) {
+        self.time += 0.02;
+        if self.time > 1.0 {
+            self.time -= 1.0;
+        }
+    }
+
+    /// Cycle through easing functions
+    fn next_easing(&mut self) {
+        self.easing = match self.easing {
+            Easing::Linear => Easing::EaseIn,
+            Easing::EaseIn => Easing::EaseOut,
+            Easing::EaseOut => Easing::EaseInOut,
+            Easing::EaseInOut => Easing::Bounce,
+            Easing::Bounce => Easing::Elastic,
+            Easing::Elastic => Easing::Linear,
+        };
+    }
+
+    /// Toggle a combo effect by index (1-4)
+    fn toggle_combo(&mut self, idx: usize) {
+        if idx < 4 {
+            self.combo_enabled[idx] = !self.combo_enabled[idx];
         }
     }
 }
@@ -2147,6 +2539,9 @@ impl Default for VisualEffectsScreen {
             // Transition overlay
             transition: TransitionState::new(),
             painter: RefCell::new(Painter::new(0, 0, Mode::Braille)),
+            // Text effects demo (bd-2b82)
+            demo_mode: DemoMode::Canvas,
+            text_effects: TextEffectsDemo::default(),
         }
     }
 }

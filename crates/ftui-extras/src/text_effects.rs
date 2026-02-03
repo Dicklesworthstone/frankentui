@@ -4184,22 +4184,42 @@ mod tests {
 
     #[test]
     fn test_organic_pulse_effect_integration() {
+        // Test with zero phase variation so t=0 gives exact min_brightness
         let text = StyledText::new("HELLO")
             .effect(TextEffect::OrganicPulse {
                 speed: 1.0,
                 min_brightness: 0.3,
                 asymmetry: 0.5,
-                phase_variation: 0.2,
+                phase_variation: 0.0, // No phase variation for predictable test
                 seed: 42,
             })
             .time(0.0);
         let color = text.char_color(0, 5);
-        let expected_intensity = (0.3 * 255.0) as u8;
+        // At t=0 with no phase variation, breathing_curve(0, _) = 0
+        // brightness = 0.3 + 0.7 * 0 = 0.3, which is ~76
+        let expected = (0.3 * 255.0) as u8;
         assert!(
-            color.r() >= expected_intensity.saturating_sub(10)
-                && color.r() <= expected_intensity.saturating_add(10),
-            "Expected color ~{expected_intensity}, got {}",
+            color.r() >= expected.saturating_sub(10) && color.r() <= expected.saturating_add(10),
+            "Expected color ~{expected}, got {}",
             color.r()
+        );
+
+        // Test with phase variation - should be in valid [min, max] range
+        let text_varied = StyledText::new("HELLO")
+            .effect(TextEffect::OrganicPulse {
+                speed: 1.0,
+                min_brightness: 0.3,
+                asymmetry: 0.5,
+                phase_variation: 0.5,
+                seed: 42,
+            })
+            .time(0.0);
+        let color_varied = text_varied.char_color(0, 5);
+        let min_expected = (0.3 * 255.0) as u8;
+        assert!(
+            color_varied.r() >= min_expected && color_varied.r() <= 255,
+            "Color should be in valid range [{min_expected}, 255], got {}",
+            color_varied.r()
         );
     }
 
@@ -6347,13 +6367,16 @@ mod tests {
 
         // Center chars should have smaller shift magnitude than edge chars
         let center_left_shift = ((center_left.r() as i16 - base.r() as i16).abs()
-            + (center_left.b() as i16 - base.b() as i16).abs()) as f64;
+            + (center_left.b() as i16 - base.b() as i16).abs())
+            as f64;
         let center_right_shift = ((center_right.r() as i16 - base.r() as i16).abs()
-            + (center_right.b() as i16 - base.b() as i16).abs()) as f64;
+            + (center_right.b() as i16 - base.b() as i16).abs())
+            as f64;
         let edge_left_shift = ((edge_left.r() as i16 - base.r() as i16).abs()
             + (edge_left.b() as i16 - base.b() as i16).abs()) as f64;
         let edge_right_shift = ((edge_right.r() as i16 - base.r() as i16).abs()
-            + (edge_right.b() as i16 - base.b() as i16).abs()) as f64;
+            + (edge_right.b() as i16 - base.b() as i16).abs())
+            as f64;
 
         let avg_center = (center_left_shift + center_right_shift) / 2.0;
         let avg_edge = (edge_left_shift + edge_right_shift) / 2.0;

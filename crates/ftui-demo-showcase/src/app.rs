@@ -940,6 +940,7 @@ impl AppModel {
             ScreenId::Notifications => self.screens.notifications.keybindings(),
             ScreenId::ActionTimeline => self.screens.action_timeline.keybindings(),
             ScreenId::IntrinsicSizing => self.screens.intrinsic_sizing.keybindings(),
+            ScreenId::MousePlayground => self.screens.mouse_playground.keybindings(),
         };
         // Convert screens::HelpEntry to chrome::HelpEntry (same struct, different module).
         entries
