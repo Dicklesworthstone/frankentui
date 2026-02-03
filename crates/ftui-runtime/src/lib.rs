@@ -54,7 +54,7 @@ pub use stdio_capture::{CapturedWriter, StdioCapture, StdioCaptureError};
 pub use eprocess_throttle::{
     EProcessThrottle, ThrottleConfig, ThrottleDecision, ThrottleLog, ThrottleStats,
 };
-pub use reactive::Observable;
+pub use reactive::{Computed, Observable};
 pub use resize_coalescer::{
     CoalesceAction, CoalescerConfig, CoalescerStats, DecisionLog, Regime, ResizeCoalescer,
 };
