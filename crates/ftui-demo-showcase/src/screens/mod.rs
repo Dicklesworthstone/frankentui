@@ -9,6 +9,7 @@ pub mod action_timeline;
 pub mod advanced_features;
 pub mod advanced_text_editor;
 pub mod code_explorer;
+pub mod form_validation;
 pub mod dashboard;
 pub mod data_viz;
 pub mod file_browser;

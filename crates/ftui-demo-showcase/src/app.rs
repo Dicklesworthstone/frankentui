@@ -76,6 +76,8 @@ pub enum ScreenId {
     AdvancedTextEditor,
     /// Mouse/hit-test playground (bd-bksf).
     MousePlayground,
+    /// Form validation demo (bd-34pj.5).
+    FormValidation,
 }
 
 impl ScreenId {
@@ -101,6 +103,7 @@ impl ScreenId {
         Self::IntrinsicSizing,
         Self::AdvancedTextEditor,
         Self::MousePlayground,
+        Self::FormValidation,
     ];
 
     /// 0-based index in the ALL array.
@@ -143,6 +146,7 @@ impl ScreenId {
             Self::IntrinsicSizing => "Intrinsic Sizing",
             Self::AdvancedTextEditor => "Advanced Text Editor",
             Self::MousePlayground => "Mouse Playground",
+            Self::FormValidation => "Form Validation",
         }
     }
 
@@ -169,6 +173,7 @@ impl ScreenId {
             Self::IntrinsicSizing => "Sizing",
             Self::AdvancedTextEditor => "Editor",
             Self::MousePlayground => "Mouse",
+            Self::FormValidation => "Validate",
         }
     }
 
@@ -195,6 +200,7 @@ impl ScreenId {
             Self::IntrinsicSizing => "IntrinsicSizing",
             Self::AdvancedTextEditor => "AdvancedTextEditor",
             Self::MousePlayground => "MousePlayground",
+            Self::FormValidation => "FormValidation",
         }
     }
 
@@ -256,9 +262,11 @@ pub struct ScreenStates {
     pub advanced_text_editor: screens::advanced_text_editor::AdvancedTextEditor,
     /// Mouse/hit-test playground screen state (bd-bksf).
     pub mouse_playground: screens::mouse_playground::MousePlayground,
+    /// Form validation demo screen state (bd-34pj.5).
+    pub form_validation: screens::form_validation::FormValidationDemo,
     /// Tracks whether each screen has errored during rendering.
     /// Indexed by `ScreenId::index()`.
-    screen_errors: [Option<String>; 20],
+    screen_errors: [Option<String>; 21],
 }
 
 impl ScreenStates {
@@ -326,6 +334,9 @@ impl ScreenStates {
             ScreenId::MousePlayground => {
                 self.mouse_playground.update(event);
             }
+            ScreenId::FormValidation => {
+                self.form_validation.update(event);
+            }
         }
     }
 
@@ -352,6 +363,7 @@ impl ScreenStates {
         self.intrinsic_sizing.tick(tick_count);
         self.advanced_text_editor.tick(tick_count);
         self.mouse_playground.tick(tick_count);
+        self.form_validation.tick(tick_count);
     }
 
     fn apply_theme(&mut self) {
@@ -401,6 +413,7 @@ impl ScreenStates {
                 ScreenId::IntrinsicSizing => self.intrinsic_sizing.view(frame, area),
                 ScreenId::AdvancedTextEditor => self.advanced_text_editor.view(frame, area),
                 ScreenId::MousePlayground => self.mouse_playground.view(frame, area),
+                ScreenId::FormValidation => self.form_validation.view(frame, area),
             }
         }));
 
@@ -956,6 +969,7 @@ impl AppModel {
             ScreenId::IntrinsicSizing => self.screens.intrinsic_sizing.keybindings(),
             ScreenId::AdvancedTextEditor => self.screens.advanced_text_editor.keybindings(),
             ScreenId::MousePlayground => self.screens.mouse_playground.keybindings(),
+            ScreenId::FormValidation => self.screens.form_validation.keybindings(),
         };
         // Convert screens::HelpEntry to chrome::HelpEntry (same struct, different module).
         entries
@@ -1312,7 +1326,7 @@ mod tests {
         assert_eq!(app.current_screen, ScreenId::Dashboard);
 
         app.update(AppMsg::PrevScreen);
-        assert_eq!(app.current_screen, ScreenId::MousePlayground);
+        assert_eq!(app.current_screen, ScreenId::FormValidation);
     }
 
     #[test]
@@ -1390,7 +1404,7 @@ mod tests {
     fn screen_next_prev_wraps() {
         assert_eq!(ScreenId::Dashboard.next(), ScreenId::Shakespeare);
         assert_eq!(ScreenId::VisualEffects.next(), ScreenId::ResponsiveDemo);
-        assert_eq!(ScreenId::Dashboard.prev(), ScreenId::MousePlayground);
+        assert_eq!(ScreenId::Dashboard.prev(), ScreenId::FormValidation);
         assert_eq!(ScreenId::Shakespeare.prev(), ScreenId::Dashboard);
     }
 
@@ -1569,7 +1583,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(ScreenId::ALL.len(), 20);
+        assert_eq!(ScreenId::ALL.len(), 21);
     }
 
     // -----------------------------------------------------------------------
