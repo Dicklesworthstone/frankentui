@@ -484,7 +484,7 @@ impl<'a> StatefulWidget for Table<'a> {
         // For v1 basic Table, we just render from state.offset
 
         for (i, row) in self.rows.iter().enumerate().skip(state.offset) {
-            if row.height > max_y.saturating_sub(y) {
+            if y >= max_y {
                 break;
             }
 

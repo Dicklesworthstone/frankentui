@@ -4,7 +4,7 @@
 //!
 //! A widget to display a scrollbar.
 
-use crate::{StatefulWidget, Widget};
+use crate::{StatefulWidget, Widget, draw_text_span};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -203,13 +203,8 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 
             // Only draw if within bounds (redundant check but safe)
             if x < area.right() && y < area.bottom() {
-                // We use draw_text_span-like logic but for single cell
-                use ftui_render::cell::Cell;
-                if let Some(c) = symbol.chars().next() {
-                    let mut cell = Cell::from_char(c);
-                    crate::apply_style(&mut cell, style);
-                    frame.buffer.set(x, y, cell);
-                }
+                // Use draw_text_span to handle graphemes correctly
+                draw_text_span(frame, x, y, symbol, style, x + 1);
             }
         }
     }
