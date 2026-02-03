@@ -328,6 +328,8 @@ pub struct VoiSampler {
     start_time: Instant,
     last_decision_forced: bool,
     logs: VecDeque<VoiLogEntry>,
+    last_decision: Option<VoiDecision>,
+    last_observation: Option<VoiObservation>,
 }
 
 impl VoiSampler {
@@ -369,7 +371,51 @@ impl VoiSampler {
             start_time: now,
             last_decision_forced: false,
             logs: VecDeque::new(),
+            last_decision: None,
+            last_observation: None,
         }
+    }
+
+    /// Access the sampler configuration.
+    #[must_use]
+    pub fn config(&self) -> &VoiConfig {
+        &self.config
+    }
+
+    /// Current posterior parameters (alpha, beta).
+    #[must_use]
+    pub fn posterior_params(&self) -> (f64, f64) {
+        (self.alpha, self.beta)
+    }
+
+    /// Current posterior mean.
+    #[must_use]
+    pub fn posterior_mean(&self) -> f64 {
+        beta_mean(self.alpha, self.beta)
+    }
+
+    /// Current posterior variance.
+    #[must_use]
+    pub fn posterior_variance(&self) -> f64 {
+        beta_variance(self.alpha, self.beta)
+    }
+
+    /// Expected posterior variance after one additional sample.
+    #[must_use]
+    pub fn expected_variance_after(&self) -> f64 {
+        expected_variance_after(self.alpha, self.beta)
+    }
+
+    /// Most recent decision, if any.
+    #[must_use]
+    pub fn last_decision(&self) -> Option<&VoiDecision> {
+        self.last_decision.as_ref()
+    }
+
+    /// Most recent observation, if any.
+    #[must_use]
+    pub fn last_observation(&self) -> Option<&VoiObservation> {
+        self.last_observation.as_ref()
     }
 
     /// Decide whether to sample at time `now`.
@@ -449,6 +495,7 @@ impl VoiSampler {
             reason,
         };
 
+        self.last_decision = Some(decision.clone());
         self.last_decision_forced = forced;
 
         if self.config.enable_logging {
@@ -487,6 +534,7 @@ impl VoiSampler {
             e_threshold: self.e_threshold,
         };
 
+        self.last_observation = Some(observation.clone());
         if self.config.enable_logging {
             self.push_log(VoiLogEntry::Observation(observation.clone()));
         }

@@ -216,7 +216,10 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 
             let (x, y) = if is_vertical {
                 let x = match self.orientation {
-                    ScrollbarOrientation::VerticalRight => area.right().saturating_sub(1),
+                    // For VerticalRight, position so the symbol (including wide chars) fits in the area
+                    ScrollbarOrientation::VerticalRight => {
+                        area.right().saturating_sub(symbol_width.max(1) as u16)
+                    }
                     ScrollbarOrientation::VerticalLeft => area.left(),
                     _ => unreachable!(),
                 };
@@ -232,8 +235,9 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 
             // Only draw if within bounds (redundant check but safe)
             if x < area.right() && y < area.bottom() {
-                // Use draw_text_span to handle graphemes correctly
-                draw_text_span(frame, x, y, symbol, style, x + 1);
+                // Use draw_text_span to handle graphemes correctly.
+                // Pass max_x that accommodates the symbol width for wide characters.
+                draw_text_span(frame, x, y, symbol, style, x.saturating_add(symbol_width as u16));
 
                 if let Some(id) = self.hit_id {
                     let data = (part << 56) | (i as u64);
