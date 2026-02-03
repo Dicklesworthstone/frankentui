@@ -2,6 +2,7 @@
 
 //! Render kernel: cells, buffers, diffs, and ANSI presentation.
 
+pub mod alloc_budget;
 pub mod ansi;
 pub mod budget;
 pub mod buffer;

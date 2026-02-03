@@ -42,7 +42,7 @@ pub use input_macro::{
 };
 pub use log_sink::LogSink;
 pub use program::{
-    App, AppBuilder, BatchController, BatchTelemetry, Cmd, Model, Program, ProgramConfig,
+    App, AppBuilder, BatchController, Cmd, Model, Program, ProgramConfig,
     ResizeBehavior,
 };
 pub use simulator::ProgramSimulator;

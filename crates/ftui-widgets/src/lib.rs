@@ -132,10 +132,12 @@ pub mod error_boundary;
 /// Fenwick tree (Binary Indexed Tree) for O(log n) prefix sum queries.
 pub mod fenwick;
 pub mod file_picker;
+/// Focus management: navigation graph for keyboard-driven focus traversal.
+pub mod focus;
 pub mod group;
-pub mod help;
 /// Bayesian height prediction with conformal bounds for virtualized lists.
 pub mod height_predictor;
+pub mod help;
 /// Utility-based keybinding hint ranking with Bayesian posteriors.
 pub mod hint_ranker;
 pub mod input;
@@ -165,6 +167,8 @@ pub mod rule;
 pub mod scrollbar;
 pub mod sparkline;
 pub mod spinner;
+/// Opt-in persistable state trait for widgets.
+pub mod stateful;
 pub mod status_line;
 pub mod stopwatch;
 /// Table widget with rows, columns, and selection.
@@ -203,9 +207,9 @@ pub use virtualized::{
 
 // Toast notification widget
 pub use toast::{
-    Toast, ToastAnimationConfig, ToastAnimationPhase, ToastAnimationState, ToastConfig,
-    ToastContent, ToastEasing, ToastEntranceAnimation, ToastExitAnimation, ToastIcon, ToastId,
-    ToastPosition, ToastState, ToastStyle,
+    KeyEvent as ToastKeyEvent, Toast, ToastAction, ToastAnimationConfig, ToastAnimationPhase,
+    ToastAnimationState, ToastConfig, ToastContent, ToastEasing, ToastEntranceAnimation,
+    ToastEvent, ToastExitAnimation, ToastIcon, ToastId, ToastPosition, ToastState, ToastStyle,
 };
 
 // Notification queue manager
@@ -227,6 +231,14 @@ pub use modal::{
 pub use inspector::{
     HitInfo, InspectorMode, InspectorOverlay, InspectorState, InspectorStyle, WidgetInfo,
 };
+
+// Focus management
+pub use focus::{
+    FocusEvent, FocusGraph, FocusGroup, FocusId, FocusManager, FocusNode, FocusTrap, NavDirection,
+};
+
+// Stateful persistence trait
+pub use stateful::{StateKey, Stateful, VersionedState};
 
 // Undo support for widgets
 pub use undo_support::{

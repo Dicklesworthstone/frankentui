@@ -31,6 +31,10 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use ftui_core::geometry::Rect;
+use ftui_render::frame::Frame;
+
+use crate::Widget;
 use crate::toast::{Toast, ToastId, ToastPosition};
 
 /// Priority level for notifications.
@@ -201,6 +205,51 @@ pub struct NotificationQueue {
     recent_hashes: HashMap<u64, Instant>,
     /// Statistics.
     stats: QueueStats,
+}
+
+/// Widget that renders the visible toasts in a queue.
+///
+/// This is a thin renderer over `NotificationQueue`, keeping stacking logic
+/// centralized in the queue while ensuring the draw path stays deterministic.
+pub struct NotificationStack<'a> {
+    queue: &'a NotificationQueue,
+    margin: u16,
+}
+
+impl<'a> NotificationStack<'a> {
+    /// Create a new notification stack renderer.
+    pub fn new(queue: &'a NotificationQueue) -> Self {
+        Self { queue, margin: 1 }
+    }
+
+    /// Set the margin from the screen edge.
+    pub fn margin(mut self, margin: u16) -> Self {
+        self.margin = margin;
+        self
+    }
+}
+
+impl Widget for NotificationStack<'_> {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        if area.is_empty() || self.queue.visible().is_empty() {
+            return;
+        }
+
+        let positions = self
+            .queue
+            .calculate_positions(area.width, area.height, self.margin);
+
+        for (toast, (_, rel_x, rel_y)) in self.queue.visible().iter().zip(positions.iter()) {
+            let (toast_width, toast_height) = toast.calculate_dimensions();
+            let x = area.x.saturating_add(*rel_x);
+            let y = area.y.saturating_add(*rel_y);
+            let toast_area = Rect::new(x, y, toast_width, toast_height);
+            let render_area = toast_area.intersection(&area);
+            if !render_area.is_empty() {
+                toast.render(render_area, frame);
+            }
+        }
+    }
 }
 
 impl NotificationQueue {
@@ -462,6 +511,8 @@ impl Default for NotificationQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_render::frame::Frame;
+    use ftui_render::grapheme_pool::GraphemePool;
 
     fn make_toast(msg: &str) -> Toast {
         Toast::with_id(ToastId::new(0), msg).persistent() // Use persistent for testing
@@ -722,5 +773,24 @@ mod tests {
         assert_eq!(queue.total_count(), 2);
         assert_eq!(queue.visible_count(), 1);
         assert_eq!(queue.pending_count(), 1);
+    }
+
+    #[test]
+    fn notification_stack_renders_visible_toast() {
+        let mut queue = NotificationQueue::with_defaults();
+        queue.push(make_toast("Hello"), NotificationPriority::Normal);
+        queue.tick(Duration::from_millis(16));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        let area = Rect::new(0, 0, 40, 10);
+
+        NotificationStack::new(&queue)
+            .margin(0)
+            .render(area, &mut frame);
+
+        let (_, x, y) = queue.calculate_positions(40, 10, 0)[0];
+        let cell = frame.buffer.get(x, y).expect("cell should exist");
+        assert!(!cell.is_empty(), "stack should render toast content");
     }
 }
