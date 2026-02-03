@@ -5,16 +5,17 @@
 //! Run `BLESS=1 cargo test --package ftui-harness` to create/update snapshots.
 
 use ftui_core::geometry::{Rect, Sides};
-use ftui_harness::assert_snapshot;
+use ftui_harness::{assert_snapshot, assert_snapshot_ansi};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_text::Text;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::BorderType;
 use ftui_widgets::borders::Borders;
 use ftui_widgets::columns::Columns;
+use ftui_widgets::inspector::{InspectorMode, InspectorOverlay, InspectorState, WidgetInfo};
 use ftui_widgets::list::{List, ListItem, ListState};
 use ftui_widgets::modal::{BackdropConfig, Modal, ModalPosition, ModalSizeConstraints};
 use ftui_widgets::padding::Padding;
@@ -376,4 +377,70 @@ fn snapshot_modal_backdrop_opacity() {
     let area = Rect::new(0, 0, 40, 12);
     modal.render(area, &mut frame);
     assert_snapshot!("modal_backdrop_opacity", &frame.buffer);
+}
+
+// ============================================================================
+// UI Inspector
+// ============================================================================
+
+#[test]
+fn snapshot_inspector_hit_regions_with_panel() {
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(50, 16, &mut pool);
+    let area = Rect::new(0, 0, 50, 16);
+
+    let shell = Block::new().title(" Inspector Demo ").borders(Borders::ALL);
+    let inner = shell.inner(area);
+    shell.render(area, &mut frame);
+
+    let content = Paragraph::new(Text::raw("Hit regions\n- Button\n- Content"))
+        .alignment(Alignment::Left);
+    content.render(inner, &mut frame);
+
+    let button_hit = Rect::new(inner.x + 2, inner.y + 2, 12, 3);
+    let list_hit = Rect::new(inner.x + 2, inner.y + 6, 18, 2);
+
+    frame.register_hit(button_hit, HitId::new(1), HitRegion::Button, 7);
+    frame.register_hit(list_hit, HitId::new(2), HitRegion::Content, 0);
+
+    let mut state = InspectorState::new();
+    state.mode = InspectorMode::HitRegions;
+    state.show_detail_panel = true;
+    state.selected = Some(HitId::new(1));
+    state.hover_pos = Some((list_hit.x + 1, list_hit.y));
+
+    InspectorOverlay::new(&state).render(area, &mut frame);
+
+    assert_snapshot_ansi!("inspector_hit_regions_with_panel", &frame.buffer);
+}
+
+#[test]
+fn snapshot_inspector_widget_bounds_tree() {
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(60, 18, &mut pool);
+    let area = Rect::new(0, 0, 60, 18);
+
+    let shell = Block::new().title(" Layout ").borders(Borders::ALL);
+    shell.render(area, &mut frame);
+
+    let mut state = InspectorState::new();
+    state.mode = InspectorMode::WidgetBounds;
+
+    let mut root = WidgetInfo::new("Root", Rect::new(1, 1, 58, 16)).with_depth(0);
+    let mut left = WidgetInfo::new("LeftPane", Rect::new(2, 2, 26, 12))
+        .with_depth(1)
+        .with_hit_id(HitId::new(10));
+    let right = WidgetInfo::new("RightPane", Rect::new(31, 2, 26, 12))
+        .with_depth(1)
+        .with_hit_id(HitId::new(11));
+    left.add_child(WidgetInfo::new("SearchBox", Rect::new(4, 4, 20, 3)).with_depth(2));
+    left.add_child(WidgetInfo::new("Results", Rect::new(4, 8, 20, 5)).with_depth(2));
+
+    root.add_child(left);
+    root.add_child(right);
+    state.register_widget(root);
+
+    InspectorOverlay::new(&state).render(area, &mut frame);
+
+    assert_snapshot_ansi!("inspector_widget_bounds_tree", &frame.buffer);
 }

@@ -46,7 +46,7 @@ use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 use ftui_extras::theme;
 use ftui_layout::{Constraint, Flex, Grid, GridArea};
 use ftui_render::cell::Cell;
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, HitId, HitRegion};
 #[cfg(feature = "telemetry")]
 use ftui_runtime::TelemetryConfig;
 use ftui_runtime::{Cmd, Every, Model, Program, ProgramConfig, ScreenMode, Subscription};
@@ -56,6 +56,7 @@ use ftui_widgets::block::Alignment;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
+use ftui_widgets::inspector::{InspectorMode, InspectorOverlay, InspectorState, WidgetInfo};
 use ftui_widgets::list::{List, ListState};
 use ftui_widgets::log_viewer::{LogViewer, LogViewerState};
 use ftui_widgets::paragraph::Paragraph;
@@ -150,6 +151,7 @@ enum HarnessView {
     WidgetTable,
     WidgetList,
     WidgetInput,
+    WidgetInspector,
 }
 
 impl AgentHarness {
@@ -636,6 +638,7 @@ impl Model for AgentHarness {
             HarnessView::WidgetTable => self.view_widget_table(frame),
             HarnessView::WidgetList => self.view_widget_list(frame),
             HarnessView::WidgetInput => self.view_widget_input(frame),
+            HarnessView::WidgetInspector => self.view_widget_inspector(frame),
         }
     }
 
@@ -925,6 +928,72 @@ impl AgentHarness {
         self.input.render(inner, frame);
     }
 
+    fn view_widget_inspector(&self, frame: &mut Frame) {
+        frame.enable_hit_testing();
+
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        let chunks = Flex::horizontal()
+            .constraints([Constraint::Percentage(55.0), Constraint::Percentage(45.0)])
+            .split(area);
+
+        let left_block = Block::new()
+            .title(" Logs ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(Style::new().bg(theme::alpha::SURFACE))
+            .border_style(Style::new().fg(theme::fg::MUTED));
+        let left_inner = left_block.inner(chunks[0]);
+        left_block.render(chunks[0], frame);
+
+        let log_text = Paragraph::new("Search results\n- hit: button\n- hit: list\n- hit: panel")
+            .wrap(WrapMode::Word);
+        log_text.render(left_inner, frame);
+
+        let right_block = Block::new()
+            .title(" Actions ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(Style::new().bg(theme::alpha::SURFACE))
+            .border_style(Style::new().fg(theme::fg::MUTED));
+        let right_inner = right_block.inner(chunks[1]);
+        right_block.render(chunks[1], frame);
+
+        let details = Paragraph::new("Hover + selection\nshould show in\nInspector panel.")
+            .alignment(Alignment::Left)
+            .wrap(WrapMode::Word);
+        details.render(right_inner, frame);
+
+        let button_hit = Rect::new(
+            right_inner.x + 2,
+            right_inner.y + 1,
+            right_inner.width.saturating_sub(4),
+            3,
+        );
+        frame.register_hit(button_hit, HitId::new(2), HitRegion::Button, 7);
+        frame.register_hit(left_inner, HitId::new(1), HitRegion::Content, 0);
+
+        let mut inspector = InspectorState::new();
+        inspector.mode = InspectorMode::Full;
+        inspector.show_detail_panel = true;
+        inspector.selected = Some(HitId::new(1));
+        inspector.hover_pos = Some((button_hit.x + 1, button_hit.y + 1));
+
+        let mut root = WidgetInfo::new("Harness", area).with_depth(0);
+        let mut left_info = WidgetInfo::new("LogPanel", chunks[0])
+            .with_depth(1)
+            .with_hit_id(HitId::new(1));
+        left_info.add_child(WidgetInfo::new("LogText", left_inner).with_depth(2));
+        let mut right_info = WidgetInfo::new("ActionPanel", chunks[1])
+            .with_depth(1)
+            .with_hit_id(HitId::new(2));
+        right_info.add_child(WidgetInfo::new("PrimaryButton", button_hit).with_depth(2));
+        root.add_child(left_info);
+        root.add_child(right_info);
+        inspector.register_widget(root);
+
+        InspectorOverlay::new(&inspector).render(area, frame);
+    }
+
     /// Render the tree view overlay (toggled via Esc Esc).
     fn view_tree_overlay(&self, frame: &mut Frame) {
         let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
@@ -1070,6 +1139,7 @@ fn main() -> std::io::Result<()> {
         "widget-table" | "widget_table" | "table" => HarnessView::WidgetTable,
         "widget-list" | "widget_list" | "list" => HarnessView::WidgetList,
         "widget-input" | "widget_input" | "input" => HarnessView::WidgetInput,
+        "widget-inspector" | "widget_inspector" | "inspector" => HarnessView::WidgetInspector,
         _ => HarnessView::Default,
     };
 

@@ -42,7 +42,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::flicker_detection::{analyze_stream, FlickerAnalysis};
+use crate::flicker_detection::{FlickerAnalysis, analyze_stream};
 
 // ============================================================================
 // Configuration
@@ -453,12 +453,7 @@ impl ResizeStorm {
             let delay_b = rng.next_range(self.config.min_delay_ms, self.config.max_delay_ms);
 
             events.push(ResizeEvent::new(size_a.0, size_a.1, delay_a, cycle * 2));
-            events.push(ResizeEvent::new(
-                size_b.0,
-                size_b.1,
-                delay_b,
-                cycle * 2 + 1,
-            ));
+            events.push(ResizeEvent::new(size_b.0, size_b.1, delay_b, cycle * 2 + 1));
         }
         events
     }
@@ -1013,8 +1008,9 @@ mod tests {
     fn custom_pattern_uses_provided_events() {
         let custom_events = vec![(100, 50, 10), (80, 24, 20), (120, 40, 15)];
 
-        let config =
-            StormConfig::default().with_pattern(StormPattern::Custom { events: custom_events });
+        let config = StormConfig::default().with_pattern(StormPattern::Custom {
+            events: custom_events,
+        });
 
         let storm = ResizeStorm::new(config);
         let events = storm.events();
