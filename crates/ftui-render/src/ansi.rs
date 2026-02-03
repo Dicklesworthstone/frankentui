@@ -25,7 +25,6 @@
 //! | DEC | `ESC 7` / `ESC 8` | Cursor save/restore (DECSC/DECRC) |
 
 use std::io::{self, Write};
-use std::sync::OnceLock;
 
 use crate::cell::{PackedRgba, StyleFlags};
 
@@ -93,7 +92,27 @@ pub fn sgr_flags<W: Write>(w: &mut W, flags: StyleFlags) -> io::Result<()> {
         return Ok(());
     }
 
-    w.write_all(sgr_flags_cached(flags))
+    let bits = flags.bits();
+    if bits.is_power_of_two() {
+        if let Some(seq) = sgr_single_flag_seq(bits) {
+            return w.write_all(seq);
+        }
+    }
+
+    w.write_all(b"\x1b[")?;
+    let mut first = true;
+
+    for (flag, codes) in FLAG_TABLE {
+        if flags.contains(flag) {
+            if !first {
+                w.write_all(b";")?;
+            }
+            write!(w, "{}", codes.on)?;
+            first = false;
+        }
+    }
+
+    w.write_all(b"m")
 }
 
 /// Ordered table of (flag, on/off codes) for iteration.
@@ -108,54 +127,33 @@ pub const FLAG_TABLE: [(StyleFlags, SgrCodes); 8] = [
     (StyleFlags::STRIKETHROUGH, SGR_STRIKETHROUGH),
 ];
 
-static SGR_FLAGS_CACHE: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
-
 #[inline]
-fn sgr_flags_cached(flags: StyleFlags) -> &'static [u8] {
-    let cache = SGR_FLAGS_CACHE.get_or_init(build_sgr_flags_cache);
-    &cache[flags.bits() as usize]
-}
-
-fn build_sgr_flags_cache() -> Vec<Vec<u8>> {
-    let mut cache = Vec::with_capacity(256);
-    for mask in 0u16..=0xFF {
-        let flags = StyleFlags::from_bits_truncate(mask as u8);
-        if flags.is_empty() {
-            cache.push(Vec::new());
-            continue;
-        }
-
-        let mut buf = Vec::with_capacity(16);
-        buf.extend_from_slice(b"\x1b[");
-        let mut first = true;
-
-        for (flag, codes) in FLAG_TABLE {
-            if flags.contains(flag) {
-                if !first {
-                    buf.push(b';');
-                }
-                write_u8_dec(&mut buf, codes.on);
-                first = false;
-            }
-        }
-
-        buf.push(b'm');
-        cache.push(buf);
+fn sgr_single_flag_seq(bits: u8) -> Option<&'static [u8]> {
+    match bits {
+        0b0000_0001 => Some(b"\x1b[1m"), // bold
+        0b0000_0010 => Some(b"\x1b[2m"), // dim
+        0b0000_0100 => Some(b"\x1b[3m"), // italic
+        0b0000_1000 => Some(b"\x1b[4m"), // underline
+        0b0001_0000 => Some(b"\x1b[5m"), // blink
+        0b0010_0000 => Some(b"\x1b[7m"), // reverse
+        0b0100_0000 => Some(b"\x1b[9m"), // strikethrough
+        0b1000_0000 => Some(b"\x1b[8m"), // hidden
+        _ => None,
     }
-    cache
 }
 
 #[inline]
-fn write_u8_dec(buf: &mut Vec<u8>, value: u8) {
-    if value >= 100 {
-        buf.push(b'0' + (value / 100));
-        buf.push(b'0' + ((value / 10) % 10));
-        buf.push(b'0' + (value % 10));
-    } else if value >= 10 {
-        buf.push(b'0' + (value / 10));
-        buf.push(b'0' + (value % 10));
-    } else {
-        buf.push(b'0' + value);
+fn sgr_single_flag_off_seq(bits: u8) -> Option<&'static [u8]> {
+    match bits {
+        0b0000_0001 => Some(b"\x1b[22m"), // bold off
+        0b0000_0010 => Some(b"\x1b[22m"), // dim off
+        0b0000_0100 => Some(b"\x1b[23m"), // italic off
+        0b0000_1000 => Some(b"\x1b[24m"), // underline off
+        0b0001_0000 => Some(b"\x1b[25m"), // blink off
+        0b0010_0000 => Some(b"\x1b[27m"), // reverse off
+        0b0100_0000 => Some(b"\x1b[29m"), // strikethrough off
+        0b1000_0000 => Some(b"\x1b[28m"), // hidden off
+        _ => None,
     }
 }
 
@@ -176,6 +174,20 @@ pub fn sgr_flags_off<W: Write>(
 ) -> io::Result<StyleFlags> {
     if flags_to_disable.is_empty() {
         return Ok(StyleFlags::empty());
+    }
+
+    let disable_bits = flags_to_disable.bits();
+    if disable_bits.is_power_of_two() {
+        if let Some(seq) = sgr_single_flag_off_seq(disable_bits) {
+            w.write_all(seq)?;
+            if disable_bits == StyleFlags::BOLD.bits() && flags_to_keep.contains(StyleFlags::DIM) {
+                return Ok(StyleFlags::DIM);
+            }
+            if disable_bits == StyleFlags::DIM.bits() && flags_to_keep.contains(StyleFlags::BOLD) {
+                return Ok(StyleFlags::BOLD);
+            }
+            return Ok(StyleFlags::empty());
+        }
     }
 
     let mut collateral = StyleFlags::empty();
