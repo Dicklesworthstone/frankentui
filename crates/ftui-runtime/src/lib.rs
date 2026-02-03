@@ -27,11 +27,12 @@ pub mod stdio_capture;
 pub mod string_model;
 pub mod subscription;
 pub mod terminal_writer;
+pub mod undo;
 
 pub use asciicast::{AsciicastRecorder, AsciicastWriter};
 pub use input_macro::{
-    EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayer, MacroRecorder, RecordingFilter,
-    RecordingState, TimedEvent,
+    EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayback, MacroPlayer, MacroRecorder,
+    RecordingFilter, RecordingState, TimedEvent,
 };
 pub use log_sink::LogSink;
 pub use program::{App, AppBuilder, Cmd, Model, Program, ProgramConfig};
@@ -45,3 +46,8 @@ pub use render_thread::{OutMsg, RenderThread};
 
 #[cfg(feature = "stdio-capture")]
 pub use stdio_capture::{CapturedWriter, StdioCapture, StdioCaptureError};
+
+pub use undo::{
+    CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, MergeConfig,
+    TextDeleteCmd, TextInsertCmd, TextReplaceCmd, UndoableCmd, WidgetId,
+};

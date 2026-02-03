@@ -190,12 +190,16 @@ impl MacroRecorder {
     pub fn record_event(&mut self, event: Event) {
         let now = Instant::now();
         let delay = now.duration_since(self.last_event_time);
+        #[cfg(feature = "tracing")]
+        tracing::debug!(event = ?event, delay = ?delay, "macro record event");
         self.events.push(TimedEvent::new(event, delay));
         self.last_event_time = now;
     }
 
     /// Record an event with an explicit delay from the previous event.
     pub fn record_event_with_delay(&mut self, event: Event, delay: Duration) {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(event = ?event, delay = ?delay, "macro record event");
         self.events.push(TimedEvent::new(event, delay));
         // Advance the synthetic clock
         self.last_event_time += delay;
@@ -273,6 +277,8 @@ impl<'a> MacroPlayer<'a> {
         }
 
         let timed = &self.input_macro.events[self.position];
+        #[cfg(feature = "tracing")]
+        tracing::debug!(event = ?timed.event, delay = ?timed.delay, "macro playback event");
         self.elapsed += timed.delay;
         sim.inject_events(std::slice::from_ref(&timed.event));
         self.position += 1;
