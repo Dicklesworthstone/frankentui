@@ -983,16 +983,20 @@ impl Screen for MousePlayground {
             }) if !modifiers.contains(ftui_core::event::Modifiers::SHIFT) => {
                 self.focus = self.focus.next();
             }
-            // Shift+Tab: Cycle focus backward
+            // BackTab: Cycle focus backward
             Event::Key(KeyEvent {
                 code: KeyCode::BackTab,
                 kind: KeyEventKind::Press,
                 ..
-            })
-            | Event::Key(KeyEvent {
+            }) => {
+                self.focus = self.focus.prev();
+            }
+            // Shift+Tab: Cycle focus backward
+            Event::Key(KeyEvent {
                 code: KeyCode::Tab,
                 kind: KeyEventKind::Press,
                 modifiers,
+                ..
             }) if modifiers.contains(ftui_core::event::Modifiers::SHIFT) => {
                 self.focus = self.focus.prev();
             }
@@ -1151,10 +1155,26 @@ impl Screen for MousePlayground {
         let right_area = chunks[1];
 
         // --- Left Panel: Hit-Test Target Grid ---
+        let targets_focused = self.focus == Focus::Targets;
+        let (targets_border_style, targets_title) = if targets_focused {
+            (
+                Style::new()
+                    .fg(theme::accent::PRIMARY.resolve())
+                    .attrs(StyleFlags::BOLD),
+                " ► Hit-Test Targets ",
+            )
+        } else {
+            (Style::new().fg(theme::fg::MUTED.resolve()), "   Hit-Test Targets ")
+        };
         let left_block = Block::new()
-            .title(" Hit-Test Targets ")
+            .title(targets_title)
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(if targets_focused {
+                BorderType::Thick
+            } else {
+                BorderType::Rounded
+            })
+            .border_style(targets_border_style)
             .style(Style::new().bg(theme::bg::SURFACE));
         let inner_left = left_block.inner(left_area);
         left_block.render(left_area, frame);
@@ -1168,20 +1188,52 @@ impl Screen for MousePlayground {
             .split(right_area);
 
         // Event log
+        let log_focused = self.focus == Focus::EventLog;
+        let (log_border_style, log_title) = if log_focused {
+            (
+                Style::new()
+                    .fg(theme::accent::PRIMARY.resolve())
+                    .attrs(StyleFlags::BOLD),
+                " ► Event Log ",
+            )
+        } else {
+            (Style::new().fg(theme::fg::MUTED.resolve()), "   Event Log ")
+        };
         let log_block = Block::new()
-            .title(" Event Log ")
+            .title(log_title)
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(if log_focused {
+                BorderType::Thick
+            } else {
+                BorderType::Rounded
+            })
+            .border_style(log_border_style)
             .style(Style::new().bg(theme::bg::SURFACE));
         let log_inner = log_block.inner(right_chunks[0]);
         log_block.render(right_chunks[0], frame);
         self.render_event_log(frame, log_inner);
 
         // Stats panel
+        let stats_focused = self.focus == Focus::Stats;
+        let (stats_border_style, stats_title) = if stats_focused {
+            (
+                Style::new()
+                    .fg(theme::accent::PRIMARY.resolve())
+                    .attrs(StyleFlags::BOLD),
+                " ► Stats ",
+            )
+        } else {
+            (Style::new().fg(theme::fg::MUTED.resolve()), "   Stats ")
+        };
         let stats_block = Block::new()
-            .title(" Stats ")
+            .title(stats_title)
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(if stats_focused {
+                BorderType::Thick
+            } else {
+                BorderType::Rounded
+            })
+            .border_style(stats_border_style)
             .style(Style::new().bg(theme::bg::SURFACE));
         let stats_inner = stats_block.inner(right_chunks[1]);
         stats_block.render(right_chunks[1], frame);

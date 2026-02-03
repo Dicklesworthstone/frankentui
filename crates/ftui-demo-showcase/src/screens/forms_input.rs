@@ -1048,4 +1048,42 @@ mod tests {
         Screen::redo(&mut screen);
         assert_ne!(screen.textarea.text(), before);
     }
+
+    #[test]
+    fn validation_errors_after_touch() {
+        let mut screen = FormsInput::new();
+
+        // Touch the Name field by tabbing away while empty.
+        screen.update(&press(KeyCode::Tab));
+
+        let errors = &screen.form_state.borrow().errors;
+        assert!(errors.iter().any(|e| e.field == 0));
+        assert!(!errors.iter().any(|e| e.field == 1));
+    }
+
+    #[test]
+    fn disabled_field_ignores_input() {
+        let mut screen = FormsInput::new();
+
+        // Move focus to Theme (disabled) field.
+        screen.update(&press(KeyCode::Tab)); // Email
+        screen.update(&press(KeyCode::Tab)); // Role
+        screen.update(&press(KeyCode::Tab)); // Theme (disabled)
+
+        let before = if let Some(FormField::Radio { selected, .. }) = screen.form.field(3) {
+            *selected
+        } else {
+            0
+        };
+
+        screen.update(&press(KeyCode::Char(' ')));
+
+        let after = if let Some(FormField::Radio { selected, .. }) = screen.form.field(3) {
+            *selected
+        } else {
+            0
+        };
+
+        assert_eq!(before, after, "disabled field should not change");
+    }
 }

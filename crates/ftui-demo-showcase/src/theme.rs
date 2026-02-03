@@ -1382,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn a11y_settings_is_copy() {
+    fn a11y_settings_is_copy_trait() {
         let a = A11ySettings::all();
         let b = a; // A11ySettings implements Copy
         assert_eq!(a, b);
