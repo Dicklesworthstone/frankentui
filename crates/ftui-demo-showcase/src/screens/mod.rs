@@ -8,9 +8,11 @@
 pub mod action_timeline;
 pub mod advanced_features;
 pub mod advanced_text_editor;
+pub mod async_tasks;
 pub mod code_explorer;
 pub mod dashboard;
 pub mod data_viz;
+pub mod drag_drop;
 pub mod file_browser;
 pub mod form_validation;
 pub mod forms_input;
@@ -24,6 +26,7 @@ pub mod notifications;
 pub mod performance;
 pub mod responsive_demo;
 pub mod shakespeare;
+pub mod theme_studio;
 pub mod virtualized_search;
 pub mod visual_effects;
 pub mod widget_gallery;
@@ -58,6 +61,31 @@ pub trait Screen {
     /// Return keybindings specific to this screen for the help overlay.
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![]
+    }
+
+    /// Whether this screen can undo.
+    fn can_undo(&self) -> bool {
+        false
+    }
+
+    /// Whether this screen can redo.
+    fn can_redo(&self) -> bool {
+        false
+    }
+
+    /// Description of the next undo action, if any.
+    fn next_undo_description(&self) -> Option<&str> {
+        None
+    }
+
+    /// Handle an undo request. Return true if the screen owns undo handling.
+    fn undo(&mut self) -> bool {
+        false
+    }
+
+    /// Handle a redo request. Return true if the screen owns redo handling.
+    fn redo(&mut self) -> bool {
+        false
     }
 
     /// Called on each application tick (100ms interval) with the global tick count.

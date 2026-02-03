@@ -17,6 +17,7 @@ use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::Cell as RenderCell;
 use ftui_render::frame::Frame;
+use ftui_runtime::undo::HistoryManager;
 use ftui_runtime::{Cmd, Every, Model, Subscription};
 use ftui_style::Style;
 use ftui_widgets::Widget;
@@ -80,6 +81,10 @@ pub enum ScreenId {
     FormValidation,
     /// Virtualized list with fuzzy search (bd-2zbk).
     VirtualizedSearch,
+    /// Async task manager / job queue (bd-13pq).
+    AsyncTasks,
+    /// Theme studio / live palette editor (bd-vu0o).
+    ThemeStudio,
 }
 
 impl ScreenId {
@@ -107,6 +112,8 @@ impl ScreenId {
         Self::MousePlayground,
         Self::FormValidation,
         Self::VirtualizedSearch,
+        Self::AsyncTasks,
+        Self::ThemeStudio,
     ];
 
     /// 0-based index in the ALL array.
@@ -151,6 +158,8 @@ impl ScreenId {
             Self::MousePlayground => "Mouse Playground",
             Self::FormValidation => "Form Validation",
             Self::VirtualizedSearch => "Virtualized Search",
+            Self::AsyncTasks => "Async Tasks",
+            Self::ThemeStudio => "Theme Studio",
         }
     }
 
@@ -179,6 +188,8 @@ impl ScreenId {
             Self::MousePlayground => "Mouse",
             Self::FormValidation => "Validate",
             Self::VirtualizedSearch => "VirtSearch",
+            Self::AsyncTasks => "Tasks",
+            Self::ThemeStudio => "Themes",
         }
     }
 
@@ -207,6 +218,8 @@ impl ScreenId {
             Self::MousePlayground => "MousePlayground",
             Self::FormValidation => "FormValidation",
             Self::VirtualizedSearch => "VirtualizedSearch",
+            Self::AsyncTasks => "AsyncTasks",
+            Self::ThemeStudio => "ThemeStudio",
         }
     }
 
@@ -272,9 +285,13 @@ pub struct ScreenStates {
     pub form_validation: screens::form_validation::FormValidationDemo,
     /// Virtualized list with fuzzy search screen state (bd-2zbk).
     pub virtualized_search: screens::virtualized_search::VirtualizedSearch,
+    /// Async task manager screen state (bd-13pq).
+    pub async_tasks: screens::async_tasks::AsyncTaskManager,
+    /// Theme studio screen state (bd-vu0o).
+    pub theme_studio: screens::theme_studio::ThemeStudioDemo,
     /// Tracks whether each screen has errored during rendering.
     /// Indexed by `ScreenId::index()`.
-    screen_errors: [Option<String>; 22],
+    screen_errors: [Option<String>; 24],
 }
 
 impl ScreenStates {
@@ -348,6 +365,12 @@ impl ScreenStates {
             ScreenId::VirtualizedSearch => {
                 self.virtualized_search.update(event);
             }
+            ScreenId::AsyncTasks => {
+                self.async_tasks.update(event);
+            }
+            ScreenId::ThemeStudio => {
+                self.theme_studio.update(event);
+            }
         }
     }
 
@@ -376,6 +399,8 @@ impl ScreenStates {
         self.mouse_playground.tick(tick_count);
         self.form_validation.tick(tick_count);
         self.virtualized_search.tick(tick_count);
+        self.async_tasks.tick(tick_count);
+        self.theme_studio.tick(tick_count);
     }
 
     fn apply_theme(&mut self) {
@@ -427,6 +452,8 @@ impl ScreenStates {
                 ScreenId::MousePlayground => self.mouse_playground.view(frame, area),
                 ScreenId::FormValidation => self.form_validation.view(frame, area),
                 ScreenId::VirtualizedSearch => self.virtualized_search.view(frame, area),
+                ScreenId::AsyncTasks => self.async_tasks.view(frame, area),
+                ScreenId::ThemeStudio => self.theme_studio.view(frame, area),
             }
         }));
 
@@ -476,6 +503,14 @@ pub enum AppMsg {
     ToggleDebug,
     /// Toggle the performance HUD overlay.
     TogglePerfHud,
+    /// Toggle the accessibility panel overlay.
+    ToggleA11yPanel,
+    /// Toggle high contrast mode.
+    ToggleHighContrast,
+    /// Toggle reduced motion mode.
+    ToggleReducedMotion,
+    /// Toggle large text mode.
+    ToggleLargeText,
     /// Cycle the active color theme.
     CycleTheme,
     /// Periodic tick for animations and data updates.
@@ -526,6 +561,12 @@ pub struct AppModel {
     pub debug_visible: bool,
     /// Whether the performance HUD overlay is visible.
     pub perf_hud_visible: bool,
+    /// Accessibility settings (high contrast, reduced motion, large text).
+    pub a11y: theme::A11ySettings,
+    /// Whether the accessibility panel is visible.
+    pub a11y_panel_visible: bool,
+    /// Base theme before accessibility overrides.
+    pub base_theme: theme::ThemeId,
     /// Command palette for instant action search (Ctrl+K).
     pub command_palette: CommandPalette,
     /// Global tick counter (incremented every 100ms).
@@ -548,6 +589,8 @@ pub struct AppModel {
     perf_views_per_tick: f64,
     /// Performance HUD: previous view count snapshot (for computing views per tick).
     perf_prev_view_count: u64,
+    /// Global undo/redo history manager for reversible operations.
+    pub history: HistoryManager,
 }
 
 impl Default for AppModel {
@@ -559,7 +602,10 @@ impl Default for AppModel {
 impl AppModel {
     /// Create a new application model with default state.
     pub fn new() -> Self {
-        theme::set_theme(theme::ThemeId::CyberpunkAurora);
+        let base_theme = theme::ThemeId::CyberpunkAurora;
+        theme::set_theme(base_theme);
+        theme::set_motion_scale(1.0);
+        theme::set_large_text(false);
         let mut palette = CommandPalette::new().with_max_visible(12);
         Self::register_palette_actions(&mut palette);
         Self {
@@ -568,6 +614,9 @@ impl AppModel {
             help_visible: false,
             debug_visible: false,
             perf_hud_visible: false,
+            a11y: theme::A11ySettings::default(),
+            a11y_panel_visible: false,
+            base_theme,
             command_palette: palette,
             tick_count: 0,
             frame_count: 0,
@@ -579,6 +628,7 @@ impl AppModel {
             perf_view_counter: Cell::new(0),
             perf_views_per_tick: 0.0,
             perf_prev_view_count: 0,
+            history: HistoryManager::default(),
         }
     }
 
@@ -709,13 +759,70 @@ impl AppModel {
                 Cmd::None
             }
 
+            AppMsg::ToggleA11yPanel => {
+                self.a11y_panel_visible = !self.a11y_panel_visible;
+                let state = if self.a11y_panel_visible { "on" } else { "off" };
+                self.screens.action_timeline.record_command_event(
+                    self.tick_count,
+                    "Toggle A11y panel",
+                    vec![("state".to_string(), state.to_string())],
+                );
+                Cmd::None
+            }
+
+            AppMsg::ToggleHighContrast => {
+                self.a11y.high_contrast = !self.a11y.high_contrast;
+                if self.a11y.high_contrast {
+                    self.base_theme = theme::current_theme();
+                }
+                self.apply_a11y_settings();
+                let state = if self.a11y.high_contrast { "on" } else { "off" };
+                self.screens.action_timeline.record_command_event(
+                    self.tick_count,
+                    "Toggle high contrast",
+                    vec![("state".to_string(), state.to_string())],
+                );
+                Cmd::None
+            }
+
+            AppMsg::ToggleReducedMotion => {
+                self.a11y.reduced_motion = !self.a11y.reduced_motion;
+                self.apply_a11y_settings();
+                let state = if self.a11y.reduced_motion {
+                    "on"
+                } else {
+                    "off"
+                };
+                self.screens.action_timeline.record_command_event(
+                    self.tick_count,
+                    "Toggle reduced motion",
+                    vec![("state".to_string(), state.to_string())],
+                );
+                Cmd::None
+            }
+
+            AppMsg::ToggleLargeText => {
+                self.a11y.large_text = !self.a11y.large_text;
+                self.apply_a11y_settings();
+                let state = if self.a11y.large_text { "on" } else { "off" };
+                self.screens.action_timeline.record_command_event(
+                    self.tick_count,
+                    "Toggle large text",
+                    vec![("state".to_string(), state.to_string())],
+                );
+                Cmd::None
+            }
+
             AppMsg::CycleTheme => {
-                theme::cycle_theme();
-                self.screens.apply_theme();
+                self.base_theme = self.next_base_theme();
+                self.apply_a11y_settings();
                 self.screens.action_timeline.record_command_event(
                     self.tick_count,
                     "Cycle theme",
-                    vec![("theme".to_string(), theme::current_theme_name().to_string())],
+                    vec![
+                        ("theme".to_string(), theme::current_theme_name().to_string()),
+                        ("base_theme".to_string(), self.base_theme.name().to_string()),
+                    ],
                 );
                 Cmd::None
             }
@@ -723,7 +830,9 @@ impl AppModel {
             AppMsg::Tick => {
                 self.tick_count += 1;
                 self.record_tick_timing();
-                self.screens.tick(self.tick_count);
+                if !self.a11y.reduced_motion {
+                    self.screens.tick(self.tick_count);
+                }
                 let playback_events = self.screens.macro_recorder.drain_playback_events();
                 for event in playback_events {
                     let cmd = self.handle_msg(AppMsg::from(event), EventSource::Playback);
@@ -784,6 +893,24 @@ impl AppModel {
                     ..
                 }) = &event
                 {
+                    if self.a11y_panel_visible {
+                        match (*code, *modifiers) {
+                            (KeyCode::Char('A'), Modifiers::SHIFT) | (KeyCode::Escape, _) => {
+                                return self.handle_msg(AppMsg::ToggleA11yPanel, source);
+                            }
+                            (KeyCode::Char('H'), Modifiers::SHIFT) => {
+                                return self.handle_msg(AppMsg::ToggleHighContrast, source);
+                            }
+                            (KeyCode::Char('M'), Modifiers::SHIFT) => {
+                                return self.handle_msg(AppMsg::ToggleReducedMotion, source);
+                            }
+                            (KeyCode::Char('L'), Modifiers::SHIFT) => {
+                                return self.handle_msg(AppMsg::ToggleLargeText, source);
+                            }
+                            _ => {}
+                        }
+                    }
+
                     match (*code, *modifiers) {
                         // Quit
                         (KeyCode::Char('q'), Modifiers::NONE) => return Cmd::Quit,
@@ -808,11 +935,34 @@ impl AppModel {
                             self.perf_hud_visible = !self.perf_hud_visible;
                             return Cmd::None;
                         }
+                        // Undo (Ctrl+Z)
+                        (KeyCode::Char('z'), Modifiers::CTRL) => {
+                            if self.history.can_undo() {
+                                let _ = self.history.undo();
+                            }
+                            return Cmd::None;
+                        }
+                        // Redo (Ctrl+Y or Ctrl+Shift+Z)
+                        (KeyCode::Char('y'), Modifiers::CTRL) => {
+                            if self.history.can_redo() {
+                                let _ = self.history.redo();
+                            }
+                            return Cmd::None;
+                        }
+                        (KeyCode::Char('Z'), m) if m.contains(Modifiers::CTRL) => {
+                            // Ctrl+Shift+Z for redo
+                            if self.history.can_redo() {
+                                let _ = self.history.redo();
+                            }
+                            return Cmd::None;
+                        }
+                        // A11y panel
+                        (KeyCode::Char('A'), Modifiers::SHIFT) => {
+                            return self.handle_msg(AppMsg::ToggleA11yPanel, source);
+                        }
                         // Theme cycling
                         (KeyCode::Char('t'), Modifiers::CTRL) => {
-                            theme::cycle_theme();
-                            self.screens.apply_theme();
-                            return Cmd::None;
+                            return self.handle_msg(AppMsg::CycleTheme, source);
                         }
                         // Tab cycling (Tab/BackTab, or Shift+H/Shift+L for Vim users)
                         (KeyCode::Tab, Modifiers::NONE) => {
@@ -915,6 +1065,17 @@ impl Model for AppModel {
         // Screen content (wrapped in error boundary)
         self.screens.view(self.current_screen, frame, inner);
 
+        // A11y panel (small overlay inside content area)
+        if self.a11y_panel_visible {
+            let a11y_state = crate::chrome::A11yPanelState {
+                high_contrast: self.a11y.high_contrast,
+                reduced_motion: self.a11y.reduced_motion,
+                large_text: self.a11y.large_text,
+                base_theme: self.base_theme.name(),
+            };
+            crate::chrome::render_a11y_panel(&a11y_state, frame, inner);
+        }
+
         // Help overlay (chrome module)
         if self.help_visible {
             let bindings = self.current_screen_keybindings();
@@ -938,6 +1099,7 @@ impl Model for AppModel {
 
         // Status bar (chrome module)
         let status_state = crate::chrome::StatusBarState {
+            current_screen: self.current_screen,
             screen_title: self.current_screen.title(),
             screen_index: self.current_screen.index(),
             screen_count: ScreenId::ALL.len(),
@@ -946,6 +1108,12 @@ impl Model for AppModel {
             terminal_width: self.terminal_width,
             terminal_height: self.terminal_height,
             theme_name: theme::current_theme_name(),
+            a11y_high_contrast: self.a11y.high_contrast,
+            a11y_reduced_motion: self.a11y.reduced_motion,
+            a11y_large_text: self.a11y.large_text,
+            can_undo: self.history.can_undo(),
+            can_redo: self.history.can_redo(),
+            undo_description: self.history.next_undo_description(),
         };
         crate::chrome::render_status_bar(&status_state, frame, chunks[2]);
     }
@@ -984,6 +1152,8 @@ impl AppModel {
             ScreenId::MousePlayground => self.screens.mouse_playground.keybindings(),
             ScreenId::FormValidation => self.screens.form_validation.keybindings(),
             ScreenId::VirtualizedSearch => self.screens.virtualized_search.keybindings(),
+            ScreenId::AsyncTasks => self.screens.async_tasks.keybindings(),
+            ScreenId::ThemeStudio => self.screens.theme_studio.keybindings(),
         };
         // Convert screens::HelpEntry to chrome::HelpEntry (same struct, different module).
         entries
@@ -1049,13 +1219,7 @@ impl AppModel {
                         );
                     }
                     "cmd:cycle_theme" => {
-                        theme::cycle_theme();
-                        self.screens.apply_theme();
-                        self.screens.action_timeline.record_command_event(
-                            self.tick_count,
-                            "Cycle theme (palette)",
-                            vec![("theme".to_string(), theme::current_theme_name().to_string())],
-                        );
+                        return self.handle_msg(AppMsg::CycleTheme, EventSource::User);
                     }
                     "cmd:quit" => {
                         self.screens.action_timeline.record_command_event(
@@ -1124,6 +1288,25 @@ impl AppModel {
         let max_ms = sorted[n - 1] as f64 / 1000.0;
 
         (tps, avg_ms, p95_ms, p99_ms, min_ms, max_ms)
+    }
+
+    /// Apply the current accessibility settings to theme/runtime globals.
+    fn apply_a11y_settings(&mut self) {
+        let theme_id = if self.a11y.high_contrast {
+            theme::ThemeId::HighContrast
+        } else {
+            self.base_theme
+        };
+        theme::set_theme(theme_id);
+        let motion_scale = if self.a11y.reduced_motion { 0.0 } else { 1.0 };
+        theme::set_motion_scale(motion_scale);
+        theme::set_large_text(self.a11y.large_text);
+        self.screens.apply_theme();
+    }
+
+    /// Cycle to the next base theme, returning it.
+    fn next_base_theme(&self) -> theme::ThemeId {
+        self.base_theme.next_non_accessibility()
     }
 
     /// Render the Performance HUD overlay in the top-left corner.
@@ -1340,7 +1523,7 @@ mod tests {
         assert_eq!(app.current_screen, ScreenId::Dashboard);
 
         app.update(AppMsg::PrevScreen);
-        assert_eq!(app.current_screen, ScreenId::VirtualizedSearch);
+        assert_eq!(app.current_screen, ScreenId::ThemeStudio);
     }
 
     #[test]
@@ -1418,7 +1601,7 @@ mod tests {
     fn screen_next_prev_wraps() {
         assert_eq!(ScreenId::Dashboard.next(), ScreenId::Shakespeare);
         assert_eq!(ScreenId::VisualEffects.next(), ScreenId::ResponsiveDemo);
-        assert_eq!(ScreenId::Dashboard.prev(), ScreenId::VirtualizedSearch);
+        assert_eq!(ScreenId::Dashboard.prev(), ScreenId::ThemeStudio);
         assert_eq!(ScreenId::Shakespeare.prev(), ScreenId::Dashboard);
     }
 
@@ -1597,7 +1780,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(ScreenId::ALL.len(), 22);
+        assert_eq!(ScreenId::ALL.len(), 24);
     }
 
     // -----------------------------------------------------------------------
