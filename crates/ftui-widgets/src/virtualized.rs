@@ -503,6 +503,221 @@ impl HeightCache {
 }
 
 // ============================================================================
+// VariableHeightsFenwick - O(log n) scroll-to-index mapping
+// ============================================================================
+
+use crate::fenwick::FenwickTree;
+
+/// Variable height tracker using Fenwick tree for O(log n) prefix sum queries.
+///
+/// This enables efficient scroll offset to item index mapping for virtualized
+/// lists with variable height items.
+///
+/// # Operations
+///
+/// | Operation | Time |
+/// |-----------|------|
+/// | `find_item_at_offset` | O(log n) |
+/// | `offset_of_item` | O(log n) |
+/// | `set_height` | O(log n) |
+/// | `total_height` | O(log n) |
+///
+/// # Invariants
+///
+/// 1. `tree.prefix(i)` == sum of heights [0..=i]
+/// 2. `find_item_at_offset(offset)` returns largest i where prefix(i-1) < offset
+/// 3. Heights are u32 internally (u16 input widened for large lists)
+#[derive(Debug, Clone)]
+pub struct VariableHeightsFenwick {
+    /// Fenwick tree storing item heights.
+    tree: FenwickTree,
+    /// Default height for items not yet measured.
+    default_height: u16,
+    /// Number of items tracked.
+    len: usize,
+}
+
+impl Default for VariableHeightsFenwick {
+    fn default() -> Self {
+        Self::new(1, 0)
+    }
+}
+
+impl VariableHeightsFenwick {
+    /// Create a new height tracker with given default height and initial capacity.
+    #[must_use]
+    pub fn new(default_height: u16, capacity: usize) -> Self {
+        let tree = if capacity > 0 {
+            // Initialize with default heights
+            let heights: Vec<u32> = vec![u32::from(default_height); capacity];
+            FenwickTree::from_values(&heights)
+        } else {
+            FenwickTree::new(0)
+        };
+        Self {
+            tree,
+            default_height,
+            len: capacity,
+        }
+    }
+
+    /// Create from a slice of heights.
+    #[must_use]
+    pub fn from_heights(heights: &[u16], default_height: u16) -> Self {
+        let heights_u32: Vec<u32> = heights.iter().map(|&h| u32::from(h)).collect();
+        Self {
+            tree: FenwickTree::from_values(&heights_u32),
+            default_height,
+            len: heights.len(),
+        }
+    }
+
+    /// Number of items tracked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether tracking is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Get the default height for unmeasured items.
+    #[must_use]
+    pub fn default_height(&self) -> u16 {
+        self.default_height
+    }
+
+    /// Get height of a specific item. O(log n).
+    #[must_use]
+    pub fn get(&self, idx: usize) -> u16 {
+        if idx >= self.len {
+            return self.default_height;
+        }
+        // Fenwick get returns the individual value at idx
+        self.tree.get(idx).min(u32::from(u16::MAX)) as u16
+    }
+
+    /// Set height of a specific item. O(log n).
+    pub fn set(&mut self, idx: usize, height: u16) {
+        if idx >= self.len {
+            // Need to resize
+            self.resize(idx + 1);
+        }
+        self.tree.set(idx, u32::from(height));
+    }
+
+    /// Get the y-offset (in pixels/rows) of an item. O(log n).
+    ///
+    /// Returns the sum of heights of all items before `idx`.
+    #[must_use]
+    pub fn offset_of_item(&self, idx: usize) -> u32 {
+        if idx == 0 || self.len == 0 {
+            return 0;
+        }
+        let clamped = idx.min(self.len);
+        if clamped > 0 {
+            self.tree.prefix(clamped - 1)
+        } else {
+            0
+        }
+    }
+
+    /// Find the item index at a given scroll offset. O(log n).
+    ///
+    /// Returns the index of the first item that is at least partially visible
+    /// at the given offset. If offset is beyond all items, returns `self.len`.
+    #[must_use]
+    pub fn find_item_at_offset(&self, offset: u32) -> usize {
+        if self.len == 0 || offset == 0 {
+            return 0;
+        }
+        // find_prefix returns largest i where prefix(i) <= target
+        // We want the first item where prefix(i-1) < offset (item starts before offset ends)
+        match self.tree.find_prefix(offset.saturating_sub(1)) {
+            Some(i) => {
+                // i is the last item whose cumulative height <= offset-1
+                // So item i+1 is the first item that starts at or after offset
+                (i + 1).min(self.len)
+            }
+            None => 0, // offset is within first item
+        }
+    }
+
+    /// Count how many items fit within a viewport starting at `start_idx`. O(log n).
+    ///
+    /// Returns the number of items that fit completely within `viewport_height`.
+    #[must_use]
+    pub fn visible_count(&self, start_idx: usize, viewport_height: u16) -> usize {
+        if self.len == 0 || viewport_height == 0 {
+            return 0;
+        }
+        let start = start_idx.min(self.len);
+        let start_offset = self.offset_of_item(start);
+        let end_offset = start_offset + u32::from(viewport_height);
+
+        // Find last item that fits
+        let end_idx = self.find_item_at_offset(end_offset);
+
+        // Count items from start to end (exclusive of partially visible)
+        if end_idx > start {
+            // Check if end_idx item is fully visible
+            let end_item_start = self.offset_of_item(end_idx);
+            if end_item_start + u32::from(self.get(end_idx)) <= end_offset {
+                end_idx - start + 1
+            } else {
+                end_idx - start
+            }
+        } else {
+            // At least show one item if viewport has space
+            if viewport_height > 0 && start < self.len {
+                1
+            } else {
+                0
+            }
+        }
+    }
+
+    /// Get total height of all items. O(log n).
+    #[must_use]
+    pub fn total_height(&self) -> u32 {
+        self.tree.total()
+    }
+
+    /// Resize the tracker to accommodate `new_len` items.
+    ///
+    /// New items are initialized with default height.
+    pub fn resize(&mut self, new_len: usize) {
+        if new_len == self.len {
+            return;
+        }
+        self.tree.resize(new_len);
+        // Set default heights for new items
+        if new_len > self.len {
+            for i in self.len..new_len {
+                self.tree.set(i, u32::from(self.default_height));
+            }
+        }
+        self.len = new_len;
+    }
+
+    /// Clear all height data.
+    pub fn clear(&mut self) {
+        self.tree = FenwickTree::new(0);
+        self.len = 0;
+    }
+
+    /// Rebuild from a fresh set of heights.
+    pub fn rebuild(&mut self, heights: &[u16]) {
+        let heights_u32: Vec<u32> = heights.iter().map(|&h| u32::from(h)).collect();
+        self.tree = FenwickTree::from_values(&heights_u32);
+        self.len = heights.len();
+    }
+}
+
+// ============================================================================
 // VirtualizedList Widget
 // ============================================================================
 

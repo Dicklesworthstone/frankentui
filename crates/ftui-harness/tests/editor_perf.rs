@@ -303,7 +303,7 @@ fn invariant_cursor_always_valid() {
 
     editor.move_to_document_end();
     let end_cursor = editor.cursor();
-    assert!(end_cursor.line < editor.line_count() as u32 || editor.is_empty());
+    assert!(end_cursor.line < editor.line_count() || editor.is_empty());
 
     // Move past bounds should clamp
     for _ in 0..100 {

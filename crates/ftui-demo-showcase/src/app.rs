@@ -78,6 +78,8 @@ pub enum ScreenId {
     MousePlayground,
     /// Form validation demo (bd-34pj.5).
     FormValidation,
+    /// Virtualized list with fuzzy search (bd-2zbk).
+    VirtualizedSearch,
 }
 
 impl ScreenId {
@@ -104,6 +106,7 @@ impl ScreenId {
         Self::AdvancedTextEditor,
         Self::MousePlayground,
         Self::FormValidation,
+        Self::VirtualizedSearch,
     ];
 
     /// 0-based index in the ALL array.
@@ -147,6 +150,7 @@ impl ScreenId {
             Self::AdvancedTextEditor => "Advanced Text Editor",
             Self::MousePlayground => "Mouse Playground",
             Self::FormValidation => "Form Validation",
+            Self::VirtualizedSearch => "Virtualized Search",
         }
     }
 
