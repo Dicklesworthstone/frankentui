@@ -1789,7 +1789,8 @@ mod tests {
                 h in dimension()
             ) {
                 let config = CoalescerConfig::default();
-                let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
+                // Use (0,0) so no generated size (1..500) hits the skip_same_size path
+                let mut c = ResizeCoalescer::new(config.clone(), (0, 0));
                 let base = Instant::now();
 
                 c.handle_resize_at(w, h, base);
@@ -1823,7 +1824,8 @@ mod tests {
                 h in dimension()
             ) {
                 let config = CoalescerConfig::default();
-                let mut c = ResizeCoalescer::new(config.clone(), (80, 24));
+                // Use (0,0) so no generated size (1..500) hits the skip_same_size path
+                let mut c = ResizeCoalescer::new(config.clone(), (0, 0));
                 let base = Instant::now();
 
                 c.handle_resize_at(w, h, base);
