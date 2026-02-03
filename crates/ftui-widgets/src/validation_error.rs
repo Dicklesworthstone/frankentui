@@ -42,11 +42,11 @@
 use std::time::{Duration, Instant};
 
 use ftui_core::geometry::Rect;
-use ftui_render::cell::{Cell, PackedRgba};
+use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
 
-use crate::{StatefulWidget, Widget, apply_style, draw_text_span, set_style_area};
+use crate::{StatefulWidget, Widget, draw_text_span};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -350,7 +350,7 @@ impl StatefulWidget for ValidationErrorDisplay {
         // Adjust style with opacity
         let icon_style = if deg.apply_styling() && effective_opacity < 255 {
             let fg = self.icon_style.fg.unwrap_or(ERROR_FG_DEFAULT);
-            Style::new().fg(fg.with_alpha(effective_opacity))
+            Style::new().fg(PackedRgba::rgba(fg.r(), fg.g(), fg.b(), effective_opacity))
         } else if deg.apply_styling() {
             self.icon_style
         } else {
@@ -359,7 +359,7 @@ impl StatefulWidget for ValidationErrorDisplay {
 
         let text_style = if deg.apply_styling() && effective_opacity < 255 {
             let fg = self.style.fg.unwrap_or(ERROR_FG_DEFAULT);
-            Style::new().fg(fg.with_alpha(effective_opacity))
+            Style::new().fg(PackedRgba::rgba(fg.r(), fg.g(), fg.b(), effective_opacity))
         } else if deg.apply_styling() {
             self.style
         } else {
@@ -601,7 +601,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 1);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(20, 1, &mut pool);
-        error.render(area, &mut frame);
+        Widget::render(&error, area, &mut frame);
 
         // Icon should be at position 0
         // Note: emoji width varies, but we check something was drawn
@@ -615,7 +615,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 1);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(20, 1, &mut pool);
-        error.render(area, &mut frame);
+        Widget::render(&error, area, &mut frame);
 
         // "!" at 0, space at 1, "Required" starts at 2
         assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('!'));
@@ -628,16 +628,16 @@ mod tests {
         let area = Rect::new(0, 0, 12, 1);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(12, 1, &mut pool);
-        error.render(area, &mut frame);
+        Widget::render(&error, area, &mut frame);
 
         // Should end with ellipsis somewhere
         let mut found_ellipsis = false;
         for x in 0..12 {
-            if let Some(cell) = frame.buffer.get(x, 0) {
-                if cell.content.as_char() == Some('…') {
-                    found_ellipsis = true;
-                    break;
-                }
+            if let Some(cell) = frame.buffer.get(x, 0)
+                && cell.content.as_char() == Some('…')
+            {
+                found_ellipsis = true;
+                break;
             }
         }
         assert!(found_ellipsis);
@@ -736,12 +736,15 @@ mod tests {
         let area = Rect::new(0, 0, 20, 1);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(20, 1, &mut pool);
-        error.render(area, &mut frame);
+        Widget::render(&error, area, &mut frame);
 
         // Check message cell has custom fg color
         let cell = frame.buffer.get(2, 0).unwrap(); // 'R' of "Required"
-        // Note: degradation is Full by default, so style should apply
-        // The exact comparison depends on how styles are applied
+        assert_eq!(
+            cell.fg,
+            PackedRgba::rgb(100, 200, 50),
+            "message cell should use the custom fg color"
+        );
     }
 
     #[test]
@@ -753,7 +756,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 1);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(20, 1, &mut pool);
-        error.render(area, &mut frame);
+        Widget::render(&error, area, &mut frame);
 
         let icon_cell = frame.buffer.get(0, 0).unwrap();
         let msg_cell = frame.buffer.get(2, 0).unwrap();

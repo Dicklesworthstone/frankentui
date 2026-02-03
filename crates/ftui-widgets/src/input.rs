@@ -26,7 +26,7 @@ pub struct TextInput {
     /// Cursor position (grapheme index).
     cursor: usize,
     /// Scroll offset (visual cells) for horizontal scrolling.
-    scroll_cells: usize,
+    scroll_cells: std::cell::Cell<usize>,
     /// Selection anchor (grapheme index). When set, selection spans from anchor to cursor.
     selection_anchor: Option<usize>,
     /// Placeholder text.
@@ -123,7 +123,7 @@ impl TextInput {
         self.value = value.into();
         let max = self.grapheme_count();
         self.cursor = self.cursor.min(max);
-        self.scroll_cells = 0;
+        self.scroll_cells.set(0);
         self.selection_anchor = None;
     }
 
@@ -131,7 +131,7 @@ impl TextInput {
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
-        self.scroll_cells = 0;
+        self.scroll_cells.set(0);
         self.selection_anchor = None;
     }
 
@@ -270,7 +270,7 @@ impl TextInput {
                     self.selection_anchor = None;
                 }
                 self.cursor = 0;
-                self.scroll_cells = 0;
+                self.scroll_cells.set(0);
                 true
             }
             KeyCode::End => {
@@ -433,6 +433,16 @@ impl TextInput {
         }
     }
 
+    fn get_grapheme_class(g: &str) -> u8 {
+        if g.chars().all(char::is_whitespace) {
+            0
+        } else if g.chars().any(char::is_alphanumeric) {
+            1
+        } else {
+            2
+        }
+    }
+
     fn move_cursor_word_left(&mut self, select: bool) {
         if select {
             self.ensure_selection_anchor();
@@ -440,33 +450,26 @@ impl TextInput {
             self.selection_anchor = None;
         }
 
-        let graphemes: Vec<&str> = self.value.graphemes(true).collect();
-        let mut pos = self.cursor;
-
-        if pos == 0 {
+        if self.cursor == 0 {
             return;
         }
 
-        // Helper to determine class: 0=Space, 1=AlphaNum, 2=Punct
-        let class = |g: &str| {
-            if g.chars().all(char::is_whitespace) {
-                0
-            } else if g.chars().any(char::is_alphanumeric) {
-                1
-            } else {
-                2
+        let byte_pos = self.grapheme_byte_offset(self.cursor);
+        let slice = &self.value[..byte_pos];
+        let mut graphemes = slice.graphemes(true).rev();
+
+        if let Some(first_g) = graphemes.next() {
+            let target_class = Self::get_grapheme_class(first_g);
+            let mut skipped = 1;
+
+            for g in graphemes {
+                if Self::get_grapheme_class(g) != target_class {
+                    break;
+                }
+                skipped += 1;
             }
-        };
-
-        // Determine class of character *before* cursor
-        let target_class = class(graphemes[pos - 1]);
-
-        // Skip all preceding characters of the same class
-        while pos > 0 && class(graphemes[pos - 1]) == target_class {
-            pos -= 1;
+            self.cursor -= skipped;
         }
-
-        self.cursor = pos;
     }
 
     fn move_cursor_word_right(&mut self, select: bool) {
@@ -476,34 +479,26 @@ impl TextInput {
             self.selection_anchor = None;
         }
 
-        let graphemes: Vec<&str> = self.value.graphemes(true).collect();
-        let max = graphemes.len();
-        let mut pos = self.cursor;
-
-        if pos >= max {
+        let byte_pos = self.grapheme_byte_offset(self.cursor);
+        if byte_pos >= self.value.len() {
             return;
         }
 
-        // Helper to determine class: 0=Space, 1=AlphaNum, 2=Punct
-        let class = |g: &str| {
-            if g.chars().all(char::is_whitespace) {
-                0
-            } else if g.chars().any(char::is_alphanumeric) {
-                1
-            } else {
-                2
+        let slice = &self.value[byte_pos..];
+        let mut graphemes = slice.graphemes(true);
+
+        if let Some(first_g) = graphemes.next() {
+            let target_class = Self::get_grapheme_class(first_g);
+            let mut skipped = 1;
+
+            for g in graphemes {
+                if Self::get_grapheme_class(g) != target_class {
+                    break;
+                }
+                skipped += 1;
             }
-        };
-
-        // Determine class of character *at* cursor
-        let target_class = class(graphemes[pos]);
-
-        // Skip all following characters of the same class
-        while pos < max && class(graphemes[pos]) == target_class {
-            pos += 1;
+            self.cursor += skipped;
         }
-
-        self.cursor = pos;
     }
 
     // --- Internal helpers ---
@@ -541,7 +536,7 @@ impl TextInput {
 
     fn effective_scroll(&self, viewport_width: usize) -> usize {
         let cursor_visual = self.cursor_visual_pos();
-        let mut scroll = self.scroll_cells;
+        let mut scroll = self.scroll_cells.get();
         if cursor_visual < scroll {
             scroll = cursor_visual;
         }
@@ -734,7 +729,7 @@ impl UndoSupport for TextInput {
             self.value = snap.value.clone();
             self.cursor = snap.cursor;
             self.selection_anchor = snap.selection_anchor;
-            self.scroll_cells = 0; // Reset scroll on restore
+            self.scroll_cells.set(0); // Reset scroll on restore
             true
         } else {
             false

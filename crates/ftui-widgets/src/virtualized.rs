@@ -30,7 +30,6 @@
 //! println!("Visible: {}..{}", range.start, range.end);
 //! ```
 
-use crate::stateful::{StateKey, Stateful};
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::time::Duration;
@@ -748,11 +747,11 @@ pub struct VirtualizedListPersistState {
     pub follow_mode: bool,
 }
 
-impl Stateful for VirtualizedListState {
+impl crate::stateful::Stateful for VirtualizedListState {
     type State = VirtualizedListPersistState;
 
-    fn state_key(&self) -> StateKey {
-        StateKey::new(
+    fn state_key(&self) -> crate::stateful::StateKey {
+        crate::stateful::StateKey::new(
             "VirtualizedList",
             self.persistence_id.as_deref().unwrap_or("default"),
         )
