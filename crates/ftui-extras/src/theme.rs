@@ -866,7 +866,7 @@ impl SemanticSwatch {
             bg,
             text,
             fg_style: Style::new().fg(fg),
-            badge_style: Style::new().fg(text).bg(bg),
+            badge_style: Style::new().fg(text).bg(bg).bold(),
         }
     }
 
@@ -1140,6 +1140,60 @@ mod tests {
                 contrast::meets_wcag_aa(text_open, bg_open),
                 "OPEN badge contrast too low for {theme:?}"
             );
+        }
+    }
+
+    #[test]
+    fn semantic_styles_build_valid_badge_styles() {
+        for theme in ThemeId::ALL {
+            let styles = semantic_styles_for(theme);
+            let base_bg = palette(theme).bg_base;
+
+            let swatches = [
+                styles.status.open,
+                styles.status.in_progress,
+                styles.status.blocked,
+                styles.status.closed,
+                styles.priority.p0,
+                styles.priority.p1,
+                styles.priority.p2,
+                styles.priority.p3,
+                styles.priority.p4,
+                styles.issue_type.bug,
+                styles.issue_type.feature,
+                styles.issue_type.task,
+                styles.issue_type.epic,
+                styles.intent.success,
+                styles.intent.warning,
+                styles.intent.info,
+                styles.intent.error,
+            ];
+
+            for swatch in swatches {
+                assert!(
+                    swatch.fg_style.fg.is_some(),
+                    "missing fg_style.fg for {theme:?}"
+                );
+                assert!(
+                    swatch.badge_style.fg.is_some(),
+                    "missing badge_style.fg for {theme:?}"
+                );
+                assert!(
+                    swatch.badge_style.bg.is_some(),
+                    "missing badge_style.bg for {theme:?}"
+                );
+
+                let badge_bg = swatch.bg.over(base_bg);
+                assert!(
+                    contrast::meets_wcag_aa(swatch.text, badge_bg),
+                    "badge text contrast too low for {theme:?}"
+                );
+
+                assert_ne!(
+                    swatch.badge_style.fg, swatch.badge_style.bg,
+                    "badge fg/bg should differ for {theme:?}"
+                );
+            }
         }
     }
 }

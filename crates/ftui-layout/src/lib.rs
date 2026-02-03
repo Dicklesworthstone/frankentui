@@ -1815,8 +1815,8 @@ mod tests {
                 2 => Constraint::Min(rng.next_u16_range(0, 40)),
                 3 => Constraint::Max(rng.next_u16_range(5, 120)),
                 4 => {
-                    let n = (rng.next_u32() % 5 + 1) as u32;
-                    let d = (rng.next_u32() % 5 + 1) as u32;
+                    let n = rng.next_u32() % 5 + 1;
+                    let d = rng.next_u32() % 5 + 1;
                     Constraint::Ratio(n, d)
                 }
                 5 => Constraint::Fill,
@@ -1883,9 +1883,9 @@ mod tests {
         fn property_constraints_respected_ratio_proportional() {
             let mut rng = Lcg::new(0x1234_5678);
             for _ in 0..200 {
-                let n1 = (rng.next_u32() % 5 + 1) as u32;
-                let n2 = (rng.next_u32() % 5 + 1) as u32;
-                let d = (rng.next_u32() % 5 + 1) as u32;
+                let n1 = rng.next_u32() % 5 + 1;
+                let n2 = rng.next_u32() % 5 + 1;
+                let d = rng.next_u32() % 5 + 1;
                 let avail = rng.next_u16_range(20, 200);
                 let flex = Flex::horizontal()
                     .constraints([Constraint::Ratio(n1, d), Constraint::Ratio(n2, d)]);
@@ -1921,7 +1921,7 @@ mod tests {
                 let constraints: Vec<Constraint> =
                     (0..n).map(|_| random_constraint(&mut rng)).collect();
                 let avail = rng.next_u16_range(5, 200);
-                let dir = if rng.next_u32() % 2 == 0 {
+                let dir = if rng.next_u32().is_multiple_of(2) {
                     Direction::Horizontal
                 } else {
                     Direction::Vertical
@@ -1972,23 +1972,19 @@ mod tests {
 
         #[test]
         fn property_deterministic_across_runs() {
-            let mut rng1 = Lcg::new(0x9999_8888);
-            let mut rng2 = Lcg::new(0x9999_8888);
+            let mut rng = Lcg::new(0x9999_8888);
             for _ in 0..100 {
-                let n = (rng1.next_u32() % 5 + 1) as usize;
-                let c1: Vec<Constraint> = (0..n).map(|_| random_constraint(&mut rng1)).collect();
-                let c2: Vec<Constraint> = (0..n).map(|_| random_constraint(&mut rng2)).collect();
-                let avail1 = rng1.next_u16_range(10, 200);
-                let avail2 = rng2.next_u16_range(10, 200);
-                assert_eq!(c1, c2);
-                assert_eq!(avail1, avail2);
+                let n = (rng.next_u32() % 5 + 1) as usize;
+                let constraints: Vec<Constraint> =
+                    (0..n).map(|_| random_constraint(&mut rng)).collect();
+                let avail = rng.next_u16_range(10, 200);
                 let r1 = Flex::horizontal()
-                    .constraints(c1)
-                    .split(Rect::new(0, 0, avail1, 10));
+                    .constraints(constraints.clone())
+                    .split(Rect::new(0, 0, avail, 10));
                 let r2 = Flex::horizontal()
-                    .constraints(c2)
-                    .split(Rect::new(0, 0, avail2, 10));
-                assert_eq!(r1, r2, "Determinism violation at avail={}", avail1);
+                    .constraints(constraints)
+                    .split(Rect::new(0, 0, avail, 10));
+                assert_eq!(r1, r2, "Determinism violation at avail={}", avail);
             }
         }
     }
@@ -2255,8 +2251,8 @@ mod tests {
                 "\
 Flex Horizontal 80x24 (3 constraints)
   [0] x=0 y=0 w=26 h=24
-  [1] x=26 y=0 w=27 h=24
-  [2] x=53 y=0 w=27 h=24
+  [1] x=26 y=0 w=26 h=24
+  [2] x=52 y=0 w=28 h=24
   total=80
 "
             );

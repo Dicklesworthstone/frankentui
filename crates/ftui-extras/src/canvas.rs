@@ -105,6 +105,27 @@ impl Painter {
         Self::new(width, height, mode)
     }
 
+    /// Ensure the painter has at least the given sub-pixel dimensions.
+    ///
+    /// This is a grow-only operation; buffers never shrink.
+    pub fn ensure_size(&mut self, width: u16, height: u16, mode: Mode) {
+        self.mode = mode;
+        self.width = width;
+        self.height = height;
+        let len = width as usize * height as usize;
+        if len > self.pixels.len() {
+            self.pixels.resize(len, false);
+            self.colors.resize(len, None);
+        }
+    }
+
+    /// Ensure the painter can cover a terminal area at the given mode.
+    pub fn ensure_for_area(&mut self, area: Rect, mode: Mode) {
+        let width = area.width.saturating_mul(mode.cols_per_cell());
+        let height = area.height.saturating_mul(mode.rows_per_cell());
+        self.ensure_size(width, height, mode);
+    }
+
     /// Clear all pixels.
     pub fn clear(&mut self) {
         self.pixels.fill(false);
@@ -227,6 +248,11 @@ impl Painter {
     /// Get the sub-pixel dimensions.
     pub fn size(&self) -> (u16, u16) {
         (self.width, self.height)
+    }
+
+    /// Current backing buffer length (pixels).
+    pub fn buffer_len(&self) -> usize {
+        self.pixels.len()
     }
 
     /// Get the terminal cell dimensions needed to display this painter.
@@ -408,11 +434,42 @@ pub struct Canvas {
     style: Style,
 }
 
+/// Canvas widget that renders a borrowed [`Painter`] without cloning.
+#[derive(Debug, Clone)]
+pub struct CanvasRef<'a> {
+    painter: &'a Painter,
+    style: Style,
+}
+
 impl Canvas {
     /// Create a canvas from a painter.
     pub fn from_painter(painter: &Painter) -> Self {
         Self {
             painter: painter.clone(),
+            style: Style::new(),
+        }
+    }
+
+    /// Create a canvas that borrows a painter (no allocations).
+    pub fn from_painter_ref(painter: &Painter) -> CanvasRef<'_> {
+        CanvasRef {
+            painter,
+            style: Style::new(),
+        }
+    }
+
+    /// Set the base style (foreground color for lit pixels, background for unlit).
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+}
+
+impl<'a> CanvasRef<'a> {
+    /// Create a canvas reference from a painter.
+    pub fn from_painter(painter: &'a Painter) -> Self {
+        Self {
+            painter,
             style: Style::new(),
         }
     }
@@ -425,6 +482,16 @@ impl Canvas {
 }
 
 impl Widget for Canvas {
+    fn render(&self, area: Rect, frame: &mut Frame) {
+        if area.is_empty() {
+            return;
+        }
+        self.painter
+            .render_to_buffer(area, &mut frame.buffer, self.style);
+    }
+}
+
+impl Widget for CanvasRef<'_> {
     fn render(&self, area: Rect, frame: &mut Frame) {
         if area.is_empty() {
             return;
