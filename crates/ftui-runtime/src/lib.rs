@@ -16,11 +16,13 @@
 //! - [`Every`] - Built-in tick subscription
 
 pub mod asciicast;
+pub mod eprocess_throttle;
 pub mod input_macro;
 pub mod log_sink;
 pub mod program;
 #[cfg(feature = "render-thread")]
 pub mod render_thread;
+pub mod resize_coalescer;
 pub mod simulator;
 #[cfg(feature = "stdio-capture")]
 pub mod stdio_capture;
@@ -35,7 +37,7 @@ pub use input_macro::{
     RecordingFilter, RecordingState, TimedEvent,
 };
 pub use log_sink::LogSink;
-pub use program::{App, AppBuilder, Cmd, Model, Program, ProgramConfig};
+pub use program::{App, AppBuilder, Cmd, Model, Program, ProgramConfig, ResizeBehavior};
 pub use simulator::ProgramSimulator;
 pub use string_model::{StringModel, StringModelAdapter};
 pub use subscription::{Every, MockSubscription, StopSignal, SubId, Subscription};
@@ -47,7 +49,14 @@ pub use render_thread::{OutMsg, RenderThread};
 #[cfg(feature = "stdio-capture")]
 pub use stdio_capture::{CapturedWriter, StdioCapture, StdioCaptureError};
 
+pub use eprocess_throttle::{
+    EProcessThrottle, ThrottleConfig, ThrottleDecision, ThrottleLog, ThrottleStats,
+};
+pub use resize_coalescer::{
+    CoalesceAction, CoalescerConfig, CoalescerStats, DecisionLog, Regime, ResizeCoalescer,
+};
 pub use undo::{
-    CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, MergeConfig,
-    TextDeleteCmd, TextInsertCmd, TextReplaceCmd, UndoableCmd, WidgetId,
+    CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, HistoryConfig,
+    HistoryManager, MergeConfig, TextDeleteCmd, TextInsertCmd, TextReplaceCmd, Transaction,
+    TransactionScope, UndoableCmd, WidgetId,
 };
