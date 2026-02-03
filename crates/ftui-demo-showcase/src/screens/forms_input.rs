@@ -264,6 +264,7 @@ impl FormsInput {
         state.apply_theme();
         state.form_state.borrow_mut().init_tracking(&state.form);
         state.update_form_validation(false);
+        state.update_status();
         state
     }
 

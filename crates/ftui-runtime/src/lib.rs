@@ -28,6 +28,7 @@ pub mod program;
 #[cfg(feature = "render-thread")]
 pub mod render_thread;
 pub mod resize_coalescer;
+pub mod resize_sla;
 pub mod simulator;
 pub mod state_persistence;
 #[cfg(feature = "stdio-capture")]
@@ -81,6 +82,9 @@ pub use reactive::{BatchScope, Binding, BindingScope, Computed, Observable, TwoW
 pub use resize_coalescer::{
     CoalesceAction, CoalescerConfig, CoalescerStats, CycleTimePercentiles, DecisionLog,
     DecisionSummary, Regime, ResizeCoalescer, TelemetryHooks,
+};
+pub use resize_sla::{
+    ResizeEvidence, ResizeSlaMonitor, SlaConfig, SlaLogEntry, SlaSummary, make_sla_hooks,
 };
 pub use undo::{
     CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, HistoryConfig,

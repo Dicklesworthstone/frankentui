@@ -317,11 +317,14 @@ impl GridLayoutRecord {
 /// let debugger = LayoutDebugger::new();
 /// debugger.set_telemetry_hooks(hooks);
 /// ```
+type LayoutHook = Box<dyn Fn(&LayoutRecord) + Send + Sync>;
+type GridHook = Box<dyn Fn(&GridLayoutRecord) + Send + Sync>;
+
 pub struct LayoutTelemetryHooks {
-    on_layout_solve: Option<Box<dyn Fn(&LayoutRecord) + Send + Sync>>,
-    on_grid_solve: Option<Box<dyn Fn(&GridLayoutRecord) + Send + Sync>>,
-    on_overflow: Option<Box<dyn Fn(&LayoutRecord) + Send + Sync>>,
-    on_underflow: Option<Box<dyn Fn(&LayoutRecord) + Send + Sync>>,
+    on_layout_solve: Option<LayoutHook>,
+    on_grid_solve: Option<GridHook>,
+    on_overflow: Option<LayoutHook>,
+    on_underflow: Option<LayoutHook>,
 }
 
 impl Default for LayoutTelemetryHooks {
@@ -509,15 +512,15 @@ impl LayoutDebugger {
         }
 
         // Fire telemetry hooks before recording
-        if let Ok(hooks) = self.telemetry_hooks.lock() {
-            if let Some(ref h) = *hooks {
-                h.fire_layout_solve(&record);
-                if record.has_overflow() {
-                    h.fire_overflow(&record);
-                }
-                if record.has_underflow() {
-                    h.fire_underflow(&record);
-                }
+        if let Ok(hooks) = self.telemetry_hooks.lock()
+            && let Some(ref h) = *hooks
+        {
+            h.fire_layout_solve(&record);
+            if record.has_overflow() {
+                h.fire_overflow(&record);
+            }
+            if record.has_underflow() {
+                h.fire_underflow(&record);
             }
         }
 
@@ -535,10 +538,10 @@ impl LayoutDebugger {
         }
 
         // Fire telemetry hooks before recording
-        if let Ok(hooks) = self.telemetry_hooks.lock() {
-            if let Some(ref h) = *hooks {
-                h.fire_grid_solve(&record);
-            }
+        if let Ok(hooks) = self.telemetry_hooks.lock()
+            && let Some(ref h) = *hooks
+        {
+            h.fire_grid_solve(&record);
         }
 
         if let Ok(mut grid_records) = self.grid_records.lock() {
@@ -1009,5 +1012,230 @@ mod tests {
             LayoutRecord::format_constraint(&Constraint::Ratio(1, 3)),
             "Ratio(1/3)"
         );
+    }
+
+    // --- Telemetry tests (bd-32my.5) ---
+
+    #[test]
+    fn layout_record_to_jsonl() {
+        let mut record = LayoutRecord::new("test_layout");
+        record.constraints = vec![Constraint::Fixed(30), Constraint::Min(10)];
+        record.available_size = 100;
+        record.computed_sizes = vec![30, 70];
+        record.direction = Direction::Horizontal;
+        record.gap = 2;
+
+        let jsonl = record.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"layout_solve\""));
+        assert!(jsonl.contains("\"name\":\"test_layout\""));
+        assert!(jsonl.contains("\"direction\":\"Horizontal\""));
+        assert!(jsonl.contains("\"available_size\":100"));
+        assert!(jsonl.contains("\"gap\":2"));
+        assert!(jsonl.contains("\"Fixed(30)\""));
+        assert!(jsonl.contains("\"Min(10)\""));
+        assert!(jsonl.contains("\"computed_sizes\":[30,70]"));
+        // Verify it's valid single-line JSON (no newlines)
+        assert!(!jsonl.contains('\n'));
+    }
+
+    #[test]
+    fn grid_record_to_jsonl() {
+        let mut record = GridLayoutRecord::new("test_grid");
+        record.available_width = 100;
+        record.available_height = 50;
+        record.row_heights = vec![10, 20, 20];
+        record.col_widths = vec![30, 30, 40];
+
+        let jsonl = record.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"grid_layout_solve\""));
+        assert!(jsonl.contains("\"name\":\"test_grid\""));
+        assert!(jsonl.contains("\"available_width\":100"));
+        assert!(jsonl.contains("\"available_height\":50"));
+        assert!(jsonl.contains("\"row_heights\":[10,20,20]"));
+        assert!(jsonl.contains("\"col_widths\":[30,30,40]"));
+        assert!(jsonl.contains("\"has_row_overflow\":false"));
+        assert!(jsonl.contains("\"has_col_overflow\":false"));
+        assert!(!jsonl.contains('\n'));
+    }
+
+    #[test]
+    fn telemetry_hooks_fire_on_layout_solve() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let hooks = LayoutTelemetryHooks::new()
+            .on_layout_solve(move |_record| {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+        let debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.set_telemetry_hooks(hooks);
+
+        let mut record = LayoutRecord::new("test");
+        record.available_size = 100;
+        record.computed_sizes = vec![50, 50];
+        debugger.record(record);
+
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn telemetry_hooks_fire_on_overflow() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let overflow_counter = Arc::new(AtomicU32::new(0));
+        let overflow_clone = overflow_counter.clone();
+
+        let hooks = LayoutTelemetryHooks::new()
+            .on_overflow(move |_record| {
+                overflow_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+        let debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.set_telemetry_hooks(hooks);
+
+        // Record with overflow
+        let mut overflow_record = LayoutRecord::new("overflow");
+        overflow_record.available_size = 100;
+        overflow_record.computed_sizes = vec![60, 60]; // 120 > 100
+        debugger.record(overflow_record);
+
+        // Record without overflow
+        let mut normal_record = LayoutRecord::new("normal");
+        normal_record.available_size = 100;
+        normal_record.computed_sizes = vec![30, 30];
+        debugger.record(normal_record);
+
+        // Only the overflow record should have triggered the hook
+        assert_eq!(overflow_counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn telemetry_hooks_fire_on_underflow() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let underflow_counter = Arc::new(AtomicU32::new(0));
+        let underflow_clone = underflow_counter.clone();
+
+        let hooks = LayoutTelemetryHooks::new()
+            .on_underflow(move |_record| {
+                underflow_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+        let debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.set_telemetry_hooks(hooks);
+
+        // Record with underflow (< 80% utilization)
+        let mut underflow_record = LayoutRecord::new("underflow");
+        underflow_record.available_size = 100;
+        underflow_record.computed_sizes = vec![10, 10]; // 20% utilization
+        debugger.record(underflow_record);
+
+        assert_eq!(underflow_counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn telemetry_hooks_fire_on_grid_solve() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let hooks = LayoutTelemetryHooks::new()
+            .on_grid_solve(move |_record| {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+        let debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.set_telemetry_hooks(hooks);
+
+        let mut record = GridLayoutRecord::new("grid");
+        record.available_width = 100;
+        record.available_height = 50;
+        record.row_heights = vec![25, 25];
+        record.col_widths = vec![50, 50];
+        debugger.record_grid(record);
+
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn telemetry_hooks_not_fired_when_disabled() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let hooks = LayoutTelemetryHooks::new()
+            .on_layout_solve(move |_record| {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+        let debugger = LayoutDebugger::new();
+        // Note: NOT enabled
+        debugger.set_telemetry_hooks(hooks);
+
+        let mut record = LayoutRecord::new("test");
+        record.available_size = 100;
+        record.computed_sizes = vec![50, 50];
+        debugger.record(record);
+
+        // Hook should not fire because debugger is disabled
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn clear_telemetry_hooks() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let hooks = LayoutTelemetryHooks::new()
+            .on_layout_solve(move |_record| {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+        let debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.set_telemetry_hooks(hooks);
+
+        let mut record1 = LayoutRecord::new("test1");
+        record1.available_size = 100;
+        record1.computed_sizes = vec![50, 50];
+        debugger.record(record1);
+
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        // Clear hooks
+        debugger.clear_telemetry_hooks();
+
+        let mut record2 = LayoutRecord::new("test2");
+        record2.available_size = 100;
+        record2.computed_sizes = vec![50, 50];
+        debugger.record(record2);
+
+        // Counter should still be 1 (hooks cleared)
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn layout_record_jsonl_overflow_flags() {
+        let mut record = LayoutRecord::new("overflow_test");
+        record.available_size = 100;
+        record.computed_sizes = vec![60, 60]; // Overflow
+
+        let jsonl = record.to_jsonl();
+        assert!(jsonl.contains("\"has_overflow\":true"));
+    }
+
+    #[test]
+    fn layout_record_jsonl_underflow_flags() {
+        let mut record = LayoutRecord::new("underflow_test");
+        record.available_size = 100;
+        record.computed_sizes = vec![10, 10]; // 20% utilization
+
+        let jsonl = record.to_jsonl();
+        assert!(jsonl.contains("\"has_underflow\":true"));
     }
 }

@@ -400,6 +400,9 @@ impl Form {
     pub fn validate_all(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         for (i, (field, validator)) in self.fields.iter().zip(self.validators.iter()).enumerate() {
+            if self.is_disabled(i) {
+                continue;
+            }
             if let Some(vf) = validator
                 && let Some(msg) = vf(field)
             {
@@ -1119,6 +1122,7 @@ impl StatefulWidget for Form {
                     self.label_style
                 };
 
+                let focus_for_field = is_focused && !is_disabled;
                 self.render_field(
                     frame,
                     field,
@@ -1127,7 +1131,7 @@ impl StatefulWidget for Form {
                     value_width,
                     field_style,
                     placeholder_style,
-                    is_focused,
+                    focus_for_field,
                     state,
                 );
             }

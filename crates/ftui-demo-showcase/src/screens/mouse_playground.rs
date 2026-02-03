@@ -32,10 +32,10 @@ use ftui_core::event::{
 use ftui_core::geometry::Rect;
 use ftui_core::hover_stabilizer::{HoverStabilizer, HoverStabilizerConfig};
 use ftui_layout::{Constraint, Flex};
-use ftui_render::cell::{Cell as RenderCell, CellAttrs, StyleFlags};
+use ftui_render::cell::{Cell as RenderCell, CellAttrs, StyleFlags as CellStyleFlags};
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_runtime::Cmd;
-use ftui_style::Style;
+use ftui_style::{Style, StyleFlags};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -956,6 +956,16 @@ impl MousePlayground {
         self.tick_count
     }
 
+    /// Current panel focus (bd-bksf.6 UX/A11y).
+    pub fn current_focus(&self) -> Focus {
+        self.focus
+    }
+
+    /// Currently keyboard-focused target index (bd-bksf.6 UX/A11y).
+    pub fn focused_target_index(&self) -> usize {
+        self.focused_target_index
+    }
+
     /// Add a test event to the log (for testing purposes).
     pub fn push_test_event(&mut self, description: impl Into<String>, x: u16, y: u16) {
         self.log_event(description, x, y);
@@ -1160,7 +1170,7 @@ impl Screen for MousePlayground {
             (
                 Style::new()
                     .fg(theme::accent::PRIMARY.resolve())
-                    .attrs(StyleFlags::BOLD),
+                    .bold(),
                 " ► Hit-Test Targets ",
             )
         } else {
@@ -1170,7 +1180,7 @@ impl Screen for MousePlayground {
             .title(targets_title)
             .borders(Borders::ALL)
             .border_type(if targets_focused {
-                BorderType::Thick
+                BorderType::Heavy
             } else {
                 BorderType::Rounded
             })
@@ -1193,7 +1203,7 @@ impl Screen for MousePlayground {
             (
                 Style::new()
                     .fg(theme::accent::PRIMARY.resolve())
-                    .attrs(StyleFlags::BOLD),
+                    .bold(),
                 " ► Event Log ",
             )
         } else {
@@ -1203,7 +1213,7 @@ impl Screen for MousePlayground {
             .title(log_title)
             .borders(Borders::ALL)
             .border_type(if log_focused {
-                BorderType::Thick
+                BorderType::Heavy
             } else {
                 BorderType::Rounded
             })
@@ -1219,7 +1229,7 @@ impl Screen for MousePlayground {
             (
                 Style::new()
                     .fg(theme::accent::PRIMARY.resolve())
-                    .attrs(StyleFlags::BOLD),
+                    .bold(),
                 " ► Stats ",
             )
         } else {
@@ -1229,7 +1239,7 @@ impl Screen for MousePlayground {
             .title(stats_title)
             .borders(Borders::ALL)
             .border_type(if stats_focused {
-                BorderType::Thick
+                BorderType::Heavy
             } else {
                 BorderType::Rounded
             })
@@ -1317,29 +1327,52 @@ impl MousePlayground {
             // Slightly smaller than cell for visual separation
             let target_rect = Rect::new(x + 1, y, cell_width.saturating_sub(2), cell_height);
 
-            // Style based on hover/click state
-            let style = if target.hovered {
-                Style::new()
-                    .fg(theme::accent::PRIMARY)
-                    .bg(theme::accent::PRIMARY)
-            } else {
-                Style::new().bg(theme::bg::SURFACE)
-            };
+            // Determine if this target has keyboard focus
+            let keyboard_focused = self.focus == Focus::Targets && i == self.focused_target_index;
 
-            let border_style = if target.hovered {
-                Style::new().fg(theme::accent::PRIMARY)
+            // Style based on keyboard focus, hover, and click state
+            let (style, border_style, border_type) = if keyboard_focused && target.hovered {
+                // Both keyboard focused and mouse hovered
+                (
+                    Style::new()
+                        .fg(theme::accent::PRIMARY)
+                        .bg(theme::accent::PRIMARY),
+                    Style::new()
+                        .fg(theme::accent::PRIMARY.resolve())
+                        .attrs(StyleFlags::BOLD),
+                    BorderType::Double,
+                )
+            } else if keyboard_focused {
+                // Keyboard focused only
+                (
+                    Style::new().bg(theme::bg::ELEVATED),
+                    Style::new()
+                        .fg(theme::accent::PRIMARY.resolve())
+                        .attrs(StyleFlags::BOLD),
+                    BorderType::Heavy,
+                )
+            } else if target.hovered {
+                // Mouse hovered only
+                (
+                    Style::new()
+                        .fg(theme::accent::PRIMARY)
+                        .bg(theme::accent::PRIMARY),
+                    Style::new().fg(theme::accent::PRIMARY),
+                    BorderType::Double,
+                )
             } else {
-                Style::new().fg(theme::fg::SECONDARY)
+                // Default state
+                (
+                    Style::new().bg(theme::bg::SURFACE),
+                    Style::new().fg(theme::fg::SECONDARY),
+                    BorderType::Rounded,
+                )
             };
 
             // Render target block
             let block = Block::new()
                 .borders(Borders::ALL)
-                .border_type(if target.hovered {
-                    BorderType::Double
-                } else {
-                    BorderType::Rounded
-                })
+                .border_type(border_type)
                 .border_style(border_style)
                 .style(style);
 
@@ -1349,7 +1382,7 @@ impl MousePlayground {
             // Render label and click count
             if inner.height >= 1 && inner.width >= 2 {
                 let label = format!("{} ({})", target.label, target.clicks);
-                let label_style = if target.hovered {
+                let label_style = if keyboard_focused || target.hovered {
                     Style::new().bold()
                 } else {
                     Style::new()
@@ -1428,13 +1461,13 @@ impl MousePlayground {
             // Draw crosshair at mouse position
             let horiz_cell = RenderCell::from_char('-')
                 .with_fg(theme::accent::PRIMARY.into())
-                .with_attrs(CellAttrs::new(StyleFlags::DIM, 0));
+                .with_attrs(CellAttrs::new(CellStyleFlags::DIM, 0));
             let vert_cell = RenderCell::from_char('|')
                 .with_fg(theme::accent::PRIMARY.into())
-                .with_attrs(CellAttrs::new(StyleFlags::DIM, 0));
+                .with_attrs(CellAttrs::new(CellStyleFlags::DIM, 0));
             let center_cell = RenderCell::from_char('+')
                 .with_fg(theme::accent::PRIMARY.into())
-                .with_attrs(CellAttrs::new(StyleFlags::BOLD, 0));
+                .with_attrs(CellAttrs::new(CellStyleFlags::BOLD, 0));
 
             // Horizontal line (within bounds)
             let h_start = area.x;
