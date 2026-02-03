@@ -2296,8 +2296,8 @@ mod tests {
 
     #[test]
     fn telemetry_hooks_on_mode_change_fires() {
-        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&counter);

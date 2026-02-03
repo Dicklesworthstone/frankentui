@@ -145,10 +145,10 @@ fn emit_a11y_jsonl(event: &str, fields: &[(&str, &str)]) {
 /// Accessibility telemetry event types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A11yEventKind {
-    Panel,
-    HighContrast,
-    ReducedMotion,
-    LargeText,
+    PanelToggled,
+    HighContrastToggled,
+    ReducedMotionToggled,
+    LargeTextToggled,
 }
 
 /// Telemetry payload for A11y events.
