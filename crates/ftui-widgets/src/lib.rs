@@ -116,6 +116,8 @@
 //! [`Buffer`]: ftui_render::buffer::Buffer
 
 pub mod align;
+/// Badge widget (status/priority pills).
+pub mod badge;
 /// Block widget with borders, titles, and padding.
 pub mod block;
 pub mod borders;
@@ -170,6 +172,7 @@ pub mod undo_support;
 pub mod virtualized;
 
 pub use align::{Align, VerticalAlignment};
+pub use badge::Badge;
 pub use cached::{CacheKey, CachedWidget, CachedWidgetState, FnKey, HashKey, NoCacheKey};
 pub use columns::{Column, Columns};
 pub use constraint_overlay::{ConstraintOverlay, ConstraintOverlayStyle};
@@ -181,7 +184,7 @@ pub use debug_overlay::{
 pub use group::Group;
 pub use layout_debugger::{LayoutConstraints, LayoutDebugger, LayoutRecord};
 pub use log_ring::LogRing;
-pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode};
+pub use log_viewer::{LogViewer, LogViewerState, LogWrapMode, SearchConfig, SearchMode};
 pub use paginator::{Paginator, PaginatorMode};
 pub use panel::Panel;
 pub use sparkline::Sparkline;

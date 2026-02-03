@@ -7,6 +7,7 @@ publish = false
 [features]
 default = []
 debug-overlay = []
+regex-search = ["dep:regex"]
 tracing = ["dep:tracing", "ftui-render/tracing"]
 
 [dependencies]
@@ -16,6 +17,7 @@ ftui-layout = { path = "../ftui-layout" }
 ftui-render = { path = "../ftui-render" }
 ftui-style = { path = "../ftui-style" }
 ftui-text = { path = "../ftui-text" }
+regex = { version = "1", optional = true }
 tracing = { version = "0.1", optional = true }
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.2"
