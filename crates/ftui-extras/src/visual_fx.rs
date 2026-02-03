@@ -3077,9 +3077,8 @@ mod tests {
         let theme = ThemeInputs::default_dark();
         let backdrop = Backdrop::new(Box::new(SolidBg), theme).with_scrim(Scrim::vignette(0.5));
         // Verify scrim is set (not Off)
-        match backdrop.scrim {
-            Scrim::Off => panic!("Scrim should be vignette, not Off"),
-            _ => {} // Any non-Off scrim is correct
+        if backdrop.scrim == Scrim::Off {
+            panic!("Scrim should be vignette, not Off");
         }
     }
 
