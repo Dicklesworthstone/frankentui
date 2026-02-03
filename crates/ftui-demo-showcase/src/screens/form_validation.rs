@@ -361,13 +361,9 @@ impl FormValidationDemo {
             .title("Error Summary")
             .title_alignment(Alignment::Center)
             .style(if errors.is_empty() {
-                Style::new()
-                    .fg(theme::accent::SUCCESS)
-                    .bg(theme::bg::DEEP)
+                Style::new().fg(theme::accent::SUCCESS).bg(theme::bg::DEEP)
             } else {
-                Style::new()
-                    .fg(theme::accent::ERROR)
-                    .bg(theme::bg::DEEP)
+                Style::new().fg(theme::accent::ERROR).bg(theme::bg::DEEP)
             });
 
         let inner = block.inner(area);
@@ -408,10 +404,7 @@ impl FormValidationDemo {
             ValidationMode::OnSubmit => Style::new().fg(theme::accent::INFO),
         };
 
-        let indicator = format!(
-            "Mode: {} [M to toggle]",
-            self.validation_mode.label()
-        );
+        let indicator = format!("Mode: {} [M to toggle]", self.validation_mode.label());
 
         Paragraph::new(indicator)
             .style(mode_style)
@@ -487,10 +480,10 @@ impl Screen for FormValidationDemo {
         // Left side: form + indicators
         let left_chunks = Flex::vertical()
             .constraints([
-                Constraint::Fixed(1),  // Mode indicator
-                Constraint::Min(10),   // Form
-                Constraint::Fixed(1),  // State indicators
-                Constraint::Fixed(1),  // Status text
+                Constraint::Fixed(1), // Mode indicator
+                Constraint::Min(10),  // Form
+                Constraint::Fixed(1), // State indicators
+                Constraint::Fixed(1), // Status text
             ])
             .split(main_chunks[0]);
 
@@ -602,7 +595,10 @@ mod tests {
 
         let state = demo.form_state.borrow();
         // Empty form should have multiple validation errors
-        assert!(!state.errors.is_empty(), "Empty form should have validation errors");
+        assert!(
+            !state.errors.is_empty(),
+            "Empty form should have validation errors"
+        );
     }
 
     #[test]

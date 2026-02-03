@@ -213,7 +213,7 @@ impl Tooltip {
 
         let padding = self.config.padding as usize;
         let width = (max_line_width + padding * 2).min(self.config.max_width as usize);
-        let height = lines.len() + padding as usize * 2;
+        let height = lines.len() + padding * 2;
 
         Size::new(width as u16, height as u16)
     }
@@ -336,10 +336,10 @@ impl Widget for Tooltip {
                 }
 
                 // Write the grapheme
-                if let Some(cell) = frame.buffer.get_mut(x, y) {
-                    if let Some(c) = grapheme.chars().next() {
-                        cell.content = CellContent::from_char(c);
-                    }
+                if let Some(cell) = frame.buffer.get_mut(x, y)
+                    && let Some(c) = grapheme.chars().next()
+                {
+                    cell.content = CellContent::from_char(c);
                 }
                 // Mark continuation cells for wide chars
                 for offset in 1..w {
@@ -417,10 +417,10 @@ impl TooltipState {
 
     /// Update visibility based on elapsed time and delay.
     pub fn update(&mut self, current_time_ms: u64, delay_ms: u64) {
-        if let Some(start) = self.hover_start_ms {
-            if current_time_ms >= start + delay_ms {
-                self.visible = true;
-            }
+        if let Some(start) = self.hover_start_ms
+            && current_time_ms >= start + delay_ms
+        {
+            self.visible = true;
         }
     }
 
