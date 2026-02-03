@@ -60,6 +60,7 @@ use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::spinner::{DOTS, Spinner, SpinnerState};
 use ftui_widgets::status_line::{StatusItem, StatusLine};
 use ftui_widgets::table::{Row, Table, TableState};
+use ftui_widgets::tree::{Tree, TreeNode};
 use ftui_widgets::{StatefulWidget, Widget};
 
 /// Application state for the agent harness.
@@ -611,6 +612,13 @@ impl Model for AgentHarness {
 
     fn view(&self, frame: &mut Frame) {
         self.apply_theme_base(frame);
+
+        // If tree view is open, render it as an overlay
+        if self.tree_view_open {
+            self.view_tree_overlay(frame);
+            return;
+        }
+
         match self.view_mode {
             HarnessView::Default => self.view_default(frame),
             HarnessView::LayoutFlexRow => self.view_layout_flex_row(frame),
