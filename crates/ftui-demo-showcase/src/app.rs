@@ -1569,17 +1569,32 @@ impl Model for AppModel {
             .buffer
             .fill(area, RenderCell::default().with_bg(theme::bg::DEEP.into()));
 
-        // Top-level layout: tab bar (1 row) + content + status bar (1 row)
+        // Top-level layout: nav (1-2 rows) + content + status bar (1 row)
+        let nav_rows = if area.height >= 3 { 2 } else { 1 };
         let chunks = Flex::vertical()
             .constraints([
-                Constraint::Fixed(1),
+                Constraint::Fixed(nav_rows),
                 Constraint::Min(1),
                 Constraint::Fixed(1),
             ])
             .split(area);
 
-        // Tab bar (chrome module)
-        crate::chrome::render_tab_bar(self.current_screen, frame, chunks[0]);
+        // Navigation rows (chrome module)
+        if nav_rows >= 2 {
+            let nav_chunks = Flex::vertical()
+                .constraints([Constraint::Fixed(1), Constraint::Fixed(1)])
+                .split(chunks[0]);
+            let current_category = screens::screen_category(self.current_screen);
+            crate::chrome::render_category_tabs(self.current_screen, frame, nav_chunks[0]);
+            crate::chrome::render_screen_tabs_for_category(
+                self.current_screen,
+                current_category,
+                frame,
+                nav_chunks[1],
+            );
+        } else {
+            crate::chrome::render_tab_bar(self.current_screen, frame, chunks[0]);
+        }
 
         // Content area with border
         let content_block = Block::new()
@@ -2692,7 +2707,7 @@ mod tests {
         for &id in screens::screen_ids() {
             let mut pool = GraphemePool::new();
             let mut frame = Frame::new(120, 40, &mut pool);
-            let area = Rect::new(0, 0, 120, 38); // Leave room for tab bar + status
+            let area = Rect::new(0, 0, 120, 37); // Leave room for nav (2) + status
             app.screens.view(id, &mut frame, area);
             // If we reach here without panicking, the screen rendered successfully.
         }
@@ -2705,7 +2720,7 @@ mod tests {
         for &id in screens::screen_ids() {
             let mut pool = GraphemePool::new();
             let mut frame = Frame::new(40, 10, &mut pool);
-            let area = Rect::new(0, 0, 40, 8);
+            let area = Rect::new(0, 0, 40, 7);
             app.screens.view(id, &mut frame, area);
         }
     }
