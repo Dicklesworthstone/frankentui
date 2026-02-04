@@ -265,3 +265,16 @@ All tasks are complete. The codebase has been extensively refactored for Unicode
     - Updated `render_match_radar` to center the selected match in the list view.
     - Added clamping logic to ensure the view stays within bounds and keeps the window full when near the end of the list.
     - Applied similar centering and clamping logic to `render_hotspot_panel` for consistent behavior.
+
+## 98. Shakespeare Search Performance
+**File:** `crates/ftui-demo-showcase/src/screens/shakespeare.rs`
+**Issue:** `perform_search` allocated a new `String` (via `to_ascii_lowercase`) for every line in the text (100k+ allocations) on every keystroke, causing severe input lag during search.
+**Fix:**
+    - Implemented `line_contains_ignore_case` helper to perform case-insensitive substring checks without allocation.
+    - Updated `perform_search` to lowercase the query once and use the allocation-free helper for the scan.
+
+## 99. Code Explorer Search Performance
+**File:** `crates/ftui-demo-showcase/src/screens/code_explorer.rs`
+**Issue:** Search implementation suffered from the same O(N) allocation issue as Shakespeare, exacerbated by the larger `sqlite3.c` dataset.
+**Fix:**
+    - Applied the same `line_contains_ignore_case` optimization to `perform_search`, eliminating hundreds of thousands of allocations per search event.

@@ -532,6 +532,18 @@ impl DiffStrategySelector {
         self.frame_count
     }
 
+    /// Override the last decision's selected strategy and guard reason.
+    ///
+    /// Used when higher-level feature flags or probes force a different strategy
+    /// than the Bayesian selector chose.
+    pub fn override_last_strategy(&mut self, strategy: DiffStrategy, reason: &'static str) {
+        if let Some(evidence) = self.last_evidence.as_mut() {
+            evidence.strategy = strategy;
+            evidence.guard_reason = reason;
+            evidence.hysteresis_applied = false;
+        }
+    }
+
     /// Select the optimal strategy for the current frame.
     ///
     /// # Arguments
