@@ -11,6 +11,9 @@ markup = ["dep:ftui-render"]
 bidi = ["dep:unicode-bidi"]
 normalization = ["dep:unicode-normalization"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
+
 [dependencies]
 ftui-layout = { path = "../ftui-layout" }
 ftui-style = { path = "../ftui-style" }

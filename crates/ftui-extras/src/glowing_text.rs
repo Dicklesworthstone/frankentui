@@ -29,9 +29,9 @@
 //! ```
 
 use ftui_core::geometry::Rect;
-use ftui_render::cell::PackedRgba;
+use ftui_render::cell::{Cell, CellAttrs, CellContent, PackedRgba, StyleFlags as CellStyleFlags};
 use ftui_render::frame::Frame;
-use ftui_style::{Style, StyleFlags};
+use ftui_text::{display_width, grapheme_width, graphemes};
 use ftui_widgets::Widget;
 
 // =============================================================================
@@ -140,20 +140,33 @@ impl GlowingText {
         }
 
         let color = self.effective_color();
-        let mut style = Style::new().fg(color);
+        let mut flags = CellStyleFlags::empty();
         if self.bold {
-            style = style.attrs(StyleFlags::BOLD);
+            flags = flags.union(CellStyleFlags::BOLD);
         }
+        let attrs = CellAttrs::new(flags, 0);
 
-        for (i, ch) in self.text.chars().enumerate() {
-            let px = x.saturating_add(i as u16);
-            if let Some(cell) = frame.buffer.get_mut(px, y) {
-                cell.set_char(ch);
-                cell.fg = color;
-                if self.bold {
-                    cell.flags = cell.flags.union(StyleFlags::BOLD);
-                }
+        let mut px = x;
+        for grapheme in graphemes(self.text.as_str()) {
+            let w = grapheme_width(grapheme);
+            if w == 0 {
+                continue;
             }
+            let content = if w > 1 || grapheme.chars().count() > 1 {
+                let id = frame.intern_with_width(grapheme, w as u8);
+                CellContent::from_grapheme(id)
+            } else if let Some(ch) = grapheme.chars().next() {
+                CellContent::from_char(ch)
+            } else {
+                continue;
+            };
+
+            let mut cell = Cell::new(content);
+            cell.fg = color;
+            cell.attrs = attrs;
+            frame.buffer.set(px, y, cell);
+
+            px = px.saturating_add(w as u16);
         }
     }
 }
@@ -258,7 +271,7 @@ impl Widget for TransitionOverlay {
         let glow = self.glow_intensity();
 
         // Center the title
-        let title_len = self.title.chars().count() as u16;
+        let title_len = display_width(&self.title) as u16;
         let title_x = area.x + area.width.saturating_sub(title_len) / 2;
         let title_y = area.y + area.height / 2;
 
@@ -273,7 +286,7 @@ impl Widget for TransitionOverlay {
 
         // Render subtitle below (if there's room and subtitle exists)
         if !self.subtitle.is_empty() && title_y + 1 < area.y + area.height {
-            let subtitle_len = self.subtitle.chars().count() as u16;
+            let subtitle_len = display_width(&self.subtitle) as u16;
             let subtitle_x = area.x + area.width.saturating_sub(subtitle_len) / 2;
             let subtitle_y = title_y + 1;
 
@@ -288,7 +301,7 @@ impl Widget for TransitionOverlay {
         // Optional: render decorative glow "halo" around title
         if glow > 0.3 && title_y > 0 {
             let halo_chars = "~ ~ ~";
-            let halo_len = halo_chars.len() as u16;
+            let halo_len = display_width(halo_chars) as u16;
             let halo_x = area.x + area.width.saturating_sub(halo_len) / 2;
 
             // Above title

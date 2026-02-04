@@ -82,6 +82,12 @@ pub struct Painter {
     width: u16,
     /// Height in sub-pixels.
     height: u16,
+    /// Cached width as i32 for bounds checks.
+    width_i32: i32,
+    /// Cached height as i32 for bounds checks.
+    height_i32: i32,
+    /// Cached width as usize for index math.
+    width_usize: usize,
     /// Resolution mode.
     mode: Mode,
     /// Pixel buffer (row-major, `true` = on).
@@ -97,6 +103,9 @@ impl Painter {
         Self {
             width,
             height,
+            width_i32: width as i32,
+            height_i32: height as i32,
+            width_usize: width as usize,
             mode,
             pixels: vec![false; len],
             colors: vec![None; len],
@@ -117,6 +126,9 @@ impl Painter {
         self.mode = mode;
         self.width = width;
         self.height = height;
+        self.width_i32 = width as i32;
+        self.height_i32 = height as i32;
+        self.width_usize = width as usize;
         let len = width as usize * height as usize;
         if len > self.pixels.len() {
             self.pixels.resize(len, false);
@@ -372,11 +384,12 @@ impl Painter {
         self.index(x, y).map(|i| self.pixels[i]).unwrap_or(false)
     }
 
+    #[inline]
     fn index(&self, x: i32, y: i32) -> Option<usize> {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+        if x < 0 || y < 0 || x >= self.width_i32 || y >= self.height_i32 {
             return None;
         }
-        Some(y as usize * self.width as usize + x as usize)
+        Some(y as usize * self.width_usize + x as usize)
     }
 
     /// Render this painter's pixels into a cell grid.

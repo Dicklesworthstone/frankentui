@@ -473,13 +473,13 @@ impl GenericTokenizer {
         // Hex prefix
         if end + 1 < bytes.len() && bytes[end] == b'0' && (bytes[end + 1] | 0x20) == b'x' {
             end += 2;
-            while end < bytes.len() && bytes[end].is_ascii_hexdigit() {
+            while end < bytes.len() && (bytes[end].is_ascii_hexdigit() || bytes[end] == b'_') {
                 end += 1;
             }
             return end;
         }
         // Decimal (with optional dot and exponent)
-        while end < bytes.len() && bytes[end].is_ascii_digit() {
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'_') {
             end += 1;
         }
         if end < bytes.len()
@@ -488,7 +488,7 @@ impl GenericTokenizer {
             && bytes[end + 1].is_ascii_digit()
         {
             end += 1;
-            while end < bytes.len() && bytes[end].is_ascii_digit() {
+            while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'_') {
                 end += 1;
             }
         }

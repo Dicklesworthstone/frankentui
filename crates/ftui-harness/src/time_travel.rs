@@ -333,6 +333,24 @@ impl TimeTravel {
 
         // Evict oldest if at capacity
         if self.snapshots.len() >= self.capacity {
+            // When dropping the oldest frame (index 0), we must ensure the
+            // next frame (index 1) becomes self-contained (Full snapshot).
+            // Otherwise, it remains a Delta relative to the frame we just dropped,
+            // making it impossible to reconstruct.
+            if self.snapshots.len() > 1 {
+                let f0 = &self.snapshots[0];
+                let f1 = &self.snapshots[1];
+
+                // Reconstruct the state at frame 1
+                let mut buf = Buffer::new(f0.width, f0.height);
+                f0.apply_to(&mut buf);
+                f1.apply_to(&mut buf);
+
+                // Create a full snapshot from that state
+                let f1_full = CompressedFrame::full(&buf).with_cursor(f1.cursor);
+                self.snapshots[1] = f1_full;
+            }
+
             self.snapshots.pop_front();
             self.metadata.pop_front();
         }
@@ -661,6 +679,43 @@ mod tests {
         // Oldest retained is frame 2
         let meta = tt.metadata(0).unwrap();
         assert_eq!(meta.frame_number, 2);
+    }
+
+    #[test]
+    fn eviction_preserves_data_integrity() {
+        let mut tt = TimeTravel::new(3);
+        let mut buf = Buffer::new(5, 1);
+
+        // Frame 0: A....
+        buf.set(0, 0, Cell::from_char('A'));
+        tt.record(&buf, make_metadata(0));
+
+        // Frame 1: AB... (Delta from 0)
+        buf.set(1, 0, Cell::from_char('B'));
+        tt.record(&buf, make_metadata(1));
+
+        // Frame 2: ABC.. (Delta from 1)
+        buf.set(2, 0, Cell::from_char('C'));
+        tt.record(&buf, make_metadata(2));
+
+        // State: [F0, D1, D2]
+        // Frame 3: ABCD. (Delta from 2) -> Evicts F0
+        buf.set(3, 0, Cell::from_char('D'));
+        tt.record(&buf, make_metadata(3));
+
+        // State should be: [F1, D2, D3] (conceptually)
+        // Verify we can reconstruct the new head (frame 1)
+        let f1 = tt.get(0).unwrap();
+        assert_eq!(f1.get(0, 0).unwrap().content.as_char(), Some('A'));
+        assert_eq!(f1.get(1, 0).unwrap().content.as_char(), Some('B'));
+        assert!(f1.get(2, 0).unwrap().is_empty());
+
+        // Verify we can reconstruct the tail (frame 3)
+        let f3 = tt.get(2).unwrap();
+        assert_eq!(f3.get(0, 0).unwrap().content.as_char(), Some('A'));
+        assert_eq!(f3.get(1, 0).unwrap().content.as_char(), Some('B'));
+        assert_eq!(f3.get(2, 0).unwrap().content.as_char(), Some('C'));
+        assert_eq!(f3.get(3, 0).unwrap().content.as_char(), Some('D'));
     }
 
     #[test]

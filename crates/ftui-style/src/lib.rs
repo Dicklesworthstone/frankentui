@@ -14,6 +14,8 @@ pub mod color;
 pub mod style;
 /// StyleSheet registry for named styles.
 pub mod stylesheet;
+/// Table theme types and presets.
+pub mod table_theme;
 /// Theme system with semantic color slots.
 pub mod theme;
 
@@ -44,4 +46,8 @@ pub use color::{
 };
 pub use style::{Style, StyleFlags};
 pub use stylesheet::{StyleId, StyleSheet};
+pub use table_theme::{
+    BlendMode, Gradient, StyleMask, TableEffect, TableEffectResolver, TableEffectRule,
+    TableEffectScope, TableEffectTarget, TablePresetId, TableSection, TableTheme,
+};
 pub use theme::{AdaptiveColor, ResolvedTheme, Theme, ThemeBuilder};

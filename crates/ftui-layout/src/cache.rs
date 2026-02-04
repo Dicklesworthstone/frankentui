@@ -126,8 +126,24 @@ impl LayoutCacheKey {
                 Constraint::Min(v) => v.hash(&mut hasher),
                 Constraint::Max(v) => v.hash(&mut hasher),
                 Constraint::Ratio(n, d) => {
-                    n.hash(&mut hasher);
-                    d.hash(&mut hasher);
+                    fn gcd(mut a: u32, mut b: u32) -> u32 {
+                        while b != 0 {
+                            let t = b;
+                            b = a % b;
+                            a = t;
+                        }
+                        a
+                    }
+                    let divisor = gcd(*n, *d);
+                    if let (Some(n_div), Some(d_div)) =
+                        (n.checked_div(divisor), d.checked_div(divisor))
+                    {
+                        n_div.hash(&mut hasher);
+                        d_div.hash(&mut hasher);
+                    } else {
+                        n.hash(&mut hasher);
+                        d.hash(&mut hasher);
+                    }
                 }
                 Constraint::Fill => {}
                 Constraint::FitContent => {}
@@ -571,6 +587,10 @@ mod tests {
         )
     }
 
+    fn should_not_call(label: &str) -> Vec<Rect> {
+        unreachable!("{label}");
+    }
+
     // --- LayoutCacheKey tests ---
 
     #[test]
@@ -663,7 +683,7 @@ mod tests {
         };
 
         let r1 = cache.get_or_compute(key, compute);
-        let r2 = cache.get_or_compute(key, || panic!("should not call"));
+        let r2 = cache.get_or_compute(key, || should_not_call("should not call"));
 
         assert_eq!(r1, r2);
         assert_eq!(compute_count, 1);
@@ -719,7 +739,7 @@ mod tests {
         cache.get_or_compute(k2, || vec![Rect::new(0, 0, 20, 20)]);
 
         // Access k1 again (increases access count)
-        cache.get_or_compute(k1, || panic!("k1 should hit"));
+        cache.get_or_compute(k1, || should_not_call("k1 should hit"));
 
         // Insert k3, should evict k2 (least accessed)
         cache.get_or_compute(k3, || vec![Rect::new(0, 0, 30, 30)]);
@@ -735,7 +755,7 @@ mod tests {
         assert!(was_called, "k2 should have been evicted");
 
         // k1 should still be cached
-        cache.get_or_compute(k1, || panic!("k1 should still be cached"));
+        cache.get_or_compute(k1, || should_not_call("k1 should still be cached"));
     }
 
     #[test]
@@ -746,7 +766,7 @@ mod tests {
         let k2 = make_key(120, 40);
 
         cache.get_or_compute(k1, Vec::new); // miss
-        cache.get_or_compute(k1, || panic!("hit")); // hit
+        cache.get_or_compute(k1, || should_not_call("hit")); // hit
         cache.get_or_compute(k2, Vec::new); // miss
 
         let stats = cache.stats();
@@ -761,7 +781,7 @@ mod tests {
         let key = make_key(80, 24);
 
         cache.get_or_compute(key, Vec::new);
-        cache.get_or_compute(key, || panic!("hit"));
+        cache.get_or_compute(key, || should_not_call("hit"));
 
         let stats = cache.stats();
         assert_eq!(stats.hits, 1);
@@ -932,7 +952,7 @@ mod tests {
 
         // Subsequent accesses are hits
         for _ in 0..5 {
-            cache.get_or_compute(key, || panic!("should hit"));
+            cache.get_or_compute(key, || should_not_call("should hit"));
         }
 
         let stats = cache.stats();

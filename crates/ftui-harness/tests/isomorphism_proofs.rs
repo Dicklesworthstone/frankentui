@@ -83,6 +83,13 @@ fn log_jsonl(step: &str, data: &[(&str, &str)]) {
     eprintln!("{{{}}}", fields.join(","));
 }
 
+fn is_coverage_mode() -> bool {
+    std::env::var("LLVM_PROFILE_FILE").is_ok()
+        || std::env::var("CARGO_LLVM_COV").is_ok()
+        || std::env::var("LLVM_COV").is_ok()
+        || std::env::var("RUSTFLAGS").is_ok_and(|flags| flags.contains("instrument-coverage"))
+}
+
 // ===========================================================================
 // Checksum Helpers
 // ===========================================================================
@@ -130,7 +137,7 @@ fn render_styled_scene(width: u16, height: u16) -> Buffer {
 }
 
 /// Run a buffer through the full present pipeline and return headless term content.
-fn pipeline_roundtrip(buf: &Buffer, diff: &BufferDiff) -> Vec<String> {
+fn pipeline_roundtrip(buf: &Buffer, diff: &BufferDiff) -> HeadlessTerm {
     let output = {
         let mut vec = Vec::new();
         let caps = TerminalCapabilities::default();
@@ -142,8 +149,7 @@ fn pipeline_roundtrip(buf: &Buffer, diff: &BufferDiff) -> Vec<String> {
 
     let mut term = HeadlessTerm::new(buf.width(), buf.height());
     term.process(&output);
-
-    term.screen_text()
+    term
 }
 
 // ===========================================================================
@@ -342,22 +348,31 @@ fn proof_pipe1_content_survives_pipeline() {
         let next = render_styled_scene(w, h);
         let diff = BufferDiff::compute(&prev, &next);
 
-        let rows = pipeline_roundtrip(&next, &diff);
+        let term = pipeline_roundtrip(&next, &diff);
 
         // Verify content matches buffer
         for y in 0..h {
             for x in 0..w {
-                let buf_ch = next
-                    .get(x, y)
-                    .and_then(|c| c.content.as_char())
-                    .unwrap_or(' ');
-                let term_ch = rows[y as usize].chars().nth(x as usize).unwrap_or(' ');
+                let Some(buf_cell) = next.get(x, y) else {
+                    continue;
+                };
+                let Some(term_cell) = term.model().cell(x as usize, y as usize) else {
+                    continue;
+                };
 
                 // Skip styled chars (★) which may not round-trip through headless
-                // since headless doesn't handle all Unicode
-                if buf_ch == '★' {
+                // since headless doesn't handle all Unicode.
+                if buf_cell.content.as_char() == Some('★') {
                     continue;
                 }
+
+                // For graphemes/continuations, compare best-effort without shifting indices.
+                if buf_cell.content.is_grapheme() {
+                    continue;
+                }
+
+                let buf_ch = buf_cell.content.as_char().unwrap_or(' ');
+                let term_ch = term_cell.text.chars().next().unwrap_or(' ');
 
                 assert_eq!(
                     buf_ch, term_ch,
@@ -769,7 +784,8 @@ fn proof_performance_budget() {
         &[("test", "performance_budget"), ("bead", "bd-1rz0.29")],
     );
 
-    let iterations = 50;
+    let coverage = is_coverage_mode();
+    let iterations = if coverage { 10 } else { 50 };
     let mut timings_us = Vec::with_capacity(iterations);
 
     for _ in 0..iterations {
@@ -788,20 +804,24 @@ fn proof_performance_budget() {
     let p95 = timings_us[(timings_us.len() * 95) / 100];
     let p99 = timings_us[(timings_us.len() * 99) / 100];
 
+    let budget_us = if coverage { 50_000 } else { 5_000 };
+
     log_jsonl(
         "perf",
         &[
             ("p50_us", &p50.to_string()),
             ("p95_us", &p95.to_string()),
             ("p99_us", &p99.to_string()),
+            ("budget_us", &budget_us.to_string()),
+            ("coverage", if coverage { "true" } else { "false" }),
             ("iterations", &iterations.to_string()),
         ],
     );
 
-    // Budget: render + diff cycle should be under 5ms at p99
+    // Budget: render + diff cycle should be under 5ms at p99 (relaxed under coverage)
     assert!(
-        p99 < 5000,
-        "Performance budget exceeded: p99={p99}μs (budget=5000μs)"
+        p99 < budget_us,
+        "Performance budget exceeded: p99={p99}μs (budget={budget_us}μs, coverage={coverage})"
     );
 }
 

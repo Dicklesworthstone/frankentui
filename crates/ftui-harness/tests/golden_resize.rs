@@ -34,6 +34,7 @@ use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_text::Text;
+use ftui_text::display_width;
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::Borders;
@@ -67,7 +68,7 @@ fn render_test_pattern(buf: &mut Buffer, width: u16, height: u16) {
 
     // Size label in center
     let label = format!("{}x{}", width, height);
-    let start_x = (width.saturating_sub(label.len() as u16)) / 2;
+    let start_x = (width.saturating_sub(display_width(&label) as u16)) / 2;
     let start_y = height / 2;
     for (i, c) in label.chars().enumerate() {
         let x = start_x + i as u16;

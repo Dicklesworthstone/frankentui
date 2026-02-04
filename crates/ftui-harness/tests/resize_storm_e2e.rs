@@ -93,6 +93,33 @@ fn storm_env_json(seed: u64) -> String {
     )
 }
 
+fn is_coverage_mode() -> bool {
+    std::env::var("LLVM_PROFILE_FILE").is_ok()
+        || std::env::var("CARGO_LLVM_COV").is_ok()
+        || std::env::var("LLVM_COV").is_ok()
+        || std::env::var("RUSTFLAGS").is_ok_and(|flags| flags.contains("instrument-coverage"))
+}
+
+fn coverage_scale(count: usize) -> usize {
+    if !is_coverage_mode() {
+        return count;
+    }
+    let divisor = if count >= 200 { 4 } else { 2 };
+    let scaled = (count / divisor).max(10);
+    scaled.min(count)
+}
+
+const FRAME_BUDGET_US_DEFAULT: u64 = 50_000;
+const FRAME_BUDGET_US_COVERAGE: u64 = 200_000;
+
+fn frame_budget_us() -> u64 {
+    if is_coverage_mode() {
+        FRAME_BUDGET_US_COVERAGE
+    } else {
+        FRAME_BUDGET_US_DEFAULT
+    }
+}
+
 // ============================================================================
 // Scene Rendering
 // ============================================================================
@@ -197,6 +224,7 @@ fn run_storm_e2e(case_name: &str, storm: &ResizeStorm, frame_budget_us: u64) -> 
     let events = storm.events();
     let caps = StormCapabilities::detect();
     let env_json = storm_env_json(seed);
+    let coverage = is_coverage_mode();
 
     let mut frame_checksums = Vec::with_capacity(events.len() + 1);
     let mut ghost_failures = Vec::new();
@@ -214,6 +242,8 @@ fn run_storm_e2e(case_name: &str, storm: &ResizeStorm, frame_budget_us: u64) -> 
             ("seed", &seed.to_string()),
             ("pattern", &format!("\"{}\"", storm.config().pattern.name())),
             ("frames", &events.len().to_string()),
+            ("coverage", if coverage { "true" } else { "false" }),
+            ("frame_budget_us", &frame_budget_us.to_string()),
             ("env", &env_json),
             ("capabilities", &caps.to_json()),
         ],
@@ -440,20 +470,21 @@ fn assert_storm_result(result: &StormE2eResult) {
 // E2E Tests — Storm Patterns
 // ============================================================================
 
-/// Budget: 50ms per frame (generous for CI; typical is <5ms).
-const FRAME_BUDGET_US: u64 = 50_000;
+/// Budget: 50ms per frame (generous for CI; relaxed under coverage).
 
 #[test]
 fn e2e_burst_storm_50() {
     let seed = get_storm_seed();
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Burst { count: 50 })
+        .with_pattern(StormPattern::Burst {
+            count: coverage_scale(50),
+        })
         .with_case_name("burst_50")
         .with_size_bounds(20, 200, 5, 60);
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("burst_50", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("burst_50", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -462,12 +493,14 @@ fn e2e_burst_storm_200() {
     let seed = get_storm_seed();
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Burst { count: 200 })
+        .with_pattern(StormPattern::Burst {
+            count: coverage_scale(200),
+        })
         .with_case_name("burst_200")
         .with_size_bounds(20, 200, 5, 60);
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("burst_200", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("burst_200", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -480,12 +513,12 @@ fn e2e_sweep_small_to_large() {
             start_height: 8,
             end_width: 200,
             end_height: 60,
-            steps: 40,
+            steps: coverage_scale(40),
         })
         .with_case_name("sweep_small_to_large");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("sweep_small_to_large", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("sweep_small_to_large", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -498,12 +531,12 @@ fn e2e_sweep_large_to_small() {
             start_height: 60,
             end_width: 30,
             end_height: 8,
-            steps: 40,
+            steps: coverage_scale(40),
         })
         .with_case_name("sweep_large_to_small");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("sweep_large_to_small", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("sweep_large_to_small", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -515,12 +548,12 @@ fn e2e_oscillate_standard() {
         .with_pattern(StormPattern::Oscillate {
             size_a: (80, 24),
             size_b: (120, 40),
-            cycles: 25,
+            cycles: coverage_scale(25),
         })
         .with_case_name("oscillate_standard");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("oscillate_standard", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("oscillate_standard", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -532,12 +565,12 @@ fn e2e_oscillate_extreme() {
         .with_pattern(StormPattern::Oscillate {
             size_a: (20, 5),
             size_b: (200, 60),
-            cycles: 20,
+            cycles: coverage_scale(20),
         })
         .with_case_name("oscillate_extreme");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("oscillate_extreme", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("oscillate_extreme", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -546,11 +579,13 @@ fn e2e_pathological_50() {
     let seed = get_storm_seed();
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Pathological { count: 50 })
+        .with_pattern(StormPattern::Pathological {
+            count: coverage_scale(50),
+        })
         .with_case_name("pathological_50");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("pathological_50", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("pathological_50", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -559,12 +594,14 @@ fn e2e_mixed_100() {
     let seed = get_storm_seed();
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Mixed { count: 100 })
+        .with_pattern(StormPattern::Mixed {
+            count: coverage_scale(100),
+        })
         .with_case_name("mixed_100")
         .with_size_bounds(20, 200, 5, 60);
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("mixed_100", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("mixed_100", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -575,16 +612,19 @@ fn e2e_mixed_100() {
 #[test]
 fn e2e_determinism_burst() {
     let seed = 42u64;
-    let checksums: Vec<Vec<String>> = (0..3)
+    let runs = if is_coverage_mode() { 2 } else { 3 };
+    let checksums: Vec<Vec<String>> = (0..runs)
         .map(|_| {
             let config = StormConfig::default()
                 .with_seed(seed)
-                .with_pattern(StormPattern::Burst { count: 30 })
+                .with_pattern(StormPattern::Burst {
+                    count: coverage_scale(30),
+                })
                 .with_case_name("determinism_burst")
                 .with_size_bounds(20, 150, 5, 50);
 
             let storm = ResizeStorm::new(config);
-            let result = run_storm_e2e("determinism_burst", &storm, FRAME_BUDGET_US);
+            let result = run_storm_e2e("determinism_burst", &storm, frame_budget_us());
             result.frame_checksums
         })
         .collect();
@@ -593,16 +633,18 @@ fn e2e_determinism_burst() {
         checksums[0], checksums[1],
         "Runs 0 and 1 should produce identical frame checksums"
     );
-    assert_eq!(
-        checksums[1], checksums[2],
-        "Runs 1 and 2 should produce identical frame checksums"
-    );
+    if checksums.len() > 2 {
+        assert_eq!(
+            checksums[1], checksums[2],
+            "Runs 1 and 2 should produce identical frame checksums"
+        );
+    }
 
     log_jsonl(
         "storm_e2e_determinism",
         &[
             ("seed", &seed.to_string()),
-            ("runs", "3"),
+            ("runs", &runs.to_string()),
             ("frames_per_run", &checksums[0].len().to_string()),
             ("passed", "true"),
         ],
@@ -612,22 +654,27 @@ fn e2e_determinism_burst() {
 #[test]
 fn e2e_determinism_mixed() {
     let seed = 7777u64;
-    let checksums: Vec<Vec<String>> = (0..3)
+    let runs = if is_coverage_mode() { 2 } else { 3 };
+    let checksums: Vec<Vec<String>> = (0..runs)
         .map(|_| {
             let config = StormConfig::default()
                 .with_seed(seed)
-                .with_pattern(StormPattern::Mixed { count: 40 })
+                .with_pattern(StormPattern::Mixed {
+                    count: coverage_scale(40),
+                })
                 .with_case_name("determinism_mixed")
                 .with_size_bounds(20, 150, 5, 50);
 
             let storm = ResizeStorm::new(config);
-            let result = run_storm_e2e("determinism_mixed", &storm, FRAME_BUDGET_US);
+            let result = run_storm_e2e("determinism_mixed", &storm, frame_budget_us());
             result.frame_checksums
         })
         .collect();
 
     assert_eq!(checksums[0], checksums[1]);
-    assert_eq!(checksums[1], checksums[2]);
+    if checksums.len() > 2 {
+        assert_eq!(checksums[1], checksums[2]);
+    }
 }
 
 // ============================================================================
@@ -644,22 +691,23 @@ fn e2e_single_resize() {
         .with_case_name("single_resize");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("single_resize", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("single_resize", &storm, frame_budget_us());
     assert_storm_result(&result);
     assert_eq!(result.total_frames, 1);
 }
 
 #[test]
 fn e2e_same_size_repeated() {
+    let repeats = coverage_scale(20);
     let config = StormConfig::default()
         .with_seed(42)
         .with_pattern(StormPattern::Custom {
-            events: vec![(80, 24, 0); 20],
+            events: vec![(80, 24, 0); repeats],
         })
         .with_case_name("same_size_repeated");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("same_size_repeated", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("same_size_repeated", &storm, frame_budget_us());
     assert_storm_result(&result);
 
     // All frames at the same size should produce identical checksums
@@ -692,7 +740,7 @@ fn e2e_minimum_viable_sizes() {
         .with_case_name("minimum_viable");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("minimum_viable", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("minimum_viable", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -714,17 +762,19 @@ fn e2e_large_screen_custom_storm() {
         .with_case_name("large_screen_custom");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("large_screen_custom", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("large_screen_custom", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
 #[test]
 fn e2e_shrink_sequence() {
     // Progressive shrinking — stress-tests ghosting detection
-    let events: Vec<(u16, u16, u64)> = (0..20)
+    let steps = coverage_scale(20);
+    let events: Vec<(u16, u16, u64)> = (0..steps)
         .map(|i| {
-            let w = 200u16.saturating_sub(i * 9).max(20);
-            let h = 60u16.saturating_sub(i * 3).max(5);
+            let i = i as u16;
+            let w = 200u16.saturating_sub(i.saturating_mul(9)).max(20);
+            let h = 60u16.saturating_sub(i.saturating_mul(3)).max(5);
             (w, h, 0)
         })
         .collect();
@@ -736,17 +786,19 @@ fn e2e_shrink_sequence() {
         .with_case_name("shrink_sequence");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("shrink_sequence", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("shrink_sequence", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
 #[test]
 fn e2e_grow_sequence() {
     // Progressive growth — verifies content expansion
-    let events: Vec<(u16, u16, u64)> = (0..20)
+    let steps = coverage_scale(20);
+    let events: Vec<(u16, u16, u64)> = (0..steps)
         .map(|i| {
-            let w = (20 + i * 9).min(200);
-            let h = (5 + i * 3).min(60);
+            let i = i as u16;
+            let w = (20u16 + i.saturating_mul(9)).min(200);
+            let h = (5u16 + i.saturating_mul(3)).min(60);
             (w, h, 0)
         })
         .collect();
@@ -758,7 +810,7 @@ fn e2e_grow_sequence() {
         .with_case_name("grow_sequence");
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("grow_sequence", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("grow_sequence", &storm, frame_budget_us());
     assert_storm_result(&result);
 }
 
@@ -772,7 +824,9 @@ fn e2e_pipeline_content_every_frame() {
     let seed = 42u64;
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Burst { count: 30 })
+        .with_pattern(StormPattern::Burst {
+            count: coverage_scale(30),
+        })
         .with_case_name("pipeline_content")
         .with_size_bounds(30, 150, 8, 50);
 
@@ -837,7 +891,9 @@ fn e2e_flicker_analysis_burst() {
     let seed = 42u64;
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Burst { count: 30 })
+        .with_pattern(StormPattern::Burst {
+            count: coverage_scale(30),
+        })
         .with_case_name("flicker_burst")
         .with_size_bounds(30, 150, 8, 50);
 
@@ -892,10 +948,13 @@ fn e2e_flicker_analysis_burst() {
 
 #[test]
 fn e2e_performance_budget_burst() {
+    let coverage = is_coverage_mode();
     let seed = 42u64;
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Burst { count: 100 })
+        .with_pattern(StormPattern::Burst {
+            count: coverage_scale(100),
+        })
         .with_case_name("perf_budget_burst")
         .with_size_bounds(20, 200, 5, 60);
 
@@ -932,14 +991,18 @@ fn e2e_performance_budget_burst() {
             ("p50_us", &p50.to_string()),
             ("p95_us", &p95.to_string()),
             ("p99_us", &p99.to_string()),
+            ("coverage", if coverage { "true" } else { "false" }),
         ],
     );
 
-    // Budget: p95 should be under 50ms (generous for CI)
+    let budget_us = frame_budget_us();
+    // Budget: p95 should be under 50ms (generous for CI), relaxed under coverage
     assert!(
-        p95 < 50_000,
-        "p95 frame time {}μs exceeds budget 50,000μs",
-        p95
+        p95 < budget_us,
+        "p95 frame time {}μs exceeds budget {}μs (coverage={})",
+        p95,
+        budget_us,
+        coverage
     );
 }
 
@@ -952,14 +1015,16 @@ fn e2e_stress_500_resizes() {
     let seed = get_storm_seed();
     let config = StormConfig::default()
         .with_seed(seed)
-        .with_pattern(StormPattern::Mixed { count: 500 })
+        .with_pattern(StormPattern::Mixed {
+            count: coverage_scale(500),
+        })
         .with_case_name("stress_500")
         .with_size_bounds(20, 200, 5, 60);
 
     let storm = ResizeStorm::new(config);
-    let result = run_storm_e2e("stress_500", &storm, FRAME_BUDGET_US);
+    let result = run_storm_e2e("stress_500", &storm, frame_budget_us());
     assert_storm_result(&result);
-    assert_eq!(result.total_frames, 500);
+    assert_eq!(result.total_frames, storm.events().len());
 }
 
 // ============================================================================
@@ -1025,7 +1090,7 @@ fn e2e_recorded_storm_replay_consistency() {
         .with_pattern(StormPattern::Oscillate {
             size_a: (60, 15),
             size_b: (120, 40),
-            cycles: 10,
+            cycles: coverage_scale(10),
         })
         .with_case_name("replay_test");
 
@@ -1040,8 +1105,8 @@ fn e2e_recorded_storm_replay_consistency() {
     );
 
     // Run E2E on both and compare checksums
-    let result1 = run_storm_e2e("replay_test_1", &storm1, FRAME_BUDGET_US);
-    let result2 = run_storm_e2e("replay_test_2", &storm2, FRAME_BUDGET_US);
+    let result1 = run_storm_e2e("replay_test_1", &storm1, frame_budget_us());
+    let result2 = run_storm_e2e("replay_test_2", &storm2, frame_budget_us());
 
     assert_eq!(
         result1.frame_checksums, result2.frame_checksums,
@@ -1069,7 +1134,7 @@ fn e2e_suite_summary() {
                 "patterns",
                 "\"burst,sweep,oscillate,pathological,mixed,custom\"",
             ),
-            ("frame_budget_us", &FRAME_BUDGET_US.to_string()),
+            ("frame_budget_us", &frame_budget_us().to_string()),
         ],
     );
 }

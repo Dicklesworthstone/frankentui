@@ -1251,6 +1251,7 @@ mod tests {
 
     #[test]
     fn theme_rotation_wraps() {
+        let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
         // CyberpunkAurora -> Darcula
         set_theme(ThemeId::CyberpunkAurora);
         assert_eq!(cycle_theme(), ThemeId::Darcula);
@@ -1263,14 +1264,14 @@ mod tests {
 
     #[test]
     fn token_resolves_from_palette() {
-        set_theme(ThemeId::Darcula);
+        let _guard = ScopedThemeLock::new(ThemeId::Darcula);
         let color: PackedRgba = fg::PRIMARY.into();
         assert_eq!(color, palette(ThemeId::Darcula).fg_primary);
     }
 
     #[test]
     fn alpha_color_preserves_channel_and_alpha() {
-        set_theme(ThemeId::CyberpunkAurora);
+        let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
         let color = AlphaColor::new(bg::BASE, 123).resolve();
         let base = current_palette().bg_base;
         assert_eq!(color.r(), base.r());
@@ -1281,7 +1282,7 @@ mod tests {
 
     #[test]
     fn blend_over_matches_packed_rgba() {
-        set_theme(ThemeId::CyberpunkAurora);
+        let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
         let blended = blend_over(accent::PRIMARY, bg::BASE, 0.5);
         let expected = accent::PRIMARY
             .resolve()
@@ -1293,7 +1294,7 @@ mod tests {
     #[test]
     fn accent_gradient_wraps() {
         for theme in ThemeId::ALL {
-            set_theme(theme);
+            let _guard = ScopedThemeLock::new(theme);
             assert_eq!(accent_gradient(0.0), accent_gradient(1.0));
             assert_eq!(accent_gradient(-1.0), accent_gradient(0.0));
         }
@@ -1302,7 +1303,7 @@ mod tests {
     #[test]
     fn status_colors_have_valid_contrast() {
         for theme in ThemeId::ALL {
-            set_theme(theme);
+            let _guard = ScopedThemeLock::new(theme);
             let base = bg::BASE.resolve();
             let open = status::OPEN.resolve();
             let progress = status::IN_PROGRESS.resolve();
@@ -1330,7 +1331,7 @@ mod tests {
     #[test]
     fn priority_colors_distinct() {
         for theme in ThemeId::ALL {
-            set_theme(theme);
+            let _guard = ScopedThemeLock::new(theme);
             let colors = [
                 priority::P0.resolve(),
                 priority::P1.resolve(),
@@ -1352,7 +1353,7 @@ mod tests {
     #[test]
     fn status_bg_variants_have_low_opacity() {
         for theme in ThemeId::ALL {
-            set_theme(theme);
+            let _guard = ScopedThemeLock::new(theme);
             assert!(status::open_bg().a() < 128);
             assert!(status::in_progress_bg().a() < 128);
             assert!(status::blocked_bg().a() < 128);
@@ -1363,7 +1364,7 @@ mod tests {
     #[test]
     fn status_badge_text_meets_contrast() {
         for theme in ThemeId::ALL {
-            set_theme(theme);
+            let _guard = ScopedThemeLock::new(theme);
             let base = bg::BASE.resolve();
             let bg_open = status::open_bg().over(base);
             let text_open = status::open_text();
@@ -1449,7 +1450,7 @@ mod tests {
     #[test]
     fn priority_badge_labels_and_colors_are_distinct() {
         for theme in ThemeId::ALL {
-            set_theme(theme);
+            let _guard = ScopedThemeLock::new(theme);
             let badges = [
                 priority_badge(PriorityBadge::P0),
                 priority_badge(PriorityBadge::P1),

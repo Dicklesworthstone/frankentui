@@ -1578,7 +1578,7 @@ mod tests {
             assert!(value.is_empty());
             assert!(placeholder.is_none());
         } else {
-            panic!("expected Text");
+            unreachable!("expected Text");
         }
     }
 
@@ -1588,7 +1588,7 @@ mod tests {
         if let FormField::Text { value, .. } = &f {
             assert_eq!(value, "Alice");
         } else {
-            panic!("expected Text");
+            unreachable!("expected Text");
         }
     }
 
@@ -1598,7 +1598,7 @@ mod tests {
         if let FormField::Text { placeholder, .. } = &f {
             assert_eq!(placeholder.as_deref(), Some("Enter name..."));
         } else {
-            panic!("expected Text");
+            unreachable!("expected Text");
         }
     }
 
@@ -1608,7 +1608,7 @@ mod tests {
         if let FormField::Checkbox { checked, .. } = &f {
             assert!(!checked);
         } else {
-            panic!("expected Checkbox");
+            unreachable!("expected Checkbox");
         }
     }
 
@@ -1622,7 +1622,7 @@ mod tests {
             assert_eq!(options.len(), 2);
             assert_eq!(*selected, 0);
         } else {
-            panic!("expected Radio");
+            unreachable!("expected Radio");
         }
     }
 
@@ -1636,7 +1636,7 @@ mod tests {
             assert_eq!(options.len(), 3);
             assert_eq!(*selected, 0);
         } else {
-            panic!("expected Select");
+            unreachable!("expected Select");
         }
     }
 
@@ -1651,7 +1651,7 @@ mod tests {
             assert!(min.is_none());
             assert!(max.is_none());
         } else {
-            panic!("expected Number");
+            unreachable!("expected Number");
         }
     }
 
@@ -1666,7 +1666,7 @@ mod tests {
             assert_eq!(*min, Some(0));
             assert_eq!(*max, Some(150));
         } else {
-            panic!("expected Number");
+            unreachable!("expected Number");
         }
     }
 
@@ -2256,7 +2256,7 @@ mod tests {
         // Should be max label len + 2
         assert_eq!(
             form.effective_label_width(),
-            "Much Longer Label".len() as u16 + 2
+            display_width("Much Longer Label") as u16 + 2
         );
     }
 

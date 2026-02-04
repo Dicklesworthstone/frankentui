@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 use std::env;
+#[cfg(feature = "clipboard-fallback")]
+use std::io::Read;
 use std::io::Write;
 #[cfg(feature = "clipboard-fallback")]
 use std::path::Path;
@@ -10,6 +12,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 
 const ENV_CLIPBOARD_BACKEND: &str = "FTUI_CLIPBOARD_BACKEND";
+#[cfg(feature = "clipboard-fallback")]
+const EXTERNAL_CMD_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// OSC 52 clipboard selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -680,34 +684,71 @@ fn run_command_with_input(cmd: &str, args: &[&str], content: &str) -> Result<(),
             .map_err(|err| ClipboardError::WriteError(err.to_string()))?;
     }
 
-    let status = child
-        .wait()
-        .map_err(|err| ClipboardError::WriteError(err.to_string()))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(ClipboardError::WriteError(format!(
-            "clipboard command failed: {cmd}"
-        )))
+    let deadline = std::time::Instant::now() + EXTERNAL_CMD_TIMEOUT;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| ClipboardError::WriteError(err.to_string()))?
+        {
+            if status.success() {
+                return Ok(());
+            }
+            return Err(ClipboardError::WriteError(format!(
+                "clipboard command failed: {cmd}"
+            )));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ClipboardError::WriteError(format!(
+                "clipboard command timed out: {cmd}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
 #[cfg(feature = "clipboard-fallback")]
 fn run_command_output(cmd: &str, args: &[&str]) -> Result<String, ClipboardError> {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
-    let output = Command::new(cmd)
+    let mut child = Command::new(cmd)
         .args(args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|err| ClipboardError::ReadError(err.to_string()))?;
 
-    if !output.status.success() {
+    let deadline = std::time::Instant::now() + EXTERNAL_CMD_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| ClipboardError::ReadError(err.to_string()))?
+        {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ClipboardError::ReadError(format!(
+                "clipboard command timed out: {cmd}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    if !status.success() {
         return Err(ClipboardError::ReadError(format!(
             "clipboard command failed: {cmd}"
         )));
     }
 
-    String::from_utf8(output.stdout).map_err(|err| ClipboardError::ReadError(err.to_string()))
+    let mut stdout = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_end(&mut stdout)
+            .map_err(|err| ClipboardError::ReadError(err.to_string()))?;
+    }
+    String::from_utf8(stdout).map_err(|err| ClipboardError::ReadError(err.to_string()))
 }
 
 #[cfg(feature = "clipboard-logging")]

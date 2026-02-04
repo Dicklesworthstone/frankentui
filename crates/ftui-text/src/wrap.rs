@@ -450,6 +450,11 @@ fn has_emoji_presentation_selector(grapheme: &str) -> bool {
     grapheme.chars().any(|c| c as u32 == 0xFE0F)
 }
 
+#[inline]
+fn is_emoji_grapheme(grapheme: &str) -> bool {
+    has_emoji_presentation_selector(grapheme) || grapheme.chars().any(is_probable_emoji)
+}
+
 /// Calculate the display width of a single grapheme cluster.
 ///
 /// Uses `unicode-display-width` so grapheme clusters (ZWJ emoji, flags, combining
@@ -464,9 +469,7 @@ pub fn grapheme_width(grapheme: &str) -> usize {
         return 0;
     }
     let width = unicode_display_width(grapheme) as usize;
-    if width == 1
-        && (has_emoji_presentation_selector(grapheme) || grapheme.chars().any(is_probable_emoji))
-    {
+    if is_emoji_grapheme(grapheme) {
         return 2;
     }
     width
@@ -1157,6 +1160,16 @@ mod tests {
     fn display_width_misc_symbol_emoji() {
         assert_eq!(display_width("⏳"), 2);
         assert_eq!(display_width("⌛"), 2);
+    }
+
+    #[test]
+    fn display_width_file_icons() {
+        let icons = [
+            "📁", "🔗", "🦀", "🐍", "📜", "📝", "⚙️", "🖼️", "🎵", "🎬", "⚡️", "📄",
+        ];
+        for icon in icons {
+            assert_eq!(display_width(icon), 2, "icon width mismatch: {icon}");
+        }
     }
 
     #[test]

@@ -41,7 +41,7 @@
 #[cfg(feature = "diagram")]
 use crate::diagram;
 use ftui_render::cell::PackedRgba;
-use ftui_style::Style;
+use ftui_style::{Style, TableEffectScope, TableSection, TableTheme};
 use ftui_text::text::{Line, Span, Text};
 use pulldown_cmark::{
     Alignment, BlockQuoteKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
@@ -785,10 +785,7 @@ pub struct MarkdownTheme {
     pub horizontal_rule: Style,
 
     // Tables
-    pub table_border: Style,
-    pub table_header: Style,
-    pub table_row: Style,
-    pub table_row_alt: Style,
+    pub table_theme: TableTheme,
 
     // Task lists
     pub task_done: Style,
@@ -812,6 +809,7 @@ pub struct MarkdownTheme {
 
 impl Default for MarkdownTheme {
     fn default() -> Self {
+        let table_theme = default_markdown_table_theme();
         Self {
             // Headings: bright white -> soft lavender gradient
             h1: Style::new().fg(PackedRgba::rgb(255, 255, 255)).bold(),
@@ -837,15 +835,7 @@ impl Default for MarkdownTheme {
             horizontal_rule: Style::new().fg(PackedRgba::rgb(100, 100, 100)).dim(),
 
             // Tables: cool borders with subtle zebra rows
-            table_border: Style::new().fg(PackedRgba::rgb(145, 160, 190)),
-            table_header: Style::new()
-                .fg(PackedRgba::rgb(250, 250, 255))
-                .bg(PackedRgba::rgb(55, 75, 115))
-                .bold(),
-            table_row: Style::new().fg(PackedRgba::rgb(225, 230, 240)),
-            table_row_alt: Style::new()
-                .fg(PackedRgba::rgb(225, 230, 240))
-                .bg(PackedRgba::rgb(30, 35, 50)),
+            table_theme,
 
             // Task lists: green for done, cyan for todo
             task_done: Style::new().fg(PackedRgba::rgb(120, 220, 120)),
@@ -869,6 +859,34 @@ impl Default for MarkdownTheme {
     }
 }
 
+fn default_markdown_table_theme() -> TableTheme {
+    let border = Style::new().fg(PackedRgba::rgb(145, 160, 190));
+    let header = Style::new()
+        .fg(PackedRgba::rgb(250, 250, 255))
+        .bg(PackedRgba::rgb(55, 75, 115))
+        .bold();
+    let row = Style::new().fg(PackedRgba::rgb(225, 230, 240));
+    let row_alt = Style::new()
+        .fg(PackedRgba::rgb(225, 230, 240))
+        .bg(PackedRgba::rgb(30, 35, 50));
+    let divider = Style::new().fg(PackedRgba::rgb(120, 135, 165));
+
+    TableTheme {
+        border,
+        header,
+        row,
+        row_alt,
+        row_selected: header,
+        row_hover: row_alt,
+        divider,
+        padding: 1,
+        column_gap: 1,
+        row_height: 1,
+        effects: Vec::new(),
+        preset_id: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
@@ -882,6 +900,7 @@ pub struct MarkdownRenderer {
     theme: MarkdownTheme,
     rule_width: u16,
     table_max_width: Option<u16>,
+    table_effect_phase: Option<f32>,
 }
 
 impl MarkdownRenderer {
@@ -892,6 +911,7 @@ impl MarkdownRenderer {
             theme,
             rule_width: 40,
             table_max_width: None,
+            table_effect_phase: None,
         }
     }
 
@@ -906,6 +926,15 @@ impl MarkdownRenderer {
     #[must_use]
     pub fn table_max_width(mut self, width: u16) -> Self {
         self.table_max_width = Some(width);
+        self
+    }
+
+    /// Set an optional phase for table effect animation (0.0..1.0).
+    ///
+    /// When not set, table effects are not applied.
+    #[must_use]
+    pub fn table_effect_phase(mut self, phase: f32) -> Self {
+        self.table_effect_phase = Some(phase);
         self
     }
 
@@ -924,7 +953,12 @@ impl MarkdownRenderer {
             | Options::ENABLE_GFM;
         let parser = Parser::new_ext(markdown, options);
 
-        let mut builder = RenderState::new(&self.theme, self.rule_width, self.table_max_width);
+        let mut builder = RenderState::new(
+            &self.theme,
+            self.rule_width,
+            self.table_max_width,
+            self.table_effect_phase,
+        );
         builder.process(parser);
         builder.finish()
     }
@@ -1056,6 +1090,16 @@ struct TableRow {
     is_header: bool,
 }
 
+struct TableRowContext<'a> {
+    widths: &'a [usize],
+    alignments: &'a [Alignment],
+    base_style: Style,
+    border_style: Style,
+    section: TableSection,
+    effect_phase: Option<f32>,
+    resolver: &'a ftui_style::TableEffectResolver<'a>,
+}
+
 #[derive(Debug, Clone)]
 struct TableState {
     alignments: Vec<Alignment>,
@@ -1079,6 +1123,7 @@ struct RenderState<'t> {
     theme: &'t MarkdownTheme,
     rule_width: u16,
     table_max_width: Option<u16>,
+    table_effect_phase: Option<f32>,
     lines: Vec<Line>,
     current_spans: Vec<Span<'static>>,
     style_stack: Vec<StyleContext>,
@@ -1110,11 +1155,17 @@ struct RenderState<'t> {
 }
 
 impl<'t> RenderState<'t> {
-    fn new(theme: &'t MarkdownTheme, rule_width: u16, table_max_width: Option<u16>) -> Self {
+    fn new(
+        theme: &'t MarkdownTheme,
+        rule_width: u16,
+        table_max_width: Option<u16>,
+        table_effect_phase: Option<f32>,
+    ) -> Self {
         Self {
             theme,
             rule_width,
             table_max_width,
+            table_effect_phase,
             lines: Vec::new(),
             current_spans: Vec::new(),
             style_stack: Vec::new(),
@@ -1674,33 +1725,60 @@ impl<'t> RenderState<'t> {
         }
         self.fit_table_widths(&mut widths);
 
-        let border_style = self.theme.table_border;
+        let table_theme = &self.theme.table_theme;
+        let border_style = table_theme.border;
+        let divider_style = table_theme.divider;
+        let resolver = table_theme.effect_resolver();
+        let effect_phase = self.table_effect_phase;
         self.lines
             .push(self.table_border_line(&widths, '┌', '┬', '┐', border_style));
 
         let last_header = table.rows.iter().rposition(|row| row.is_header);
         let mut body_index = 0usize;
+        let mut header_index = 0usize;
 
         for (idx, row) in table.rows.iter().enumerate() {
-            let base_style = if row.is_header {
-                self.theme.table_header
-            } else if body_index.is_multiple_of(2) {
-                self.theme.table_row
+            let (section, row_index) = if row.is_header {
+                let row_index = header_index;
+                header_index += 1;
+                (TableSection::Header, row_index)
             } else {
-                self.theme.table_row_alt
+                let row_index = body_index;
+                body_index += 1;
+                (TableSection::Body, row_index)
             };
 
-            let line =
-                self.table_row_line(row, &widths, &table.alignments, base_style, border_style);
+            let base_style = if row.is_header {
+                table_theme.header
+            } else if row_index.is_multiple_of(2) {
+                table_theme.row
+            } else {
+                table_theme.row_alt
+            };
+
+            let base_style = if let Some(phase) = effect_phase {
+                let resolved =
+                    resolver.resolve(base_style, TableEffectScope::section(section), phase);
+                resolver.resolve(resolved, TableEffectScope::row(section, row_index), phase)
+            } else {
+                base_style
+            };
+
+            let context = TableRowContext {
+                widths: &widths,
+                alignments: &table.alignments,
+                base_style,
+                border_style,
+                section,
+                effect_phase,
+                resolver: &resolver,
+            };
+            let line = self.table_row_line(row, &context);
             self.lines.push(line);
 
-            if row.is_header {
-                if Some(idx) == last_header && idx + 1 < table.rows.len() {
-                    self.lines
-                        .push(self.table_border_line(&widths, '├', '┼', '┤', border_style));
-                }
-            } else {
-                body_index += 1;
+            if row.is_header && Some(idx) == last_header && idx + 1 < table.rows.len() {
+                self.lines
+                    .push(self.table_border_line(&widths, '├', '┼', '┤', divider_style));
             }
         }
 
@@ -1802,26 +1880,32 @@ impl<'t> RenderState<'t> {
         Line::styled(line, style)
     }
 
-    fn table_row_line(
-        &self,
-        row: &TableRow,
-        widths: &[usize],
-        alignments: &[Alignment],
-        base_style: Style,
-        border_style: Style,
-    ) -> Line {
+    fn table_row_line(&self, row: &TableRow, context: &TableRowContext<'_>) -> Line {
         let mut spans = Vec::new();
-        spans.push(Span::styled("│", border_style));
+        spans.push(Span::styled("│", context.border_style));
 
-        for (idx, width) in widths.iter().enumerate() {
+        for (idx, width) in context.widths.iter().enumerate() {
             let cell_spans = row
                 .cells
                 .get(idx)
                 .cloned()
                 .unwrap_or_else(|| vec![Span::raw("")]);
-            let (cell_spans, cell_width) = self.table_cell_spans(&cell_spans, *width, base_style);
+            let cell_style = if let Some(phase) = context.effect_phase {
+                context.resolver.resolve(
+                    context.base_style,
+                    TableEffectScope::column(context.section, idx),
+                    phase,
+                )
+            } else {
+                context.base_style
+            };
+            let (cell_spans, cell_width) = self.table_cell_spans(&cell_spans, *width, cell_style);
             let extra = width.saturating_sub(cell_width);
-            let alignment = alignments.get(idx).copied().unwrap_or(Alignment::None);
+            let alignment = context
+                .alignments
+                .get(idx)
+                .copied()
+                .unwrap_or(Alignment::None);
 
             let (left_extra, right_extra) = match alignment {
                 Alignment::Right => (extra, 0),
@@ -1832,10 +1916,10 @@ impl<'t> RenderState<'t> {
             let left_pad = 1 + left_extra;
             let right_pad = 1 + right_extra;
 
-            spans.push(Span::styled(" ".repeat(left_pad), base_style));
+            spans.push(Span::styled(" ".repeat(left_pad), cell_style));
             spans.extend(cell_spans);
-            spans.push(Span::styled(" ".repeat(right_pad), base_style));
-            spans.push(Span::styled("│", border_style));
+            spans.push(Span::styled(" ".repeat(right_pad), cell_style));
+            spans.push(Span::styled("│", context.border_style));
         }
 
         Line::from_spans(spans)

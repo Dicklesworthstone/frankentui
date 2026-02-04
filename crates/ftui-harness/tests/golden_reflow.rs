@@ -35,6 +35,7 @@ use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_text::Text;
+use ftui_text::display_width;
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::Borders;
@@ -132,7 +133,7 @@ fn render_border(buf: &mut Buffer, width: u16, height: u16) {
 }
 
 fn render_centered_text(buf: &mut Buffer, text: &str, width: u16, y: u16) {
-    let start_x = (width.saturating_sub(text.len() as u16)) / 2;
+    let start_x = (width.saturating_sub(display_width(text) as u16)) / 2;
     for (i, c) in text.chars().enumerate() {
         let x = start_x + i as u16;
         if x > 0 && x < width.saturating_sub(1) {

@@ -36,8 +36,9 @@
 use std::f64::consts::{FRAC_1_SQRT_2, PI, SQRT_2, TAU};
 
 use ftui_core::geometry::Rect;
-use ftui_render::cell::{CellAttrs, CellContent, PackedRgba, StyleFlags as CellStyleFlags};
+use ftui_render::cell::{Cell, CellAttrs, CellContent, PackedRgba, StyleFlags as CellStyleFlags};
 use ftui_render::frame::Frame;
+use ftui_text::{display_width, grapheme_count, grapheme_width, graphemes};
 use ftui_widgets::Widget;
 
 // =============================================================================
@@ -2036,8 +2037,9 @@ impl RevealMode {
                 // Find which word this character belongs to
                 let mut word_idx = 0;
                 let mut in_word = false;
-                for (i, ch) in text.chars().enumerate() {
-                    if ch.is_whitespace() {
+                for (i, grapheme) in graphemes(text).enumerate() {
+                    let is_ws = grapheme.chars().all(|c| c.is_whitespace());
+                    if is_ws {
                         if in_word {
                             in_word = false;
                         }
@@ -3221,7 +3223,7 @@ impl StyledText {
 
     /// Get the length of the text.
     pub fn len(&self) -> usize {
-        self.text.chars().count()
+        grapheme_count(&self.text)
     }
 
     /// Check if text is empty.
@@ -3896,7 +3898,7 @@ impl StyledText {
             return original;
         }
 
-        let total = self.text.chars().count();
+        let total = grapheme_count(&self.text);
 
         for effect in &self.effects {
             match effect {
@@ -4198,7 +4200,7 @@ impl StyledText {
             return None;
         };
 
-        let total = self.text.chars().count();
+        let total = grapheme_count(&self.text);
 
         match position {
             CursorPosition::End => Some(total),
@@ -4258,10 +4260,42 @@ impl StyledText {
 
     /// Render at a specific position.
     pub fn render_at(&self, x: u16, y: u16, frame: &mut Frame) {
-        let total = self.text.chars().count();
+        struct Run<'a> {
+            idx: usize,
+            grapheme: &'a str,
+            width: usize,
+            base_px: u16,
+            simple_char: Option<char>,
+        }
+
+        let mut runs = Vec::new();
+        let mut col = 0usize;
+        for (idx, grapheme) in graphemes(self.text.as_str()).enumerate() {
+            let width = grapheme_width(grapheme);
+            if width == 0 {
+                continue;
+            }
+            let base_px = x.saturating_add(col as u16);
+            let simple_char = if width == 1 && grapheme.chars().count() == 1 {
+                grapheme.chars().next()
+            } else {
+                None
+            };
+            runs.push(Run {
+                idx,
+                grapheme,
+                width,
+                base_px,
+                simple_char,
+            });
+            col = col.saturating_add(width);
+        }
+
+        let total = runs.len();
         if total == 0 {
             return;
         }
+        let total_width = col;
         let has_fade_effect = self.effects.iter().any(|effect| {
             matches!(
                 effect,
@@ -4282,13 +4316,17 @@ impl StyledText {
                 let glow_color = glow.layer_color(layer_idx);
                 let offsets: Vec<_> = glow.layer_offsets(layer_idx).collect();
 
-                for (i, ch) in self.text.chars().enumerate() {
-                    let base_px = x.saturating_add(i as u16);
-                    let display_char = self.char_at(i, ch);
+                for run in &runs {
+                    let content = if let Some(ch) = run.simple_char {
+                        CellContent::from_char(self.char_at(run.idx, ch))
+                    } else {
+                        let id = frame.intern_with_width(run.grapheme, run.width as u8);
+                        CellContent::from_grapheme(id)
+                    };
 
                     // Apply each offset for this glow layer
                     for (dx, dy) in &offsets {
-                        let glow_x = (base_px as i32).saturating_add(i32::from(*dx));
+                        let glow_x = (run.base_px as i32).saturating_add(i32::from(*dx));
                         let glow_y = (y as i32).saturating_add(i32::from(*dy));
 
                         // Bounds check and render
@@ -4296,10 +4334,10 @@ impl StyledText {
                             && glow_x < i32::from(frame_width)
                             && glow_y >= 0
                             && glow_y < i32::from(frame_height)
-                            && let Some(cell) = frame.buffer.get_mut(glow_x as u16, glow_y as u16)
                         {
-                            cell.content = CellContent::from_char(display_char);
+                            let mut cell = Cell::new(content);
                             cell.fg = glow_color;
+                            frame.buffer.set(glow_x as u16, glow_y as u16, cell);
                         }
                     }
                 }
@@ -4312,17 +4350,21 @@ impl StyledText {
         for shadow in &self.shadows {
             let shadow_color = shadow.effective_color();
 
-            for (i, ch) in self.text.chars().enumerate() {
-                let base_px = x.saturating_add(i as u16);
-                let display_char = self.char_at(i, ch);
+            for run in &runs {
+                let content = if let Some(ch) = run.simple_char {
+                    CellContent::from_char(self.char_at(run.idx, ch))
+                } else {
+                    let id = frame.intern_with_width(run.grapheme, run.width as u8);
+                    CellContent::from_grapheme(id)
+                };
 
                 // Apply shadow offset using the helper method
                 if let Some((shadow_x, shadow_y)) =
-                    shadow.apply_offset(base_px, y, frame_width, frame_height)
-                    && let Some(cell) = frame.buffer.get_mut(shadow_x, shadow_y)
+                    shadow.apply_offset(run.base_px, y, frame_width, frame_height)
                 {
-                    cell.content = CellContent::from_char(display_char);
+                    let mut cell = Cell::new(content);
                     cell.fg = shadow_color;
+                    frame.buffer.set(shadow_x, shadow_y, cell);
                 }
             }
         }
@@ -4354,12 +4396,16 @@ impl StyledText {
 
                 let offsets: Vec<_> = temp_config.offsets().collect();
 
-                for (i, ch) in self.text.chars().enumerate() {
-                    let base_px = x.saturating_add(i as u16);
-                    let outline_char = if outline.use_text_char {
-                        self.char_at(i, ch)
+                for run in &runs {
+                    let content = if outline.use_text_char {
+                        if let Some(ch) = run.simple_char {
+                            CellContent::from_char(self.char_at(run.idx, ch))
+                        } else {
+                            let id = frame.intern_with_width(run.grapheme, run.width as u8);
+                            CellContent::from_grapheme(id)
+                        }
                     } else {
-                        '█' // Block character for solid outline
+                        CellContent::from_char('█')
                     };
 
                     // Render at each offset position
@@ -4369,7 +4415,7 @@ impl StyledText {
                             continue;
                         };
 
-                        let outline_x = (base_px as i32).saturating_add(i32::from(*dx));
+                        let outline_x = (run.base_px as i32).saturating_add(i32::from(*dx));
                         let outline_y = (y as i32).saturating_add(i32::from(*dy));
 
                         // Bounds check and render
@@ -4377,11 +4423,10 @@ impl StyledText {
                             && outline_x < i32::from(frame_width)
                             && outline_y >= 0
                             && outline_y < i32::from(frame_height)
-                            && let Some(cell) =
-                                frame.buffer.get_mut(outline_x as u16, outline_y as u16)
                         {
-                            cell.content = CellContent::from_char(outline_char);
+                            let mut cell = Cell::new(content);
                             cell.fg = outline_color;
+                            frame.buffer.set(outline_x as u16, outline_y as u16, cell);
                         }
                     }
                 }
@@ -4391,10 +4436,14 @@ impl StyledText {
         // =====================================================================
         // Phase 3: Render main text (on top of shadows and glow)
         // =====================================================================
-        for (i, ch) in self.text.chars().enumerate() {
-            let base_px = x.saturating_add(i as u16);
-            let color = self.char_color(i, total);
-            let display_char = self.char_at(i, ch);
+        for run in &runs {
+            let color = self.char_color(run.idx, total);
+            let content = if let Some(ch) = run.simple_char {
+                CellContent::from_char(self.char_at(run.idx, ch))
+            } else {
+                let id = frame.intern_with_width(run.grapheme, run.width as u8);
+                CellContent::from_grapheme(id)
+            };
 
             // Skip fully transparent
             if color.r() == 0 && color.g() == 0 && color.b() == 0 && has_fade_effect {
@@ -4403,44 +4452,46 @@ impl StyledText {
 
             // Calculate final position with offset
             let (final_x, final_y) = if has_position_effects {
-                let offset = self.char_offset(i, total);
-                let clamped = offset.clamp_for_position(base_px, y, frame_width, frame_height);
+                let offset = self.char_offset(run.idx, total);
+                let clamped = offset.clamp_for_position(run.base_px, y, frame_width, frame_height);
 
-                let fx =
-                    (base_px as i32 + clamped.dx as i32).clamp(0, frame_width as i32 - 1) as u16;
+                let fx = (run.base_px as i32 + clamped.dx as i32).clamp(0, frame_width as i32 - 1)
+                    as u16;
                 let fy = (y as i32 + clamped.dy as i32).clamp(0, frame_height as i32 - 1) as u16;
                 (fx, fy)
             } else {
-                (base_px, y)
+                (run.base_px, y)
             };
 
-            if let Some(cell) = frame.buffer.get_mut(final_x, final_y) {
-                cell.content = CellContent::from_char(display_char);
-                cell.fg = color;
-
-                if let Some(bg) = self.bg_color {
-                    cell.bg = bg;
-                }
-
-                let mut flags = CellStyleFlags::empty();
-                if self.bold {
-                    flags = flags.union(CellStyleFlags::BOLD);
-                }
-                if self.italic {
-                    flags = flags.union(CellStyleFlags::ITALIC);
-                }
-                if self.underline {
-                    flags = flags.union(CellStyleFlags::UNDERLINE);
-                }
-                cell.attrs = CellAttrs::new(flags, 0);
+            let mut cell = Cell::new(content);
+            cell.fg = color;
+            if let Some(bg) = self.bg_color {
+                cell.bg = bg;
             }
+
+            let mut flags = CellStyleFlags::empty();
+            if self.bold {
+                flags = flags.union(CellStyleFlags::BOLD);
+            }
+            if self.italic {
+                flags = flags.union(CellStyleFlags::ITALIC);
+            }
+            if self.underline {
+                flags = flags.union(CellStyleFlags::UNDERLINE);
+            }
+            cell.attrs = CellAttrs::new(flags, 0);
+            frame.buffer.set(final_x, final_y, cell);
         }
 
         // Render cursor if visible
         if self.cursor_visible()
             && let Some(cursor_idx) = self.cursor_index()
         {
-            let cursor_x = x.saturating_add(cursor_idx as u16);
+            let cursor_x = if cursor_idx >= total {
+                x.saturating_add(total_width as u16)
+            } else {
+                runs[cursor_idx].base_px
+            };
 
             // Get cursor style from effect
             if let Some(TextEffect::Cursor { style, .. }) = self.cursor_effect() {
@@ -4559,7 +4610,7 @@ impl Widget for TransitionOverlay {
         }
 
         // Center the title
-        let title_len = self.title.chars().count() as u16;
+        let title_len = display_width(&self.title) as u16;
         let title_x = area.x + area.width.saturating_sub(title_len) / 2;
         let title_y = area.y + area.height / 2;
 
@@ -4582,7 +4633,7 @@ impl Widget for TransitionOverlay {
 
         // Render subtitle
         if !self.subtitle.is_empty() && title_y + 1 < area.y + area.height {
-            let subtitle_len = self.subtitle.chars().count() as u16;
+            let subtitle_len = display_width(&self.subtitle) as u16;
             let subtitle_x = area.x + area.width.saturating_sub(subtitle_len) / 2;
             let subtitle_y = title_y + 1;
 
@@ -7929,7 +7980,7 @@ mod tests {
                 "EaseIn at 0.5 should be ~0.125, got {progress}"
             );
         } else {
-            panic!("Expected FadeIn effect");
+            unreachable!("Expected FadeIn effect");
         }
     }
 
@@ -8066,7 +8117,7 @@ mod tests {
         if let TextEffect::FadeIn { progress } = effect {
             assert!((progress - 0.5).abs() < 0.01);
         } else {
-            panic!("Expected FadeIn effect");
+            unreachable!("Expected FadeIn effect");
         }
     }
 
@@ -9472,11 +9523,16 @@ impl AsciiArtText {
     /// Render to frame at position with optional effects.
     pub fn render_at(&self, x: u16, y: u16, frame: &mut Frame, time: f64) {
         let lines = self.render_lines();
-        let total_width: usize = lines.first().map(|l| l.chars().count()).unwrap_or(0);
+        let total_width: usize = lines.first().map(|l| display_width(l)).unwrap_or(0);
 
         for (row, line) in lines.iter().enumerate() {
             let py = y.saturating_add(row as u16);
-            for (col, ch) in line.chars().enumerate() {
+            let mut col = 0usize;
+            for grapheme in graphemes(line) {
+                let w = grapheme_width(grapheme);
+                if w == 0 {
+                    continue;
+                }
                 let px = x.saturating_add(col as u16);
 
                 // Determine color
@@ -9491,12 +9547,22 @@ impl AsciiArtText {
                     self.color.unwrap_or(PackedRgba::rgb(255, 255, 255))
                 };
 
-                if let Some(cell) = frame.buffer.get_mut(px, py) {
-                    cell.content = CellContent::from_char(ch);
-                    if ch != ' ' {
-                        cell.fg = color;
-                    }
+                let content = if w > 1 || grapheme.chars().count() > 1 {
+                    let id = frame.intern_with_width(grapheme, w as u8);
+                    CellContent::from_grapheme(id)
+                } else if let Some(ch) = grapheme.chars().next() {
+                    CellContent::from_char(ch)
+                } else {
+                    continue;
+                };
+
+                let mut cell = Cell::new(content);
+                if grapheme != " " {
+                    cell.fg = color;
                 }
+                frame.buffer.set(px, py, cell);
+
+                col = col.saturating_add(w);
             }
         }
     }
@@ -9690,7 +9756,7 @@ impl StyledMultiLine {
     pub fn width(&self) -> usize {
         self.lines
             .iter()
-            .map(|l| l.chars().count())
+            .map(|l| display_width(l))
             .max()
             .unwrap_or(0)
     }
@@ -9903,11 +9969,18 @@ impl StyledMultiLine {
         }
         let attrs = CellAttrs::new(flags, 0);
 
-        for (col, ch) in line.chars().enumerate() {
+        let mut col = 0usize;
+        for grapheme in graphemes(line) {
+            let width = grapheme_width(grapheme);
+            if width == 0 {
+                continue;
+            }
+
             let px = x.saturating_add(col as u16);
             let py = y;
 
             if px >= frame_width || py >= frame_height {
+                col = col.saturating_add(width);
                 continue;
             }
 
@@ -9916,17 +9989,34 @@ impl StyledMultiLine {
                 color = apply_alpha(color, opacity);
             }
 
-            if let Some(cell) = frame.buffer.get_mut(px, py) {
-                // Only overwrite non-space characters for block art aesthetics
-                if ch != ' ' {
-                    cell.content = CellContent::from_char(ch);
-                    cell.fg = color;
-                    cell.attrs = attrs;
-                }
-                if let Some(bg) = self.bg_color {
+            if grapheme == " " {
+                if let Some(bg) = self.bg_color
+                    && let Some(cell) = frame.buffer.get_mut(px, py)
+                {
                     cell.bg = bg;
                 }
+                col = col.saturating_add(width);
+                continue;
             }
+
+            let content = if width > 1 || grapheme.chars().count() > 1 {
+                let id = frame.intern_with_width(grapheme, width as u8);
+                CellContent::from_grapheme(id)
+            } else if let Some(ch) = grapheme.chars().next() {
+                CellContent::from_char(ch)
+            } else {
+                col = col.saturating_add(width);
+                continue;
+            };
+
+            let mut cell = Cell::new(content);
+            cell.fg = color;
+            cell.attrs = attrs;
+            if let Some(bg) = self.bg_color {
+                cell.bg = bg;
+            }
+            frame.buffer.set(px, py, cell);
+            col = col.saturating_add(width);
         }
     }
 

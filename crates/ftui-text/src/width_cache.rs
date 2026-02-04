@@ -2123,6 +2123,15 @@ mod perf_cache_overhead {
         sorted[sorted.len() / 2]
     }
 
+    #[allow(unexpected_cfgs)]
+    fn perf_budget_ns(base_ns: u128) -> u128 {
+        if cfg!(coverage) || cfg!(coverage_nightly) {
+            base_ns.saturating_mul(10)
+        } else {
+            base_ns
+        }
+    }
+
     #[test]
     fn perf_lru_hit_latency() {
         let mut cache = WidthCache::new(1000);
@@ -2138,11 +2147,13 @@ mod perf_cache_overhead {
 
         let p95_ns = p95(&latencies);
         // Budget: < 1us (1000ns) p95 for cache hits.
-        // Use generous 5us to account for CI variability.
+        // Use generous 5us to account for CI variability (10x under coverage).
+        let budget_ns = perf_budget_ns(5_000);
         assert!(
-            p95_ns < 5_000,
-            "LRU hit p95 = {}ns exceeds 5us budget (median={}ns, p99={}ns)",
+            p95_ns < budget_ns,
+            "LRU hit p95 = {}ns exceeds {}ns budget (median={}ns, p99={}ns)",
             p95_ns,
+            budget_ns,
             median(&latencies),
             p99(&latencies),
         );
@@ -2165,10 +2176,12 @@ mod perf_cache_overhead {
 
         let p95_ns = p95(&latencies);
         // Budget: < 1us p95 for hits (5us CI-safe threshold).
+        let budget_ns = perf_budget_ns(5_000);
         assert!(
-            p95_ns < 5_000,
-            "TinyLFU hit p95 = {}ns exceeds 5us budget (median={}ns, p99={}ns)",
+            p95_ns < budget_ns,
+            "TinyLFU hit p95 = {}ns exceeds {}ns budget (median={}ns, p99={}ns)",
             p95_ns,
+            budget_ns,
             median(&latencies),
             p99(&latencies),
         );
@@ -2185,11 +2198,13 @@ mod perf_cache_overhead {
 
         let p95_ns = p95(&latencies);
         // Misses include unicode width computation. Budget: < 5us p95.
-        // Use 20us CI-safe threshold (computation dominates).
+        // Use 20us CI-safe threshold (10x under coverage; computation dominates).
+        let budget_ns = perf_budget_ns(20_000);
         assert!(
-            p95_ns < 20_000,
-            "TinyLFU miss p95 = {}ns exceeds 20us budget (median={}ns, p99={}ns)",
+            p95_ns < budget_ns,
+            "TinyLFU miss p95 = {}ns exceeds {}ns budget (median={}ns, p99={}ns)",
             p95_ns,
+            budget_ns,
             median(&latencies),
             p99(&latencies),
         );
@@ -2206,10 +2221,12 @@ mod perf_cache_overhead {
 
         let p95_ns = p95(&latencies);
         // CMS increment should be very fast: < 500ns p95.
+        let budget_ns = perf_budget_ns(2_000);
         assert!(
-            p95_ns < 2_000,
-            "CMS increment p95 = {}ns exceeds 2us budget (median={}ns)",
+            p95_ns < budget_ns,
+            "CMS increment p95 = {}ns exceeds {}ns budget (median={}ns)",
             p95_ns,
+            budget_ns,
             median(&latencies),
         );
     }
@@ -2225,10 +2242,12 @@ mod perf_cache_overhead {
 
         let p95_ns = p95(&latencies);
         // Doorkeeper bit ops: < 200ns p95.
+        let budget_ns = perf_budget_ns(1_000);
         assert!(
-            p95_ns < 1_000,
-            "Doorkeeper p95 = {}ns exceeds 1us budget (median={}ns)",
+            p95_ns < budget_ns,
+            "Doorkeeper p95 = {}ns exceeds {}ns budget (median={}ns)",
             p95_ns,
+            budget_ns,
             median(&latencies),
         );
     }
@@ -2243,10 +2262,12 @@ mod perf_cache_overhead {
 
         let p95_ns = p95(&latencies);
         // FNV hash: < 200ns p95.
+        let budget_ns = perf_budget_ns(1_000);
         assert!(
-            p95_ns < 1_000,
-            "fingerprint_hash p95 = {}ns exceeds 1us budget (median={}ns)",
+            p95_ns < budget_ns,
+            "fingerprint_hash p95 = {}ns exceeds {}ns budget (median={}ns)",
             p95_ns,
+            budget_ns,
             median(&latencies),
         );
     }

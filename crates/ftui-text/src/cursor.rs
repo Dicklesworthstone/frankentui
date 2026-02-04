@@ -328,25 +328,48 @@ fn move_word_left_in_line(text: &str, grapheme_idx: usize) -> usize {
 }
 
 fn move_word_right_in_line(text: &str, grapheme_idx: usize) -> usize {
-    let graphemes: Vec<&str> = graphemes(text).collect();
-    let max = graphemes.len();
-    let mut pos = grapheme_idx.min(max);
-    if pos >= max {
-        return max;
+    let mut iter = graphemes(text).peekable();
+    let mut pos = 0usize;
+
+    while pos < grapheme_idx {
+        if iter.next().is_none() {
+            return pos;
+        }
+        pos = pos.saturating_add(1);
     }
-    if grapheme_class(graphemes[pos]) == GraphemeClass::Space {
-        while pos < max && grapheme_class(graphemes[pos]) == GraphemeClass::Space {
+
+    let Some(current) = iter.peek() else {
+        return pos;
+    };
+
+    if grapheme_class(current) == GraphemeClass::Space {
+        while let Some(g) = iter.peek() {
+            if grapheme_class(g) != GraphemeClass::Space {
+                break;
+            }
+            iter.next();
             pos = pos.saturating_add(1);
         }
         return pos;
     }
-    let target = grapheme_class(graphemes[pos]);
-    while pos < max && grapheme_class(graphemes[pos]) == target {
+
+    let target = grapheme_class(current);
+    while let Some(g) = iter.peek() {
+        if grapheme_class(g) != target {
+            break;
+        }
+        iter.next();
         pos = pos.saturating_add(1);
     }
-    while pos < max && grapheme_class(graphemes[pos]) == GraphemeClass::Space {
+
+    while let Some(g) = iter.peek() {
+        if grapheme_class(g) != GraphemeClass::Space {
+            break;
+        }
+        iter.next();
         pos = pos.saturating_add(1);
     }
+
     pos
 }
 

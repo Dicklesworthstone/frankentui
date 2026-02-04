@@ -311,7 +311,7 @@ impl<'a> Lexer<'a> {
     fn lex_comment_or_directive(&mut self, start: Position) -> Token<'a> {
         self.advance_byte(); // %
         self.advance_byte(); // %
-        if self.peek_byte() == Some(b'{') {
+        if self.peek_n_bytes(0) == Some(b'{') {
             self.advance_byte();
             let content_start = self.idx;
             while self.idx < self.bytes.len() {
@@ -626,6 +626,9 @@ pub fn parse(input: &str) -> Result<MermaidAst, MermaidError> {
 
 fn strip_inline_comment(line: &str) -> &str {
     if let Some(idx) = line.find("%%") {
+        if line[..idx].trim().is_empty() {
+            return line;
+        }
         &line[..idx]
     } else {
         line
@@ -1051,5 +1054,25 @@ mod tests {
             .filter(|s| matches!(s, Statement::PieEntry(_)))
             .count();
         assert_eq!(entries, 2);
+    }
+
+    #[test]
+    fn tokenize_directive_block() {
+        let tokens = tokenize("%%{init: {\"theme\":\"dark\"}}%%\n");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::Directive(_)))
+        );
+    }
+
+    #[test]
+    fn parse_directive_line() {
+        let ast = parse("graph TD\n%%{init: {\"theme\":\"dark\"}}%%\nA-->B\n").expect("parse");
+        assert!(
+            ast.statements
+                .iter()
+                .any(|s| matches!(s, Statement::Directive(_)))
+        );
     }
 }
