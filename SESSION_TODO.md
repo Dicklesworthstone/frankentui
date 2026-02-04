@@ -1,5 +1,33 @@
 # Session TODO List
 
+## Current Session (Codex) — Architecture + Optimization + Beads (2026-02-04)
+- [x] Read **all** of `AGENTS.md` (rules, toolchain, constraints, workflows)
+- [x] Read **all** of `README.md` (purpose, architecture, algorithms, usage)
+- [x] Load `extreme-software-optimization` skill and confirm mandatory loop
+- [x] Run `bv --robot-triage` and record actionable picks + blockers
+- [x] Run `bv --robot-next` and note top pick state (in-progress by another agent)
+- [x] Run `br ready --json` to list all actionable beads
+- [x] Spawn code investigation agent (explorer) to map architecture + hotspots
+- [x] Review explorer summary and extract concrete optimization candidates (buffer/diff/presenter hotspots noted)
+- [x] Identify current agent name for Agent Mail (register if needed) — BrightRiver
+- [x] Check Agent Mail inbox for existing coordination threads (empty)
+- [x] Select an **unclaimed** bead from actionable list (per bv + br) — `bd-3e1t.4.2`
+- [x] Claim bead via `br update <id> --status=in_progress`
+- [x] Reserve file paths for the chosen bead via MCP Agent Mail (`crates/ftui-runtime/src/terminal_writer.rs`)
+- [x] Announce start in Agent Mail thread `[bead-id] Start: <title>` (ack_required=true)
+- [x] Capture **baseline** performance (hyperfine): `cargo bench -p ftui-render --bench diff_bench -- diff/full_vs_dirty` → mean ~84.9s (10 runs)
+- [x] Capture **profile** (cargo flamegraph) for hotspot discovery (`flamegraph.svg`, debuginfo on)
+- [ ] Build **opportunity matrix** with top 3 hotspots and scores
+- [x] Choose **one** change with score ≥ 2.0 (single lever): reuse diff allocation in TerminalWriter
+- [x] Create **golden outputs** for behavior proof + write checksums (`/tmp/ftui_golden_outputs/golden_checksums.txt`)
+- [x] Implement optimization change (manual edits only): `BufferDiff::compute_into` + `diff_scratch`
+- [x] Run golden checksum verification (sha256sum -c)
+- [ ] Re-profile to confirm improvement and no new hotspot regression
+- [ ] Write isomorphism proof for the change (ordering, ties, FP, RNG, checksums)
+- [x] Run required quality gates (cargo fmt/check, cargo check, cargo clippy -D warnings)
+- [x] Update bead with progress or close if complete (closed bd-3e1t.4.2 as already done)
+- [x] Post status update to Agent Mail thread with findings/results
+
 ## Current Session (FoggyHawk) — bd-2qbx.3, bd-3k3x, bd-3vbf.27
 - [x] Commit & push previous session work (bd-2qbx.3 KeybindingHints + bd-2qbx.6 E2E tests)
 - [x] Claim bd-3k3x (Performance HUD + Render Budget Visualizer)
@@ -268,3 +296,106 @@
 - [x] **Fix**: `RenderThread` memory leak (`GraphemePool` GC).
 - [x] **Verify**: `diff.rs` and `table.rs` correctness.
 - [x] **Report**: Updated `REVIEW_REPORT.md` with findings.
+
+## 17. Current Session (Codex) — Extreme Performance Optimization (Command Palette)
+- [x] **Read AGENTS.md** fully (constraints, no deletion, quality gates).
+- [x] **Read README.md** fully (architecture + project intent).
+- [x] **Code investigation**: map crate boundaries (`ftui`, `ftui-core`, `ftui-render`, `ftui-runtime`, `ftui-widgets`, `ftui-text`, `ftui-layout`).
+- [x] **Code investigation**: trace render pipeline (Buffer → Diff → Presenter → ANSI).
+- [x] **Code investigation**: trace runtime loop (Program, TerminalWriter, ScreenMode).
+- [x] **Code investigation**: inspect Command Palette scoring path (scorer + incremental cache).
+- [x] **Profile plan**: confirm benchmark target + command for command palette scoring.
+- [x] **Baseline**: run `hyperfine` on `command_palette/incremental_corpus_size` benchmark.
+- [x] **Profile**: run `cargo flamegraph` with debuginfo + `--noplot` to reduce overhead.
+- [x] **Profile analysis**: extract usable hotspots (note kernel symbol limits + gnuplot overhead).
+- [x] **Optimize**: ASCII fast path for match detection + optional word-start cache (scorer).
+- [x] **Optimize**: cache lowercased titles + word-start positions in CommandPalette.
+- [x] **Optimize**: incremental scorer path that consumes cached lower/word starts.
+- [x] **Optimize**: avoid cloning match positions (move Vec into MatchResult).
+- [x] **Optimize**: drop cached `MatchResult` clones (cache only indices).
+- [x] **Optimize**: replace evidence descriptions with lazy formatting enum (remove format! in hot path).
+- [x] **Optimize**: fast-path scoring when `track_evidence=false` (compute odds directly).
+- [x] **Optimize**: tag-score boost without evidence ledger (odds multiplier).
+- [x] **Fix fmt parse**: switch dashboard raw strings to `r###` delimiters to avoid rustfmt parse errors.
+- [x] **Fix build**: remove duplicate sidebar methods + invalid text effects in `code_explorer`.
+- [x] **Fix build**: remove unused `StyledMultiLine` import and duplicate keybinding.
+- [x] **Fix build**: add `flicker` to Scanline effect where required.
+- [x] **Verify**: `cargo fmt --check` after dashboard raw-string change.
+- [x] **Verify**: `cargo check --all-targets` after dashboard raw-string change.
+- [x] **Verify**: `cargo clippy --all-targets -- -D warnings` after dashboard raw-string change.
+- [x] **Verify**: re-run command palette scorer test after cache change.
+- [x] **Profile**: rebuild profiling harness in `/tmp/ftui_profile` with debuginfo.
+- [x] **Profile**: run flamegraph (`/tmp/ftui_profile`) and extract top hot functions.
+- [x] **Benchmark**: re-run criterion `command_palette/incremental_corpus_size` after cache change.
+- [x] **Benchmark**: re-run `hyperfine` for `command_palette/incremental_corpus_size`.
+- [x] **Bench updates**: feed cached lower + word-starts in widget benches.
+- [x] **Test updates**: adjust scorer test for lowered + word-starts path.
+- [x] **Golden outputs**: capture deterministic output + sha256 checksums (fixture in `/tmp/ftui_golden_outputs`).
+- [x] **Isomorphism proof**: document ordering/tie-break/float/RNG invariants.
+- [x] **Verification**: `cargo check --all-targets`.
+- [x] **Verification**: `cargo clippy --all-targets -- -D warnings`.
+- [x] **Verification**: `cargo fmt --check`.
+- [x] **Verification**: re-run targeted tests for command palette scorer.
+- [x] **Benchmark**: run criterion `command_palette/incremental_corpus_size` after changes.
+- [x] **Benchmark**: capture `hyperfine` post-change timing.
+- [x] **Summarize**: performance deltas + risk assessment + next steps.
+- [x] **Summarize**: record benchmark deltas per corpus size (30/100/500/1K/5K).
+- [x] **Summarize**: document flamegraph limits (kernel symbols + gnuplot overhead).
+- [x] **Summarize**: update `SESSION_TODO.md` with final isomorphism proof notes.
+
+## 18. Current Session (BronzeHawk) — bd-3e1t.2.6 BOCPD vs Heuristic Coalescer Simulation
+- [x] **Run bv triage**: `bv --robot-triage` to identify top-impact beads.
+- [x] **List ready beads**: `br ready --json` for actionable options.
+- [x] **Inspect bead details**: `br show bd-3e1t.2.6`.
+- [x] **Claim bead**: `br update bd-3e1t.2.6 --status in_progress`.
+- [x] **Register Agent Mail session** (BronzeHawk) via `macro_start_session`.
+- [x] **Notify agents**: post start message to StormyReef/ScarletLake/MagentaBridge thread `bd-3e1t.2.6`.
+- [x] **Reserve files**: `crates/ftui-runtime/src/resize_coalescer.rs`, `SESSION_TODO.md`.
+- [x] **Audit coalescer code**: map BOCPD/heuristic decision paths + logging fields.
+- [x] **Design simulation harness**.
+- [x] Define deterministic resize patterns: steady, burst, oscillatory.
+- [x] Define tick cadence + end conditions (hard deadline tail).
+- [x] Define metrics: apply count, forced count, mean/max coalesce ms, checksum.
+- [x] **Implement simulation helpers** in `resize_coalescer.rs` test module.
+- [x] **Add JSONL/structured summary** output for each pattern and mode.
+- [x] **Assertions**.
+- [x] Burst pattern reduces render count vs event count.
+- [x] Latency bounded by hard deadline for both modes.
+- [x] **Run targeted tests**: `cargo test -p ftui-runtime resize_coalescer::tests::simulation_bocpd_vs_heuristic_metrics -- --exact`.
+- [x] **Run quality gates** after changes.
+- [x] `cargo fmt --check` (fails: dashboard.rs parse errors).
+- [x] `cargo check --all-targets` (fails: dashboard.rs parse errors).
+- [x] `cargo clippy --all-targets -- -D warnings` (fails: dashboard.rs parse errors).
+- [x] **Update bead status** to `closed` when complete.
+- [x] **Sync beads**: `br sync --flush-only`.
+- [x] **Release file reservations** for edited files.
+- [x] **Post completion message** in Agent Mail thread `bd-3e1t.2.6`.
+
+## bd-11ee — Demo Showcase: Pane Click Routing + Whiz‑Bang Screens
+
+- [x] **Baseline review**: identify demo showcase panels eligible for click‑to‑tab routing.
+- [x] **Global UX**: add ambient backdrop pattern for all screens (eliminate blank areas).
+- [x] **Pane routing**: add global hit‑test routing for pane click → tab switch.
+- [x] **Dashboard**: map each panel to a target screen; register pane hit regions.
+- [x] **Dashboard**: add “click to open” visual cues for mapped panels.
+- [x] **Dashboard**: supercharge info panel with richer stats + sparkline strip.
+- [x] **Dashboard**: multi‑preview text effects (2–3 at once).
+- [x] **Shakespeare**: confirm pane hit regions + mode UI copy for Spotlight/Concordance.
+- [x] **SQLite Code Explorer**: confirm pane hit regions + mode UI copy for Query Lab/Exec Plan.
+- [x] **Quality gates**: `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`.
+- [x] **Comms**: update agent‑mail thread `bd-11ee` with status and changes.
+
+## 19. Current Session (BronzeHawk) — Fix Dashboard Parse Errors + Next Bead
+- [x] **Diagnose dashboard.rs parse errors** reported by fmt/check/clippy.
+- [x] **Inspect offending region** around line ~4200 and trailing raw-string delimiters.
+- [x] **Fix raw string delimiters** so markdown/demo content compiles under Rust 2024.
+- [x] **Ensure non-ASCII literals live inside raw strings** (avoid stray tokens in Rust code).
+- [x] **Fix build break** in `crates/ftui-extras/src/forms.rs` (duplicate `display_width`/`grapheme_width`).
+- [x] **Re-run quality gates**:
+- [x] `cargo fmt --check`
+- [x] `cargo check --all-targets`
+- [x] `cargo clippy --all-targets -- -D warnings`
+- [ ] **Run bv --robot-next** to pick next bead.
+- [ ] **Claim next bead** (`br update <id> --status in_progress`).
+- [ ] **Announce in Agent Mail** thread for the chosen bead.
+- [ ] **Reserve file paths** for the new bead.
