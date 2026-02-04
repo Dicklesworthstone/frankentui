@@ -500,7 +500,7 @@ pub struct ScreenStates {
     pub hyperlink_playground: screens::hyperlink_playground::HyperlinkPlayground,
     /// Tracks whether each screen has errored during rendering.
     /// Indexed by `ScreenId::index()`.
-    screen_errors: [Option<String>; 36],
+    screen_errors: Vec<Option<String>>,
 }
 
 impl Default for ScreenStates {
@@ -542,7 +542,7 @@ impl Default for ScreenStates {
             command_palette_lab: Default::default(),
             determinism_lab: Default::default(),
             hyperlink_playground: Default::default(),
-            screen_errors: std::array::from_fn(|_| None),
+            screen_errors: vec![None; screens::screen_registry().len()],
         }
     }
 }
