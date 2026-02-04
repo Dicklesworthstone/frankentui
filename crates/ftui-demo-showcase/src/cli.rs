@@ -22,47 +22,51 @@ OPTIONS:
     --ui-min-height=N    Min UI height for inline-auto (default: 12)
     --ui-max-height=N    Max UI height for inline-auto (default: 40)
     --screen=N           Start on screen N, 1-indexed (default: 1)
+    --tour               Start the guided tour on launch
+    --tour-speed=F       Guided tour speed multiplier (default: 1.0)
+    --tour-start-step=N  Start tour at step N, 1-indexed (default: 1)
     --no-mouse           Disable mouse event capture
     --help, -h           Show this help message
     --version, -V        Show version
 
 SCREENS:
-    1  Dashboard          System monitor with live-updating widgets
-    2  Shakespeare        Complete works with search and scroll
-    3  Code Explorer      SQLite source with syntax highlighting
-    4  Widget Gallery     Every widget type showcased
-    5  Layout Lab         Interactive constraint solver demo
-    6  Forms & Input      Interactive form widgets and text editing
-    7  Data Viz           Charts, canvas, and structured data
-    8  File Browser       File system navigation and preview
-    9  Advanced           Mouse, clipboard, hyperlinks, export
-   10  Performance        Frame budget, caching, virtualization
+    1  Guided Tour        Cinematic auto-play tour across key screens
+    2  Dashboard          System monitor with live-updating widgets
+    3  Shakespeare        Complete works with search and scroll
+    4  Code Explorer      SQLite source with syntax highlighting
+    5  Widget Gallery     Every widget type showcased
+    6  Layout Lab         Interactive constraint solver demo
+    7  Forms & Input      Interactive form widgets and text editing
+    8  Data Viz           Charts, canvas, and structured data
+    9  File Browser       File system navigation and preview
+   10  Advanced           Mouse, clipboard, hyperlinks, export
    11  Terminal Caps      Terminal capability detection and probing
    12  Macro Recorder     Record/replay input macros and scenarios
-   13  Markdown           Rich text and markdown rendering
-   14  Visual Effects     Animated braille and canvas effects
-   15  Responsive         Breakpoint-driven responsive layout demo
-   16  Log Search         Live log search and filter demo
-   17  Notifications      Toast notification system demo
-   18  Action Timeline    Event timeline with filtering and severity
-   19  Sizing             Content-aware intrinsic sizing demo
-   20  Layout Inspector   Constraint solver visual inspector
-   21  Text Editor        Advanced multi-line text editor with search
-   22  Mouse Playground   Mouse hit-testing and interaction demo
-   23  Form Validation    Comprehensive form validation demo
-   24  Virtualized Search Fuzzy search in 100K+ items demo
-   25  Async Tasks        Async task manager and queue diagnostics
-   26  Theme Studio       Live palette editor and theme inspector
-   27  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
-   28  Performance HUD    Real-time render budget and frame diagnostics
-   29  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
-   30  VOI Overlay        Galaxy-Brain VOI debug overlay
-   31  Inline Mode        Inline scrollback + chrome story
-   32  Accessibility      Accessibility control panel + contrast checks
-   33  Widget Builder     Interactive widget composition sandbox
-   34  Palette Evidence   Command palette evidence lab
-   35  Determinism Lab    Checksum equivalence + determinism proofs
-   36  Links              OSC-8 hyperlink playground + hit regions
+   13  Performance        Frame budget, caching, virtualization
+   14  Markdown           Rich text and markdown rendering
+   15  Visual Effects     Animated braille and canvas effects
+   16  Responsive         Breakpoint-driven responsive layout demo
+   17  Log Search         Live log search and filter demo
+   18  Notifications      Toast notification system demo
+   19  Action Timeline    Event timeline with filtering and severity
+   20  Sizing             Content-aware intrinsic sizing demo
+   21  Layout Inspector   Constraint solver visual inspector
+   22  Text Editor        Advanced multi-line text editor with search
+   23  Mouse Playground   Mouse hit-testing and interaction demo
+   24  Form Validation    Comprehensive form validation demo
+   25  Virtualized Search Fuzzy search in 100K+ items demo
+   26  Async Tasks        Async task manager and queue diagnostics
+   27  Theme Studio       Live palette editor and theme inspector
+   28  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
+   29  Performance HUD    Real-time render budget and frame diagnostics
+   30  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
+   31  VOI Overlay        Galaxy-Brain VOI debug overlay
+   32  Inline Mode        Inline scrollback + chrome story
+   33  Accessibility      Accessibility control panel + contrast checks
+   34  Widget Builder     Interactive widget composition sandbox
+   35  Palette Evidence   Command palette evidence lab
+   36  Determinism Lab    Checksum equivalence + determinism proofs
+   37  Links              OSC-8 hyperlink playground + hit regions
 
 KEYBINDINGS:
     1-9, 0          Switch to screens 1-10 by number
@@ -77,7 +81,10 @@ ENVIRONMENT VARIABLES:
     FTUI_DEMO_UI_MIN_HEIGHT   Override --ui-min-height
     FTUI_DEMO_UI_MAX_HEIGHT   Override --ui-max-height
     FTUI_DEMO_SCREEN          Override --screen
-    FTUI_DEMO_EXIT_AFTER_MS   Auto-quit after N milliseconds (for testing)";
+    FTUI_DEMO_EXIT_AFTER_MS   Auto-quit after N milliseconds (for testing)
+    FTUI_DEMO_TOUR            Override --tour (1/true to enable)
+    FTUI_DEMO_TOUR_SPEED      Override --tour-speed
+    FTUI_DEMO_TOUR_START_STEP Override --tour-start-step";
 
 /// Parsed command-line options.
 pub struct Opts {
@@ -91,6 +98,12 @@ pub struct Opts {
     pub ui_max_height: u16,
     /// Starting screen (1-indexed).
     pub start_screen: u16,
+    /// Start the guided tour on launch.
+    pub tour: bool,
+    /// Guided tour speed multiplier.
+    pub tour_speed: f64,
+    /// Guided tour starting step (1-indexed).
+    pub tour_start_step: usize,
     /// Whether mouse events are enabled.
     pub mouse: bool,
     /// Auto-exit after this many milliseconds (0 = disabled).
@@ -105,6 +118,9 @@ impl Default for Opts {
             ui_min_height: 12,
             ui_max_height: 40,
             start_screen: 1,
+            tour: false,
+            tour_speed: 1.0,
+            tour_start_step: 1,
             mouse: true,
             exit_after_ms: 0,
         }
@@ -143,6 +159,20 @@ impl Opts {
         {
             opts.start_screen = n;
         }
+        if let Ok(val) = env::var("FTUI_DEMO_TOUR") {
+            let enabled = val == "1" || val.eq_ignore_ascii_case("true");
+            opts.tour = enabled;
+        }
+        if let Ok(val) = env::var("FTUI_DEMO_TOUR_SPEED")
+            && let Ok(n) = val.parse()
+        {
+            opts.tour_speed = n;
+        }
+        if let Ok(val) = env::var("FTUI_DEMO_TOUR_START_STEP")
+            && let Ok(n) = val.parse()
+        {
+            opts.tour_start_step = n;
+        }
         if let Ok(val) = env::var("FTUI_DEMO_EXIT_AFTER_MS")
             && let Ok(n) = val.parse()
         {
@@ -166,6 +196,9 @@ impl Opts {
                 }
                 "--no-mouse" => {
                     opts.mouse = false;
+                }
+                "--tour" => {
+                    opts.tour = true;
                 }
                 other => {
                     if let Some(val) = other.strip_prefix("--screen-mode=") {
@@ -199,6 +232,22 @@ impl Opts {
                             Ok(n) => opts.start_screen = n,
                             Err(_) => {
                                 eprintln!("Invalid --screen value: {val}");
+                                process::exit(1);
+                            }
+                        }
+                    } else if let Some(val) = other.strip_prefix("--tour-speed=") {
+                        match val.parse() {
+                            Ok(n) => opts.tour_speed = n,
+                            Err(_) => {
+                                eprintln!("Invalid --tour-speed value: {val}");
+                                process::exit(1);
+                            }
+                        }
+                    } else if let Some(val) = other.strip_prefix("--tour-start-step=") {
+                        match val.parse() {
+                            Ok(n) => opts.tour_start_step = n,
+                            Err(_) => {
+                                eprintln!("Invalid --tour-start-step value: {val}");
                                 process::exit(1);
                             }
                         }
@@ -236,6 +285,9 @@ mod tests {
         assert_eq!(opts.ui_min_height, 12);
         assert_eq!(opts.ui_max_height, 40);
         assert_eq!(opts.start_screen, 1);
+        assert!(!opts.tour);
+        assert_eq!(opts.tour_speed, 1.0);
+        assert_eq!(opts.tour_start_step, 1);
         assert!(opts.mouse);
         assert_eq!(opts.exit_after_ms, 0);
     }
@@ -276,8 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn help_text_contains_visual_effects_as_screen_14() {
-        assert!(HELP_TEXT.contains("14  Visual Effects"));
+    fn help_text_contains_visual_effects_as_screen_15() {
+        assert!(HELP_TEXT.contains("15  Visual Effects"));
     }
 
     #[test]
@@ -286,5 +338,8 @@ mod tests {
         assert!(HELP_TEXT.contains("FTUI_DEMO_EXIT_AFTER_MS"));
         assert!(HELP_TEXT.contains("FTUI_DEMO_UI_MIN_HEIGHT"));
         assert!(HELP_TEXT.contains("FTUI_DEMO_UI_MAX_HEIGHT"));
+        assert!(HELP_TEXT.contains("FTUI_DEMO_TOUR"));
+        assert!(HELP_TEXT.contains("FTUI_DEMO_TOUR_SPEED"));
+        assert!(HELP_TEXT.contains("FTUI_DEMO_TOUR_START_STEP"));
     }
 }

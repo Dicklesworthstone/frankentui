@@ -35,6 +35,10 @@ fn main() {
     let mut model = AppModel::new();
     model.current_screen = start_screen;
     model.exit_after_ms = opts.exit_after_ms;
+    if opts.tour || start_screen == ScreenId::GuidedTour {
+        let start_step = opts.tour_start_step.saturating_sub(1);
+        model.start_tour(start_step, opts.tour_speed);
+    }
 
     let budget = match screen_mode {
         ScreenMode::AltScreen => {

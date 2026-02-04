@@ -3460,7 +3460,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(screens::screen_registry().len(), 36);
+        assert_eq!(screens::screen_registry().len(), 37);
     }
 
     // -----------------------------------------------------------------------

@@ -2464,6 +2464,9 @@ impl Default for WaveInterferenceState {
 
 impl WaveInterferenceState {
     fn update(&mut self) {
+        if self.sources.len() < 2 {
+            return;
+        }
         self.time += 0.08;
         // Slowly move sources in circular patterns
         let t = self.time * 0.1;
@@ -2475,6 +2478,9 @@ impl WaveInterferenceState {
 
     fn render(&self, painter: &mut Painter, width: u16, height: u16, quality: FxQuality) {
         if width == 0 || height == 0 {
+            return;
+        }
+        if self.sources.is_empty() {
             return;
         }
 
@@ -2492,15 +2498,19 @@ impl WaveInterferenceState {
 
         let w = width as f64;
         let h = height as f64;
+        let inv_w = 1.0 / w;
+        let inv_h = 1.0 / h;
+        let sources = &self.sources;
+        let denom = sources.len() as f64;
 
         for py in (0..height as usize).step_by(stride) {
             for px in (0..width as usize).step_by(stride) {
-                let x = px as f64 / w;
-                let y = py as f64 / h;
+                let x = px as f64 * inv_w;
+                let y = py as f64 * inv_h;
 
                 // Sum waves from all sources (superposition principle)
                 let mut sum = 0.0;
-                for source in &self.sources {
+                for source in sources {
                     let dx = x - source.x;
                     let dy = y - source.y;
                     let dist = (dx * dx + dy * dy).sqrt();
@@ -2511,7 +2521,7 @@ impl WaveInterferenceState {
                 }
 
                 // Normalize and map to color
-                let normalized = (sum / self.sources.len() as f64 + 1.0) / 2.0;
+                let normalized = (sum / denom + 1.0) / 2.0;
                 let color = palette_ocean(normalized);
                 painter.point_colored(px as i32, py as i32, color);
             }
@@ -3145,7 +3155,7 @@ impl DoomE1M1State {
             };
             for px in (0..width as i32).step_by(fill_stride) {
                 let jitter = ((px + py + frame as i32) & 3) as f32;
-                let shade = 0.9 + jitter * 0.04;
+                let shade = 0.95 + jitter * 0.04;
                 let rr = (r as f32 * shade).clamp(0.0, 255.0) as u8;
                 let gg = (g as f32 * shade).clamp(0.0, 255.0) as u8;
                 let bb = (b as f32 * shade).clamp(0.0, 255.0) as u8;
@@ -3194,7 +3204,7 @@ impl DoomE1M1State {
                 (((px as u64).wrapping_mul(113) ^ (frame.wrapping_mul(131)) ^ hit_idx as u64) & 7)
                     as f32
                     / 80.0;
-            brightness = (brightness * tex_boost + grain + 0.08).clamp(0.2, 1.6);
+            brightness = (brightness * tex_boost + grain + 0.1).clamp(0.25, 1.8);
 
             let r = (base.r() as f32 * brightness).min(255.0) as u8;
             let g = (base.g() as f32 * brightness).min(255.0) as u8;
@@ -3847,7 +3857,7 @@ impl QuakeE1M1State {
             };
             for px in (0..width as i32).step_by(fill_stride) {
                 let jitter = ((px * 3 + py * 5 + frame as i32) & 3) as f32;
-                let shade = 0.88 + jitter * 0.05;
+                let shade = 0.92 + jitter * 0.05;
                 let rr = (r as f32 * shade).clamp(0.0, 255.0) as u8;
                 let gg = (g as f32 * shade).clamp(0.0, 255.0) as u8;
                 let bb = (b as f32 * shade).clamp(0.0, 255.0) as u8;
@@ -4007,9 +4017,9 @@ impl QuakeE1M1State {
                             & 3) as f32
                             / 20.0;
                         let mut brightness =
-                            (light * fade * pattern + grain + 0.2).clamp(0.12, 1.4);
+                            (light * fade * pattern + grain + 0.24).clamp(0.16, 1.6);
                         if self.fire_flash > 0.0 {
-                            brightness = (brightness + self.fire_flash * 0.4).min(1.5);
+                            brightness = (brightness + self.fire_flash * 0.45).min(1.7);
                         }
 
                         let mut r = base.r() as f32 * brightness;
@@ -4995,8 +5005,12 @@ impl Screen for VisualEffectsScreen {
         {
             let area_cells = canvas_area.width as usize * canvas_area.height as usize;
             let mut quality = FxQuality::from_degradation_with_area(frame.degradation, area_cells);
-            if self.is_fps_effect() && matches!(quality, FxQuality::Off) {
-                quality = FxQuality::Minimal;
+            if self.is_fps_effect() {
+                quality = match quality {
+                    FxQuality::Off => FxQuality::Minimal,
+                    FxQuality::Minimal => FxQuality::Reduced,
+                    other => other,
+                };
             }
             self.last_quality.set(quality);
             let theme_inputs = current_fx_theme();

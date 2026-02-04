@@ -103,6 +103,24 @@ fn i18n_stress_screen(
 }
 
 // ============================================================================
+// Guided Tour Overlay
+// ============================================================================
+
+#[test]
+fn guided_tour_overlay_80x24() {
+    let mut app = AppModel::new();
+    app.start_tour(0, 1.0);
+    snapshot_app(&mut app, 80, 24, "guided_tour_overlay_80x24");
+}
+
+#[test]
+fn guided_tour_overlay_120x40() {
+    let mut app = AppModel::new();
+    app.start_tour(1, 1.0);
+    snapshot_app(&mut app, 120, 40, "guided_tour_overlay_120x40");
+}
+
+// ============================================================================
 // Dashboard
 // ============================================================================
 

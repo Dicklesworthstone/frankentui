@@ -463,14 +463,10 @@ pub fn grapheme_width(grapheme: &str) -> usize {
     if grapheme.chars().all(is_zero_width_codepoint) {
         return 0;
     }
-    let width = unicode_display_width(grapheme) as usize;
-    if width == 1 && has_emoji_presentation_selector(grapheme) {
+    if has_emoji_presentation_selector(grapheme) || grapheme.chars().any(is_probable_emoji) {
         return 2;
     }
-    if width == 1 && grapheme.chars().any(is_probable_emoji) {
-        return 2;
-    }
-    width
+    unicode_display_width(grapheme) as usize
 }
 
 /// Calculate the display width of text in cells.

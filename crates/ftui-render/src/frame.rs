@@ -34,8 +34,8 @@ use crate::buffer::Buffer;
 use crate::cell::{Cell, CellContent, GraphemeId};
 use crate::drawing::{BorderChars, Draw};
 use crate::grapheme_pool::GraphemePool;
+use crate::{display_width, grapheme_width};
 use ftui_core::geometry::Rect;
-use ftui_text::wrap::{display_width, grapheme_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Identifier for a clickable region in the hit grid.

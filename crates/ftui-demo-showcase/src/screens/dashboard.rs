@@ -4731,18 +4731,24 @@ impl Dashboard {
         let mut lines = Vec::new();
         for line in text.lines() {
             let plain = line.to_plain_text();
-            if Self::is_table_line(&plain) || line.width() <= width {
+            let table_like = Self::is_table_line(&plain) || Self::is_table_like_line(&plain);
+            if table_like || line.width() <= width {
                 lines.push(line.clone());
                 continue;
             }
 
-            lines.extend(line.wrap(width, WrapMode::Word));
+            for wrapped in line.wrap(width, WrapMode::Word) {
+                if wrapped.width() <= width {
+                    lines.push(wrapped);
+                } else {
+                    let mut text = Text::from_lines([wrapped]);
+                    text.truncate(width, None);
+                    lines.extend(text.lines().iter().cloned());
+                }
+            }
         }
 
-        let mut wrapped = Text::from_lines(lines);
-        // Clamp to panel width to avoid border overdraw on long table/rule lines.
-        wrapped.truncate(width, None);
-        wrapped
+        Text::from_lines(lines)
     }
 
     fn is_table_line(plain: &str) -> bool {
@@ -4752,6 +4758,14 @@ impl Dashboard {
                 '┌' | '┬' | '┐' | '├' | '┼' | '┤' | '└' | '┴' | '┘' | '│' | '─'
             )
         })
+    }
+
+    fn is_table_like_line(plain: &str) -> bool {
+        let trimmed = plain.trim_start();
+        if !trimmed.starts_with('|') {
+            return false;
+        }
+        trimmed.chars().filter(|&c| c == '|').count() >= 2
     }
 
     /// Render markdown preview.

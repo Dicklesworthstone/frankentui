@@ -11,8 +11,8 @@
 
 use crate::buffer::Buffer;
 use crate::cell::{Cell, CellContent};
+use crate::grapheme_width;
 use ftui_core::geometry::Rect;
-use ftui_text::wrap::grapheme_width;
 
 /// Characters used to draw a border around a rectangle.
 ///

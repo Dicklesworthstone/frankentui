@@ -87,11 +87,30 @@ pub fn render_guided_tour_overlay(state: &TourOverlayState<'_>, frame: &mut Fram
     }
 
     let width = area.width.min(56);
-    let height = area.height.min(12);
+    let height = area.height.min(14);
     if width < 28 || height < 7 {
         return;
     }
-    let overlay = Rect::new(area.right().saturating_sub(width), area.y, width, height);
+    let default_overlay = Rect::new(area.right().saturating_sub(width), area.y, width, height);
+    let overlay = if let Some(highlight) = state.highlight {
+        let candidates = [
+            default_overlay,
+            Rect::new(area.x, area.y, width, height),
+            Rect::new(
+                area.right().saturating_sub(width),
+                area.bottom().saturating_sub(height),
+                width,
+                height,
+            ),
+            Rect::new(area.x, area.bottom().saturating_sub(height), width, height),
+        ];
+        candidates
+            .into_iter()
+            .find(|candidate| !rects_intersect(*candidate, highlight))
+            .unwrap_or(default_overlay)
+    } else {
+        default_overlay
+    };
 
     let block = Block::new()
         .borders(Borders::ALL)
@@ -127,6 +146,22 @@ pub fn render_guided_tour_overlay(state: &TourOverlayState<'_>, frame: &mut Fram
     ]);
     lines.push(header);
 
+    let remaining = state.remaining.as_secs_f32();
+    let timing = Line::from_spans([
+        Span::styled("Speed ", Style::new().fg(theme::fg::MUTED)),
+        Span::styled(
+            format!("{:.2}x", state.speed),
+            Style::new().fg(theme::fg::PRIMARY),
+        ),
+        Span::raw(" · "),
+        Span::styled("Next ", Style::new().fg(theme::fg::MUTED)),
+        Span::styled(
+            format!("{remaining:.1}s"),
+            Style::new().fg(theme::accent::INFO),
+        ),
+    ]);
+    lines.push(timing);
+
     lines.push(Line::from_spans([Span::styled(
         state.callout_title,
         Style::new().fg(theme::fg::PRIMARY).bold(),
@@ -144,12 +179,16 @@ pub fn render_guided_tour_overlay(state: &TourOverlayState<'_>, frame: &mut Fram
         )]));
     }
 
-    if inner.height >= 6 {
+    let mut remaining_rows = inner.height.saturating_sub(lines.len() as u16) as usize;
+    if remaining_rows >= 2 {
         lines.push(Line::from_spans([Span::styled(
-            "Next:",
+            "Steps:",
             Style::new().fg(theme::fg::MUTED).bold(),
         )]));
-        for step in state.steps.iter().take((inner.height - 5) as usize) {
+        remaining_rows = remaining_rows.saturating_sub(1);
+        let legend_reserve = if remaining_rows >= 2 { 1 } else { 0 };
+        let max_steps = remaining_rows.saturating_sub(legend_reserve);
+        for step in state.steps.iter().take(max_steps) {
             let prefix = if step.is_current { "▶" } else { "•" };
             let label = format!("{} {} · {}", prefix, step.category.label(), step.title);
             lines.push(Line::from_spans([Span::styled(
@@ -157,11 +196,35 @@ pub fn render_guided_tour_overlay(state: &TourOverlayState<'_>, frame: &mut Fram
                 Style::new().fg(theme::fg::PRIMARY),
             )]));
         }
+        remaining_rows = inner.height.saturating_sub(lines.len() as u16) as usize;
+        if remaining_rows >= 1 {
+            let mut spans = Vec::new();
+            spans.push(Span::styled(
+                "Legend:",
+                Style::new().fg(theme::fg::MUTED).bold(),
+            ));
+            for category in ScreenCategory::ALL {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    category.short_label(),
+                    Style::new().fg(category_accent(*category)),
+                ));
+            }
+            lines.push(Line::from_spans(spans));
+        }
     }
 
     Paragraph::new(Text::from_lines(lines))
         .wrap(WrapMode::Word)
         .render(inner, frame);
+}
+
+fn rects_intersect(a: Rect, b: Rect) -> bool {
+    let ax2 = a.right();
+    let ay2 = a.bottom();
+    let bx2 = b.right();
+    let by2 = b.bottom();
+    !(ax2 <= b.x || bx2 <= a.x || ay2 <= b.y || by2 <= a.y)
 }
 
 // ---------------------------------------------------------------------------

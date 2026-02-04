@@ -121,7 +121,7 @@ pub const SCREEN_REGISTRY: &[ScreenMeta] = &[
         palette_tags: &["tour", "storyboard", "autoplay"],
         blurb: "Cinematic auto-play tour across key screens.",
         default_hotkey: Some("1"),
-        tour_step_hint: Some("Auto-play showcase"),
+        tour_step_hint: None,
     },
     ScreenMeta {
         id: ScreenId::Dashboard,

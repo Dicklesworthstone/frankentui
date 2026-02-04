@@ -34,168 +34,241 @@ use crate::theme;
 /// Simulated LLM streaming response with complex GFM content.
 /// This demonstrates real-world markdown that an LLM might generate.
 const STREAMING_MARKDOWN: &str = "\
-# FrankenTUI Architecture
+# FrankenTUI Streaming Report — \"Galaxy Brain\" Edition
 
-FrankenTUI is a **kernel-level** TUI library for Rust.
+> [!NOTE]
+> This stream simulates an LLM response rendered **incrementally** with full GFM support.
 
-## Core Principles
+> [!TIP]
+> Inline-first output keeps logs scrolling while the UI stays stable.
 
-1.  **Correctness**: No flicker, no tearing.
-2.  **Determinism**: $State_n \\to Output_n$.
-3.  **Performance**: 16-byte cells, diffing.
+> [!WARNING]
+> Rendering is deterministic. If you see flicker, it is a bug.
 
-### The Render Pipeline
+## TL;DR
 
-```rust
-fn render(frame: &mut Frame) {
-    let buffer = frame.buffer_mut();
-    // 1. Draw widgets
-    // 2. Diff against previous
-    // 3. Emit ANSI
+- ✅ Zero-flicker rendering via **Buffer → Diff → Presenter**
+- ✅ Evidence-ledger decisions (Bayes factors) for strategy selection
+- ✅ Inline mode preserves scrollback
+- ✅ 16-byte cells enable SIMD comparisons
+
+### Roadmap (Live)
+
+- [x] Deterministic renderer
+- [x] Inline mode
+- [x] Snapshot testing
+- [ ] Dirty-span diff (interval union)
+- [ ] Summed-area tile skip
+- [ ] Conformal frame-time risk control
+
+## Architecture Overview
+
+```mermaid
+graph TD
+  A[Event Stream] --> B[Model Update]
+  B --> C[Frame Buffer]
+  C --> D[Diff Engine]
+  D --> E[ANSI Presenter]
+  E --> F[Terminal Writer]
+```
+
+## Runtime Config (YAML)
+
+```yaml
+runtime:
+  screen_mode: inline
+  ui_height: 12
+  tick_ms: 16
+  evidence_log: true
+  budgets:
+    render_ms: 16
+    input_ms: 1
+    diff_ms: 4
+```
+
+## Evidence Ledger (JSON)
+
+```json
+{
+  \"event\": \"diff_decision\",
+  \"strategy\": \"DirtyRows\",
+  \"posterior_mean\": 0.032,
+  \"expected_cost\": {
+    \"full\": 1.23,
+    \"dirty\": 0.41,
+    \"redraw\": 2.02
+  },
+  \"tie_break\": \"stable\"
 }
 ```
 
-> [!TIP]
-> Use `Buffer::diff()` for minimal I/O.
+## SQL Query (Latency Scan)
 
-### Performance Budget
+```sql
+SELECT
+  frame_id,
+  diff_cells,
+  render_ms,
+  budget_ms
+FROM telemetry
+WHERE render_ms > budget_ms
+ORDER BY render_ms DESC
+LIMIT 5;
+```
 
-| Metric | Budget | Status |
-| :--- | :--- | :--- |
-| Diff | 4ms | ✅ |
-| Render | 16ms | ✅ |
-| Input | 1ms | ✅ |
+## Rust Snippet (Renderer Core)
 
-### Quantum Safety
+```rust
+pub fn present(frame: &Frame, writer: &mut TerminalWriter) -> Result<()> {
+    let diff = BufferDiff::compute(frame.prev(), frame.next());
+    let spans = diff.coalesced_spans();
+    writer.begin_sync()?;
+    for span in spans {
+        writer.move_to(span.x, span.y)?;
+        writer.write_cells(span.cells)?;
+    }
+    writer.end_sync()?;
+    Ok(())
+}
+```
 
-Our state machine is **entangled** with the terminal:
+## TypeScript Snippet (Log Parser)
 
-$$|\\psi\\rangle = \\frac{1}{\\sqrt{2}} (|00\\rangle + |11\\rangle)$$
+```ts
+type Event = { tick: number; render_ms: number; diff_cells: number };
+
+export function p95(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.floor(0.95 * (sorted.length - 1));
+  return sorted[idx] ?? 0;
+}
+
+export function summarize(events: Event[]) {
+  const render = events.map((e) => e.render_ms);
+  return { p95: p95(render), max: Math.max(...render) };
+}
+```
+
+## Bash Harness
+
+```bash
+FTUI_DEMO_SCREEN=14 \
+FTUI_DEMO_EXIT_AFTER_MS=1200 \
+cargo run -p ftui-demo-showcase --release
+```
+
+## Diff Sample
+
+```diff
+- dirty_rows = 48
+- strategy = \"Full\"
++ dirty_rows = 6
++ strategy = \"DirtyRows\"
+```
+
+## Data Table
+
+| Metric | Value | Trend |
+|:------ | ----: | :--- |
+| Diff cells | 182 | ↘ |
+| Render ms | 9.4 | ↘ |
+| FPS | 59.7 | ↗ |
+
+## Math Corner
+
+Inline: $E = mc^2$ and $\\alpha + \\beta = \\gamma$.
+
+Block:
+
+$$P(R \\mid E) = \\frac{P(E\\mid R)P(R)}{P(E)}$$
 
 ---
 
-*Press* <kbd>Space</kbd> *to toggle streaming, <kbd>r</kbd> to restart* \u{1f680}
+*Press* <kbd>Space</kbd> *to toggle streaming, <kbd>r</kbd> to restart* 🚀
 ";
 
 const SAMPLE_MARKDOWN: &str = "\
-# GitHub-Flavored Markdown
+# GitHub-Flavored Markdown (Rich Demo)
 
-## Math & LaTeX Support
+## LaTeX + Symbols
 
-Inline math like $E = mc^2$ and $\\alpha + \\beta = \\gamma$ renders to Unicode.
+Inline math: $E = mc^2$, $\\alpha + \\beta = \\gamma$, $\\Delta x \\approx 0.001$.
 
-Display math for complex equations:
+Block math:
 
 $$\\sum_{i=1}^{n} x_i = \\frac{n(n+1)}{2}$$
 
-$$f(x) = \\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$
-
-Greek letters: $\\alpha$, $\\beta$, $\\gamma$, $\\delta$, $\\epsilon$
-
-Operators: $\\times$, $\\div$, $\\pm$, $\\leq$, $\\geq$, $\\neq$, $\\approx$
-
-## Task Lists
-
-- [x] Implement markdown parser
-- [x] Add LaTeX to Unicode conversion
-- [x] Support task list checkboxes
-- [ ] Add syntax highlighting
-- [ ] Write comprehensive tests
+$$\\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$
 
 ## Admonitions
 
 > [!NOTE]
-> This is an informational note with helpful context.
+> Information note with **rich emphasis**.
 
 > [!TIP]
-> Pro tip: Use keyboard shortcuts for faster navigation.
-
-> [!IMPORTANT]
-> Critical information that users need to know.
+> Use <kbd>Tab</kbd> and <kbd>Shift+Tab</kbd> to navigate.
 
 > [!WARNING]
-> Potential issues or things to be careful about.
+> Unsafe mode is forbidden in this project.
 
-> [!CAUTION]
-> Dangerous actions that may cause problems.
+## Task Lists + Links
 
-## Footnotes
+- [x] Inline mode + scrollback
+- [x] Deterministic output
+- [ ] Time-travel diff heatmap
+- [ ] Conformal frame-time predictor
 
-FrankenTUI[^1] supports GitHub-Flavored Markdown[^gfm] with
-many extensions for rich terminal rendering.
-
-[^1]: A TUI framework for Rust.
-[^gfm]: GitHub-Flavored Markdown specification.
+Link: <https://example.com>
 
 ## Code Blocks
 
 ```rust
-fn fibonacci(n: u64) -> u64 {
-    match n {
-        0 => 0,
-        1 => 1,
-        _ => fibonacci(n - 1) + fibonacci(n - 2),
-    }
+#[derive(Debug, Clone)]
+pub enum Strategy { Full, DirtyRows, Redraw }
+
+pub fn choose(costs: &[f64; 3]) -> Strategy {
+    let (idx, _) = costs.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)).unwrap();
+    match idx { 0 => Strategy::Full, 1 => Strategy::DirtyRows, _ => Strategy::Redraw }
 }
 ```
 
 ```python
-def quicksort(arr):
-    if len(arr) <= 1:
-        return arr
-    pivot = arr[len(arr) // 2]
-    left = [x for x in arr if x < pivot]
-    return quicksort(left) + [pivot] + quicksort(right)
+from dataclasses import dataclass
+
+@dataclass
+class Span:
+    x0: int
+    x1: int
 ```
 
-## HTML Subset
+```json
+{ \"screen\": \"dashboard\", \"fps\": 59.7, \"dirty_rows\": 6 }
+```
 
-Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to copy, <kbd>Ctrl</kbd>+<kbd>V</kbd> to paste.
-
-Chemical formula: H<sub>2</sub>O (water), CO<sub>2</sub> (carbon dioxide)
-
-Math notation: x<sup>2</sup> + y<sup>2</sup> = r<sup>2</sup>
+```yaml
+features:
+  - inline
+  - diff
+  - evidence
+```
 
 ## Tables
 
 | Feature | Status | Notes |
-|---------|--------|-------|
-| Basic MD | ✓ | Headings, lists, emphasis |
-| GFM | ✓ | Tasks, tables, footnotes |
-| Math | ✓ | LaTeX → Unicode |
-| Admonitions | ✓ | Note, tip, warning, etc. |
-
-## ASCII Diagrams
-
-Manual alignment:
-
-```text
-+----------+
-| Diagram  |
-+----------+
-```
-
-## Mermaid Diagrams
-
-```mermaid
-graph LR
-    A[Input] --> B{Parse}
-    B --> C[Render]
-    C --> D[Display]
-```
+|--------|:------:|------:|
+| Inline mode | ✅ | Scrollback preserved |
+| Diff engine | ✅ | SIMD-friendly |
+| Evidence logs | ✅ | JSONL |
 
 ## Typography
 
-**Bold**, *italic*, ~~strikethrough~~, `inline code`
+**Bold**, *Italic*, ~~Strike~~, `Inline Code`
 
-Combined: ***bold italic***, **`bold code`**
-
-> \"The best way to predict the future is to invent it.\"
-> — Alan Kay
+> \"Correctness over cleverness.\" — FrankenTUI
 
 ---
 
-*Built with FrankenTUI \u{1f980}*
+*Built with FrankenTUI 🦀*
 ";
 
 const WRAP_MODES: &[WrapMode] = &[
@@ -210,7 +283,7 @@ const ALIGNMENTS: &[Alignment] = &[Alignment::Left, Alignment::Center, Alignment
 /// Base characters to advance per tick during streaming simulation.
 const STREAM_CHARS_PER_TICK: usize = 3;
 /// Global speed multiplier for the streaming demo.
-const STREAM_SPEED_MULTIPLIER: usize = 27;
+const STREAM_SPEED_MULTIPLIER: usize = 81;
 /// Horizontal rule width for markdown rendering.
 const RULE_WIDTH: u16 = 36;
 
@@ -229,18 +302,24 @@ fn wrap_markdown_for_panel(text: &Text, width: u16) -> Text {
     let mut lines = Vec::new();
     for line in text.lines() {
         let plain = line.to_plain_text();
-        if is_table_line(&plain) || line.width() <= width {
+        let table_like = is_table_line(&plain) || is_table_like_line(&plain);
+        if table_like || line.width() <= width {
             lines.push(line.clone());
             continue;
         }
 
-        lines.extend(line.wrap(width, WrapMode::Word));
+        for wrapped in line.wrap(width, WrapMode::Word) {
+            if wrapped.width() <= width {
+                lines.push(wrapped);
+            } else {
+                let mut text = Text::from_lines([wrapped]);
+                text.truncate(width, None);
+                lines.extend(text.lines().iter().cloned());
+            }
+        }
     }
 
-    let mut wrapped = Text::from_lines(lines);
-    // Clamp to panel width to avoid border overdraw on long table/rule lines.
-    wrapped.truncate(width, None);
-    wrapped
+    Text::from_lines(lines)
 }
 
 fn is_table_line(plain: &str) -> bool {
@@ -250,6 +329,14 @@ fn is_table_line(plain: &str) -> bool {
             '┌' | '┬' | '┐' | '├' | '┼' | '┤' | '└' | '┴' | '┘' | '│' | '─'
         )
     })
+}
+
+fn is_table_like_line(plain: &str) -> bool {
+    let trimmed = plain.trim_start();
+    if !trimmed.starts_with('|') {
+        return false;
+    }
+    trimmed.chars().filter(|&c| c == '|').count() >= 2
 }
 
 impl Widget for MarkdownPanel<'_> {
@@ -831,6 +918,11 @@ impl Screen for MarkdownRichText {
         if area.is_empty() {
             return;
         }
+
+        // Clear the full area to avoid stale borders bleeding through gaps.
+        Paragraph::new("")
+            .style(Style::new().bg(theme::alpha::SURFACE))
+            .render(area, frame);
 
         // Main layout: three columns - left markdown, center streaming, right panels
         let cols = Flex::horizontal()
