@@ -149,7 +149,84 @@ jobs:
           key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Generate coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --all-targets --all-features --lcov --output-path lcov.info
+
+      - name: Enforce coverage thresholds
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import sys
+
+          lcov_path = Path("lcov.info")
+          if not lcov_path.exists():
+              raise SystemExit("lcov.info not found; coverage gate cannot run")
+
+          thresholds = {
+              "ftui-render": 80.0,
+              "ftui-core": 80.0,
+              "ftui-style": 80.0,
+              "ftui-text": 80.0,
+              "ftui-layout": 75.0,
+              "ftui-runtime": 75.0,
+              "ftui-widgets": 70.0,
+              "ftui-extras": 60.0,
+          }
+          overall_target = 70.0
+
+          crate_totals = {crate: {"LF": 0, "LH": 0} for crate in thresholds}
+          overall = {"LF": 0, "LH": 0}
+
+          current = None
+          for raw in lcov_path.read_text().splitlines():
+              line = raw.strip()
+              if line.startswith("SF:"):
+                  current = {"file": line[3:], "LF": 0, "LH": 0}
+              elif line.startswith("LF:") and current is not None:
+                  current["LF"] = int(line[3:])
+              elif line.startswith("LH:") and current is not None:
+                  current["LH"] = int(line[3:])
+              elif line == "end_of_record" and current is not None:
+                  overall["LF"] += current["LF"]
+                  overall["LH"] += current["LH"]
+                  marker = "/crates/"
+                  path = current["file"]
+                  if marker in path:
+                      crate = path.split(marker, 1)[1].split("/", 1)[0]
+                      if crate in crate_totals:
+                          crate_totals[crate]["LF"] += current["LF"]
+                          crate_totals[crate]["LH"] += current["LH"]
+                  current = None
+
+          def pct(hit: int, total: int) -> float:
+              return 0.0 if total == 0 else (100.0 * hit / total)
+
+          failures = []
+          for crate, totals in sorted(crate_totals.items()):
+              value = pct(totals["LH"], totals["LF"])
+              target = thresholds[crate]
+              delta = value - target
+              if delta < 0:
+                  failures.append((crate, value, target, delta))
+
+          overall_pct = pct(overall["LH"], overall["LF"])
+          if overall_pct < overall_target:
+              failures.append(("overall", overall_pct, overall_target, overall_pct - overall_target))
+
+          if failures:
+              print("Coverage gate failed:")
+              for crate, value, target, delta in failures:
+                  print(f"- {crate}: {value:.2f}% (target {target:.2f}%, delta {delta:.2f}%)")
+              sys.exit(1)
+
+          print(f"Coverage gate passed: overall {overall_pct:.2f}% (target {overall_target:.2f}%)")
+          for crate, totals in sorted(crate_totals.items()):
+              value = pct(totals["LH"], totals["LF"])
+              target = thresholds[crate]
+              delta = value - target
+              print(f"- {crate}: {value:.2f}% (target {target:.2f}%, delta {delta:+.2f}%)")
+          PY
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

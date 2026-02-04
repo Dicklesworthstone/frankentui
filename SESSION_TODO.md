@@ -1,5 +1,25 @@
 # Session TODO List
 
+## Current Session (Codex) — Publish + Review + Showcase Notes (2026-02-04)
+- [x] Re-read `AGENTS.md` + `README.md` end-to-end (fresh constraints + project intent)
+- [x] Run `bv --robot-triage` (capture top picks + blockers)
+- [x] Identify publish blocker: `ftui-render` dev-dep cycle with `ftui-harness`
+- [x] Verify `ftui-render` tests/bench now self-contained (no `ftui-harness` deps)
+- [x] Verify `ftui-harness` contains moved render tests (`render_flicker_integration.rs`, `render_no_flicker_proof.rs`, `render_resize_storm_regression.rs`)
+- [x] Fix `ftui-harness` dev-deps: add `proptest` (dedupe entries)
+- [ ] Confirm `ftui-render` publishes cleanly: `cargo publish -p ftui-render --dry-run`
+- [ ] If dry-run passes: publish `ftui-render`
+- [ ] Continue publish order for remaining crates (ftui-style, ftui-text, ftui-runtime, ftui-widgets, ftui-extras, ftui-harness, ftui-pty, ftui-demo-showcase, ftui-simd, ftui)
+- [ ] Update bead `bd-3abcg` notes with cycle fix + publish status
+- [ ] Update bead `bd-17unx` (remaining publish steps)
+- [ ] Multi-pass bug hunt (bd-k57as):
+- [ ] Run `UBS_MAX_DIR_SIZE_MB=0 ubs --only=rust,toml crates/` and triage criticals
+- [ ] Classify findings: production vs tests; fix high-risk runtime paths first
+- [ ] Re-run UBS on touched files
+- [ ] Quality gates after edits: `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`
+- [ ] Git + beads: `br sync --flush-only`, commit, `git pull --rebase`, push, `git status`
+- [ ] Agent Mail: register/notify (blocked if MCP Agent Mail unavailable)
+
 ## Current Session (RedSpring) — bd-3isi7 Determinism Fixtures + Deep Review + Optimization (2026-02-04)
 - [x] Re-read `AGENTS.md` + `README.md` end-to-end (fresh constraints + architecture)
 - [x] Load skills: `codebase-archaeology`, `extreme-software-optimization`, `agent-mail`, `ubs`
