@@ -6,3 +6,10 @@ crates/ftui-demo-showcase/src/screens/forms_input.rs
 crates/ftui-demo-showcase/src/screens/theme_studio.rs
 crates/ftui-demo-showcase/src/screens/widget_gallery.rs
 crates/ftui-demo-showcase/src/theme.rs
+# False-positive hardcoded-secret heuristic in demo showcase content.
+crates/ftui-demo-showcase/src/app.rs
+crates/ftui-demo-showcase/src/chrome.rs
+crates/ftui-demo-showcase/src/cli.rs
+crates/ftui-demo-showcase/src/main.rs
+crates/ftui-demo-showcase/src/screens/data_viz.rs
+crates/ftui-demo-showcase/src/screens/visual_effects.rs
