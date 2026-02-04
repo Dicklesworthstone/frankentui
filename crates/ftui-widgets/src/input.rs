@@ -10,8 +10,8 @@ use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, CellContent};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::grapheme_width;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 use crate::Widget;
 use crate::undo_support::{TextEditOperation, TextInputUndoExt, UndoSupport, UndoWidgetId};
@@ -564,7 +564,7 @@ impl TextInput {
         if let Some(mask) = self.mask_char {
             unicode_width::UnicodeWidthChar::width(mask).unwrap_or(1)
         } else {
-            UnicodeWidthStr::width(g)
+            grapheme_width(g)
         }
     }
 
@@ -637,7 +637,7 @@ impl Widget for TextInput {
                 Style::default()
             };
             for g in self.placeholder.graphemes(true) {
-                let w = UnicodeWidthStr::width(g);
+                let w = self.grapheme_width(g);
                 if w == 0 {
                     continue;
                 }
@@ -1265,7 +1265,7 @@ mod tests {
 
         let cell = frame.buffer.get(0, 0).unwrap();
         assert!(cell.content.is_grapheme());
-        let width = UnicodeWidthStr::width(grapheme);
+        let width = grapheme_width(grapheme);
         if width > 1 {
             assert!(frame.buffer.get(1, 0).unwrap().is_continuation());
         }

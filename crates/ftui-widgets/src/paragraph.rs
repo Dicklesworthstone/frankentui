@@ -6,8 +6,7 @@ use crate::{Widget, draw_text_span_scrolled, draw_text_span_with_link, set_style
 use ftui_core::geometry::{Rect, Size};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use ftui_text::{Text, WrapMode};
-use unicode_width::UnicodeWidthStr;
+use ftui_text::{Text, WrapMode, display_width};
 
 /// A widget that renders multi-line styled text.
 #[derive(Debug, Clone, Default)]
@@ -311,7 +310,7 @@ impl Paragraph<'_> {
             let plain = line.to_plain_text();
             // Split on whitespace to find words
             for word in plain.split_whitespace() {
-                let word_width = UnicodeWidthStr::width(word);
+                let word_width = display_width(word);
                 max_word_width = max_word_width.max(word_width);
             }
         }

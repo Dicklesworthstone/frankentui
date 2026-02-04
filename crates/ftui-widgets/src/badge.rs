@@ -15,8 +15,7 @@ use ftui_core::geometry::Rect;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use ftui_text::display_width;
 
 /// A compact label with padding and style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,11 +56,7 @@ impl<'a> Badge<'a> {
     /// Display width in terminal cells (label width + padding).
     #[must_use]
     pub fn width(&self) -> u16 {
-        let label_width: u16 = self
-            .label
-            .graphemes(true)
-            .map(|g| UnicodeWidthStr::width(g) as u16)
-            .sum();
+        let label_width = display_width(self.label) as u16;
         label_width
             .saturating_add(self.pad_left)
             .saturating_add(self.pad_right)

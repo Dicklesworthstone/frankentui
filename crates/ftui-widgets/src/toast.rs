@@ -25,7 +25,7 @@ use ftui_core::geometry::Rect;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use unicode_width::UnicodeWidthStr;
+use ftui_text::display_width;
 
 use crate::{Widget, set_style_area};
 
@@ -667,7 +667,7 @@ impl ToastAction {
     ///
     /// Rendered as `[Label]`, so width = label_width + 2 (brackets).
     pub fn display_width(&self) -> usize {
-        UnicodeWidthStr::width(self.label.as_str()) + 2 // [ + label + ]
+        display_width(self.label.as_str()) + 2 // [ + label + ]
     }
 }
 
@@ -1195,12 +1195,12 @@ impl Toast {
 
         // Calculate content width
         let icon_width = if self.content.icon.is_some() { 2 } else { 0 }; // icon + space
-        let message_width = UnicodeWidthStr::width(self.content.message.as_str());
+        let message_width = display_width(self.content.message.as_str());
         let title_width = self
             .content
             .title
             .as_ref()
-            .map(|t| UnicodeWidthStr::width(t.as_str()))
+            .map(|t| display_width(t.as_str()))
             .unwrap_or(0);
 
         // Content width is max of title and message (plus icon)

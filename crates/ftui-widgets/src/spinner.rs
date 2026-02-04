@@ -7,6 +7,7 @@ use crate::{StatefulWidget, Widget, set_style_area};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::display_width;
 
 /// Braille dot spinner animation frames.
 pub const DOTS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -143,7 +144,7 @@ impl<'a> StatefulWidget for Spinner<'a> {
 
         crate::draw_text_span(frame, x, y, frame_char, style, spinner_area.right());
 
-        let w = unicode_width::UnicodeWidthStr::width(frame_char);
+        let w = display_width(frame_char);
         x += w as u16;
 
         // Render label

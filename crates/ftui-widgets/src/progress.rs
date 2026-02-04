@@ -8,6 +8,7 @@ use ftui_core::geometry::{Rect, Size};
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::display_width;
 
 /// A widget to display a progress bar.
 #[derive(Debug, Clone, Default)]
@@ -133,7 +134,7 @@ impl<'a> Widget for ProgressBar<'a> {
             Style::default()
         };
         if let Some(label) = self.label {
-            let label_width = unicode_width::UnicodeWidthStr::width(label);
+            let label_width = display_width(label);
             let label_x = bar_area
                 .left()
                 .saturating_add(((bar_area.width as usize).saturating_sub(label_width) / 2) as u16);

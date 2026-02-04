@@ -8,6 +8,7 @@ use crate::{StatefulWidget, Widget, draw_text_span};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
+use ftui_text::display_width;
 
 /// Scrollbar orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -199,7 +200,7 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
                 (track_char, SCROLLBAR_PART_TRACK)
             };
 
-            let symbol_width = unicode_width::UnicodeWidthStr::width(symbol);
+            let symbol_width = display_width(symbol);
             if is_vertical {
                 next_draw_index = i + 1;
             } else {

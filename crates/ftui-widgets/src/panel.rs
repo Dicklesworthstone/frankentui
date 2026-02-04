@@ -10,8 +10,8 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::{display_width, grapheme_width};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 /// A bordered container that renders a child widget inside an inner padded area.
 #[derive(Debug, Clone)]
@@ -200,7 +200,7 @@ impl<'a, W> Panel<'a, W> {
     }
 
     fn ellipsize<'s>(&self, s: &'s str, max_width: usize) -> std::borrow::Cow<'s, str> {
-        let total = UnicodeWidthStr::width(s);
+        let total = display_width(s);
         if total <= max_width {
             return std::borrow::Cow::Borrowed(s);
         }
@@ -218,7 +218,7 @@ impl<'a, W> Panel<'a, W> {
         let target = max_width - 1;
 
         for g in s.graphemes(true) {
-            let w = UnicodeWidthStr::width(g);
+            let w = grapheme_width(g);
             if w == 0 {
                 continue;
             }
@@ -247,18 +247,18 @@ impl<'a, W> Panel<'a, W> {
 
         let available_width = area.width.saturating_sub(2) as usize;
         let text = self.ellipsize(text, available_width);
-        let display_width = UnicodeWidthStr::width(text.as_ref()).min(available_width);
+        let text_width = display_width(text.as_ref()).min(available_width);
 
         let x = match alignment {
             Alignment::Left => area.x.saturating_add(1),
             Alignment::Center => area
                 .x
                 .saturating_add(1)
-                .saturating_add(((available_width.saturating_sub(display_width)) / 2) as u16),
+                .saturating_add(((available_width.saturating_sub(text_width)) / 2) as u16),
             Alignment::Right => area
                 .right()
                 .saturating_sub(1)
-                .saturating_sub(display_width as u16),
+                .saturating_sub(text_width as u16),
         };
 
         let max_x = area.right().saturating_sub(1);
@@ -279,18 +279,18 @@ impl<'a, W> Panel<'a, W> {
 
         let available_width = area.width.saturating_sub(2) as usize;
         let text = self.ellipsize(text, available_width);
-        let display_width = UnicodeWidthStr::width(text.as_ref()).min(available_width);
+        let text_width = display_width(text.as_ref()).min(available_width);
 
         let x = match alignment {
             Alignment::Left => area.x.saturating_add(1),
             Alignment::Center => area
                 .x
                 .saturating_add(1)
-                .saturating_add(((available_width.saturating_sub(display_width)) / 2) as u16),
+                .saturating_add(((available_width.saturating_sub(text_width)) / 2) as u16),
             Alignment::Right => area
                 .right()
                 .saturating_sub(1)
-                .saturating_sub(display_width as u16),
+                .saturating_sub(text_width as u16),
         };
 
         let y = area.bottom().saturating_sub(1);

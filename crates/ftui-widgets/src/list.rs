@@ -12,8 +12,7 @@ use crate::{StatefulWidget, Widget, draw_text_span, draw_text_span_with_link, se
 use ftui_core::geometry::{Rect, Size};
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
-use ftui_text::Text;
-use unicode_width::UnicodeWidthStr;
+use ftui_text::{Text, display_width};
 
 /// A single item in a list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,7 +330,7 @@ impl<'a> Widget for List<'a> {
 impl MeasurableWidget for ListItem<'_> {
     fn measure(&self, _available: Size) -> SizeConstraints {
         // ListItem is a single line of text with optional marker
-        let marker_width = UnicodeWidthStr::width(self.marker) as u16;
+        let marker_width = display_width(self.marker) as u16;
         let space_after_marker = if self.marker.is_empty() { 0u16 } else { 1 };
 
         // Get text width from the first line (List currently renders only first line)
@@ -392,7 +391,7 @@ impl MeasurableWidget for List<'_> {
 
         // Add highlight symbol width if present
         if let Some(symbol) = self.highlight_symbol {
-            let symbol_width = UnicodeWidthStr::width(symbol) as u16 + 1; // +1 for space
+            let symbol_width = display_width(symbol) as u16 + 1; // +1 for space
             max_width = max_width.saturating_add(symbol_width);
         }
 

@@ -19,15 +19,14 @@
 use crate::block::{Alignment, Block};
 use crate::borders::Borders;
 use crate::modal::{Modal, ModalConfig, ModalPosition, ModalSizeConstraints};
-use crate::{StatefulWidget, Widget, apply_style, set_style_area};
+use crate::{StatefulWidget, Widget, draw_text_span, set_style_area};
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
-use ftui_render::cell::Cell;
 use ftui_render::frame::{Frame, HitData, HitId, HitRegion};
 use ftui_style::{Style, StyleFlags};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use ftui_text::display_width;
 
 /// Hit region for dialog buttons.
 pub const DIALOG_HIT_BUTTON: HitRegion = HitRegion::Custom(10);
@@ -76,8 +75,8 @@ impl DialogButton {
 
     /// Display width including brackets.
     pub fn display_width(&self) -> usize {
-        // [ label ] = label.len() + 4
-        self.label.len() + 4
+        // [ label ] = display_width(label) + 4
+        display_width(self.label.as_str()) + 4
     }
 }
 
@@ -310,6 +309,10 @@ impl Dialog {
     ) -> Option<DialogResult> {
         if !state.open {
             return None;
+        }
+
+        if self.config.kind != DialogKind::Prompt && state.input_focused {
+            state.input_focused = false;
         }
 
         match event {
@@ -572,28 +575,10 @@ impl Dialog {
         text: &str,
         style: Style,
     ) {
-        let text_width = UnicodeWidthStr::width(text).min(width as usize);
+        let text_width = display_width(text).min(width as usize);
         let offset = (width as usize - text_width) / 2;
-
-        let mut col = 0usize;
-        for c in text.chars() {
-            let char_width = UnicodeWidthChar::width(c).unwrap_or(0);
-            if col + char_width > width as usize {
-                break;
-            }
-            let cx = x + offset as u16 + col as u16;
-            if cx < x + width {
-                let mut cell = Cell::from_char(c);
-                if let Some(fg) = style.fg {
-                    cell.fg = fg;
-                }
-                if let Some(bg) = style.bg {
-                    cell.bg = bg;
-                }
-                frame.buffer.set(cx, y, cell);
-            }
-            col += char_width;
-        }
+        let start_x = x.saturating_add(offset as u16);
+        draw_text_span(frame, start_x, y, text, style, x.saturating_add(width));
     }
 
     fn render_input(&self, frame: &mut Frame, x: u16, y: u16, width: u16, state: &DialogState) {
@@ -609,27 +594,18 @@ impl Dialog {
             &state.input_value
         };
 
-        let mut col = 0usize;
-        for c in display_text.chars() {
-            let char_width = UnicodeWidthChar::width(c).unwrap_or(0);
-            if col + char_width > input_area.width as usize {
-                break;
-            }
-            let mut cell = Cell::from_char(c);
-            if let Some(fg) = input_style.fg {
-                cell.fg = fg;
-            }
-            if let Some(attrs) = input_style.attrs {
-                let cell_flags: ftui_render::cell::StyleFlags = attrs.into();
-                cell.attrs = cell.attrs.with_flags(cell_flags);
-            }
-            frame.buffer.set(input_area.x + col as u16, y, cell);
-            col += char_width;
-        }
+        draw_text_span(
+            frame,
+            input_area.x,
+            y,
+            display_text,
+            input_style,
+            input_area.right(),
+        );
 
         // Draw cursor if focused
         if state.input_focused {
-            let input_width = UnicodeWidthStr::width(state.input_value.as_str());
+            let input_width = display_width(state.input_value.as_str());
             let cursor_x = input_area.x + input_width.min(input_area.width as usize) as u16;
             if cursor_x < input_area.right() {
                 frame.cursor_position = Some((cursor_x, y));
@@ -677,23 +653,20 @@ impl Dialog {
 
             // Draw button: [ label ]
             let btn_text = format!("[ {} ]", button.label);
-            for (j, c) in btn_text.chars().enumerate() {
-                let cx = bx + j as u16;
-                if cx >= x + width {
-                    break;
-                }
-                let mut cell = Cell::from_char(c);
-                apply_style(&mut cell, style);
-                frame.buffer.set(cx, y, cell);
-            }
+            let btn_width = display_width(btn_text.as_str());
+            draw_text_span(frame, bx, y, &btn_text, style, x.saturating_add(width));
 
             // Register hit region for button
             if let Some(hit_id) = self.hit_id {
-                let btn_area = Rect::new(bx, y, btn_text.len() as u16, 1);
-                frame.register_hit(btn_area, hit_id, DIALOG_HIT_BUTTON, i as u64);
+                let max_btn_width = width.saturating_sub(bx.saturating_sub(x));
+                let btn_area_width = btn_width.min(max_btn_width as usize) as u16;
+                if btn_area_width > 0 {
+                    let btn_area = Rect::new(bx, y, btn_area_width, 1);
+                    frame.register_hit(btn_area, hit_id, DIALOG_HIT_BUTTON, i as u64);
+                }
             }
 
-            bx += btn_text.len() as u16 + 2; // Button + spacing
+            bx = bx.saturating_add(btn_width as u16 + 2); // Button + spacing
         }
     }
 }

@@ -287,6 +287,7 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::grapheme_width;
 
 /// A widget that can render itself into a [`Frame`].
 ///
@@ -468,13 +469,12 @@ pub(crate) fn draw_text_span(
     max_x: u16,
 ) -> u16 {
     use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
 
     for grapheme in content.graphemes(true) {
         if x >= max_x {
             break;
         }
-        let w = UnicodeWidthStr::width(grapheme);
+        let w = grapheme_width(grapheme);
         if w == 0 {
             continue;
         }
@@ -530,7 +530,6 @@ pub(crate) fn draw_text_span_scrolled(
     link_url: Option<&str>,
 ) -> u16 {
     use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
 
     // Register link if present
     let link_id = if let Some(url) = link_url {
@@ -545,7 +544,7 @@ pub(crate) fn draw_text_span_scrolled(
         if x >= max_x {
             break;
         }
-        let w = UnicodeWidthStr::width(grapheme);
+        let w = grapheme_width(grapheme);
         if w == 0 {
             continue;
         }

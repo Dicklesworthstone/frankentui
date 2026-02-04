@@ -22,7 +22,7 @@ use ftui_core::geometry::Rect;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use unicode_width::UnicodeWidthStr;
+use ftui_text::display_width;
 
 /// An item that can be displayed in the status line.
 #[derive(Debug, Clone)]
@@ -73,7 +73,7 @@ impl<'a> StatusItem<'a> {
     /// Calculate the display width of this item.
     fn width(&self) -> usize {
         match self {
-            Self::Text(s) => UnicodeWidthStr::width(*s),
+            Self::Text(s) => display_width(s),
             Self::Spinner(_) => 1, // Single char spinner
             Self::Progress { current, total } => {
                 // Format: "42/100" or "100%"
@@ -82,7 +82,7 @@ impl<'a> StatusItem<'a> {
             }
             Self::KeyHint { key, action } => {
                 // Format: "^C Quit"
-                UnicodeWidthStr::width(*key) + 1 + UnicodeWidthStr::width(*action)
+                display_width(key) + 1 + display_width(action)
             }
             Self::Spacer => 0, // Spacer has no fixed width
         }
@@ -163,7 +163,7 @@ impl<'a> StatusLine<'a> {
 
     /// Calculate total fixed width (non-spacers, with separators between non-spacers).
     fn items_fixed_width(&self, items: &[StatusItem]) -> usize {
-        let sep_width = UnicodeWidthStr::width(self.separator);
+        let sep_width = display_width(self.separator);
         let mut width = 0usize;
         let mut prev_item = false;
 

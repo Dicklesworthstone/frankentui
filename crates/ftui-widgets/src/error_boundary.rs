@@ -12,6 +12,8 @@ use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::{display_width, grapheme_width};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{StatefulWidget, Widget, apply_style, draw_text_span, set_style_area};
 
@@ -298,19 +300,17 @@ fn render_error_fallback(frame: &mut Frame, area: Rect, error: &CapturedError) {
         let inner_y = top.saturating_add(1);
         let max_chars = (inner_right.saturating_sub(inner_left)) as usize;
 
-        let msg: String = if unicode_width::UnicodeWidthStr::width(error.message.as_str())
-            > max_chars.saturating_sub(2)
-        {
+        let msg: String = if display_width(error.message.as_str()) > max_chars.saturating_sub(2) {
             let mut truncated = String::new();
             let mut w = 0;
             let limit = max_chars.saturating_sub(3);
-            for ch in error.message.chars() {
-                let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if w + ch_w > limit {
+            for grapheme in error.message.graphemes(true) {
+                let gw = grapheme_width(grapheme);
+                if w + gw > limit {
                     break;
                 }
-                truncated.push(ch);
-                w += ch_w;
+                truncated.push_str(grapheme);
+                w += gw;
             }
             format!("! {truncated}\u{2026}")
         } else {

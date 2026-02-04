@@ -9,6 +9,7 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::{grapheme_width, graphemes};
 
 /// A widget that draws a block with optional borders, title, and padding.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -231,7 +232,7 @@ impl<'a> Block<'a> {
                 return;
             }
 
-            let title_width = unicode_width::UnicodeWidthStr::width(title);
+            let title_width = text_width(title);
             let display_width = title_width.min(available_width);
 
             let x = match self.title_alignment {
@@ -310,7 +311,7 @@ impl Widget for Block<'_> {
             {
                 let available_width = area.width.saturating_sub(2) as usize;
                 if available_width > 0 {
-                    let title_width = unicode_width::UnicodeWidthStr::width(title);
+                    let title_width = text_width(title);
                     let display_width = title_width.min(available_width);
                     let x = match self.title_alignment {
                         Alignment::Left => area.x.saturating_add(1),
@@ -346,6 +347,13 @@ impl MeasurableWidget for Block<'_> {
         // Block has intrinsic size only if it has borders
         self.borders != Borders::empty()
     }
+}
+
+fn text_width(text: &str) -> usize {
+    if text.is_ascii() {
+        return text.len();
+    }
+    graphemes(text).map(grapheme_width).sum()
 }
 
 #[cfg(test)]

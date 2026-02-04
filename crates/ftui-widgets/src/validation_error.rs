@@ -45,6 +45,7 @@ use ftui_core::geometry::Rect;
 use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
+use ftui_text::{display_width, grapheme_width};
 
 use crate::{StatefulWidget, Widget, draw_text_span};
 
@@ -174,9 +175,9 @@ impl ValidationErrorDisplay {
     /// Calculate the minimum width needed to display the error.
     #[must_use]
     pub fn min_width(&self) -> u16 {
-        let icon_width = unicode_width::UnicodeWidthStr::width(self.icon.as_str()) as u16;
+        let icon_width = display_width(self.icon.as_str()) as u16;
         if self.show_message && !self.message.is_empty() {
-            let msg_width = unicode_width::UnicodeWidthStr::width(self.message.as_str()) as u16;
+            let msg_width = display_width(self.message.as_str()) as u16;
             icon_width.saturating_add(1).saturating_add(msg_width)
         } else {
             icon_width
@@ -379,7 +380,7 @@ impl StatefulWidget for ValidationErrorDisplay {
 
             // Draw message (truncate with ellipsis if needed)
             let remaining_width = max_x.saturating_sub(x) as usize;
-            let msg_width = unicode_width::UnicodeWidthStr::width(self.message.as_str());
+            let msg_width = display_width(self.message.as_str());
 
             if msg_width <= remaining_width {
                 draw_text_span(frame, x, y, &self.message, text_style, max_x);
@@ -393,7 +394,7 @@ impl StatefulWidget for ValidationErrorDisplay {
                     self.message.as_str(),
                     true,
                 ) {
-                    let gw = unicode_width::UnicodeWidthStr::width(grapheme);
+                    let gw = grapheme_width(grapheme);
                     if w + gw > limit {
                         break;
                     }
@@ -476,14 +477,14 @@ mod tests {
     fn min_width_icon_only() {
         let error = ValidationErrorDisplay::new("Error").icon_only();
         // Warning icon is 1 cell wide (may vary by font but assume 2 for emoji)
-        let icon_width = unicode_width::UnicodeWidthStr::width(ERROR_ICON_DEFAULT) as u16;
+        let icon_width = display_width(ERROR_ICON_DEFAULT) as u16;
         assert_eq!(error.min_width(), icon_width);
     }
 
     #[test]
     fn min_width_with_message() {
         let error = ValidationErrorDisplay::new("Error");
-        let icon_width = unicode_width::UnicodeWidthStr::width(ERROR_ICON_DEFAULT) as u16;
+        let icon_width = display_width(ERROR_ICON_DEFAULT) as u16;
         let msg_width = 5u16; // "Error"
         assert_eq!(error.min_width(), icon_width + 1 + msg_width);
     }
@@ -491,7 +492,7 @@ mod tests {
     #[test]
     fn min_width_empty_message() {
         let error = ValidationErrorDisplay::new("");
-        let icon_width = unicode_width::UnicodeWidthStr::width(ERROR_ICON_DEFAULT) as u16;
+        let icon_width = display_width(ERROR_ICON_DEFAULT) as u16;
         assert_eq!(error.min_width(), icon_width);
     }
 

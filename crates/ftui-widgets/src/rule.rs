@@ -14,7 +14,7 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use unicode_width::UnicodeWidthStr;
+use ftui_text::display_width;
 
 /// A horizontal rule / divider.
 ///
@@ -151,7 +151,7 @@ impl Widget for Rule<'_> {
             }
             Some("") => self.fill_rule_char(&mut frame.buffer, y, area.x, area.right()),
             Some(title) => {
-                let title_width = UnicodeWidthStr::width(title) as u16;
+                let title_width = display_width(title) as u16;
 
                 // Need at least 1 char of padding on each side of the title,
                 // plus the title itself. If the area is too narrow, just draw
@@ -229,7 +229,7 @@ impl MeasurableWidget for Rule<'_> {
 
         let preferred_width = if let Some(title) = self.title {
             // Title + padding (1 space on each side) + at least 2 rule chars
-            let title_width = UnicodeWidthStr::width(title) as u16;
+            let title_width = display_width(title) as u16;
             title_width.saturating_add(4) // title + 2 spaces + 2 rule chars minimum
         } else {
             1 // Just a single rule char is fine

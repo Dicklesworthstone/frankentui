@@ -6,7 +6,7 @@ use crate::{Widget, draw_text_span};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::Frame;
 use ftui_style::Style;
-use unicode_width::UnicodeWidthStr;
+use ftui_text::display_width;
 
 /// Display mode for the paginator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,8 +112,8 @@ impl<'a> Paginator<'a> {
             return None;
         }
 
-        let active_width = UnicodeWidthStr::width(self.active_symbol);
-        let inactive_width = UnicodeWidthStr::width(self.inactive_symbol);
+        let active_width = display_width(self.active_symbol);
+        let inactive_width = display_width(self.inactive_symbol);
         let symbol_width = active_width.max(inactive_width);
         if symbol_width == 0 {
             return None;
@@ -138,7 +138,7 @@ impl<'a> Paginator<'a> {
             }
         }
 
-        if UnicodeWidthStr::width(out.as_str()) > max_width {
+        if display_width(out.as_str()) > max_width {
             return None;
         }
         Some(out)
