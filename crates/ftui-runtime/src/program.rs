@@ -3171,6 +3171,77 @@ mod tests {
         }
     }
 
+    fn signal_value_cost(signal: &WidgetSignal, config: &WidgetRefreshConfig) -> (f32, f32, bool) {
+        let starved = config.starve_ms > 0 && signal.staleness_ms >= config.starve_ms;
+        let staleness_window = config.staleness_window_ms.max(1) as f32;
+        let staleness_score = (signal.staleness_ms as f32 / staleness_window).min(1.0);
+        let mut value = config.weight_priority * signal.priority
+            + config.weight_staleness * staleness_score
+            + config.weight_focus * signal.focus_boost
+            + config.weight_interaction * signal.interaction_boost;
+        if starved {
+            value += config.starve_boost;
+        }
+        let raw_cost = if signal.recent_cost_us > 0.0 {
+            signal.recent_cost_us
+        } else {
+            signal.cost_estimate_us
+        };
+        let cost_us = raw_cost.max(config.min_cost_us);
+        (value, cost_us, starved)
+    }
+
+    fn fifo_select(
+        signals: &[WidgetSignal],
+        budget_us: f64,
+        config: &WidgetRefreshConfig,
+    ) -> (Vec<u64>, f64, usize) {
+        let mut selected = Vec::new();
+        let mut total_value = 0.0f64;
+        let mut starved_selected = 0usize;
+        let mut remaining = budget_us;
+
+        for signal in signals {
+            if !signal.essential {
+                continue;
+            }
+            let (value, cost_us, starved) = signal_value_cost(signal, config);
+            remaining -= cost_us as f64;
+            total_value += value as f64;
+            if starved {
+                starved_selected = starved_selected.saturating_add(1);
+            }
+            selected.push(signal.widget_id);
+        }
+        for signal in signals {
+            if signal.essential {
+                continue;
+            }
+            let (value, cost_us, starved) = signal_value_cost(signal, config);
+            if remaining >= cost_us as f64 {
+                remaining -= cost_us as f64;
+                total_value += value as f64;
+                if starved {
+                    starved_selected = starved_selected.saturating_add(1);
+                }
+                selected.push(signal.widget_id);
+            }
+        }
+
+        (selected, total_value, starved_selected)
+    }
+
+    fn rotate_signals(signals: &[WidgetSignal], offset: usize) -> Vec<WidgetSignal> {
+        if signals.is_empty() {
+            return Vec::new();
+        }
+        let mut rotated = Vec::with_capacity(signals.len());
+        for idx in 0..signals.len() {
+            rotated.push(signals[(idx + offset) % signals.len()].clone());
+        }
+        rotated
+    }
+
     #[test]
     fn widget_refresh_selects_essentials_first() {
         let signals = vec![
@@ -3246,6 +3317,47 @@ mod tests {
         plan.recompute(12, 0.0, DegradationLevel::Full, &signals, &config);
         let selected: Vec<u64> = plan.selected.iter().map(|e| e.widget_id).collect();
         assert_eq!(selected, vec![1, 2]);
+    }
+
+    #[test]
+    fn widget_refresh_greedy_beats_fifo_and_round_robin() {
+        let signals = vec![
+            make_signal(1, false, 0.1, 0, 6.0),
+            make_signal(2, false, 0.2, 0, 6.0),
+            make_signal(3, false, 1.0, 0, 4.0),
+            make_signal(4, false, 0.9, 0, 3.0),
+            make_signal(5, false, 0.8, 0, 3.0),
+            make_signal(6, false, 0.1, 4_000, 2.0),
+        ];
+        let budget_us = 10.0;
+        let config = WidgetRefreshConfig::default();
+
+        let mut plan = WidgetRefreshPlan::new();
+        plan.recompute(21, budget_us, DegradationLevel::Full, &signals, &config);
+        let greedy_value = plan.selected_value;
+        let greedy_selected: Vec<u64> = plan.selected.iter().map(|e| e.widget_id).collect();
+
+        let (fifo_selected, fifo_value, _fifo_starved) = fifo_select(&signals, budget_us, &config);
+        let rotated = rotate_signals(&signals, 2);
+        let (rr_selected, rr_value, _rr_starved) = fifo_select(&rotated, budget_us, &config);
+
+        assert!(
+            greedy_value > fifo_value,
+            "greedy_value={greedy_value:.3} <= fifo_value={fifo_value:.3}; greedy={:?}, fifo={:?}",
+            greedy_selected,
+            fifo_selected
+        );
+        assert!(
+            greedy_value > rr_value,
+            "greedy_value={greedy_value:.3} <= rr_value={rr_value:.3}; greedy={:?}, rr={:?}",
+            greedy_selected,
+            rr_selected
+        );
+        assert!(
+            plan.starved_selected > 0,
+            "greedy did not select starved widget; greedy={:?}",
+            greedy_selected
+        );
     }
 
     #[test]
