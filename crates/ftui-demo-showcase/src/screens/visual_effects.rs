@@ -11,7 +11,7 @@
 //! - Tunnel zoom effect
 //! - Fire simulation
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::env;
 use std::f64::consts::TAU;
@@ -115,6 +115,8 @@ pub struct VisualEffectsScreen {
     transition: TransitionState,
     /// Cached painter buffer (grow-only) for canvas rendering.
     painter: RefCell<Painter>,
+    /// Last render quality (used to throttle updates).
+    last_quality: Cell<FxQuality>,
     // Text effects demo (bd-2b82)
     /// Current demo mode: Canvas or TextEffects
     demo_mode: DemoMode,
@@ -2708,6 +2710,7 @@ impl Default for VisualEffectsScreen {
             // Transition overlay
             transition: TransitionState::new(),
             painter: RefCell::new(Painter::new(0, 0, Mode::Braille)),
+            last_quality: Cell::new(FxQuality::Full),
             // Text effects demo (bd-2b82)
             demo_mode: DemoMode::Canvas,
             text_effects: TextEffectsDemo::default(),
@@ -3424,8 +3427,10 @@ impl Screen for VisualEffectsScreen {
             EffectType::Metaballs | EffectType::Plasma => {}
         }
 
-        // Update text effects animation (bd-2b82)
-        self.text_effects.tick();
+        // Update text effects only when the text demo is visible (bd-2b82).
+        if matches!(self.demo_mode, DemoMode::TextEffects) {
+            self.text_effects.tick();
+        }
 
         // Update transition overlay animation
         self.transition.tick();
