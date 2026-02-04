@@ -67,6 +67,8 @@
 - [x] Fix clippy errors in `crates/ftui-extras/src/markdown.rs` (unused mut, collapsible if, too many args)
 - [x] Fix category tabs type mismatch in `crates/ftui-demo-showcase/src/chrome.rs`
 - [x] Run quality gates: `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`
+- [x] Run `cargo test -p ftui-widgets command_palette` (93 tests) to verify ranking correctness
+- [x] Close bead `bd-2me70` (Completed) + release file reservations
 
 ## Current Session (LilacDune) — Deep Review / UBS Audit (2026-02-04)
 - [x] Run UBS full Rust scan: `UBS_MAX_DIR_SIZE_MB=0 ubs --only=rust,toml crates/`
