@@ -32,6 +32,7 @@ OPTIONS:
     --vfx-frames=N       VFX harness auto-exit after N frames (default: 0)
     --vfx-cols=N         VFX harness forced cols (default: 120)
     --vfx-rows=N         VFX harness forced rows (default: 40)
+    --vfx-seed=N         VFX harness seed override (optional)
     --vfx-jsonl=PATH     VFX harness JSONL output path (default: vfx_harness.jsonl)
     --vfx-run-id=ID      VFX harness run id override (optional)
     --help, -h           Show this help message
@@ -147,6 +148,8 @@ pub struct Opts {
     pub vfx_cols: u16,
     /// VFX harness forced rows.
     pub vfx_rows: u16,
+    /// VFX harness seed override.
+    pub vfx_seed: Option<u64>,
     /// VFX harness JSONL output path.
     pub vfx_jsonl: Option<String>,
     /// VFX harness run id override.
@@ -172,6 +175,7 @@ impl Default for Opts {
             vfx_frames: 0,
             vfx_cols: 120,
             vfx_rows: 40,
+            vfx_seed: None,
             vfx_jsonl: None,
             vfx_run_id: None,
         }
@@ -269,6 +273,11 @@ impl Opts {
             && let Ok(n) = val.parse()
         {
             opts.vfx_rows = n;
+        }
+        if let Ok(val) = env::var("FTUI_DEMO_VFX_SEED")
+            && let Ok(n) = val.parse()
+        {
+            opts.vfx_seed = Some(n);
         }
         if let Ok(val) = env::var("FTUI_DEMO_VFX_JSONL")
             && !val.trim().is_empty()
@@ -399,6 +408,14 @@ impl Opts {
                                 process::exit(1);
                             }
                         }
+                    } else if let Some(val) = other.strip_prefix("--vfx-seed=") {
+                        match val.parse() {
+                            Ok(n) => opts.vfx_seed = Some(n),
+                            Err(_) => {
+                                eprintln!("Invalid --vfx-seed value: {val}");
+                                process::exit(1);
+                            }
+                        }
                     } else if let Some(val) = other.strip_prefix("--vfx-jsonl=") {
                         if !val.trim().is_empty() {
                             opts.vfx_jsonl = Some(val.to_string());
@@ -455,6 +472,7 @@ mod tests {
         assert_eq!(opts.vfx_frames, 0);
         assert_eq!(opts.vfx_cols, 120);
         assert_eq!(opts.vfx_rows, 40);
+        assert!(opts.vfx_seed.is_none());
         assert!(opts.vfx_jsonl.is_none());
         assert!(opts.vfx_run_id.is_none());
     }
@@ -517,6 +535,7 @@ mod tests {
         assert!(HELP_TEXT.contains("FTUI_DEMO_VFX_SIZE"));
         assert!(HELP_TEXT.contains("FTUI_DEMO_VFX_COLS"));
         assert!(HELP_TEXT.contains("FTUI_DEMO_VFX_ROWS"));
+        assert!(HELP_TEXT.contains("FTUI_DEMO_VFX_SEED"));
         assert!(HELP_TEXT.contains("FTUI_DEMO_VFX_RUN_ID"));
         assert!(HELP_TEXT.contains("FTUI_DEMO_VFX_JSONL"));
     }

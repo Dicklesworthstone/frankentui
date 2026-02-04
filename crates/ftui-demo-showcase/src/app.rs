@@ -1011,6 +1011,7 @@ pub struct VfxHarnessConfig {
     pub run_id: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    pub seed: Option<u64>,
 }
 
 pub enum VfxHarnessMsg {
@@ -1141,15 +1142,17 @@ impl VfxHarnessModel {
         let jsonl_path = config
             .jsonl_path
             .unwrap_or_else(|| VFX_HARNESS_DEFAULT_JSONL.to_string());
-        let seed = determinism::seed_from_env(
-            &[
-                "FTUI_DEMO_VFX_SEED",
-                "FTUI_DEMO_SEED",
-                "FTUI_SEED",
-                "E2E_SEED",
-            ],
-            VFX_HARNESS_SEED,
-        );
+        let seed = config.seed.unwrap_or_else(|| {
+            determinism::seed_from_env(
+                &[
+                    "FTUI_DEMO_VFX_SEED",
+                    "FTUI_DEMO_SEED",
+                    "FTUI_SEED",
+                    "E2E_SEED",
+                ],
+                determinism::demo_seed(VFX_HARNESS_SEED),
+            )
+        });
         let logger = VfxHarnessLogger::new(
             &jsonl_path,
             run_id,
@@ -3781,7 +3784,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(screens::screen_registry().len(), 37);
+        assert_eq!(screens::screen_registry().len(), 38);
     }
 
     // -----------------------------------------------------------------------
@@ -4098,8 +4101,8 @@ mod tests {
         app.terminal_height = 40;
 
         // Add some tick samples so stats are non-trivial
-        for i in 0..30 {
-            app.perf_tick_times_us.push_back(90_000 + i * 1_000);
+        for _ in 0..30 {
+            app.perf_tick_times_us.push_back(100_000);
         }
 
         let mut pool = GraphemePool::new();
@@ -4343,7 +4346,7 @@ mod tests {
         );
     }
 
-    /// Property: view counter increments on each view call.
+    /// Property: perf_view_counter increments on each view call.
     #[test]
     fn perf_view_counter_increments() {
         let app = AppModel::new();

@@ -8,7 +8,7 @@
 #![cfg(unix)]
 
 use std::path::Path;
-use std::sync::{OnceLock, mpsc};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use ftui_harness::determinism::{JsonValue, TestJsonlLogger};
@@ -187,6 +187,7 @@ fn run_vfx_harness(demo_bin: &str, case: VfxCase, seed: u64) -> Result<Vec<VfxFr
     cmd.arg(format!("--vfx-frames={}", case.frames));
     cmd.arg(format!("--vfx-cols={}", case.cols));
     cmd.arg(format!("--vfx-rows={}", case.rows));
+    cmd.arg(format!("--vfx-seed={seed}"));
     cmd.arg("--vfx-jsonl=-");
     cmd.arg(format!("--vfx-run-id={run_id}"));
     cmd.arg("--exit-after-ms=4000");
@@ -311,18 +312,10 @@ fn pty_visual_effects_input_no_panic() -> Result<(), String> {
         &mut last_key,
     );
 
-    let output_snapshot = session.output().to_vec();
-
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let status = session.wait_and_drain(Duration::from_secs(2));
-        let output = session.output().to_vec();
-        let _ = tx.send((status, output));
-    });
-
-    let result = rx.recv_timeout(Duration::from_secs(6));
+    let result = session.wait_and_drain(Duration::from_secs(6));
+    let output = session.output().to_vec();
     match result {
-        Ok((Ok(status), output)) if status.success() => {
+        Ok(status) if status.success() => {
             log_jsonl(
                 "result",
                 &[
@@ -338,21 +331,15 @@ fn pty_visual_effects_input_no_panic() -> Result<(), String> {
             );
             Ok(())
         }
-        Ok((Ok(status), output)) => {
+        Ok(status) => {
             let tail = tail_output(&output, 2048);
             let msg = format!("PTY exit status failure: {status:?}\nTAIL:\n{tail}");
             eprintln!("{msg}");
             Err(msg)
         }
-        Ok((Err(err), output)) => {
+        Err(err) => {
             let tail = tail_output(&output, 2048);
             let msg = format!("PTY wait_and_drain error: {err}\nTAIL:\n{tail}");
-            eprintln!("{msg}");
-            Err(msg)
-        }
-        Err(_) => {
-            let tail = tail_output(&output_snapshot, 2048);
-            let msg = format!("PTY timeout waiting for exit; last_key={last_key}\nTAIL:\n{tail}");
             eprintln!("{msg}");
             Err(msg)
         }

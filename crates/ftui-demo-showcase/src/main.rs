@@ -45,6 +45,7 @@ fn main() {
             run_id: opts.vfx_run_id.clone(),
             cols: opts.vfx_cols,
             rows: opts.vfx_rows,
+            seed: opts.vfx_seed,
         };
         let model = match VfxHarnessModel::new(harness_config) {
             Ok(model) => model,

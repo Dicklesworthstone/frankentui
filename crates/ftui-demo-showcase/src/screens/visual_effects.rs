@@ -2911,7 +2911,7 @@ impl SpinLatticeState {
 const DOOM_FOV: f32 = 1.2;
 const DOOM_WALL_HEIGHT: f32 = 128.0;
 const DOOM_GRAVITY: f32 = -4.2;
-const DOOM_JUMP_VELOCITY: f32 = 40.0;
+const DOOM_JUMP_VELOCITY: f32 = 28.0;
 const DOOM_COLLISION_RADIUS: f32 = 20.0;
 const DOOM_COLLISION_PAD: f32 = 2.0;
 const DOOM_MOVE_STEP: f32 = 2.8;
@@ -5970,6 +5970,137 @@ mod tests {
             })
         });
         assert!(has_content, "Quake should render visible content");
+    }
+
+    fn rgb_tuple(color: PackedRgba) -> (u8, u8, u8) {
+        (color.r(), color.g(), color.b())
+    }
+
+    fn pick_doom_line(lines: &[DoomLine]) -> DoomLine {
+        for line in lines {
+            let dx = line.x2 - line.x1;
+            let dy = line.y2 - line.y1;
+            let len = (dx * dx + dy * dy).sqrt();
+            let mx = (line.x1 + line.x2) * 0.5;
+            let my = (line.y1 + line.y2) * 0.5;
+            if len > 48.0 && mx > 128.0 && mx < 1920.0 && my > 128.0 && my < 1920.0 {
+                return *line;
+            }
+        }
+        lines[0]
+    }
+
+    fn pick_quake_wall(walls: &[WallSeg], min: Vec3, max: Vec3) -> WallSeg {
+        for seg in walls {
+            let mx = (seg.x1 + seg.x2) * 0.5;
+            let my = (seg.y1 + seg.y2) * 0.5;
+            let len = (seg.vx * seg.vx + seg.vy * seg.vy).sqrt();
+            if len > 0.12
+                && mx > min.x + 0.15
+                && mx < max.x - 0.15
+                && my > min.y + 0.15
+                && my < max.y - 0.15
+            {
+                return *seg;
+            }
+        }
+        walls[0]
+    }
+
+    /// Doom jump should peak below wall height and settle back on the ground.
+    #[test]
+    fn doom_jump_height_and_landing() {
+        let mut doom = DoomE1M1State::default();
+        doom.jump();
+        let mut max_jump = 0.0f32;
+        for _ in 0..200 {
+            doom.update();
+            max_jump = max_jump.max(doom.player.jump_z);
+        }
+        assert!(doom.player.grounded);
+        assert!(doom.player.jump_z.abs() <= 0.001);
+        assert!(
+            max_jump <= DOOM_WALL_HEIGHT * 0.9,
+            "Jump apex {max_jump} should stay below wall height"
+        );
+    }
+
+    /// Doom collision should prevent stepping through walls.
+    #[test]
+    fn doom_collision_blocks_wall_crossing() {
+        let mut doom = DoomE1M1State::default();
+        let line = pick_doom_line(&doom.lines);
+        let vx = line.x2 - line.x1;
+        let vy = line.y2 - line.y1;
+        let len = (vx * vx + vy * vy).sqrt().max(1.0);
+        let nx = -vy / len;
+        let ny = vx / len;
+        let radius = DOOM_COLLISION_RADIUS + DOOM_COLLISION_PAD;
+        doom.player.x = (line.x1 + line.x2) * 0.5 + nx * (radius + 6.0);
+        doom.player.y = (line.y1 + line.y2) * 0.5 + ny * (radius + 6.0);
+        doom.try_move(-nx * (radius + 12.0), -ny * (radius + 12.0));
+        let dist_sq = line.distance_sq(doom.player.x, doom.player.y);
+        assert!(
+            dist_sq >= (radius * radius) * 0.85,
+            "Player clipped into wall: dist_sq={dist_sq}"
+        );
+    }
+
+    /// Quake jump should return to ground without overshooting.
+    #[test]
+    fn quake_jump_returns_to_ground() {
+        let mut quake = QuakeE1M1State::default();
+        let ground = quake.ground_eye_height(quake.player.pos.x, quake.player.pos.y);
+        quake.jump();
+        let mut max_z = quake.player.pos.z;
+        for _ in 0..200 {
+            quake.update();
+            max_z = max_z.max(quake.player.pos.z);
+        }
+        assert!(quake.player.grounded);
+        assert!((quake.player.pos.z - ground).abs() <= 0.001);
+        assert!(
+            (max_z - ground) <= 0.25,
+            "Quake jump apex {max_z} too high above ground {ground}"
+        );
+    }
+
+    /// Quake collision should prevent stepping through wall segments.
+    #[test]
+    fn quake_collision_blocks_wall_crossing() {
+        let mut quake = QuakeE1M1State::default();
+        assert!(!quake.wall_segments.is_empty());
+        let seg = pick_quake_wall(&quake.wall_segments, quake.bounds_min, quake.bounds_max);
+        let len = (seg.vx * seg.vx + seg.vy * seg.vy).sqrt().max(0.0001);
+        let nx = -seg.vy / len;
+        let ny = seg.vx / len;
+        let radius = QUAKE_COLLISION_RADIUS;
+        let mid_x = (seg.x1 + seg.x2) * 0.5;
+        let mid_y = (seg.y1 + seg.y2) * 0.5;
+        quake.player.pos.x = mid_x + nx * (radius + 0.08);
+        quake.player.pos.y = mid_y + ny * (radius + 0.08);
+        quake.player.pos.z = quake.ground_eye_height(quake.player.pos.x, quake.player.pos.y);
+        quake.try_move(-nx * (radius + 0.16), -ny * (radius + 0.16));
+        let dist_sq = seg.distance_sq(quake.player.pos.x, quake.player.pos.y);
+        assert!(
+            dist_sq >= (radius * radius) * 0.85,
+            "Player clipped into wall: dist_sq={dist_sq}"
+        );
+    }
+
+    /// Palette swatches should stay aligned to Doom/Quake expectations.
+    #[test]
+    fn doom_quake_palette_swatches() {
+        assert_eq!(rgb_tuple(palette_doom_wall(0)), (96, 66, 44));
+        assert_eq!(rgb_tuple(palette_doom_wall(4)), (118, 118, 118));
+        assert_eq!(rgb_tuple(palette_doom_wall(5)), (170, 170, 170));
+
+        assert_eq!(rgb_tuple(palette_quake_floor(0.0)), (86, 72, 58));
+        assert_eq!(rgb_tuple(palette_quake_floor(1.0)), (128, 108, 88));
+        assert_eq!(rgb_tuple(palette_quake_ceiling(0.0)), (70, 76, 92));
+        assert_eq!(rgb_tuple(palette_quake_ceiling(1.0)), (110, 118, 136));
+        assert_eq!(rgb_tuple(palette_quake_stone(0.0)), (78, 70, 60));
+        assert_eq!(rgb_tuple(palette_quake_stone(1.0)), (126, 116, 104));
     }
 
     /// Verify effect transitions work without panicking.
