@@ -5,6 +5,7 @@
 use crate::Style;
 use crate::color::{Ansi16, Color, ColorProfile};
 use ftui_render::cell::PackedRgba;
+use std::hash::{Hash, Hasher};
 
 #[inline]
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
@@ -350,6 +351,18 @@ pub struct TableTheme {
     pub preset_id: Option<TablePresetId>,
 }
 
+/// Diagnostics payload for TableTheme instrumentation.
+#[derive(Clone, Debug)]
+pub struct TableThemeDiagnostics {
+    pub preset_id: Option<TablePresetId>,
+    pub style_hash: u64,
+    pub effects_hash: u64,
+    pub effect_count: usize,
+    pub padding: u8,
+    pub column_gap: u8,
+    pub row_height: u8,
+}
+
 struct ThemeStyles {
     border: Style,
     header: Style,
@@ -647,6 +660,49 @@ impl TableTheme {
             preset_id: Some(preset_id),
         }
     }
+
+    /// Produce a deterministic diagnostics summary for logging or tests.
+    #[must_use]
+    pub fn diagnostics(&self) -> TableThemeDiagnostics {
+        TableThemeDiagnostics {
+            preset_id: self.preset_id,
+            style_hash: self.style_hash(),
+            effects_hash: self.effects_hash(),
+            effect_count: self.effects.len(),
+            padding: self.padding,
+            column_gap: self.column_gap,
+            row_height: self.row_height,
+        }
+    }
+
+    /// Stable hash of base styles + layout parameters.
+    #[must_use]
+    pub fn style_hash(&self) -> u64 {
+        let mut hasher = StableHasher::new();
+        hash_style(&self.border, &mut hasher);
+        hash_style(&self.header, &mut hasher);
+        hash_style(&self.row, &mut hasher);
+        hash_style(&self.row_alt, &mut hasher);
+        hash_style(&self.row_selected, &mut hasher);
+        hash_style(&self.row_hover, &mut hasher);
+        hash_style(&self.divider, &mut hasher);
+        hash_u8(self.padding, &mut hasher);
+        hash_u8(self.column_gap, &mut hasher);
+        hash_u8(self.row_height, &mut hasher);
+        hash_preset(self.preset_id, &mut hasher);
+        hasher.finish()
+    }
+
+    /// Stable hash of effect rules (target + effect + blend + mask).
+    #[must_use]
+    pub fn effects_hash(&self) -> u64 {
+        let mut hasher = StableHasher::new();
+        hash_usize(self.effects.len(), &mut hasher);
+        for rule in &self.effects {
+            hash_effect_rule(rule, &mut hasher);
+        }
+        hasher.finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -878,6 +934,218 @@ fn classic_color(profile: ColorProfile, rgb: (u8, u8, u8), ansi16: Ansi16) -> Pa
     };
     let rgb = color.to_rgb();
     PackedRgba::rgb(rgb.r, rgb.g, rgb.b)
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics hashing (stable, deterministic)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+struct StableHasher {
+    state: u64,
+}
+
+impl StableHasher {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+
+    #[must_use]
+    const fn new() -> Self {
+        Self { state: Self::OFFSET }
+    }
+}
+
+impl Hasher for StableHasher {
+    fn finish(&self) -> u64 {
+        self.state
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = self.state;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(Self::PRIME);
+        }
+        self.state = hash;
+    }
+}
+
+fn hash_u8(value: u8, hasher: &mut StableHasher) {
+    hasher.write(&[value]);
+}
+
+fn hash_u32(value: u32, hasher: &mut StableHasher) {
+    hasher.write(&value.to_le_bytes());
+}
+
+fn hash_u64(value: u64, hasher: &mut StableHasher) {
+    hasher.write(&value.to_le_bytes());
+}
+
+fn hash_usize(value: usize, hasher: &mut StableHasher) {
+    hash_u64(value as u64, hasher);
+}
+
+fn hash_f32(value: f32, hasher: &mut StableHasher) {
+    hash_u32(value.to_bits(), hasher);
+}
+
+fn hash_bool(value: bool, hasher: &mut StableHasher) {
+    hash_u8(value as u8, hasher);
+}
+
+fn hash_style(style: &Style, hasher: &mut StableHasher) {
+    style.hash(hasher);
+}
+
+fn hash_packed_rgba(color: PackedRgba, hasher: &mut StableHasher) {
+    hash_u32(color.0, hasher);
+}
+
+fn hash_preset(preset: Option<TablePresetId>, hasher: &mut StableHasher) {
+    match preset {
+        None => hash_u8(0, hasher),
+        Some(id) => {
+            hash_u8(1, hasher);
+            hash_table_preset(id, hasher);
+        }
+    }
+}
+
+fn hash_table_preset(preset: TablePresetId, hasher: &mut StableHasher) {
+    let tag = match preset {
+        TablePresetId::Aurora => 1,
+        TablePresetId::Graphite => 2,
+        TablePresetId::Neon => 3,
+        TablePresetId::Slate => 4,
+        TablePresetId::Solar => 5,
+        TablePresetId::Orchard => 6,
+        TablePresetId::Paper => 7,
+        TablePresetId::Midnight => 8,
+        TablePresetId::TerminalClassic => 9,
+    };
+    hash_u8(tag, hasher);
+}
+
+fn hash_table_section(section: TableSection, hasher: &mut StableHasher) {
+    let tag = match section {
+        TableSection::Header => 1,
+        TableSection::Body => 2,
+        TableSection::Footer => 3,
+    };
+    hash_u8(tag, hasher);
+}
+
+fn hash_blend_mode(mode: BlendMode, hasher: &mut StableHasher) {
+    let tag = match mode {
+        BlendMode::Replace => 1,
+        BlendMode::Additive => 2,
+        BlendMode::Multiply => 3,
+        BlendMode::Screen => 4,
+    };
+    hash_u8(tag, hasher);
+}
+
+fn hash_style_mask(mask: StyleMask, hasher: &mut StableHasher) {
+    hash_bool(mask.fg, hasher);
+    hash_bool(mask.bg, hasher);
+    hash_bool(mask.attrs, hasher);
+}
+
+fn hash_effect_target(target: &TableEffectTarget, hasher: &mut StableHasher) {
+    match *target {
+        TableEffectTarget::Section(section) => {
+            hash_u8(1, hasher);
+            hash_table_section(section, hasher);
+        }
+        TableEffectTarget::Row(row) => {
+            hash_u8(2, hasher);
+            hash_usize(row, hasher);
+        }
+        TableEffectTarget::RowRange { start, end } => {
+            hash_u8(3, hasher);
+            hash_usize(start, hasher);
+            hash_usize(end, hasher);
+        }
+        TableEffectTarget::Column(column) => {
+            hash_u8(4, hasher);
+            hash_usize(column, hasher);
+        }
+        TableEffectTarget::ColumnRange { start, end } => {
+            hash_u8(5, hasher);
+            hash_usize(start, hasher);
+            hash_usize(end, hasher);
+        }
+        TableEffectTarget::AllRows => {
+            hash_u8(6, hasher);
+        }
+        TableEffectTarget::AllCells => {
+            hash_u8(7, hasher);
+        }
+    }
+}
+
+fn hash_gradient(gradient: &Gradient, hasher: &mut StableHasher) {
+    hash_usize(gradient.stops.len(), hasher);
+    for (pos, color) in &gradient.stops {
+        hash_f32(*pos, hasher);
+        hash_packed_rgba(*color, hasher);
+    }
+}
+
+fn hash_effect(effect: &TableEffect, hasher: &mut StableHasher) {
+    match *effect {
+        TableEffect::Pulse {
+            fg_a,
+            fg_b,
+            bg_a,
+            bg_b,
+            speed,
+            phase_offset,
+        } => {
+            hash_u8(1, hasher);
+            hash_packed_rgba(fg_a, hasher);
+            hash_packed_rgba(fg_b, hasher);
+            hash_packed_rgba(bg_a, hasher);
+            hash_packed_rgba(bg_b, hasher);
+            hash_f32(speed, hasher);
+            hash_f32(phase_offset, hasher);
+        }
+        TableEffect::BreathingGlow {
+            fg,
+            bg,
+            intensity,
+            speed,
+            phase_offset,
+            asymmetry,
+        } => {
+            hash_u8(2, hasher);
+            hash_packed_rgba(fg, hasher);
+            hash_packed_rgba(bg, hasher);
+            hash_f32(intensity, hasher);
+            hash_f32(speed, hasher);
+            hash_f32(phase_offset, hasher);
+            hash_f32(asymmetry, hasher);
+        }
+        TableEffect::GradientSweep {
+            ref gradient,
+            speed,
+            phase_offset,
+        } => {
+            hash_u8(3, hasher);
+            hash_gradient(gradient, hasher);
+            hash_f32(speed, hasher);
+            hash_f32(phase_offset, hasher);
+        }
+    }
+}
+
+fn hash_effect_rule(rule: &TableEffectRule, hasher: &mut StableHasher) {
+    hash_effect_target(&rule.target, hasher);
+    hash_effect(&rule.effect, hasher);
+    hash_u8(rule.priority, hasher);
+    hash_blend_mode(rule.blend_mode, hasher);
+    hash_style_mask(rule.style_mask, hasher);
 }
 
 #[cfg(test)]

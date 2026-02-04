@@ -132,7 +132,7 @@ impl<'a> Block<'a> {
             return;
         }
 
-        let set = self.border_type.to_border_set();
+        let set = self.border_set();
 
         // Edges
         if self.borders.contains(Borders::LEFT) {

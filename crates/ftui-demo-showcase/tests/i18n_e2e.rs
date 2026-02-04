@@ -53,6 +53,10 @@ fn log_jsonl(test: &str, check: &str, passed: bool, notes: &str) {
     );
 }
 
+fn is_coverage_run() -> bool {
+    std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+}
+
 fn key_press(code: KeyCode) -> Event {
     Event::Key(KeyEvent {
         code,
@@ -999,7 +1003,7 @@ fn integration_keybindings_documented() {
 #[test]
 fn perf_catalog_lookup_latency() {
     let catalog = test_catalog();
-    let iterations = 100_000;
+    let iterations = if is_coverage_run() { 10_000 } else { 100_000 };
 
     let start = Instant::now();
     for _ in 0..iterations {
@@ -1036,7 +1040,7 @@ fn perf_plural_categorization() {
         PluralRule::CJK,
         PluralRule::Polish,
     ];
-    let iterations = 100_000;
+    let iterations = if is_coverage_run() { 10_000 } else { 100_000 };
     let counts: Vec<i64> = (0..100).collect();
 
     let start = Instant::now();
@@ -1069,7 +1073,7 @@ fn perf_plural_categorization() {
 #[test]
 fn perf_coverage_report() {
     let catalog = test_catalog();
-    let iterations = 10_000;
+    let iterations = if is_coverage_run() { 1_000 } else { 10_000 };
 
     let start = Instant::now();
     for _ in 0..iterations {

@@ -45,6 +45,11 @@ fn log_jsonl(data: &serde_json::Value) {
     eprintln!("{}", serde_json::to_string(data).unwrap());
 }
 
+#[allow(dead_code)]
+fn is_coverage_run() -> bool {
+    std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+}
+
 /// Hash the visible content of a frame buffer for determinism checks.
 fn buffer_hash(frame: &Frame, area: Rect) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -464,8 +469,9 @@ fn stress_mode_cycling_with_many_widgets() {
         state.register_widget(widget);
     }
 
+    let cycle_count = if is_coverage_run() { 200 } else { 1000 };
     let start = Instant::now();
-    for _ in 0..1000 {
+    for _ in 0..cycle_count {
         state.mode = state.mode.cycle();
     }
     let elapsed = start.elapsed();
@@ -473,7 +479,7 @@ fn stress_mode_cycling_with_many_widgets() {
     log_jsonl(&serde_json::json!({
         "test": "stress_mode_cycling_with_many_widgets",
         "widget_count": 500,
-        "cycle_count": 1000,
+        "cycle_count": cycle_count,
         "elapsed_us": elapsed.as_micros(),
     }));
 
@@ -484,7 +490,7 @@ fn stress_mode_cycling_with_many_widgets() {
         elapsed
     );
 
-    // After 1000 cycles (multiple of 4), should be back at Off
+    // After a multiple of 4 cycles, should be back at Off.
     assert_eq!(state.mode, InspectorMode::Off);
 }
 
@@ -502,8 +508,9 @@ fn stress_toggle_flags_with_diagnostics() {
         state.register_widget(widget);
     }
 
+    let cycles = if is_coverage_run() { 100 } else { 500 };
     let start = Instant::now();
-    for _ in 0..500 {
+    for _ in 0..cycles {
         state.toggle_hits();
         state.toggle_bounds();
         state.toggle_names();
@@ -527,12 +534,12 @@ fn stress_toggle_flags_with_diagnostics() {
 
     log_jsonl(&serde_json::json!({
         "test": "stress_toggle_flags_with_diagnostics",
-        "toggle_count": 2500,
+        "toggle_count": cycles * 5,
         "diagnostic_events": toggle_events,
         "elapsed_us": elapsed.as_micros(),
     }));
 
-    // Budget: 2500 toggles with diagnostic recording should be < 50ms
+    // Budget: toggle burst with diagnostic recording should be < 50ms
     assert!(
         elapsed.as_millis() < 50,
         "Flag toggle throughput exceeded budget: {:?}",
@@ -756,20 +763,21 @@ fn stress_hover_position_updates() {
         state.register_widget(widget);
     }
 
+    let update_count: u16 = if is_coverage_run() { 2000 } else { 10_000 };
     let start = Instant::now();
-    for i in 0..10_000u16 {
+    for i in 0..update_count {
         state.set_hover(Some((i % 120, i % 40)));
     }
     let elapsed = start.elapsed();
 
     log_jsonl(&serde_json::json!({
         "test": "stress_hover_position_updates",
-        "update_count": 10_000,
+        "update_count": update_count,
         "elapsed_us": elapsed.as_micros(),
-        "avg_ns": elapsed.as_nanos() / 10_000,
+        "avg_ns": elapsed.as_nanos() / update_count as u128,
     }));
 
-    // Budget: 10,000 hover updates should be < 5ms (O(1) per update)
+    // Budget: hover updates should be < 5ms (O(1) per update)
     assert!(
         elapsed.as_millis() < 5,
         "Hover update throughput exceeded budget: {:?}",
@@ -800,8 +808,9 @@ fn stress_render_tiny_frame_with_many_widgets() {
     let mut pool = GraphemePool::new();
 
     // Should not panic and should complete quickly
+    let render_count = if is_coverage_run() { 10 } else { 50 };
     let start = Instant::now();
-    for _ in 0..50 {
+    for _ in 0..render_count {
         let mut frame = Frame::with_hit_grid(10, 5, &mut pool);
         overlay.render(area, &mut frame);
     }
@@ -811,7 +820,7 @@ fn stress_render_tiny_frame_with_many_widgets() {
         "test": "stress_render_tiny_frame_with_many_widgets",
         "widget_count": 1000,
         "frame_size": "10x5",
-        "render_count": 50,
+        "render_count": render_count,
         "elapsed_us": elapsed.as_micros(),
     }));
 
@@ -846,8 +855,9 @@ fn regression_off_mode_is_zero_cost() {
     populate_hit_grid(&mut frame, area, 5);
 
     // Measure ONLY the overlay render calls (should be pure is_active() → return)
+    let render_count = if is_coverage_run() { 2000 } else { 10_000 };
     let start = Instant::now();
-    for _ in 0..10_000 {
+    for _ in 0..render_count {
         overlay.render(area, &mut frame);
     }
     let elapsed = start.elapsed();
@@ -855,12 +865,12 @@ fn regression_off_mode_is_zero_cost() {
     log_jsonl(&serde_json::json!({
         "test": "regression_off_mode_is_zero_cost",
         "widget_count": 1000,
-        "render_count": 10_000,
+        "render_count": render_count,
         "elapsed_us": elapsed.as_micros(),
-        "avg_ns": elapsed.as_nanos() / 10_000,
+        "avg_ns": elapsed.as_nanos() / render_count as u128,
     }));
 
-    // Off mode should be < 5ms for 10,000 renders (just the is_active() check)
+    // Off mode should be < 5ms for a large render batch (just the is_active() check)
     assert!(
         elapsed.as_millis() < 5,
         "Off mode render not zero-cost: {:?}",
@@ -877,8 +887,9 @@ fn stress_rapid_selection_changes() {
     let mut state = InspectorState::new();
     state.mode = InspectorMode::Full;
 
+    let selection_count: u32 = if is_coverage_run() { 2000 } else { 10_000 };
     let start = Instant::now();
-    for i in 0..10_000u32 {
+    for i in 0..selection_count {
         state.select(Some(HitId::new(i)));
     }
     state.clear_selection();
@@ -886,13 +897,13 @@ fn stress_rapid_selection_changes() {
 
     log_jsonl(&serde_json::json!({
         "test": "stress_rapid_selection_changes",
-        "selection_count": 10_000,
+        "selection_count": selection_count,
         "elapsed_us": elapsed.as_micros(),
     }));
 
     assert!(state.selected.is_none());
 
-    // Budget: 10,000 selections should be < 5ms
+    // Budget: selection throughput should be < 5ms
     assert!(
         elapsed.as_millis() < 5,
         "Selection throughput exceeded budget: {:?}",

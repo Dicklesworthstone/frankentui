@@ -587,6 +587,7 @@ impl<'a> StatefulWidget for Table<'a> {
             };
 
             if apply_styling {
+                set_style_area(&mut frame.buffer, row_area, header_style);
                 if let Some((resolver, phase)) = effects {
                     for (col_idx, rect) in column_rects.iter().enumerate() {
                         let cell_area = Rect::new(rect.x, y, rect.width, header.height);
@@ -598,8 +599,6 @@ impl<'a> StatefulWidget for Table<'a> {
                         let style = resolver.resolve(header_style, scope, phase);
                         set_style_area(&mut frame.buffer, cell_area, style);
                     }
-                } else {
-                    set_style_area(&mut frame.buffer, row_area, header_style);
                 }
             }
 
@@ -670,6 +669,7 @@ impl<'a> StatefulWidget for Table<'a> {
             if apply_styling {
                 if let Some((resolver, phase)) = effects {
                     if has_column_effects {
+                        set_style_area(&mut frame.buffer, row_area, row_style);
                         for (col_idx, rect) in column_rects.iter().enumerate() {
                             let cell_area = Rect::new(rect.x, y, rect.width, row.height);
                             let scope = TableEffectScope {
@@ -805,9 +805,7 @@ fn render_row(
 
                 if let (Some((resolver, phase)), Some(scope)) = (effects, scope) {
                     if span.style.is_none() {
-                        if let Some(base_effect) =
-                            column_effect_base.or(row_effect_base)
-                        {
+                        if let Some(base_effect) = column_effect_base.or(row_effect_base) {
                             span_style = base_effect;
                         } else {
                             span_style = resolver.resolve(span_style, scope, phase);

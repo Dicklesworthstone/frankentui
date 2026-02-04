@@ -655,9 +655,67 @@ mod tests {
         assert!(!is_rtl_char(' '));
     }
 
+    #[test]
+    fn is_rtl_char_additional_ranges() {
+        let samples = [
+            '\u{FB1D}',  // Hebrew Presentation Forms
+            '\u{FB50}',  // Arabic Presentation Forms-A
+            '\u{FE70}',  // Arabic Presentation Forms-B
+            '\u{10800}', // Cypriot
+            '\u{10840}', // Imperial Aramaic
+            '\u{10900}', // Phoenician
+            '\u{10920}', // Lydian
+            '\u{10A00}', // Kharoshthi
+            '\u{10B00}', // Avestan
+            '\u{1EE00}', // Arabic Mathematical Symbols
+        ];
+
+        for sample in samples {
+            assert!(is_rtl_char(sample), "Expected RTL for {sample:?}");
+        }
+    }
+
     // ===================================================================
     // BidiSegment tests (bd-ic6i.4)
     // ===================================================================
+
+    #[test]
+    fn run_is_empty() {
+        let empty = BidiRun {
+            start: 2,
+            end: 2,
+            level: Level::ltr(),
+            direction: Direction::Ltr,
+        };
+        assert!(empty.is_empty());
+
+        let non_empty = BidiRun {
+            start: 2,
+            end: 3,
+            level: Level::ltr(),
+            direction: Direction::Ltr,
+        };
+        assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn segment_base_direction() {
+        let ltr = BidiSegment::new("Hello", None);
+        assert_eq!(ltr.base_direction(), Direction::Ltr);
+
+        let rtl_text = "\u{05E9}\u{05DC}\u{05D5}\u{05DD}";
+        let rtl = BidiSegment::new(rtl_text, None);
+        assert_eq!(rtl.base_direction(), Direction::Rtl);
+    }
+
+    #[test]
+    fn segment_compute_helpers_empty() {
+        let runs = BidiSegment::compute_runs(&[]);
+        assert!(runs.is_empty());
+
+        let order = BidiSegment::compute_visual_order(&[]);
+        assert!(order.is_empty());
+    }
 
     #[test]
     fn segment_empty() {
