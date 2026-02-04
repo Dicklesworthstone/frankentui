@@ -68,7 +68,7 @@ use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 use ftui_render::budget::{BudgetDecision, DegradationLevel, FrameBudgetConfig, RenderBudget};
 use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, WidgetSignal};
 use ftui_render::sanitize::sanitize;
 use std::io::{self, Stdout, Write};
 use std::time::{Duration, Instant};
@@ -783,6 +783,8 @@ pub struct Program<M: Model, W: Write + Send = Stdout> {
     dirty: bool,
     /// Monotonic frame index for evidence logging.
     frame_idx: u64,
+    /// Widget scheduling signals captured during the last render.
+    widget_signals: Vec<WidgetSignal>,
     /// Current terminal width.
     width: u16,
     /// Current terminal height.
@@ -888,6 +890,7 @@ impl<M: Model> Program<M, Stdout> {
             last_tick: Instant::now(),
             dirty: true,
             frame_idx: 0,
+            widget_signals: Vec::new(),
             width,
             height,
             poll_timeout: config.poll_timeout,
@@ -923,6 +926,12 @@ impl<M: Model, W: Write + Send> Program<M, W> {
     /// 4. Shutdown (terminal cleanup)
     pub fn run(&mut self) -> io::Result<()> {
         self.run_event_loop()
+    }
+
+    /// Access widget scheduling signals captured on the last render.
+    #[inline]
+    pub fn last_widget_signals(&self) -> &[WidgetSignal] {
+        &self.widget_signals
     }
 
     /// The inner event loop, separated for proper cleanup handling.
@@ -1598,6 +1607,7 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         )
         .entered();
         self.model.view(&mut frame);
+        self.widget_signals = frame.take_widget_signals();
         tracing::Span::current().record("duration_us", view_start.elapsed().as_micros() as u64);
         // widget_count would require tracking in Frame
 

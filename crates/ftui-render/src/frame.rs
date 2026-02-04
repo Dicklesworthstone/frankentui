@@ -237,6 +237,74 @@ impl HitGrid {
 
 use crate::link_registry::LinkRegistry;
 
+/// Source of the cost estimate for widget scheduling.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CostEstimateSource {
+    /// Measured from recent render timings.
+    Measured,
+    /// Derived from area-based fallback (cells * cost_per_cell).
+    AreaFallback,
+    /// Fixed default when no signals exist.
+    #[default]
+    FixedDefault,
+}
+
+/// Per-widget scheduling signals captured during rendering.
+///
+/// These signals are used by runtime policies (budgeted refresh, greedy
+/// selection) to prioritize which widgets to render when budget is tight.
+#[derive(Debug, Clone)]
+pub struct WidgetSignal {
+    /// Stable widget identifier.
+    pub widget_id: u64,
+    /// Whether this widget is essential.
+    pub essential: bool,
+    /// Base priority in [0, 1].
+    pub priority: f32,
+    /// Milliseconds since last render.
+    pub staleness_ms: u64,
+    /// Focus boost in [0, 1].
+    pub focus_boost: f32,
+    /// Interaction boost in [0, 1].
+    pub interaction_boost: f32,
+    /// Widget area in cells (width * height).
+    pub area_cells: u32,
+    /// Estimated render cost in microseconds.
+    pub cost_estimate_us: f32,
+    /// Recent measured cost (EMA), if available.
+    pub recent_cost_us: f32,
+    /// Cost estimate provenance.
+    pub estimate_source: CostEstimateSource,
+}
+
+impl Default for WidgetSignal {
+    fn default() -> Self {
+        Self {
+            widget_id: 0,
+            essential: false,
+            priority: 0.5,
+            staleness_ms: 0,
+            focus_boost: 0.0,
+            interaction_boost: 0.0,
+            area_cells: 1,
+            cost_estimate_us: 5.0,
+            recent_cost_us: 5.0,
+            estimate_source: CostEstimateSource::FixedDefault,
+        }
+    }
+}
+
+impl WidgetSignal {
+    /// Create a widget signal with neutral defaults.
+    #[must_use]
+    pub fn new(widget_id: u64) -> Self {
+        Self {
+            widget_id,
+            ..Self::default()
+        }
+    }
+}
+
 /// Frame = Buffer + metadata for a render pass.
 ///
 /// The Frame is passed to `Model::view()` and contains everything needed
@@ -262,6 +330,9 @@ pub struct Frame<'a> {
     ///
     /// When `Some`, widgets can register clickable regions.
     pub hit_grid: Option<HitGrid>,
+
+    /// Collected per-widget scheduling signals for this frame.
+    pub widget_signals: Vec<WidgetSignal>,
 
     /// Cursor position (if app wants to show cursor).
     ///
@@ -289,6 +360,7 @@ impl<'a> Frame<'a> {
             pool,
             links: None,
             hit_grid: None,
+            widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -304,6 +376,7 @@ impl<'a> Frame<'a> {
             pool,
             links: None,
             hit_grid: None,
+            widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -325,6 +398,7 @@ impl<'a> Frame<'a> {
             pool,
             links: Some(links),
             hit_grid: None,
+            widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -340,6 +414,7 @@ impl<'a> Frame<'a> {
             pool,
             links: None,
             hit_grid: Some(HitGrid::new(width, height)),
+            widget_signals: Vec::new(),
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
@@ -360,6 +435,23 @@ impl<'a> Frame<'a> {
         } else {
             0
         }
+    }
+
+    /// Register a widget scheduling signal for this frame.
+    pub fn register_widget_signal(&mut self, signal: WidgetSignal) {
+        self.widget_signals.push(signal);
+    }
+
+    /// Borrow the collected widget signals.
+    #[inline]
+    pub fn widget_signals(&self) -> &[WidgetSignal] {
+        &self.widget_signals
+    }
+
+    /// Take the collected widget signals, leaving an empty list.
+    #[inline]
+    pub fn take_widget_signals(&mut self) -> Vec<WidgetSignal> {
+        std::mem::take(&mut self.widget_signals)
     }
 
     /// Intern a string in the grapheme pool.
