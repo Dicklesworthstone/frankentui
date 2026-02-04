@@ -49,10 +49,10 @@ use crate::cell::Cell;
 /// Chosen to match common SIMD register width (256-bit / 512-bit).
 const BLOCK_SIZE: usize = 4;
 
-/// Row block size for coarse blockwise skip (64 cells = 1024 bytes).
+/// Row block size for coarse blockwise skip (32 cells = 512 bytes).
 /// This lets us skip large unchanged regions in sparse rows while
 /// preserving row-major iteration order.
-const ROW_BLOCK_SIZE: usize = 64;
+const ROW_BLOCK_SIZE: usize = 32;
 
 /// Scan a row slice for changed cells, appending positions to `changes`.
 ///

@@ -58,7 +58,11 @@ fn grapheme_width(grapheme: &str) -> usize {
     if grapheme.chars().all(is_zero_width_codepoint) {
         return 0;
     }
-    unicode_display_width(grapheme) as usize
+    let width = unicode_display_width(grapheme) as usize;
+    if width == 1 && grapheme.chars().any(is_probable_emoji) {
+        return 2;
+    }
+    width
 }
 
 fn display_width(text: &str) -> usize {
@@ -86,6 +90,12 @@ fn is_zero_width_codepoint(c: char) -> bool {
             0x00AD | 0x034F | 0x180E | 0x200B | 0x200C | 0x200D | 0x200E | 0x200F | 0x2060 | 0xFEFF
         )
         || matches!(u, 0x202A..=0x202E | 0x2066..=0x2069 | 0x206A..=0x206F)
+}
+
+#[inline]
+fn is_probable_emoji(c: char) -> bool {
+    let u = c as u32;
+    matches!(u, 0x1F000..=0x1FAFF)
 }
 
 /// Identifier for a clickable region in the hit grid.
