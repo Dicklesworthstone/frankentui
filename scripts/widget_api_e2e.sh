@@ -27,6 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${LOG_DIR:-/tmp/widget_api_e2e_${TIMESTAMP}}"
+E2E_LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
 
 VERBOSE=false
 QUICK=false
@@ -34,6 +35,31 @@ STEP_COUNT=0
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
+
+# Seed for deterministic runs
+SEED="${FTUI_HARNESS_SEED:-0}"
+export FTUI_HARNESS_SEED="$SEED"
+
+# Optional shared E2E helpers (PTY runner)
+if [[ -f "$E2E_LIB_DIR/common.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$E2E_LIB_DIR/common.sh"
+fi
+if [[ -f "$E2E_LIB_DIR/pty.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$E2E_LIB_DIR/pty.sh"
+fi
+
+# Resolve python for PTY runner if available
+if [[ -z "${E2E_PYTHON:-}" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+        E2E_PYTHON="$(command -v python3)"
+        export E2E_PYTHON
+    elif command -v python >/dev/null 2>&1; then
+        E2E_PYTHON="$(command -v python)"
+        export E2E_PYTHON
+    fi
+fi
 
 # Parse arguments
 for arg in "$@"; do
@@ -139,13 +165,200 @@ skip_step() {
 }
 
 # ============================================================================
+# Policy Toggle E2E Helpers
+# ============================================================================
+
+bool_json() {
+    case "${1:-}" in
+        1|true|TRUE|True|yes|YES|on|ON)
+            echo "true"
+            ;;
+        *)
+            echo "false"
+            ;;
+    esac
+}
+
+escape_json() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g; s/\n/\\n/g'
+}
+
+record_terminal_caps() {
+    local output_file="$1"
+    {
+        echo "Terminal Capabilities"
+        echo "====================="
+        echo "TERM=${TERM:-}"
+        echo "COLORTERM=${COLORTERM:-}"
+        echo "NO_COLOR=${NO_COLOR:-}"
+        echo ""
+        if command -v infocmp >/dev/null 2>&1; then
+            echo "infocmp -1:"
+            infocmp -1 2>/dev/null || true
+        else
+            echo "infocmp not available"
+        fi
+        echo ""
+        echo "tput colors: $(tput colors 2>/dev/null || echo N/A)"
+        echo "stty -a: $(stty -a 2>/dev/null || echo N/A)"
+    } > "$output_file"
+}
+
+write_case_meta() {
+    local meta_file="$1"
+    local case_name="$2"
+    local screen_mode="$3"
+    local cols="$4"
+    local rows="$5"
+    local ui_height="$6"
+    local diff_bayes="$7"
+    local bocpd="$8"
+    local conformal="$9"
+    local evidence_jsonl="${10}"
+    local run_log="${11}"
+    local pty_out="${12}"
+    local caps_file="${13}"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -nc \
+            --arg case "$case_name" \
+            --arg timestamp "$(date -Iseconds)" \
+            --arg seed "$SEED" \
+            --arg screen_mode "$screen_mode" \
+            --argjson cols "$cols" \
+            --argjson rows "$rows" \
+            --argjson ui_height "$ui_height" \
+            --argjson diff_bayes "$(bool_json "$diff_bayes")" \
+            --argjson bocpd "$(bool_json "$bocpd")" \
+            --argjson conformal "$(bool_json "$conformal")" \
+            --arg evidence_jsonl "$evidence_jsonl" \
+            --arg run_log "$run_log" \
+            --arg pty_output "$pty_out" \
+            --arg caps_file "$caps_file" \
+            --arg term "${TERM:-}" \
+            --arg colorterm "${COLORTERM:-}" \
+            --arg no_color "${NO_COLOR:-}" \
+            '{case:$case,timestamp:$timestamp,seed:$seed,screen_mode:$screen_mode,cols:$cols,rows:$rows,ui_height:$ui_height,diff_bayesian:$diff_bayes,bocpd:$bocpd,conformal:$conformal,evidence_jsonl:$evidence_jsonl,run_log:$run_log,pty_output:$pty_output,caps_file:$caps_file,term:$term,colorterm:$colorterm,no_color:$no_color}' \
+            > "$meta_file"
+    else
+        printf '{"case":"%s","timestamp":"%s","seed":"%s","screen_mode":"%s","cols":%s,"rows":%s,"ui_height":%s,"diff_bayesian":%s,"bocpd":%s,"conformal":%s,"evidence_jsonl":"%s","run_log":"%s","pty_output":"%s","caps_file":"%s","term":"%s","colorterm":"%s","no_color":"%s"}\n' \
+            "$(escape_json "$case_name")" \
+            "$(date -Iseconds)" \
+            "$(escape_json "$SEED")" \
+            "$(escape_json "$screen_mode")" \
+            "$cols" "$rows" "$ui_height" \
+            "$(bool_json "$diff_bayes")" \
+            "$(bool_json "$bocpd")" \
+            "$(bool_json "$conformal")" \
+            "$(escape_json "$evidence_jsonl")" \
+            "$(escape_json "$run_log")" \
+            "$(escape_json "$pty_out")" \
+            "$(escape_json "$caps_file")" \
+            "$(escape_json "${TERM:-}")" \
+            "$(escape_json "${COLORTERM:-}")" \
+            "$(escape_json "${NO_COLOR:-}")" \
+            > "$meta_file"
+    fi
+}
+
+run_policy_case() {
+    local case_name="$1"
+    local screen_mode="$2"
+    local cols="$3"
+    local rows="$4"
+    local ui_height="$5"
+    local diff_bayes="$6"
+    local bocpd="$7"
+    local conformal="$8"
+    local policy_dir="$9"
+    local harness_bin="${10}"
+
+    local case_dir="$policy_dir/$case_name"
+    local evidence_jsonl="$case_dir/evidence.jsonl"
+    local run_log="$case_dir/run.log"
+    local pty_out="$case_dir/pty_output.pty"
+    local caps_file="$case_dir/terminal_caps.txt"
+    local meta_file="$case_dir/meta.json"
+
+    mkdir -p "$case_dir"
+    record_terminal_caps "$caps_file"
+    write_case_meta "$meta_file" "$case_name" "$screen_mode" "$cols" "$rows" "$ui_height" "$diff_bayes" "$bocpd" "$conformal" "$evidence_jsonl" "$run_log" "$pty_out" "$caps_file"
+
+    export FTUI_HARNESS_SCREEN_MODE="$screen_mode"
+    export FTUI_HARNESS_UI_HEIGHT="$ui_height"
+    export FTUI_HARNESS_VIEW="widget-inspector"
+    export FTUI_HARNESS_SUPPRESS_WELCOME=1
+    export FTUI_HARNESS_EXIT_AFTER_MS=1200
+    export FTUI_HARNESS_DIFF_BAYESIAN="$diff_bayes"
+    export FTUI_HARNESS_BOCPD="$bocpd"
+    export FTUI_HARNESS_CONFORMAL="$conformal"
+    export FTUI_HARNESS_EVIDENCE_JSONL="$evidence_jsonl"
+
+    local start_ms
+    start_ms=$(date +%s%3N)
+    local exit_code=0
+
+    if [[ -n "${E2E_PYTHON:-}" ]] && type -t pty_run >/dev/null 2>&1; then
+        PTY_COLS="$cols" PTY_ROWS="$rows" PTY_TIMEOUT=8 PTY_TEST_NAME="$case_name" \
+            pty_run "$pty_out" "$harness_bin" > "$run_log" 2>&1 || exit_code=$?
+    else
+        if command -v timeout >/dev/null 2>&1; then
+            TERM="${TERM:-xterm-256color}" \
+                timeout 8 "$harness_bin" > "$run_log" 2>&1 || exit_code=$?
+        else
+            TERM="${TERM:-xterm-256color}" \
+                "$harness_bin" > "$run_log" 2>&1 || exit_code=$?
+        fi
+    fi
+
+    local end_ms
+    end_ms=$(date +%s%3N)
+    local duration_ms=$((end_ms - start_ms))
+
+    local status="pass"
+    if [[ "$exit_code" -ne 0 ]]; then
+        status="fail"
+    fi
+    if [[ ! -s "$evidence_jsonl" ]]; then
+        status="fail"
+        exit_code=1
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -nc \
+            --arg case "$case_name" \
+            --arg status "$status" \
+            --arg seed "$SEED" \
+            --arg screen_mode "$screen_mode" \
+            --argjson diff_bayes "$(bool_json "$diff_bayes")" \
+            --argjson bocpd "$(bool_json "$bocpd")" \
+            --argjson conformal "$(bool_json "$conformal")" \
+            --arg evidence_jsonl "$evidence_jsonl" \
+            --argjson duration_ms "$duration_ms" \
+            '{case:$case,status:$status,seed:$seed,screen_mode:$screen_mode,diff_bayesian:$diff_bayes,bocpd:$bocpd,conformal:$conformal,evidence_jsonl:$evidence_jsonl,duration_ms:$duration_ms}' \
+            >> "$policy_dir/policy_runs.jsonl"
+    else
+        printf '{"case":"%s","status":"%s","seed":"%s","screen_mode":"%s","diff_bayesian":%s,"bocpd":%s,"conformal":%s,"evidence_jsonl":"%s","duration_ms":%s}\n' \
+            "$(escape_json "$case_name")" \
+            "$status" \
+            "$(escape_json "$SEED")" \
+            "$(escape_json "$screen_mode")" \
+            "$(bool_json "$diff_bayes")" \
+            "$(bool_json "$bocpd")" \
+            "$(bool_json "$conformal")" \
+            "$(escape_json "$evidence_jsonl")" \
+            "$duration_ms" \
+            >> "$policy_dir/policy_runs.jsonl"
+    fi
+
+    return "$exit_code"
+}
+
+# ============================================================================
 # Main Script
 # ============================================================================
 
-TOTAL_STEPS=7
-if $QUICK; then
-    TOTAL_STEPS=5
-fi
+TOTAL_STEPS=8
 
 echo "=============================================="
 echo "  Widget API E2E Test Suite"
@@ -162,6 +375,7 @@ MODE="${MODE:-normal}"
 echo "Mode: ${MODE% }"
 
 mkdir -p "$LOG_DIR"
+export E2E_LOG_DIR="$LOG_DIR"
 cd "$PROJECT_ROOT"
 
 # Record environment info
@@ -180,6 +394,9 @@ cd "$PROJECT_ROOT"
     echo ""
     echo "Git commit:"
     git log -1 --oneline 2>/dev/null || echo "N/A"
+    echo ""
+    echo "Harness seed: $SEED"
+    echo "E2E_PYTHON: ${E2E_PYTHON:-}"
 } > "$LOG_DIR/00_environment.log"
 
 # Step 1: Workspace Build
@@ -356,6 +573,80 @@ else
         SKIP_COUNT=$((SKIP_COUNT + 1))
     fi
 fi
+
+# Step 8: Policy Toggle Matrix (diff/BOCPD/conformal)
+log_step "Policy toggle matrix (diff/BOCPD/conformal)"
+policy_log="$LOG_DIR/08_policy.log"
+{
+    echo "Policy Toggle Matrix - $(date -Iseconds)"
+    echo ""
+
+    policy_dir="$LOG_DIR/policy_runs"
+    mkdir -p "$policy_dir"
+    : > "$policy_dir/policy_runs.jsonl"
+
+    harness_bin="$PROJECT_ROOT/target/debug/ftui-harness"
+    if [[ ! -x "$harness_bin" ]]; then
+        echo "ftui-harness binary not found; building..."
+        cargo build -p ftui-harness --bin ftui-harness
+    fi
+    if [[ ! -x "$harness_bin" ]]; then
+        echo "ERROR: ftui-harness binary not found at $harness_bin"
+        exit 1
+    fi
+
+    if [[ -z "${E2E_PYTHON:-}" ]] || ! type -t pty_run >/dev/null 2>&1; then
+        echo "PTY runner unavailable; falling back to timeout-based runs."
+        echo "E2E_PYTHON=${E2E_PYTHON:-}"
+    else
+        echo "PTY runner available: $E2E_PYTHON"
+    fi
+
+    SCREEN_CASES=(
+        "alt 200 60 0"
+        "alt 120 40 0"
+        "inline 200 60 12"
+        "inline 80 24 8"
+    )
+
+    total_cases=0
+    pass_cases=0
+    fail_cases=0
+
+    for screen_case in "${SCREEN_CASES[@]}"; do
+        read -r screen_mode cols rows ui_height <<< "$screen_case"
+        for diff_bayes in 0 1; do
+            for bocpd in 0 1; do
+                for conformal in 0 1; do
+                    total_cases=$((total_cases + 1))
+                    case_name="${screen_mode}_${cols}x${rows}_ui${ui_height}_bayes${diff_bayes}_bocpd${bocpd}_conformal${conformal}"
+                    echo "Running policy case: $case_name"
+                    if run_policy_case "$case_name" "$screen_mode" "$cols" "$rows" "$ui_height" "$diff_bayes" "$bocpd" "$conformal" "$policy_dir" "$harness_bin"; then
+                        echo "  [PASS] $case_name"
+                        pass_cases=$((pass_cases + 1))
+                    else
+                        echo "  [FAIL] $case_name"
+                        fail_cases=$((fail_cases + 1))
+                    fi
+                done
+            done
+        done
+    done
+
+    echo ""
+    echo "Policy matrix results: total=$total_cases pass=$pass_cases fail=$fail_cases"
+
+    if [[ "$fail_cases" -ne 0 ]]; then
+        exit 1
+    fi
+
+} > "$policy_log" 2>&1 && {
+    log_pass "Policy toggle matrix completed"
+    PASS_COUNT=$((PASS_COUNT + 1))
+} || {
+    log_fail "Policy toggle matrix failed. See: $policy_log"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+}
 
 # ============================================================================
 # Summary
