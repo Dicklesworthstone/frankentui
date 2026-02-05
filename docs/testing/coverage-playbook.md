@@ -58,6 +58,18 @@ crate + delta guidance. Keep local results consistent with CI by using:
 cargo llvm-cov --workspace --lcov --output-path lcov.info
 ```
 
+## CI Gate Tightening Checklist
+
+When tightening coverage gates (bd-1mzp6):
+
+- Establish a **fresh baseline** with `cargo llvm-cov --workspace --lcov`.
+- Update `docs/testing/coverage-matrix.md` with the new thresholds and dates.
+- Prefer incremental bumps on critical crates first (typically `ftui-core`,
+  `ftui-render`, then `ftui-runtime`).
+- Document rationale for any threshold increase in `coverage-report.md`.
+- Verify CI fails on a deliberate local regression (remove a small test and
+  confirm the gate trips).
+
 ## No-Mock Policy
 
 Coverage must be achieved with real components. See:

@@ -1,5 +1,88 @@
 # Session TODO List
 
+## Current Session (LavenderFalcon/gpt-5) — Dependency Upgrades + Test Fix (2026-02-05)
+- [x] Read `AGENTS.md` end-to-end
+- [x] Read `README.md` end-to-end
+- [x] Register Agent Mail identity (`LavenderFalcon`)
+- [x] Enumerate active agents via Agent Mail resource list
+- [x] Check Agent Mail inbox
+- [x] Reply to CyanForge intro
+- [x] Send intro to active agents (OrangePond, GrayDune, CyanBeacon, GrayBrook, CoralHarbor, BlueAnchor, GoldWaterfall, SageElk, OliveCat, MistyForge, SunnyBeaver, AzureCove)
+- [x] Spawn code investigation explorer agent
+- [ ] Capture explorer summary + record architecture notes once it returns
+- [x] Identify failing test: `command_palette::widget_tests::telemetry_emits_in_order`
+- [x] Patch EventVisitor debug normalization in `crates/ftui-widgets/src/command_palette/mod.rs`
+- [x] Run targeted test with tracing feature: `cargo test -p ftui-widgets --features tracing telemetry_emits_in_order`
+- [ ] Run required quality gates after patch:
+- [ ] `cargo fmt --check`
+- [ ] `cargo check --all-targets`
+- [ ] `cargo clippy --all-targets -- -D warnings`
+- [ ] Re-run full test suite: `cargo test`
+- [ ] Update `UPGRADE_LOG.md` summary/notes if needed
+- [ ] Update `claude-upgrade-progress.json` if needed
+- [ ] Run UBS on changed files (pre-commit)
+- [ ] Beads: confirm `bd-yhp9` still in progress (update if needed)
+- [ ] Beads: close `bd-yhp9` when complete
+- [ ] Agent Mail: post progress/completion update in thread `bd-yhp9`
+- [ ] Git: stage changes (`git add .`)
+- [ ] Git: commit with `bd-yhp9` in message
+- [ ] Git: `git pull --rebase`
+- [ ] Git: `git push`
+- [ ] Git: verify `git status` clean + up to date
+
+## Current Session (MistyForge/gpt-5) — bd-yhp9 Dependency Upgrades (2026-02-05)
+- [x] Read `AGENTS.md` + `README.md` end-to-end
+- [x] Register Agent Mail identity + announce presence
+- [x] Claim bead `bd-yhp9` and notify other agents
+- [x] Create upgrade tracking files: `UPGRADE_LOG.md`, `claude-upgrade-progress.json`
+- [x] Inventory external deps via `cargo metadata`
+- [x] Apply upgrades (Cargo.toml edits):
+  - [x] bytemuck → 1.25.0
+  - [x] math-text-transform → 0.1.1
+  - [x] proptest → 1.7.0
+  - [x] serde → 1.0.227
+  - [x] serde_json → 1.0.145
+  - [x] tempfile → 3.22.0
+  - [x] time → 0.3.44
+  - [x] tracing → 0.1.41
+  - [x] tracing-subscriber → 0.3.20
+  - [x] tracing-test → 0.2.5
+  - [x] ropey → 1.6.1
+  - [x] rustc-hash → 2.1.1
+  - [x] unicode-bidi → 0.3.18
+  - [x] unicode-normalization → 0.1.24
+- [x] Note latest-only deps (kept at latest available): base64, bitflags, crossterm, criterion, image, unicode-width, lru, memchr, opentelemetry*, pollster, portable-pty, pulldown-cmark, regex, serial_test, signal-hook, smallvec, unicode-display-width, unicode-segmentation, vte, wgpu, unicodeit
+- [x] Resolve Rust 2024 env-var safety in `screen_snapshots.rs` (remove env mutation path)
+- [x] Quality gates after upgrades:
+  - [x] `cargo check --all-targets`
+  - [x] `cargo clippy --all-targets -- -D warnings`
+  - [x] `cargo fmt --check`
+- [ ] Run full test suite: `cargo test`
+- [ ] Run UBS on changed files (pre-commit)
+- [ ] Update `UPGRADE_LOG.md` summary + notes if tests reveal issues
+- [ ] Update `claude-upgrade-progress.json` if any new adjustments are needed
+- [ ] Beads: close `bd-yhp9` with completion reason
+- [ ] Beads: `br sync --flush-only`
+- [ ] Stage all changes (`git add ...`)
+- [ ] Commit changes with `bd-yhp9` in message
+- [ ] `git pull --rebase`
+- [ ] `git push`
+- [ ] Verify `git status` is clean + up to date
+- [ ] Post Agent Mail completion summary in thread `bd-yhp9`
+
+## Current Session (CalmPeak/opus-4.5) — Fix race condition bd-3ul6j (2026-02-05)
+- [x] **Agent Mail bootstrap** for `/data/projects/frankentui` — registered as CalmPeak
+- [x] **Triage**: ran `bv --robot-priority` and `bv --robot-plan`
+- [x] **Fix bd-3ul6j**: SCREEN_INIT_EVENTS race condition in parallel tests
+  - Root cause: Static `OnceLock<Mutex<Vec<...>>>` shared across test threads
+  - Fix 1: Converted to `thread_local!` with `RefCell<Vec<...>>` (app.rs:216-224)
+  - Fix 2: Added `#[serial]` to `integration_all_screens_render`, `integration_resize_small`, `integration_screen_cycle` (app.rs:4209-4237) — these tests also trigger lazy init events
+  - Fix 3: Converted doc comment to regular comment to fix rustdoc warning
+  - Verification: All 960 lib tests pass in parallel, clippy clean
+- [x] **Blessed a11y snapshots**: Updated 43 snapshot files (tab bar trailing pipe change)
+- [x] **Agent Mail updates**: sent progress notes to other agents
+- [ ] **Note**: Pre-existing performance regression in `stress_render_tiny_frame_with_many_widgets` (~130ms vs 50ms budget) — not related to this fix
+
 ## Current Session (Codex) — Agent Mail + bd-1e3w (Shakespeare + Code Explorer) (2026-02-05)
 - [x] **Agent Mail bootstrap** attempted for `/data/projects/frankentui` (blocked: MCP Agent Mail unavailable)
 - [x] **Agent Mail roster** attempt (blocked: no MCP resources)

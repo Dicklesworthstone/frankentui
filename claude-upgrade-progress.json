@@ -1,10 +1,10 @@
 {
   "schema_version": "1.0",
-  "started": "2026-02-02T20:53:16Z",
-  "last_updated": "2026-02-04T18:40:00Z",
-  "project": "frankentui",
+  "started": "2026-02-05T04:18:05Z",
+  "last_updated": "2026-02-05T05:17:05Z",
+  "project": "FrankenTUI",
   "language": "Rust",
-  "manifest": "Cargo.toml (workspace)",
+  "manifest": "Cargo.toml",
   "status": "in_progress",
   "config": {
     "skip_alpha_beta": true,
@@ -13,537 +13,509 @@
     "max_total_failures": 10
   },
   "summary": {
-    "total": 27,
-    "updated": 13,
-    "skipped": 1,
+    "total": 38,
+    "updated": 14,
+    "skipped": 24,
     "failed": 0,
     "requires_refactor": 0
   },
   "dependencies": [
     {
       "name": "base64",
-      "current_version": "0.22.1",
-      "target_version": "",
+      "current_version": "^0.22.1",
+      "target_version": "0.22.1",
       "version_type": "stable",
-      "status": "pending",
-      "changelog_url": "",
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/base64/latest/base64/",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
-      "attempts": 0,
+      "notes": "Already on latest stable (docs.rs shows 0.22.1)",
+      "attempts": 1,
       "error_log": []
     },
     {
       "name": "bitflags",
-      "current_version": "2.10.0",
+      "current_version": "^2.10.0",
       "target_version": "2.10.0",
       "version_type": "stable",
       "status": "skipped",
-      "changelog_url": "https://docs.rs/bitflags/latest/bitflags/",
+      "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "Already on latest stable.",
+      "notes": "Already on latest stable (docs.rs shows 2.10.0)",
       "attempts": 0,
       "error_log": []
     },
     {
-      "name": "crossterm",
-      "current_version": "0.28",
-      "target_version": "0.29.0",
+      "name": "bytemuck",
+      "current_version": "^1.25.0",
+      "target_version": "1.25.0",
       "version_type": "stable",
       "status": "updated",
-      "changelog_url": "https://docs.rs/crate/crossterm/0.29.0/source/CHANGELOG.md",
-      "breaking_changes": [
-        "KeyModifiers Display now uses correct key names (breaking change noted in 0.29.0)"
-      ],
+      "changelog_url": "https://www.mail-archive.com/rust-releases@mozilla.org/msg15058.html",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "cargo test passed; warning about unused variable in ftui-extras/src/markdown.rs remains.",
+      "notes": "Updated optional dependency in crates/ftui-extras/Cargo.toml",
       "attempts": 1,
       "error_log": []
     },
     {
       "name": "criterion",
-      "current_version": "mixed: 0.5, 0.6",
+      "current_version": "^0.8.2",
       "target_version": "0.8.2",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/crate/criterion/latest/source/CHANGELOG.md",
-      "breaking_changes": [
-        "No breaking changes affecting current bench usage in 0.8.x"
-      ],
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/crate/criterion/latest/source/Cargo.toml",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "Updated across all crates; cargo check --all-targets passed.",
+      "notes": "Already on latest stable (docs.rs shows 0.8.2)",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "crossterm",
+      "current_version": "^0.29.0",
+      "target_version": "0.29.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/crossterm/0.29.0/crossterm/terminal/index.html",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Already on latest stable (docs.rs shows 0.29.0)",
       "attempts": 1,
       "error_log": []
     },
     {
       "name": "image",
-      "current_version": "0.25.9",
-      "target_version": "",
+      "current_version": "^0.25.9",
+      "target_version": "0.25.9",
       "version_type": "stable",
-      "status": "pending",
-      "changelog_url": "",
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/image/latest/image/",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
-      "attempts": 0,
-      "error_log": []
-    },
-    {
-      "name": "lru",
-      "current_version": "0.12",
-      "target_version": "0.16.3",
-      "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/crate/lru/0.16.3/source/CHANGELOG.md",
-      "breaking_changes": [
-        "Potential API changes between 0.12 and 0.16; verify usage on build"
-      ],
-      "deprecations": [],
-      "notes": "Updated to address RUSTSEC-2026-0002 unsoundness; compile/tests pending.",
+      "notes": "Already on latest stable (docs.rs shows 0.25.9)",
       "attempts": 1,
       "error_log": []
     },
     {
-      "name": "math-text-transform",
-      "current_version": "0.1",
-      "target_version": "",
+      "name": "lru",
+      "current_version": "^0.16.3",
+      "target_version": "0.16.3",
       "version_type": "stable",
-      "status": "pending",
+      "status": "skipped",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Already on latest stable (changelog shows 0.16.3 latest)",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "math-text-transform",
+      "current_version": "^0.1",
+      "target_version": "0.1.1",
+      "version_type": "stable",
+      "status": "updated",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated optional dependency in crates/ftui-extras/Cargo.toml",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "memchr",
-      "current_version": "2",
+      "current_version": "^2.7.6",
       "target_version": "2.7.6",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/memchr/2.7.6/memchr/",
-      "breaking_changes": [
-        "No breaking changes noted within 2.x releases"
-      ],
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "cargo test passed after regenerating snapshots; warning: unused variable in ftui-extras/src/markdown.rs (pre-existing change).",
-      "attempts": 1,
+      "notes": "Already on latest stable (docs.rs shows 2.7.6)",
+      "attempts": 0,
       "error_log": []
     },
     {
-      "name": "portable-pty",
-      "current_version": "mixed: 0.8, 0.8.1",
-      "target_version": "0.9.0",
+      "name": "opentelemetry",
+      "current_version": "^0.31",
+      "target_version": "0.31.0",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/crate/portable-pty/0.9.0",
-      "breaking_changes": [
-        "Major version bump from 0.8 to 0.9; verify API compatibility on build"
-      ],
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "Updated to mitigate serial unmaintained advisory; compile/tests pending.",
-      "attempts": 1,
+      "notes": "Already on latest stable (docs.rs shows 0.31.0)",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "opentelemetry-otlp",
+      "current_version": "^0.31",
+      "target_version": "0.31.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Already on latest stable (docs.rs shows 0.31.0)",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "opentelemetry_sdk",
+      "current_version": "^0.31",
+      "target_version": "0.31.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Already on latest stable (docs.rs shows 0.31.0)",
+      "attempts": 0,
       "error_log": []
     },
     {
       "name": "pollster",
-      "current_version": "0.3.0",
+      "current_version": "^0.4.0",
       "target_version": "0.4.0",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/crate/pollster/0.4.0/source/CHANGELOG.md",
-      "breaking_changes": [
-        "0.4.0: block_on now accepts IntoFuture (backwards compatible)"
-      ],
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "fx-gpu feature compiles cleanly with pollster 0.4.0.",
-      "attempts": 1,
+      "notes": "Already on latest stable (docs.rs shows 0.4.0)",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "portable-pty",
+      "current_version": "^0.9.0",
+      "target_version": "0.9.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Already on latest stable (docs.rs shows 0.9.0)",
+      "attempts": 0,
       "error_log": []
     },
     {
       "name": "proptest",
-      "current_version": "1",
-      "target_version": "",
+      "current_version": "^1.4",
+      "target_version": "1.7.0",
       "version_type": "stable",
-      "status": "pending",
+      "status": "updated",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Updated dev-dependency across ftui-* crates",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "pulldown-cmark",
-      "current_version": "0.12",
+      "current_version": "^0.13.0",
       "target_version": "0.13.0",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://github.com/pulldown-cmark/pulldown-cmark/releases/tag/v0.13.0",
-      "breaking_changes": [
-        "0.13.0 adds new extensions and parser changes; no API changes used in ftui-extras"
-      ],
-      "deprecations": [],
-      "notes": "Markdown feature compiles cleanly with pulldown-cmark 0.13.0.",
-      "attempts": 1,
-      "error_log": []
-    },
-    {
-      "name": "regex",
-      "current_version": "1.12.2",
-      "target_version": "1.12.3",
-      "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/crate/regex/1.12.3/source/CHANGELOG.md",
-      "breaking_changes": [
-        "No breaking changes noted in 1.12.3 (patch release)"
-      ],
-      "deprecations": [],
-      "notes": "regex-search feature compiles with regex 1.12.3.",
-      "attempts": 1,
-      "error_log": []
-    },
-    {
-      "name": "ropey",
-      "current_version": "1.6",
-      "target_version": "",
-      "version_type": "stable",
-      "status": "pending",
+      "status": "skipped",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Already on latest stable (docs.rs shows 0.13.0)",
       "attempts": 0,
       "error_log": []
     },
     {
-      "name": "rustc-hash",
-      "current_version": "2",
-      "target_version": "",
+      "name": "regex",
+      "current_version": "^1.12.3",
+      "target_version": "1.12.3",
       "version_type": "stable",
-      "status": "pending",
+      "status": "skipped",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Already on latest stable (docs.rs page exists for 1.12.3)",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "ropey",
+      "current_version": "^1.6.1",
+      "target_version": "1.6.1",
+      "version_type": "stable",
+      "status": "updated",
+      "changelog_url": "https://docs.rs/crate/ropey/latest/source/Cargo.toml",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated in workspace Cargo.toml files",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "rustc-hash",
+      "current_version": "^2.1.1",
+      "target_version": "2.1.1",
+      "version_type": "stable",
+      "status": "updated",
+      "changelog_url": "https://docs.rs/crate/rustc-hash/latest/source/Cargo.toml",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated in workspace Cargo.toml files",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "serde",
+      "current_version": "^1",
+      "target_version": "1.0.227",
+      "version_type": "stable",
+      "status": "updated",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated across ftui workspace Cargo.toml files",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "serde_json",
-      "current_version": "1",
-      "target_version": "",
+      "current_version": "^1",
+      "target_version": "1.0.145",
       "version_type": "stable",
-      "status": "pending",
+      "status": "updated",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Updated across ftui workspace Cargo.toml files",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "serial_test",
+      "current_version": "^3.2",
+      "target_version": "3.2.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Already on latest stable (docs.rs shows 3.2.0)",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "signal-hook",
-      "current_version": "0.3.18",
+      "current_version": "^0.4.3",
       "target_version": "0.4.3",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/crate/signal-hook/0.4.1/source/CHANGELOG.md",
-      "breaking_changes": [
-        "0.4.0 changed low_level::pipe to accept raw fd; iterator API unchanged"
-      ],
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "ftui-core uses iterator API only; cargo test -p ftui-core passed.",
-      "attempts": 1,
+      "notes": "Already on latest stable (docs.rs shows 0.4.3)",
+      "attempts": 0,
       "error_log": []
     },
     {
       "name": "smallvec",
-      "current_version": "mixed: 1.13, 1.13.2",
+      "current_version": "^1.15.1",
       "target_version": "1.15.1",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/crate/smallvec/latest",
-      "breaking_changes": [
-        "No breaking changes noted within 1.x releases"
-      ],
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/crate/smallvec/latest/source/Cargo.toml",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "No standalone changelog located on docs.rs; cargo test passed; warning about unused variable in ftui-extras/src/markdown.rs remains.",
+      "notes": "Already on latest stable (docs.rs shows 1.15.1)",
       "attempts": 1,
       "error_log": []
     },
     {
-      "name": "time",
-      "current_version": "0.3",
-      "target_version": "",
+      "name": "tempfile",
+      "current_version": "^3",
+      "target_version": "3.22.0",
       "version_type": "stable",
-      "status": "pending",
+      "status": "updated",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Updated in crates/ftui-runtime/Cargo.toml",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "time",
+      "current_version": "^0.3",
+      "target_version": "0.3.44",
+      "version_type": "stable",
+      "status": "updated",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated in crates/ftui-pty/Cargo.toml",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "tracing",
-      "current_version": "0.1",
-      "target_version": "",
+      "current_version": "^0.1",
+      "target_version": "0.1.41",
       "version_type": "stable",
-      "status": "pending",
+      "status": "updated",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Updated across ftui workspace Cargo.toml files",
+      "attempts": 0,
+      "error_log": []
+    },
+    {
+      "name": "tracing-opentelemetry",
+      "current_version": "^0.32",
+      "target_version": "0.32.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Already on latest stable (crates.io API shows 0.32.0 max_version)",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "tracing-subscriber",
-      "current_version": "0.3",
-      "target_version": "",
+      "current_version": "^0.3",
+      "target_version": "0.3.20",
       "version_type": "stable",
-      "status": "pending",
+      "status": "updated",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Updated across ftui workspace Cargo.toml files",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "tracing-test",
-      "current_version": "0.2",
-      "target_version": "",
-      "version_type": "stable",
-      "status": "pending",
-      "changelog_url": "",
-      "breaking_changes": [],
-      "deprecations": [],
-      "notes": "",
-      "attempts": 0,
-      "error_log": []
-    },
-    {
-      "name": "vte",
-      "current_version": "0.13.1",
-      "target_version": "0.15.0",
+      "current_version": "^0.2.5",
+      "target_version": "0.2.5",
       "version_type": "stable",
       "status": "updated",
-      "changelog_url": "https://www.spinics.net/lists/fedora-package-announce/msg420331.html",
-      "breaking_changes": [
-        "Parser advance API now accepts byte slices; updated ftui-extras parser accordingly"
-      ],
+      "changelog_url": "https://docs.rs/crate/tracing-test/latest/source/Cargo.toml",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "terminal feature compiles cleanly with vte 0.15.0.",
+      "notes": "Updated in ftui-text and ftui-style dev-dependencies",
       "attempts": 1,
       "error_log": []
     },
     {
       "name": "unicode-bidi",
-      "current_version": "0.3",
-      "target_version": "",
+      "current_version": "^0.3.18",
+      "target_version": "0.3.18",
       "version_type": "stable",
-      "status": "pending",
+      "status": "updated",
+      "changelog_url": "https://docs.rs/crate/unicode-bidi/latest/source/Cargo.toml",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated in workspace Cargo.toml files",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "unicode-display-width",
+      "current_version": "^0.3.0",
+      "target_version": "0.3.0",
+      "version_type": "stable",
+      "status": "skipped",
       "changelog_url": "",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
+      "notes": "Already on latest stable (docs.rs shows 0.3.0)",
       "attempts": 0,
       "error_log": []
     },
     {
       "name": "unicode-normalization",
-      "current_version": "0.1",
-      "target_version": "",
+      "current_version": "^0.1.24",
+      "target_version": "0.1.24",
       "version_type": "stable",
-      "status": "pending",
-      "changelog_url": "",
+      "status": "updated",
+      "changelog_url": "https://docs.rs/crate/unicode-normalization/latest/source/Cargo.toml",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
-      "attempts": 0,
+      "notes": "Updated in workspace Cargo.toml files",
+      "attempts": 1,
       "error_log": []
     },
     {
       "name": "unicode-segmentation",
-      "current_version": "1.11",
+      "current_version": "^1.12.0",
       "target_version": "1.12.0",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/unicode-segmentation/latest/unicode_segmentation/",
-      "breaking_changes": [
-        "No breaking changes noted within 1.x releases"
-      ],
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/crate/unicode-segmentation/latest/source/Cargo.toml",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "cargo test passed; warning about unused variable in ftui-extras/src/markdown.rs remains.",
+      "notes": "Already on latest stable (docs.rs shows 1.12.0)",
       "attempts": 1,
       "error_log": []
     },
     {
       "name": "unicode-width",
-      "current_version": "0.2",
+      "current_version": "^0.2.2",
       "target_version": "0.2.2",
       "version_type": "stable",
-      "status": "updated",
-      "changelog_url": "https://docs.rs/unicode-width/latest/unicode_width/",
-      "breaking_changes": [
-        "No breaking changes noted within 0.2.x releases"
-      ],
+      "status": "skipped",
+      "changelog_url": "",
+      "breaking_changes": [],
       "deprecations": [],
-      "notes": "cargo test passed; warning about unused variable in ftui-extras/src/markdown.rs remains.",
-      "attempts": 1,
+      "notes": "Already on latest stable (docs.rs shows 0.2.2)",
+      "attempts": 0,
       "error_log": []
     },
     {
       "name": "unicodeit",
-      "current_version": "0.2",
-      "target_version": "",
+      "current_version": "^0.2.0",
+      "target_version": "0.2.0",
       "version_type": "stable",
-      "status": "pending",
-      "changelog_url": "",
+      "status": "skipped",
+      "changelog_url": "https://lib.rs/crates/unicodeit/versions",
       "breaking_changes": [],
       "deprecations": [],
-      "notes": "",
-      "attempts": 0,
+      "notes": "0.2.7 not in crates.io index; kept 0.2.0 (latest)",
+      "attempts": 1,
       "error_log": []
-    }
-  ],
-  "completed": [
-    {
-      "name": "memchr",
-      "from": "2",
-      "to": "2.7.6",
-      "breaking_changes": [
-        "No breaking changes noted within 2.x releases"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-02T20:58:01Z"
-    }
-    ,
-    {
-      "name": "crossterm",
-      "from": "0.28",
-      "to": "0.29.0",
-      "breaking_changes": [
-        "KeyModifiers Display now uses correct key names (breaking change noted in 0.29.0)"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-02T21:11:41Z"
-    },
-    {
-      "name": "unicode-segmentation",
-      "from": "1.11",
-      "to": "1.12.0",
-      "breaking_changes": [
-        "No breaking changes noted within 1.x releases"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-02T21:13:27Z"
-    },
-    {
-      "name": "unicode-width",
-      "from": "0.2",
-      "to": "0.2.2",
-      "breaking_changes": [
-        "No breaking changes noted within 0.2.x releases"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-02T21:14:22Z"
-    },
-    {
-      "name": "smallvec",
-      "from": "mixed: 1.13, 1.13.2",
-      "to": "1.15.1",
-      "breaking_changes": [
-        "No breaking changes noted within 1.x releases"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-02T21:15:16Z"
-    },
-    {
-      "name": "lru",
-      "from": "0.12",
-      "to": "0.16.3",
-      "breaking_changes": [
-        "Potential API changes between 0.12 and 0.16; verify usage on build"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T08:00:50Z"
-    },
-    {
-      "name": "portable-pty",
-      "from": "mixed: 0.8, 0.8.1",
-      "to": "0.9.0",
-      "breaking_changes": [
-        "Major version bump from 0.8 to 0.9; verify API compatibility on build"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T08:00:50Z"
-    },
-    {
-      "name": "criterion",
-      "from": "mixed: 0.5, 0.6",
-      "to": "0.8.2",
-      "breaking_changes": [
-        "No breaking changes affecting current bench usage in 0.8.x"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T18:40:00Z"
-    },
-    {
-      "name": "signal-hook",
-      "from": "0.3.18",
-      "to": "0.4.3",
-      "breaking_changes": [
-        "0.4.0 changed low_level::pipe to accept raw fd; iterator API unchanged"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T18:40:00Z"
-    },
-    {
-      "name": "pollster",
-      "from": "0.3.0",
-      "to": "0.4.0",
-      "breaking_changes": [
-        "0.4.0: block_on now accepts IntoFuture (backwards compatible)"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T18:40:00Z"
-    },
-    {
-      "name": "pulldown-cmark",
-      "from": "0.12",
-      "to": "0.13.0",
-      "breaking_changes": [
-        "0.13.0 adds new extensions and parser changes; no API changes used in ftui-extras"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T18:40:00Z"
     },
     {
       "name": "vte",
-      "from": "0.13.1",
-      "to": "0.15.0",
-      "breaking_changes": [
-        "Parser advance API now accepts byte slices; updated ftui-extras parser accordingly"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T18:40:00Z"
+      "current_version": "^0.15.0",
+      "target_version": "0.15.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/crate/vte/latest/source/Cargo.toml",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Already on latest stable (docs.rs shows 0.15.0)",
+      "attempts": 1,
+      "error_log": []
     },
     {
-      "name": "regex",
-      "from": "1.12.2",
-      "to": "1.12.3",
-      "breaking_changes": [
-        "No breaking changes noted in 1.12.3 (patch release)"
-      ],
-      "fixes_applied": [],
-      "timestamp": "2026-02-04T18:40:00Z"
+      "name": "wgpu",
+      "current_version": "^28.0.0",
+      "target_version": "28.0.0",
+      "version_type": "stable",
+      "status": "skipped",
+      "changelog_url": "https://docs.rs/wgpu/28.0.0/wgpu/",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "28.0.1 not in crates.io index; kept 28.0.0",
+      "attempts": 1,
+      "error_log": []
     }
   ],
+  "completed": [],
   "failed": [],
   "requires_refactor": [],
   "circuit_breaker": {

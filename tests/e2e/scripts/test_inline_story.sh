@@ -113,7 +113,7 @@ run_case() {
 
     log_test_start "$case_id"
     jsonl_set_context "inline" "$cols" "$rows" "$E2E_SEED"
-    jsonl_case_step_start "$case_id" "scrollback_preserve" "pty_run" "ui_height=${ui_height} scrollback_lines=${expected_visible} pre_lines=${pre_lines}"
+    jsonl_case_step_start "$case_id" "scrollback_preserve" "pty_run" "story_step=scrollback_preserve ui_height=${ui_height} scrollback_lines=${expected_visible} scrollback_line_count=${expected_visible} pre_lines=${pre_lines}"
 
     local cmd
     cmd="$(build_prelog_cmd "$prefix" "$pre_lines" "$DEMO_BIN")"
@@ -230,7 +230,7 @@ run_case() {
         record_result "$case_id" "failed" "$duration_ms" "$LOG_FILE" "$error"
     fi
 
-    jsonl_case_step_end "$case_id" "scrollback_preserve" "$status" "$duration_ms" "pty_run" "ui_height=${ui_height} scrollback_lines=${expected_visible} scrollback_visible=${scrollback_visible} log_hash=${log_hash} ui_hash=${ui_hash}"
+    jsonl_case_step_end "$case_id" "scrollback_preserve" "$status" "$duration_ms" "pty_run" "story_step=scrollback_preserve ui_height=${ui_height} scrollback_lines=${expected_visible} scrollback_line_count=${expected_visible} scrollback_visible=${scrollback_visible} log_hash=${log_hash} ui_hash=${ui_hash}"
     jsonl_assert "${case_id}_hashes" "$status" "log_hash=${log_hash} ui_hash=${ui_hash}"
 
     if [[ "$status" == "passed" ]]; then
@@ -261,7 +261,8 @@ if [[ -z "$CANON_BIN" ]]; then
 fi
 export PTY_CANONICALIZE_BIN="$CANON_BIN"
 
-INLINE_STORY_SCREEN="${INLINE_STORY_SCREEN:-33}"
+# Screen list is 1-indexed; InlineModeStory is index 33 (0-based) → 34 here.
+INLINE_STORY_SCREEN="${INLINE_STORY_SCREEN:-34}"
 INLINE_STORY_UI_HEIGHT="${INLINE_STORY_UI_HEIGHT:-12}"
 
 FAILURES=0
