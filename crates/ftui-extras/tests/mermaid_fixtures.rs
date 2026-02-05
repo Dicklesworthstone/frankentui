@@ -79,7 +79,7 @@ const FIXTURES: &[MermaidFixture] = &[
     },
 ];
 
-#[cfg(test)]
+#[cfg(all(test, feature = "diagram"))]
 mod tests {
     use super::*;
     use ftui_extras::mermaid::{

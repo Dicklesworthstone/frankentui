@@ -43,10 +43,11 @@ fn gradient_color(t: f32) -> vec3<f32> {
 }
 
 fn pack_rgba(color: vec3<f32>, alpha: f32) -> u32 {
-    let r = u32(clamp(color.r, 0.0, 1.0) * 255.0 + 0.5);
-    let g = u32(clamp(color.g, 0.0, 1.0) * 255.0 + 0.5);
-    let b = u32(clamp(color.b, 0.0, 1.0) * 255.0 + 0.5);
-    let a = u32(clamp(alpha, 0.0, 1.0) * 255.0 + 0.5);
+    // Match CPU path which truncates toward zero when casting to u8.
+    let r = u32(clamp(color.r, 0.0, 1.0) * 255.0);
+    let g = u32(clamp(color.g, 0.0, 1.0) * 255.0);
+    let b = u32(clamp(color.b, 0.0, 1.0) * 255.0);
+    let a = u32(clamp(alpha, 0.0, 1.0) * 255.0);
     return (r << 24u) | (g << 16u) | (b << 8u) | a;
 }
 
@@ -62,8 +63,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let idx = gid.y * params.width + gid.x;
-    let nx = f32(gid.x) / width;
-    let ny = f32(gid.y) / height;
+    // Sample at cell centers to match CPU's normalized coordinate cache.
+    let nx = (f32(gid.x) + 0.5) / width;
+    let ny = (f32(gid.y) + 0.5) / height;
 
     var sum = 0.0;
     var weighted_hue = 0.0;
@@ -94,11 +96,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
 
         let denom = max(params.threshold - params.glow, 0.0001);
-        let intensity = select(
-            (sum - params.glow) / denom,
-            1.0,
-            sum > params.threshold
-        );
+        let t = (sum - params.glow) / denom;
+        let smoothed = t * t * (3.0 - 2.0 * t);
+        let intensity = select(smoothed, 1.0, sum > params.threshold);
 
         let base = gradient_color(avg_hue);
         let blended = lerp_color(params.bg_base.xyz, base, intensity);
