@@ -492,6 +492,9 @@ mod tests {
     #[cfg(feature = "fx-gpu")]
     use std::sync::Mutex;
 
+    #[cfg(feature = "fx-gpu")]
+    static GPU_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     fn ctx(theme: &ThemeInputs) -> FxContext<'_> {
         FxContext {
             width: 24,
@@ -636,13 +639,20 @@ mod tests {
 
     #[test]
     fn deterministic_for_fixed_inputs() {
+        #[cfg(feature = "fx-gpu")]
+        let _guard = GPU_TEST_LOCK.lock().expect("gpu test lock poisoned");
+
         let theme = ThemeInputs::default_dark();
         let mut fx = MetaballsFx::default();
         let ctx = ctx(&theme);
         let mut out1 = vec![PackedRgba::TRANSPARENT; ctx.len()];
         let mut out2 = vec![PackedRgba::TRANSPARENT; ctx.len()];
+        #[cfg(feature = "fx-gpu")]
+        gpu::force_disable_for_tests();
         fx.render(ctx, &mut out1);
         fx.render(ctx, &mut out2);
+        #[cfg(feature = "fx-gpu")]
+        gpu::reset_for_tests();
         let h1 = hash_pixels(&out1);
         let h2 = hash_pixels(&out2);
         assert_eq!(out1, out2, "hash1={h1:#x} hash2={h2:#x}");
@@ -925,8 +935,7 @@ mod tests {
     #[cfg(feature = "fx-gpu")]
     #[test]
     fn gpu_force_fail_falls_back_to_cpu() {
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let _guard = GPU_TEST_LOCK.lock().expect("gpu test lock poisoned");
 
         let theme = ThemeInputs::default_dark();
         let ctx = FxContext {
@@ -968,8 +977,7 @@ mod tests {
     #[cfg(feature = "fx-gpu")]
     #[test]
     fn gpu_parity_sanity_small_buffer() {
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let _guard = GPU_TEST_LOCK.lock().expect("gpu test lock poisoned");
 
         // Reset to allow GPU initialization.
         gpu::reset_for_tests();
@@ -1036,8 +1044,7 @@ mod tests {
     #[test]
     #[ignore = "requires GPU; run manually for perf comparison"]
     fn gpu_cpu_timing_baseline() {
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let _guard = GPU_TEST_LOCK.lock().expect("gpu test lock poisoned");
 
         // Reset to allow GPU initialization.
         gpu::reset_for_tests();
