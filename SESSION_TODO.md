@@ -31,11 +31,11 @@
 - [x] Beads: confirm `bd-yhp9` still in progress (update if needed)
 - [x] Beads: close `bd-yhp9` when complete
 - [x] Agent Mail: post progress/completion update in thread `bd-yhp9`
-- [ ] Git: stage changes (`git add .`)
-- [ ] Git: commit with `bd-yhp9` in message
-- [ ] Git: `git pull --rebase`
-- [ ] Git: `git push`
-- [ ] Git: verify `git status` clean + up to date
+- [x] Git: stage changes (`git add .`)
+- [x] Git: commit with `bd-yhp9` in message
+- [x] Git: `git pull --rebase`
+- [x] Git: `git push`
+- [x] Git: verify `git status` clean + up to date
 
 ## Current Session (MistyForge/gpt-5) — bd-yhp9 Dependency Upgrades (2026-02-05)
 - [x] Read `AGENTS.md` + `README.md` end-to-end
@@ -70,11 +70,11 @@
 - [x] Update `claude-upgrade-progress.json` if any new adjustments are needed
 - [x] Beads: close `bd-yhp9` with completion reason
 - [x] Beads: `br sync --flush-only`
-- [ ] Stage all changes (`git add ...`)
-- [ ] Commit changes with `bd-yhp9` in message
-- [ ] `git pull --rebase`
-- [ ] `git push`
-- [ ] Verify `git status` is clean + up to date
+- [x] Stage all changes (`git add ...`)
+- [x] Commit changes with `bd-yhp9` in message
+- [x] `git pull --rebase`
+- [x] `git push`
+- [x] Verify `git status` is clean + up to date
 - [x] Post Agent Mail completion summary in thread `bd-yhp9`
 
 ## Current Session (CalmPeak/opus-4.5) — Fix race condition bd-3ul6j (2026-02-05)
