@@ -888,29 +888,25 @@ mod tests {
         let emoji = CellContent::from_char('🎉');
         assert_eq!(emoji.width(), 2);
 
-        // "Ambiguous" width characters: width depends on CJK mode which is
-        // determined at runtime based on FTUI_CJK_WIDTH env or locale.
-        // Since the mode is cached globally, we test that they return a
-        // consistent width (either 1 or 2) rather than assuming a specific mode.
+        // Unicode East Asian Width properties:
+        // - '⚡' (U+26A1) is Wide → always width 2
+        // - '⚙' (U+2699) is Neutral → 1 (non-CJK) or 2 (CJK)
+        // - '❤' (U+2764) is Neutral → 1 (non-CJK) or 2 (CJK)
         let bolt = CellContent::from_char('⚡');
+        assert_eq!(bolt.width(), 2, "bolt is Wide, always width 2");
+
+        // Neutral-width characters: width depends on CJK mode
         let gear = CellContent::from_char('⚙');
         let heart = CellContent::from_char('❤');
-
-        // All three are "Ambiguous" width, should get the same treatment
         assert!(
-            [1, 2].contains(&bolt.width()),
-            "bolt width should be 1 (non-CJK) or 2 (CJK), got {}",
-            bolt.width()
+            [1, 2].contains(&gear.width()),
+            "gear should be 1 (non-CJK) or 2 (CJK), got {}",
+            gear.width()
         );
         assert_eq!(
-            bolt.width(),
             gear.width(),
-            "bolt and gear should have same width in any mode"
-        );
-        assert_eq!(
-            bolt.width(),
             heart.width(),
-            "bolt and heart should have same width in any mode"
+            "gear and heart should have same width (both Neutral)"
         );
     }
 
