@@ -3479,6 +3479,8 @@ mod tests {
     #[test]
     fn write_log_ui_fills_terminal_is_noop() {
         // When UI fills the entire terminal, there's no log region.
+        // Drop cleanup writes reset sequences (\x1b[0m, \x1b[?25h), so we
+        // verify the output does not contain the log text itself.
         let mut output = Vec::new();
         {
             let mut writer = TerminalWriter::new(
@@ -3490,9 +3492,13 @@ mod tests {
             writer.set_size(80, 24);
             writer.write_log("should still write\n").unwrap();
         }
-
-        // No cursor positioning and no output when there is no log region.
-        assert!(output.is_empty());
+        // Log text must NOT appear; only Drop cleanup sequences are expected.
+        assert!(
+            !output
+                .windows(b"should still write".len())
+                .any(|w| w == b"should still write"),
+            "write_log should not emit log text when UI fills the terminal"
+        );
     }
 
     #[test]

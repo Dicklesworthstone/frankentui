@@ -14,8 +14,8 @@
 
 use crate::diagram::{grapheme_width, visual_width};
 use crate::mermaid::{
-    DiagramType, GraphDirection, IrEndpoint, IrNodeId, MermaidConfig, MermaidDegradationPlan,
-    MermaidDiagramIr, MermaidFidelity, append_jsonl_line,
+    DiagramType, GraphDirection, IrEndpoint, IrNodeId, LayoutConstraint, MermaidConfig,
+    MermaidDegradationPlan, MermaidDiagramIr, MermaidFidelity, append_jsonl_line,
 };
 
 // ── Layout output types ──────────────────────────────────────────────
@@ -1702,8 +1702,121 @@ pub fn layout_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig) -> DiagramL
     layout_diagram_with_spacing(ir, config, &LayoutSpacing::default())
 }
 
-/// Compute layout with custom spacing parameters.
-#[must_use]
+// ── Constraint application ──────────────────────────────────────────
+
+/// Apply same-rank constraints: merge ranks so constrained nodes share the lowest rank.
+fn apply_same_rank_constraints(
+    ranks: &mut [usize],
+    constraints: &[LayoutConstraint],
+    node_id_map: &std::collections::HashMap<&str, usize>,
+) {
+    for constraint in constraints {
+        if let LayoutConstraint::SameRank { node_ids, .. } = constraint {
+            let indices: Vec<usize> = node_ids
+                .iter()
+                .filter_map(|id| node_id_map.get(id.as_str()).copied())
+                .collect();
+            if indices.len() < 2 {
+                continue;
+            }
+            let min_rank = indices.iter().map(|&i| ranks[i]).min().unwrap_or(0);
+            for &idx in &indices {
+                ranks[idx] = min_rank;
+            }
+        }
+    }
+}
+
+/// Apply min-length constraints: ensure rank(to) - rank(from) >= min_len.
+fn apply_min_length_constraints(
+    ranks: &mut [usize],
+    constraints: &[LayoutConstraint],
+    node_id_map: &std::collections::HashMap<&str, usize>,
+) {
+    for constraint in constraints {
+        if let LayoutConstraint::MinLength {
+            from_id,
+            to_id,
+            min_len,
+            ..
+        } = constraint
+        {
+            let from_idx = node_id_map.get(from_id.as_str()).copied();
+            let to_idx = node_id_map.get(to_id.as_str()).copied();
+            if let (Some(fi), Some(ti)) = (from_idx, to_idx) {
+                let current_span = ranks[ti].saturating_sub(ranks[fi]);
+                if current_span < *min_len {
+                    ranks[ti] = ranks[fi] + *min_len;
+                }
+            }
+        }
+    }
+}
+
+/// Apply order-in-rank constraints: force left-to-right ordering within each rank.
+fn apply_order_constraints(
+    rank_order: &mut [Vec<usize>],
+    constraints: &[LayoutConstraint],
+    node_id_map: &std::collections::HashMap<&str, usize>,
+    ranks: &[usize],
+) {
+    for constraint in constraints {
+        if let LayoutConstraint::OrderInRank { node_ids, .. } = constraint {
+            let indices: Vec<usize> = node_ids
+                .iter()
+                .filter_map(|id| node_id_map.get(id.as_str()).copied())
+                .collect();
+            if indices.len() < 2 {
+                continue;
+            }
+            // Group by rank
+            let mut by_rank: std::collections::HashMap<usize, Vec<usize>> =
+                std::collections::HashMap::new();
+            for &idx in &indices {
+                by_rank.entry(ranks[idx]).or_default().push(idx);
+            }
+            // For each rank containing constrained nodes, enforce ordering
+            for (&rank, ordered) in &by_rank {
+                if rank >= rank_order.len() || ordered.len() < 2 {
+                    continue;
+                }
+                let bucket = &mut rank_order[rank];
+                // Remove constrained nodes from their current positions
+                let mut other: Vec<usize> = bucket
+                    .iter()
+                    .copied()
+                    .filter(|n| !ordered.contains(n))
+                    .collect();
+                // Find insertion point: where the first constrained node was
+                let first_pos = bucket.iter().position(|n| ordered.contains(n)).unwrap_or(0);
+                let insert_at = first_pos.min(other.len());
+                // Insert constrained nodes in specified order at that position
+                for (i, &node) in ordered.iter().enumerate() {
+                    other.insert(insert_at + i, node);
+                }
+                *bucket = other;
+            }
+        }
+    }
+}
+
+/// Apply pin constraints: override node positions to pinned coordinates.
+fn apply_pin_constraints(
+    node_rects: &mut [LayoutRect],
+    constraints: &[LayoutConstraint],
+    node_id_map: &std::collections::HashMap<&str, usize>,
+) {
+    for constraint in constraints {
+        if let LayoutConstraint::Pin { node_id, x, y, .. } = constraint
+            && let Some(&idx) = node_id_map.get(node_id.as_str())
+            && idx < node_rects.len()
+        {
+            node_rects[idx].x = *x;
+            node_rects[idx].y = *y;
+        }
+    }
+}
+
 pub fn layout_diagram_with_spacing(
     ir: &MermaidDiagramIr,
     config: &MermaidConfig,
@@ -1748,7 +1861,19 @@ pub fn layout_diagram_with_spacing(
     let graph = LayoutGraph::from_ir(ir);
 
     // Phase 1: Rank assignment.
-    let ranks = assign_ranks(&graph);
+    let mut ranks = assign_ranks(&graph);
+
+    // Phase 1b: Apply rank constraints (same-rank, min-length).
+    let node_id_map: std::collections::HashMap<&str, usize> = ir
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, node)| (node.id.as_str(), i))
+        .collect();
+    if !ir.constraints.is_empty() {
+        apply_same_rank_constraints(&mut ranks, &ir.constraints, &node_id_map);
+        apply_min_length_constraints(&mut ranks, &ir.constraints, &node_id_map);
+    }
 
     // Phase 2: Build rank buckets and minimize crossings.
     let mut rank_order = build_rank_buckets(&ranks);
@@ -1764,6 +1889,11 @@ pub fn layout_diagram_with_spacing(
         minimize_crossings(&mut rank_order, &graph, max_iterations, &cluster_map);
     let budget_exceeded = iterations_used >= max_iterations;
 
+    // Phase 2b: Apply order-in-rank constraints (after crossing minimization).
+    if !ir.constraints.is_empty() {
+        apply_order_constraints(&mut rank_order, &ir.constraints, &node_id_map, &ranks);
+    }
+
     // Phase 3: Coordinate assignment (content-aware sizing).
     let node_sizes = compute_node_sizes(ir, spacing);
     let mut node_rects =
@@ -1778,6 +1908,11 @@ pub fn layout_diagram_with_spacing(
         ir.direction,
         3,
     );
+
+    // Phase 3c: Apply pin constraints (override positions).
+    if !ir.constraints.is_empty() {
+        apply_pin_constraints(&mut node_rects, &ir.constraints, &node_id_map);
+    }
 
     // Precompute per-node order within its rank to avoid repeated scans.
     let mut order_map = vec![0usize; n];
@@ -6989,7 +7124,10 @@ mod label_tests {
         };
         // Each CJK character is 2 display columns wide
         let (w, _h, _trunc) = measure_text("漢字", &cfg);
-        assert!((w - 4.0).abs() < f64::EPSILON, "'漢字' should be 4 cols, got {w}");
+        assert!(
+            (w - 4.0).abs() < f64::EPSILON,
+            "'漢字' should be 4 cols, got {w}"
+        );
     }
 
     #[test]
@@ -7004,7 +7142,10 @@ mod label_tests {
         };
         // "漢字テスト" = 10 display cols, wraps into multiple lines at width 5
         let (_w, h, _trunc) = measure_text("漢字テスト", &cfg);
-        assert!(h > 1.0, "CJK text should wrap to multiple lines at width 5, got height {h}");
+        assert!(
+            h > 1.0,
+            "CJK text should wrap to multiple lines at width 5, got height {h}"
+        );
     }
 
     #[test]
@@ -7019,7 +7160,10 @@ mod label_tests {
         };
         // "Hi" = 2 cols, "漢字" = 4 cols, total = 6
         let (w, _h, _trunc) = measure_text("Hi漢字", &cfg);
-        assert!((w - 6.0).abs() < f64::EPSILON, "'Hi漢字' should be 6 cols, got {w}");
+        assert!(
+            (w - 6.0).abs() < f64::EPSILON,
+            "'Hi漢字' should be 6 cols, got {w}"
+        );
     }
 
     // ── Edge segment rects ──────────────────────────────────────────
