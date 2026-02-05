@@ -961,6 +961,30 @@ mod tests {
         assert_eq!(high, palette.color_at(1.0, &theme));
     }
 
+    #[test]
+    fn lerp_helpers_respect_endpoints() {
+        let a = (10, 20, 30);
+        let b = (200, 210, 220);
+        assert_eq!(PlasmaPalette::lerp_rgb(a, b, 0.0), a);
+        assert_eq!(PlasmaPalette::lerp_rgb(a, b, 1.0), b);
+
+        let ca = PackedRgba::rgb(10, 20, 30);
+        let cb = PackedRgba::rgb(200, 210, 220);
+        assert_eq!(PlasmaPalette::lerp_color(ca, cb, 0.0), ca);
+        assert_eq!(PlasmaPalette::lerp_color(ca, cb, 1.0), cb);
+    }
+
+    #[test]
+    fn hsv_to_rgb_primary_colors() {
+        let red = PlasmaPalette::hsv_to_rgb(0.0, 1.0, 1.0);
+        let green = PlasmaPalette::hsv_to_rgb(120.0, 1.0, 1.0);
+        let blue = PlasmaPalette::hsv_to_rgb(240.0, 1.0, 1.0);
+
+        assert_eq!(red, PackedRgba::rgb(255, 0, 0));
+        assert_eq!(green, PackedRgba::rgb(0, 255, 0));
+        assert_eq!(blue, PackedRgba::rgb(0, 0, 255));
+    }
+
     // =========================================================================
     // No-Allocation Proxy Tests (bd-l8x9.4.3)
     // =========================================================================

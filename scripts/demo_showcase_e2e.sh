@@ -9,7 +9,7 @@
 # 4. Unit + snapshot tests
 # 5. Smoke test (alt-screen with auto-exit)
 # 6. Inline mode smoke test
-# 7. Screen navigation (cycle all 22 screens)
+# 7. Screen navigation (cycle all 38 screens)
 # 8. Search test (Shakespeare screen)
 # 9. Resize test (SIGWINCH handling)
 # 10. VisualEffects backdrop test (bd-l8x9.8.2)
@@ -17,6 +17,9 @@
 # 11b. Core navigation + dashboard screens (bd-1av4o.14.1)
 # 11c. Editors + markdown + log search (bd-1av4o.14.2)
 # 11d. Data viz + tables + charts (bd-1av4o.14.4)
+# 11e. VFX + determinism lab + Doom/Quake (bd-1av4o.14.3)
+# 11f. Inputs/forms + virtualized search (bd-1av4o.14.5)
+# 11g. Terminal caps + inline mode story (bd-1av4o.14.6)
 # 12. Terminal capabilities report export (bd-iuvb.6)
 # 13. i18n stress lab report export (bd-iuvb.9)
 # 14. Widget builder export (bd-iuvb.10)
@@ -275,7 +278,7 @@ run_in_pty() {
 if $QUICK; then
     TOTAL_STEPS=3
 else
-    TOTAL_STEPS=20  # Updated: added data viz + tables + charts coverage
+    TOTAL_STEPS=23  # Updated: added terminal caps + inline story coverage
 fi
 
 echo "=============================================="
@@ -392,11 +395,11 @@ if $CAN_SMOKE; then
     # ────────────────────────────────────────────────────────────────────────
     # Step 7: Screen Navigation
     #
-    # Launch the demo on each screen (--screen=1..36) with a
+    # Launch the demo on each screen (--screen=1..38) with a
     # short auto-exit. If any screen panics on startup, this catches it.
-    # Updated for 36 screens (bd-iuvb.2: includes Determinism Lab at screen 35)
+    # Updated for 38 screens (bd-iuvb.2 + palette evidence + links)
     # ────────────────────────────────────────────────────────────────────────
-    log_step "Screen navigation (all 36 screens)"
+    log_step "Screen navigation (all 38 screens)"
     log_info "Starting demo on each screen to verify no panics..."
     NAV_LOG="$LOG_DIR/07_navigation.log"
     STEP_NAMES+=("Screen navigation (all 36)")
@@ -405,7 +408,7 @@ if $CAN_SMOKE; then
     nav_start_ms="$(e2e_now_ms)"
     {
         NAV_FAILURES=0
-        for screen_num in $(seq 1 36); do
+        for screen_num in $(seq 1 38); do
             echo "--- Screen $screen_num ---"
             if run_in_pty "FTUI_DEMO_EXIT_AFTER_MS=1500 timeout 8 $DEMO_BIN --screen=$screen_num" 2>&1; then
                 echo "  Screen $screen_num: OK"
@@ -433,12 +436,12 @@ if $CAN_SMOKE; then
         log_pass "Screen navigation passed in ${nav_dur_s}s"
         PASS_COUNT=$((PASS_COUNT + 1))
         STEP_STATUSES+=("PASS")
-        jsonl_step_end "Screen navigation (all 36)" "success" "$nav_dur_ms"
+        jsonl_step_end "Screen navigation (all 38)" "success" "$nav_dur_ms"
     else
         log_fail "Screen navigation failed. See: $NAV_LOG"
         FAIL_COUNT=$((FAIL_COUNT + 1))
         STEP_STATUSES+=("FAIL")
-        jsonl_step_end "Screen navigation (all 36)" "failed" "$nav_dur_ms"
+        jsonl_step_end "Screen navigation (all 38)" "failed" "$nav_dur_ms"
     fi
 
     # ────────────────────────────────────────────────────────────────────────
@@ -449,7 +452,7 @@ if $CAN_SMOKE; then
     # the screen survives initialization and a brief run.
     # ────────────────────────────────────────────────────────────────────────
     run_smoke_step "Search test (Shakespeare)" "$LOG_DIR/08_search.log" \
-        "run_in_pty 'FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=2 timeout 8 $DEMO_BIN'" || true
+        "run_in_pty 'FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=3 timeout 8 $DEMO_BIN'" || true
 
     # ────────────────────────────────────────────────────────────────────────
     # Step 9: Resize Test (SIGWINCH)
@@ -510,7 +513,7 @@ if $CAN_SMOKE; then
     # ────────────────────────────────────────────────────────────────────────
     # Step 10: VisualEffects Backdrop Test (bd-l8x9.8.2)
     #
-    # Targeted test for the VisualEffects screen (screen 14) which exercises
+    # Targeted test for the VisualEffects screen (screen 16) which exercises
     # backdrop blending, metaballs/plasma effects, and markdown-over-backdrop
     # composition paths. Runs at multiple sizes to verify determinism and
     # no panics under various render conditions.
@@ -526,7 +529,7 @@ if $CAN_SMOKE; then
     jsonl_step_start "VisualEffects backdrop"
     vfx_start_ms="$(e2e_now_ms)"
     {
-        echo "=== VisualEffects (Screen 14) Backdrop Blending Tests ==="
+        echo "=== VisualEffects (Screen 16) Backdrop Blending Tests ==="
         echo "Bead: bd-l8x9.8.2 - Targeted runs for metaballs/plasma/backdrop paths"
         echo ""
         VFX_FAILURES=0
@@ -590,7 +593,7 @@ if $CAN_SMOKE; then
             local rows="$3"
             local cols="$4"
             local size="${cols}x${rows}"
-            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; FTUI_DEMO_EXIT_AFTER_MS=2500 ${effect_env} timeout 10 $DEMO_BIN --screen=14"
+            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; FTUI_DEMO_EXIT_AFTER_MS=2500 ${effect_env} timeout 10 $DEMO_BIN --screen=16"
             local start_ms dur_ms outcome exit_code
 
             echo "--- ${effect} (${size}) ---"
@@ -654,7 +657,7 @@ if $CAN_SMOKE; then
     # Runs the Layout Inspector screen and cycles scenarios/steps to
     # produce deterministic hashes for evidence logs.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "Layout Inspector (screen 20)"
+    log_step "Layout Inspector (screen 22)"
     log_info "Running Layout Inspector scenarios and logging hashes..."
     INSPECT_LOG="$LOG_DIR/11_layout_inspector.log"
     INSPECT_JSONL="$LOG_DIR/11_layout_inspector.jsonl"
@@ -666,7 +669,7 @@ if $CAN_SMOKE; then
     jsonl_step_start "Layout Inspector"
     inspect_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Layout Inspector (Screen 20) ==="
+        echo "=== Layout Inspector (Screen 22) ==="
         echo "Bead: bd-iuvb.7"
         echo "JSONL: $INSPECT_JSONL"
         echo ""
@@ -676,7 +679,7 @@ if $CAN_SMOKE; then
             local step="$2"
             local keys="$3"
             local log_file="$LOG_DIR/11_layout_inspector_${scenario}_${step}.log"
-            local cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=20 timeout 8 $DEMO_BIN"
+            local cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=22 timeout 8 $DEMO_BIN"
             local start_ms dur_ms outcome exit_code rects_hash
 
             echo "--- Scenario ${scenario} / Step ${step} (keys='${keys}') ---"
@@ -717,7 +720,7 @@ if $CAN_SMOKE; then
             payload="${payload}\"hash_key\":\"$(json_escape "$hash_key")\","
             payload="${payload}\"cols\":${cols_json},"
             payload="${payload}\"rows\":${rows_json},"
-            payload="${payload}\"screen\":20,"
+            payload="${payload}\"screen\":22,"
             payload="${payload}\"scenario_id\":${scenario},"
             payload="${payload}\"step_idx\":${step},"
             payload="${payload}\"keys\":\"$(json_escape "$keys")\","
@@ -1009,12 +1012,270 @@ if $CAN_SMOKE; then
     fi
 
     # ────────────────────────────────────────────────────────────────────────
+    # Step 11e: VFX + Determinism Lab + Doom/Quake (bd-1av4o.14.3)
+    #
+    # Exercise visual effects, Doom/Quake modes, determinism lab, and VOI overlay
+    # with deterministic inputs and schema-compliant JSONL assert events.
+    # ────────────────────────────────────────────────────────────────────────
+    log_step "VFX + determinism lab + Doom/Quake"
+    log_info "Running VFX/Doom/Quake/determinism lab/VOI overlay..."
+    VFX_SWEEP_LOG="$LOG_DIR/11e_vfx_determinism.log"
+    STEP_NAMES+=("VFX + determinism lab + Doom/Quake")
+
+    jsonl_set_context "alt" 80 24 "${E2E_SEED:-}" 2>/dev/null || true
+    jsonl_step_start "VFX + determinism lab + Doom/Quake"
+    vfx_sweep_start_ms="$(e2e_now_ms)"
+    {
+        echo "=== VFX + Determinism Lab + Doom/Quake ==="
+        echo "Bead: bd-1av4o.14.3"
+        echo ""
+
+        vfx_failures=0
+
+        run_vfx_screen_case() {
+            local label="$1"
+            local screen_num="$2"
+            local keys="$3"
+            local env_prefix="$4"
+            local cols="${5:-80}"
+            local rows="${6:-24}"
+            local log_file="$LOG_DIR/11e_${label}.log"
+            local keys_display
+            keys_display="$(printf '%q' "$keys")"
+            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & ${env_prefix} FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} timeout 10 $DEMO_BIN"
+            local start_ms dur_ms exit_code outcome status hash
+
+            echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
+            start_ms=$(e2e_now_ms)
+            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+                exit_code=0
+            else
+                exit_code=$?
+            fi
+            dur_ms=$(( $(e2e_now_ms) - start_ms ))
+
+            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+                outcome="pass"
+                status="pass"
+            else
+                outcome="fail"
+                status="fail"
+                vfx_failures=$((vfx_failures + 1))
+            fi
+
+            hash=$(sha256sum "$log_file" | awk '{print $1}')
+            local seed_val="${E2E_CONTEXT_SEED:-${E2E_SEED:-0}}"
+            local mode="${E2E_CONTEXT_MODE:-alt}"
+            local hash_key
+            hash_key="$(e2e_hash_key "$mode" "$cols" "$rows" "$seed_val")"
+            jsonl_assert "vfx_screen_${label}" "$status" \
+                "screen=${label} screen_num=${screen_num} keys=${keys_display} mode=${mode} cols=${cols} rows=${rows} seed=${seed_val} hash_key=${hash_key} hash=${hash} duration_ms=${dur_ms} exit=${exit_code} outcome=${outcome}"
+        }
+
+        run_vfx_screen_case "visual_effects_default" 16 "" "" 80 24
+        run_vfx_screen_case "doom_e1m1" 16 " w " "FTUI_DEMO_VFX_EFFECT=doom-e1m1" 80 24
+        run_vfx_screen_case "quake_e1m1" 16 " w " "FTUI_DEMO_VFX_EFFECT=quake-e1m1" 80 24
+        run_vfx_screen_case "determinism_lab" 37 "e" "" 80 24
+        run_vfx_screen_case "voi_overlay" 32 "" "" 80 24
+
+        echo ""
+        echo "VFX/determinism failures: $vfx_failures"
+        [ "$vfx_failures" -eq 0 ]
+    } > "$VFX_SWEEP_LOG" 2>&1
+    vfx_sweep_exit=$?
+    vfx_sweep_dur_ms=$(( $(e2e_now_ms) - vfx_sweep_start_ms ))
+    vfx_sweep_dur_s=$(echo "scale=2; $vfx_sweep_dur_ms / 1000" | bc 2>/dev/null || echo "${vfx_sweep_dur_ms}ms")
+    STEP_DURATIONS+=("${vfx_sweep_dur_s}s")
+
+    if [ $vfx_sweep_exit -eq 0 ]; then
+        log_pass "VFX + determinism lab + Doom/Quake passed in ${vfx_sweep_dur_s}s"
+        PASS_COUNT=$((PASS_COUNT + 1))
+        STEP_STATUSES+=("PASS")
+        jsonl_step_end "VFX + determinism lab + Doom/Quake" "success" "$vfx_sweep_dur_ms"
+    else
+        log_fail "VFX + determinism lab + Doom/Quake failed. See: $VFX_SWEEP_LOG"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        STEP_STATUSES+=("FAIL")
+        jsonl_step_end "VFX + determinism lab + Doom/Quake" "failed" "$vfx_sweep_dur_ms"
+    fi
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Step 11f: Inputs/Forms + Virtualized Search (bd-1av4o.14.5)
+    #
+    # Exercise forms and virtualized search with deterministic inputs and
+    # schema-compliant JSONL assert events.
+    # ────────────────────────────────────────────────────────────────────────
+    log_step "Inputs/forms + virtualized search"
+    log_info "Running forms and virtualized search screens..."
+    FORMS_LOG="$LOG_DIR/11f_forms_virtualized.log"
+    STEP_NAMES+=("Inputs/forms + virtualized search")
+
+    jsonl_set_context "alt" 80 24 "${E2E_SEED:-}" 2>/dev/null || true
+    jsonl_step_start "Inputs/forms + virtualized search"
+    forms_start_ms="$(e2e_now_ms)"
+    {
+        echo "=== Inputs/Forms + Virtualized Search ==="
+        echo "Bead: bd-1av4o.14.5"
+        echo ""
+
+        forms_failures=0
+
+        run_forms_case() {
+            local label="$1"
+            local screen_num="$2"
+            local keys="$3"
+            local cols="${4:-80}"
+            local rows="${5:-24}"
+            local log_file="$LOG_DIR/11f_${label}.log"
+            local keys_display
+            keys_display="$(printf '%q' "$keys")"
+            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} timeout 10 $DEMO_BIN"
+            local start_ms dur_ms exit_code outcome status hash
+
+            echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
+            start_ms=$(e2e_now_ms)
+            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+                exit_code=0
+            else
+                exit_code=$?
+            fi
+            dur_ms=$(( $(e2e_now_ms) - start_ms ))
+
+            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+                outcome="pass"
+                status="pass"
+            else
+                outcome="fail"
+                status="fail"
+                forms_failures=$((forms_failures + 1))
+            fi
+
+            hash=$(sha256sum "$log_file" | awk '{print $1}')
+            local seed_val="${E2E_CONTEXT_SEED:-${E2E_SEED:-0}}"
+            local mode="${E2E_CONTEXT_MODE:-alt}"
+            local hash_key
+            hash_key="$(e2e_hash_key "$mode" "$cols" "$rows" "$seed_val")"
+            jsonl_assert "forms_screen_${label}" "$status" \
+                "screen=${label} screen_num=${screen_num} keys=${keys_display} mode=${mode} cols=${cols} rows=${rows} seed=${seed_val} hash_key=${hash_key} hash=${hash} duration_ms=${dur_ms} exit=${exit_code} outcome=${outcome}"
+        }
+
+        run_forms_case "forms_input" 7 $'a\tb' 80 24
+        run_forms_case "form_validation" 25 "m" 80 24
+        run_forms_case "virtualized_search" 26 $'/io\rj' 80 24
+
+        echo ""
+        echo "Forms/virtualized failures: $forms_failures"
+        [ "$forms_failures" -eq 0 ]
+    } > "$FORMS_LOG" 2>&1
+    forms_exit=$?
+    forms_dur_ms=$(( $(e2e_now_ms) - forms_start_ms ))
+    forms_dur_s=$(echo "scale=2; $forms_dur_ms / 1000" | bc 2>/dev/null || echo "${forms_dur_ms}ms")
+    STEP_DURATIONS+=("${forms_dur_s}s")
+
+    if [ $forms_exit -eq 0 ]; then
+        log_pass "Inputs/forms + virtualized search passed in ${forms_dur_s}s"
+        PASS_COUNT=$((PASS_COUNT + 1))
+        STEP_STATUSES+=("PASS")
+        jsonl_step_end "Inputs/forms + virtualized search" "success" "$forms_dur_ms"
+    else
+        log_fail "Inputs/forms + virtualized search failed. See: $FORMS_LOG"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        STEP_STATUSES+=("FAIL")
+        jsonl_step_end "Inputs/forms + virtualized search" "failed" "$forms_dur_ms"
+    fi
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Step 11g: Terminal Caps + Inline Mode Story (bd-1av4o.14.6)
+    #
+    # Exercise terminal capabilities screen and inline mode story with
+    # deterministic inputs and schema-compliant JSONL assert events.
+    # ────────────────────────────────────────────────────────────────────────
+    log_step "Terminal caps + inline mode story"
+    log_info "Running terminal caps and inline mode story screens..."
+    INLINE_LOG="$LOG_DIR/11g_terminal_inline.log"
+    STEP_NAMES+=("Terminal caps + inline story")
+
+    jsonl_set_context "alt" 80 24 "${E2E_SEED:-}" 2>/dev/null || true
+    jsonl_step_start "Terminal caps + inline story"
+    inline_start_ms="$(e2e_now_ms)"
+    {
+        echo "=== Terminal Caps + Inline Mode Story ==="
+        echo "Bead: bd-1av4o.14.6"
+        echo ""
+
+        inline_failures=0
+
+        run_terminal_case() {
+            local label="$1"
+            local screen_num="$2"
+            local keys="$3"
+            local env_prefix="$4"
+            local cols="${5:-80}"
+            local rows="${6:-24}"
+            local log_file="$LOG_DIR/11g_${label}.log"
+            local keys_display
+            keys_display="$(printf '%q' "$keys")"
+            local cmd="stty rows ${rows} cols ${cols} 2>/dev/null; (sleep 0.6; printf \"$keys\" > /dev/tty) & ${env_prefix} FTUI_DEMO_EXIT_AFTER_MS=2400 FTUI_DEMO_SCREEN=${screen_num} timeout 10 $DEMO_BIN"
+            local start_ms dur_ms exit_code outcome status hash
+
+            echo "--- ${label} (screen ${screen_num}, keys=${keys_display}) ---"
+            start_ms=$(e2e_now_ms)
+            if run_in_pty "$cmd" > "$log_file" 2>&1; then
+                exit_code=0
+            else
+                exit_code=$?
+            fi
+            dur_ms=$(( $(e2e_now_ms) - start_ms ))
+
+            if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 0 ]; then
+                outcome="pass"
+                status="pass"
+            else
+                outcome="fail"
+                status="fail"
+                inline_failures=$((inline_failures + 1))
+            fi
+
+            hash=$(sha256sum "$log_file" | awk '{print $1}')
+            local seed_val="${E2E_CONTEXT_SEED:-${E2E_SEED:-0}}"
+            local mode="${E2E_CONTEXT_MODE:-alt}"
+            local hash_key
+            hash_key="$(e2e_hash_key "$mode" "$cols" "$rows" "$seed_val")"
+            jsonl_assert "terminal_screen_${label}" "$status" \
+                "screen=${label} screen_num=${screen_num} keys=${keys_display} mode=${mode} cols=${cols} rows=${rows} seed=${seed_val} hash_key=${hash_key} hash=${hash} duration_ms=${dur_ms} exit=${exit_code} outcome=${outcome}"
+        }
+
+        run_terminal_case "terminal_caps" 12 "e" "" 80 24
+        run_terminal_case "inline_mode_story" 33 "" "FTUI_DEMO_SCREEN_MODE=inline FTUI_DEMO_UI_HEIGHT=12" 80 24
+
+        echo ""
+        echo "Terminal/inline failures: $inline_failures"
+        [ "$inline_failures" -eq 0 ]
+    } > "$INLINE_LOG" 2>&1
+    inline_exit=$?
+    inline_dur_ms=$(( $(e2e_now_ms) - inline_start_ms ))
+    inline_dur_s=$(echo "scale=2; $inline_dur_ms / 1000" | bc 2>/dev/null || echo "${inline_dur_ms}ms")
+    STEP_DURATIONS+=("${inline_dur_s}s")
+
+    if [ $inline_exit -eq 0 ]; then
+        log_pass "Terminal caps + inline mode story passed in ${inline_dur_s}s"
+        PASS_COUNT=$((PASS_COUNT + 1))
+        STEP_STATUSES+=("PASS")
+        jsonl_step_end "Terminal caps + inline story" "success" "$inline_dur_ms"
+    else
+        log_fail "Terminal caps + inline mode story failed. See: $INLINE_LOG"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        STEP_STATUSES+=("FAIL")
+        jsonl_step_end "Terminal caps + inline story" "failed" "$inline_dur_ms"
+    fi
+
+    # ────────────────────────────────────────────────────────────────────────
     # Step 12: Terminal Capabilities Report Export (bd-iuvb.6)
     #
     # Runs the Terminal Capabilities screen and triggers an export via
     # an injected 'e' keypress to produce JSONL output.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "Terminal caps report (screen 11)"
+    log_step "Terminal caps report (screen 12)"
     log_info "Running TerminalCapabilities and exporting JSONL report..."
     CAPS_LOG="$LOG_DIR/12_terminal_caps.log"
     CAPS_REPORT="$LOG_DIR/12_terminal_caps_report_${TIMESTAMP}.jsonl"
@@ -1024,12 +1285,12 @@ if $CAN_SMOKE; then
     jsonl_step_start "Terminal caps report"
     caps_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Terminal Capabilities (Screen 11) Report Export ==="
+        echo "=== Terminal Capabilities (Screen 12) Report Export ==="
         echo "Bead: bd-iuvb.6"
         echo "Report path: $CAPS_REPORT"
         echo ""
 
-        caps_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf 'e' > /dev/tty) & FTUI_TERMCAPS_REPORT_PATH=\"$CAPS_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=11 timeout 8 $DEMO_BIN"
+        caps_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf 'e' > /dev/tty) & FTUI_TERMCAPS_REPORT_PATH=\"$CAPS_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2000 FTUI_DEMO_SCREEN=12 timeout 8 $DEMO_BIN"
 
         if run_in_pty "$caps_cmd" 2>&1; then
             caps_exit=0
@@ -1135,10 +1396,10 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 13: i18n Stress Lab Report Export (bd-iuvb.9)
     #
-    # Runs the i18n screen (screen 29), cycles to the Stress Lab panel,
+    # Runs the i18n screen (screen 31), cycles to the Stress Lab panel,
     # and exports a JSONL report via an injected 'e' keypress.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "i18n stress report (screen 29)"
+    log_step "i18n stress report (screen 31)"
     log_info "Running i18n Stress Lab and exporting JSONL report..."
     I18N_LOG="$LOG_DIR/13_i18n_stress.log"
     I18N_REPORT="$LOG_DIR/13_i18n_report_${TIMESTAMP}.jsonl"
@@ -1148,12 +1409,12 @@ PY
     jsonl_step_start "i18n stress report"
     i18n_start_ms="$(e2e_now_ms)"
     {
-        echo "=== i18n Stress Lab (Screen 29) Report Export ==="
+        echo "=== i18n Stress Lab (Screen 31) Report Export ==="
         echo "Bead: bd-iuvb.9"
         echo "Report path: $I18N_REPORT"
         echo ""
 
-        i18n_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf '\\t\\t\\t' > /dev/tty; sleep 0.2; printf 'e' > /dev/tty) & FTUI_I18N_REPORT_PATH=\"$I18N_REPORT\" FTUI_I18N_REPORT_WIDTH=32 FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=29 timeout 8 $DEMO_BIN"
+        i18n_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf '\\t\\t\\t' > /dev/tty; sleep 0.2; printf 'e' > /dev/tty) & FTUI_I18N_REPORT_PATH=\"$I18N_REPORT\" FTUI_I18N_REPORT_WIDTH=32 FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=31 timeout 8 $DEMO_BIN"
 
         if run_in_pty "$i18n_cmd" 2>&1; then
             i18n_exit=0
@@ -1254,9 +1515,9 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 14: Widget Builder Export (bd-iuvb.10)
     #
-    # Runs the widget builder (screen 33) and exports a JSONL snapshot.
+    # Runs the widget builder (screen 35) and exports a JSONL snapshot.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "widget builder export (screen 33)"
+    log_step "widget builder export (screen 35)"
     log_info "Running Widget Builder and exporting JSONL snapshot..."
     WIDGET_LOG="$LOG_DIR/14_widget_builder.log"
     WIDGET_REPORT="$LOG_DIR/14_widget_builder_report_${TIMESTAMP}.jsonl"
@@ -1266,12 +1527,12 @@ PY
     jsonl_step_start "widget builder export"
     widget_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Widget Builder (Screen 33) Export ==="
+        echo "=== Widget Builder (Screen 35) Export ==="
         echo "Bead: bd-iuvb.10"
         echo "Report path: $WIDGET_REPORT"
         echo ""
 
-        widget_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf 'x' > /dev/tty) & FTUI_WIDGET_BUILDER_EXPORT_PATH=\"$WIDGET_REPORT\" FTUI_WIDGET_BUILDER_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=33 timeout 8 $DEMO_BIN"
+        widget_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf 'x' > /dev/tty) & FTUI_WIDGET_BUILDER_EXPORT_PATH=\"$WIDGET_REPORT\" FTUI_WIDGET_BUILDER_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=35 timeout 8 $DEMO_BIN"
 
         if run_in_pty "$widget_cmd" 2>&1; then
             widget_exit=0
@@ -1372,9 +1633,9 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 15: Determinism Lab JSONL (bd-iuvb.2)
     #
-    # Runs the Determinism Lab (screen 35) and exports JSONL verification data.
+    # Runs the Determinism Lab (screen 37) and exports JSONL verification data.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "determinism lab report (screen 35)"
+    log_step "determinism lab report (screen 37)"
     log_info "Running Determinism Lab and validating JSONL..."
     DET_LOG="$LOG_DIR/15_determinism_lab.log"
     DET_REPORT="$LOG_DIR/15_determinism_report_${TIMESTAMP}.jsonl"
@@ -1384,12 +1645,12 @@ PY
     jsonl_step_start "determinism lab report"
     det_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Determinism Lab (Screen 35) ==="
+        echo "=== Determinism Lab (Screen 37) ==="
         echo "Bead: bd-iuvb.2"
         echo "Report path: $DET_REPORT"
         echo ""
 
-        det_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf 'e' > /dev/tty) & FTUI_DETERMINISM_LAB_REPORT=\"$DET_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=35 timeout 8 $DEMO_BIN"
+        det_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.6; printf 'e' > /dev/tty) & FTUI_DETERMINISM_LAB_REPORT=\"$DET_REPORT\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=37 timeout 8 $DEMO_BIN"
 
         if run_in_pty "$det_cmd" 2>&1; then
             det_run_exit=0
@@ -1529,9 +1790,9 @@ PY
     # ────────────────────────────────────────────────────────────────────────
     # Step 16: Hyperlink Playground JSONL (bd-iuvb.14)
     #
-    # Runs the Hyperlink Playground (screen 36) and captures JSONL events.
+    # Runs the Hyperlink Playground (screen 38) and captures JSONL events.
     # ────────────────────────────────────────────────────────────────────────
-    log_step "hyperlink playground (screen 36)"
+    log_step "hyperlink playground (screen 38)"
     log_info "Running Hyperlink Playground and validating JSONL..."
     LINK_LOG="$LOG_DIR/16_hyperlink_playground.log"
     LINK_REPORT="$LOG_DIR/16_hyperlink_report_${TIMESTAMP}.jsonl"
@@ -1541,12 +1802,12 @@ PY
     jsonl_step_start "hyperlink playground"
     link_start_ms="$(e2e_now_ms)"
     {
-        echo "=== Hyperlink Playground (Screen 36) ==="
+        echo "=== Hyperlink Playground (Screen 38) ==="
         echo "Bead: bd-iuvb.14"
         echo "Report path: $LINK_REPORT"
         echo ""
 
-        link_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf '\\t\\r' > /dev/tty) & FTUI_LINK_REPORT_PATH=\"$LINK_REPORT\" FTUI_LINK_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=36 timeout 8 $DEMO_BIN"
+        link_cmd="stty rows 24 cols 80 2>/dev/null; (sleep 0.5; printf '\\t\\r' > /dev/tty) & FTUI_LINK_REPORT_PATH=\"$LINK_REPORT\" FTUI_LINK_RUN_ID=\"$RUN_ID\" FTUI_DEMO_EXIT_AFTER_MS=2200 FTUI_DEMO_SCREEN=38 timeout 8 $DEMO_BIN"
 
         if run_in_pty "$link_cmd" 2>&1; then
             link_exit=0

@@ -132,6 +132,9 @@ Each run produces:
 The authoritative mode/size matrix and per-script cell mapping live in:
 `docs/testing/e2e-gap-analysis.md`.
 
+The per-screen demo coverage matrix and artifact checklist live in:
+`docs/testing/e2e-coverage-matrix.md`.
+
 Target cells are alt/inline across 80x24, 120x40, and 200x50. Use
 `FTUI_HARNESS_SCREEN_MODE` and `PTY_COLS/PTY_ROWS` to pin a test to a cell.
 

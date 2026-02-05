@@ -169,26 +169,6 @@ impl TreeNode {
         count
     }
 
-    /// Flatten the visible tree into a list of (depth, is_last_at_each_depth, label) tuples.
-    fn flatten_visible(&self, depth: usize, is_last: &[bool], out: &mut Vec<FlatNode>) {
-        out.push(FlatNode {
-            label: self.label.clone(),
-            depth,
-            is_last: is_last.to_vec(),
-        });
-
-        if !self.expanded {
-            return;
-        }
-
-        let child_count = self.children.len();
-        for (i, child) in self.children.iter().enumerate() {
-            let mut child_is_last = is_last.to_vec();
-            child_is_last.push(i == child_count - 1);
-            child.flatten_visible(depth + 1, &child_is_last, out);
-        }
-    }
-
     /// Collect all expanded node paths into a set.
     #[allow(dead_code)]
     pub(crate) fn collect_expanded(&self, prefix: &str, out: &mut HashSet<String>) {
@@ -224,15 +204,6 @@ impl TreeNode {
             child.apply_expanded(&path, expanded_paths);
         }
     }
-}
-
-/// Flattened representation of a visible tree node for rendering.
-#[derive(Debug, Clone)]
-struct FlatNode {
-    label: String,
-    depth: usize,
-    /// For each ancestor depth, whether it was the last child at that depth.
-    is_last: Vec<bool>,
 }
 
 /// Tree widget for rendering hierarchical data.
@@ -340,21 +311,84 @@ impl Tree {
         &mut self.root
     }
 
-    /// Flatten the tree into a list of visible nodes for rendering.
-    fn flatten(&self) -> Vec<FlatNode> {
-        let mut out = Vec::new();
-        self.root.flatten_visible(0, &[], &mut out);
-        if !self.show_root && !out.is_empty() {
-            out.remove(0);
-            // Decrease depth of remaining nodes
-            for node in &mut out {
-                node.depth = node.depth.saturating_sub(1);
-                if !node.is_last.is_empty() {
-                    node.is_last.remove(0);
-                }
-            }
+    #[allow(clippy::too_many_arguments)]
+    fn render_node(
+        &self,
+        node: &TreeNode,
+        depth: usize,
+        is_last: &mut Vec<bool>,
+        area: Rect,
+        frame: &mut Frame,
+        current_row: &mut usize,
+        deg: ftui_render::budget::DegradationLevel,
+    ) {
+        if *current_row >= area.height as usize {
+            return;
         }
-        out
+
+        let y = area.y.saturating_add(*current_row as u16);
+        let mut x = area.x;
+        let max_x = area.right();
+
+        // Draw guide characters for each depth level
+        if depth > 0 && deg.apply_styling() {
+            for d in 0..depth {
+                let is_last_at_depth = is_last.get(d).copied().unwrap_or(false);
+                let guide = if d == depth - 1 {
+                    // This is the immediate parent level
+                    if is_last_at_depth {
+                        self.guides.last()
+                    } else {
+                        self.guides.branch()
+                    }
+                } else {
+                    // Ancestor level: show vertical line or blank
+                    if is_last_at_depth {
+                        self.guides.space()
+                    } else {
+                        self.guides.vertical()
+                    }
+                };
+
+                x = draw_text_span(frame, x, y, guide, self.guide_style, max_x);
+            }
+        } else if depth > 0 {
+            // Minimal rendering: indent with spaces
+            let indent = "    ".repeat(depth);
+            x = draw_text_span(frame, x, y, &indent, Style::default(), max_x);
+        }
+
+        // Draw label
+        let style = if depth == 0 && self.show_root {
+            self.root_style
+        } else {
+            self.label_style
+        };
+
+        if deg.apply_styling() {
+            draw_text_span(frame, x, y, &node.label, style, max_x);
+        } else {
+            draw_text_span(frame, x, y, &node.label, Style::default(), max_x);
+        }
+
+        // Register hit region for the row
+        if let Some(id) = self.hit_id {
+            let row_area = Rect::new(area.x, y, area.width, 1);
+            frame.register_hit(row_area, id, HitRegion::Content, *current_row as u64);
+        }
+
+        *current_row += 1;
+
+        if !node.expanded {
+            return;
+        }
+
+        let child_count = node.children.len();
+        for (i, child) in node.children.iter().enumerate() {
+            is_last.push(i == child_count - 1);
+            self.render_node(child, depth + 1, is_last, area, frame, current_row, deg);
+            is_last.pop();
+        }
     }
 }
 
@@ -365,62 +399,36 @@ impl Widget for Tree {
         }
 
         let deg = frame.buffer.degradation;
-        let flat = self.flatten();
-        let max_x = area.right();
+        let mut current_row = 0;
+        let mut is_last = Vec::with_capacity(8);
 
-        for (row_idx, node) in flat.iter().enumerate() {
-            if row_idx >= area.height as usize {
-                break;
-            }
-
-            let y = area.y.saturating_add(row_idx as u16);
-            let mut x = area.x;
-
-            // Draw guide characters for each depth level
-            if node.depth > 0 && deg.apply_styling() {
-                for d in 0..node.depth {
-                    let is_last_at_depth = node.is_last.get(d).copied().unwrap_or(false);
-                    let guide = if d == node.depth - 1 {
-                        // This is the immediate parent level
-                        if is_last_at_depth {
-                            self.guides.last()
-                        } else {
-                            self.guides.branch()
-                        }
-                    } else {
-                        // Ancestor level: show vertical line or blank
-                        if is_last_at_depth {
-                            self.guides.space()
-                        } else {
-                            self.guides.vertical()
-                        }
-                    };
-
-                    x = draw_text_span(frame, x, y, guide, self.guide_style, max_x);
-                }
-            } else if node.depth > 0 {
-                // Minimal rendering: indent with spaces
-                let indent = "    ".repeat(node.depth);
-                x = draw_text_span(frame, x, y, &indent, Style::default(), max_x);
-            }
-
-            // Draw label
-            let style = if node.depth == 0 && self.show_root {
-                self.root_style
-            } else {
-                self.label_style
-            };
-
-            if deg.apply_styling() {
-                draw_text_span(frame, x, y, &node.label, style, max_x);
-            } else {
-                draw_text_span(frame, x, y, &node.label, Style::default(), max_x);
-            }
-
-            // Register hit region for the row
-            if let Some(id) = self.hit_id {
-                let row_area = Rect::new(area.x, y, area.width, 1);
-                frame.register_hit(row_area, id, HitRegion::Content, row_idx as u64);
+        if self.show_root {
+            self.render_node(
+                &self.root,
+                0,
+                &mut is_last,
+                area,
+                frame,
+                &mut current_row,
+                deg,
+            );
+        } else if self.root.expanded {
+            // If root is hidden but expanded, render children as top-level nodes.
+            // We do NOT push to is_last for the root level, effectively shifting
+            // the hierarchy up by one level.
+            let child_count = self.root.children.len();
+            for (i, child) in self.root.children.iter().enumerate() {
+                is_last.push(i == child_count - 1);
+                self.render_node(
+                    child,
+                    0, // Children become depth 0
+                    &mut is_last,
+                    area,
+                    frame,
+                    &mut current_row,
+                    deg,
+                );
+                is_last.pop();
             }
         }
     }
@@ -534,6 +542,45 @@ impl Tree {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Test-only flatten helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlatNode {
+    label: String,
+    depth: usize,
+}
+
+#[cfg(test)]
+fn flatten_visible(node: &TreeNode, depth: usize, out: &mut Vec<FlatNode>) {
+    out.push(FlatNode {
+        label: node.label.clone(),
+        depth,
+    });
+    if node.expanded {
+        for child in &node.children {
+            flatten_visible(child, depth + 1, out);
+        }
+    }
+}
+
+#[cfg(test)]
+impl Tree {
+    fn flatten(&self) -> Vec<FlatNode> {
+        let mut out = Vec::new();
+        if self.show_root {
+            flatten_visible(&self.root, 0, &mut out);
+        } else if self.root.expanded {
+            for child in &self.root.children {
+                flatten_visible(child, 0, &mut out);
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,32 +670,6 @@ mod tests {
         ] {
             assert_eq!(g.width(), 4);
         }
-    }
-
-    #[test]
-    fn tree_flatten_with_root() {
-        let tree = Tree::new(simple_tree());
-        let flat = tree.flatten();
-        assert_eq!(flat.len(), 5);
-        assert_eq!(flat[0].label, "root");
-        assert_eq!(flat[0].depth, 0);
-        assert_eq!(flat[1].label, "a");
-        assert_eq!(flat[1].depth, 1);
-        assert_eq!(flat[2].label, "a1");
-        assert_eq!(flat[2].depth, 2);
-        assert_eq!(flat[3].label, "a2");
-        assert_eq!(flat[3].depth, 2);
-        assert_eq!(flat[4].label, "b");
-        assert_eq!(flat[4].depth, 1);
-    }
-
-    #[test]
-    fn tree_flatten_without_root() {
-        let tree = Tree::new(simple_tree()).with_show_root(false);
-        let flat = tree.flatten();
-        assert_eq!(flat.len(), 4);
-        assert_eq!(flat[0].label, "a");
-        assert_eq!(flat[0].depth, 0);
     }
 
     #[test]

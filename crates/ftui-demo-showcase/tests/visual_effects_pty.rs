@@ -817,6 +817,7 @@ fn pty_vfx_perf_regression_guard() -> Result<(), String> {
     for case in VFX_PERF_CASES {
         let output = run_vfx_harness_output(&demo_bin, *case, seed, true)?;
         let summary = extract_vfx_perf_summary(&output)?;
+        let frames = extract_vfx_frames(&output)?;
         let budget = find_perf_budget(*case).ok_or_else(|| {
             format!(
                 "missing VFX perf baseline for {} {}x{}",
@@ -830,6 +831,80 @@ fn pty_vfx_perf_regression_guard() -> Result<(), String> {
         let delta_p50 = summary.total_p50_ms - budget_p50;
         let delta_p95 = summary.total_p95_ms - budget_p95;
         let delta_p99 = summary.total_p99_ms - budget_p99;
+
+        let scenario = case.scenario_name(seed);
+        let checksum_path = golden_checksum_path(vfx_golden_base_dir(), &scenario);
+        let expected_hashes = load_golden_checksums(&checksum_path).unwrap_or_default();
+        let actual_hashes = frame_hash_sequence(&frames);
+        if expected_hashes.is_empty() {
+            log_jsonl(
+                "vfx_perf_guard_hash",
+                &[
+                    ("scenario", JsonValue::str(&scenario)),
+                    ("effect", JsonValue::str(case.effect)),
+                    ("cols", JsonValue::u64(case.cols as u64)),
+                    ("rows", JsonValue::u64(case.rows as u64)),
+                    ("compared_frames", JsonValue::u64(0)),
+                    ("outcome", JsonValue::str("missing")),
+                ],
+            );
+        } else {
+            if expected_hashes.len() > actual_hashes.len() {
+                return Err(format!(
+                    "VFX hash guard for {scenario} expected {} frames but got {}",
+                    expected_hashes.len(),
+                    actual_hashes.len()
+                ));
+            }
+            let (outcome, mismatch) =
+                verify_checksums(&actual_hashes[..expected_hashes.len()], &expected_hashes);
+            let (mismatch_idx, mismatch_frame, expected_hash, actual_hash) =
+                if let Some(idx) = mismatch {
+                    (
+                        JsonValue::u64(idx as u64),
+                        JsonValue::u64(frames[idx].frame_idx),
+                        JsonValue::str(&expected_hashes[idx]),
+                        JsonValue::str(&actual_hashes[idx]),
+                    )
+                } else {
+                    (
+                        JsonValue::u64(0),
+                        JsonValue::u64(0),
+                        JsonValue::str(""),
+                        JsonValue::str(""),
+                    )
+                };
+
+            log_jsonl(
+                "vfx_perf_guard_hash",
+                &[
+                    ("scenario", JsonValue::str(&scenario)),
+                    ("effect", JsonValue::str(case.effect)),
+                    ("cols", JsonValue::u64(case.cols as u64)),
+                    ("rows", JsonValue::u64(case.rows as u64)),
+                    (
+                        "compared_frames",
+                        JsonValue::u64(expected_hashes.len() as u64),
+                    ),
+                    (
+                        "outcome",
+                        JsonValue::str(match outcome {
+                            GoldenOutcome::Pass => "pass",
+                            GoldenOutcome::Fail => "fail",
+                            GoldenOutcome::Skip => "skip",
+                        }),
+                    ),
+                    ("mismatch_idx", mismatch_idx),
+                    ("frame_idx", mismatch_frame),
+                    ("expected_hash", expected_hash),
+                    ("actual_hash", actual_hash),
+                ],
+            );
+
+            if outcome != GoldenOutcome::Pass {
+                return Err(format!("VFX hash guard failed for {scenario}"));
+            }
+        }
 
         log_jsonl(
             "vfx_perf_guard",

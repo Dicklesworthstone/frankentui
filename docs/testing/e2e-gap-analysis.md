@@ -79,7 +79,7 @@ Legend: Cells refer to the matrix above. Non-PTY scripts are marked `N/A`.
 | `scripts/a11y_transitions_e2e.sh` | A11y transitions + JSONL | non-PTY | N/A | N/A |
 | `scripts/command_palette_e2e.sh` | Command palette E2E | non-PTY | N/A | N/A |
 | `scripts/cross_platform_e2e.sh` | Cross-platform smoke | non-PTY | N/A | N/A |
-| `scripts/demo_showcase_e2e.sh` | Demo showcase full run + core nav/editor/markdown/data hashes | alt (default) + inline step | 80x24, 120x40, 40x10, 132x43, 200x24 | A1, A2, I1 +small |
+| `scripts/demo_showcase_e2e.sh` | Demo showcase full run + core nav/editor/markdown/data/VFX/forms/inline hashes | alt (default) + inline step | 80x24, 120x40, 40x10, 132x43, 200x24 | A1, A2, I1 +small |
 | `scripts/demo_text_effects_e2e.sh` | Text effects E2E | non-PTY | N/A | N/A |
 | `scripts/e2e_demo_tour.sh` | Guided tour JSONL | alt | 80x24 (default) | A1 |
 | `scripts/e2e_test.sh` | PTY suite wrapper | wrapper | N/A | N/A |
@@ -165,10 +165,12 @@ Target matrix for deterministic E2E coverage:
 | Flow | Current Coverage | Missing Matrix Cells |
 |------|------------------|----------------------|
 | Guided tour | `scripts/e2e_demo_tour.sh` (alt default) | A2, A3, I1, I2, I3 |
-| Doom/Quake | None in PTY E2E | A1, A2, A3, I1, I2, I3 |
+| Doom/Quake | `scripts/demo_showcase_e2e.sh` VFX sweep (A1) | A2, A3, I1, I2, I3 |
 | Dashboard | `scripts/demo_showcase_e2e.sh` screen navigation + core nav hashes (A1) | A2, A3, I2, I3 |
 | Markdown live editor | Not registered in demo screen list (module exists only) | A1, A2, A3, I1, I2, I3 |
 | Performance HUD | `scripts/demo_showcase_e2e.sh` core nav hash (A1), `scripts/perf_hud_demo.sh` (manual) | A2, A3, I1, I2, I3 |
+| Virtualized search | `scripts/demo_showcase_e2e.sh` forms sweep (A1) | A2, A3, I1, I2, I3 |
+| Inline mode story | `scripts/demo_showcase_e2e.sh` inline story sweep (I1) | A1, A2, A3, I2, I3 |
 | Terminal capabilities | `test_terminal_capabilities.sh` (I1, I2) | A1, A2, A3, I3 |
 | Text effects | `scripts/demo_text_effects_e2e.sh` (non-PTY) | A1, A2, A3, I1, I2, I3 |
 | Inline mode story | `test_inline.sh` (I1) | I2, I3 |
