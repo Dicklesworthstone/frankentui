@@ -2784,3 +2784,170 @@ fn mermaid_showcase_error_sample_120x40() {
     mermaid_showcase_goto_sample(&mut screen, 19);
     mermaid_showcase_snapshot(&mut screen, 120, 40, "mermaid_showcase_error_sample_120x40");
 }
+
+#[test]
+fn mermaid_showcase_help_overlay_60x20() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
+    screen.update(&press(KeyCode::Char('?')));
+    mermaid_showcase_snapshot(&mut screen, 60, 20, "mermaid_showcase_help_overlay_60x20");
+}
+
+// ============================================================================
+// Mermaid Mega Showcase
+// ============================================================================
+
+fn mega_showcase_goto_sample(
+    screen: &mut ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen,
+    index: usize,
+) {
+    for _ in 0..index {
+        screen.update(&press(KeyCode::Down));
+    }
+}
+
+fn mega_showcase_snapshot(
+    screen: &mut ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen,
+    width: u16,
+    height: u16,
+    name: &str,
+) {
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(width, height, &mut pool);
+    let area = Rect::new(0, 0, width, height);
+    screen.view(&mut frame, area);
+    assert_snapshot!(name, &frame.buffer);
+}
+
+// Baseline: Flow Basic (sample 0) at standard sizes.
+#[test]
+fn mega_showcase_flow_basic_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_snapshot(&mut screen, 80, 24, "mega_showcase_flow_basic_80x24");
+}
+
+#[test]
+fn mega_showcase_flow_basic_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_flow_basic_120x40");
+}
+
+// Sequence diagram (sample 3).
+#[test]
+fn mega_showcase_sequence_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 3);
+    mega_showcase_snapshot(&mut screen, 80, 24, "mega_showcase_sequence_80x24");
+}
+
+#[test]
+fn mega_showcase_sequence_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 3);
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_sequence_120x40");
+}
+
+// Class diagram (sample 4).
+#[test]
+fn mega_showcase_class_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 4);
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_class_120x40");
+}
+
+// State diagram (sample 5).
+#[test]
+fn mega_showcase_state_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 5);
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_state_120x40");
+}
+
+// ER diagram (sample 6).
+#[test]
+fn mega_showcase_er_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 6);
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_er_120x40");
+}
+
+// Pie chart (sample 7).
+#[test]
+fn mega_showcase_pie_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 7);
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_pie_120x40");
+}
+
+// Gantt chart (sample 8).
+#[test]
+fn mega_showcase_gantt_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 8);
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_gantt_120x40");
+}
+
+// Mindmap (sample 9).
+#[test]
+fn mega_showcase_mindmap_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    mega_showcase_goto_sample(&mut screen, 9);
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_mindmap_120x40");
+}
+
+// Help overlay visible.
+#[test]
+fn mega_showcase_help_overlay_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    screen.update(&press(KeyCode::Char('?')));
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_help_overlay_120x40");
+}
+
+// Panels collapsed via Escape.
+#[test]
+fn mega_showcase_collapsed_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    screen.update(&press(KeyCode::Escape));
+    mega_showcase_snapshot(&mut screen, 120, 40, "mega_showcase_collapsed_120x40");
+}
+
+// Viewport override with custom size.
+#[test]
+fn mega_showcase_viewport_override_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen =
+        ftui_demo_showcase::screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen::new();
+    screen.update(&press(KeyCode::Char(']')));
+    screen.update(&press(KeyCode::Char(']')));
+    screen.update(&press(KeyCode::Char('}')));
+    mega_showcase_snapshot(
+        &mut screen,
+        120,
+        40,
+        "mega_showcase_viewport_override_120x40",
+    );
+}

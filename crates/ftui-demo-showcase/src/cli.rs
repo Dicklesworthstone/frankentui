@@ -56,7 +56,7 @@ SCREENS:
    14  Performance        Frame budget, caching, virtualization
    15  Markdown           Rich text and markdown rendering
    16  Mermaid Showcase   Mermaid diagrams with layout diagnostics
-   17  Mermaid Mega       Comprehensive Mermaid diagram lab with all knobs
+   17  Mermaid Mega Showcase Comprehensive Mermaid diagram lab with all knobs
    18  Visual Effects     Animated braille and canvas effects
    19  Responsive         Breakpoint-driven responsive layout demo
    20  Log Search         Live log search and filter demo
@@ -707,7 +707,12 @@ mod tests {
     }
 
     #[test]
-    fn help_text_contains_visual_effects_as_screen_17() {
+    fn help_text_contains_mermaid_mega_showcase_as_screen_17() {
+        assert!(HELP_TEXT.contains("17  Mermaid Mega Showcase"));
+    }
+
+    #[test]
+    fn help_text_contains_visual_effects_as_screen_18() {
         assert!(HELP_TEXT.contains("18  Visual Effects"));
     }
 

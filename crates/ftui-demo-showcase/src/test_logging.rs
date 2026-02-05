@@ -89,3 +89,68 @@ impl JsonlLogger {
         eprintln!("{{{}}}", parts.join(","));
     }
 }
+
+/// Validate the Mermaid mega showcase recompute JSONL schema.
+pub fn validate_mega_recompute_jsonl_schema(line: &str) -> Result<(), String> {
+    let required_fields = [
+        "\"schema_version\":",
+        "\"event\":\"mermaid_mega_recompute\"",
+        "\"seq\":",
+        "\"timestamp\":",
+        "\"seed\":",
+        "\"screen_mode\":",
+        "\"sample\":",
+        "\"diagram_type\":",
+        "\"layout_mode\":",
+        "\"tier\":",
+        "\"glyph_mode\":",
+        "\"wrap_mode\":",
+        "\"render_mode\":",
+        "\"palette\":",
+        "\"styles_enabled\":",
+        "\"comparison_enabled\":",
+        "\"comparison_layout_mode\":",
+        "\"viewport_cols\":",
+        "\"viewport_rows\":",
+        "\"render_cols\":",
+        "\"render_rows\":",
+        "\"zoom\":",
+        "\"pan_x\":",
+        "\"pan_y\":",
+        "\"analysis_epoch\":",
+        "\"layout_epoch\":",
+        "\"render_epoch\":",
+        "\"analysis_ran\":",
+        "\"layout_ran\":",
+        "\"render_ran\":",
+        "\"cache_hits\":",
+        "\"cache_misses\":",
+        "\"cache_hit\":",
+        "\"debounce_skips\":",
+        "\"layout_budget_exceeded\":",
+        "\"parse_ms\":",
+        "\"layout_ms\":",
+        "\"render_ms\":",
+        "\"node_count\":",
+        "\"edge_count\":",
+        "\"error_count\":",
+        "\"layout_iterations\":",
+        "\"layout_iterations_max\":",
+        "\"layout_budget_exceeded_layout\":",
+        "\"layout_crossings\":",
+        "\"layout_ranks\":",
+        "\"layout_max_rank_width\":",
+        "\"layout_total_bends\":",
+        "\"layout_position_variance\":",
+    ];
+
+    for field in required_fields {
+        if !line.contains(field) {
+            return Err(format!(
+                "mega recompute JSONL missing required field {field}: {line}"
+            ));
+        }
+    }
+
+    Ok(())
+}
