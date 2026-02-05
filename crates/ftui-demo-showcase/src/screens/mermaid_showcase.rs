@@ -164,15 +164,179 @@ impl LayoutMode {
     }
 }
 
+/// Diagram family for type-safe filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SampleFamily {
+    Flow,
+    Sequence,
+    Class,
+    State,
+    Er,
+    Gantt,
+    Mindmap,
+    Pie,
+    Unsupported,
+}
+
+impl SampleFamily {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Flow => "flow",
+            Self::Sequence => "sequence",
+            Self::Class => "class",
+            Self::State => "state",
+            Self::Er => "er",
+            Self::Gantt => "gantt",
+            Self::Mindmap => "mindmap",
+            Self::Pie => "pie",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    const ALL: &[Self] = &[
+        Self::Flow,
+        Self::Sequence,
+        Self::Class,
+        Self::State,
+        Self::Er,
+        Self::Gantt,
+        Self::Mindmap,
+        Self::Pie,
+        Self::Unsupported,
+    ];
+}
+
+/// Sample complexity tier for filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SampleComplexity {
+    /// Small: 1-5 nodes/entities.
+    S,
+    /// Medium: 6-20 nodes/entities.
+    M,
+    /// Large: 20+ nodes/entities or deep nesting.
+    L,
+}
+
+impl SampleComplexity {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::S => "S",
+            Self::M => "M",
+            Self::L => "L",
+        }
+    }
+}
+
+/// Default viewport size hint for a sample (width, height in terminal cells).
+#[derive(Debug, Clone, Copy)]
+struct SampleSizeHint {
+    width: u16,
+    height: u16,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MermaidSample {
+    /// Stable identifier for referencing this sample.
+    id: &'static str,
+    /// Human-readable display name.
     name: &'static str,
-    kind: &'static str,
-    complexity: &'static str,
+    /// Diagram family.
+    family: SampleFamily,
+    /// Complexity tier.
+    complexity: SampleComplexity,
+    /// Searchable category tags.
     tags: &'static [&'static str],
+    /// Feature coverage tags (must be in KNOWN_FEATURE_TAGS).
     features: &'static [&'static str],
+    /// Rendering edge cases this sample exercises.
     edge_cases: &'static [&'static str],
+    /// Default viewport size hint (minimum comfortable rendering area).
+    default_size: SampleSizeHint,
+    /// Optional notes about this sample's purpose or quirks.
+    notes: &'static str,
+    /// Raw Mermaid source text.
     source: &'static str,
+}
+
+/// Sample registry with selection and filtering.
+struct SampleRegistry;
+
+impl SampleRegistry {
+    /// All registered samples.
+    fn all() -> &'static [MermaidSample] {
+        DEFAULT_SAMPLES
+    }
+
+    /// Filter samples by diagram family.
+    fn by_family(family: SampleFamily) -> Vec<&'static MermaidSample> {
+        DEFAULT_SAMPLES
+            .iter()
+            .filter(|s| s.family == family)
+            .collect()
+    }
+
+    /// Filter samples by minimum complexity.
+    fn by_min_complexity(min: SampleComplexity) -> Vec<&'static MermaidSample> {
+        DEFAULT_SAMPLES
+            .iter()
+            .filter(|s| s.complexity >= min)
+            .collect()
+    }
+
+    /// Filter samples by exact complexity tier.
+    fn by_complexity(tier: SampleComplexity) -> Vec<&'static MermaidSample> {
+        DEFAULT_SAMPLES
+            .iter()
+            .filter(|s| s.complexity == tier)
+            .collect()
+    }
+
+    /// Filter samples that fit within a given viewport size.
+    fn by_max_size(width: u16, height: u16) -> Vec<&'static MermaidSample> {
+        DEFAULT_SAMPLES
+            .iter()
+            .filter(|s| s.default_size.width <= width && s.default_size.height <= height)
+            .collect()
+    }
+
+    /// Filter samples that exercise a specific feature tag.
+    fn by_feature(tag: &str) -> Vec<&'static MermaidSample> {
+        DEFAULT_SAMPLES
+            .iter()
+            .filter(|s| s.features.contains(&tag))
+            .collect()
+    }
+
+    /// Filter samples matching any of the given tags.
+    fn by_any_tag(tags: &[&str]) -> Vec<&'static MermaidSample> {
+        DEFAULT_SAMPLES
+            .iter()
+            .filter(|s| s.tags.iter().any(|t| tags.contains(t)))
+            .collect()
+    }
+
+    /// Find a sample by its stable id.
+    fn by_id(id: &str) -> Option<&'static MermaidSample> {
+        DEFAULT_SAMPLES.iter().find(|s| s.id == id)
+    }
+
+    /// Combined filter: family + complexity + max size.
+    fn select(
+        family: Option<SampleFamily>,
+        complexity: Option<SampleComplexity>,
+        max_width: Option<u16>,
+        max_height: Option<u16>,
+    ) -> Vec<&'static MermaidSample> {
+        DEFAULT_SAMPLES
+            .iter()
+            .filter(|s| {
+                family.map_or(true, |f| s.family == f)
+                    && complexity.map_or(true, |c| s.complexity == c)
+                    && max_width.map_or(true, |w| s.default_size.width <= w)
+                    && max_height.map_or(true, |h| s.default_size.height <= h)
+            })
+            .collect()
+    }
 }
 
 // =============================================================================
