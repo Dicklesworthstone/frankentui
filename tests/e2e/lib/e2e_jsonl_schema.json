@@ -158,6 +158,31 @@
         "rows": ["number", "null"]
       }
     },
+    "case": {
+      "required": [
+        "scenario",
+        "mode",
+        "cols",
+        "rows",
+        "status",
+        "hash",
+        "duration_ms",
+        "error",
+        "screen"
+      ],
+      "optional": [],
+      "types": {
+        "scenario": "string",
+        "mode": "string",
+        "cols": "number",
+        "rows": "number",
+        "status": "string",
+        "hash": "string",
+        "duration_ms": "number",
+        "error": "string",
+        "screen": "string"
+      }
+    },
     "pty_capture": {
       "required": [
         "output_file",
