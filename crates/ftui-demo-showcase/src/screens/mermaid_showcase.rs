@@ -19,6 +19,8 @@ use ftui_extras::mermaid_layout;
 use ftui_extras::mermaid_render;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::buffer::Buffer;
+use ftui_render::cell::{Cell, PackedRgba};
+use ftui_render::drawing::{BorderChars, Draw};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
@@ -1199,7 +1201,7 @@ impl MermaidShowcaseState {
             layout_mode: LayoutMode::Auto,
             tier: MermaidTier::Auto,
             glyph_mode: MermaidGlyphMode::Unicode,
-            render_mode: MermaidRenderMode::Auto,
+            render_mode: MermaidRenderMode::Braille,
             wrap_mode: MermaidWrapMode::WordChar,
             styles_enabled: true,
             metrics_visible: true,
@@ -2156,18 +2158,32 @@ impl MermaidShowcaseScreen {
             return;
         }
 
-        let hint = "j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier";
-        let metrics = if self.state.metrics_visible {
-            format!(
-                "parse {}ms | layout {}ms | render {}ms",
-                self.state.metrics.parse_ms.unwrap_or(0.0),
-                self.state.metrics.layout_ms.unwrap_or(0.0),
-                self.state.metrics.render_ms.unwrap_or(0.0)
-            )
+        let hint = if area.width >= 120 {
+            "j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier"
+        } else if area.width >= 80 {
+            "j/k sample  Enter render  l layout  +/- zoom  m metrics  ? help"
         } else {
-            "metrics hidden (m)".to_string()
+            "j/k sample  Enter render  ? help"
         };
-        let text = format!("{hint} | {metrics}");
+        let metrics = if area.width >= 120 {
+            if self.state.metrics_visible {
+                format!(
+                    "parse {}ms | layout {}ms | render {}ms",
+                    self.state.metrics.parse_ms.unwrap_or(0.0),
+                    self.state.metrics.layout_ms.unwrap_or(0.0),
+                    self.state.metrics.render_ms.unwrap_or(0.0)
+                )
+            } else {
+                "metrics hidden (m)".to_string()
+            }
+        } else {
+            String::new()
+        };
+        let text = if metrics.is_empty() {
+            hint.to_string()
+        } else {
+            format!("{hint} | {metrics}")
+        };
         Paragraph::new(text)
             .style(Style::new().fg(theme::fg::MUTED).bg(theme::bg::BASE))
             .render(area, frame);
@@ -2628,6 +2644,9 @@ impl Screen for MermaidShowcaseScreen {
                     }
                 }
             }
+            if self.state.help_visible {
+                self.render_help_overlay(frame, area);
+            }
             return;
         }
 
@@ -2646,6 +2665,9 @@ impl Screen for MermaidShowcaseScreen {
             } else {
                 self.render_viewport(frame, right);
             }
+            if self.state.help_visible {
+                self.render_help_overlay(frame, area);
+            }
             return;
         }
 
@@ -2654,6 +2676,10 @@ impl Screen for MermaidShowcaseScreen {
             .split(body);
         self.render_samples(frame, rows[0]);
         self.render_viewport(frame, rows[1]);
+
+        if self.state.help_visible {
+            self.render_help_overlay(frame, area);
+        }
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
@@ -3044,8 +3070,6 @@ mod tests {
     #[test]
     fn render_mode_cycles() {
         let mut s = new_state();
-        assert_eq!(s.render_mode, MermaidRenderMode::Auto);
-        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
         assert_eq!(s.render_mode, MermaidRenderMode::Braille);
         s.apply_action(MermaidShowcaseAction::CycleRenderMode);
         assert_eq!(s.render_mode, MermaidRenderMode::Block);
@@ -3055,6 +3079,8 @@ mod tests {
         assert_eq!(s.render_mode, MermaidRenderMode::CellOnly);
         s.apply_action(MermaidShowcaseAction::CycleRenderMode);
         assert_eq!(s.render_mode, MermaidRenderMode::Auto);
+        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
+        assert_eq!(s.render_mode, MermaidRenderMode::Braille);
     }
 
     #[test]
@@ -3401,6 +3427,20 @@ mod tests {
         let event = Event::Key(press(KeyCode::Char('j')));
         screen.update(&event);
         assert_eq!(screen.state.selected_index, 1);
+    }
+
+    #[test]
+    fn collapse_panels_does_not_block_nav_or_refresh() {
+        let mut screen = new_screen();
+        let initial_index = screen.state.selected_index;
+        let initial_epoch = screen.state.render_epoch;
+
+        screen.update(&Event::Key(press(KeyCode::Escape)));
+        screen.update(&Event::Key(press(KeyCode::Down)));
+        assert_eq!(screen.state.selected_index, initial_index + 1);
+
+        screen.update(&Event::Key(press(KeyCode::Enter)));
+        assert!(screen.state.render_epoch > initial_epoch);
     }
 
     #[test]
@@ -4002,5 +4042,477 @@ mod tests {
                 sample.default_size.height
             );
         }
+    }
+    // ================================================================
+    // bd-1yor8: keybinding coverage + viewport size-adjust tests
+    // ================================================================
+
+    // --- Normal mode keys: palette, debug, node selection, search ---
+
+    #[test]
+    fn key_p_maps_to_cycle_palette() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('p')));
+        assert!(matches!(action, Some(MermaidShowcaseAction::CyclePalette)));
+    }
+
+    #[test]
+    fn key_shift_p_maps_to_prev_palette() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('P')));
+        assert!(matches!(action, Some(MermaidShowcaseAction::PrevPalette)));
+    }
+
+    #[test]
+    fn key_d_maps_to_debug_overlay() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('d')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::ToggleDebugOverlay)
+        ));
+    }
+
+    #[test]
+    fn key_tab_maps_to_select_next_node() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Tab));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::SelectNextNode)
+        ));
+    }
+
+    #[test]
+    fn key_backtab_maps_to_select_prev_node() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::BackTab));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::SelectPrevNode)
+        ));
+    }
+
+    #[test]
+    fn key_slash_maps_to_enter_search() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('/')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::EnterSearchMode)
+        ));
+    }
+
+    #[test]
+    fn key_question_mark_maps_to_help_in_normal() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('?')));
+        assert!(matches!(action, Some(MermaidShowcaseAction::ToggleHelp)));
+    }
+
+    // --- Search mode keybindings ---
+
+    #[test]
+    fn search_mode_n_maps_to_next_match() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Search;
+        let action = screen.handle_key(&press(KeyCode::Char('n')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::NextSearchMatch)
+        ));
+    }
+
+    #[test]
+    fn search_mode_shift_n_maps_to_prev_match() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Search;
+        let action = screen.handle_key(&press(KeyCode::Char('N')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::PrevSearchMatch)
+        ));
+    }
+
+    #[test]
+    fn search_mode_escape_exits() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Search;
+        let action = screen.handle_key(&press(KeyCode::Escape));
+        assert!(matches!(action, Some(MermaidShowcaseAction::ExitMode)));
+    }
+
+    #[test]
+    fn search_mode_ignores_normal_keys() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Search;
+        // 'j' is NextSample in Normal mode but should be ignored in Search.
+        let action = screen.handle_key(&press(KeyCode::Char('j')));
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn search_mode_question_mark_toggles_help() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Search;
+        let action = screen.handle_key(&press(KeyCode::Char('?')));
+        assert!(matches!(action, Some(MermaidShowcaseAction::ToggleHelp)));
+    }
+
+    // --- Inspect mode keybindings ---
+
+    #[test]
+    fn inspect_mode_escape_exits() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        let action = screen.handle_key(&press(KeyCode::Escape));
+        assert!(matches!(action, Some(MermaidShowcaseAction::ExitMode)));
+    }
+
+    #[test]
+    fn inspect_mode_tab_selects_next() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        let action = screen.handle_key(&press(KeyCode::Tab));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::SelectNextNode)
+        ));
+    }
+
+    #[test]
+    fn inspect_mode_backtab_selects_prev() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        let action = screen.handle_key(&press(KeyCode::BackTab));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::SelectPrevNode)
+        ));
+    }
+
+    #[test]
+    fn inspect_mode_zoom_keys_work() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('+'))),
+            Some(MermaidShowcaseAction::ZoomIn)
+        ));
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('='))),
+            Some(MermaidShowcaseAction::ZoomIn)
+        ));
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('-'))),
+            Some(MermaidShowcaseAction::ZoomOut)
+        ));
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('0'))),
+            Some(MermaidShowcaseAction::ZoomReset)
+        ));
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('f'))),
+            Some(MermaidShowcaseAction::FitToView)
+        ));
+    }
+
+    #[test]
+    fn inspect_mode_panel_keys_work() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('m'))),
+            Some(MermaidShowcaseAction::ToggleMetrics)
+        ));
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('c'))),
+            Some(MermaidShowcaseAction::ToggleControls)
+        ));
+        assert!(matches!(
+            screen.handle_key(&press(KeyCode::Char('i'))),
+            Some(MermaidShowcaseAction::ToggleStatusLog)
+        ));
+    }
+
+    #[test]
+    fn inspect_mode_slash_enters_search() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        let action = screen.handle_key(&press(KeyCode::Char('/')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::EnterSearchMode)
+        ));
+    }
+
+    #[test]
+    fn inspect_mode_ignores_sample_navigation() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        // 'j', 'k', Home, End are not available in inspect mode.
+        assert!(screen.handle_key(&press(KeyCode::Char('j'))).is_none());
+        assert!(screen.handle_key(&press(KeyCode::Char('k'))).is_none());
+        assert!(screen.handle_key(&press(KeyCode::Home)).is_none());
+        assert!(screen.handle_key(&press(KeyCode::End)).is_none());
+    }
+
+    #[test]
+    fn inspect_mode_question_mark_toggles_help() {
+        let mut screen = new_screen();
+        screen.state.mode = ShowcaseMode::Inspect;
+        let action = screen.handle_key(&press(KeyCode::Char('?')));
+        assert!(matches!(action, Some(MermaidShowcaseAction::ToggleHelp)));
+    }
+
+    // --- State transitions: palette ---
+
+    #[test]
+    fn palette_cycles_through_all() {
+        let mut s = new_state();
+        assert_eq!(s.palette, DiagramPalettePreset::Default);
+        s.apply_action(MermaidShowcaseAction::CyclePalette);
+        assert_eq!(s.palette, DiagramPalettePreset::Corporate);
+        s.apply_action(MermaidShowcaseAction::CyclePalette);
+        assert_eq!(s.palette, DiagramPalettePreset::Neon);
+        s.apply_action(MermaidShowcaseAction::CyclePalette);
+        assert_eq!(s.palette, DiagramPalettePreset::Monochrome);
+        s.apply_action(MermaidShowcaseAction::CyclePalette);
+        assert_eq!(s.palette, DiagramPalettePreset::Pastel);
+        s.apply_action(MermaidShowcaseAction::CyclePalette);
+        assert_eq!(s.palette, DiagramPalettePreset::HighContrast);
+        s.apply_action(MermaidShowcaseAction::CyclePalette);
+        assert_eq!(s.palette, DiagramPalettePreset::Default);
+    }
+
+    #[test]
+    fn prev_palette_cycles_backward() {
+        let mut s = new_state();
+        assert_eq!(s.palette, DiagramPalettePreset::Default);
+        s.apply_action(MermaidShowcaseAction::PrevPalette);
+        assert_eq!(s.palette, DiagramPalettePreset::HighContrast);
+        s.apply_action(MermaidShowcaseAction::PrevPalette);
+        assert_eq!(s.palette, DiagramPalettePreset::Pastel);
+    }
+
+    #[test]
+    fn palette_bumps_render_epoch() {
+        let mut s = new_state();
+        let epoch = s.render_epoch;
+        s.apply_action(MermaidShowcaseAction::CyclePalette);
+        assert_eq!(s.render_epoch, epoch + 1);
+    }
+
+    // --- State transitions: debug overlay ---
+
+    #[test]
+    fn debug_overlay_toggles() {
+        let mut s = new_state();
+        assert!(!s.debug_overlay);
+        s.apply_action(MermaidShowcaseAction::ToggleDebugOverlay);
+        assert!(s.debug_overlay);
+        s.apply_action(MermaidShowcaseAction::ToggleDebugOverlay);
+        assert!(!s.debug_overlay);
+    }
+
+    #[test]
+    fn debug_overlay_bumps_render_epoch() {
+        let mut s = new_state();
+        let epoch = s.render_epoch;
+        s.apply_action(MermaidShowcaseAction::ToggleDebugOverlay);
+        assert_eq!(s.render_epoch, epoch + 1);
+    }
+
+    // --- State transitions: help ---
+
+    #[test]
+    fn help_toggles() {
+        let mut s = new_state();
+        assert!(!s.help_visible);
+        s.apply_action(MermaidShowcaseAction::ToggleHelp);
+        assert!(s.help_visible);
+        s.apply_action(MermaidShowcaseAction::ToggleHelp);
+        assert!(!s.help_visible);
+    }
+
+    // --- State transitions: mode (search / inspect) ---
+
+    #[test]
+    fn enter_search_mode_sets_state() {
+        let mut s = new_state();
+        assert_eq!(s.mode, ShowcaseMode::Normal);
+        s.apply_action(MermaidShowcaseAction::EnterSearchMode);
+        assert_eq!(s.mode, ShowcaseMode::Search);
+        assert!(s.search_query.is_empty());
+        assert!(s.search_matches.is_empty());
+        assert_eq!(s.search_match_idx, 0);
+    }
+
+    #[test]
+    fn exit_search_mode_clears_state() {
+        let mut s = new_state();
+        s.mode = ShowcaseMode::Search;
+        s.search_query = "test".to_string();
+        s.search_matches = vec![0, 1];
+        s.search_match_idx = 1;
+        s.apply_action(MermaidShowcaseAction::ExitMode);
+        assert_eq!(s.mode, ShowcaseMode::Normal);
+        assert!(s.search_query.is_empty());
+        assert!(s.search_matches.is_empty());
+        assert_eq!(s.search_match_idx, 0);
+    }
+
+    #[test]
+    fn exit_inspect_mode_clears_node() {
+        let mut s = new_state();
+        s.mode = ShowcaseMode::Inspect;
+        s.selected_node_idx = Some(3);
+        s.apply_action(MermaidShowcaseAction::ExitMode);
+        assert_eq!(s.mode, ShowcaseMode::Normal);
+        assert!(s.selected_node_idx.is_none());
+    }
+
+    #[test]
+    fn exit_normal_mode_is_noop() {
+        let mut s = new_state();
+        assert_eq!(s.mode, ShowcaseMode::Normal);
+        s.apply_action(MermaidShowcaseAction::ExitMode);
+        assert_eq!(s.mode, ShowcaseMode::Normal);
+    }
+
+    #[test]
+    fn next_search_match_wraps() {
+        let mut s = new_state();
+        s.mode = ShowcaseMode::Search;
+        s.search_matches = vec![0, 3, 7];
+        s.search_match_idx = 0;
+        s.apply_action(MermaidShowcaseAction::NextSearchMatch);
+        assert_eq!(s.search_match_idx, 1);
+        s.apply_action(MermaidShowcaseAction::NextSearchMatch);
+        assert_eq!(s.search_match_idx, 2);
+        s.apply_action(MermaidShowcaseAction::NextSearchMatch);
+        assert_eq!(s.search_match_idx, 0); // wraps
+    }
+
+    #[test]
+    fn prev_search_match_wraps() {
+        let mut s = new_state();
+        s.mode = ShowcaseMode::Search;
+        s.search_matches = vec![0, 3, 7];
+        s.search_match_idx = 0;
+        s.apply_action(MermaidShowcaseAction::PrevSearchMatch);
+        assert_eq!(s.search_match_idx, 2); // wraps backward
+        s.apply_action(MermaidShowcaseAction::PrevSearchMatch);
+        assert_eq!(s.search_match_idx, 1);
+    }
+
+    #[test]
+    fn search_match_noop_when_empty() {
+        let mut s = new_state();
+        s.mode = ShowcaseMode::Search;
+        s.search_matches = vec![];
+        s.search_match_idx = 0;
+        s.apply_action(MermaidShowcaseAction::NextSearchMatch);
+        assert_eq!(s.search_match_idx, 0);
+        s.apply_action(MermaidShowcaseAction::PrevSearchMatch);
+        assert_eq!(s.search_match_idx, 0);
+    }
+
+    // --- State transitions: node selection ---
+
+    #[test]
+    fn select_next_node_enters_inspect() {
+        let mut s = new_state();
+        assert_eq!(s.mode, ShowcaseMode::Normal);
+        s.apply_action(MermaidShowcaseAction::SelectNextNode);
+        // If cache_node_count() > 0, should enter inspect mode.
+        // The heuristic may return 0 for some samples, so check conditionally.
+        if s.selected_node_idx.is_some() {
+            assert_eq!(s.mode, ShowcaseMode::Inspect);
+        }
+    }
+
+    #[test]
+    fn select_prev_node_enters_inspect() {
+        let mut s = new_state();
+        s.apply_action(MermaidShowcaseAction::SelectPrevNode);
+        if s.selected_node_idx.is_some() {
+            assert_eq!(s.mode, ShowcaseMode::Inspect);
+        }
+    }
+
+    // --- Viewport size-adjust: comprehensive ---
+
+    #[test]
+    fn viewport_decrease_width() {
+        let mut s = new_state();
+        // First increase to establish an override.
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportWidth);
+        let (cols1, rows1) = s.viewport_size_override.unwrap();
+        s.apply_action(MermaidShowcaseAction::DecreaseViewportWidth);
+        let (cols2, rows2) = s.viewport_size_override.unwrap();
+        assert_eq!(cols2, cols1 - VIEWPORT_OVERRIDE_STEP_COLS as u16);
+        assert_eq!(rows2, rows1); // height unchanged
+    }
+
+    #[test]
+    fn viewport_decrease_height() {
+        let mut s = new_state();
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportHeight);
+        let (cols1, rows1) = s.viewport_size_override.unwrap();
+        s.apply_action(MermaidShowcaseAction::DecreaseViewportHeight);
+        let (cols2, rows2) = s.viewport_size_override.unwrap();
+        assert_eq!(cols2, cols1); // width unchanged
+        assert_eq!(rows2, rows1 - VIEWPORT_OVERRIDE_STEP_ROWS as u16);
+    }
+
+    #[test]
+    fn viewport_size_accumulates() {
+        let mut s = new_state();
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportWidth);
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportWidth);
+        let (cols, _) = s.viewport_size_override.unwrap();
+        let expected = VIEWPORT_OVERRIDE_DEFAULT_COLS + 2 * VIEWPORT_OVERRIDE_STEP_COLS as u16;
+        assert_eq!(cols, expected);
+    }
+
+    #[test]
+    fn viewport_width_clamps_at_minimum() {
+        let mut s = new_state();
+        s.viewport_size_override = Some((VIEWPORT_OVERRIDE_MIN_COLS, 24));
+        s.apply_action(MermaidShowcaseAction::DecreaseViewportWidth);
+        let (cols, _) = s.viewport_size_override.unwrap();
+        assert!(cols >= VIEWPORT_OVERRIDE_MIN_COLS);
+    }
+
+    #[test]
+    fn viewport_height_clamps_at_minimum() {
+        let mut s = new_state();
+        s.viewport_size_override = Some((80, VIEWPORT_OVERRIDE_MIN_ROWS));
+        s.apply_action(MermaidShowcaseAction::DecreaseViewportHeight);
+        let (_, rows) = s.viewport_size_override.unwrap();
+        assert!(rows >= VIEWPORT_OVERRIDE_MIN_ROWS);
+    }
+
+    #[test]
+    fn viewport_width_and_height_independent() {
+        let mut s = new_state();
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportWidth);
+        let (cols1, rows1) = s.viewport_size_override.unwrap();
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportHeight);
+        let (cols2, rows2) = s.viewport_size_override.unwrap();
+        assert_eq!(cols2, cols1); // width didn't change
+        assert_eq!(rows2, rows1 + VIEWPORT_OVERRIDE_STEP_ROWS as u16);
+    }
+
+    #[test]
+    fn viewport_reset_when_no_override_is_noop() {
+        let mut s = new_state();
+        assert!(s.viewport_size_override.is_none());
+        let epoch = s.render_epoch;
+        s.apply_action(MermaidShowcaseAction::ResetViewportOverride);
+        assert!(s.viewport_size_override.is_none());
+        // No epoch bump when already None.
+        assert_eq!(s.render_epoch, epoch);
     }
 }

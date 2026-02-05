@@ -8,6 +8,9 @@
 //! - Help overlay driven by the canonical keymap spec
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use ftui_core::geometry::Rect;
@@ -24,7 +27,9 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
 
+use crate::determinism;
 use crate::screens::{Cmd, Event, Frame, HelpEntry, Screen};
+use crate::test_logging::{TEST_JSONL_SCHEMA, escape_json, jsonl_enabled};
 
 // ── Layout constants ────────────────────────────────────────────────
 
@@ -56,6 +61,8 @@ const VIEWPORT_OVERRIDE_MIN_ROWS: u16 = 4;
 const VIEWPORT_OVERRIDE_STEP_COLS: i16 = 4;
 /// Viewport override step for height adjustments.
 const VIEWPORT_OVERRIDE_STEP_ROWS: i16 = 2;
+const MEGA_JSONL_EVENT: &str = "mermaid_mega_recompute";
+static MEGA_JSONL_SEQ: AtomicU64 = AtomicU64::new(0);
 
 // ── Sample library ─────────────────────────────────────────────────
 
@@ -64,6 +71,8 @@ struct MegaSample {
     name: &'static str,
     source: &'static str,
 }
+
+const GENERATED_SAMPLE_SOURCE: &str = "__generated__";
 
 const MEGA_SAMPLES: &[MegaSample] = &[
     MegaSample {
@@ -77,6 +86,54 @@ const MEGA_SAMPLES: &[MegaSample] = &[
     MegaSample {
         name: "Flow Dense",
         source: "graph TD\n    A --> B --> C --> D\n    A --> C\n    B --> D\n    E --> F --> G\n    D --> G\n    A --> E",
+    },
+    MegaSample {
+        name: "Flow RL Labels",
+        source: "graph RL
+    Z[Output] -->|result| Y[Transform]
+    Y -->|data| X[Validate]
+    X -->|raw| W[Input]
+    X -->|error| V[Reject]
+    V -->|retry| W",
+    },
+    MegaSample {
+        name: "Flow Nested Subgraphs",
+        source: "graph TB
+    subgraph Cluster A
+        subgraph Inner
+            A1[Core] --> A2[Cache]
+        end
+        A3[Gateway] --> A1
+    end
+    subgraph Cluster B
+        B1[Worker] --> B2[Queue]
+    end
+    A2 --> B2
+    B1 --> A3",
+    },
+    MegaSample {
+        name: "Flow BT Shapes",
+        source: "graph BT
+    D[(Database)] --> S{{Service}}
+    S --> G>Gateway]
+    G --> C([Client])
+    S --> L[/Logger/]
+    L --> M[[Monitor]]",
+    },
+    MegaSample {
+        name: "Flow Complex",
+        source: "graph LR
+    A[Request] -->|HTTP| B{Auth?}
+    B -->|valid| C[Router]
+    B -->|invalid| D[401 Error]
+    C -->|/api| E[REST Handler]
+    C -->|/ws| F[WebSocket]
+    E --> G[(PostgreSQL)]
+    F --> H[(Redis)]
+    G --> I[Response]
+    H --> I
+    I -->|cache| J{{CDN}}
+    J --> K([User])",
     },
     MegaSample {
         name: "Sequence",
@@ -106,7 +163,211 @@ const MEGA_SAMPLES: &[MegaSample] = &[
         name: "Mindmap",
         source: "mindmap\n  root((Project))\n    Planning\n      Goals\n      Timeline\n    Development\n      Frontend\n      Backend\n    Testing",
     },
+    // -- Sequence samples (bd-3oaig.5.2) --
+    MegaSample {
+        name: "Sequence Loops",
+        source: "sequenceDiagram\n    participant C as Client\n    participant S as Server\n    participant DB as Database\n    C->>S: Login\n    activate S\n    S->>DB: Query user\n    activate DB\n    DB-->>S: User data\n    deactivate DB\n    alt Valid credentials\n        S-->>C: 200 OK\n    else Invalid\n        S-->>C: 401 Unauthorized\n    end\n    deactivate S\n    loop Every 30s\n        C->>S: Heartbeat\n        S-->>C: ACK\n    end",
+    },
+    MegaSample {
+        name: "Sequence Parallel",
+        source: "sequenceDiagram\n    participant U as User\n    participant GW as Gateway\n    participant A as Auth Service\n    participant P as Product Service\n    participant O as Order Service\n    U->>GW: Place Order\n    par Auth Check\n        GW->>A: Validate token\n        A-->>GW: OK\n    and Inventory\n        GW->>P: Check stock\n        P-->>GW: Available\n    end\n    GW->>O: Create order\n    Note over O: Processing...\n    O-->>GW: Order ID\n    GW-->>U: Confirmation",
+    },
+    // -- Class diagram samples (bd-3oaig.5.3) --
+    MegaSample {
+        name: "Class Inheritance",
+        source: "classDiagram\n    class Shape {\n        <<abstract>>\n        +area() float\n        +perimeter() float\n    }\n    class Circle {\n        -float radius\n        +area() float\n    }\n    class Rectangle {\n        -float width\n        -float height\n        +area() float\n    }\n    class Square {\n        +Square(float side)\n    }\n    Shape <|-- Circle\n    Shape <|-- Rectangle\n    Rectangle <|-- Square\n    Shape *-- Color",
+    },
+    MegaSample {
+        name: "Class Large",
+        source: "classDiagram\n    class Controller {\n        +handle()\n    }\n    class Service {\n        +execute()\n    }\n    class Repository {\n        +find()\n        +save()\n    }\n    class Model {\n        +validate()\n    }\n    class DTO {\n        +serialize()\n    }\n    class Mapper {\n        +toDTO()\n        +toModel()\n    }\n    class Config {\n        +load()\n    }\n    class Logger {\n        +info()\n        +error()\n    }\n    class Cache {\n        +get()\n        +set()\n    }\n    class Queue {\n        +push()\n        +pop()\n    }\n    Controller --> Service\n    Service --> Repository\n    Service --> Cache\n    Repository --> Model\n    Controller --> DTO\n    Mapper --> DTO\n    Mapper --> Model\n    Service --> Logger\n    Service --> Queue\n    Config <.. Service",
+    },
+    // -- State diagram samples (bd-3oaig.5.4) --
+    MegaSample {
+        name: "State Nested",
+        source: "stateDiagram-v2\n    [*] --> Active\n    state Active {\n        [*] --> Running\n        state Running {\n            [*] --> Normal\n            Normal --> Degraded : high_load\n            Degraded --> Normal : load_reduced\n        }\n        Running --> Paused : pause\n        Paused --> Running : resume\n    }\n    Active --> Stopped : shutdown\n    Stopped --> Active : restart\n    Stopped --> [*]",
+    },
+    MegaSample {
+        name: "State Parallel",
+        source: "stateDiagram-v2\n    [*] --> Online\n    state Online {\n        state Network {\n            Connected --> Disconnected : timeout\n            Disconnected --> Connected : reconnect\n        }\n        --\n        state Auth {\n            LoggedIn --> LoggedOut : expire\n            LoggedOut --> LoggedIn : login\n        }\n    }\n    Online --> Offline : shutdown\n    Offline --> [*]",
+    },
+    // -- ER diagram samples (bd-3oaig.5.5) --
+    MegaSample {
+        name: "ER Complex",
+        source: "erDiagram\n    CUSTOMER {\n        int id PK\n        string name\n        string email UK\n    }\n    ORDER {\n        int id PK\n        date created\n        string status\n    }\n    PRODUCT {\n        int id PK\n        string name\n        float price\n    }\n    LINE_ITEM {\n        int qty\n        float subtotal\n    }\n    ADDRESS {\n        string street\n        string city\n    }\n    CUSTOMER ||--o{ ORDER : places\n    CUSTOMER ||--o{ ADDRESS : has\n    ORDER ||--|{ LINE_ITEM : contains\n    PRODUCT ||--o{ LINE_ITEM : includes\n    ORDER }o--|| ADDRESS : ships_to",
+    },
+    MegaSample {
+        name: "ER Minimal",
+        source: "erDiagram\n    USER ||--o{ POST : writes\n    POST ||--o{ COMMENT : has\n    USER ||--o{ COMMENT : authors",
+    },
+    // -- Journey + Gantt samples (bd-3oaig.5.6) --
+    MegaSample {
+        name: "Gantt Multi-Section",
+        source: "gantt\n    title Release Cycle\n    dateFormat YYYY-MM-DD\n    section Planning\n    Requirements :a1, 2024-01-01, 10d\n    Architecture :a2, after a1, 7d\n    section Development\n    Core Module :b1, after a2, 21d\n    API Layer   :b2, after a2, 14d\n    UI Components :b3, after b2, 14d\n    section QA\n    Unit Tests  :c1, after b1, 7d\n    Integration :c2, after b3, 10d\n    section Release\n    Staging     :d1, after c2, 5d\n    Production  :d2, after d1, 3d",
+    },
+    MegaSample {
+        name: "Journey",
+        source: "journey\n    title User Onboarding\n    section Discovery\n      Visit landing page: 5: User\n      Read features: 3: User\n      Watch demo video: 4: User\n    section Signup\n      Create account: 5: User\n      Verify email: 2: User, System\n      Set preferences: 3: User\n    section First Use\n      Complete tutorial: 4: User\n      Create first project: 5: User\n      Invite team: 3: User",
+    },
+    // -- Mindmap samples (bd-3oaig.5.7) --
+    MegaSample {
+        name: "Mindmap Deep",
+        source: "mindmap\n  root((Architecture))\n    Frontend\n      Components\n        Atoms\n        Molecules\n        Organisms\n      State\n        Redux\n        Context\n      Routing\n    Backend\n      API\n        REST\n        GraphQL\n      Database\n        SQL\n        NoSQL\n      Auth\n        OAuth\n        JWT\n    DevOps\n      CI/CD\n      Monitoring\n      Containers",
+    },
+    MegaSample {
+        name: "Mindmap Wide",
+        source: "mindmap\n  root((Product))\n    Design\n    Engineering\n    Marketing\n    Sales\n    Support\n    Legal\n    Finance\n    Operations",
+    },
+    // -- Pie chart samples (bd-3oaig.5.8) --
+    MegaSample {
+        name: "Pie Many Slices",
+        source: "pie title Language Popularity\n    \"JavaScript\" : 28\n    \"Python\" : 22\n    \"Java\" : 15\n    \"TypeScript\" : 12\n    \"C#\" : 8\n    \"Rust\" : 5\n    \"Go\" : 5\n    \"Other\" : 5",
+    },
+    MegaSample {
+        name: "Pie Dominant",
+        source: "pie title Market Share\n    \"Leader\" : 72\n    \"Runner-up\" : 15\n    \"Others\" : 13",
+    },
+    // -- Mixed/stress samples (bd-3oaig.5.9) --
+    MegaSample {
+        name: "Flow Stress 20",
+        source: "graph TD\n    N1 --> N2 --> N3 --> N4 --> N5\n    N1 --> N3\n    N2 --> N5\n    N6 --> N7 --> N8 --> N9 --> N10\n    N5 --> N6\n    N3 --> N8\n    N11 --> N12 --> N13 --> N14 --> N15\n    N10 --> N11\n    N7 --> N13\n    N16 --> N17 --> N18 --> N19 --> N20\n    N15 --> N16\n    N12 --> N18\n    N1 --> N11\n    N6 --> N16\n    N5 --> N20",
+    },
+    MegaSample {
+        name: "Sequence Dense",
+        source: "sequenceDiagram\n    participant A\n    participant B\n    participant C\n    participant D\n    participant E\n    A->>B: msg1\n    B->>C: msg2\n    C->>D: msg3\n    D->>E: msg4\n    E-->>D: reply4\n    D-->>C: reply3\n    C-->>B: reply2\n    B-->>A: reply1\n    A->>C: direct\n    C->>E: skip\n    B->>D: cross\n    D->>A: back",
+    },
+    MegaSample {
+        name: "Generated",
+        source: GENERATED_SAMPLE_SOURCE,
+    },
 ];
+
+// ── Parametric generator ────────────────────────────────────────────
+
+const GENERATOR_MIN_NODES: u16 = 6;
+const GENERATOR_MAX_NODES: u16 = 200;
+const GENERATOR_MIN_BRANCHING: u8 = 1;
+const GENERATOR_MAX_BRANCHING: u8 = 6;
+const GENERATOR_MIN_LABEL_LEN: u8 = 3;
+const GENERATOR_MAX_LABEL_LEN: u8 = 20;
+const GENERATOR_MIN_DENSITY: u8 = 0;
+const GENERATOR_MAX_DENSITY: u8 = 100;
+
+#[derive(Debug, Clone, Copy)]
+struct GeneratorParams {
+    nodes: u16,
+    branching: u8,
+    density: u8,
+    label_len: u8,
+    seed: u64,
+}
+
+impl GeneratorParams {
+    fn clamp(self) -> Self {
+        Self {
+            nodes: self.nodes.clamp(GENERATOR_MIN_NODES, GENERATOR_MAX_NODES),
+            branching: self
+                .branching
+                .clamp(GENERATOR_MIN_BRANCHING, GENERATOR_MAX_BRANCHING),
+            density: self
+                .density
+                .clamp(GENERATOR_MIN_DENSITY, GENERATOR_MAX_DENSITY),
+            label_len: self
+                .label_len
+                .clamp(GENERATOR_MIN_LABEL_LEN, GENERATOR_MAX_LABEL_LEN),
+            seed: self.seed,
+        }
+    }
+}
+
+impl Default for GeneratorParams {
+    fn default() -> Self {
+        Self {
+            nodes: 24,
+            branching: 2,
+            density: 25,
+            label_len: 6,
+            seed: 1,
+        }
+    }
+}
+
+struct GeneratorRng {
+    state: u64,
+}
+
+impl GeneratorRng {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (self.state >> 32) as u32
+    }
+
+    fn next_range(&mut self, max: u32) -> u32 {
+        if max == 0 { 0 } else { self.next_u32() % max }
+    }
+}
+
+fn make_generator_label(index: usize, len: usize) -> String {
+    let mut label = format!("N{index}");
+    let mut cursor = 0usize;
+    while label.len() < len {
+        let ch = (b'A' + (cursor as u8 % 26)) as char;
+        label.push(ch);
+        cursor = cursor.saturating_add(1);
+    }
+    label.truncate(len.max(1));
+    label
+}
+
+fn generate_parametric_flowchart(params: GeneratorParams) -> String {
+    let params = params.clamp();
+    let nodes = params.nodes as usize;
+    let branching = params.branching as usize;
+    let label_len = params.label_len as usize;
+    let density = params.density as usize;
+
+    let mut out = String::new();
+    out.push_str("graph TD\n");
+
+    for i in 1..=nodes {
+        let label = make_generator_label(i, label_len);
+        out.push_str(&format!("    N{i}[{label}]\n"));
+    }
+
+    let mut edges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for i in 1..nodes {
+        edges.insert((i, i + 1));
+        for b in 0..branching {
+            let target = i + b + 2;
+            if target <= nodes {
+                edges.insert((i, target));
+            }
+        }
+    }
+
+    let base_edges = edges.len();
+    let extra_edges = density.saturating_mul(nodes) / 100;
+    let mut rng = GeneratorRng::new(params.seed ^ ((nodes as u64) << 32));
+    let mut attempts = 0usize;
+    let max_attempts = extra_edges.saturating_mul(20).saturating_add(10);
+
+    while edges.len() < base_edges + extra_edges && attempts < max_attempts {
+        let src = rng.next_range(nodes as u32) as usize + 1;
+        let dst = rng.next_range(nodes as u32) as usize + 1;
+        if src != dst {
+            edges.insert((src, dst));
+        }
+        attempts = attempts.saturating_add(1);
+    }
+
+    for (src, dst) in edges {
+        out.push_str(&format!("    N{src} --> N{dst}\n"));
+    }
+    out
+}
 
 // ── Panel visibility ────────────────────────────────────────────────
 
@@ -118,6 +379,7 @@ struct PanelVisibility {
     detail: bool,
     status_log: bool,
     help_overlay: bool,
+    diagnostics: bool,
 }
 
 impl Default for PanelVisibility {
@@ -128,7 +390,29 @@ impl Default for PanelVisibility {
             detail: false,
             status_log: false,
             help_overlay: false,
+            diagnostics: false,
         }
+    }
+}
+
+// ── Debug overlays ─────────────────────────────────────────────────
+
+/// Debug overlay toggles for visualizing internal layout structures.
+#[derive(Debug, Clone, Copy, Default)]
+struct DebugOverlays {
+    /// Show rectangles around node bounds.
+    node_bounds: bool,
+    /// Show markers at edge route waypoints.
+    edge_routes: bool,
+    /// Show rectangles around cluster (subgraph) bounds.
+    cluster_bounds: bool,
+    /// Show alignment grid at rank boundaries.
+    alignment_grid: bool,
+}
+
+impl DebugOverlays {
+    fn any_active(self) -> bool {
+        self.node_bounds || self.edge_routes || self.cluster_bounds || self.alignment_grid
     }
 }
 
@@ -160,6 +444,37 @@ impl LayoutMode {
             Self::Spacious => Self::Auto,
             Self::Auto => Self::Dense,
         }
+    }
+}
+
+fn push_opt_f32(json: &mut String, key: &str, value: Option<f32>) {
+    json.push_str(&format!(",\"{key}\":"));
+    if let Some(v) = value
+        && v.is_finite()
+    {
+        json.push_str(&format!("{v:.3}"));
+    } else {
+        json.push_str("null");
+    }
+}
+
+fn push_opt_f64(json: &mut String, key: &str, value: Option<f64>) {
+    json.push_str(&format!(",\"{key}\":"));
+    if let Some(v) = value
+        && v.is_finite()
+    {
+        json.push_str(&format!("{v:.6}"));
+    } else {
+        json.push_str("null");
+    }
+}
+
+fn push_opt_u64(json: &mut String, key: &str, value: Option<u64>) {
+    json.push_str(&format!(",\"{key}\":"));
+    if let Some(v) = value {
+        json.push_str(&v.to_string());
+    } else {
+        json.push_str("null");
     }
 }
 
@@ -260,6 +575,8 @@ struct MegaRenderCache {
     budget_warning_logged: bool,
     /// Number of layout passes deferred due to debounce.
     debounce_skips: u64,
+    /// Monotonic sequence number for telemetry events.
+    telemetry_seq: u64,
 }
 
 impl MegaRenderCache {
@@ -284,8 +601,16 @@ impl MegaRenderCache {
             layout_budget_exceeded: false,
             budget_warning_logged: true,
             debounce_skips: 0,
+            telemetry_seq: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MegaRecomputeFlags {
+    analysis_ran: bool,
+    layout_ran: bool,
+    render_ran: bool,
 }
 
 // ── State ───────────────────────────────────────────────────────────
@@ -298,6 +623,296 @@ const STATUS_LOG_CAP: usize = 64;
 struct StatusLogEntry {
     action: &'static str,
     detail: String,
+}
+
+// ── Structured telemetry (bd-3oaig.20) ────────────────────────────
+
+/// Schema version for mega showcase telemetry JSONL events.
+pub const MEGA_TELEMETRY_SCHEMA: &str = "ftui-mega-telemetry-v1";
+
+/// Structured telemetry event emitted after each cache-miss recompute pass.
+///
+/// Contains the full decision context, phase breakdown, diagram dimensions,
+/// cache statistics, and layout quality metrics.  Serialised to a single
+/// JSONL line via [`MegaRecomputeEvent::to_jsonl`].
+#[derive(Debug, Clone)]
+pub struct MegaRecomputeEvent {
+    // ── Identity ───────────────────────────────────────────────────
+    /// Schema version for forward compatibility.
+    pub schema_version: &'static str,
+    /// Event type identifier (always `"mermaid_mega_recompute"`).
+    pub event: &'static str,
+    /// Monotonic sequence number within this session.
+    pub seq: u64,
+
+    // ── Sample ─────────────────────────────────────────────────────
+    /// Sample name from the mega sample library.
+    pub sample: String,
+    /// Sample index in the library.
+    pub sample_idx: usize,
+    /// Detected diagram type from the parsed IR.
+    pub diagram_type: String,
+
+    // ── Trigger ────────────────────────────────────────────────────
+    /// What caused this recompute: "initial", "sample_change",
+    /// "config_change", "resize", "zoom".
+    pub trigger: String,
+
+    // ── Configuration snapshot ─────────────────────────────────────
+    pub layout_mode: String,
+    pub tier: String,
+    pub glyph_mode: String,
+    pub render_mode: String,
+    pub wrap_mode: String,
+    pub palette: String,
+    pub viewport_cols: u16,
+    pub viewport_rows: u16,
+    pub zoom: f32,
+
+    // ── Phase timings (milliseconds; None if phase was skipped) ────
+    pub parse_ms: Option<f32>,
+    pub layout_ms: Option<f32>,
+    pub render_ms: Option<f32>,
+    /// Sum of non-None phase timings.
+    pub total_ms: f32,
+
+    // ── Which phases actually ran ──────────────────────────────────
+    pub analysis_ran: bool,
+    pub layout_ran: bool,
+    pub render_ran: bool,
+
+    // ── Diagram dimensions (from IR) ───────────────────────────────
+    pub node_count: usize,
+    pub edge_count: usize,
+    pub cluster_count: usize,
+    pub label_count: usize,
+
+    // ── Cache statistics ───────────────────────────────────────────
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub cache_hit_ratio: f32,
+    pub debounce_skips: u64,
+
+    // ── Layout quality metrics (None if layout was not recomputed) ─
+    pub layout_iterations: Option<usize>,
+    pub layout_budget_exceeded: bool,
+    pub crossings: Option<usize>,
+    pub total_bends: Option<usize>,
+    pub position_variance: Option<f64>,
+    pub ranks: Option<usize>,
+    pub max_rank_width: Option<usize>,
+
+    // ── Errors ─────────────────────────────────────────────────────
+    pub error_count: usize,
+}
+
+impl MegaRecomputeEvent {
+    /// Serialise this event to a single JSON line (no trailing newline).
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        serde_json::json!({
+            "schema_version": self.schema_version,
+            "event": self.event,
+            "seq": self.seq,
+            "sample": self.sample,
+            "sample_idx": self.sample_idx,
+            "diagram_type": self.diagram_type,
+            "trigger": self.trigger,
+            "layout_mode": self.layout_mode,
+            "tier": self.tier,
+            "glyph_mode": self.glyph_mode,
+            "render_mode": self.render_mode,
+            "wrap_mode": self.wrap_mode,
+            "palette": self.palette,
+            "viewport_cols": self.viewport_cols,
+            "viewport_rows": self.viewport_rows,
+            "zoom": self.zoom,
+            "parse_ms": self.parse_ms,
+            "layout_ms": self.layout_ms,
+            "render_ms": self.render_ms,
+            "total_ms": self.total_ms,
+            "analysis_ran": self.analysis_ran,
+            "layout_ran": self.layout_ran,
+            "render_ran": self.render_ran,
+            "node_count": self.node_count,
+            "edge_count": self.edge_count,
+            "cluster_count": self.cluster_count,
+            "label_count": self.label_count,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "cache_hit_ratio": self.cache_hit_ratio,
+            "debounce_skips": self.debounce_skips,
+            "layout_iterations": self.layout_iterations,
+            "layout_budget_exceeded": self.layout_budget_exceeded,
+            "crossings": self.crossings,
+            "total_bends": self.total_bends,
+            "position_variance": self.position_variance,
+            "ranks": self.ranks,
+            "max_rank_width": self.max_rank_width,
+            "error_count": self.error_count,
+        })
+        .to_string()
+    }
+}
+
+/// Required top-level fields in every `mega_recompute` JSONL event.
+pub const MEGA_TELEMETRY_REQUIRED_FIELDS: &[&str] = &[
+    "schema_version",
+    "event",
+    "seq",
+    "sample",
+    "sample_idx",
+    "diagram_type",
+    "trigger",
+    "layout_mode",
+    "tier",
+    "glyph_mode",
+    "render_mode",
+    "wrap_mode",
+    "palette",
+    "viewport_cols",
+    "viewport_rows",
+    "zoom",
+    "total_ms",
+    "analysis_ran",
+    "layout_ran",
+    "render_ran",
+    "node_count",
+    "edge_count",
+    "cluster_count",
+    "label_count",
+    "cache_hits",
+    "cache_misses",
+    "cache_hit_ratio",
+    "debounce_skips",
+    "layout_budget_exceeded",
+    "error_count",
+];
+
+/// Fields that may be `null` (phase was skipped or data unavailable).
+pub const MEGA_TELEMETRY_NULLABLE_FIELDS: &[&str] = &[
+    "parse_ms",
+    "layout_ms",
+    "render_ms",
+    "layout_iterations",
+    "crossings",
+    "total_bends",
+    "position_variance",
+    "ranks",
+    "max_rank_width",
+];
+
+/// Valid values for the `trigger` field.
+pub const MEGA_TELEMETRY_VALID_TRIGGERS: &[&str] = &[
+    "initial",
+    "sample_change",
+    "config_change",
+    "resize",
+    "zoom",
+];
+
+/// Validate a JSONL line against the mega telemetry schema.
+///
+/// Returns `Ok(())` if the line is valid, or `Err(reason)` with a
+/// human-readable explanation of the first validation failure.
+pub fn validate_mega_telemetry_line(line: &str) -> Result<(), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| format!("invalid JSON: {e}"))?;
+
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "top-level value must be a JSON object".to_string())?;
+
+    // Check schema version.
+    match obj.get("schema_version").and_then(|v| v.as_str()) {
+        Some(v) if v == MEGA_TELEMETRY_SCHEMA => {}
+        Some(v) => {
+            return Err(format!(
+                "schema_version mismatch: expected \"{MEGA_TELEMETRY_SCHEMA}\", got \"{v}\""
+            ));
+        }
+        None => return Err("missing field: schema_version".to_string()),
+    }
+
+    // Check event type.
+    match obj.get("event").and_then(|v| v.as_str()) {
+        Some("mermaid_mega_recompute") => {}
+        Some(v) => {
+            return Err(format!(
+                "event type mismatch: expected \"mermaid_mega_recompute\", got \"{v}\""
+            ));
+        }
+        None => return Err("missing field: event".to_string()),
+    }
+
+    // Check all required fields are present and non-null.
+    for &field in MEGA_TELEMETRY_REQUIRED_FIELDS {
+        match obj.get(field) {
+            None => return Err(format!("missing required field: {field}")),
+            Some(v) if v.is_null() => {
+                return Err(format!("required field is null: {field}"));
+            }
+            _ => {}
+        }
+    }
+
+    // Check nullable fields exist (they must be present, but may be null).
+    for &field in MEGA_TELEMETRY_NULLABLE_FIELDS {
+        if !obj.contains_key(field) {
+            return Err(format!("missing nullable field: {field}"));
+        }
+    }
+
+    // Validate trigger value.
+    if let Some(trigger) = obj.get("trigger").and_then(|v| v.as_str()) {
+        if !MEGA_TELEMETRY_VALID_TRIGGERS.contains(&trigger) {
+            return Err(format!(
+                "invalid trigger value: \"{}\": expected one of {:?}",
+                trigger, MEGA_TELEMETRY_VALID_TRIGGERS
+            ));
+        }
+    }
+
+    // Validate numeric ranges.
+    if let Some(total) = obj.get("total_ms").and_then(|v| v.as_f64()) {
+        if total < 0.0 {
+            return Err(format!("total_ms must be non-negative, got {total}"));
+        }
+    }
+
+    if let Some(ratio) = obj.get("cache_hit_ratio").and_then(|v| v.as_f64()) {
+        if !(0.0..=1.0).contains(&ratio) {
+            return Err(format!(
+                "cache_hit_ratio must be in [0.0, 1.0], got {ratio}"
+            ));
+        }
+    }
+
+    if let Some(zoom) = obj.get("zoom").and_then(|v| v.as_f64()) {
+        if zoom <= 0.0 {
+            return Err(format!("zoom must be positive, got {zoom}"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate all lines in a multi-line JSONL string.
+///
+/// Returns a vec of `(line_number, error)` for each invalid line.
+/// Empty lines are skipped.
+#[must_use]
+pub fn validate_mega_telemetry_jsonl(content: &str) -> Vec<(usize, String)> {
+    content
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .filter_map(|(i, line)| {
+            validate_mega_telemetry_line(line.trim())
+                .err()
+                .map(|e| (i + 1, e))
+        })
+        .collect()
 }
 
 /// State for the Mermaid Mega Showcase screen.
@@ -329,6 +944,10 @@ pub struct MermaidMegaState {
     viewport_size_override: Option<(u16, u16)>,
     /// Selected sample index.
     selected_sample: usize,
+    /// Parametric generator settings for the generated sample.
+    generator: GeneratorParams,
+    /// Cached source for the generated sample.
+    generated_source: String,
     /// Selected node index for inspect mode.
     selected_node: Option<usize>,
     /// Search query (when in search mode).
@@ -339,17 +958,25 @@ pub struct MermaidMegaState {
     render_epoch: u64,
     /// Status log for debugging state changes.
     status_log: Vec<StatusLogEntry>,
+    /// Debug overlay visibility flags.
+    debug_overlays: DebugOverlays,
+    /// Comparison mode: render a second layout side-by-side.
+    comparison_enabled: bool,
+    /// Layout mode used for the comparison (right-side) pane.
+    comparison_layout_mode: LayoutMode,
 }
 
 impl Default for MermaidMegaState {
     fn default() -> Self {
+        let generator = GeneratorParams::default();
+        let generated_source = generate_parametric_flowchart(generator);
         Self {
             mode: ShowcaseMode::Normal,
             panels: PanelVisibility::default(),
             layout_mode: LayoutMode::Auto,
             tier: MermaidTier::Auto,
             glyph_mode: MermaidGlyphMode::Unicode,
-            render_mode: MermaidRenderMode::Auto,
+            render_mode: MermaidRenderMode::Braille,
             wrap_mode: MermaidWrapMode::WordChar,
             palette: DiagramPalettePreset::Default,
             styles_enabled: true,
@@ -357,12 +984,17 @@ impl Default for MermaidMegaState {
             viewport_pan: (0, 0),
             viewport_size_override: None,
             selected_sample: 0,
+            generator,
+            generated_source,
             selected_node: None,
             search_query: None,
             analysis_epoch: 0,
             layout_epoch: 0,
             render_epoch: 0,
             status_log: Vec::new(),
+            debug_overlays: DebugOverlays::default(),
+            comparison_enabled: false,
+            comparison_layout_mode: LayoutMode::Dense,
         }
     }
 }
@@ -418,22 +1050,46 @@ impl MermaidMegaState {
         }
     }
 
-    /// Get the currently selected sample source, wrapping around.
-    fn selected_source(&self) -> Option<&'static str> {
+    fn selected_sample_entry(&self) -> Option<&'static MegaSample> {
         if MEGA_SAMPLES.is_empty() {
             return None;
         }
         let idx = self.selected_sample % MEGA_SAMPLES.len();
-        Some(MEGA_SAMPLES[idx].source)
+        Some(&MEGA_SAMPLES[idx])
+    }
+
+    fn selected_is_generated(&self) -> bool {
+        self.selected_sample_entry()
+            .is_some_and(|sample| sample.source == GENERATED_SAMPLE_SOURCE)
+    }
+
+    fn regenerate_generated_source(&mut self) {
+        self.generator = self.generator.clamp();
+        self.generated_source = generate_parametric_flowchart(self.generator);
+    }
+
+    fn on_generator_change(&mut self) {
+        self.regenerate_generated_source();
+        if self.selected_is_generated() {
+            self.bump_analysis();
+        }
+    }
+
+    /// Get the currently selected sample source, wrapping around.
+    fn selected_source(&self) -> Option<&str> {
+        let sample = self.selected_sample_entry()?;
+        if sample.source == GENERATED_SAMPLE_SOURCE {
+            Some(self.generated_source.as_str())
+        } else {
+            Some(sample.source)
+        }
     }
 
     /// Get the currently selected sample name, wrapping around.
     fn selected_name(&self) -> &'static str {
-        if MEGA_SAMPLES.is_empty() {
-            return "(none)";
-        }
-        let idx = self.selected_sample % MEGA_SAMPLES.len();
-        MEGA_SAMPLES[idx].name
+        self.selected_sample_entry()
+            .map(|sample| sample.name)
+            .unwrap_or("(none)")
     }
 
     /// Adjust the viewport size override by a delta, creating one if needed.
@@ -478,6 +1134,15 @@ impl MermaidMegaState {
 enum MegaAction {
     NextSample,
     PrevSample,
+    IncreaseGenNodes,
+    DecreaseGenNodes,
+    IncreaseGenBranching,
+    DecreaseGenBranching,
+    IncreaseGenDensity,
+    DecreaseGenDensity,
+    IncreaseGenLabelLen,
+    DecreaseGenLabelLen,
+    NextGenSeed,
     CycleTier,
     ToggleGlyphMode,
     CycleRenderMode,
@@ -510,7 +1175,14 @@ enum MegaAction {
     DeselectNode,
     EnterSearch,
     ExitSearch,
+    ToggleDiagnostics,
+    ToggleDebugNodeBounds,
+    ToggleDebugEdgeRoutes,
+    ToggleDebugClusterBounds,
+    ToggleDebugGrid,
     CollapsePanels,
+    ToggleComparison,
+    CycleComparisonLayout,
 }
 
 impl MermaidMegaState {
@@ -526,6 +1198,98 @@ impl MermaidMegaState {
                 self.selected_sample = self.selected_sample.wrapping_sub(1);
                 self.selected_node = None;
                 self.bump_analysis();
+            }
+            MegaAction::IncreaseGenNodes => {
+                let next = self
+                    .generator
+                    .nodes
+                    .saturating_add(4)
+                    .clamp(GENERATOR_MIN_NODES, GENERATOR_MAX_NODES);
+                if next != self.generator.nodes {
+                    self.generator.nodes = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::DecreaseGenNodes => {
+                let next = self
+                    .generator
+                    .nodes
+                    .saturating_sub(4)
+                    .clamp(GENERATOR_MIN_NODES, GENERATOR_MAX_NODES);
+                if next != self.generator.nodes {
+                    self.generator.nodes = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::IncreaseGenBranching => {
+                let next = self
+                    .generator
+                    .branching
+                    .saturating_add(1)
+                    .clamp(GENERATOR_MIN_BRANCHING, GENERATOR_MAX_BRANCHING);
+                if next != self.generator.branching {
+                    self.generator.branching = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::DecreaseGenBranching => {
+                let next = self
+                    .generator
+                    .branching
+                    .saturating_sub(1)
+                    .clamp(GENERATOR_MIN_BRANCHING, GENERATOR_MAX_BRANCHING);
+                if next != self.generator.branching {
+                    self.generator.branching = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::IncreaseGenDensity => {
+                let next = self
+                    .generator
+                    .density
+                    .saturating_add(5)
+                    .clamp(GENERATOR_MIN_DENSITY, GENERATOR_MAX_DENSITY);
+                if next != self.generator.density {
+                    self.generator.density = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::DecreaseGenDensity => {
+                let next = self
+                    .generator
+                    .density
+                    .saturating_sub(5)
+                    .clamp(GENERATOR_MIN_DENSITY, GENERATOR_MAX_DENSITY);
+                if next != self.generator.density {
+                    self.generator.density = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::IncreaseGenLabelLen => {
+                let next = self
+                    .generator
+                    .label_len
+                    .saturating_add(1)
+                    .clamp(GENERATOR_MIN_LABEL_LEN, GENERATOR_MAX_LABEL_LEN);
+                if next != self.generator.label_len {
+                    self.generator.label_len = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::DecreaseGenLabelLen => {
+                let next = self
+                    .generator
+                    .label_len
+                    .saturating_sub(1)
+                    .clamp(GENERATOR_MIN_LABEL_LEN, GENERATOR_MAX_LABEL_LEN);
+                if next != self.generator.label_len {
+                    self.generator.label_len = next;
+                    self.on_generator_change();
+                }
+            }
+            MegaAction::NextGenSeed => {
+                self.generator.seed = self.generator.seed.wrapping_add(1);
+                self.on_generator_change();
             }
             MegaAction::CycleTier => {
                 self.tier = match self.tier {
@@ -668,6 +1432,21 @@ impl MermaidMegaState {
                 self.search_query = None;
                 self.bump_render();
             }
+            MegaAction::ToggleDiagnostics => {
+                self.panels.diagnostics = !self.panels.diagnostics;
+            }
+            MegaAction::ToggleDebugNodeBounds => {
+                self.debug_overlays.node_bounds = !self.debug_overlays.node_bounds;
+            }
+            MegaAction::ToggleDebugEdgeRoutes => {
+                self.debug_overlays.edge_routes = !self.debug_overlays.edge_routes;
+            }
+            MegaAction::ToggleDebugClusterBounds => {
+                self.debug_overlays.cluster_bounds = !self.debug_overlays.cluster_bounds;
+            }
+            MegaAction::ToggleDebugGrid => {
+                self.debug_overlays.alignment_grid = !self.debug_overlays.alignment_grid;
+            }
             MegaAction::CollapsePanels => {
                 if self.mode == ShowcaseMode::Inspect {
                     self.selected_node = None;
@@ -683,7 +1462,21 @@ impl MermaidMegaState {
                     self.panels.detail = false;
                     self.panels.status_log = false;
                     self.panels.help_overlay = false;
+                    self.panels.diagnostics = false;
                 }
+            }
+            MegaAction::ToggleComparison => {
+                self.comparison_enabled = !self.comparison_enabled;
+                self.bump_render();
+            }
+            MegaAction::CycleComparisonLayout => {
+                self.comparison_layout_mode = match self.comparison_layout_mode {
+                    LayoutMode::Dense => LayoutMode::Normal,
+                    LayoutMode::Normal => LayoutMode::Spacious,
+                    LayoutMode::Spacious => LayoutMode::Auto,
+                    LayoutMode::Auto => LayoutMode::Dense,
+                };
+                self.bump_render();
             }
         }
         // Log every action for debugging.
@@ -697,6 +1490,8 @@ impl MermaidMegaState {
 pub struct MermaidMegaShowcaseScreen {
     state: MermaidMegaState,
     cache: RefCell<MegaRenderCache>,
+    /// Separate cache for the comparison (right-side) layout.
+    comparison_cache: RefCell<MegaRenderCache>,
 }
 
 impl Default for MermaidMegaShowcaseScreen {
@@ -712,6 +1507,7 @@ impl MermaidMegaShowcaseScreen {
         Self {
             state: MermaidMegaState::default(),
             cache: RefCell::new(MegaRenderCache::empty()),
+            comparison_cache: RefCell::new(MegaRenderCache::empty()),
         }
     }
 
@@ -722,6 +1518,16 @@ impl MermaidMegaShowcaseScreen {
             // Sample navigation
             KeyCode::Down | KeyCode::Char('j') => Some(MegaAction::NextSample),
             KeyCode::Up | KeyCode::Char('k') => Some(MegaAction::PrevSample),
+            // Generator controls (parametric sample)
+            KeyCode::Char('U') => Some(MegaAction::IncreaseGenNodes),
+            KeyCode::Char('u') => Some(MegaAction::DecreaseGenNodes),
+            KeyCode::Char('N') => Some(MegaAction::IncreaseGenBranching),
+            KeyCode::Char('n') => Some(MegaAction::DecreaseGenBranching),
+            KeyCode::Char('X') => Some(MegaAction::IncreaseGenDensity),
+            KeyCode::Char('x') => Some(MegaAction::DecreaseGenDensity),
+            KeyCode::Char('Y') => Some(MegaAction::IncreaseGenLabelLen),
+            KeyCode::Char('y') => Some(MegaAction::DecreaseGenLabelLen),
+            KeyCode::Char('R') => Some(MegaAction::NextGenSeed),
             // Render config
             KeyCode::Char('t') => Some(MegaAction::CycleTier),
             KeyCode::Char('g') => Some(MegaAction::ToggleGlyphMode),
@@ -754,10 +1560,14 @@ impl MermaidMegaShowcaseScreen {
             KeyCode::Char('c') => Some(MegaAction::ToggleControls),
             KeyCode::Char('d') => Some(MegaAction::ToggleDetail),
             KeyCode::Char('i') => Some(MegaAction::ToggleStatusLog),
+            KeyCode::Char('e') => Some(MegaAction::ToggleDiagnostics),
             KeyCode::Char('?') => Some(MegaAction::ToggleHelp),
             // Node inspection
             KeyCode::Tab => Some(MegaAction::SelectNextNode),
             KeyCode::BackTab => Some(MegaAction::SelectPrevNode),
+            // Comparison mode
+            KeyCode::Char('v') => Some(MegaAction::ToggleComparison),
+            KeyCode::Char('V') => Some(MegaAction::CycleComparisonLayout),
             // Search
             KeyCode::Char('/') => Some(MegaAction::EnterSearch),
             // Escape is context-dependent
@@ -789,6 +1599,9 @@ impl MermaidMegaShowcaseScreen {
             .clamp(1.0, f32::from(u16::MAX)) as u16;
 
         let mut cache = self.cache.borrow_mut();
+        let mut ran_analysis = false;
+        let mut ran_layout = false;
+        let mut ran_render = false;
         let zoom_matches = (cache.zoom - zoom).abs() <= f32::EPSILON;
         let mut analysis_needed = cache.analysis_epoch != self.state.analysis_epoch;
         let mut layout_needed = cache.layout_epoch != self.state.layout_epoch;
@@ -849,6 +1662,7 @@ impl MermaidMegaShowcaseScreen {
         let policy = MermaidFallbackPolicy::default();
 
         if analysis_needed {
+            ran_analysis = true;
             let parse_start = Instant::now();
             let parsed = mermaid::parse_with_diagnostics(source);
             cache.parse_ms = Some(parse_start.elapsed().as_secs_f32() * 1000.0);
@@ -872,6 +1686,7 @@ impl MermaidMegaShowcaseScreen {
                 let elapsed_ms = layout_start.elapsed().as_secs_f32() * 1000.0;
                 cache.layout_ms = Some(elapsed_ms);
                 cache.layout = Some(layout);
+                ran_layout = true;
 
                 // Record timestamp for debounce and check budget.
                 cache.last_layout_instant = Some(Instant::now());
@@ -895,11 +1710,281 @@ impl MermaidMegaShowcaseScreen {
                     mermaid_render::render_diagram_adaptive(layout, ir, &config, area, &mut buffer);
                 cache.render_ms = Some(render_start.elapsed().as_secs_f32() * 1000.0);
                 cache.buffer = buffer;
+                ran_render = true;
             }
             cache.viewport = (width, height);
             cache.zoom = zoom;
             cache.render_epoch = self.state.render_epoch;
         }
+
+        if ran_analysis || ran_layout || ran_render {
+            let flags = MegaRecomputeFlags {
+                analysis_ran: ran_analysis,
+                layout_ran: ran_layout,
+                render_ran: ran_render,
+            };
+            self.emit_recompute_jsonl(
+                &cache,
+                flags,
+                (width, height),
+                (render_width, render_height),
+            );
+        }
+    }
+
+    fn emit_recompute_jsonl(
+        &self,
+        cache: &MegaRenderCache,
+        flags: MegaRecomputeFlags,
+        viewport: (u16, u16),
+        render_size: (u16, u16),
+    ) {
+        if !jsonl_enabled() {
+            return;
+        }
+        let seq = MEGA_JSONL_SEQ.fetch_add(1, Ordering::Relaxed);
+        let run_id = determinism::demo_run_id();
+        let seed = determinism::demo_seed(0);
+        let screen_mode = determinism::demo_screen_mode();
+        let line = self.recompute_jsonl_line(
+            cache,
+            seq,
+            run_id.as_deref(),
+            seed,
+            &screen_mode,
+            flags,
+            viewport,
+            render_size,
+        );
+        let _ = writeln!(std::io::stderr(), "{line}");
+    }
+
+    fn recompute_jsonl_line(
+        &self,
+        cache: &MegaRenderCache,
+        seq: u64,
+        run_id: Option<&str>,
+        seed: u64,
+        screen_mode: &str,
+        flags: MegaRecomputeFlags,
+        viewport: (u16, u16),
+        render_size: (u16, u16),
+    ) -> String {
+        let timestamp = determinism::chrono_like_timestamp();
+        let sample = self.state.selected_name();
+        let diagram_type = cache
+            .ir
+            .as_ref()
+            .map(|ir| ir.diagram_type.as_str())
+            .unwrap_or("unknown");
+        let node_count = cache.ir.as_ref().map(|ir| ir.nodes.len() as u64);
+        let edge_count = cache.ir.as_ref().map(|ir| ir.edges.len() as u64);
+        let layout_stats = cache.layout.as_ref().map(|layout| &layout.stats);
+
+        let mut json = String::new();
+        json.push('{');
+        json.push_str(&format!("\"schema_version\":\"{}\"", MEGA_TELEMETRY_SCHEMA));
+        json.push_str(&format!(",\"event\":\"{}\"", MEGA_JSONL_EVENT));
+        json.push_str(&format!(",\"seq\":{seq}"));
+        json.push_str(&format!(",\"timestamp\":\"{}\"", escape_json(&timestamp)));
+        if let Some(run_id) = run_id {
+            json.push_str(&format!(",\"run_id\":\"{}\"", escape_json(run_id)));
+        }
+        json.push_str(&format!(",\"seed\":{seed}"));
+        json.push_str(&format!(
+            ",\"screen_mode\":\"{}\"",
+            escape_json(screen_mode)
+        ));
+        json.push_str(&format!(",\"sample\":\"{}\"", escape_json(sample)));
+        json.push_str(&format!(",\"diagram_type\":\"{diagram_type}\""));
+        json.push_str(&format!(
+            ",\"layout_mode\":\"{}\"",
+            self.state.layout_mode.as_str()
+        ));
+        json.push_str(&format!(
+            ",\"tier\":\"{}\"",
+            escape_json(&self.state.tier.to_string())
+        ));
+        json.push_str(&format!(
+            ",\"glyph_mode\":\"{}\"",
+            escape_json(&self.state.glyph_mode.to_string())
+        ));
+        json.push_str(&format!(
+            ",\"wrap_mode\":\"{}\"",
+            escape_json(&self.state.wrap_mode.to_string())
+        ));
+        json.push_str(&format!(
+            ",\"render_mode\":\"{}\"",
+            escape_json(&self.state.render_mode.to_string())
+        ));
+        json.push_str(&format!(
+            ",\"palette\":\"{}\"",
+            escape_json(&self.state.palette.to_string())
+        ));
+        json.push_str(&format!(
+            ",\"styles_enabled\":{}",
+            self.state.styles_enabled
+        ));
+        json.push_str(&format!(
+            ",\"comparison_enabled\":{}",
+            self.state.comparison_enabled
+        ));
+        json.push_str(&format!(
+            ",\"comparison_layout_mode\":\"{}\"",
+            self.state.comparison_layout_mode.as_str()
+        ));
+        json.push_str(&format!(",\"viewport_cols\":{}", viewport.0));
+        json.push_str(&format!(",\"viewport_rows\":{}", viewport.1));
+        json.push_str(&format!(",\"render_cols\":{}", render_size.0));
+        json.push_str(&format!(",\"render_rows\":{}", render_size.1));
+        json.push_str(&format!(",\"zoom\":{:.3}", self.state.viewport_zoom));
+        json.push_str(&format!(",\"pan_x\":{}", self.state.viewport_pan.0));
+        json.push_str(&format!(",\"pan_y\":{}", self.state.viewport_pan.1));
+        json.push_str(&format!(
+            ",\"analysis_epoch\":{}",
+            self.state.analysis_epoch
+        ));
+        json.push_str(&format!(",\"layout_epoch\":{}", self.state.layout_epoch));
+        json.push_str(&format!(",\"render_epoch\":{}", self.state.render_epoch));
+        json.push_str(&format!(",\"analysis_ran\":{}", flags.analysis_ran));
+        json.push_str(&format!(",\"layout_ran\":{}", flags.layout_ran));
+        json.push_str(&format!(",\"render_ran\":{}", flags.render_ran));
+        json.push_str(&format!(",\"cache_hits\":{}", cache.cache_hits));
+        json.push_str(&format!(",\"cache_misses\":{}", cache.cache_misses));
+        json.push_str(&format!(",\"cache_hit\":{}", cache.last_cache_hit));
+        json.push_str(&format!(",\"debounce_skips\":{}", cache.debounce_skips));
+        json.push_str(&format!(
+            ",\"layout_budget_exceeded\":{}",
+            cache.layout_budget_exceeded
+        ));
+        push_opt_f32(&mut json, "parse_ms", cache.parse_ms);
+        push_opt_f32(&mut json, "layout_ms", cache.layout_ms);
+        push_opt_f32(&mut json, "render_ms", cache.render_ms);
+        push_opt_u64(&mut json, "node_count", node_count);
+        push_opt_u64(&mut json, "edge_count", edge_count);
+        push_opt_u64(&mut json, "error_count", Some(cache.errors.len() as u64));
+
+        if let Some(stats) = layout_stats {
+            push_opt_u64(
+                &mut json,
+                "layout_iterations",
+                Some(stats.iterations_used as u64),
+            );
+            push_opt_u64(
+                &mut json,
+                "layout_iterations_max",
+                Some(stats.max_iterations as u64),
+            );
+            json.push_str(&format!(
+                ",\"layout_budget_exceeded_layout\":{}",
+                stats.budget_exceeded
+            ));
+            push_opt_u64(&mut json, "layout_crossings", Some(stats.crossings as u64));
+            push_opt_u64(&mut json, "layout_ranks", Some(stats.ranks as u64));
+            push_opt_u64(
+                &mut json,
+                "layout_max_rank_width",
+                Some(stats.max_rank_width as u64),
+            );
+            push_opt_u64(
+                &mut json,
+                "layout_total_bends",
+                Some(stats.total_bends as u64),
+            );
+            push_opt_f64(
+                &mut json,
+                "layout_position_variance",
+                Some(stats.position_variance),
+            );
+        } else {
+            push_opt_u64(&mut json, "layout_iterations", None);
+            push_opt_u64(&mut json, "layout_iterations_max", None);
+            json.push_str(",\"layout_budget_exceeded_layout\":null");
+            push_opt_u64(&mut json, "layout_crossings", None);
+            push_opt_u64(&mut json, "layout_ranks", None);
+            push_opt_u64(&mut json, "layout_max_rank_width", None);
+            push_opt_u64(&mut json, "layout_total_bends", None);
+            push_opt_f64(&mut json, "layout_position_variance", None);
+        }
+        json.push('}');
+        json
+    }
+
+    /// Ensure the comparison cache is up-to-date for side-by-side mode.
+    ///
+    /// Shares the parsed IR from the main cache but applies an independent
+    /// layout using `comparison_layout_mode`.
+    fn ensure_comparison_cache(&self, inner: Rect) {
+        let (width, height) = self.target_viewport_size(inner);
+        let zoom = self.state.viewport_zoom;
+        let render_width = (f32::from(width) * zoom)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+        let render_height = (f32::from(height) * zoom)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+
+        let main_cache = self.cache.borrow();
+        let main_ir = main_cache.ir.clone();
+        let main_analysis_epoch = main_cache.analysis_epoch;
+        drop(main_cache);
+
+        let mut cache = self.comparison_cache.borrow_mut();
+        let zoom_matches = (cache.zoom - zoom).abs() <= f32::EPSILON;
+        let analysis_changed = cache.analysis_epoch != main_analysis_epoch;
+        let layout_changed = cache.layout_epoch != self.state.layout_epoch;
+        let render_changed = cache.render_epoch != self.state.render_epoch
+            || cache.viewport != (width, height)
+            || !zoom_matches;
+
+        if !analysis_changed && !layout_changed && !render_changed && cache.layout.is_some() {
+            cache.cache_hits = cache.cache_hits.saturating_add(1);
+            cache.last_cache_hit = true;
+            return;
+        }
+
+        cache.cache_misses = cache.cache_misses.saturating_add(1);
+        cache.last_cache_hit = false;
+
+        let ir = match main_ir {
+            Some(ir) => ir,
+            None => return,
+        };
+
+        let config = self.state.to_config();
+        let spacing = match self.state.comparison_layout_mode {
+            LayoutMode::Dense => mermaid_layout::LayoutSpacing {
+                rank_gap: 2.0,
+                node_gap: 2.0,
+                ..mermaid_layout::LayoutSpacing::default()
+            },
+            LayoutMode::Spacious => mermaid_layout::LayoutSpacing {
+                rank_gap: 6.0,
+                node_gap: 5.0,
+                ..mermaid_layout::LayoutSpacing::default()
+            },
+            LayoutMode::Normal | LayoutMode::Auto => mermaid_layout::LayoutSpacing::default(),
+        };
+
+        if analysis_changed || layout_changed || cache.layout.is_none() {
+            let layout = mermaid_layout::layout_diagram_with_spacing(&ir, &config, &spacing);
+            cache.layout_ms = Some(0.0);
+            cache.layout = Some(layout);
+            cache.analysis_epoch = main_analysis_epoch;
+            cache.layout_epoch = self.state.layout_epoch;
+        }
+
+        if let Some(layout) = cache.layout.as_ref() {
+            let mut buffer = Buffer::new(render_width, render_height);
+            let area = Rect::new(0, 0, render_width, render_height);
+            let _plan =
+                mermaid_render::render_diagram_adaptive(layout, &ir, &config, area, &mut buffer);
+            cache.buffer = buffer;
+        }
+        cache.ir = Some(ir);
+        cache.viewport = (width, height);
+        cache.zoom = zoom;
+        cache.render_epoch = self.state.render_epoch;
     }
 
     /// Blit a cached buffer onto the frame with centering and pan offset.
@@ -971,8 +2056,22 @@ impl MermaidMegaShowcaseScreen {
         } else {
             String::new()
         };
+        let err_count = self.cache.borrow().errors.len();
+        let err_indicator = if err_count > 0 {
+            format!(" ERR:{err_count}")
+        } else {
+            String::new()
+        };
+        let gen_info = format!(
+            " Gen:n{} b{} d{}% l{} seed{}",
+            s.generator.nodes,
+            s.generator.branching,
+            s.generator.density,
+            s.generator.label_len,
+            s.generator.seed
+        );
         let status = format!(
-            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Palette:{} Zoom:{:.0}% {}{} ",
+            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Palette:{} Zoom:{:.0}% {}{}{}{} ",
             s.tier,
             s.glyph_mode,
             s.render_mode,
@@ -982,6 +2081,8 @@ impl MermaidMegaShowcaseScreen {
             (s.viewport_zoom * 100.0),
             viewport_info,
             pan_info,
+            err_indicator,
+            gen_info,
         );
         let text_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(180, 200, 220));
         frame.print_text_clipped(
@@ -1020,6 +2121,16 @@ impl MermaidMegaShowcaseScreen {
 
         lines.push(format!("Mode: {}", self.state.mode.as_str()));
         lines.push(format!("Sample: {}", self.state.selected_name()));
+        if self.state.selected_is_generated() {
+            lines.push(format!(
+                "Gen: n{} b{} d{}% l{} seed{}",
+                self.state.generator.nodes,
+                self.state.generator.branching,
+                self.state.generator.density,
+                self.state.generator.label_len,
+                self.state.generator.seed
+            ));
+        }
         lines.push(format!("Palette: {}", self.state.palette));
         lines.push(format!(
             "Node: {}",
@@ -1079,7 +2190,7 @@ impl MermaidMegaShowcaseScreen {
             lines.push(format!("Budget: OVER ({LAYOUT_BUDGET_MS:.0}ms)"));
         }
         if !cache.errors.is_empty() {
-            lines.push(format!("Errors: {}", cache.errors.len()));
+            lines.push(format!("Errors: {} (e=diag)", cache.errors.len()));
         }
 
         let info_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(160, 160, 180));
@@ -1112,7 +2223,7 @@ impl MermaidMegaShowcaseScreen {
         let end =
             frame.print_text_clipped(area.x, area.y, mode_str, mode_cell, area.x + area.width);
 
-        let hints = " j/k:sample t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help";
+        let hints = " j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help";
         let hint_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(100, 100, 120));
         frame.print_text_clipped(end + 1, area.y, hints, hint_cell, area.x + area.width);
     }
@@ -1168,6 +2279,7 @@ impl MermaidMegaShowcaseScreen {
                     ("c", "Toggle controls strip"),
                     ("d", "Toggle detail panel"),
                     ("i", "Toggle status log"),
+                    ("e", "Toggle diagnostics (errors)"),
                     ("?", "Toggle this help overlay"),
                     ("Esc", "Deselect node / exit search / collapse"),
                 ],
@@ -1263,6 +2375,12 @@ impl MermaidMegaShowcaseScreen {
         if area.is_empty() {
             return;
         }
+
+        if self.state.comparison_enabled && area.width >= 20 {
+            self.render_diagram_comparison(area, frame);
+            return;
+        }
+
         let border = Cell::from_char(' ').with_fg(PackedRgba::rgb(60, 60, 80));
         frame.draw_border(area, BorderChars::SQUARE, border);
 
@@ -1291,7 +2409,228 @@ impl MermaidMegaShowcaseScreen {
         // Run the pipeline and blit.
         self.ensure_render_cache(inner);
         let cache = self.cache.borrow();
-        self.blit_buffer(frame, inner, &cache.buffer, self.state.viewport_pan);
+
+        if self.state.panels.diagnostics && !cache.errors.is_empty() {
+            // When diagnostics panel is active, render a dedicated error display.
+            drop(cache);
+            self.render_diagnostics_view(inner, frame);
+        } else if !cache.errors.is_empty() {
+            // Errors exist but diagnostics panel is off: blit diagram then overlay.
+            let has_content = cache.ir.as_ref().is_some_and(|ir| {
+                !ir.nodes.is_empty()
+                    || !ir.edges.is_empty()
+                    || !ir.labels.is_empty()
+                    || !ir.clusters.is_empty()
+            });
+            // Blit the (possibly partial) diagram first.
+            self.blit_buffer(frame, inner, &cache.buffer, self.state.viewport_pan);
+            // Grab error data while the borrow is still live.
+            let errors: Vec<_> = cache.errors.clone();
+            let source = self.state.selected_source().unwrap_or("").to_string();
+            drop(cache);
+            let config = self.state.to_config();
+            // Build a scratch buffer the size of the inner area and render the
+            // error panel/overlay into it, then blit onto the frame.
+            let mut err_buf = Buffer::new(inner.width, inner.height);
+            let err_area = Rect::new(0, 0, inner.width, inner.height);
+            if has_content {
+                mermaid_render::render_mermaid_error_overlay(
+                    &errors,
+                    &source,
+                    &config,
+                    err_area,
+                    &mut err_buf,
+                );
+            } else {
+                mermaid_render::render_mermaid_error_panel(
+                    &errors,
+                    &source,
+                    &config,
+                    err_area,
+                    &mut err_buf,
+                );
+            }
+            // Overlay non-empty cells from the error buffer onto the frame.
+            self.overlay_buffer(frame, inner, &err_buf);
+        } else {
+            self.blit_buffer(frame, inner, &cache.buffer, self.state.viewport_pan);
+        }
+    }
+
+    /// Render comparison mode: two diagrams side-by-side with different layout modes.
+    fn render_diagram_comparison(&self, area: Rect, frame: &mut Frame) {
+        // Split the area into left (primary) and right (comparison) halves.
+        let half_w = area.width / 2;
+        let left_area = Rect::new(area.x, area.y, half_w, area.height);
+        let right_area = Rect::new(
+            area.x + half_w,
+            area.y,
+            area.width.saturating_sub(half_w),
+            area.height,
+        );
+
+        let border = Cell::from_char(' ').with_fg(PackedRgba::rgb(60, 60, 80));
+        let palette = DiagramPalette::from_preset(self.state.palette);
+        let sample_name = self.state.selected_name();
+
+        // Draw left pane (primary layout mode).
+        frame.draw_border(left_area, BorderChars::SQUARE, border);
+        let left_title = format!(" {} [{}] ", sample_name, self.state.layout_mode.as_str());
+        let title_cell = Cell::from_char(' ').with_fg(palette.node_border);
+        frame.print_text_clipped(
+            left_area.x + 1,
+            left_area.y,
+            &left_title,
+            title_cell,
+            left_area.x + left_area.width - 1,
+        );
+
+        let left_inner = Rect::new(
+            left_area.x + 1,
+            left_area.y + 1,
+            left_area.width.saturating_sub(2),
+            left_area.height.saturating_sub(2),
+        );
+        if !left_inner.is_empty() {
+            self.ensure_render_cache(left_inner);
+            let cache = self.cache.borrow();
+            self.blit_buffer(frame, left_inner, &cache.buffer, self.state.viewport_pan);
+        }
+
+        // Draw right pane (comparison layout mode).
+        frame.draw_border(right_area, BorderChars::SQUARE, border);
+        let right_title = format!(
+            " {} [{}] ",
+            sample_name,
+            self.state.comparison_layout_mode.as_str()
+        );
+        let cmp_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(200, 160, 100));
+        frame.print_text_clipped(
+            right_area.x + 1,
+            right_area.y,
+            &right_title,
+            cmp_cell,
+            right_area.x + right_area.width - 1,
+        );
+
+        let right_inner = Rect::new(
+            right_area.x + 1,
+            right_area.y + 1,
+            right_area.width.saturating_sub(2),
+            right_area.height.saturating_sub(2),
+        );
+        if !right_inner.is_empty() {
+            self.ensure_comparison_cache(right_inner);
+            let cache = self.comparison_cache.borrow();
+            self.blit_buffer(frame, right_inner, &cache.buffer, self.state.viewport_pan);
+        }
+    }
+
+    /// Overlay non-empty cells from a buffer onto the frame (for error overlays).
+    fn overlay_buffer(&self, frame: &mut Frame, area: Rect, buf: &Buffer) {
+        let empty = Cell::default();
+        for row in 0..buf.height().min(area.height) {
+            for col in 0..buf.width().min(area.width) {
+                if let Some(cell) = buf.get(col, row)
+                    && !cell.bits_eq(&empty)
+                {
+                    frame.buffer.set(area.x + col, area.y + row, *cell);
+                }
+            }
+        }
+    }
+
+    /// Render a dedicated diagnostics view showing detailed error information.
+    fn render_diagnostics_view(&self, area: Rect, frame: &mut Frame) {
+        if area.is_empty() {
+            return;
+        }
+
+        let cache = self.cache.borrow();
+        let errors = &cache.errors;
+
+        // Dark background for diagnostics.
+        let bg = Cell::from_char(' ').with_fg(PackedRgba::rgb(40, 30, 30));
+        for row in area.y..area.y + area.height {
+            for col in area.x..area.x + area.width {
+                frame.buffer.set(col, row, bg);
+            }
+        }
+
+        let max_x = area.x + area.width.saturating_sub(1);
+        let mut y = area.y;
+
+        // Title
+        let title = format!(
+            " Diagnostics ({} error{}) ",
+            errors.len(),
+            if errors.len() == 1 { "" } else { "s" }
+        );
+        let title_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(255, 100, 100));
+        frame.print_text_clipped(area.x, y, &title, title_cell, max_x);
+        y += 1;
+
+        // Separator
+        let sep_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(80, 40, 40));
+        let sep: String = "─".repeat(area.width as usize);
+        frame.print_text_clipped(area.x, y, &sep, sep_cell, max_x);
+        y += 1;
+
+        let err_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(255, 160, 120));
+        let loc_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(180, 180, 200));
+        let hint_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(140, 200, 140));
+
+        for (i, error) in errors.iter().enumerate() {
+            if y >= area.y + area.height.saturating_sub(1) {
+                // Show truncation indicator.
+                let remaining = errors.len() - i;
+                let trunc = format!(
+                    "... and {} more error{}",
+                    remaining,
+                    if remaining == 1 { "" } else { "s" }
+                );
+                frame.print_text_clipped(area.x + 1, y, &trunc, loc_cell, max_x);
+                break;
+            }
+
+            // Error number and message
+            let msg = format!("{}. {}", i + 1, error.message);
+            frame.print_text_clipped(area.x + 1, y, &msg, err_cell, max_x);
+            y += 1;
+
+            if y >= area.y + area.height.saturating_sub(1) {
+                break;
+            }
+
+            // Location info
+            let loc = format!(
+                "   line {}, col {}",
+                error.span.start.line, error.span.start.col
+            );
+            frame.print_text_clipped(area.x + 1, y, &loc, loc_cell, max_x);
+            y += 1;
+
+            // Expected tokens (if any)
+            if let Some(expected) = &error.expected
+                && y < area.y + area.height.saturating_sub(1)
+                && !expected.is_empty()
+            {
+                let exp = format!("   expected: {}", expected.join(", "));
+                frame.print_text_clipped(area.x + 1, y, &exp, hint_cell, max_x);
+                y += 1;
+            }
+
+            // Blank separator between errors
+            if y < area.y + area.height.saturating_sub(1) {
+                y += 1;
+            }
+        }
+
+        // Footer hint at bottom
+        let footer_y = area.y + area.height.saturating_sub(1);
+        let hint = " Press 'e' to close diagnostics ";
+        let footer_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(120, 120, 140));
+        frame.print_text_clipped(area.x, footer_y, hint, footer_cell, max_x);
     }
 }
 
@@ -1319,6 +2658,25 @@ impl Screen for MermaidMegaShowcaseScreen {
                 format!("layout {ms:.1}ms > {LAYOUT_BUDGET_MS:.0}ms budget ({sample}, {mode})"),
             );
             self.cache.borrow_mut().budget_warning_logged = true;
+        }
+
+        // Log parse/IR errors to status log once (when errors first appear).
+        let cache = self.cache.borrow();
+        let err_count = cache.errors.len();
+        if err_count > 0 {
+            // Check if last status log entry already covers this error set.
+            let already_logged = self.state.status_log.last().is_some_and(|e| {
+                e.action == "errors" && e.detail.contains(&format!("{err_count} error"))
+            });
+            if !already_logged {
+                let sample = self.state.selected_name().to_string();
+                let first_msg = cache.errors[0].message.clone();
+                drop(cache);
+                self.state.log_action(
+                    "errors",
+                    format!("{err_count} error(s) in {sample}: {first_msg}"),
+                );
+            }
         }
     }
 
@@ -1350,6 +2708,26 @@ impl Screen for MermaidMegaShowcaseScreen {
             HelpEntry {
                 key: "k/↑",
                 action: "Previous sample",
+            },
+            HelpEntry {
+                key: "u/U",
+                action: "Gen nodes -/+",
+            },
+            HelpEntry {
+                key: "n/N",
+                action: "Gen branch -/+",
+            },
+            HelpEntry {
+                key: "x/X",
+                action: "Gen density -/+",
+            },
+            HelpEntry {
+                key: "y/Y",
+                action: "Gen label -/+",
+            },
+            HelpEntry {
+                key: "R",
+                action: "Gen reseed",
             },
             HelpEntry {
                 key: "t",
@@ -1444,6 +2822,26 @@ impl Screen for MermaidMegaShowcaseScreen {
                 action: "Toggle help",
             },
             HelpEntry {
+                key: "e",
+                action: "Toggle diagnostics",
+            },
+            HelpEntry {
+                key: "v",
+                action: "Toggle comparison",
+            },
+            HelpEntry {
+                key: "V",
+                action: "Cycle comparison layout",
+            },
+            HelpEntry {
+                key: "Tab",
+                action: "Select next node",
+            },
+            HelpEntry {
+                key: "/",
+                action: "Enter search",
+            },
+            HelpEntry {
                 key: "Esc",
                 action: "Deselect / collapse",
             },
@@ -1512,6 +2910,7 @@ mod tests {
             detail: false,
             status_log: false,
             help_overlay: false,
+            diagnostics: false,
         };
         let regions = LayoutRegions::compute(area, &panels);
 
@@ -1893,6 +3292,48 @@ mod tests {
     }
 
     #[test]
+    fn keymap_generator_controls() {
+        use ftui_core::event::KeyCode;
+        let s = MermaidMegaShowcaseScreen::new();
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('u'))),
+            Some(MegaAction::DecreaseGenNodes)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('U'))),
+            Some(MegaAction::IncreaseGenNodes)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('n'))),
+            Some(MegaAction::DecreaseGenBranching)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('N'))),
+            Some(MegaAction::IncreaseGenBranching)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('x'))),
+            Some(MegaAction::DecreaseGenDensity)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('X'))),
+            Some(MegaAction::IncreaseGenDensity)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('y'))),
+            Some(MegaAction::DecreaseGenLabelLen)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('Y'))),
+            Some(MegaAction::IncreaseGenLabelLen)
+        );
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Char('R'))),
+            Some(MegaAction::NextGenSeed)
+        );
+    }
+
+    #[test]
     fn keymap_render_config() {
         use ftui_core::event::KeyCode;
         let s = MermaidMegaShowcaseScreen::new();
@@ -2066,7 +3507,7 @@ mod tests {
     fn keymap_unbound_returns_none() {
         use ftui_core::event::KeyCode;
         let s = MermaidMegaShowcaseScreen::new();
-        assert_eq!(s.handle_key(&key(KeyCode::Char('x'))), None);
+        assert_eq!(s.handle_key(&key(KeyCode::Char('q'))), None);
         assert_eq!(s.handle_key(&key(KeyCode::Char('z'))), None);
         assert_eq!(s.handle_key(&key(KeyCode::F(1))), None);
         assert_eq!(s.handle_key(&key(KeyCode::Enter)), None);
@@ -2125,10 +3566,6 @@ mod tests {
     #[test]
     fn cycle_render_mode_full_loop() {
         let mut state = MermaidMegaState::default();
-        assert_eq!(state.render_mode, MermaidRenderMode::Auto);
-        state.apply(MegaAction::CycleRenderMode);
-        assert_eq!(state.render_mode, MermaidRenderMode::CellOnly);
-        state.apply(MegaAction::CycleRenderMode);
         assert_eq!(state.render_mode, MermaidRenderMode::Braille);
         state.apply(MegaAction::CycleRenderMode);
         assert_eq!(state.render_mode, MermaidRenderMode::Block);
@@ -2136,6 +3573,10 @@ mod tests {
         assert_eq!(state.render_mode, MermaidRenderMode::HalfBlock);
         state.apply(MegaAction::CycleRenderMode);
         assert_eq!(state.render_mode, MermaidRenderMode::Auto);
+        state.apply(MegaAction::CycleRenderMode);
+        assert_eq!(state.render_mode, MermaidRenderMode::CellOnly);
+        state.apply(MegaAction::CycleRenderMode);
+        assert_eq!(state.render_mode, MermaidRenderMode::Braille);
     }
 
     // ── State transition: wrap mode cycling ──────────────────────────
@@ -2528,6 +3969,38 @@ mod tests {
         let _ = state.selected_name();
     }
 
+    #[test]
+    fn generated_sample_uses_generator_source() {
+        let mut state = MermaidMegaState::default();
+        let idx = MEGA_SAMPLES
+            .iter()
+            .position(|sample| sample.source == GENERATED_SAMPLE_SOURCE)
+            .expect("generated sample missing from MEGA_SAMPLES");
+        state.selected_sample = idx;
+        let source = state.selected_source().unwrap_or("");
+        assert!(source.contains("graph TD"));
+        assert!(source.contains("N1"));
+    }
+
+    #[test]
+    fn generator_is_deterministic_for_seed() {
+        let params = GeneratorParams {
+            nodes: 18,
+            branching: 2,
+            density: 40,
+            label_len: 8,
+            seed: 42,
+        };
+        let a = generate_parametric_flowchart(params);
+        let b = generate_parametric_flowchart(params);
+        assert_eq!(a, b);
+
+        let mut bumped = params;
+        bumped.seed = 43;
+        let c = generate_parametric_flowchart(bumped);
+        assert_ne!(a, c);
+    }
+
     // ── Config generation tests ──────────────────────────────────────
 
     #[test]
@@ -2809,7 +4282,7 @@ mod tests {
         assert_eq!(state.layout_mode, LayoutMode::Auto);
         assert_eq!(state.tier, MermaidTier::Auto);
         assert_eq!(state.glyph_mode, MermaidGlyphMode::Unicode);
-        assert_eq!(state.render_mode, MermaidRenderMode::Auto);
+        assert_eq!(state.render_mode, MermaidRenderMode::Braille);
         assert_eq!(state.wrap_mode, MermaidWrapMode::WordChar);
         assert_eq!(state.palette, DiagramPalettePreset::Default);
         assert!(state.styles_enabled);
@@ -2817,6 +4290,12 @@ mod tests {
         assert_eq!(state.viewport_pan, (0, 0));
         assert!(state.viewport_size_override.is_none());
         assert_eq!(state.selected_sample, 0);
+        assert_eq!(state.generator.nodes, 24);
+        assert_eq!(state.generator.branching, 2);
+        assert_eq!(state.generator.density, 25);
+        assert_eq!(state.generator.label_len, 6);
+        assert_eq!(state.generator.seed, 1);
+        assert!(!state.generated_source.is_empty());
         assert!(state.selected_node.is_none());
         assert!(state.search_query.is_none());
         assert_eq!(state.analysis_epoch, 0);
@@ -2842,6 +4321,15 @@ mod tests {
         let actions = [
             MegaAction::NextSample,
             MegaAction::PrevSample,
+            MegaAction::IncreaseGenNodes,
+            MegaAction::DecreaseGenNodes,
+            MegaAction::IncreaseGenBranching,
+            MegaAction::DecreaseGenBranching,
+            MegaAction::IncreaseGenDensity,
+            MegaAction::DecreaseGenDensity,
+            MegaAction::IncreaseGenLabelLen,
+            MegaAction::DecreaseGenLabelLen,
+            MegaAction::NextGenSeed,
             MegaAction::CycleTier,
             MegaAction::ToggleGlyphMode,
             MegaAction::CycleRenderMode,
@@ -3133,5 +4621,338 @@ mod tests {
             "expected at least 22 keybinding entries, got {}",
             bindings.len()
         );
+    }
+
+    // ── Comparison mode tests ────────────────────────────────────────
+
+    #[test]
+    fn comparison_toggle_flips_state() {
+        let mut state = MermaidMegaState::default();
+        assert!(!state.comparison_enabled);
+        state.apply(MegaAction::ToggleComparison);
+        assert!(state.comparison_enabled);
+        state.apply(MegaAction::ToggleComparison);
+        assert!(!state.comparison_enabled);
+    }
+
+    #[test]
+    fn comparison_layout_mode_cycles() {
+        let mut state = MermaidMegaState::default();
+        assert!(matches!(state.comparison_layout_mode, LayoutMode::Dense));
+        state.apply(MegaAction::CycleComparisonLayout);
+        assert!(matches!(state.comparison_layout_mode, LayoutMode::Normal));
+        state.apply(MegaAction::CycleComparisonLayout);
+        assert!(matches!(state.comparison_layout_mode, LayoutMode::Spacious));
+        state.apply(MegaAction::CycleComparisonLayout);
+        assert!(matches!(state.comparison_layout_mode, LayoutMode::Auto));
+        state.apply(MegaAction::CycleComparisonLayout);
+        assert!(matches!(state.comparison_layout_mode, LayoutMode::Dense));
+    }
+
+    #[test]
+    fn comparison_toggle_bumps_render_epoch() {
+        let mut state = MermaidMegaState::default();
+        let epoch = state.render_epoch;
+        state.apply(MegaAction::ToggleComparison);
+        assert!(state.render_epoch > epoch);
+    }
+
+    #[test]
+    fn comparison_cycle_layout_bumps_render_epoch() {
+        let mut state = MermaidMegaState::default();
+        let epoch = state.render_epoch;
+        state.apply(MegaAction::CycleComparisonLayout);
+        assert!(state.render_epoch > epoch);
+    }
+
+    #[test]
+    fn comparison_keybinding_v_toggles() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        let event = ftui_core::event::KeyEvent {
+            code: ftui_core::event::KeyCode::Char('v'),
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: ftui_core::event::KeyEventKind::Press,
+        };
+        assert_eq!(
+            screen.handle_key(&event),
+            Some(MegaAction::ToggleComparison)
+        );
+    }
+
+    #[test]
+    fn comparison_keybinding_shift_v_cycles() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        let event = ftui_core::event::KeyEvent {
+            code: ftui_core::event::KeyCode::Char('V'),
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: ftui_core::event::KeyEventKind::Press,
+        };
+        assert_eq!(
+            screen.handle_key(&event),
+            Some(MegaAction::CycleComparisonLayout)
+        );
+    }
+
+    #[test]
+    fn comparison_render_does_not_panic() {
+        let screen = {
+            let mut s = MermaidMegaShowcaseScreen::new();
+            s.state.comparison_enabled = true;
+            s
+        };
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        let area = ftui_core::geometry::Rect::new(0, 0, 120, 40);
+        // Should not panic even in comparison mode.
+        screen.view(&mut frame, area);
+    }
+
+    #[test]
+    fn comparison_default_layout_is_dense() {
+        let state = MermaidMegaState::default();
+        assert!(matches!(state.comparison_layout_mode, LayoutMode::Dense));
+        assert!(!state.comparison_enabled);
+    }
+
+    #[test]
+    fn comparison_independent_of_primary_layout() {
+        let mut state = MermaidMegaState::default();
+        state.apply(MegaAction::CycleLayoutMode);
+        // Primary should have changed but comparison should remain Dense.
+        assert!(matches!(state.comparison_layout_mode, LayoutMode::Dense));
+    }
+
+    // ── Diagnostics panel tests ──────────────────────────────────────
+
+    #[test]
+    fn toggle_diagnostics_panel() {
+        let mut state = MermaidMegaState::default();
+        assert!(!state.panels.diagnostics);
+        state.apply(MegaAction::ToggleDiagnostics);
+        assert!(state.panels.diagnostics);
+        state.apply(MegaAction::ToggleDiagnostics);
+        assert!(!state.panels.diagnostics);
+    }
+
+    #[test]
+    fn diagnostics_key_maps_to_action() {
+        use ftui_core::event::{KeyCode, KeyEvent};
+        let screen = MermaidMegaShowcaseScreen::new();
+        let event = KeyEvent::new(KeyCode::Char('e'));
+        assert_eq!(
+            screen.handle_key(&event),
+            Some(MegaAction::ToggleDiagnostics)
+        );
+    }
+
+    #[test]
+    fn collapse_panels_clears_diagnostics() {
+        let mut state = MermaidMegaState::default();
+        state.panels.diagnostics = true;
+        state.apply(MegaAction::CollapsePanels);
+        assert!(!state.panels.diagnostics);
+    }
+
+    #[test]
+    fn diagnostics_default_is_off() {
+        let state = MermaidMegaState::default();
+        assert!(!state.panels.diagnostics);
+    }
+
+    #[test]
+    fn render_diagram_with_no_errors_does_not_panic() {
+        use ftui_render::grapheme_pool::GraphemePool;
+        let screen = MermaidMegaShowcaseScreen::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        let area = Rect::new(0, 0, 80, 24);
+        // Diagram area is the full area; no errors should just render normally.
+        screen.render_diagram(area, &mut frame);
+    }
+
+    #[test]
+    fn render_diagram_with_diagnostics_on_does_not_panic() {
+        use ftui_render::grapheme_pool::GraphemePool;
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.state.panels.diagnostics = true;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        let area = Rect::new(0, 0, 80, 24);
+        screen.render_diagram(area, &mut frame);
+    }
+
+    #[test]
+    fn render_diagnostics_view_with_errors() {
+        use ftui_extras::mermaid::MermaidError;
+        use ftui_render::grapheme_pool::GraphemePool;
+        let screen = MermaidMegaShowcaseScreen::new();
+        // Inject errors into cache.
+        {
+            let mut cache = screen.cache.borrow_mut();
+            cache.errors.push(MermaidError {
+                message: "unexpected token".to_string(),
+                span: ftui_extras::mermaid::Span {
+                    start: ftui_extras::mermaid::Position {
+                        line: 3,
+                        col: 10,
+                        byte: 0,
+                    },
+                    end: ftui_extras::mermaid::Position {
+                        line: 3,
+                        col: 15,
+                        byte: 0,
+                    },
+                },
+                expected: Some(vec!["-->", "---"]),
+                code: ftui_extras::mermaid::MermaidErrorCode::Parse,
+            });
+        }
+        // Call render_diagnostics_view directly (render_diagram would overwrite errors
+        // via ensure_render_cache).
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        let area = Rect::new(0, 0, 80, 24);
+        screen.render_diagnostics_view(area, &mut frame);
+        // Verify diagnostics title is rendered (starts with "D" for "Diagnostics").
+        let mut found_diagnostics = false;
+        for col in 0..80 {
+            if let Some(cell) = frame.buffer.get(col, 0)
+                && let Some('D') = cell.content.as_char()
+            {
+                found_diagnostics = true;
+                break;
+            }
+        }
+        assert!(found_diagnostics, "Diagnostics title should be rendered");
+    }
+
+    #[test]
+    fn error_overlay_renders_on_partial_diagram() {
+        use ftui_extras::mermaid::MermaidError;
+        use ftui_render::grapheme_pool::GraphemePool;
+        let screen = MermaidMegaShowcaseScreen::new();
+        // Diagnostics panel is OFF, but there are errors.
+        assert!(!screen.state.panels.diagnostics);
+        // Populate cache with errors and a valid IR (partial).
+        screen.ensure_render_cache(Rect::new(0, 0, 60, 20));
+        {
+            let mut cache = screen.cache.borrow_mut();
+            cache.errors.push(MermaidError {
+                message: "test error".to_string(),
+                span: ftui_extras::mermaid::Span {
+                    start: ftui_extras::mermaid::Position {
+                        line: 1,
+                        col: 1,
+                        byte: 0,
+                    },
+                    end: ftui_extras::mermaid::Position {
+                        line: 1,
+                        col: 5,
+                        byte: 0,
+                    },
+                },
+                expected: None,
+                code: ftui_extras::mermaid::MermaidErrorCode::Parse,
+            });
+        }
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        let area = Rect::new(0, 0, 80, 24);
+        // Should not panic; error overlay renders on top of diagram.
+        screen.render_diagram(area, &mut frame);
+    }
+
+    #[test]
+    fn keybindings_include_diagnostics() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        let bindings = screen.keybindings();
+        let keys: Vec<&str> = bindings.iter().map(|h| h.key).collect();
+        assert!(
+            keys.contains(&"e"),
+            "keybindings should include 'e' for diagnostics"
+        );
+    }
+
+    #[test]
+    fn controls_strip_shows_error_count() {
+        use ftui_extras::mermaid::MermaidError;
+        use ftui_render::grapheme_pool::GraphemePool;
+        let screen = MermaidMegaShowcaseScreen::new();
+        // Inject an error.
+        {
+            let mut cache = screen.cache.borrow_mut();
+            cache.errors.push(MermaidError {
+                message: "bad input".to_string(),
+                span: ftui_extras::mermaid::Span {
+                    start: ftui_extras::mermaid::Position {
+                        line: 1,
+                        col: 1,
+                        byte: 0,
+                    },
+                    end: ftui_extras::mermaid::Position {
+                        line: 1,
+                        col: 1,
+                        byte: 0,
+                    },
+                },
+                expected: None,
+                code: ftui_extras::mermaid::MermaidErrorCode::Parse,
+            });
+        }
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 10, &mut pool);
+        let area = Rect::new(0, 0, 120, 8);
+        screen.render_controls(area, &mut frame);
+        // Check that ERR:1 appears in the rendered controls strip.
+        let mut found_err = false;
+        for col in 0..120 {
+            if let Some(cell) = frame.buffer.get(col, 1)
+                && let Some('E') = cell.content.as_char()
+                && let Some(r1) = frame.buffer.get(col + 1, 1)
+                && let Some('R') = r1.content.as_char()
+            {
+                found_err = true;
+                break;
+            }
+        }
+        assert!(
+            found_err,
+            "controls strip should show ERR indicator when errors exist"
+        );
+    }
+
+    #[test]
+    fn mega_recompute_jsonl_schema_valid() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(0, 0, 120, 40);
+        screen.ensure_render_cache(area);
+
+        let viewport = screen.target_viewport_size(area);
+        let zoom = screen.state.viewport_zoom;
+        let render_cols = (f32::from(viewport.0) * zoom)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+        let render_rows = (f32::from(viewport.1) * zoom)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+
+        let flags = MegaRecomputeFlags {
+            analysis_ran: true,
+            layout_ran: true,
+            render_ran: true,
+        };
+        let cache = screen.cache.borrow();
+        let line = screen.recompute_jsonl_line(
+            &cache,
+            7,
+            Some("run-1"),
+            42,
+            "alt",
+            flags,
+            viewport,
+            (render_cols, render_rows),
+        );
+        crate::test_logging::validate_mega_recompute_jsonl_schema(&line)
+            .expect("mega recompute JSONL schema");
     }
 }
