@@ -2508,8 +2508,10 @@ mod tests {
         let parsed = parse_with_diagnostics(source);
         assert!(!parsed.errors.is_empty(), "expected parse errors");
 
-        let mut config = MermaidConfig::default();
-        config.error_mode = MermaidErrorMode::Panel;
+        let config = MermaidConfig {
+            error_mode: MermaidErrorMode::Panel,
+            ..MermaidConfig::default()
+        };
 
         let mut buf = Buffer::new(48, 12);
         render_mermaid_error_panel(
@@ -2528,8 +2530,10 @@ mod tests {
         let parsed = parse_with_diagnostics(source);
         assert!(!parsed.errors.is_empty(), "expected parse errors");
 
-        let mut config = MermaidConfig::default();
-        config.error_mode = MermaidErrorMode::Raw;
+        let config = MermaidConfig {
+            error_mode: MermaidErrorMode::Raw,
+            ..MermaidConfig::default()
+        };
 
         let mut buf = Buffer::new(48, 12);
         render_mermaid_error_panel(
@@ -2548,8 +2552,10 @@ mod tests {
         let parsed = parse_with_diagnostics(source);
         assert!(!parsed.errors.is_empty(), "expected parse errors");
 
-        let mut config = MermaidConfig::default();
-        config.error_mode = MermaidErrorMode::Both;
+        let config = MermaidConfig {
+            error_mode: MermaidErrorMode::Both,
+            ..MermaidConfig::default()
+        };
 
         let mut buf = Buffer::new(56, 16);
         render_mermaid_error_panel(

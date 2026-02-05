@@ -5203,7 +5203,7 @@ mod tests {
             ("|o--|{", "zero-or-one-to-one-or-many"),
         ] {
             let input = format!("erDiagram\nA {} B : {}", arrow, desc);
-            let ast = parse(&input).expect(&format!("parse {}", desc));
+            let ast = parse(&input).unwrap_or_else(|_| panic!("parse {}", desc));
             let edge = ast
                 .statements
                 .iter()
