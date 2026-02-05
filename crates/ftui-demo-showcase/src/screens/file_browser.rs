@@ -684,7 +684,7 @@ mod icons {
     use crate::theme;
 
     #[inline]
-    fn use_emoji() -> bool {
+    pub(crate) fn use_emoji() -> bool {
         // Demo requirement: always show emoji in the file browser.
         true
     }
@@ -1079,5 +1079,83 @@ mod tests {
         assert!(entries.len() > 10);
         assert!(entries.iter().any(|e| e.is_dir()));
         assert!(entries.iter().any(|e| e.kind == FileKind::Symlink));
+    }
+
+    // --- Emoji regression tests (bd-zlcj8) ---
+
+    /// Regression: use_emoji() must always return true for the demo showcase.
+    #[test]
+    fn use_emoji_always_true() {
+        assert!(
+            icons::use_emoji(),
+            "Demo file browser must always show emoji"
+        );
+    }
+
+    /// Regression: file icons must contain actual emoji characters, not ASCII fallbacks.
+    #[test]
+    fn file_icons_are_emoji() {
+        let dir = icons::directory_icon();
+        let file = icons::file_icon("test.rs");
+        let sym = icons::symlink_icon();
+
+        // Emoji icons should NOT be pure ASCII (2-letter codes like "DR", "RS", "SY").
+        assert!(
+            dir.len() > 2,
+            "directory icon should be emoji, got: {dir:?}"
+        );
+        assert!(
+            file.len() > 2,
+            "file icon should be emoji, got: {file:?}"
+        );
+        assert!(
+            sym.len() > 2,
+            "symlink icon should be emoji, got: {sym:?}"
+        );
+    }
+
+    /// Regression: breadcrumbs contain home emoji.
+    #[test]
+    fn breadcrumbs_contain_emoji() {
+        let crumbs = format_breadcrumbs("/home/user/project");
+        assert!(
+            crumbs.contains('🏠'),
+            "breadcrumbs should contain home emoji: {crumbs:?}"
+        );
+    }
+
+    /// Regression: entry_icon returns emoji for all entry kinds.
+    #[test]
+    fn entry_icon_returns_emoji_for_all_kinds() {
+        let dir_entry = FileEntry {
+            name: "src".to_string(),
+            kind: FileKind::Directory,
+            size: 0,
+            modified: "now".to_string(),
+        };
+        let file_entry = FileEntry {
+            name: "main.rs".to_string(),
+            kind: FileKind::File,
+            size: 100,
+            modified: "now".to_string(),
+        };
+        let sym_entry = FileEntry {
+            name: "link".to_string(),
+            kind: FileKind::Symlink,
+            size: 0,
+            modified: "now".to_string(),
+        };
+
+        for (entry, label) in [
+            (&dir_entry, "directory"),
+            (&file_entry, "file"),
+            (&sym_entry, "symlink"),
+        ] {
+            let icon = icons::entry_icon(entry);
+            assert!(
+                icon.len() > 2,
+                "{label} entry should have emoji icon, got: {icon:?}"
+            );
+        }
     }
 }
