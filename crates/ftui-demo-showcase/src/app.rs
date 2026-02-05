@@ -479,11 +479,7 @@ fn palette_run_id() -> String {
 }
 
 fn json_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
+    escape_json(value)
 }
 
 /// Emit a palette JSONL entry to the report path (best-effort).
@@ -514,6 +510,11 @@ fn emit_palette_jsonl(
         json_escape(outcome)
     );
 
+    if let Some(parent) = Path::new(&path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = create_dir_all(parent);
+    }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{json}");
     }
@@ -1991,7 +1992,22 @@ fn open_vfx_writer(path: &str) -> std::io::Result<Box<dyn Write + Send>> {
 }
 
 fn escape_json(raw: &str) -> String {
-    raw.replace('"', "\\\"")
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", ch as u32);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -2216,6 +2232,11 @@ impl AppModel {
             self.tour.speed(),
         );
 
+        if let Some(parent) = Path::new(&path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = create_dir_all(parent);
+        }
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{json}");
         }

@@ -35,7 +35,6 @@ use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
-use ftui_text::text::Text;
 use ftui_text::{WrapMode, display_width, truncate_to_width};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
@@ -137,7 +136,7 @@ pub struct VisualEffectsScreen {
     /// Text effects demo state
     text_effects: TextEffectsDemo,
     /// Markdown panel rendered over backdrop effects.
-    markdown_panel: Text,
+    markdown_panel: Paragraph<'static>,
     /// Active FPS movement input state (WASD).
     fps_input: FpsInputState,
     /// Last mouse position for FPS-style mouse look.
@@ -4564,7 +4563,7 @@ fn fx_stride_for_area(quality: FxQuality, width: u16, height: u16, max_samples: 
 impl Default for VisualEffectsScreen {
     fn default() -> Self {
         let plasma_palette = PlasmaPalette::Sunset;
-        let markdown_panel = render_markdown(MARKDOWN_OVERLAY);
+        let markdown_panel = Paragraph::new(render_markdown(MARKDOWN_OVERLAY)).wrap(WrapMode::Word);
         let effect = initial_effect_from_env().unwrap_or(EffectType::Metaballs);
         reset_rand_state(effect_seed(effect));
 
@@ -4884,9 +4883,7 @@ impl VisualEffectsScreen {
             return;
         }
 
-        Paragraph::new(self.markdown_panel.clone())
-            .wrap(WrapMode::Word)
-            .render(inner, frame);
+        self.markdown_panel.render(inner, frame);
     }
 
     /// Render text effects demo area

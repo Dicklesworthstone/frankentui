@@ -531,6 +531,7 @@ pub struct TerminalCapabilitiesScreen {
     selected: usize,
     profile_override: Option<TerminalProfile>,
     detected_profile_override: Option<TerminalProfile>,
+    detected_caps_override: Option<TerminalCapabilities>,
     prober: CapabilityProber,
     env_override: Option<EnvSnapshot>,
     diagnostic_log: DiagnosticLog,
@@ -556,6 +557,7 @@ impl TerminalCapabilitiesScreen {
             selected: 0,
             profile_override: None,
             detected_profile_override: None,
+            detected_caps_override: None,
             prober: CapabilityProber::new(Duration::from_millis(200)),
             env_override: None,
             diagnostic_log,
@@ -596,11 +598,18 @@ impl TerminalCapabilitiesScreen {
         }
     }
 
+    pub fn set_detected_capabilities_override(&mut self, caps: TerminalCapabilities) {
+        self.detected_caps_override = Some(caps);
+    }
+
     pub fn set_env_override(&mut self, env: EnvSnapshot) {
         self.env_override = Some(env);
     }
 
     fn detected_capabilities(&self) -> TerminalCapabilities {
+        if let Some(caps) = self.detected_caps_override {
+            return caps;
+        }
         match self.detected_profile_override {
             Some(profile) => TerminalCapabilities::from_profile(profile),
             None => TerminalCapabilities::with_overrides(),

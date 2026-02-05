@@ -2257,9 +2257,12 @@ mod proptests {
 
 #[cfg(test)]
 mod diagnostic_tests {
+    use serial_test::serial;
+
     use super::*;
 
     #[test]
+    #[serial(event_counter)]
     fn diagnostic_entry_new_sets_fields() {
         reset_event_counter();
         let entry = DiagnosticEntry::new(DiagnosticEventKind::MouseDown, 42);
@@ -2331,6 +2334,7 @@ mod diagnostic_tests {
     }
 
     #[test]
+    #[serial(event_counter)]
     fn diagnostic_entry_to_jsonl_format() {
         reset_event_counter();
         let entry = DiagnosticEntry::new(DiagnosticEventKind::MouseDown, 100)
@@ -2619,6 +2623,7 @@ mod diagnostic_tests {
     // -------------------------------------------------------------------------
 
     #[test]
+    #[serial(event_counter)]
     fn event_counter_increments() {
         reset_event_counter();
         assert_eq!(next_event_seq(), 0);
@@ -2627,6 +2632,7 @@ mod diagnostic_tests {
     }
 
     #[test]
+    #[serial(diagnostics_flag)]
     fn diagnostics_enabled_flag() {
         set_diagnostics_enabled(false);
         assert!(!diagnostics_enabled());

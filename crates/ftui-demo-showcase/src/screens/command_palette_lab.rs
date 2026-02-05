@@ -8,6 +8,8 @@
 //! - Deterministic micro-bench (queries/sec)
 //! - HintRanker evidence ledger for keybinding hints
 
+use std::time::Instant;
+
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
@@ -76,6 +78,9 @@ impl FilterMode {
     }
 }
 
+/// Target search latency threshold in microseconds (1ms).
+const LATENCY_THRESHOLD_US: u64 = 1_000;
+
 #[derive(Debug, Clone)]
 struct BenchState {
     enabled: bool,
@@ -83,6 +88,8 @@ struct BenchState {
     last_step_tick: u64,
     processed: u64,
     query_index: usize,
+    /// Last measured query latency in microseconds.
+    last_query_us: u64,
 }
 
 impl BenchState {
@@ -93,6 +100,7 @@ impl BenchState {
             last_step_tick: 0,
             processed: 0,
             query_index: 0,
+            last_query_us: 0,
         }
     }
 
@@ -102,6 +110,7 @@ impl BenchState {
         self.last_step_tick = 0;
         self.processed = 0;
         self.query_index = 0;
+        self.last_query_us = 0;
     }
 }
 
@@ -334,6 +343,16 @@ impl CommandPaletteEvidenceLab {
             "-"
         };
 
+        let latency_us = self.bench.last_query_us;
+        let within_budget = latency_us <= LATENCY_THRESHOLD_US;
+        let latency_color = if !self.bench.enabled {
+            theme::fg::SECONDARY
+        } else if within_budget {
+            theme::accent::SUCCESS
+        } else {
+            theme::accent::ERROR
+        };
+
         let lines = [
             Line::from_spans([
                 Span::styled("Status: ", theme::muted()),
@@ -358,6 +377,11 @@ impl CommandPaletteEvidenceLab {
                 ),
                 Span::styled("  Query: ", theme::muted()),
                 Span::styled(current_query, Style::new().fg(theme::accent::PRIMARY)),
+            ]),
+            Line::from_spans([
+                Span::styled("Latency: ", theme::muted()),
+                Span::styled(format!("{latency_us}us"), Style::new().fg(latency_color)),
+                Span::styled(format!("  (< {}us)", LATENCY_THRESHOLD_US), theme::muted()),
             ]),
         ];
 
@@ -508,7 +532,7 @@ impl Screen for CommandPaletteEvidenceLab {
             .constraints([
                 Constraint::Fixed(4),
                 Constraint::Min(6),
-                Constraint::Fixed(6),
+                Constraint::Fixed(7),
             ])
             .split(inner);
 
@@ -562,7 +586,9 @@ impl Screen for CommandPaletteEvidenceLab {
                 self.bench.last_step_tick = elapsed;
                 self.bench.query_index = (self.bench.query_index + 1) % BENCH_QUERIES.len();
                 let query = BENCH_QUERIES[self.bench.query_index];
+                let start = Instant::now();
                 self.palette.set_query(query);
+                self.bench.last_query_us = start.elapsed().as_micros() as u64;
                 self.bench.processed = self.bench.processed.saturating_add(1);
             }
         }
@@ -648,4 +674,191 @@ fn build_hint_ranker() -> HintRanker {
     ranker.record_shown_not_used(bench_id);
 
     ranker
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ftui_render::grapheme_pool::GraphemePool;
+    use ftui_widgets::command_palette::MatchType;
+
+    #[test]
+    fn lab_creates_with_default_query() {
+        let lab = CommandPaletteEvidenceLab::new();
+        assert_eq!(lab.filter_mode, FilterMode::All);
+        assert!(!lab.bench.enabled);
+        assert_eq!(lab.tick_count, 0);
+    }
+
+    #[test]
+    fn filter_mode_cycles_correctly() {
+        let mut mode = FilterMode::All;
+        let expected = [
+            FilterMode::Exact,
+            FilterMode::Prefix,
+            FilterMode::WordStart,
+            FilterMode::Substring,
+            FilterMode::Fuzzy,
+            FilterMode::All,
+        ];
+        for expected_mode in expected {
+            mode = mode.next();
+            assert_eq!(mode, expected_mode);
+        }
+    }
+
+    #[test]
+    fn filter_mode_labels_all_unique() {
+        let modes = [
+            FilterMode::All,
+            FilterMode::Exact,
+            FilterMode::Prefix,
+            FilterMode::WordStart,
+            FilterMode::Substring,
+            FilterMode::Fuzzy,
+        ];
+        let labels: Vec<&str> = modes.iter().map(|m| m.label()).collect();
+        for (i, a) in labels.iter().enumerate() {
+            for (j, b) in labels.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "duplicate label at index {i} and {j}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn evidence_scores_ordered_correctly() {
+        let lab = CommandPaletteEvidenceLab::new();
+        let results: Vec<_> = lab.palette.results().collect();
+        for window in results.windows(2) {
+            assert!(
+                window[0].result.score >= window[1].result.score,
+                "results not in descending score order: {} vs {}",
+                window[0].result.score,
+                window[1].result.score,
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_ledger_has_entries_for_matches() {
+        let lab = CommandPaletteEvidenceLab::new();
+        for matched in lab.palette.results() {
+            if matched.result.match_type != MatchType::NoMatch {
+                assert!(
+                    !matched.result.evidence.entries().is_empty(),
+                    "matched result '{}' has empty evidence",
+                    matched.action.title,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn filter_mode_to_match_filter_roundtrips() {
+        let modes = [
+            FilterMode::All,
+            FilterMode::Exact,
+            FilterMode::Prefix,
+            FilterMode::WordStart,
+            FilterMode::Substring,
+            FilterMode::Fuzzy,
+        ];
+        for mode in modes {
+            let filter = mode.to_match_filter();
+            let label = mode.label();
+            assert!(!label.is_empty());
+            let _ = format!("{filter:?}");
+        }
+    }
+
+    #[test]
+    fn bench_state_reset_clears_processed() {
+        let mut bench = BenchState::new();
+        bench.processed = 42;
+        bench.last_query_us = 999;
+        bench.reset(100);
+        assert!(bench.enabled);
+        assert_eq!(bench.processed, 0);
+        assert_eq!(bench.start_tick, 100);
+        assert_eq!(bench.last_query_us, 0);
+    }
+
+    #[test]
+    fn bench_qps_returns_zero_when_disabled() {
+        let lab = CommandPaletteEvidenceLab::new();
+        assert_eq!(lab.bench_qps(), 0.0);
+    }
+
+    #[test]
+    fn toggle_bench_enables_then_disables() {
+        let mut lab = CommandPaletteEvidenceLab::new();
+        assert!(!lab.bench.enabled);
+        lab.toggle_bench();
+        assert!(lab.bench.enabled);
+        lab.toggle_bench();
+        assert!(!lab.bench.enabled);
+    }
+
+    #[test]
+    fn tick_advances_bench_query_index() {
+        let mut lab = CommandPaletteEvidenceLab::new();
+        lab.toggle_bench();
+        assert_eq!(lab.bench.query_index, 0);
+        for t in 1..=(BENCH_STEP_TICKS + 1) {
+            lab.tick(t);
+        }
+        assert!(lab.bench.processed > 0);
+    }
+
+    #[test]
+    fn sample_actions_all_have_ids_and_titles() {
+        let actions = sample_actions();
+        assert!(
+            actions.len() >= 10,
+            "should have at least 10 sample actions"
+        );
+        for action in &actions {
+            assert!(!action.id.is_empty(), "action missing id");
+            assert!(!action.title.is_empty(), "action missing title");
+        }
+    }
+
+    #[test]
+    fn hint_ranker_produces_evidence() {
+        let lab = CommandPaletteEvidenceLab::new();
+        assert!(
+            !lab.hint_ledger.is_empty(),
+            "hint ledger should have entries",
+        );
+        for entry in &lab.hint_ledger {
+            assert!(!entry.label.is_empty());
+        }
+    }
+
+    #[test]
+    fn keybindings_not_empty() {
+        let lab = CommandPaletteEvidenceLab::new();
+        let keys = lab.keybindings();
+        assert!(keys.len() >= 3, "should have at least 3 keybindings");
+    }
+
+    #[test]
+    fn render_does_not_panic_on_small_area() {
+        let lab = CommandPaletteEvidenceLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        let area = Rect::new(0, 0, 10, 5);
+        lab.view(&mut frame, area);
+    }
+
+    #[test]
+    fn render_does_not_panic_on_zero_area() {
+        let lab = CommandPaletteEvidenceLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        let area = Rect::new(0, 0, 0, 0);
+        lab.view(&mut frame, area);
+    }
 }
