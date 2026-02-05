@@ -1392,55 +1392,301 @@ pub struct FeatureMatrixEntry {
 /// with `fixture: None` represent explicit gaps that need sample coverage.
 pub const FEATURE_MATRIX: &[FeatureMatrixEntry] = &[
     // ── Flowchart / Graph ───────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "basic nodes + edges", level: MermaidSupportLevel::Supported, fixture: Some("graph_small.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "subgraphs / clusters", level: MermaidSupportLevel::Supported, fixture: Some("graph_medium.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "direction override (TB/LR/RL/BT)", level: MermaidSupportLevel::Supported, fixture: Some("graph_medium.mmd"), note: "all 5 directions" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "all 8 node shapes", level: MermaidSupportLevel::Supported, fixture: None, note: "cell-mode shapes via draw_shaped_node" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "classDef / style / class", level: MermaidSupportLevel::Supported, fixture: Some("graph_medium.mmd"), note: "fill/stroke/color/dash" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "linkStyle", level: MermaidSupportLevel::Supported, fixture: None, note: "edge styling by index" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "init directives (%%{init}%%)", level: MermaidSupportLevel::Supported, fixture: Some("graph_init_directive.mmd"), note: "theme + themeVariables + direction" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "click / link handlers", level: MermaidSupportLevel::Partial, fixture: None, note: "parsed but rendering TBD" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "unicode / long labels", level: MermaidSupportLevel::Supported, fixture: Some("graph_unicode_labels.mmd"), note: "wrapping + truncation" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "large graph (>50 nodes)", level: MermaidSupportLevel::Supported, fixture: Some("graph_large.mmd"), note: "stress + layout scale" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "edge label placement", level: MermaidSupportLevel::Supported, fixture: None, note: "collision-avoidance labels" },
-    FeatureMatrixEntry { family: DiagramType::Graph, feature: "color themes / palettes", level: MermaidSupportLevel::Supported, fixture: None, note: "6 preset palettes" },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "basic nodes + edges",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("graph_small.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "subgraphs / clusters",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("graph_medium.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "direction override (TB/LR/RL/BT)",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("graph_medium.mmd"),
+        note: "all 5 directions",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "all 8 node shapes",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "cell-mode shapes via draw_shaped_node",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "classDef / style / class",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("graph_medium.mmd"),
+        note: "fill/stroke/color/dash",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "linkStyle",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "edge styling by index",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "init directives (%%{init}%%)",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("graph_init_directive.mmd"),
+        note: "theme + themeVariables + direction",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "click / link handlers",
+        level: MermaidSupportLevel::Partial,
+        fixture: None,
+        note: "parsed but rendering TBD",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "unicode / long labels",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("graph_unicode_labels.mmd"),
+        note: "wrapping + truncation",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "large graph (>50 nodes)",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("graph_large.mmd"),
+        note: "stress + layout scale",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "edge label placement",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "collision-avoidance labels",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Graph,
+        feature: "color themes / palettes",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "6 preset palettes",
+    },
     // ── Sequence ────────────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Sequence, feature: "participants + messages", level: MermaidSupportLevel::Partial, fixture: Some("sequence_basic.mmd"), note: "basic parse; layout WIP" },
-    FeatureMatrixEntry { family: DiagramType::Sequence, feature: "activation bars", level: MermaidSupportLevel::Unsupported, fixture: None, note: "not yet implemented" },
-    FeatureMatrixEntry { family: DiagramType::Sequence, feature: "notes", level: MermaidSupportLevel::Unsupported, fixture: None, note: "not yet implemented" },
-    FeatureMatrixEntry { family: DiagramType::Sequence, feature: "alt/opt/loop/par blocks", level: MermaidSupportLevel::Unsupported, fixture: None, note: "not yet implemented" },
+    FeatureMatrixEntry {
+        family: DiagramType::Sequence,
+        feature: "participants + messages",
+        level: MermaidSupportLevel::Partial,
+        fixture: Some("sequence_basic.mmd"),
+        note: "basic parse; layout WIP",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Sequence,
+        feature: "activation bars",
+        level: MermaidSupportLevel::Unsupported,
+        fixture: None,
+        note: "not yet implemented",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Sequence,
+        feature: "notes",
+        level: MermaidSupportLevel::Unsupported,
+        fixture: None,
+        note: "not yet implemented",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Sequence,
+        feature: "alt/opt/loop/par blocks",
+        level: MermaidSupportLevel::Unsupported,
+        fixture: None,
+        note: "not yet implemented",
+    },
     // ── State ───────────────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::State, feature: "basic transitions", level: MermaidSupportLevel::Supported, fixture: Some("state_basic.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::State, feature: "composite states", level: MermaidSupportLevel::Supported, fixture: Some("state_composite.mmd"), note: "nested state containers" },
-    FeatureMatrixEntry { family: DiagramType::State, feature: "start/end markers", level: MermaidSupportLevel::Supported, fixture: Some("state_composite.mmd"), note: "[*] nodes" },
-    FeatureMatrixEntry { family: DiagramType::State, feature: "notes", level: MermaidSupportLevel::Partial, fixture: None, note: "parsed; render TBD" },
+    FeatureMatrixEntry {
+        family: DiagramType::State,
+        feature: "basic transitions",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("state_basic.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::State,
+        feature: "composite states",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("state_composite.mmd"),
+        note: "nested state containers",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::State,
+        feature: "start/end markers",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("state_composite.mmd"),
+        note: "[*] nodes",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::State,
+        feature: "notes",
+        level: MermaidSupportLevel::Partial,
+        fixture: None,
+        note: "parsed; render TBD",
+    },
     // ── Class ───────────────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Class, feature: "class declarations", level: MermaidSupportLevel::Supported, fixture: Some("class_basic.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Class, feature: "members (fields + methods)", level: MermaidSupportLevel::Supported, fixture: Some("class_basic.mmd"), note: "via IrNode.members" },
-    FeatureMatrixEntry { family: DiagramType::Class, feature: "inheritance/association edges", level: MermaidSupportLevel::Supported, fixture: Some("class_basic.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Class, feature: "class annotations", level: MermaidSupportLevel::Unsupported, fixture: None, note: "<<interface>> etc." },
+    FeatureMatrixEntry {
+        family: DiagramType::Class,
+        feature: "class declarations",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("class_basic.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Class,
+        feature: "members (fields + methods)",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("class_basic.mmd"),
+        note: "via IrNode.members",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Class,
+        feature: "inheritance/association edges",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("class_basic.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Class,
+        feature: "class annotations",
+        level: MermaidSupportLevel::Unsupported,
+        fixture: None,
+        note: "<<interface>> etc.",
+    },
     // ── ER ──────────────────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Er, feature: "entity-relationship edges", level: MermaidSupportLevel::Supported, fixture: Some("er_basic.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Er, feature: "cardinality labels", level: MermaidSupportLevel::Partial, fixture: Some("er_basic.mmd"), note: "parsed; rendering basic" },
-    FeatureMatrixEntry { family: DiagramType::Er, feature: "entity attributes", level: MermaidSupportLevel::Unsupported, fixture: None, note: "not yet implemented" },
+    FeatureMatrixEntry {
+        family: DiagramType::Er,
+        feature: "entity-relationship edges",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("er_basic.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Er,
+        feature: "cardinality labels",
+        level: MermaidSupportLevel::Partial,
+        fixture: Some("er_basic.mmd"),
+        note: "parsed; rendering basic",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Er,
+        feature: "entity attributes",
+        level: MermaidSupportLevel::Unsupported,
+        fixture: None,
+        note: "not yet implemented",
+    },
     // ── Gantt ───────────────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Gantt, feature: "title + sections + tasks", level: MermaidSupportLevel::Supported, fixture: Some("gantt_basic.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Gantt, feature: "date-based timelines", level: MermaidSupportLevel::Partial, fixture: None, note: "parsed; visual layout basic" },
-    FeatureMatrixEntry { family: DiagramType::Gantt, feature: "milestones", level: MermaidSupportLevel::Unsupported, fixture: None, note: "not yet implemented" },
+    FeatureMatrixEntry {
+        family: DiagramType::Gantt,
+        feature: "title + sections + tasks",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("gantt_basic.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Gantt,
+        feature: "date-based timelines",
+        level: MermaidSupportLevel::Partial,
+        fixture: None,
+        note: "parsed; visual layout basic",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Gantt,
+        feature: "milestones",
+        level: MermaidSupportLevel::Unsupported,
+        fixture: None,
+        note: "not yet implemented",
+    },
     // ── Mindmap ─────────────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Mindmap, feature: "indent-based hierarchy", level: MermaidSupportLevel::Supported, fixture: Some("mindmap_basic.mmd"), note: "depth detection" },
-    FeatureMatrixEntry { family: DiagramType::Mindmap, feature: "node shapes in mindmap", level: MermaidSupportLevel::Partial, fixture: None, note: "shape parsing TBD" },
+    FeatureMatrixEntry {
+        family: DiagramType::Mindmap,
+        feature: "indent-based hierarchy",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("mindmap_basic.mmd"),
+        note: "depth detection",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Mindmap,
+        feature: "node shapes in mindmap",
+        level: MermaidSupportLevel::Partial,
+        fixture: None,
+        note: "shape parsing TBD",
+    },
     // ── Pie ─────────────────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Pie, feature: "pie entries with values", level: MermaidSupportLevel::Supported, fixture: Some("pie_basic.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Pie, feature: "pie title", level: MermaidSupportLevel::Supported, fixture: Some("pie_basic.mmd"), note: "" },
-    FeatureMatrixEntry { family: DiagramType::Pie, feature: "showData toggle", level: MermaidSupportLevel::Partial, fixture: None, note: "parsed; render TBD" },
+    FeatureMatrixEntry {
+        family: DiagramType::Pie,
+        feature: "pie entries with values",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("pie_basic.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Pie,
+        feature: "pie title",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("pie_basic.mmd"),
+        note: "",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Pie,
+        feature: "showData toggle",
+        level: MermaidSupportLevel::Partial,
+        fixture: None,
+        note: "parsed; render TBD",
+    },
     // ── Cross-cutting ───────────────────────────────────────────────
-    FeatureMatrixEntry { family: DiagramType::Unknown, feature: "unsupported diagram fallback", level: MermaidSupportLevel::Supported, fixture: Some("unsupported_mix.mmd"), note: "graceful error panel" },
-    FeatureMatrixEntry { family: DiagramType::Unknown, feature: "error panel / raw / both modes", level: MermaidSupportLevel::Supported, fixture: None, note: "snapshot tested" },
-    FeatureMatrixEntry { family: DiagramType::Unknown, feature: "cache + hash invalidation", level: MermaidSupportLevel::Supported, fixture: None, note: "DiagramCacheKey" },
-    FeatureMatrixEntry { family: DiagramType::Unknown, feature: "fidelity tiers (compact/normal/rich)", level: MermaidSupportLevel::Supported, fixture: None, note: "RenderPlan selection" },
-    FeatureMatrixEntry { family: DiagramType::Unknown, feature: "interactive selection + highlights", level: MermaidSupportLevel::Supported, fixture: None, note: "SelectionState + navigate_direction" },
-    FeatureMatrixEntry { family: DiagramType::Unknown, feature: "debug overlay", level: MermaidSupportLevel::Supported, fixture: None, note: "bounding boxes + metrics" },
+    FeatureMatrixEntry {
+        family: DiagramType::Unknown,
+        feature: "unsupported diagram fallback",
+        level: MermaidSupportLevel::Supported,
+        fixture: Some("unsupported_mix.mmd"),
+        note: "graceful error panel",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Unknown,
+        feature: "error panel / raw / both modes",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "snapshot tested",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Unknown,
+        feature: "cache + hash invalidation",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "DiagramCacheKey",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Unknown,
+        feature: "fidelity tiers (compact/normal/rich)",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "RenderPlan selection",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Unknown,
+        feature: "interactive selection + highlights",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "SelectionState + navigate_direction",
+    },
+    FeatureMatrixEntry {
+        family: DiagramType::Unknown,
+        feature: "debug overlay",
+        level: MermaidSupportLevel::Supported,
+        fixture: None,
+        note: "bounding boxes + metrics",
+    },
 ];
 
 /// Return features for a specific diagram type.
@@ -1452,16 +1698,28 @@ pub fn features_for_type(dt: DiagramType) -> Vec<&'static FeatureMatrixEntry> {
 /// Count features by support level.
 #[must_use]
 pub fn feature_coverage_summary() -> (usize, usize, usize) {
-    let supported = FEATURE_MATRIX.iter().filter(|e| e.level == MermaidSupportLevel::Supported).count();
-    let partial = FEATURE_MATRIX.iter().filter(|e| e.level == MermaidSupportLevel::Partial).count();
-    let unsupported = FEATURE_MATRIX.iter().filter(|e| e.level == MermaidSupportLevel::Unsupported).count();
+    let supported = FEATURE_MATRIX
+        .iter()
+        .filter(|e| e.level == MermaidSupportLevel::Supported)
+        .count();
+    let partial = FEATURE_MATRIX
+        .iter()
+        .filter(|e| e.level == MermaidSupportLevel::Partial)
+        .count();
+    let unsupported = FEATURE_MATRIX
+        .iter()
+        .filter(|e| e.level == MermaidSupportLevel::Unsupported)
+        .count();
     (supported, partial, unsupported)
 }
 
 /// Features that have no test fixture (explicit coverage gaps).
 #[must_use]
 pub fn uncovered_features() -> Vec<&'static FeatureMatrixEntry> {
-    FEATURE_MATRIX.iter().filter(|e| e.fixture.is_none()).collect()
+    FEATURE_MATRIX
+        .iter()
+        .filter(|e| e.fixture.is_none())
+        .collect()
 }
 
 // ── Interaction model + keymap spec ──────────────────────────────────
@@ -1547,47 +1805,226 @@ pub struct KeymapEntry {
 /// (not replace) these bindings.
 pub const SHOWCASE_KEYMAP: &[KeymapEntry] = &[
     // ── Sample navigation (Normal mode) ─────────────────────────────
-    KeymapEntry { key: "j/↓", action: "Next sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "k/↑", action: "Previous sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "Home", action: "First sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "End", action: "Last sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "Enter", action: "Refresh / re-render", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry {
+        key: "j/↓",
+        action: "Next sample",
+        category: KeyCategory::SampleNav,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "k/↑",
+        action: "Previous sample",
+        category: KeyCategory::SampleNav,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "Home",
+        action: "First sample",
+        category: KeyCategory::SampleNav,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "End",
+        action: "Last sample",
+        category: KeyCategory::SampleNav,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "Enter",
+        action: "Refresh / re-render",
+        category: KeyCategory::SampleNav,
+        modes: &[ShowcaseMode::Normal],
+    },
     // ── Render configuration (Normal mode) ──────────────────────────
-    KeymapEntry { key: "t", action: "Cycle fidelity tier", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "g", action: "Toggle glyph mode (Unicode/ASCII)", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "b", action: "Cycle render mode (Cell/Braille/Block/Half)", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "s", action: "Toggle style rendering", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "w", action: "Cycle wrap mode", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "l", action: "Toggle layout mode (Dense/Normal/Spacious)", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "r", action: "Force re-layout", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry {
+        key: "t",
+        action: "Cycle fidelity tier",
+        category: KeyCategory::RenderConfig,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "g",
+        action: "Toggle glyph mode (Unicode/ASCII)",
+        category: KeyCategory::RenderConfig,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "b",
+        action: "Cycle render mode (Cell/Braille/Block/Half)",
+        category: KeyCategory::RenderConfig,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "s",
+        action: "Toggle style rendering",
+        category: KeyCategory::RenderConfig,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "w",
+        action: "Cycle wrap mode",
+        category: KeyCategory::RenderConfig,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "l",
+        action: "Toggle layout mode (Dense/Normal/Spacious)",
+        category: KeyCategory::RenderConfig,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "r",
+        action: "Force re-layout",
+        category: KeyCategory::RenderConfig,
+        modes: &[ShowcaseMode::Normal],
+    },
     // ── Viewport and zoom (Normal + Inspect) ────────────────────────
-    KeymapEntry { key: "+/=", action: "Zoom in", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "-", action: "Zoom out", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "0", action: "Reset zoom", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "f", action: "Fit diagram to view", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "]", action: "Increase viewport width", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "[", action: "Decrease viewport width", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "}", action: "Increase viewport height", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "{", action: "Decrease viewport height", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "o", action: "Reset viewport override", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry {
+        key: "+/=",
+        action: "Zoom in",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "-",
+        action: "Zoom out",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "0",
+        action: "Reset zoom",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "f",
+        action: "Fit diagram to view",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "]",
+        action: "Increase viewport width",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "[",
+        action: "Decrease viewport width",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "}",
+        action: "Increase viewport height",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "{",
+        action: "Decrease viewport height",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "o",
+        action: "Reset viewport override",
+        category: KeyCategory::Viewport,
+        modes: &[ShowcaseMode::Normal],
+    },
     // ── Node inspection (Inspect mode) ──────────────────────────────
-    KeymapEntry { key: "Tab", action: "Select next node (layout order)", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "S-Tab", action: "Select previous node", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "←/→/↑/↓", action: "Navigate to connected node", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Inspect] },
-    KeymapEntry { key: "Esc", action: "Deselect / exit inspect mode", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Inspect] },
+    KeymapEntry {
+        key: "Tab",
+        action: "Select next node (layout order)",
+        category: KeyCategory::NodeInspect,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "S-Tab",
+        action: "Select previous node",
+        category: KeyCategory::NodeInspect,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "←/→/↑/↓",
+        action: "Navigate to connected node",
+        category: KeyCategory::NodeInspect,
+        modes: &[ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "Esc",
+        action: "Deselect / exit inspect mode",
+        category: KeyCategory::NodeInspect,
+        modes: &[ShowcaseMode::Inspect],
+    },
     // ── Search (Search mode) ────────────────────────────────────────
-    KeymapEntry { key: "/", action: "Enter search mode", category: KeyCategory::Search, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "n", action: "Next search match", category: KeyCategory::Search, modes: &[ShowcaseMode::Search] },
-    KeymapEntry { key: "N", action: "Previous search match", category: KeyCategory::Search, modes: &[ShowcaseMode::Search] },
-    KeymapEntry { key: "Esc", action: "Clear search / exit search mode", category: KeyCategory::Search, modes: &[ShowcaseMode::Search] },
+    KeymapEntry {
+        key: "/",
+        action: "Enter search mode",
+        category: KeyCategory::Search,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "n",
+        action: "Next search match",
+        category: KeyCategory::Search,
+        modes: &[ShowcaseMode::Search],
+    },
+    KeymapEntry {
+        key: "N",
+        action: "Previous search match",
+        category: KeyCategory::Search,
+        modes: &[ShowcaseMode::Search],
+    },
+    KeymapEntry {
+        key: "Esc",
+        action: "Clear search / exit search mode",
+        category: KeyCategory::Search,
+        modes: &[ShowcaseMode::Search],
+    },
     // ── Panels and UI (all modes) ───────────────────────────────────
-    KeymapEntry { key: "m", action: "Toggle metrics panel", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "c", action: "Toggle controls panel", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "i", action: "Toggle status log", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
-    KeymapEntry { key: "?", action: "Toggle help overlay", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect, ShowcaseMode::Search] },
+    KeymapEntry {
+        key: "m",
+        action: "Toggle metrics panel",
+        category: KeyCategory::Panels,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "c",
+        action: "Toggle controls panel",
+        category: KeyCategory::Panels,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "i",
+        action: "Toggle status log",
+        category: KeyCategory::Panels,
+        modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect],
+    },
+    KeymapEntry {
+        key: "?",
+        action: "Toggle help overlay",
+        category: KeyCategory::Panels,
+        modes: &[
+            ShowcaseMode::Normal,
+            ShowcaseMode::Inspect,
+            ShowcaseMode::Search,
+        ],
+    },
     // ── Theme (Normal mode) ─────────────────────────────────────────
-    KeymapEntry { key: "p", action: "Cycle color palette", category: KeyCategory::Theme, modes: &[ShowcaseMode::Normal] },
-    KeymapEntry { key: "P", action: "Previous color palette", category: KeyCategory::Theme, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry {
+        key: "p",
+        action: "Cycle color palette",
+        category: KeyCategory::Theme,
+        modes: &[ShowcaseMode::Normal],
+    },
+    KeymapEntry {
+        key: "P",
+        action: "Previous color palette",
+        category: KeyCategory::Theme,
+        modes: &[ShowcaseMode::Normal],
+    },
 ];
 
 /// Return keymap entries for a specific mode.
@@ -8435,7 +8872,10 @@ mod tests {
             FEATURE_MATRIX.len(),
             "coverage counts must sum to total"
         );
-        assert!(supported > partial, "more features should be supported than partial");
+        assert!(
+            supported > partial,
+            "more features should be supported than partial"
+        );
     }
 
     #[test]
@@ -8474,11 +8914,26 @@ mod tests {
 
     #[test]
     fn palette_preset_parse_aliases() {
-        assert_eq!(DiagramPalettePreset::parse("corp"), Some(DiagramPalettePreset::Corporate));
-        assert_eq!(DiagramPalettePreset::parse("mono"), Some(DiagramPalettePreset::Monochrome));
-        assert_eq!(DiagramPalettePreset::parse("hc"), Some(DiagramPalettePreset::HighContrast));
-        assert_eq!(DiagramPalettePreset::parse("glow"), Some(DiagramPalettePreset::Neon));
-        assert_eq!(DiagramPalettePreset::parse("soft"), Some(DiagramPalettePreset::Pastel));
+        assert_eq!(
+            DiagramPalettePreset::parse("corp"),
+            Some(DiagramPalettePreset::Corporate)
+        );
+        assert_eq!(
+            DiagramPalettePreset::parse("mono"),
+            Some(DiagramPalettePreset::Monochrome)
+        );
+        assert_eq!(
+            DiagramPalettePreset::parse("hc"),
+            Some(DiagramPalettePreset::HighContrast)
+        );
+        assert_eq!(
+            DiagramPalettePreset::parse("glow"),
+            Some(DiagramPalettePreset::Neon)
+        );
+        assert_eq!(
+            DiagramPalettePreset::parse("soft"),
+            Some(DiagramPalettePreset::Pastel)
+        );
         assert_eq!(DiagramPalettePreset::parse("invalid"), None);
     }
 
@@ -8495,10 +8950,12 @@ mod tests {
         );
     }
 
-
     #[test]
     fn keymap_not_empty() {
-        assert!(SHOWCASE_KEYMAP.len() >= 30, "Expected at least 30 keymap entries");
+        assert!(
+            SHOWCASE_KEYMAP.len() >= 30,
+            "Expected at least 30 keymap entries"
+        );
     }
 
     #[test]
@@ -8535,7 +8992,11 @@ mod tests {
 
     #[test]
     fn keymap_no_duplicate_keys_per_mode() {
-        for &mode in &[ShowcaseMode::Normal, ShowcaseMode::Inspect, ShowcaseMode::Search] {
+        for &mode in &[
+            ShowcaseMode::Normal,
+            ShowcaseMode::Inspect,
+            ShowcaseMode::Search,
+        ] {
             let entries = keymap_for_mode(mode);
             let mut seen = std::collections::HashSet::new();
             for entry in &entries {
@@ -8559,5 +9020,4 @@ mod tests {
         let has_palette = entries.iter().any(|e| e.category == KeyCategory::Theme);
         assert!(has_palette, "Normal mode should have theme bindings");
     }
-
 }

@@ -2675,10 +2675,11 @@ fn render_canvas_edges(
             last = Some((x, y));
         }
 
-        // TODO(bd-ukp1f.5): arrowhead rendering not yet implemented.
-        // if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx) {
-        //     render_canvas_arrowheads(painter, edge_path, &ir_edge.arrow, canvas_mode, vp);
-        // }
+        if ir.diagram_type != DiagramType::Mindmap
+            && let Some(ir_edge) = ir.edges.get(edge_path.edge_idx)
+        {
+            render_canvas_arrowheads(painter, edge_path, &ir_edge.arrow, canvas_mode, vp);
+        }
     }
 }
 
@@ -2790,6 +2791,203 @@ fn signum_i32(value: i32) -> i32 {
     } else {
         0
     }
+}
+
+#[cfg(feature = "canvas")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum ArrowHeadKind {
+    Normal,
+    Open,
+    Circle,
+    Cross,
+    Diamond,
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn arrowhead_kind_start(arrow: &str) -> Option<ArrowHeadKind> {
+    if arrow.starts_with("<<") {
+        Some(ArrowHeadKind::Open)
+    } else if arrow.starts_with('<') {
+        Some(ArrowHeadKind::Normal)
+    } else if arrow.starts_with('o') {
+        Some(ArrowHeadKind::Circle)
+    } else if arrow.starts_with('x') {
+        Some(ArrowHeadKind::Cross)
+    } else if arrow.starts_with('*') {
+        Some(ArrowHeadKind::Diamond)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn arrowhead_kind_end(arrow: &str) -> Option<ArrowHeadKind> {
+    if arrow.ends_with(">>") {
+        Some(ArrowHeadKind::Open)
+    } else if arrow.ends_with('>') {
+        Some(ArrowHeadKind::Normal)
+    } else if arrow.ends_with('o') {
+        Some(ArrowHeadKind::Circle)
+    } else if arrow.ends_with('x') {
+        Some(ArrowHeadKind::Cross)
+    } else if arrow.ends_with('*') {
+        Some(ArrowHeadKind::Diamond)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn render_canvas_arrowheads(
+    painter: &mut Painter,
+    edge_path: &LayoutEdgePath,
+    arrow: &str,
+    canvas_mode: CanvasMode,
+    vp: &CanvasViewport,
+) {
+    if arrow.is_empty() {
+        return;
+    }
+    let mut points: Vec<(i32, i32)> = edge_path
+        .waypoints
+        .iter()
+        .map(|p| vp.to_pixel(p.x, p.y))
+        .collect();
+    points.dedup();
+    if points.len() < 2 {
+        return;
+    }
+
+    if let Some(kind) = arrowhead_kind_end(arrow)
+        && let Some((from, tip)) = last_two_distinct(&points)
+    {
+        draw_canvas_arrowhead(painter, from, tip, kind, canvas_mode);
+    }
+
+    if let Some(kind) = arrowhead_kind_start(arrow)
+        && let Some((tip, next)) = first_two_distinct(&points)
+    {
+        draw_canvas_arrowhead(painter, next, tip, kind, canvas_mode);
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn first_two_distinct(points: &[(i32, i32)]) -> Option<((i32, i32), (i32, i32))> {
+    let first = *points.first()?;
+    for &pt in points.iter().skip(1) {
+        if pt != first {
+            return Some((first, pt));
+        }
+    }
+    None
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn last_two_distinct(points: &[(i32, i32)]) -> Option<((i32, i32), (i32, i32))> {
+    let last = *points.last()?;
+    for &pt in points.iter().rev().skip(1) {
+        if pt != last {
+            return Some((pt, last));
+        }
+    }
+    None
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn arrowhead_dimensions(mode: CanvasMode) -> (f64, f64, i32) {
+    match mode {
+        CanvasMode::Braille => (4.0, 4.0, 2),
+        CanvasMode::Block => (3.0, 3.0, 1),
+        CanvasMode::HalfBlock => (3.0, 2.0, 1),
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn draw_canvas_arrowhead(
+    painter: &mut Painter,
+    from: (i32, i32),
+    tip: (i32, i32),
+    kind: ArrowHeadKind,
+    canvas_mode: CanvasMode,
+) {
+    let dx = (tip.0 - from.0) as f64;
+    let dy = (tip.1 - from.1) as f64;
+    let len = (dx * dx + dy * dy).sqrt();
+    let (arrow_len, arrow_width, radius) = arrowhead_dimensions(canvas_mode);
+    if len < arrow_len.max(2.0) {
+        return;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    let px = -uy;
+    let py = ux;
+    let half_width = arrow_width / 2.0;
+
+    let tip_f = (tip.0 as f64, tip.1 as f64);
+    let base_center = (tip_f.0 - ux * arrow_len, tip_f.1 - uy * arrow_len);
+    let base_left = (
+        base_center.0 + px * half_width,
+        base_center.1 + py * half_width,
+    );
+    let base_right = (
+        base_center.0 - px * half_width,
+        base_center.1 - py * half_width,
+    );
+
+    let tip_i = (tip_f.0.round() as i32, tip_f.1.round() as i32);
+    let bl_i = (base_left.0.round() as i32, base_left.1.round() as i32);
+    let br_i = (base_right.0.round() as i32, base_right.1.round() as i32);
+
+    match kind {
+        ArrowHeadKind::Normal => painter.polygon_filled(&[tip_i, bl_i, br_i]),
+        ArrowHeadKind::Open => draw_polygon(painter, &[tip_i, bl_i, br_i]),
+        ArrowHeadKind::Circle => draw_canvas_circle_filled(painter, tip_i.0, tip_i.1, radius),
+        ArrowHeadKind::Cross => draw_canvas_cross(painter, tip_i.0, tip_i.1, radius),
+        ArrowHeadKind::Diamond => {
+            let back = (tip_f.0 - ux * arrow_len, tip_f.1 - uy * arrow_len);
+            let mid = (
+                tip_f.0 - ux * (arrow_len / 2.0),
+                tip_f.1 - uy * (arrow_len / 2.0),
+            );
+            let left = (mid.0 + px * half_width, mid.1 + py * half_width);
+            let right = (mid.0 - px * half_width, mid.1 - py * half_width);
+            let back_i = (back.0.round() as i32, back.1.round() as i32);
+            let left_i = (left.0.round() as i32, left.1.round() as i32);
+            let right_i = (right.0.round() as i32, right.1.round() as i32);
+            painter.polygon_filled(&[tip_i, left_i, back_i, right_i]);
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn draw_canvas_circle_filled(painter: &mut Painter, cx: i32, cy: i32, radius: i32) {
+    let r = radius.max(1);
+    for y in (cy - r)..=(cy + r) {
+        for x in (cx - r)..=(cx + r) {
+            let dx = x - cx;
+            let dy = y - cy;
+            if dx * dx + dy * dy <= r * r {
+                painter.point(x, y);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn draw_canvas_cross(painter: &mut Painter, cx: i32, cy: i32, radius: i32) {
+    let r = radius.max(1);
+    painter.line(cx - r, cy - r, cx + r, cy + r);
+    painter.line(cx - r, cy + r, cx + r, cy - r);
 }
 
 #[cfg(feature = "canvas")]
@@ -5551,6 +5749,104 @@ mod tests {
         draw_canvas_line_segment(&mut painter, 0, 1, 15, 1, EdgeLineStyle::Thick);
         assert!(painter.get(6, 1));
         assert!(painter.get(6, 2));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_arrowhead_directions() {
+        let directions = [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (-1, 1),
+            (1, -1),
+            (-1, -1),
+        ];
+        for (dx, dy) in directions {
+            let mut painter = Painter::new(11, 11, CanvasMode::Braille);
+            let tip = (5, 5);
+            let from = (5 - dx * 4, 5 - dy * 4);
+            draw_canvas_arrowhead(
+                &mut painter,
+                from,
+                tip,
+                ArrowHeadKind::Normal,
+                CanvasMode::Braille,
+            );
+            assert!(painter.get(tip.0, tip.1), "tip not set for {dx},{dy}");
+
+            let mut has_back = false;
+            for y in 0..11 {
+                for x in 0..11 {
+                    if !painter.get(x, y) {
+                        continue;
+                    }
+                    let vx = x - tip.0;
+                    let vy = y - tip.1;
+                    if vx * dx + vy * dy < 0 {
+                        has_back = true;
+                        break;
+                    }
+                }
+                if has_back {
+                    break;
+                }
+            }
+            assert!(has_back, "arrowhead for {dx},{dy} has no back pixels");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_arrowhead_types_snapshot() {
+        let input = concat!(
+            "graph LR\n",
+            "A-->B\n",
+            "B-->>C\n",
+            "C--oD\n",
+            "D--xE\n",
+            "E--*F\n",
+        );
+        let prepared = parse_with_diagnostics(input);
+        assert!(prepared.errors.is_empty());
+        let ir_parse = normalize_ast_to_ir(
+            &prepared.ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+        let layout = layout_diagram(ir, &MermaidConfig::default());
+        let area = Rect::new(0, 0, 50, 12);
+        let config = MermaidConfig {
+            render_mode: MermaidRenderMode::Braille,
+            tier_override: MermaidTier::Normal,
+            capability_profile: Some("kitty".to_string()),
+            ..MermaidConfig::default()
+        };
+        let mut buf = Buffer::new(area.width, area.height);
+        let _plan = render_diagram_adaptive(&layout, ir, &config, area, &mut buf);
+        let text = trim_trailing_spaces(&buffer_to_text(&buf));
+        if std::env::var("FTUI_SNAPSHOT").is_ok() {
+            println!("{text}");
+        }
+        let expected = concat!(
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            " ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤\n",
+            " ⠓⠒⠒⠒⠒⠚⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠓⠒⠒⠒⠒⠚\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+        );
+        assert_eq!(text, expected);
     }
 
     #[test]
