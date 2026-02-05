@@ -2605,6 +2605,7 @@ fn render_diagram_canvas_with_plan(
     let vp = CanvasViewport::fit(&layout.bounding_box, plan.diagram_area, canvas_mode);
 
     let resolved_styles = resolve_styles(ir);
+    let colors = DiagramPalette::from_preset(config.palette);
     render_canvas_edges(
         &mut painter,
         &layout.edges,
@@ -2613,7 +2614,7 @@ fn render_diagram_canvas_with_plan(
         canvas_mode,
         &vp,
     );
-    render_canvas_nodes(&mut painter, &layout.nodes, ir, &vp);
+    render_canvas_nodes(&mut painter, &layout.nodes, ir, &colors, &vp);
 
     let style = ftui_style::Style::new().fg(EDGE_FG);
     painter.render_to_buffer(plan.diagram_area, buf, style);
@@ -2996,6 +2997,7 @@ fn render_canvas_nodes(
     painter: &mut Painter,
     nodes: &[LayoutNodeBox],
     ir: &MermaidDiagramIr,
+    colors: &DiagramPalette,
     vp: &CanvasViewport,
 ) {
     for node in nodes {
@@ -3011,33 +3013,74 @@ fn render_canvas_nodes(
             continue;
         }
         let rect = vp.to_pixel_rect(&node.rect);
-        draw_node_outline_canvas(painter, rect, ir_node.shape);
+        let fill = colors.node_fill_for(node.node_idx);
+        let border = colors.node_border;
+        draw_node_canvas(painter, rect, ir_node.shape, border, fill);
     }
 }
 
 #[cfg(feature = "canvas")]
-#[allow(dead_code)]
-fn draw_node_outline_canvas(painter: &mut Painter, rect: PixelRect, shape: NodeShape) {
+fn draw_node_canvas(
+    painter: &mut Painter,
+    rect: PixelRect,
+    shape: NodeShape,
+    border: PackedRgba,
+    fill: PackedRgba,
+) {
     let w = rect.width.max(1);
     let h = rect.height.max(1);
     if w <= 1 || h <= 1 {
-        painter.point(rect.x, rect.y);
+        painter.point_colored(rect.x, rect.y, border);
         return;
     }
 
     match shape {
+        NodeShape::Rect => {
+            fill_rect_colored(painter, rect, fill);
+            draw_rect_border_colored(painter, rect, border);
+        }
+        NodeShape::Rounded => {
+            fill_rounded_rect_colored(painter, rect, fill);
+            draw_rounded_rect_colored(painter, rect, border);
+        }
+        NodeShape::Stadium => {
+            draw_stadium_colored(painter, rect, border, fill);
+        }
+        NodeShape::Subroutine => {
+            fill_rect_colored(painter, rect, fill);
+            draw_rect_border_colored(painter, rect, border);
+            if w > 3 {
+                painter.line_colored(
+                    rect.x + 1,
+                    rect.y,
+                    rect.x + 1,
+                    rect.y + h - 1,
+                    Some(border),
+                );
+                painter.line_colored(
+                    rect.x + w - 2,
+                    rect.y,
+                    rect.x + w - 2,
+                    rect.y + h - 1,
+                    Some(border),
+                );
+            }
+        }
         NodeShape::Circle => {
             let radius = (w.min(h) / 2).max(1);
             let cx = rect.x + w / 2;
             let cy = rect.y + h / 2;
-            painter.circle(cx, cy, radius);
+            fill_circle_colored(painter, cx, cy, radius, fill);
+            draw_circle_colored(painter, cx, cy, radius, border);
         }
         NodeShape::Diamond => {
             let top = (rect.x + w / 2, rect.y);
             let right = (rect.x + w - 1, rect.y + h / 2);
             let bottom = (rect.x + w / 2, rect.y + h - 1);
             let left = (rect.x, rect.y + h / 2);
-            draw_polygon(painter, &[top, right, bottom, left]);
+            let points = [top, right, bottom, left];
+            fill_polygon_colored(painter, &points, fill);
+            draw_polygon_colored(painter, &points, border);
         }
         NodeShape::Hexagon => {
             let dx = (w / 4).max(1);
@@ -3047,10 +3090,9 @@ fn draw_node_outline_canvas(painter: &mut Painter, rect: PixelRect, shape: NodeS
             let bottom_right = (rect.x + w - dx - 1, rect.y + h - 1);
             let bottom_left = (rect.x + dx, rect.y + h - 1);
             let left = (rect.x, rect.y + h / 2);
-            draw_polygon(
-                painter,
-                &[top_left, top_right, right, bottom_right, bottom_left, left],
-            );
+            let points = [top_left, top_right, right, bottom_right, bottom_left, left];
+            fill_polygon_colored(painter, &points, fill);
+            draw_polygon_colored(painter, &points, border);
         }
         NodeShape::Asymmetric => {
             let tip = (rect.x + w - 1, rect.y + h / 2);
@@ -3058,19 +3100,233 @@ fn draw_node_outline_canvas(painter: &mut Painter, rect: PixelRect, shape: NodeS
             let mid_top = (rect.x + w - 2, rect.y);
             let mid_bottom = (rect.x + w - 2, rect.y + h - 1);
             let bottom = (rect.x, rect.y + h - 1);
-            draw_polygon(painter, &[top, mid_top, tip, mid_bottom, bottom]);
-        }
-        NodeShape::Subroutine => {
-            painter.rect(rect.x, rect.y, w, h);
-            if w > 3 {
-                painter.line(rect.x + 1, rect.y, rect.x + 1, rect.y + h - 1);
-                painter.line(rect.x + w - 2, rect.y, rect.x + w - 2, rect.y + h - 1);
-            }
+            let points = [top, mid_top, tip, mid_bottom, bottom];
+            fill_polygon_colored(painter, &points, fill);
+            draw_polygon_colored(painter, &points, border);
         }
         _ => {
-            painter.rect(rect.x, rect.y, w, h);
+            fill_rect_colored(painter, rect, fill);
+            draw_rect_border_colored(painter, rect, border);
         }
     }
+}
+
+#[cfg(feature = "canvas")]
+fn fill_rect_colored(painter: &mut Painter, rect: PixelRect, color: PackedRgba) {
+    for y in rect.y..(rect.y + rect.height) {
+        for x in rect.x..(rect.x + rect.width) {
+            painter.point_colored(x, y, color);
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_rect_border_colored(painter: &mut Painter, rect: PixelRect, color: PackedRgba) {
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width - 1;
+    let y1 = rect.y + rect.height - 1;
+    painter.line_colored(x0, y0, x1, y0, Some(color));
+    painter.line_colored(x1, y0, x1, y1, Some(color));
+    painter.line_colored(x1, y1, x0, y1, Some(color));
+    painter.line_colored(x0, y1, x0, y0, Some(color));
+}
+
+#[cfg(feature = "canvas")]
+fn fill_polygon_colored(painter: &mut Painter, points: &[(i32, i32)], color: PackedRgba) {
+    if points.len() < 3 {
+        return;
+    }
+    let (mut min_x, mut max_x) = (points[0].0, points[0].0);
+    let (mut min_y, mut max_y) = (points[0].1, points[0].1);
+    for &(x, y) in points.iter().skip(1) {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            if point_in_convex_polygon(x, y, points) {
+                painter.point_colored(x, y, color);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_polygon_colored(painter: &mut Painter, points: &[(i32, i32)], color: PackedRgba) {
+    if points.len() < 2 {
+        return;
+    }
+    for idx in 0..points.len() {
+        let (x0, y0) = points[idx];
+        let (x1, y1) = points[(idx + 1) % points.len()];
+        painter.line_colored(x0, y0, x1, y1, Some(color));
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn fill_circle_colored(
+    painter: &mut Painter,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: PackedRgba,
+) {
+    let r = radius.max(1);
+    for y in (cy - r)..=(cy + r) {
+        for x in (cx - r)..=(cx + r) {
+            let dx = x - cx;
+            let dy = y - cy;
+            if dx * dx + dy * dy <= r * r {
+                painter.point_colored(x, y, color);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_circle_colored(
+    painter: &mut Painter,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: PackedRgba,
+) {
+    if radius <= 0 {
+        painter.point_colored(cx, cy, color);
+        return;
+    }
+
+    let mut x = radius;
+    let mut y = 0;
+    let mut d = 1 - radius;
+
+    while x >= y {
+        let points = [
+            (cx + x, cy + y),
+            (cx + y, cy + x),
+            (cx - y, cy + x),
+            (cx - x, cy + y),
+            (cx - x, cy - y),
+            (cx - y, cy - x),
+            (cx + y, cy - x),
+            (cx + x, cy - y),
+        ];
+        for (px, py) in points {
+            painter.point_colored(px, py, color);
+        }
+
+        y += 1;
+        if d < 0 {
+            d += 2 * y + 1;
+        } else {
+            x -= 1;
+            d += 2 * (y - x) + 1;
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_rounded_rect_colored(painter: &mut Painter, rect: PixelRect, color: PackedRgba) {
+    if rect.width < 4 || rect.height < 4 {
+        draw_rect_border_colored(painter, rect, color);
+        return;
+    }
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width - 1;
+    let y1 = rect.y + rect.height - 1;
+    painter.line_colored(x0 + 1, y0, x1 - 1, y0, Some(color));
+    painter.line_colored(x1, y0 + 1, x1, y1 - 1, Some(color));
+    painter.line_colored(x1 - 1, y1, x0 + 1, y1, Some(color));
+    painter.line_colored(x0, y1 - 1, x0, y0 + 1, Some(color));
+    painter.line_colored(x0, y0 + 1, x0 + 1, y0, Some(color));
+    painter.line_colored(x1 - 1, y0, x1, y0 + 1, Some(color));
+    painter.line_colored(x1, y1 - 1, x1 - 1, y1, Some(color));
+    painter.line_colored(x0 + 1, y1, x0, y1 - 1, Some(color));
+}
+
+#[cfg(feature = "canvas")]
+fn fill_rounded_rect_colored(painter: &mut Painter, rect: PixelRect, color: PackedRgba) {
+    if rect.width < 4 || rect.height < 4 {
+        fill_rect_colored(painter, rect, color);
+        return;
+    }
+    for y in rect.y..(rect.y + rect.height) {
+        for x in rect.x..(rect.x + rect.width) {
+            let at_corner = (x == rect.x || x == rect.x + rect.width - 1)
+                && (y == rect.y || y == rect.y + rect.height - 1);
+            if !at_corner {
+                painter.point_colored(x, y, color);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_stadium_colored(
+    painter: &mut Painter,
+    rect: PixelRect,
+    border: PackedRgba,
+    fill: PackedRgba,
+) {
+    let w = rect.width.max(1);
+    let h = rect.height.max(1);
+    if w <= 2 || h <= 2 {
+        fill_rect_colored(painter, rect, fill);
+        draw_rect_border_colored(painter, rect, border);
+        return;
+    }
+    let radius = (h.min(w) / 2).max(1);
+    let left_cx = rect.x + radius;
+    let right_cx = rect.x + w - radius - 1;
+    let cy = rect.y + h / 2;
+
+    // Fill center rectangle + end caps.
+    let inner = PixelRect {
+        x: left_cx,
+        y: rect.y,
+        width: (right_cx - left_cx + 1).max(1),
+        height: h,
+    };
+    fill_rect_colored(painter, inner, fill);
+    fill_circle_colored(painter, left_cx, cy, radius, fill);
+    fill_circle_colored(painter, right_cx, cy, radius, fill);
+
+    // Border.
+    draw_circle_colored(painter, left_cx, cy, radius, border);
+    draw_circle_colored(painter, right_cx, cy, radius, border);
+    painter.line_colored(left_cx, rect.y, right_cx, rect.y, Some(border));
+    painter.line_colored(
+        left_cx,
+        rect.y + h - 1,
+        right_cx,
+        rect.y + h - 1,
+        Some(border),
+    );
+}
+
+#[cfg(feature = "canvas")]
+fn point_in_convex_polygon(x: i32, y: i32, points: &[(i32, i32)]) -> bool {
+    let mut sign: i32 = 0;
+    let len = points.len();
+    for i in 0..len {
+        let (x0, y0) = points[i];
+        let (x1, y1) = points[(i + 1) % len];
+        let cross = (x - x0) * (y1 - y0) - (y - y0) * (x1 - x0);
+        if cross == 0 {
+            continue;
+        }
+        let s = cross.signum();
+        if sign == 0 {
+            sign = s;
+        } else if sign != s {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(feature = "canvas")]
