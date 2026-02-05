@@ -1737,6 +1737,188 @@ impl MermaidRenderer {
         }
     }
 
+    /// Composite text labels on top of canvas-rendered diagram.
+    ///
+    /// Unlike [`render_labels_with_plan`], this fills the background of each
+    /// label region with the node fill color so that canvas dots (Braille,
+    /// Block, HalfBlock) do not bleed through behind text.
+    #[cfg(feature = "canvas")]
+    #[allow(dead_code)]
+    fn canvas_composite_labels(
+        &self,
+        nodes: &[LayoutNodeBox],
+        edges: &[LayoutEdgePath],
+        ir: &MermaidDiagramIr,
+        vp: &Viewport,
+        plan: &RenderPlan,
+        buf: &mut Buffer,
+    ) {
+        if plan.show_edge_labels {
+            for edge_path in edges {
+                if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx)
+                    && let Some(label_id) = ir_edge.label
+                    && let Some(label) = ir.labels.get(label_id.0)
+                {
+                    self.render_edge_label_canvas(
+                        edge_path,
+                        &label.text,
+                        plan.max_label_width,
+                        vp,
+                        buf,
+                    );
+                }
+            }
+        }
+
+        if ir.diagram_type == DiagramType::Er {
+            for edge_path in edges {
+                if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx) {
+                    render_er_cardinality(edge_path, &ir_edge.arrow, vp, buf);
+                }
+            }
+        }
+
+        if !plan.show_node_labels {
+            return;
+        }
+
+        for node in nodes {
+            let ir_node = match ir.nodes.get(node.node_idx) {
+                Some(n) => n,
+                None => continue,
+            };
+            if ir_node
+                .classes
+                .iter()
+                .any(|class| class == STATE_CONTAINER_CLASS)
+            {
+                continue;
+            }
+            let cell_rect = vp.to_cell_rect(&node.rect);
+            let fill = self.colors.node_fill_for(node.node_idx);
+
+            if let Some(label_id) = ir_node.label
+                && let Some(label) = ir.labels.get(label_id.0)
+            {
+                if !ir_node.members.is_empty() {
+                    self.render_class_compartments(
+                        cell_rect,
+                        &label.text,
+                        &ir_node.members,
+                        plan.max_label_width,
+                        buf,
+                    );
+                } else {
+                    let text = if plan.max_label_width > 0 {
+                        truncate_label(&label.text, plan.max_label_width)
+                    } else {
+                        label.text.clone()
+                    };
+                    self.render_node_label_canvas(cell_rect, &text, fill, buf);
+                }
+            }
+        }
+    }
+
+    /// Render a node label with filled background for canvas compositing.
+    ///
+    /// Fills the interior cells with `fill` background color, then writes
+    /// centered text on top. This prevents canvas dots from bleeding through.
+    #[cfg(feature = "canvas")]
+    fn render_node_label_canvas(
+        &self,
+        cell_rect: Rect,
+        text: &str,
+        fill: PackedRgba,
+        buf: &mut Buffer,
+    ) {
+        let inner_w = cell_rect.width.saturating_sub(2) as usize;
+        let inner_h = cell_rect.height.saturating_sub(2) as usize;
+        if inner_w == 0 || inner_h == 0 {
+            return;
+        }
+
+        let max_x = cell_rect
+            .x
+            .saturating_add(cell_rect.width)
+            .saturating_sub(1);
+
+        // Fill interior with background color to cover canvas dots.
+        let bg_cell = Cell::from_char(' ').with_bg(fill);
+        for dy in 0..inner_h {
+            for dx in 0..inner_w {
+                let x = cell_rect.x.saturating_add(1 + dx as u16);
+                let y = cell_rect.y.saturating_add(1 + dy as u16);
+                buf.set(x, y, bg_cell);
+            }
+        }
+
+        // Write text with matching background.
+        let label_cell = Cell::from_char(' ')
+            .with_fg(self.colors.node_text)
+            .with_bg(fill);
+
+        let mut lines = wrap_text(text, inner_w);
+        if lines.len() > inner_h {
+            lines.truncate(inner_h);
+            if let Some(last) = lines.last_mut() {
+                *last = append_ellipsis(last, inner_w);
+            }
+        }
+
+        let pad_y = inner_h.saturating_sub(lines.len()) / 2;
+        for (i, line) in lines.iter().enumerate() {
+            let line_width = display_width(line).min(inner_w);
+            let pad_x = inner_w.saturating_sub(line_width) / 2;
+
+            let lx = cell_rect.x.saturating_add(1).saturating_add(pad_x as u16);
+            let ly = cell_rect
+                .y
+                .saturating_add(1)
+                .saturating_add(pad_y as u16 + i as u16);
+            buf.print_text_clipped(lx, ly, line, label_cell, max_x);
+        }
+    }
+
+    /// Render an edge label with filled background for canvas compositing.
+    ///
+    /// Fills a background strip behind the label text so it remains readable
+    /// on top of canvas-rendered edge lines.
+    #[cfg(feature = "canvas")]
+    fn render_edge_label_canvas(
+        &self,
+        edge_path: &LayoutEdgePath,
+        text: &str,
+        max_label_width: usize,
+        vp: &Viewport,
+        buf: &mut Buffer,
+    ) {
+        if edge_path.waypoints.len() < 2 || text.is_empty() {
+            return;
+        }
+        let mid_idx = edge_path.waypoints.len() / 2;
+        let mid = &edge_path.waypoints[mid_idx];
+        let (cx, cy) = vp.to_cell(mid.x, mid.y);
+        let label = if max_label_width == 0 {
+            text.to_string()
+        } else {
+            truncate_label(text, max_label_width)
+        };
+        let label_width = display_width(&label);
+
+        // Fill background strip behind label.
+        let lx = cx.saturating_add(1);
+        let bg_cell = Cell::from_char(' ').with_bg(PackedRgba::BLACK);
+        for dx in 0..label_width {
+            buf.set(lx.saturating_add(dx as u16), cy, bg_cell);
+        }
+
+        let label_cell = Cell::from_char(' ')
+            .with_fg(self.colors.edge_label_color)
+            .with_bg(PackedRgba::BLACK);
+        buf.print_text(lx, cy, &label, label_cell);
+    }
+
     /// Render with fidelity plan and selection highlighting.
     ///
     /// When `selection` has a selected node, that node and its connected
@@ -2627,7 +2809,7 @@ fn render_diagram_canvas_with_plan(
     if ir.diagram_type == DiagramType::Sequence {
         renderer.render_sequence_lifelines(layout, &cell_vp, buf);
     }
-    renderer.render_labels_with_plan(&layout.nodes, &layout.edges, ir, &cell_vp, plan, buf);
+    renderer.canvas_composite_labels(&layout.nodes, &layout.edges, ir, &cell_vp, plan, buf);
 }
 
 #[cfg(feature = "canvas")]
@@ -4207,6 +4389,7 @@ mod tests {
                 theme_overrides: MermaidThemeOverrides::default(),
                 guard: MermaidGuardReport::default(),
             },
+            constraints: vec![],
         }
     }
 
@@ -4905,7 +5088,10 @@ mod tests {
     fn render_mode_auto_selects_braille_for_kitty() {
         let caps = TerminalCapabilities::from_profile(TerminalProfile::Kitty);
         let policy = GlyphPolicy::from_env_with(|_| None, &caps);
-        let config = MermaidConfig::default();
+        let config = MermaidConfig {
+            render_mode: MermaidRenderMode::Auto,
+            ..MermaidConfig::default()
+        };
         assert_eq!(
             resolve_render_mode(&config, &policy),
             MermaidRenderMode::Braille
@@ -4916,7 +5102,10 @@ mod tests {
     fn render_mode_auto_selects_block_for_xterm() {
         let caps = TerminalCapabilities::from_profile(TerminalProfile::Xterm);
         let policy = GlyphPolicy::from_env_with(|_| None, &caps);
-        let config = MermaidConfig::default();
+        let config = MermaidConfig {
+            render_mode: MermaidRenderMode::Auto,
+            ..MermaidConfig::default()
+        };
         assert_eq!(
             resolve_render_mode(&config, &policy),
             MermaidRenderMode::Block
@@ -4927,7 +5116,10 @@ mod tests {
     fn render_mode_auto_selects_cell_only_for_vt100() {
         let caps = TerminalCapabilities::from_profile(TerminalProfile::Vt100);
         let policy = GlyphPolicy::from_env_with(|_| None, &caps);
-        let config = MermaidConfig::default();
+        let config = MermaidConfig {
+            render_mode: MermaidRenderMode::Auto,
+            ..MermaidConfig::default()
+        };
         assert_eq!(
             resolve_render_mode(&config, &policy),
             MermaidRenderMode::CellOnly
@@ -4938,7 +5130,10 @@ mod tests {
     fn render_mode_auto_selects_cell_only_for_dumb() {
         let caps = TerminalCapabilities::from_profile(TerminalProfile::Dumb);
         let policy = GlyphPolicy::from_env_with(|_| None, &caps);
-        let config = MermaidConfig::default();
+        let config = MermaidConfig {
+            render_mode: MermaidRenderMode::Auto,
+            ..MermaidConfig::default()
+        };
         assert_eq!(
             resolve_render_mode(&config, &policy),
             MermaidRenderMode::CellOnly
@@ -6072,8 +6267,8 @@ mod tests {
             "\n",
             "\n",
             "\n",
-            " ⡤⠤⠤⠤⠤⢤⢠⣀⢠⠤⠤⠤⠤⠤⡄⣄⡀⡤⠤⠤⠤⠤⢤ ⢀⣤⠤⠤⠤⠤⢤ ⠠⣠⡤⠤⠤⠤⠤⡄⢀⣄⡤⠤⠤⠤⠤⢤\n",
-            " ⠓⠒⠒⠒⠒⠚⠹⠛⠙⠒⠒⠒⠒⠒⠋⠯⠛⠓⠒⠒⠒⠒⠚⠉⠙⠟⠓⠒⠒⠒⠚⠉⠩⠛⠲⠒⠒⠒⠒⠋⠙⠟⠓⠒⠒⠒⠒⠚\n",
+            " ⣤⣤⣤⣤⣤⣤⢠⣀⢠⣤⣤⣤⣤⣤⡄⣄⡀⣤⣤⣤⣤⣤⣤ ⢀⣤⣤⣤⣤⣤⣤ ⠠⣠⣤⣤⣤⣤⣤⡄⢀⣄⣤⣤⣤⣤⣤⣤\n",
+            " ⠛⠛⠛⠛⠛⠛⠹⠛⠙⠛⠛⠛⠛⠛⠋⠯⠛⠛⠛⠛⠛⠛⠛⠉⠙⠟⠛⠛⠛⠛⠛⠉⠩⠛⠻⠛⠛⠛⠛⠋⠙⠟⠛⠛⠛⠛⠛⠛\n",
             "\n",
             "\n",
             "\n",
@@ -6122,8 +6317,8 @@ mod tests {
             "\n",
             "\n",
             "\n",
-            " ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤\n",
-            " ⠓⠒⠒⠒⠒⠚⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠓⠒⠒⠒⠒⠚\n",
+            " ⣤⣤⣤⣤⣤⣤⣄⡀⣤⣤⣤⣤⣤⣤⣄⡀⣤⣤⣤⣤⣤⣤⣄⡀⣤⣤⣤⣤⣤⣤⣄⡀⣤⣤⣤⣤⣤⣤\n",
+            " ⠛⠛⠛⠛⠛⠛⠟⠋⠛⠛⠛⠛⠛⠛⠟⠋⠛⠛⠛⠛⠛⠛⠟⠋⠛⠛⠛⠛⠛⠛⠟⠋⠛⠛⠛⠛⠛⠛\n",
             "\n",
             "\n",
             "\n",

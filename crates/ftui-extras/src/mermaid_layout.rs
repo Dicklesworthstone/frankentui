@@ -4258,6 +4258,7 @@ mod tests {
                 },
                 guard: empty_guard_report(),
             },
+            constraints: vec![],
         }
     }
     fn count_crossings_bruteforce(
@@ -5451,6 +5452,7 @@ mod tests {
                 theme_overrides: MermaidThemeOverrides::default(),
                 guard: MermaidGuardReport::default(),
             },
+            constraints: vec![],
         }
     }
     #[test]
@@ -6514,6 +6516,7 @@ mod tests {
                 },
                 guard: empty_guard_report(),
             },
+            constraints: vec![],
         }
     }
     #[test]
@@ -6617,6 +6620,7 @@ mod tests {
                 },
                 guard: empty_guard_report(),
             },
+            constraints: vec![],
         }
     }
     #[test]
@@ -6861,6 +6865,7 @@ mod label_tests {
                 theme_overrides: MermaidThemeOverrides::default(),
                 guard: MermaidGuardReport::default(),
             },
+            constraints: vec![],
         }
     }
 
@@ -6970,6 +6975,51 @@ mod label_tests {
         let (w, h, _) = measure_text("abc\nde\nfghij", &cfg);
         assert!((w - 5.0).abs() < f64::EPSILON);
         assert!((h - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn measure_text_cjk_display_width() {
+        let cfg = LabelPlacementConfig {
+            max_label_width: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+            max_lines: 5,
+            max_label_height: 10.0,
+            ..Default::default()
+        };
+        // Each CJK character is 2 display columns wide
+        let (w, _h, _trunc) = measure_text("漢字", &cfg);
+        assert!((w - 4.0).abs() < f64::EPSILON, "'漢字' should be 4 cols, got {w}");
+    }
+
+    #[test]
+    fn measure_text_cjk_wrapping() {
+        let cfg = LabelPlacementConfig {
+            max_label_width: 5.0,
+            char_width: 1.0,
+            line_height: 1.0,
+            max_lines: 10,
+            max_label_height: 20.0,
+            ..Default::default()
+        };
+        // "漢字テスト" = 10 display cols, wraps into multiple lines at width 5
+        let (_w, h, _trunc) = measure_text("漢字テスト", &cfg);
+        assert!(h > 1.0, "CJK text should wrap to multiple lines at width 5, got height {h}");
+    }
+
+    #[test]
+    fn measure_text_mixed_ascii_cjk() {
+        let cfg = LabelPlacementConfig {
+            max_label_width: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+            max_lines: 5,
+            max_label_height: 10.0,
+            ..Default::default()
+        };
+        // "Hi" = 2 cols, "漢字" = 4 cols, total = 6
+        let (w, _h, _trunc) = measure_text("Hi漢字", &cfg);
+        assert!((w - 6.0).abs() < f64::EPSILON, "'Hi漢字' should be 6 cols, got {w}");
     }
 
     // ── Edge segment rects ──────────────────────────────────────────

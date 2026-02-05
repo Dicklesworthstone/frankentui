@@ -1270,6 +1270,7 @@ mod tests {
                 },
                 guard: MermaidGuardReport::default(),
             },
+            constraints: vec![],
         }
     }
 
