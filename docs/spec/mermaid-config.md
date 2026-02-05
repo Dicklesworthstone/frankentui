@@ -145,6 +145,8 @@ Warnings are deterministic and use stable codes:
 - `mermaid/unsupported/link` — links ignored
 - `mermaid/unsupported/feature` — unknown statement ignored
 - `mermaid/sanitized/input` — input sanitized (strict mode)
+- `mermaid/limit/exceeded` — `max_nodes`/`max_edges`/label limits triggered
+- `mermaid/budget/exceeded` — route/layout budget exhausted
 
 ## Compatibility Matrix
 
@@ -175,9 +177,9 @@ When encountering unsupported input, the engine degrades in a predictable order:
 3. **Unsupported statements** (e.g., advanced directives) → ignore and emit
    `MERMAID_UNSUPPORTED_TOKEN` with span.
 4. **Limits exceeded** (`max_nodes`, `max_edges`, label limits) → clamp and emit
-   `MERMAID_LIMIT_EXCEEDED` with counts.
+   `mermaid/limit/exceeded` with counts.
 5. **Budget exceeded** (`route_budget`, `layout_iteration_budget`) → degrade
-   tier `rich → normal → compact → outline`, emitting `MERMAID_BUDGET_EXCEEDED`.
+   tier `rich → normal → compact → outline`, emitting `mermaid/budget/exceeded`.
 6. **Security violations** (HTML/JS, unsafe links) → strip and emit
    `mermaid/sanitized/input`.
 
@@ -187,6 +189,17 @@ Implementation note:
 
 The **outline** fallback renders a deterministic, sorted list of nodes and
 edges (stable ordering by insertion + lexicographic tie‑break).
+
+## Complexity Guards + Degradation
+
+Guard checks run after IR normalization and are deterministic:
+
+- **Complexity score** = `nodes + edges + labels + clusters` (counts stored in meta).
+- **Label limits** clamp to `max_label_chars` and `max_label_lines` (counts recorded).
+- **Budget estimates** are heuristic but deterministic (route ops + layout iterations).
+- **Degradation plan** may hide labels, collapse clusters, simplify routing,
+  reduce decoration, and force ASCII fallback depending on which limits/budgets
+  are exceeded.
 
 ## Warning Taxonomy (JSONL + Panels)
 
@@ -201,13 +214,13 @@ Warnings are structured and deterministic, including `code`, `message`,
 | `mermaid/unsupported/link` | link/click disabled or sanitized | warn |
 | `mermaid/unsupported/feature` | Statement unsupported in current diagram | warn |
 | `mermaid/sanitized/input` | HTML/JS/unsafe text stripped | warn |
+| `mermaid/limit/exceeded` | `max_nodes`/`max_edges`/label limits triggered | warn |
+| `mermaid/budget/exceeded` | Route/layout budget exhausted | warn |
 
 Reserved for upcoming guard/degradation phases (not yet emitted):
 
 | Code | When | Severity |
 | --- | --- | --- |
-| `mermaid/limit/exceeded` | `max_nodes`/`max_edges`/label limits triggered | warn |
-| `mermaid/budget/exceeded` | Route/layout budget exhausted | warn |
 | `mermaid/disabled` | Config `enabled=false` | info |
 | `mermaid/parse/error` | Syntax error with span | error |
 
