@@ -301,6 +301,14 @@ pub struct TerminalCapabilities {
     /// 256-color palette support.
     pub colors_256: bool,
 
+    // Glyph support
+    /// Unicode box-drawing support.
+    pub unicode_box_drawing: bool,
+    /// Emoji glyph support.
+    pub unicode_emoji: bool,
+    /// Double-width glyph support (CJK/emoji).
+    pub double_width: bool,
+
     // Advanced features
     /// Synchronized output (DEC mode 2026) to reduce flicker.
     pub sync_output: bool,
@@ -395,6 +403,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Modern,
             true_color: true,
             colors_256: true,
+            unicode_box_drawing: true,
+            unicode_emoji: true,
+            double_width: true,
             sync_output: true,
             osc8_hyperlinks: true,
             scroll_region: true,
@@ -419,6 +430,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Xterm256Color,
             true_color: false,
             colors_256: true,
+            unicode_box_drawing: true,
+            unicode_emoji: true,
+            double_width: true,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -442,6 +456,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Xterm,
             true_color: false,
             colors_256: false,
+            unicode_box_drawing: true,
+            unicode_emoji: false,
+            double_width: true,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -465,6 +482,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Vt100,
             true_color: false,
             colors_256: false,
+            unicode_box_drawing: false,
+            unicode_emoji: false,
+            double_width: false,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -488,6 +508,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Dumb,
             true_color: false,
             colors_256: false,
+            unicode_box_drawing: false,
+            unicode_emoji: false,
+            double_width: false,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: false,
@@ -512,6 +535,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Screen,
             true_color: false,
             colors_256: true,
+            unicode_box_drawing: true,
+            unicode_emoji: true,
+            double_width: true,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -536,6 +562,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Tmux,
             true_color: false,
             colors_256: true,
+            unicode_box_drawing: true,
+            unicode_emoji: true,
+            double_width: true,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -559,6 +588,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Zellij,
             true_color: true,
             colors_256: true,
+            unicode_box_drawing: true,
+            unicode_emoji: true,
+            double_width: true,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -582,6 +614,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::WindowsConsole,
             true_color: true,
             colors_256: true,
+            unicode_box_drawing: true,
+            unicode_emoji: true,
+            double_width: true,
             sync_output: false,
             osc8_hyperlinks: true,
             scroll_region: true,
@@ -605,6 +640,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Kitty,
             true_color: true,
             colors_256: true,
+            unicode_box_drawing: true,
+            unicode_emoji: true,
+            double_width: true,
             sync_output: true,
             osc8_hyperlinks: true,
             scroll_region: true,
@@ -628,6 +666,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::LinuxConsole,
             true_color: false,
             colors_256: false,
+            unicode_box_drawing: true,
+            unicode_emoji: false,
+            double_width: false,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: true,
@@ -695,6 +736,9 @@ impl CapabilityProfileBuilder {
                 profile: TerminalProfile::Custom,
                 true_color: false,
                 colors_256: false,
+                unicode_box_drawing: false,
+                unicode_emoji: false,
+                double_width: false,
                 sync_output: false,
                 osc8_hyperlinks: false,
                 scroll_region: false,
@@ -922,10 +966,18 @@ impl TerminalCapabilities {
         // OSC 52 clipboard (security restricted in multiplexers by default)
         let osc52_clipboard = !is_dumb && !in_any_mux && (is_modern_terminal || is_kitty);
 
+        // Unicode glyph support (assume available in modern terminals)
+        let unicode_box_drawing = !is_dumb;
+        let unicode_emoji = !is_dumb && (is_modern_terminal || is_kitty);
+        let double_width = !is_dumb;
+
         Self {
             profile: TerminalProfile::Detected,
             true_color,
             colors_256,
+            unicode_box_drawing,
+            unicode_emoji,
+            double_width,
             sync_output,
             osc8_hyperlinks,
             scroll_region,
@@ -950,6 +1002,9 @@ impl TerminalCapabilities {
             profile: TerminalProfile::Dumb,
             true_color: false,
             colors_256: false,
+            unicode_box_drawing: false,
+            unicode_emoji: false,
+            double_width: false,
             sync_output: false,
             osc8_hyperlinks: false,
             scroll_region: false,

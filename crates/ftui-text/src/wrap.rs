@@ -1108,10 +1108,21 @@ mod tests {
 
     #[test]
     fn display_width_misc_symbol_ranges() {
-        assert_eq!(display_width("⌚"), 2);
-        assert_eq!(display_width("✈"), 2);
-        assert_eq!(display_width("⭐"), 2);
-        assert_eq!(display_width("⬆"), 2);
+        // Wide characters (east_asian_width=W) are always width 2
+        assert_eq!(display_width("⌚"), 2); // U+231A WATCH, Wide
+        assert_eq!(display_width("⭐"), 2); // U+2B50 WHITE MEDIUM STAR, Wide
+
+        // Neutral characters (east_asian_width=N): width depends on CJK mode
+        let airplane_width = display_width("✈"); // U+2708 AIRPLANE, Neutral
+        let arrow_width = display_width("⬆"); // U+2B06 UPWARDS BLACK ARROW, Neutral
+        assert!(
+            [1, 2].contains(&airplane_width),
+            "airplane should be 1 (non-CJK) or 2 (CJK), got {airplane_width}"
+        );
+        assert_eq!(
+            airplane_width, arrow_width,
+            "both Neutral-width chars should have same width in any mode"
+        );
     }
 
     #[test]

@@ -31,7 +31,7 @@ use ftui_core::geometry::Rect;
 use ftui_extras::mermaid::MermaidConfig;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::Cell as RenderCell;
-use ftui_render::frame::{Frame, HitGrid};
+use ftui_render::frame::{Frame, HitGrid, HitId};
 use ftui_runtime::render_trace::checksum_buffer;
 use ftui_runtime::undo::HistoryManager;
 use ftui_runtime::{Cmd, Every, FrameTiming, FrameTimingSink, Model, Subscription};
@@ -200,6 +200,76 @@ fn emit_screen_init_log(
             ("init_ms", &init_ms),
             ("effect_count", &effect_count),
             ("memory_estimate_bytes", &memory_estimate),
+        ],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mouse Navigation Diagnostics (bd-ptyoh)
+// ---------------------------------------------------------------------------
+
+fn mouse_jsonl_logger() -> Option<&'static JsonlLogger> {
+    if !jsonl_enabled() {
+        return None;
+    }
+    static LOGGER: OnceLock<JsonlLogger> = OnceLock::new();
+    Some(LOGGER.get_or_init(|| {
+        let run_id = determinism::demo_run_id().unwrap_or_else(|| "demo_mouse".to_string());
+        let seed = determinism::demo_seed(0);
+        JsonlLogger::new(run_id)
+            .with_seed(seed)
+            .with_context("screen_mode", determinism::demo_screen_mode())
+    }))
+}
+
+fn mouse_kind_label(kind: MouseEventKind) -> &'static str {
+    match kind {
+        MouseEventKind::Down(MouseButton::Left) => "down_left",
+        MouseEventKind::Down(MouseButton::Right) => "down_right",
+        MouseEventKind::Down(MouseButton::Middle) => "down_middle",
+        MouseEventKind::Up(MouseButton::Left) => "up_left",
+        MouseEventKind::Up(MouseButton::Right) => "up_right",
+        MouseEventKind::Up(MouseButton::Middle) => "up_middle",
+        MouseEventKind::Drag(MouseButton::Left) => "drag_left",
+        MouseEventKind::Drag(MouseButton::Right) => "drag_right",
+        MouseEventKind::Drag(MouseButton::Middle) => "drag_middle",
+        MouseEventKind::Moved => "moved",
+        MouseEventKind::ScrollUp => "scroll_up",
+        MouseEventKind::ScrollDown => "scroll_down",
+        MouseEventKind::ScrollLeft => "scroll_left",
+        MouseEventKind::ScrollRight => "scroll_right",
+    }
+}
+
+fn emit_mouse_jsonl(
+    mouse: &MouseEvent,
+    hit_id: Option<HitId>,
+    action: &str,
+    target: Option<ScreenId>,
+    current: ScreenId,
+) {
+    let Some(logger) = mouse_jsonl_logger() else {
+        return;
+    };
+    let hit_id = hit_id
+        .map(|id| id.id().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let target_label = target
+        .map(|screen| screen.title().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let current_label = current.title().to_string();
+    let x = mouse.x.to_string();
+    let y = mouse.y.to_string();
+    logger.log(
+        "mouse_event",
+        &[
+            ("kind", mouse_kind_label(mouse.kind)),
+            ("x", &x),
+            ("y", &y),
+            ("hit_id", &hit_id),
+            ("action", action),
+            ("target_screen", &target_label),
+            ("current_screen", &current_label),
         ],
     );
 }
@@ -3316,15 +3386,27 @@ impl AppModel {
     }
 
     fn handle_mouse_tab_click(&mut self, mouse: &MouseEvent) -> bool {
-        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        let is_click = matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        );
+        let current = self.current_screen;
+        let hit = self.hit_test_screen(mouse);
+
+        if !is_click {
+            let hit_id = hit.as_ref().map(|(id, _)| *id);
+            let target = hit.as_ref().map(|(_, screen)| *screen);
+            emit_mouse_jsonl(mouse, hit_id, "ignored", target, current);
             return false;
         }
 
-        let Some(target) = self.hit_test_screen(mouse) else {
+        let Some((hit_id, target)) = hit else {
+            emit_mouse_jsonl(mouse, None, "no_hit", None, current);
             return false;
         };
 
         if target == self.current_screen {
+            emit_mouse_jsonl(mouse, Some(hit_id), "no_change", Some(target), current);
             return false;
         }
 
@@ -3342,16 +3424,18 @@ impl AppModel {
                 ("to".to_string(), target.title().to_string()),
             ],
         );
+        emit_mouse_jsonl(mouse, Some(hit_id), "switch_screen", Some(target), current);
         true
     }
 
-    fn hit_test_screen(&self, mouse: &MouseEvent) -> Option<ScreenId> {
+    fn hit_test_screen(&self, mouse: &MouseEvent) -> Option<(HitId, ScreenId)> {
         let grid = self.last_hit_grid.borrow();
         let hit = grid
             .as_ref()
             .and_then(|grid| grid.hit_test(mouse.x, mouse.y));
         let (id, _region, _data) = hit?;
-        crate::chrome::screen_from_any_hit_id(id)
+        let target = crate::chrome::screen_from_any_hit_id(id)?;
+        Some((id, target))
     }
 
     fn cache_hit_grid(&self, frame: &Frame) {
@@ -4240,6 +4324,38 @@ mod tests {
             let mut frame = Frame::new(120, 40, &mut pool);
             app.view(&mut frame);
         }
+    }
+
+    #[test]
+    fn mouse_tab_click_switches_screen() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let mouse = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
+        let handled = app.handle_mouse_tab_click(&mouse);
+        assert!(handled, "Mouse tab click should be handled");
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
+    }
+
+    #[test]
+    fn mouse_tab_click_accepts_mouse_up() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let mouse = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 1, 0);
+        let handled = app.handle_mouse_tab_click(&mouse);
+        assert!(handled, "Mouse up should trigger tab navigation");
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
     }
 
     /// Verify the error boundary catches panics and shows fallback.
