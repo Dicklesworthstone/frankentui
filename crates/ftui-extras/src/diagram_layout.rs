@@ -437,9 +437,9 @@ fn count_crossings(layers: &[Vec<usize>], adj: &[Vec<usize>]) -> usize {
         let layer_a = &layers[i];
         let layer_b = &layers[i + 1];
 
-        // Position map for layer_b
+        // Position map for layer_b (usize::MAX => not present)
         let max_node = layer_b.iter().copied().max().unwrap_or(0) + 1;
-        let mut pos_b = vec![0usize; max_node];
+        let mut pos_b = vec![usize::MAX; max_node];
         for (p, &v) in layer_b.iter().enumerate() {
             if v < max_node {
                 pos_b[v] = p;
@@ -450,8 +450,11 @@ fn count_crossings(layers: &[Vec<usize>], adj: &[Vec<usize>]) -> usize {
         let mut edge_pairs: Vec<(usize, usize)> = Vec::new();
         for (pa, &u) in layer_a.iter().enumerate() {
             for &v in &adj[u] {
-                if v < max_node && layer_b.contains(&v) {
-                    edge_pairs.push((pa, pos_b[v]));
+                if v < max_node {
+                    let pos = pos_b[v];
+                    if pos != usize::MAX {
+                        edge_pairs.push((pa, pos));
+                    }
                 }
             }
         }
@@ -771,9 +774,11 @@ fn compute_ports(
                     _ => (x[nid], y[nid] + node_heights[nid] / 2.0, PortSide::Bottom),
                 },
                 IrPortSideHint::Auto => match direction {
-                    GraphDirection::LR | GraphDirection::RL => {
+                    GraphDirection::LR => {
                         (x[nid] + node_widths[nid] / 2.0, y[nid], PortSide::Right)
                     }
+                    GraphDirection::RL => (x[nid] - node_widths[nid] / 2.0, y[nid], PortSide::Left),
+                    GraphDirection::BT => (x[nid], y[nid] - node_heights[nid] / 2.0, PortSide::Top),
                     _ => (x[nid], y[nid] + node_heights[nid] / 2.0, PortSide::Bottom),
                 },
             };
