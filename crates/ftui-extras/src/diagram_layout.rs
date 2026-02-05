@@ -480,6 +480,108 @@ fn count_crossings(layers: &[Vec<usize>], adj: &[Vec<usize>]) -> usize {
     crossings
 }
 
+/// Scratch buffers reused across crossing-count operations to avoid
+/// per-call heap allocations on the hot path.
+struct CrossingScratch {
+    pos_b: Vec<usize>,
+    edge_pairs: Vec<(usize, usize)>,
+    seq: Vec<usize>,
+    merge_buf: Vec<usize>,
+}
+
+impl CrossingScratch {
+    fn new() -> Self {
+        Self {
+            pos_b: Vec::new(),
+            edge_pairs: Vec::new(),
+            seq: Vec::new(),
+            merge_buf: Vec::new(),
+        }
+    }
+}
+
+/// Count crossings between a single pair of adjacent layers, reusing scratch buffers.
+fn count_crossings_pair_with(
+    layer_a: &[usize],
+    layer_b: &[usize],
+    adj: &[Vec<usize>],
+    scratch: &mut CrossingScratch,
+) -> usize {
+    if layer_a.is_empty() || layer_b.is_empty() {
+        return 0;
+    }
+    let max_node = layer_b.iter().copied().max().unwrap_or(0) + 1;
+
+    // Reuse pos_b buffer
+    scratch.pos_b.clear();
+    scratch.pos_b.resize(max_node, usize::MAX);
+    for (p, &v) in layer_b.iter().enumerate() {
+        if v < max_node {
+            scratch.pos_b[v] = p;
+        }
+    }
+
+    // Reuse edge_pairs buffer
+    scratch.edge_pairs.clear();
+    for (pa, &u) in layer_a.iter().enumerate() {
+        for &v in &adj[u] {
+            if v < max_node {
+                let pos = scratch.pos_b[v];
+                if pos != usize::MAX {
+                    scratch.edge_pairs.push((pa, pos));
+                }
+            }
+        }
+    }
+
+    scratch
+        .edge_pairs
+        .sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    // Reuse seq and merge_buf
+    scratch.seq.clear();
+    scratch
+        .seq
+        .extend(scratch.edge_pairs.iter().map(|&(_, b)| b));
+    let n = scratch.seq.len();
+    if scratch.merge_buf.len() < n {
+        scratch.merge_buf.resize(n, 0);
+    }
+    merge_sort_count_inversions(&mut scratch.seq, &mut scratch.merge_buf)
+}
+
+/// Count total crossings across all adjacent layer pairs, reusing scratch buffers.
+fn count_crossings_with(
+    layers: &[Vec<usize>],
+    adj: &[Vec<usize>],
+    scratch: &mut CrossingScratch,
+) -> usize {
+    let mut crossings = 0;
+    for i in 0..layers.len().saturating_sub(1) {
+        crossings += count_crossings_pair_with(&layers[i], &layers[i + 1], adj, scratch);
+    }
+    crossings
+}
+
+/// Count crossings involving a specific layer, reusing scratch buffers.
+fn count_crossings_at_with(
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+    adj: &[Vec<usize>],
+    scratch: &mut CrossingScratch,
+) -> usize {
+    let mut total = 0;
+    if layer_idx > 0 {
+        total +=
+            count_crossings_pair_with(&layers[layer_idx - 1], &layers[layer_idx], adj, scratch);
+    }
+    if layer_idx + 1 < layers.len() {
+        total +=
+            count_crossings_pair_with(&layers[layer_idx], &layers[layer_idx + 1], adj, scratch);
+    }
+    total
+}
+
 /// Count inversions in a slice using merge sort. O(n log n).
 /// An inversion is a pair (i, j) where i < j but seq[i] > seq[j].
 /// `buf` is a pre-allocated scratch buffer at least as large as `seq`.
@@ -544,7 +646,10 @@ fn minimize_crossings(
         layer.sort_unstable();
     }
 
-    let mut best_crossings = count_crossings(&layers, adj);
+    // Scratch buffers reused across all crossing-count calls (hot path)
+    let mut crossing_scratch = CrossingScratch::new();
+
+    let mut best_crossings = count_crossings_with(&layers, adj, &mut crossing_scratch);
     // Lazy clone: only allocate best_layers when we find an improvement
     let mut best_layers: Option<Vec<Vec<usize>>> = None;
 
@@ -588,7 +693,7 @@ fn minimize_crossings(
             }
         }
 
-        let c = count_crossings(&layers, adj);
+        let c = count_crossings_with(&layers, adj, &mut crossing_scratch);
         if c < best_crossings {
             best_crossings = c;
             best_layers = Some(layers.clone());
@@ -608,12 +713,14 @@ fn minimize_crossings(
                 if *budget == 0 {
                     break;
                 }
-                if layers[li].len() >= 3 && sifting_sort(&mut layers, li, adj, budget) {
+                if layers[li].len() >= 3
+                    && sifting_sort(&mut layers, li, adj, budget, &mut crossing_scratch)
+                {
                     sift_improved = true;
                 }
             }
             if sift_improved {
-                let c2 = count_crossings(&layers, adj);
+                let c2 = count_crossings_with(&layers, adj, &mut crossing_scratch);
                 if c2 < best_crossings {
                     best_crossings = c2;
                     best_layers = Some(layers.clone());
@@ -714,49 +821,6 @@ fn barycenter_sort(
     layers[layer_idx] = bary.into_iter().map(|(v, _)| v).collect();
 }
 
-/// Count crossings between a single pair of adjacent layers.
-/// `layer_a` is the upper/source layer, `layer_b` is the lower/destination layer.
-fn count_crossings_pair(layer_a: &[usize], layer_b: &[usize], adj: &[Vec<usize>]) -> usize {
-    if layer_a.is_empty() || layer_b.is_empty() {
-        return 0;
-    }
-    let max_node = layer_b.iter().copied().max().unwrap_or(0) + 1;
-    let mut pos_b = vec![usize::MAX; max_node];
-    for (p, &v) in layer_b.iter().enumerate() {
-        if v < max_node {
-            pos_b[v] = p;
-        }
-    }
-    let mut edge_pairs: Vec<(usize, usize)> = Vec::new();
-    for (pa, &u) in layer_a.iter().enumerate() {
-        for &v in &adj[u] {
-            if v < max_node {
-                let pos = pos_b[v];
-                if pos != usize::MAX {
-                    edge_pairs.push((pa, pos));
-                }
-            }
-        }
-    }
-    edge_pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    let mut seq: Vec<usize> = edge_pairs.iter().map(|&(_, b)| b).collect();
-    let mut buf = vec![0usize; seq.len()];
-    merge_sort_count_inversions(&mut seq, &mut buf)
-}
-
-/// Count crossings involving a specific layer: sum crossings with its adjacent
-/// layer pair(s) (the layer above and/or the layer below).
-fn count_crossings_at(layers: &[Vec<usize>], layer_idx: usize, adj: &[Vec<usize>]) -> usize {
-    let mut total = 0;
-    if layer_idx > 0 {
-        total += count_crossings_pair(&layers[layer_idx - 1], &layers[layer_idx], adj);
-    }
-    if layer_idx + 1 < layers.len() {
-        total += count_crossings_pair(&layers[layer_idx], &layers[layer_idx + 1], adj);
-    }
-    total
-}
-
 /// Sifting refinement pass for crossing minimization.
 ///
 /// For each node in the target layer, removes it and tries reinserting it at
@@ -770,6 +834,7 @@ fn sifting_sort(
     layer_idx: usize,
     adj: &[Vec<usize>],
     budget: &mut usize,
+    scratch: &mut CrossingScratch,
 ) -> bool {
     let layer_len = layers[layer_idx].len();
     if layer_len <= 2 {
@@ -796,7 +861,7 @@ fn sifting_sort(
 
         // Baseline: crossings at the layer with the node removed (re-inserted at cur_pos)
         layers[layer_idx].insert(cur_pos, node);
-        let baseline = count_crossings_at(layers, layer_idx, adj);
+        let baseline = count_crossings_at_with(layers, layer_idx, adj, scratch);
         layers[layer_idx].remove(cur_pos);
 
         // Try every position and find the one with minimum crossings
@@ -809,7 +874,7 @@ fn sifting_sort(
                 continue; // Already measured as baseline
             }
             layers[layer_idx].insert(pos, node);
-            let c = count_crossings_at(layers, layer_idx, adj);
+            let c = count_crossings_at_with(layers, layer_idx, adj, scratch);
             layers[layer_idx].remove(pos);
             if c < best_crossings {
                 best_crossings = c;
@@ -2070,7 +2135,13 @@ mod tests {
         ];
         let original: Vec<usize> = layers[1].clone();
         let mut budget = 1000;
-        sifting_sort(&mut layers, 1, &adj, &mut budget);
+        sifting_sort(
+            &mut layers,
+            1,
+            &adj,
+            &mut budget,
+            &mut CrossingScratch::new(),
+        );
         let mut sorted_result = layers[1].clone();
         sorted_result.sort_unstable();
         let mut sorted_original = original;
@@ -2101,7 +2172,13 @@ mod tests {
         assert!(before > 0, "initial ordering should have crossings");
 
         let mut budget = 1000;
-        sifting_sort(&mut layers, 1, &adj, &mut budget);
+        sifting_sort(
+            &mut layers,
+            1,
+            &adj,
+            &mut budget,
+            &mut CrossingScratch::new(),
+        );
         let after = count_crossings(&layers, &adj);
         assert!(
             after <= before,
@@ -2120,7 +2197,13 @@ mod tests {
         let adj = vec![vec![5], vec![3], vec![4], vec![], vec![], vec![]];
         let original = layers[1].clone();
         let mut budget = 0;
-        let improved = sifting_sort(&mut layers, 1, &adj, &mut budget);
+        let improved = sifting_sort(
+            &mut layers,
+            1,
+            &adj,
+            &mut budget,
+            &mut CrossingScratch::new(),
+        );
         assert!(!improved, "sifting with zero budget should not improve");
         assert_eq!(
             layers[1], original,
@@ -2134,9 +2217,21 @@ mod tests {
         let mut layers = vec![vec![0], vec![1, 2]];
         let adj = vec![vec![1, 2], vec![], vec![]];
         let mut budget = 1000;
-        let improved = sifting_sort(&mut layers, 0, &adj, &mut budget);
+        let improved = sifting_sort(
+            &mut layers,
+            0,
+            &adj,
+            &mut budget,
+            &mut CrossingScratch::new(),
+        );
         assert!(!improved, "single-node layer cannot be improved by sifting");
-        let improved2 = sifting_sort(&mut layers, 1, &adj, &mut budget);
+        let improved2 = sifting_sort(
+            &mut layers,
+            1,
+            &adj,
+            &mut budget,
+            &mut CrossingScratch::new(),
+        );
         assert!(!improved2, "two-node layer should not trigger sifting");
     }
 
@@ -2210,11 +2305,12 @@ mod tests {
 
     #[test]
     fn count_crossings_pair_matches_full_count() {
-        // Verify count_crossings_pair gives same result as count_crossings for a 2-layer graph
+        // Verify count_crossings_pair_with gives same result as count_crossings for a 2-layer graph
         let layers = vec![vec![0, 1, 2], vec![3, 4, 5]];
         let adj = vec![vec![5], vec![3], vec![4], vec![], vec![], vec![]];
         let full = count_crossings(&layers, &adj);
-        let pair = count_crossings_pair(&layers[0], &layers[1], &adj);
+        let mut scratch = CrossingScratch::new();
+        let pair = count_crossings_pair_with(&layers[0], &layers[1], &adj, &mut scratch);
         assert_eq!(
             full, pair,
             "pair count should match full count for 2-layer graph"

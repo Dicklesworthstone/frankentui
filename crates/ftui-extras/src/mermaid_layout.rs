@@ -396,15 +396,15 @@ fn build_rank_buckets(ranks: &[usize]) -> Vec<Vec<usize>> {
     buckets
 }
 
-/// Compute barycenter of a node relative to the previous rank.
-fn order_positions(order: &[usize], n: usize) -> Vec<usize> {
-    let mut positions = vec![usize::MAX; n];
+/// Reuse a positions buffer instead of allocating a new Vec.
+fn order_positions_into(order: &[usize], n: usize, positions: &mut Vec<usize>) {
+    positions.clear();
+    positions.resize(n, usize::MAX);
     for (pos, &node) in order.iter().enumerate() {
         if node < n {
             positions[node] = pos;
         }
     }
-    positions
 }
 
 fn barycenter(prev_pos: &[usize], neighbors: &[usize]) -> f64 {
@@ -436,16 +436,18 @@ fn barycenter_sweep_forward(
     graph: &LayoutGraph,
     r: usize,
     cluster_map: &[Option<usize>],
+    pos_buf: &mut Vec<usize>,
 ) {
     if r == 0 || r >= rank_order.len() {
         return;
     }
-    let prev_pos = order_positions(&rank_order[r - 1], graph.n);
+    order_positions_into(&rank_order[r - 1], graph.n, pos_buf);
+    let prev_pos = &*pos_buf;
 
     let scored: Vec<(usize, f64)> = rank_order[r]
         .iter()
         .map(|&v| {
-            let bc = barycenter(&prev_pos, &graph.rev[v]);
+            let bc = barycenter(prev_pos, &graph.rev[v]);
             (v, bc)
         })
         .collect();
@@ -469,16 +471,18 @@ fn barycenter_sweep_backward(
     graph: &LayoutGraph,
     r: usize,
     cluster_map: &[Option<usize>],
+    pos_buf: &mut Vec<usize>,
 ) {
     if r + 1 >= rank_order.len() {
         return;
     }
-    let next_pos = order_positions(&rank_order[r + 1], graph.n);
+    order_positions_into(&rank_order[r + 1], graph.n, pos_buf);
+    let next_pos = &*pos_buf;
 
     let scored: Vec<(usize, f64)> = rank_order[r]
         .iter()
         .map(|&v| {
-            let bc = barycenter(&next_pos, &graph.adj[v]);
+            let bc = barycenter(next_pos, &graph.adj[v]);
             (v, bc)
         })
         .collect();
@@ -543,7 +547,28 @@ fn cluster_sort_key(
     }
 }
 
+/// Scratch buffers reused across crossing-count operations to avoid
+/// per-call heap allocations on the hot path.
+struct MermaidCrossingScratch {
+    pos_b: Vec<usize>,
+    in_b: Vec<bool>,
+    edges: Vec<(usize, usize)>,
+    fenwick_tree: Vec<usize>,
+}
+
+impl MermaidCrossingScratch {
+    fn new(n: usize) -> Self {
+        Self {
+            pos_b: vec![usize::MAX; n],
+            in_b: vec![false; n],
+            edges: Vec::new(),
+            fenwick_tree: Vec::new(),
+        }
+    }
+}
+
 /// Count edge crossings between two adjacent ranks.
+#[cfg(test)]
 fn count_crossings(rank_a: &[usize], rank_b: &[usize], graph: &LayoutGraph) -> usize {
     struct Fenwick {
         tree: Vec<usize>,
@@ -627,7 +652,84 @@ fn count_crossings(rank_a: &[usize], rank_b: &[usize], graph: &LayoutGraph) -> u
     crossings
 }
 
+/// Count edge crossings between two adjacent ranks, reusing scratch buffers.
+fn count_crossings_reuse(
+    rank_a: &[usize],
+    rank_b: &[usize],
+    graph: &LayoutGraph,
+    scratch: &mut MermaidCrossingScratch,
+) -> usize {
+    let n = graph.n;
+    if scratch.pos_b.len() < n {
+        scratch.pos_b.resize(n, usize::MAX);
+        scratch.in_b.resize(n, false);
+    }
+    for v in scratch.pos_b.iter_mut().take(n) {
+        *v = usize::MAX;
+    }
+    for v in scratch.in_b.iter_mut().take(n) {
+        *v = false;
+    }
+    for (i, &v) in rank_b.iter().enumerate() {
+        scratch.pos_b[v] = i;
+        scratch.in_b[v] = true;
+    }
+
+    scratch.edges.clear();
+    for (i, &u) in rank_a.iter().enumerate() {
+        for &v in &graph.adj[u] {
+            if scratch.in_b[v] {
+                scratch.edges.push((i, scratch.pos_b[v]));
+            }
+        }
+    }
+
+    if scratch.edges.len() < 2 {
+        return 0;
+    }
+
+    let bit_size = rank_b.len().saturating_add(1);
+    scratch.fenwick_tree.clear();
+    scratch.fenwick_tree.resize(bit_size, 0);
+
+    let mut crossings = 0usize;
+    let mut total_seen = 0usize;
+    let mut idx = 0usize;
+    while idx < scratch.edges.len() {
+        let current_a = scratch.edges[idx].0;
+        let mut end = idx + 1;
+        while end < scratch.edges.len() && scratch.edges[end].0 == current_a {
+            end += 1;
+        }
+
+        for e_idx in idx..end {
+            let b = scratch.edges[e_idx].1;
+            let mut acc = 0usize;
+            let mut fi = (b + 1).min(scratch.fenwick_tree.len().saturating_sub(1));
+            while fi > 0 {
+                acc = acc.saturating_add(scratch.fenwick_tree[fi]);
+                fi &= fi - 1;
+            }
+            crossings = crossings.saturating_add(total_seen.saturating_sub(acc));
+        }
+
+        for e_idx in idx..end {
+            let b = scratch.edges[e_idx].1;
+            let mut fi = b.saturating_add(1);
+            while fi < scratch.fenwick_tree.len() {
+                scratch.fenwick_tree[fi] = scratch.fenwick_tree[fi].saturating_add(1);
+                fi += fi & fi.wrapping_neg();
+            }
+            total_seen = total_seen.saturating_add(1);
+        }
+
+        idx = end;
+    }
+    crossings
+}
+
 /// Total crossings across all adjacent rank pairs.
+#[cfg(test)]
 fn total_crossings(rank_order: &[Vec<usize>], graph: &LayoutGraph) -> usize {
     let mut total = 0;
     for r in 0..rank_order.len().saturating_sub(1) {
@@ -636,7 +738,21 @@ fn total_crossings(rank_order: &[Vec<usize>], graph: &LayoutGraph) -> usize {
     total
 }
 
+/// Total crossings across all adjacent rank pairs, reusing scratch buffers.
+fn total_crossings_reuse(
+    rank_order: &[Vec<usize>],
+    graph: &LayoutGraph,
+    scratch: &mut MermaidCrossingScratch,
+) -> usize {
+    let mut total = 0;
+    for r in 0..rank_order.len().saturating_sub(1) {
+        total += count_crossings_reuse(&rank_order[r], &rank_order[r + 1], graph, scratch);
+    }
+    total
+}
+
 /// Total crossings with early-exit once `limit` is reached.
+#[cfg(test)]
 fn total_crossings_with_limit(
     rank_order: &[Vec<usize>],
     graph: &LayoutGraph,
@@ -645,6 +761,28 @@ fn total_crossings_with_limit(
     let mut total = 0usize;
     for r in 0..rank_order.len().saturating_sub(1) {
         total = total.saturating_add(count_crossings(&rank_order[r], &rank_order[r + 1], graph));
+        if total >= limit {
+            break;
+        }
+    }
+    total
+}
+
+/// Total crossings with early-exit, reusing scratch buffers.
+fn total_crossings_with_limit_reuse(
+    rank_order: &[Vec<usize>],
+    graph: &LayoutGraph,
+    limit: usize,
+    scratch: &mut MermaidCrossingScratch,
+) -> usize {
+    let mut total = 0usize;
+    for r in 0..rank_order.len().saturating_sub(1) {
+        total = total.saturating_add(count_crossings_reuse(
+            &rank_order[r],
+            &rank_order[r + 1],
+            graph,
+            scratch,
+        ));
         if total >= limit {
             break;
         }
@@ -666,24 +804,33 @@ fn minimize_crossings(
         return (0, 0);
     }
 
-    let mut best_crossings = total_crossings(rank_order, graph);
+    // Pre-allocate scratch buffers for crossing counts (hot path)
+    let mut crossing_scratch = MermaidCrossingScratch::new(graph.n);
+
+    let mut best_crossings = total_crossings_reuse(rank_order, graph, &mut crossing_scratch);
     let mut best_order = rank_order.clone();
     let mut iterations_used = 0;
+    let mut pos_buf: Vec<usize> = Vec::with_capacity(graph.n);
 
     for _iter in 0..max_iterations {
         iterations_used += 1;
 
         // Forward sweep.
         for r in 1..rank_order.len() {
-            barycenter_sweep_forward(rank_order, graph, r, cluster_map);
+            barycenter_sweep_forward(rank_order, graph, r, cluster_map, &mut pos_buf);
         }
 
         // Backward sweep.
         for r in (0..rank_order.len().saturating_sub(1)).rev() {
-            barycenter_sweep_backward(rank_order, graph, r, cluster_map);
+            barycenter_sweep_backward(rank_order, graph, r, cluster_map, &mut pos_buf);
         }
 
-        let crossings = total_crossings_with_limit(rank_order, graph, best_crossings);
+        let crossings = total_crossings_with_limit_reuse(
+            rank_order,
+            graph,
+            best_crossings,
+            &mut crossing_scratch,
+        );
         if crossings < best_crossings {
             best_crossings = crossings;
             best_order = rank_order.clone();
