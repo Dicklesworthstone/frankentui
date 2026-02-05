@@ -599,7 +599,18 @@ fn minimize_crossings(
         }
     }
 
-    best_layers.unwrap_or(layers)
+    match best_layers {
+        Some(bl) => bl,
+        None => {
+            // No sweep improved on the initial ordering — restore it.
+            // The initial ordering is sort_unstable() by node index,
+            // and sweeps only reorder within layers, so re-sorting recovers it.
+            for layer in &mut layers {
+                layer.sort_unstable();
+            }
+            layers
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -169,22 +169,25 @@ fn bench_layout(c: &mut Criterion) {
 
     // Small: 5-node linear chain
     let small = linear_chain(5);
-    group.throughput(Throughput::Elements(5));
-    group.bench_with_input(BenchmarkId::new("small", 5), &small, |b, ir| {
+    let small_n = small.nodes.len() as u64;
+    group.throughput(Throughput::Elements(small_n));
+    group.bench_with_input(BenchmarkId::new("small", small_n), &small, |b, ir| {
         b.iter(|| black_box(layout_diagram(black_box(ir))))
     });
 
-    // Medium: 20-node diamond DAG
+    // Medium: diamond DAG (actual node count depends on diamond_dag internals)
     let medium = diamond_dag(20);
-    group.throughput(Throughput::Elements(20));
-    group.bench_with_input(BenchmarkId::new("medium", 20), &medium, |b, ir| {
+    let medium_n = medium.nodes.len() as u64;
+    group.throughput(Throughput::Elements(medium_n));
+    group.bench_with_input(BenchmarkId::new("medium", medium_n), &medium, |b, ir| {
         b.iter(|| black_box(layout_diagram(black_box(ir))))
     });
 
-    // Large: 100-node random DAG
+    // Large: random DAG
     let large = random_dag(100);
-    group.throughput(Throughput::Elements(100));
-    group.bench_with_input(BenchmarkId::new("large", 100), &large, |b, ir| {
+    let large_n = large.nodes.len() as u64;
+    group.throughput(Throughput::Elements(large_n));
+    group.bench_with_input(BenchmarkId::new("large", large_n), &large, |b, ir| {
         b.iter(|| black_box(layout_diagram(black_box(ir))))
     });
 
