@@ -1773,12 +1773,232 @@ mod tests {
         );
     }
 
+    fn pulse_effect(fg: PackedRgba, bg: PackedRgba) -> TableEffect {
+        TableEffect::Pulse {
+            fg_a: fg,
+            fg_b: fg,
+            bg_a: bg,
+            bg_b: bg,
+            speed: 1.0,
+            phase_offset: 0.0,
+        }
+    }
+
+    fn assert_f32_near(label: &str, value: f32, expected: f32) {
+        let delta = (value - expected).abs();
+        assert!(delta <= 1e-6, "{label} expected {expected}, got {value}");
+    }
+
     #[test]
     fn style_mask_default_is_fg_bg() {
         let mask = StyleMask::default();
         assert!(mask.fg);
         assert!(mask.bg);
         assert!(!mask.attrs);
+    }
+
+    #[test]
+    fn effect_target_matches_scope_variants() {
+        let row_scope = TableEffectScope::row(TableSection::Body, 2);
+        assert!(TableEffectTarget::Section(TableSection::Body).matches_scope(row_scope));
+        assert!(!TableEffectTarget::Section(TableSection::Header).matches_scope(row_scope));
+        assert!(TableEffectTarget::Row(2).matches_scope(row_scope));
+        assert!(!TableEffectTarget::Row(1).matches_scope(row_scope));
+        assert!(TableEffectTarget::RowRange { start: 1, end: 3 }.matches_scope(row_scope));
+        assert!(!TableEffectTarget::RowRange { start: 3, end: 5 }.matches_scope(row_scope));
+        assert!(TableEffectTarget::AllRows.matches_scope(row_scope));
+        assert!(TableEffectTarget::AllCells.matches_scope(row_scope));
+        assert!(!TableEffectTarget::Column(0).matches_scope(row_scope));
+
+        let col_scope = TableEffectScope::column(TableSection::Header, 1);
+        assert!(TableEffectTarget::Column(1).matches_scope(col_scope));
+        assert!(TableEffectTarget::ColumnRange { start: 0, end: 2 }.matches_scope(col_scope));
+        assert!(!TableEffectTarget::AllRows.matches_scope(col_scope));
+        assert!(TableEffectTarget::AllCells.matches_scope(col_scope));
+
+        let footer_scope = TableEffectScope::row(TableSection::Footer, 0);
+        assert!(!TableEffectTarget::AllCells.matches_scope(footer_scope));
+
+        let header_section = TableEffectScope::section(TableSection::Header);
+        assert!(!TableEffectTarget::AllCells.matches_scope(header_section));
+    }
+
+    #[test]
+    fn effect_resolver_returns_base_without_effects() {
+        let base = Style::new()
+            .fg(PackedRgba::rgb(12, 34, 56))
+            .bg(PackedRgba::rgb(7, 8, 9));
+        let mut theme = TableTheme::aurora();
+        theme.effects.clear();
+
+        let resolver = theme.effect_resolver();
+        let scope = TableEffectScope::row(TableSection::Body, 0);
+        let resolved = resolver.resolve(base, scope, 0.25);
+        assert_eq!(resolved, base);
+    }
+
+    #[test]
+    fn effect_resolver_all_rows_excludes_header() {
+        let base = Style::new().fg(PackedRgba::rgb(10, 10, 10));
+        let mut theme = TableTheme::aurora();
+        theme.effects = vec![TableEffectRule::new(
+            TableEffectTarget::AllRows,
+            pulse_effect(PackedRgba::rgb(5, 5, 5), PackedRgba::rgb(200, 0, 0)),
+        )];
+
+        let resolver = theme.effect_resolver();
+        let header_scope = TableEffectScope::row(TableSection::Header, 0);
+        let body_scope = TableEffectScope::row(TableSection::Body, 0);
+
+        let header = resolver.resolve(base, header_scope, 0.5);
+        let body = resolver.resolve(base, body_scope, 0.5);
+        assert_eq!(header, base);
+        assert_eq!(body.fg, Some(PackedRgba::rgb(200, 0, 0)));
+    }
+
+    #[test]
+    fn effect_resolver_all_cells_includes_header_rows() {
+        let base = Style::new().fg(PackedRgba::rgb(10, 10, 10));
+        let mut theme = TableTheme::aurora();
+        theme.effects = vec![TableEffectRule::new(
+            TableEffectTarget::AllCells,
+            pulse_effect(PackedRgba::rgb(5, 5, 5), PackedRgba::rgb(0, 200, 0)),
+        )];
+
+        let resolver = theme.effect_resolver();
+        let header_scope = TableEffectScope::row(TableSection::Header, 0);
+        let resolved = resolver.resolve(base, header_scope, 0.5);
+        assert_eq!(resolved.fg, Some(PackedRgba::rgb(0, 200, 0)));
+    }
+
+    #[test]
+    fn normalize_phase_wraps_and_curves_are_deterministic() {
+        assert_f32_near("normalize_phase(-0.25)", normalize_phase(-0.25), 0.75);
+        assert_f32_near("normalize_phase(1.25)", normalize_phase(1.25), 0.25);
+        assert_f32_near("pulse_curve(0.0)", pulse_curve(0.0), 0.0);
+        assert_f32_near("pulse_curve(0.5)", pulse_curve(0.5), 1.0);
+        assert_f32_near(
+            "breathing_curve matches pulse at zero asymmetry",
+            breathing_curve(0.25, 0.0),
+            pulse_curve(0.25),
+        );
+    }
+
+    #[test]
+    fn lerp_color_clamps_out_of_range_t() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(255, 255, 255);
+        assert_eq!(lerp_color(a, b, -1.0), a);
+        assert_eq!(lerp_color(a, b, 2.0), b);
+    }
+
+    #[test]
+    fn effect_resolver_respects_priority_order() {
+        let base = Style::new()
+            .fg(PackedRgba::rgb(10, 10, 10))
+            .bg(PackedRgba::rgb(20, 20, 20));
+        let mut theme = TableTheme::aurora();
+        theme.effects = vec![
+            TableEffectRule::new(
+                TableEffectTarget::AllRows,
+                pulse_effect(PackedRgba::rgb(200, 0, 0), PackedRgba::rgb(0, 0, 0)),
+            )
+            .priority(0),
+            TableEffectRule::new(
+                TableEffectTarget::AllRows,
+                pulse_effect(PackedRgba::rgb(0, 0, 200), PackedRgba::rgb(0, 0, 80)),
+            )
+            .priority(5),
+        ];
+
+        let resolver = theme.effect_resolver();
+        let scope = TableEffectScope::row(TableSection::Body, 0);
+        let resolved = resolver.resolve(base, scope, 0.0);
+        assert_eq!(resolved.fg, Some(PackedRgba::rgb(0, 0, 200)));
+        assert_eq!(resolved.bg, Some(PackedRgba::rgb(0, 0, 80)));
+    }
+
+    #[test]
+    fn effect_resolver_applies_same_priority_in_list_order() {
+        let base = Style::new().fg(PackedRgba::rgb(5, 5, 5));
+        let mut theme = TableTheme::aurora();
+        theme.effects = vec![
+            TableEffectRule::new(
+                TableEffectTarget::Row(0),
+                pulse_effect(PackedRgba::rgb(10, 10, 10), PackedRgba::BLACK),
+            )
+            .priority(1),
+            TableEffectRule::new(
+                TableEffectTarget::Row(0),
+                pulse_effect(PackedRgba::rgb(40, 40, 40), PackedRgba::BLACK),
+            )
+            .priority(1),
+        ];
+
+        let resolver = theme.effect_resolver();
+        let scope = TableEffectScope::row(TableSection::Body, 0);
+        let resolved = resolver.resolve(base, scope, 0.0);
+        assert_eq!(resolved.fg, Some(PackedRgba::rgb(40, 40, 40)));
+    }
+
+    #[test]
+    fn effect_resolver_respects_style_mask() {
+        let base = Style::new()
+            .fg(PackedRgba::rgb(10, 20, 30))
+            .bg(PackedRgba::rgb(1, 2, 3));
+        let mut theme = TableTheme::aurora();
+        theme.effects = vec![
+            TableEffectRule::new(
+                TableEffectTarget::Row(0),
+                pulse_effect(PackedRgba::rgb(200, 100, 0), PackedRgba::rgb(9, 9, 9)),
+            )
+            .style_mask(StyleMask::none()),
+        ];
+
+        let resolver = theme.effect_resolver();
+        let scope = TableEffectScope::row(TableSection::Body, 0);
+        let resolved = resolver.resolve(base, scope, 0.0);
+        assert_eq!(resolved, base);
+
+        theme.effects = vec![
+            TableEffectRule::new(
+                TableEffectTarget::Row(0),
+                pulse_effect(PackedRgba::rgb(200, 100, 0), PackedRgba::rgb(9, 9, 9)),
+            )
+            .style_mask(StyleMask {
+                fg: true,
+                bg: false,
+                attrs: false,
+            }),
+        ];
+        let resolver = theme.effect_resolver();
+        let resolved = resolver.resolve(base, scope, 0.0);
+        assert_eq!(resolved.fg, Some(PackedRgba::rgb(200, 100, 0)));
+        assert_eq!(resolved.bg, base.bg);
+    }
+
+    #[test]
+    fn effect_resolver_skips_alpha_zero() {
+        let base = Style::new()
+            .fg(PackedRgba::rgb(10, 10, 10))
+            .bg(PackedRgba::rgb(20, 20, 20));
+        let mut theme = TableTheme::aurora();
+        theme.effects = vec![TableEffectRule::new(
+            TableEffectTarget::Row(0),
+            TableEffect::BreathingGlow {
+                fg: PackedRgba::rgb(200, 200, 200),
+                bg: PackedRgba::rgb(10, 10, 10),
+                intensity: 0.0,
+                speed: 1.0,
+                phase_offset: 0.0,
+                asymmetry: 0.0,
+            },
+        )];
+
+        let resolver = theme.effect_resolver();
+        let scope = TableEffectScope::row(TableSection::Body, 0);
+        let resolved = resolver.resolve(base, scope, 0.5);
+        assert_eq!(resolved, base);
     }
 
     #[test]

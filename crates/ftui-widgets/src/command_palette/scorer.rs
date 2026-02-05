@@ -1774,6 +1774,14 @@ mod tests {
         assert!(result.score.is_finite(), "Score should remain finite");
     }
 
+    #[test]
+    fn empty_query_empty_title_is_finite() {
+        let scorer = BayesianScorer::new();
+        let result = scorer.score("", "");
+        assert!(result.score.is_finite(), "Score should remain finite");
+        assert_eq!(result.match_type, MatchType::Fuzzy);
+    }
+
     // --- Query Longer Than Title ---
 
     #[test]
@@ -1782,6 +1790,31 @@ mod tests {
         let result = scorer.score("verylongquery", "short");
         assert_eq!(result.match_type, MatchType::NoMatch);
         assert_eq!(result.score, 0.0);
+    }
+
+    #[test]
+    fn long_query_exact_match_is_handled() {
+        let scorer = BayesianScorer::new();
+        let query = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let result = scorer.score(query, query);
+        assert_eq!(result.match_type, MatchType::Exact);
+        assert!(result.score.is_finite());
+        assert!(result.score > 0.9, "Exact long query should score high");
+    }
+
+    #[test]
+    fn gap_penalty_prefers_tight_fuzzy_matches() {
+        let scorer = BayesianScorer::new();
+        let tight = scorer.score("ace", "abcde");
+        let gappy = scorer.score("ace", "a...c...e");
+        assert_eq!(tight.match_type, MatchType::Fuzzy);
+        assert_eq!(gappy.match_type, MatchType::Fuzzy);
+        assert!(
+            tight.score > gappy.score,
+            "Tight fuzzy match should score higher than gappy: {} vs {}",
+            tight.score,
+            gappy.score
+        );
     }
 
     // --- Tag Matching ---

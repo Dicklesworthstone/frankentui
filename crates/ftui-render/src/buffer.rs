@@ -3754,4 +3754,31 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0], DirtySpan::new(8, 10)); // Clamped to width
     }
+
+    #[test]
+    fn dirty_span_guard_band_clamps_bounds() {
+        let mut buf = Buffer::new(10, 1);
+        buf.clear_dirty();
+        buf.set_dirty_span_config(DirtySpanConfig::default().with_guard_band(5));
+
+        buf.mark_dirty_span(0, 2, 3);
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], DirtySpan::new(0, 8));
+
+        buf.clear_dirty();
+        buf.mark_dirty_span(0, 8, 10);
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], DirtySpan::new(3, 10));
+    }
+
+    #[test]
+    fn dirty_span_empty_span_is_ignored() {
+        let mut buf = Buffer::new(10, 1);
+        buf.clear_dirty();
+        buf.mark_dirty_span(0, 5, 5);
+        let spans = buf.dirty_span_row(0).unwrap().spans();
+        assert!(spans.is_empty());
+    }
 }

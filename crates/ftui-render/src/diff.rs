@@ -54,6 +54,35 @@ const BLOCK_SIZE: usize = 4;
 /// preserving row-major iteration order.
 const ROW_BLOCK_SIZE: usize = 32;
 
+#[cfg(test)]
+fn span_diagnostics(buf: &Buffer) -> String {
+    let stats = buf.dirty_span_stats();
+    if !buf.dirty_span_config().enabled {
+        return format!("dirty spans disabled; stats={stats:?}");
+    }
+    let mut rows = Vec::new();
+    for y in 0..buf.height() {
+        let Some(row) = buf.dirty_span_row(y) else {
+            continue;
+        };
+        if row.is_full() {
+            rows.push(format!("{y}:full"));
+            continue;
+        }
+        if row.spans().is_empty() {
+            continue;
+        }
+        let spans = row
+            .spans()
+            .iter()
+            .map(|span| format!("[{}, {})", span.x0, span.x1))
+            .collect::<Vec<_>>()
+            .join(",");
+        rows.push(format!("{y}:{spans}"));
+    }
+    format!("stats={stats:?} rows=[{}]", rows.join(" | "))
+}
+
 /// Scan a row slice for changed cells, appending positions to `changes`.
 ///
 /// `x_offset` is added to each recorded x coordinate.
@@ -2620,7 +2649,8 @@ mod proptests {
             prop_assert_eq!(
                 full.changes(),
                 dirty.changes(),
-                "dirty diff (spans) must match full diff"
+                "dirty diff (spans) must match full diff; {}",
+                super::span_diagnostics(&new)
             );
         });
     }
@@ -2898,10 +2928,10 @@ mod span_edge_cases {
             prop_assert_eq!(
                 full.changes(),
                 dirty.changes(),
-                "Large buffer mismatch: w={}, h={}, spans={:?}",
+                "Large buffer mismatch: w={}, h={}, {}",
                 w,
                 h,
-                new.dirty_span_stats()
+                super::span_diagnostics(&new)
             );
         }
     }

@@ -53,6 +53,10 @@
 
 use crate::StorageResult;
 use crate::evidence_sink::{EvidenceSink, EvidenceSinkConfig};
+use crate::evidence_telemetry::{
+    BudgetDecisionSnapshot, ConformalSnapshot, ResizeDecisionSnapshot, set_budget_snapshot,
+    set_resize_snapshot,
+};
 use crate::input_fairness::{FairnessDecision, FairnessEventType, InputFairnessGuard};
 use crate::input_macro::{EventRecorder, InputMacro};
 use crate::locale::LocaleContext;
@@ -2416,10 +2420,8 @@ impl<M: Model, W: Write + Send> Program<M, W> {
         frame_time_us: f64,
         conformal_prediction: Option<&ConformalPrediction>,
     ) {
-        let Some(ref sink) = self.evidence_sink else {
-            return;
-        };
         let Some(telemetry) = self.budget.telemetry() else {
+            set_budget_snapshot(None);
             return;
         };
 
@@ -2451,7 +2453,34 @@ impl<M: Model, W: Write + Send> Program<M, W> {
             conformal,
         };
 
-        let _ = sink.write_jsonl(&evidence.to_jsonl());
+        let conformal_snapshot = evidence
+            .conformal
+            .as_ref()
+            .map(|snapshot| ConformalSnapshot {
+                bucket_key: snapshot.bucket_key.clone(),
+                sample_count: snapshot.n_b,
+                upper_us: snapshot.upper_us,
+                risk: snapshot.risk,
+            });
+        set_budget_snapshot(Some(BudgetDecisionSnapshot {
+            frame_idx: evidence.frame_idx,
+            decision: evidence.decision,
+            controller_decision: evidence.controller_decision,
+            degradation_before: evidence.degradation_before,
+            degradation_after: evidence.degradation_after,
+            frame_time_us: evidence.frame_time_us,
+            budget_us: evidence.budget_us,
+            pid_output: evidence.pid_output,
+            e_value: evidence.e_value,
+            frames_observed: evidence.frames_observed,
+            frames_since_change: evidence.frames_since_change,
+            in_warmup: evidence.in_warmup,
+            conformal: conformal_snapshot,
+        }));
+
+        if let Some(ref sink) = self.evidence_sink {
+            let _ = sink.write_jsonl(&evidence.to_jsonl());
+        }
     }
 
     fn update_widget_refresh_plan(&mut self, frame_idx: u64) {
@@ -2609,7 +2638,28 @@ impl<M: Model, W: Write + Send> Program<M, W> {
             return Ok(());
         }
 
-        match self.resize_coalescer.tick() {
+        let action = self.resize_coalescer.tick();
+        let resize_snapshot =
+            self.resize_coalescer
+                .logs()
+                .last()
+                .map(|entry| ResizeDecisionSnapshot {
+                    event_idx: entry.event_idx,
+                    action: entry.action,
+                    dt_ms: entry.dt_ms,
+                    event_rate: entry.event_rate,
+                    regime: entry.regime,
+                    pending_size: entry.pending_size,
+                    applied_size: entry.applied_size,
+                    time_since_render_ms: entry.time_since_render_ms,
+                    bocpd: self
+                        .resize_coalescer
+                        .bocpd()
+                        .and_then(|detector| detector.last_evidence().cloned()),
+                });
+        set_resize_snapshot(resize_snapshot);
+
+        match action {
             CoalesceAction::ApplyResize {
                 width,
                 height,
@@ -3115,7 +3165,9 @@ mod tests {
     use ftui_render::cell::Cell;
     use ftui_render::diff_strategy::DiffStrategy;
     use ftui_render::frame::CostEstimateSource;
+    use serde_json::Value;
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::sync::{
         Arc,
@@ -4990,6 +5042,25 @@ mod tests {
         }
     }
 
+    fn temp_evidence_path(label: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let mut path = std::env::temp_dir();
+        path.push(format!("ftui_evidence_{label}_{pid}_{seq}.jsonl"));
+        path
+    }
+
+    fn read_evidence_event(path: &PathBuf, event: &str) -> Value {
+        let jsonl = std::fs::read_to_string(path).expect("read evidence jsonl");
+        let needle = format!("\"event\":\"{event}\"");
+        let line = jsonl
+            .lines()
+            .find(|line| line.contains(&needle))
+            .unwrap_or_else(|| panic!("missing {event} line"));
+        serde_json::from_str(line).expect("valid evidence json")
+    }
+
     #[test]
     fn headless_apply_resize_updates_model_and_dimensions() {
         struct ResizeModel {
@@ -5586,13 +5657,19 @@ mod tests {
             fn view(&self, _frame: &mut Frame) {}
         }
 
+        let evidence_path = temp_evidence_path("fairness_allow");
+        let sink_config = EvidenceSinkConfig::enabled_file(&evidence_path);
         let mut config = ProgramConfig::default().with_resize_behavior(ResizeBehavior::Throttled);
         config.resize_coalescer.steady_delay_ms = 0;
         config.resize_coalescer.burst_delay_ms = 0;
         config.resize_coalescer.hard_deadline_ms = 1_000;
-        config.evidence_sink = EvidenceSinkConfig::enabled_stdout();
+        config.evidence_sink = sink_config.clone();
 
         let mut program = headless_program_with_config(ResizeModel { last_size: None }, config);
+        let sink = EvidenceSink::from_config(&sink_config)
+            .expect("evidence sink config")
+            .expect("evidence sink enabled");
+        program.evidence_sink = Some(sink);
 
         program.resize_coalescer.handle_resize(120, 40);
         assert!(program.resize_coalescer.has_pending());
@@ -5604,6 +5681,24 @@ mod tests {
         assert_eq!(program.width, 120);
         assert_eq!(program.height, 40);
         assert_eq!(program.model().last_size, Some((120, 40)));
+
+        let config_line = read_evidence_event(&evidence_path, "fairness_config");
+        assert_eq!(config_line["event"], "fairness_config");
+        assert!(config_line["enabled"].is_boolean());
+        assert!(config_line["input_priority_threshold_ms"].is_number());
+        assert!(config_line["dominance_threshold"].is_number());
+        assert!(config_line["fairness_threshold"].is_number());
+
+        let decision_line = read_evidence_event(&evidence_path, "fairness_decision");
+        assert_eq!(decision_line["event"], "fairness_decision");
+        assert_eq!(decision_line["decision"], "allow");
+        assert_eq!(decision_line["reason"], "none");
+        assert!(decision_line["pending_input_latency_ms"].is_null());
+        assert!(decision_line["jain_index"].is_number());
+        assert!(decision_line["resize_dominance_count"].is_number());
+        assert!(decision_line["dominance_threshold"].is_number());
+        assert!(decision_line["fairness_threshold"].is_number());
+        assert!(decision_line["input_priority_threshold_ms"].is_number());
     }
 
     #[test]
@@ -5640,11 +5735,18 @@ mod tests {
             fn view(&self, _frame: &mut Frame) {}
         }
 
+        let evidence_path = temp_evidence_path("fairness_yield");
+        let sink_config = EvidenceSinkConfig::enabled_file(&evidence_path);
         let mut config = ProgramConfig::default().with_resize_behavior(ResizeBehavior::Throttled);
         config.resize_coalescer.steady_delay_ms = 0;
         config.resize_coalescer.burst_delay_ms = 0;
+        config.evidence_sink = sink_config.clone();
 
         let mut program = headless_program_with_config(ResizeModel { last_size: None }, config);
+        let sink = EvidenceSink::from_config(&sink_config)
+            .expect("evidence sink config")
+            .expect("evidence sink enabled");
+        program.evidence_sink = Some(sink);
 
         program.fairness_guard = InputFairnessGuard::with_config(
             crate::input_fairness::FairnessConfig::default().with_max_latency(Duration::ZERO),
@@ -5664,6 +5766,17 @@ mod tests {
         assert_eq!(program.height, 24);
         assert_eq!(program.model().last_size, None);
         assert!(program.resize_coalescer.has_pending());
+
+        let decision_line = read_evidence_event(&evidence_path, "fairness_decision");
+        assert_eq!(decision_line["event"], "fairness_decision");
+        assert_eq!(decision_line["decision"], "yield");
+        assert_eq!(decision_line["reason"], "input_latency");
+        assert!(decision_line["pending_input_latency_ms"].is_number());
+        assert!(decision_line["jain_index"].is_number());
+        assert!(decision_line["resize_dominance_count"].is_number());
+        assert!(decision_line["dominance_threshold"].is_number());
+        assert!(decision_line["fairness_threshold"].is_number());
+        assert!(decision_line["input_priority_threshold_ms"].is_number());
     }
 
     #[test]

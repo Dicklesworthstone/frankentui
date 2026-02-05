@@ -522,7 +522,6 @@ impl Default for InputFairnessGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
 
     #[test]
     fn default_config_is_enabled() {
@@ -601,10 +600,8 @@ mod tests {
         let start = Instant::now();
         guard.input_arrived(start);
 
-        // Wait longer than threshold
-        thread::sleep(Duration::from_millis(25));
-
-        let decision = guard.check_fairness(Instant::now());
+        // Advance logical time beyond threshold (deterministic)
+        let decision = guard.check_fairness(start + Duration::from_millis(25));
         assert!(decision.yield_to_input);
         assert_eq!(decision.reason, InterventionReason::InputLatency);
     }
@@ -639,6 +636,26 @@ mod tests {
         let decision = guard.check_fairness(now);
         assert!(!decision.yield_to_input);
         assert_eq!(decision.reason, InterventionReason::None);
+    }
+
+    #[test]
+    fn test_fairness_index_intervention() {
+        let config = FairnessConfig {
+            input_priority_threshold: Duration::from_secs(10),
+            dominance_threshold: 100,
+            fairness_threshold: 0.9,
+            ..Default::default()
+        };
+        let mut guard = InputFairnessGuard::with_config(config);
+        let now = Instant::now();
+
+        guard.input_arrived(now);
+        guard.event_processed(EventType::Input, Duration::from_millis(1), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(100), now);
+
+        let decision = guard.check_fairness(now + Duration::from_millis(1));
+        assert!(decision.yield_to_input);
+        assert_eq!(decision.reason, InterventionReason::FairnessIndex);
     }
 
     #[test]

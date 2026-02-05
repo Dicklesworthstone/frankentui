@@ -347,6 +347,10 @@ pub struct MetaballsCanvasAdapter {
     y_coords: Vec<f64>,
     /// Per-row scratch buffer for dy^2 per ball.
     dy2_cache: Vec<f64>,
+    /// Cached indices of active balls for reduced/minimal quality.
+    active_indices: Vec<usize>,
+    active_step: usize,
+    active_len: usize,
 }
 
 impl MetaballsCanvasAdapter {
@@ -360,6 +364,9 @@ impl MetaballsCanvasAdapter {
             x_coords: Vec::new(),
             y_coords: Vec::new(),
             dy2_cache: Vec::new(),
+            active_indices: Vec::new(),
+            active_step: 0,
+            active_len: 0,
         }
     }
 
@@ -373,6 +380,9 @@ impl MetaballsCanvasAdapter {
             x_coords: Vec::new(),
             y_coords: Vec::new(),
             dy2_cache: Vec::new(),
+            active_indices: Vec::new(),
+            active_step: 0,
+            active_len: 0,
         }
     }
 
@@ -479,18 +489,18 @@ impl MetaballsCanvasAdapter {
         let (glow, threshold) = thresholds(&self.params);
         let stops = palette_stops(self.params.palette, theme);
 
-        let balls = &self.ball_cache;
+        let balls_len = self.ball_cache.len();
         let step = match quality {
             FxQuality::Full => 1,
             FxQuality::Reduced => {
-                if balls.len() > 4 {
+                if balls_len > 4 {
                     4
                 } else {
                     1
                 }
             }
             FxQuality::Minimal => {
-                if balls.len() > 2 {
+                if balls_len > 2 {
                     2
                 } else {
                     1
@@ -499,41 +509,75 @@ impl MetaballsCanvasAdapter {
             FxQuality::Off => return,
         };
 
-        self.dy2_cache.resize(balls.len(), 0.0);
+        if step > 1 {
+            self.ensure_active_indices(step, balls_len);
+        }
+
+        self.dy2_cache.resize(balls_len, 0.0);
+        let active_indices: &[usize] = if step > 1 {
+            self.active_indices.as_slice()
+        } else {
+            &[]
+        };
+        let balls = &self.ball_cache;
+        let dy2_cache = &mut self.dy2_cache;
+        let x_coords = &self.x_coords;
+        let y_coords = &self.y_coords;
         let w = width as usize;
         let h = height as usize;
         const EPS: f64 = 1e-8;
 
-        for y in 0..h {
-            let ny = self.y_coords[y];
-            for (i, ball) in balls.iter().enumerate() {
-                let dy = ny - ball.y;
-                self.dy2_cache[i] = dy * dy;
+        for (y, &ny) in y_coords.iter().enumerate().take(h) {
+            if step == 1 {
+                for (i, ball) in balls.iter().enumerate() {
+                    let dy = ny - ball.y;
+                    dy2_cache[i] = dy * dy;
+                }
+            } else {
+                for &i in active_indices {
+                    let dy = ny - balls[i].y;
+                    dy2_cache[i] = dy * dy;
+                }
             }
-            let dy2_cache = &self.dy2_cache;
+            let dy2_cache_ref = &dy2_cache[..];
 
-            for x in 0..w {
-                let nx = self.x_coords[x];
+            for (x, &nx) in x_coords.iter().enumerate().take(w) {
                 let mut sum = 0.0;
                 let mut weighted_hue = 0.0;
                 let mut total_weight = 0.0;
 
-                for (i, ball) in balls.iter().enumerate() {
-                    if step > 1 && i % step != 0 {
-                        continue;
-                    }
-                    let dx = nx - ball.x;
-                    let dist_sq = dx * dx + dy2_cache[i];
+                if step == 1 {
+                    for (i, ball) in balls.iter().enumerate() {
+                        let dx = nx - ball.x;
+                        let dist_sq = dx * dx + dy2_cache_ref[i];
 
-                    if dist_sq > EPS {
-                        let contrib = ball.r2 / dist_sq;
-                        sum += contrib;
-                        weighted_hue += ball.hue * contrib;
-                        total_weight += contrib;
-                    } else {
-                        sum += 100.0;
-                        weighted_hue += ball.hue * 100.0;
-                        total_weight += 100.0;
+                        if dist_sq > EPS {
+                            let contrib = ball.r2 / dist_sq;
+                            sum += contrib;
+                            weighted_hue += ball.hue * contrib;
+                            total_weight += contrib;
+                        } else {
+                            sum += 100.0;
+                            weighted_hue += ball.hue * 100.0;
+                            total_weight += 100.0;
+                        }
+                    }
+                } else {
+                    for &i in active_indices {
+                        let ball = &balls[i];
+                        let dx = nx - ball.x;
+                        let dist_sq = dx * dx + dy2_cache_ref[i];
+
+                        if dist_sq > EPS {
+                            let contrib = ball.r2 / dist_sq;
+                            sum += contrib;
+                            weighted_hue += ball.hue * contrib;
+                            total_weight += contrib;
+                        } else {
+                            sum += 100.0;
+                            weighted_hue += ball.hue * 100.0;
+                            total_weight += 100.0;
+                        }
                     }
                 }
 
@@ -565,6 +609,22 @@ impl MetaballsCanvasAdapter {
     ) {
         self.prepare(time, quality);
         self.fill(painter, quality, theme);
+    }
+}
+
+impl MetaballsCanvasAdapter {
+    fn ensure_active_indices(&mut self, step: usize, len: usize) {
+        if self.active_step == step && self.active_len == len {
+            return;
+        }
+        self.active_indices.clear();
+        for i in 0..len {
+            if i % step == 0 {
+                self.active_indices.push(i);
+            }
+        }
+        self.active_step = step;
+        self.active_len = len;
     }
 }
 

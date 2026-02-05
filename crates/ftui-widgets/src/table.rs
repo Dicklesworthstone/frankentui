@@ -962,10 +962,16 @@ impl MeasurableWidget for Table<'_> {
 mod tests {
     use super::*;
     use ftui_render::buffer::Buffer;
+    use ftui_render::cell::PackedRgba;
     use ftui_render::grapheme_pool::GraphemePool;
+    use ftui_text::{Line, Span};
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> Option<char> {
         buf.get(x, y).and_then(|c| c.content.as_char())
+    }
+
+    fn cell_fg(buf: &Buffer, x: u16, y: u16) -> Option<PackedRgba> {
+        buf.get(x, y).map(|c| c.fg)
     }
 
     // --- Row builder tests ---
@@ -1126,6 +1132,50 @@ mod tests {
     }
 
     #[test]
+    fn row_style_merge_precedence_and_span_override() {
+        let base_fg = PackedRgba::rgb(10, 0, 0);
+        let selected_fg = PackedRgba::rgb(20, 0, 0);
+        let hovered_fg = PackedRgba::rgb(30, 0, 0);
+        let table_fg = PackedRgba::rgb(40, 0, 0);
+        let row_fg = PackedRgba::rgb(50, 0, 0);
+        let highlight_fg = PackedRgba::rgb(60, 0, 0);
+        let span_fg = PackedRgba::rgb(70, 0, 0);
+
+        let mut theme = TableTheme::default();
+        theme.row = Style::new().fg(base_fg);
+        theme.row_alt = theme.row;
+        theme.row_selected = Style::new().fg(selected_fg);
+        theme.row_hover = Style::new().fg(hovered_fg);
+
+        let text = Text::from_line(Line::from_spans([
+            Span::raw("A"),
+            Span::styled("B", Style::new().fg(span_fg)),
+        ]));
+
+        let table = Table::new(
+            [Row::new([text]).style(Style::new().fg(row_fg))],
+            [Constraint::Fixed(2)],
+        )
+        .style(Style::new().fg(table_fg))
+        .highlight_style(Style::new().fg(highlight_fg))
+        .theme(theme);
+
+        let area = Rect::new(0, 0, 2, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 1, &mut pool);
+        let mut state = TableState {
+            selected: Some(0),
+            hovered: Some(0),
+            ..Default::default()
+        };
+
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        assert_eq!(cell_fg(&frame.buffer, 0, 0), Some(highlight_fg));
+        assert_eq!(cell_fg(&frame.buffer, 1, 0), Some(span_fg));
+    }
+
+    #[test]
     fn selection_below_offset_adjusts_offset() {
         let mut state = TableState {
             offset: 5,
@@ -1216,6 +1266,87 @@ mod tests {
 
         // "A" starts at x=0, "B" starts at x=3+2=5 (column width + gap)
         assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+    }
+
+    #[test]
+    fn divider_style_overrides_row_style() {
+        let row_fg = PackedRgba::rgb(120, 10, 10);
+        let divider_fg = PackedRgba::rgb(0, 200, 0);
+        let mut theme = TableTheme::default();
+        theme.row = Style::new().fg(row_fg);
+        theme.row_alt = theme.row;
+        theme.divider = Style::new().fg(divider_fg);
+
+        let table = Table::new(
+            [Row::new(["AA", "BB"])],
+            [Constraint::Fixed(2), Constraint::Fixed(2)],
+        )
+        .theme(theme);
+
+        let area = Rect::new(0, 0, 5, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_fg(&frame.buffer, 2, 0), Some(divider_fg));
+    }
+
+    #[test]
+    fn block_border_uses_theme_border_style() {
+        let border_fg = PackedRgba::rgb(1, 2, 3);
+        let theme = TableTheme {
+            border: Style::new().fg(border_fg),
+            ..Default::default()
+        };
+
+        let table = Table::new([Row::new(["X"])], [Constraint::Fixed(1)])
+            .block(Block::bordered())
+            .theme(theme);
+
+        let area = Rect::new(0, 0, 3, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_fg(&frame.buffer, 0, 0), Some(border_fg));
+    }
+
+    #[test]
+    fn render_clips_long_cell_to_column_width() {
+        let table = Table::new([Row::new(["ABCDE"])], [Constraint::Fixed(3)]);
+        let area = Rect::new(0, 0, 3, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 1, 0), Some('B'));
+        assert_eq!(cell_char(&frame.buffer, 2, 0), Some('C'));
+        assert_ne!(cell_char(&frame.buffer, 3, 0), Some('D'));
+    }
+
+    #[test]
+    fn render_multiline_cell_respects_row_height() {
+        let table = Table::new([Row::new(["A\nB"]).height(1)], [Constraint::Fixed(3)]);
+        let area = Rect::new(0, 0, 3, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 2, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+        assert_ne!(cell_char(&frame.buffer, 0, 1), Some('B'));
+    }
+
+    #[test]
+    fn render_multiline_cell_draws_second_line_when_height_allows() {
+        let table = Table::new([Row::new(["A\nB"]).height(2)], [Constraint::Fixed(3)]);
+        let area = Rect::new(0, 0, 3, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 2, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 0, 1), Some('B'));
     }
 
     #[test]
@@ -1351,6 +1482,34 @@ mod tests {
 
         // Widths: 1 + 2 + 3 = 6, plus 2 gaps of 2 = 4 → total 10
         assert_eq!(c.preferred.width, 10);
+        assert_eq!(c.preferred.height, 1);
+    }
+
+    #[test]
+    fn measure_respects_row_height_and_column_spacing() {
+        let table = Table::new(
+            [Row::new(["A", "BB"]).height(2)],
+            [Constraint::FitContent, Constraint::FitContent],
+        )
+        .column_spacing(2);
+
+        let c = table.measure(Size::MAX);
+
+        assert_eq!(c.preferred.width, 5);
+        assert_eq!(c.preferred.height, 2);
+    }
+
+    #[test]
+    fn measure_accounts_for_wide_glyphs() {
+        let table = Table::new(
+            [Row::new(["界", "A"])],
+            [Constraint::FitContent, Constraint::FitContent],
+        )
+        .column_spacing(1);
+
+        let c = table.measure(Size::MAX);
+
+        assert_eq!(c.preferred.width, 4);
         assert_eq!(c.preferred.height, 1);
     }
 

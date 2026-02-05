@@ -33,6 +33,7 @@ pub mod conformal_predictor;
 pub mod debug_trace;
 pub mod eprocess_throttle;
 pub mod evidence_sink;
+pub mod evidence_telemetry;
 pub mod flake_detector;
 pub mod input_fairness;
 pub mod input_macro;
@@ -64,6 +65,11 @@ pub mod voi_telemetry;
 
 pub use asciicast::{AsciicastRecorder, AsciicastWriter};
 pub use evidence_sink::{EvidenceSink, EvidenceSinkConfig, EvidenceSinkDestination};
+pub use evidence_telemetry::{
+    BudgetDecisionSnapshot, ConformalSnapshot, DiffDecisionSnapshot, ResizeDecisionSnapshot,
+    budget_snapshot, clear_budget_snapshot, clear_diff_snapshot, clear_resize_snapshot,
+    diff_snapshot, resize_snapshot, set_budget_snapshot, set_diff_snapshot, set_resize_snapshot,
+};
 pub use input_macro::{
     EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayback, MacroPlayer, MacroRecorder,
     RecordingFilter, RecordingState, TimedEvent,

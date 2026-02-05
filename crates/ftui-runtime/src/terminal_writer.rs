@@ -51,6 +51,7 @@ use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
 use crate::evidence_sink::EvidenceSink;
+use crate::evidence_telemetry::{DiffDecisionSnapshot, set_diff_snapshot};
 use crate::render_trace::{
     RenderTraceFrame, RenderTraceRecorder, build_diff_runs_payload, build_full_buffer_payload,
 };
@@ -1393,6 +1394,22 @@ impl<W: Write> TerminalWriter<W> {
             let dirty_tile_count = dirty_tiles;
             let skipped_tile_count = skipped_tiles;
             let sat_build_cost_est = sat_build_cells;
+
+            set_diff_snapshot(Some(DiffDecisionSnapshot {
+                event_idx,
+                screen_mode: screen_mode.to_string(),
+                cols: u16::try_from(width).unwrap_or(u16::MAX),
+                rows: u16::try_from(height).unwrap_or(u16::MAX),
+                evidence: evidence.clone(),
+                span_count,
+                span_coverage_pct,
+                max_span_len,
+                scan_cost_estimate: scan_cost,
+                fallback_reason: reason.to_string(),
+                tile_used,
+                tile_fallback: tile_fallback.to_string(),
+                strategy_used: strategy,
+            }));
 
             trace!(
                 strategy = %strategy,

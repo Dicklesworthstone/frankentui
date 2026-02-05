@@ -1765,6 +1765,70 @@ mod tests {
         assert_eq!(count, 3);
     }
 
+    #[test]
+    fn test_search_ascii_case_insensitive_fast_path_ranges() {
+        let mut log = LogViewer::new(100);
+        log.push("Alpha beta ALPHA beta alpha");
+
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: false,
+            context_lines: 0,
+        };
+        let count = log.search_with_config("alpha", config);
+        assert_eq!(count, 1);
+
+        let ranges = log.highlight_ranges_for_line(0).expect("match ranges");
+        assert_eq!(ranges, &[(0, 5), (11, 16), (22, 27)]);
+    }
+
+    #[test]
+    fn test_search_unicode_fallback_ranges() {
+        let mut log = LogViewer::new(100);
+        let line = "café résumé café";
+        log.push(line);
+
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: false,
+            context_lines: 0,
+        };
+        let count = log.search_with_config("café", config);
+        assert_eq!(count, 1);
+
+        let expected: Vec<(usize, usize)> = search_exact(line, "café")
+            .into_iter()
+            .map(|r| (r.range.start, r.range.end))
+            .collect();
+        let ranges = log.highlight_ranges_for_line(0).expect("match ranges");
+        assert_eq!(ranges, expected.as_slice());
+    }
+
+    #[test]
+    fn test_search_highlight_ranges_stable_after_push() {
+        let mut log = LogViewer::new(100);
+        log.push("Alpha beta ALPHA beta alpha");
+
+        let config = SearchConfig {
+            mode: SearchMode::Literal,
+            case_sensitive: false,
+            context_lines: 0,
+        };
+        log.search_with_config("alpha", config);
+        let before = log
+            .highlight_ranges_for_line(0)
+            .expect("match ranges")
+            .to_vec();
+
+        log.push("no match here");
+        let after = log
+            .highlight_ranges_for_line(0)
+            .expect("match ranges")
+            .to_vec();
+
+        assert_eq!(before, after);
+    }
+
     #[cfg(feature = "regex-search")]
     #[test]
     fn test_search_regex_basic() {

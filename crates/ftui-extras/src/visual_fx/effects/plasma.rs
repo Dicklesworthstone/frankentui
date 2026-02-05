@@ -447,13 +447,17 @@ impl PlasmaPalette {
 #[derive(Debug, Clone)]
 pub struct PlasmaFx {
     palette: PlasmaPalette,
+    scratch: PlasmaScratch,
 }
 
 impl PlasmaFx {
     /// Create a new plasma effect with the specified palette.
     #[inline]
     pub const fn new(palette: PlasmaPalette) -> Self {
-        Self { palette }
+        Self {
+            palette,
+            scratch: PlasmaScratch::new(),
+        }
     }
 
     /// Create a plasma effect using theme colors.
@@ -543,12 +547,64 @@ impl Default for PlasmaFx {
     }
 }
 
-impl BackdropFx for PlasmaFx {
-    fn name(&self) -> &'static str {
-        "plasma"
+#[derive(Debug, Clone)]
+struct PlasmaScratch {
+    width: u16,
+    x: Vec<f64>,
+    x_sq: Vec<f64>,
+    x_center_sq: Vec<f64>,
+    sin_x2: Vec<f64>,
+    v1: Vec<f64>,
+}
+
+impl PlasmaScratch {
+    const fn new() -> Self {
+        Self {
+            width: 0,
+            x: Vec::new(),
+            x_sq: Vec::new(),
+            x_center_sq: Vec::new(),
+            sin_x2: Vec::new(),
+            v1: Vec::new(),
+        }
     }
 
-    fn render(&mut self, ctx: FxContext<'_>, out: &mut [PackedRgba]) {
+    fn ensure_width(&mut self, width: u16, w: f64) {
+        if self.width == width {
+            return;
+        }
+        self.width = width;
+        let len = width as usize;
+        self.x.resize(len, 0.0);
+        self.x_sq.resize(len, 0.0);
+        self.x_center_sq.resize(len, 0.0);
+        self.sin_x2.resize(len, 0.0);
+        self.v1.resize(len, 0.0);
+
+        for dx in 0..len {
+            let x = (dx as f64 / w) * 6.0;
+            let x_sq = x * x;
+            let x_center = x - 3.0;
+            self.x[dx] = x;
+            self.x_sq[dx] = x_sq;
+            self.x_center_sq[dx] = x_center * x_center;
+            self.sin_x2[dx] = (x * 2.0).sin();
+        }
+    }
+
+    fn update_time(&mut self, time: f64) {
+        for (idx, x) in self.x.iter().enumerate() {
+            self.v1[idx] = (x * 1.5 + time).sin();
+        }
+    }
+}
+
+impl PlasmaFx {
+    #[inline]
+    fn render_with_palette<F>(&mut self, ctx: FxContext<'_>, out: &mut [PackedRgba], mut sample: F)
+    where
+        F: FnMut(f64) -> PackedRgba,
+    {
         // Early return if quality is Off (decorative effects are non-essential)
         if !ctx.quality.is_enabled() || ctx.is_empty() {
             return;
@@ -561,24 +617,78 @@ impl BackdropFx for PlasmaFx {
 
         // Use simplified wave for Minimal quality
         let use_simplified = ctx.quality == FxQuality::Minimal;
+        let breath = 0.85 + 0.15 * (time * 0.3).sin();
+
+        // Precompute x-dependent terms once per frame (no per-frame allocation).
+        let scratch = &mut self.scratch;
+        scratch.ensure_width(ctx.width, w);
+        scratch.update_time(time);
 
         for dy in 0..ctx.height {
+            let ny = dy as f64 / h;
+            let y = ny * 6.0;
+            let y_sq = y * y;
+            let y_center = y - 3.0;
+            let y_center_sq = y_center * y_center;
+            let v2 = (y * 1.8 + time * 0.8).sin();
+            let cos_y2 = (y * 2.0).cos();
+
             for dx in 0..ctx.width {
                 let idx = dy as usize * ctx.width as usize + dx as usize;
+                let x = scratch.x[dx as usize];
+                let v1 = scratch.v1[dx as usize];
+                let v3 = ((x + y) * 1.2 + time * 0.6).sin();
 
-                // Normalized coordinates [0, 1]
-                let nx = dx as f64 / w;
-                let ny = dy as f64 / h;
-
-                // Compute wave value based on quality
                 let wave = if use_simplified {
-                    plasma_wave_low(nx, ny, time)
+                    let value = (v1 + v2 + v3) / 3.0;
+                    (value + 1.0) / 2.0
                 } else {
-                    plasma_wave(nx, ny, time)
+                    let v4 = ((scratch.x_sq[dx as usize] + y_sq).sqrt() * 2.0 - time * 1.2).sin();
+                    let v5 = ((scratch.x_center_sq[dx as usize] + y_center_sq).sqrt() * 1.8 + time)
+                        .cos();
+                    let v6 = (scratch.sin_x2[dx as usize] * cos_y2 + time * 0.5).sin();
+                    let value = (v1 + v2 + v3 + v4 + v5 + v6) / 6.0;
+                    ((value * breath) + 1.0) / 2.0
                 };
 
-                out[idx] = self.palette.color_at(wave, ctx.theme);
+                out[idx] = sample(wave.clamp(0.0, 1.0));
             }
+        }
+    }
+}
+
+impl BackdropFx for PlasmaFx {
+    fn name(&self) -> &'static str {
+        "plasma"
+    }
+
+    fn render(&mut self, ctx: FxContext<'_>, out: &mut [PackedRgba]) {
+        let theme = ctx.theme;
+        let palette = self.palette;
+        match palette {
+            PlasmaPalette::ThemeAccents => {
+                self.render_with_palette(ctx, out, |t| PlasmaPalette::theme_gradient(t, theme));
+            }
+            PlasmaPalette::Aurora => {
+                self.render_with_palette(ctx, out, |t| PlasmaPalette::aurora(t, theme));
+            }
+            PlasmaPalette::Ember => {
+                self.render_with_palette(ctx, out, |t| PlasmaPalette::ember(t, theme));
+            }
+            PlasmaPalette::Subtle => {
+                self.render_with_palette(ctx, out, |t| PlasmaPalette::subtle(t, theme));
+            }
+            PlasmaPalette::Monochrome => {
+                self.render_with_palette(ctx, out, |t| PlasmaPalette::monochrome(t, theme));
+            }
+            PlasmaPalette::Sunset => self.render_with_palette(ctx, out, PlasmaPalette::sunset),
+            PlasmaPalette::Ocean => self.render_with_palette(ctx, out, PlasmaPalette::ocean),
+            PlasmaPalette::Fire => self.render_with_palette(ctx, out, PlasmaPalette::fire),
+            PlasmaPalette::Neon => self.render_with_palette(ctx, out, PlasmaPalette::neon),
+            PlasmaPalette::Cyberpunk => {
+                self.render_with_palette(ctx, out, PlasmaPalette::cyberpunk)
+            }
+            PlasmaPalette::Galaxy => self.render_with_palette(ctx, out, PlasmaPalette::galaxy),
         }
     }
 }
