@@ -544,24 +544,36 @@ const FEATURE_GAPS: &[(&str, &str)] = &[
 
 const DEFAULT_SAMPLES: &[MermaidSample] = &[
     MermaidSample {
+        id: "flow-basic",
         name: "Flow Basic",
-        kind: "flow",
-        complexity: "S",
+        family: SampleFamily::Flow,
+        complexity: SampleComplexity::S,
         tags: &["branch", "decision"],
         features: &["edge-labels", "basic-nodes"],
         edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 40,
+            height: 10,
+        },
+        notes: "Minimal branching with decision node, covers LR direction",
         source: r#"graph LR
 A[Start] --> B{Check}
 B -->|Yes| C[OK]
 B -->|No| D[Fix]"#,
     },
     MermaidSample {
+        id: "flow-subgraphs",
         name: "Flow Subgraphs",
-        kind: "flow",
-        complexity: "M",
+        family: SampleFamily::Flow,
+        complexity: SampleComplexity::M,
         tags: &["subgraph", "clusters"],
         features: &["subgraph", "edge-labels"],
         edge_cases: &["nested-grouping"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 20,
+        },
+        notes: "Tests cluster rendering and cross-cluster edges",
         source: r#"graph TB
   subgraph Cluster_A
     A1[Ingress] --> A2[Parse]
@@ -573,12 +585,18 @@ B -->|No| D[Fix]"#,
   A2 -->|err| B2"#,
     },
     MermaidSample {
+        id: "flow-dense",
         name: "Flow Dense",
-        kind: "flow",
-        complexity: "L",
+        family: SampleFamily::Flow,
+        complexity: SampleComplexity::L,
         tags: &["dense", "dag"],
         features: &["many-nodes", "many-edges"],
         edge_cases: &["edge-crossing"],
+        default_size: SampleSizeHint {
+            width: 80,
+            height: 30,
+        },
+        notes: "Stress test for edge crossing minimization",
         source: r#"graph LR
   A-->B
   A-->C
@@ -593,12 +611,18 @@ B -->|No| D[Fix]"#,
   J-->K"#,
     },
     MermaidSample {
+        id: "flow-long-labels",
         name: "Flow Long Labels",
-        kind: "flow",
-        complexity: "M",
+        family: SampleFamily::Flow,
+        complexity: SampleComplexity::M,
         tags: &["labels", "wrap"],
         features: &["long-labels", "edge-labels"],
         edge_cases: &["long-text"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 20,
+        },
+        notes: "Tests label wrapping and truncation",
         source: r#"graph TD
   A[This is a very long label that should wrap or truncate neatly] --> B[Another extremely verbose node label]
   B --> C{Decision with a long question that should still render}
@@ -606,24 +630,36 @@ B -->|No| D[Fix]"#,
   C -->|No| E[Abort with a meaningful explanation]"#,
     },
     MermaidSample {
+        id: "flow-unicode",
         name: "Flow Unicode",
-        kind: "flow",
-        complexity: "S",
+        family: SampleFamily::Flow,
+        complexity: SampleComplexity::S,
         tags: &["unicode", "labels"],
         features: &["unicode-labels"],
         edge_cases: &["non-ascii"],
+        default_size: SampleSizeHint {
+            width: 40,
+            height: 10,
+        },
+        notes: "Non-ASCII label rendering (CJK, Greek, accented)",
         source: r#"graph LR
   A[Δ Start] --> B[β-Compute]
   B --> C[東京]
   C --> D[naïve café]"#,
     },
     MermaidSample {
+        id: "flow-styles",
         name: "Flow Styles",
-        kind: "flow",
-        complexity: "M",
+        family: SampleFamily::Flow,
+        complexity: SampleComplexity::M,
         tags: &["classdef", "style"],
         features: &["classDef", "style"],
         edge_cases: &["style-lines"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 20,
+        },
+        notes: "classDef and style directives for custom node appearance",
         source: r#"graph LR
   A[Primary] --> B[Secondary]
   B --> C[Accent]
@@ -632,23 +668,35 @@ B -->|No| D[Fix]"#,
   style C fill:#6bc5ff,stroke:#333,stroke-width:2px;"#,
     },
     MermaidSample {
+        id: "sequence-mini",
         name: "Sequence Mini",
-        kind: "sequence",
-        complexity: "S",
+        family: SampleFamily::Sequence,
+        complexity: SampleComplexity::S,
         tags: &["compact"],
         features: &["messages", "responses"],
         edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 40,
+            height: 12,
+        },
+        notes: "Minimal sequence: two actors, one exchange",
         source: r#"sequenceDiagram
   Alice->>Bob: Hello
   Bob-->>Alice: Hi!"#,
     },
     MermaidSample {
+        id: "sequence-checkout",
         name: "Sequence Checkout",
-        kind: "sequence",
-        complexity: "M",
+        family: SampleFamily::Sequence,
+        complexity: SampleComplexity::M,
         tags: &["multi-hop", "api"],
         features: &["round-trip", "multi-actor"],
         edge_cases: &["mixed-arrows"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 20,
+        },
+        notes: "Multi-actor API flow with mixed arrow types",
         source: r#"sequenceDiagram
   Client->>API: POST /checkout
   API->>Auth: Validate token
@@ -658,12 +706,18 @@ B -->|No| D[Fix]"#,
   API-->>Client: 201 Created"#,
     },
     MermaidSample {
+        id: "sequence-dense",
         name: "Sequence Dense",
-        kind: "sequence",
-        complexity: "L",
+        family: SampleFamily::Sequence,
+        complexity: SampleComplexity::L,
         tags: &["dense", "timing"],
         features: &["many-messages"],
         edge_cases: &["tight-spacing"],
+        default_size: SampleSizeHint {
+            width: 80,
+            height: 30,
+        },
+        notes: "Stress test for tight vertical message spacing",
         source: r#"sequenceDiagram
   User->>UI: Click
   UI->>API: Fetch
@@ -675,12 +729,18 @@ B -->|No| D[Fix]"#,
   UI-->>User: Update"#,
     },
     MermaidSample {
+        id: "class-basic",
         name: "Class Basic",
-        kind: "class",
-        complexity: "S",
+        family: SampleFamily::Class,
+        complexity: SampleComplexity::S,
         tags: &["inheritance", "association"],
         features: &["relations"],
         edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 50,
+            height: 15,
+        },
+        notes: "Inheritance and association relations",
         source: r#"classDiagram
   class User
   class Admin
@@ -689,12 +749,18 @@ B -->|No| D[Fix]"#,
   User --> Order"#,
     },
     MermaidSample {
+        id: "class-members",
         name: "Class Members",
-        kind: "class",
-        complexity: "M",
+        family: SampleFamily::Class,
+        complexity: SampleComplexity::M,
         tags: &["fields", "methods"],
         features: &["class-members"],
         edge_cases: &["long-member-lines"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 20,
+        },
+        notes: "Field and method compartment rendering",
         source: r#"classDiagram
   class Account
   class Ledger
@@ -705,12 +771,18 @@ B -->|No| D[Fix]"#,
   Account --> Ledger"#,
     },
     MermaidSample {
+        id: "state-basic",
         name: "State Basic",
-        kind: "state",
-        complexity: "S",
+        family: SampleFamily::State,
+        complexity: SampleComplexity::S,
         tags: &["start-end"],
         features: &["state-edges"],
         edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 40,
+            height: 12,
+        },
+        notes: "Start/end pseudo-nodes with simple transitions",
         source: r#"stateDiagram-v2
   [*] --> Idle
   Idle --> Busy: start
@@ -718,12 +790,18 @@ B -->|No| D[Fix]"#,
   Busy --> [*]: exit"#,
     },
     MermaidSample {
+        id: "state-composite",
         name: "State Composite",
-        kind: "state",
-        complexity: "M",
+        family: SampleFamily::State,
+        complexity: SampleComplexity::M,
         tags: &["composite", "notes"],
         features: &["substates", "notes"],
         edge_cases: &["nested-blocks"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 20,
+        },
+        notes: "Nested substates and note annotations",
         source: r#"stateDiagram-v2
   [*] --> Working
   state Working {
@@ -735,24 +813,36 @@ B -->|No| D[Fix]"#,
   note right of Review: ensure QA"#,
     },
     MermaidSample {
+        id: "er-basic",
         name: "ER Basic",
-        kind: "er",
-        complexity: "M",
+        family: SampleFamily::Er,
+        complexity: SampleComplexity::M,
         tags: &["cardinality", "relations"],
         features: &["er-arrows"],
         edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 15,
+        },
+        notes: "Entity-relationship cardinality notation",
         source: r#"erDiagram
   CUSTOMER ||--o{ ORDER : places
   ORDER ||--|{ LINE_ITEM : contains
   PRODUCT ||--o{ LINE_ITEM : in"#,
     },
     MermaidSample {
+        id: "gantt-basic",
         name: "Gantt Basic",
-        kind: "gantt",
-        complexity: "M",
+        family: SampleFamily::Gantt,
+        complexity: SampleComplexity::M,
         tags: &["sections", "tasks"],
         features: &["title", "sections"],
         edge_cases: &["date-meta"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 15,
+        },
+        notes: "Title, sections, and dated task bars",
         source: r#"gantt
   title Release Plan
   section Build
@@ -763,12 +853,18 @@ B -->|No| D[Fix]"#,
   Release : milestone, 2024-01-14, 1d"#,
     },
     MermaidSample {
+        id: "mindmap-seed",
         name: "Mindmap Seed",
-        kind: "mindmap",
-        complexity: "S",
+        family: SampleFamily::Mindmap,
+        complexity: SampleComplexity::S,
         tags: &["tree"],
         features: &["indent"],
         edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 40,
+            height: 12,
+        },
+        notes: "Simple indentation-based tree",
         source: r#"mindmap
   root
     alpha
@@ -777,12 +873,18 @@ B -->|No| D[Fix]"#,
       beta-2"#,
     },
     MermaidSample {
+        id: "mindmap-deep",
         name: "Mindmap Deep",
-        kind: "mindmap",
-        complexity: "L",
+        family: SampleFamily::Mindmap,
+        complexity: SampleComplexity::L,
         tags: &["deep", "wide"],
         features: &["multi-level"],
         edge_cases: &["many-nodes"],
+        default_size: SampleSizeHint {
+            width: 80,
+            height: 25,
+        },
+        notes: "Multi-level deep hierarchy stress test",
         source: r#"mindmap
   roadmap
     discover
@@ -802,12 +904,18 @@ B -->|No| D[Fix]"#,
       ga"#,
     },
     MermaidSample {
+        id: "pie-basic",
         name: "Pie Basic",
-        kind: "pie",
-        complexity: "S",
+        family: SampleFamily::Pie,
+        complexity: SampleComplexity::S,
         tags: &["title", "showdata"],
         features: &["title", "showData"],
         edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 40,
+            height: 15,
+        },
+        notes: "Title and showData flag with basic slices",
         source: r#"pie showData
   title Market Share
   "Alpha": 38
@@ -816,12 +924,18 @@ B -->|No| D[Fix]"#,
   "Delta": 15"#,
     },
     MermaidSample {
+        id: "pie-many",
         name: "Pie Many",
-        kind: "pie",
-        complexity: "M",
+        family: SampleFamily::Pie,
+        complexity: SampleComplexity::M,
         tags: &["many-slices"],
         features: &["labels"],
         edge_cases: &["small-slices"],
+        default_size: SampleSizeHint {
+            width: 50,
+            height: 18,
+        },
+        notes: "Six+ slices testing small-slice rendering",
         source: r#"pie
   title Segments
   Core: 35
@@ -832,12 +946,18 @@ B -->|No| D[Fix]"#,
   Other: 5"#,
     },
     MermaidSample {
+        id: "gitgraph-basic",
         name: "Gitgraph Basic",
-        kind: "gitgraph",
-        complexity: "M",
+        family: SampleFamily::Unsupported,
+        complexity: SampleComplexity::M,
         tags: &["unsupported"],
         features: &["branches", "commits"],
         edge_cases: &["unsupported-diagram"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 15,
+        },
+        notes: "Unsupported diagram type fallback test",
         source: r#"gitGraph
   commit
   branch feature
@@ -847,12 +967,18 @@ B -->|No| D[Fix]"#,
   merge feature"#,
     },
     MermaidSample {
+        id: "journey-basic",
         name: "Journey Basic",
-        kind: "journey",
-        complexity: "M",
+        family: SampleFamily::Unsupported,
+        complexity: SampleComplexity::M,
         tags: &["unsupported"],
         features: &["sections", "scores"],
         edge_cases: &["unsupported-diagram"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 15,
+        },
+        notes: "Unsupported diagram type fallback test",
         source: r#"journey
   title User Onboarding
   section Discover
@@ -863,12 +989,18 @@ B -->|No| D[Fix]"#,
     First task: 5: User"#,
     },
     MermaidSample {
+        id: "requirement-basic",
         name: "Requirement Basic",
-        kind: "requirement",
-        complexity: "M",
+        family: SampleFamily::Unsupported,
+        complexity: SampleComplexity::M,
         tags: &["unsupported"],
         features: &["requirements"],
         edge_cases: &["unsupported-diagram"],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 15,
+        },
+        notes: "Unsupported diagram type fallback test",
         source: r#"requirementDiagram
   requirement req1 {
     id: 1
@@ -1846,8 +1978,8 @@ impl MermaidShowcaseScreen {
                 "  "
             };
             let mut meta_parts: Vec<&str> = Vec::with_capacity(2 + sample.tags.len());
-            meta_parts.push(sample.kind);
-            meta_parts.push(sample.complexity);
+            meta_parts.push(sample.family.as_str());
+            meta_parts.push(sample.complexity.as_str());
             meta_parts.extend_from_slice(sample.tags);
             let tag_str = if meta_parts.is_empty() {
                 String::new()
@@ -3076,13 +3208,9 @@ mod tests {
     }
 
     #[test]
-    fn each_sample_has_kind() {
+    fn each_sample_has_id() {
         for sample in DEFAULT_SAMPLES {
-            assert!(
-                !sample.kind.is_empty(),
-                "sample {} has empty kind",
-                sample.name
-            );
+            assert!(!sample.id.is_empty(), "sample {} has empty id", sample.name);
         }
     }
     // --- Metrics integration ---
