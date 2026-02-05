@@ -598,6 +598,8 @@ pub enum ScreenId {
     MarkdownRichText,
     /// Interactive Mermaid diagram showcase.
     MermaidShowcase,
+    /// Comprehensive Mermaid mega showcase (bd-3oaig.3).
+    MermaidMegaShowcase,
     /// Mind-blowing visual effects with braille.
     VisualEffects,
     /// Responsive layout breakpoint demo.
@@ -695,6 +697,7 @@ impl ScreenId {
             Self::Performance => "Performance",
             Self::MarkdownRichText => "MarkdownRichText",
             Self::MermaidShowcase => "MermaidShowcase",
+            Self::MermaidMegaShowcase => "MermaidMegaShowcase",
             Self::VisualEffects => "VisualEffects",
             Self::ResponsiveDemo => "ResponsiveDemo",
             Self::LogSearch => "LogSearch",
@@ -810,6 +813,8 @@ pub struct ScreenStates {
     pub markdown_rich_text: screens::markdown_rich_text::MarkdownRichText,
     /// Mermaid showcase screen state.
     pub mermaid_showcase: screens::mermaid_showcase::MermaidShowcaseScreen,
+    /// Mermaid mega showcase screen state (bd-3oaig.3).
+    pub mermaid_mega_showcase: screens::mermaid_mega_showcase::MermaidMegaShowcaseScreen,
     /// Visual effects screen state (lazy init).
     visual_effects: LazyScreen<screens::visual_effects::VisualEffectsScreen>,
     /// Responsive layout demo screen state.
@@ -885,6 +890,7 @@ impl Default for ScreenStates {
             performance: Default::default(),
             markdown_rich_text: Default::default(),
             mermaid_showcase: Default::default(),
+            mermaid_mega_showcase: Default::default(),
             visual_effects: LazyScreen::new(),
             responsive_demo: Default::default(),
             log_search: Default::default(),
@@ -1054,6 +1060,9 @@ impl ScreenStates {
             ScreenId::MermaidShowcase => {
                 self.mermaid_showcase.update(event);
             }
+            ScreenId::MermaidMegaShowcase => {
+                self.mermaid_mega_showcase.update(event);
+            }
             ScreenId::VisualEffects => {
                 self.visual_effects_mut(|screen| screen.update(event));
             }
@@ -1169,6 +1178,7 @@ impl ScreenStates {
             ScreenId::Performance => self.performance.tick(tick_count),
             ScreenId::MarkdownRichText => self.markdown_rich_text.tick(tick_count),
             ScreenId::MermaidShowcase => self.mermaid_showcase.tick(tick_count),
+            ScreenId::MermaidMegaShowcase => self.mermaid_mega_showcase.tick(tick_count),
             ScreenId::VisualEffects => self.visual_effects_mut(|screen| screen.tick(tick_count)),
             ScreenId::ResponsiveDemo => self.responsive_demo.tick(tick_count),
             ScreenId::LogSearch => self.log_search.tick(tick_count),
@@ -1244,6 +1254,7 @@ impl ScreenStates {
                 ScreenId::Performance => self.performance.view(frame, area),
                 ScreenId::MarkdownRichText => self.markdown_rich_text.view(frame, area),
                 ScreenId::MermaidShowcase => self.mermaid_showcase.view(frame, area),
+                ScreenId::MermaidMegaShowcase => self.mermaid_mega_showcase.view(frame, area),
                 ScreenId::VisualEffects => {
                     self.visual_effects_mut(|screen| screen.view(frame, area))
                 }
@@ -1988,6 +1999,235 @@ impl Model for VfxHarnessModel {
         let _ = self
             .logger
             .write_frame(frame_idx, hash, self.screen.sim_time());
+    }
+
+    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
+        Vec::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mermaid Harness (E2E deterministic sample runner — bd-1k26f)
+// ---------------------------------------------------------------------------
+
+/// Configuration for the Mermaid E2E harness.
+pub struct MermaidHarnessConfig {
+    pub cols: u16,
+    pub rows: u16,
+    pub seed: Option<u64>,
+    pub jsonl_path: Option<String>,
+    pub run_id: Option<String>,
+    pub exit_after_ms: u64,
+    pub tick_ms: u64,
+}
+
+/// Messages for [`MermaidHarnessModel`].
+pub enum MermaidHarnessMsg {
+    Event(Event),
+    Quit,
+}
+
+impl From<Event> for MermaidHarnessMsg {
+    fn from(event: Event) -> Self {
+        Self::Event(event)
+    }
+}
+
+/// Deterministic harness that cycles through every Mermaid sample, renders
+/// each one, computes a frame hash, emits JSONL, and exits.
+pub struct MermaidHarnessModel {
+    screen: screens::mermaid_showcase::MermaidShowcaseScreen,
+    sample_count: usize,
+    tick_count: u64,
+    tick_ms: u64,
+    exit_after_ms: u64,
+    started: Cell<bool>,
+    done: Cell<bool>,
+    frame_idx: Cell<u64>,
+    writer: RefCell<Box<dyn Write + Send>>,
+    run_id: String,
+    cols: u16,
+    rows: u16,
+    seed: u64,
+}
+
+const MERMAID_HARNESS_SEED: u64 = 42;
+const MERMAID_HARNESS_DEFAULT_JSONL: &str = "mermaid_harness.jsonl";
+
+impl MermaidHarnessModel {
+    pub fn new(config: MermaidHarnessConfig) -> std::io::Result<Self> {
+        let mut screen = screens::mermaid_showcase::MermaidShowcaseScreen::new();
+        // Toggle off metrics and controls panels so rendering is purely
+        // deterministic (no timing data in the frame hash).
+        for key in ['m', 'c'] {
+            screen.update(&Event::Key(KeyEvent {
+                code: KeyCode::Char(key),
+                kind: KeyEventKind::Press,
+                modifiers: Modifiers::NONE,
+            }));
+        }
+        let sample_count = screen.sample_count();
+        let cols = config.cols.max(1);
+        let rows = config.rows.max(1);
+        let seed = config.seed.unwrap_or_else(|| {
+            determinism::seed_from_env(
+                &[
+                    "FTUI_DEMO_MERMAID_SEED",
+                    "FTUI_DEMO_SEED",
+                    "FTUI_SEED",
+                    "E2E_SEED",
+                ],
+                determinism::demo_seed(MERMAID_HARNESS_SEED),
+            )
+        });
+        let run_id = config
+            .run_id
+            .unwrap_or_else(|| format!("mermaid-{}x{}-seed{seed}", cols, rows));
+        let jsonl_path = config
+            .jsonl_path
+            .unwrap_or_else(|| MERMAID_HARNESS_DEFAULT_JSONL.to_string());
+        let writer = open_vfx_writer(&jsonl_path)?;
+
+        Ok(Self {
+            screen,
+            sample_count,
+            tick_count: 0,
+            tick_ms: config.tick_ms.max(1),
+            exit_after_ms: config.exit_after_ms,
+            started: Cell::new(false),
+            done: Cell::new(false),
+            frame_idx: Cell::new(0),
+            writer: RefCell::new(writer),
+            run_id,
+            cols,
+            rows,
+            seed,
+        })
+    }
+
+    fn write_header(&self) {
+        let timestamp = determinism::chrono_like_timestamp();
+        let env_json = determinism::demo_env_json();
+        let hash_key = determinism::hash_key("mermaid", self.cols, self.rows, self.seed);
+        let line = format!(
+            "{{\"event\":\"mermaid_harness_start\",\"timestamp\":\"{timestamp}\",\"run_id\":\"{}\",\"hash_key\":\"{hash_key}\",\"cols\":{},\"rows\":{},\"seed\":{},\"sample_count\":{},\"env\":{env_json}}}",
+            escape_json(&self.run_id),
+            self.cols,
+            self.rows,
+            self.seed,
+            self.sample_count,
+        );
+        let _ = writeln!(self.writer.borrow_mut(), "{line}");
+    }
+
+    fn write_frame(&self, frame_idx: u64, hash: u64) {
+        let timestamp = determinism::chrono_like_timestamp();
+        let sample_idx = if frame_idx == 0 {
+            0
+        } else {
+            (frame_idx as usize).min(self.sample_count.saturating_sub(1))
+        };
+        let line = format!(
+            "{{\"event\":\"mermaid_frame\",\"timestamp\":\"{timestamp}\",\"run_id\":\"{}\",\"frame\":{frame_idx},\"sample_idx\":{sample_idx},\"hash\":{hash}}}",
+            escape_json(&self.run_id),
+        );
+        let _ = writeln!(self.writer.borrow_mut(), "{line}");
+    }
+
+    fn write_done(&self) {
+        let timestamp = determinism::chrono_like_timestamp();
+        let line = format!(
+            "{{\"event\":\"mermaid_harness_done\",\"timestamp\":\"{timestamp}\",\"run_id\":\"{}\",\"total_frames\":{}}}",
+            escape_json(&self.run_id),
+            self.frame_idx.get(),
+        );
+        let _ = writeln!(self.writer.borrow_mut(), "{line}");
+    }
+
+    fn advance_sample(&mut self) {
+        let right = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            kind: KeyEventKind::Press,
+            modifiers: Modifiers::NONE,
+        });
+        self.screen.update(&right);
+    }
+}
+
+impl Model for MermaidHarnessModel {
+    type Message = MermaidHarnessMsg;
+
+    fn init(&mut self) -> Cmd<Self::Message> {
+        self.write_header();
+        let mut cmds = vec![Cmd::Tick(Duration::from_millis(self.tick_ms))];
+        if self.exit_after_ms > 0 {
+            let ms = self.exit_after_ms;
+            cmds.push(Cmd::task_named("mermaid_harness_exit", move || {
+                std::thread::sleep(Duration::from_millis(ms));
+                MermaidHarnessMsg::Quit
+            }));
+        }
+        Cmd::batch(cmds)
+    }
+
+    fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+        match msg {
+            MermaidHarnessMsg::Quit => {
+                self.done.set(true);
+                self.write_done();
+                Cmd::Quit
+            }
+            MermaidHarnessMsg::Event(event) => match event {
+                Event::Tick => {
+                    self.tick_count = self.tick_count.saturating_add(1);
+                    if !self.started.get() {
+                        // First tick: render sample 0 (already selected).
+                        self.started.set(true);
+                    } else {
+                        // Subsequent ticks: advance to next sample.
+                        if self.tick_count as usize > self.sample_count {
+                            self.done.set(true);
+                            self.write_done();
+                            return Cmd::Quit;
+                        }
+                        self.advance_sample();
+                    }
+                    Cmd::None
+                }
+                Event::Key(KeyEvent {
+                    code,
+                    kind: KeyEventKind::Press,
+                    modifiers,
+                }) => {
+                    if matches!(code, KeyCode::Char('q' | 'Q') | KeyCode::Escape)
+                        || (matches!(code, KeyCode::Char('c' | 'C'))
+                            && modifiers.contains(Modifiers::CTRL))
+                    {
+                        self.done.set(true);
+                        self.write_done();
+                        return Cmd::Quit;
+                    }
+                    Cmd::None
+                }
+                _ => Cmd::None,
+            },
+        }
+    }
+
+    fn view(&self, frame: &mut Frame) {
+        let area = Rect::from_size(frame.buffer.width(), frame.buffer.height());
+        self.screen.view(frame, area);
+
+        // Only log frame hashes once started and before done.
+        if !self.started.get() || self.done.get() {
+            return;
+        }
+
+        let idx = self.frame_idx.get().wrapping_add(1);
+        self.frame_idx.set(idx);
+        let pool = &*frame.pool;
+        let hash = checksum_buffer(&frame.buffer, pool);
+        self.write_frame(idx - 1, hash);
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
@@ -3346,6 +3586,7 @@ impl AppModel {
             ScreenId::Performance => self.screens.performance.keybindings(),
             ScreenId::MarkdownRichText => self.screens.markdown_rich_text.keybindings(),
             ScreenId::MermaidShowcase => self.screens.mermaid_showcase.keybindings(),
+            ScreenId::MermaidMegaShowcase => self.screens.mermaid_mega_showcase.keybindings(),
             ScreenId::VisualEffects => self
                 .screens
                 .visual_effects_mut(|screen| screen.keybindings()),
@@ -4531,7 +4772,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(screens::screen_registry().len(), 41);
+        assert_eq!(screens::screen_registry().len(), 42);
     }
 
     // -----------------------------------------------------------------------

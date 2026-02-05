@@ -995,6 +995,7 @@ pub fn accent_for(id: ScreenId) -> theme::ColorToken {
         ScreenId::ExplainabilityCockpit => theme::screen_accent::PERFORMANCE,
         ScreenId::KanbanBoard => theme::screen_accent::ADVANCED,
         ScreenId::MermaidShowcase => theme::screen_accent::DATA_VIZ,
+        ScreenId::MermaidMegaShowcase => theme::screen_accent::DATA_VIZ,
     }
 }
 

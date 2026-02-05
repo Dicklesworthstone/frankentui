@@ -56,31 +56,32 @@ SCREENS:
    14  Performance        Frame budget, caching, virtualization
    15  Markdown           Rich text and markdown rendering
    16  Mermaid Showcase   Mermaid diagrams with layout diagnostics
-   17  Visual Effects     Animated braille and canvas effects
-   18  Responsive         Breakpoint-driven responsive layout demo
-   19  Log Search         Live log search and filter demo
-   20  Notifications      Toast notification system demo
-   21  Action Timeline    Event timeline with filtering and severity
-   22  Sizing             Content-aware intrinsic sizing demo
-   23  Layout Inspector   Constraint solver visual inspector
-   24  Text Editor        Advanced multi-line text editor with search
-   25  Mouse Playground   Mouse hit-testing and interaction demo
-   26  Form Validation    Comprehensive form validation demo
-   27  Virtualized Search Fuzzy search in 100K+ items demo
-   28  Async Tasks        Async task manager and queue diagnostics
-   29  Theme Studio       Live palette editor and theme inspector
-   30  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
-   31  Performance Challenge Stress harness for degradation tiers
-   32  Explainability     Diff/resize/budget evidence cockpit
-   33  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
-   34  VOI Overlay        Galaxy-Brain VOI debug overlay
-   35  Inline Mode        Inline scrollback + chrome story
-   36  Accessibility      Accessibility control panel + contrast checks
-   37  Widget Builder     Interactive widget composition sandbox
-   38  Palette Evidence   Command palette evidence lab
-   39  Determinism Lab    Checksum equivalence + determinism proofs
-   40  Links              OSC-8 hyperlink playground + hit regions
-   41  Kanban Board       Interactive Kanban board with drag-drop
+   17  Mermaid Mega       Comprehensive Mermaid diagram lab with all knobs
+   18  Visual Effects     Animated braille and canvas effects
+   19  Responsive         Breakpoint-driven responsive layout demo
+   20  Log Search         Live log search and filter demo
+   21  Notifications      Toast notification system demo
+   22  Action Timeline    Event timeline with filtering and severity
+   23  Sizing             Content-aware intrinsic sizing demo
+   24  Layout Inspector   Constraint solver visual inspector
+   25  Text Editor        Advanced multi-line text editor with search
+   26  Mouse Playground   Mouse hit-testing and interaction demo
+   27  Form Validation    Comprehensive form validation demo
+   28  Virtualized Search Fuzzy search in 100K+ items demo
+   29  Async Tasks        Async task manager and queue diagnostics
+   30  Theme Studio       Live palette editor and theme inspector
+   31  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
+   32  Performance Challenge Stress harness for degradation tiers
+   33  Explainability     Diff/resize/budget evidence cockpit
+   34  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
+   35  VOI Overlay        Galaxy-Brain VOI debug overlay
+   36  Inline Mode        Inline scrollback + chrome story
+   37  Accessibility      Accessibility control panel + contrast checks
+   38  Widget Builder     Interactive widget composition sandbox
+   39  Palette Evidence   Command palette evidence lab
+   40  Determinism Lab    Checksum equivalence + determinism proofs
+   41  Links              OSC-8 hyperlink playground + hit regions
+   42  Kanban Board       Interactive Kanban board with drag-drop
 
 KEYBINDINGS:
     1-9, 0          Switch to screens 1-10 by number
@@ -163,6 +164,20 @@ pub struct Opts {
     pub vfx_run_id: Option<String>,
     /// VFX harness per-frame timing logs.
     pub vfx_perf: bool,
+    /// Enable deterministic Mermaid harness mode.
+    pub mermaid_harness: bool,
+    /// Mermaid harness tick cadence in milliseconds.
+    pub mermaid_tick_ms: u64,
+    /// Mermaid harness forced columns.
+    pub mermaid_cols: u16,
+    /// Mermaid harness forced rows.
+    pub mermaid_rows: u16,
+    /// Mermaid harness seed override.
+    pub mermaid_seed: Option<u64>,
+    /// Mermaid harness JSONL output path.
+    pub mermaid_jsonl: Option<String>,
+    /// Mermaid harness run id override.
+    pub mermaid_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +211,13 @@ impl Default for Opts {
             vfx_jsonl: None,
             vfx_run_id: None,
             vfx_perf: false,
+            mermaid_harness: false,
+            mermaid_tick_ms: 100,
+            mermaid_cols: 120,
+            mermaid_rows: 40,
+            mermaid_seed: None,
+            mermaid_jsonl: None,
+            mermaid_run_id: None,
         }
     }
 }
@@ -339,6 +361,30 @@ impl Opts {
             let enabled = val == "1" || val.eq_ignore_ascii_case("true");
             opts.vfx_perf = enabled;
         }
+        if let Some(val) = get_env("FTUI_DEMO_MERMAID_HARNESS") {
+            let enabled = val == "1" || val.eq_ignore_ascii_case("true");
+            opts.mermaid_harness = enabled;
+        }
+        if let Some(val) = get_env("FTUI_DEMO_MERMAID_TICK_MS")
+            && let Ok(n) = val.parse()
+        {
+            opts.mermaid_tick_ms = n;
+        }
+        if let Some(val) = get_env("FTUI_DEMO_MERMAID_SEED")
+            && let Ok(n) = val.parse()
+        {
+            opts.mermaid_seed = Some(n);
+        }
+        if let Some(val) = get_env("FTUI_DEMO_MERMAID_JSONL")
+            && !val.trim().is_empty()
+        {
+            opts.mermaid_jsonl = Some(val);
+        }
+        if let Some(val) = get_env("FTUI_DEMO_MERMAID_RUN_ID")
+            && !val.trim().is_empty()
+        {
+            opts.mermaid_run_id = Some(val);
+        }
 
         // Parse command-line args (override env vars)
         let args: Vec<String> = args
@@ -363,6 +409,9 @@ impl Opts {
                 }
                 "--vfx-perf" => {
                     opts.vfx_perf = true;
+                }
+                "--mermaid-harness" => {
+                    opts.mermaid_harness = true;
                 }
                 "--tour" => {
                     opts.tour = true;
@@ -502,6 +551,54 @@ impl Opts {
                         if !val.trim().is_empty() {
                             opts.vfx_run_id = Some(val.to_string());
                         }
+                    } else if let Some(val) = other.strip_prefix("--mermaid-tick-ms=") {
+                        match val.parse() {
+                            Ok(n) => opts.mermaid_tick_ms = n,
+                            Err(_) => {
+                                return Err(ParseError::InvalidValue {
+                                    flag: "--mermaid-tick-ms",
+                                    value: val.to_string(),
+                                });
+                            }
+                        }
+                    } else if let Some(val) = other.strip_prefix("--mermaid-cols=") {
+                        match val.parse() {
+                            Ok(n) => opts.mermaid_cols = n,
+                            Err(_) => {
+                                return Err(ParseError::InvalidValue {
+                                    flag: "--mermaid-cols",
+                                    value: val.to_string(),
+                                });
+                            }
+                        }
+                    } else if let Some(val) = other.strip_prefix("--mermaid-rows=") {
+                        match val.parse() {
+                            Ok(n) => opts.mermaid_rows = n,
+                            Err(_) => {
+                                return Err(ParseError::InvalidValue {
+                                    flag: "--mermaid-rows",
+                                    value: val.to_string(),
+                                });
+                            }
+                        }
+                    } else if let Some(val) = other.strip_prefix("--mermaid-seed=") {
+                        match val.parse() {
+                            Ok(n) => opts.mermaid_seed = Some(n),
+                            Err(_) => {
+                                return Err(ParseError::InvalidValue {
+                                    flag: "--mermaid-seed",
+                                    value: val.to_string(),
+                                });
+                            }
+                        }
+                    } else if let Some(val) = other.strip_prefix("--mermaid-jsonl=") {
+                        if !val.trim().is_empty() {
+                            opts.mermaid_jsonl = Some(val.to_string());
+                        }
+                    } else if let Some(val) = other.strip_prefix("--mermaid-run-id=") {
+                        if !val.trim().is_empty() {
+                            opts.mermaid_run_id = Some(val.to_string());
+                        }
                     } else {
                         return Err(ParseError::UnknownArg(other.to_string()));
                     }
@@ -611,7 +708,7 @@ mod tests {
 
     #[test]
     fn help_text_contains_visual_effects_as_screen_17() {
-        assert!(HELP_TEXT.contains("17  Visual Effects"));
+        assert!(HELP_TEXT.contains("18  Visual Effects"));
     }
 
     #[test]

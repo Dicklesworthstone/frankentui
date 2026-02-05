@@ -12,8 +12,7 @@ use ftui_extras::mermaid::{
     DiagramPalettePreset, MermaidConfig, MermaidGlyphMode, MermaidRenderMode, MermaidTier,
     MermaidWrapMode, ShowcaseMode,
 };
-use ftui_extras::mermaid_render::{DiagramPalette, MermaidRenderer, SelectionState};
-use ftui_render::buffer::Buffer;
+use ftui_extras::mermaid_render::DiagramPalette;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
 
@@ -112,7 +111,7 @@ impl LayoutRegions {
             };
         }
 
-        let mut x = area.x;
+        let x = area.x;
         let mut y = area.y;
         let mut w = area.width;
         let mut h = area.height;
@@ -158,6 +157,16 @@ impl LayoutRegions {
 
 // ── State ───────────────────────────────────────────────────────────
 
+/// Maximum status log entries before oldest are evicted.
+const STATUS_LOG_CAP: usize = 64;
+
+/// A single entry in the status log.
+#[derive(Debug, Clone)]
+struct StatusLogEntry {
+    action: &'static str,
+    detail: String,
+}
+
 /// State for the Mermaid Mega Showcase screen.
 #[derive(Debug)]
 pub struct MermaidMegaState {
@@ -191,6 +200,8 @@ pub struct MermaidMegaState {
     analysis_epoch: u64,
     layout_epoch: u64,
     render_epoch: u64,
+    /// Status log for debugging state changes.
+    status_log: Vec<StatusLogEntry>,
 }
 
 impl Default for MermaidMegaState {
@@ -212,21 +223,31 @@ impl Default for MermaidMegaState {
             analysis_epoch: 0,
             layout_epoch: 0,
             render_epoch: 0,
+            status_log: Vec::new(),
         }
     }
 }
 
 impl MermaidMegaState {
+    /// Record an action in the status log.
+    fn log_action(&mut self, action: &'static str, detail: String) {
+        if self.status_log.len() >= STATUS_LOG_CAP {
+            self.status_log.remove(0);
+        }
+        self.status_log.push(StatusLogEntry { action, detail });
+    }
+
     /// Build a MermaidConfig from the current state.
     fn to_config(&self) -> MermaidConfig {
-        let mut config = MermaidConfig::default();
-        config.glyph_mode = self.glyph_mode;
-        config.render_mode = self.render_mode;
-        config.tier_override = self.tier;
-        config.wrap_mode = self.wrap_mode;
-        config.enable_styles = self.styles_enabled;
-        config.palette = self.palette;
-        config
+        MermaidConfig {
+            glyph_mode: self.glyph_mode,
+            render_mode: self.render_mode,
+            tier_override: self.tier,
+            wrap_mode: self.wrap_mode,
+            enable_styles: self.styles_enabled,
+            palette: self.palette,
+            ..Default::default()
+        }
     }
 
     /// Bump render epoch (triggers re-render without re-layout).
@@ -385,8 +406,7 @@ impl MermaidMegaState {
                 self.bump_render();
             }
             MegaAction::SelectPrevNode => {
-                self.selected_node =
-                    Some(self.selected_node.map_or(0, |n| n.saturating_sub(1)));
+                self.selected_node = Some(self.selected_node.map_or(0, |n| n.saturating_sub(1)));
                 self.mode = ShowcaseMode::Inspect;
                 self.bump_render();
             }
@@ -422,6 +442,8 @@ impl MermaidMegaState {
                 }
             }
         }
+        // Log every action for debugging.
+        self.log_action("action", format!("{action:?}"));
     }
 }
 
@@ -488,38 +510,41 @@ impl MermaidMegaShowcaseScreen {
     }
 
     /// Render the controls strip at the top.
-    fn render_controls(&self, area: Rect, buf: &mut Buffer) {
+    fn render_controls(&self, area: Rect, frame: &mut Frame) {
         if area.is_empty() {
             return;
         }
         let border = Cell::from_char(' ').with_fg(PackedRgba::rgb(80, 80, 100));
-        buf.draw_border(area, BorderChars::SQUARE, border);
+        frame.draw_border(area, BorderChars::SQUARE, border);
 
         let s = &self.state;
         let status = format!(
             " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Palette:{} Zoom:{:.0}% ",
-            s.tier, s.glyph_mode, s.render_mode, s.wrap_mode,
-            s.layout_mode.as_str(), s.palette, (s.viewport_zoom * 100.0),
+            s.tier,
+            s.glyph_mode,
+            s.render_mode,
+            s.wrap_mode,
+            s.layout_mode.as_str(),
+            s.palette,
+            (s.viewport_zoom * 100.0),
         );
         let text_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(180, 200, 220));
-        let y = area.y + 1;
-        let x = area.x + 1;
-        for (i, ch) in status.chars().enumerate() {
-            let col = x + i as u16;
-            if col >= area.x + area.width - 1 {
-                break;
-            }
-            buf.set(col, y, text_cell.with_char(ch));
-        }
+        frame.print_text_clipped(
+            area.x + 1,
+            area.y + 1,
+            &status,
+            text_cell,
+            area.x + area.width - 1,
+        );
     }
 
     /// Render the side panel (metrics / detail).
-    fn render_side_panel(&self, area: Rect, buf: &mut Buffer) {
+    fn render_side_panel(&self, area: Rect, frame: &mut Frame) {
         if area.is_empty() {
             return;
         }
         let border = Cell::from_char(' ').with_fg(PackedRgba::rgb(80, 80, 100));
-        buf.draw_border(area, BorderChars::SQUARE, border);
+        frame.draw_border(area, BorderChars::SQUARE, border);
 
         let title = if self.state.panels.detail {
             " Detail "
@@ -527,15 +552,14 @@ impl MermaidMegaShowcaseScreen {
             " Metrics "
         };
         let title_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(140, 180, 220));
-        for (i, ch) in title.chars().enumerate() {
-            let col = area.x + 1 + i as u16;
-            if col >= area.x + area.width - 1 {
-                break;
-            }
-            buf.set(col, area.y, title_cell.with_char(ch));
-        }
+        frame.print_text_clipped(
+            area.x + 1,
+            area.y,
+            title,
+            title_cell,
+            area.x + area.width - 1,
+        );
 
-        // Placeholder content
         let lines = [
             format!("Mode: {}", self.state.mode.as_str()),
             format!("Sample: #{}", self.state.selected_sample),
@@ -546,26 +570,24 @@ impl MermaidMegaShowcaseScreen {
                     .selected_node
                     .map_or("-".to_string(), |n| format!("#{n}"))
             ),
-            format!("Epoch: a{}/l{}/r{}", self.state.analysis_epoch, self.state.layout_epoch, self.state.render_epoch),
+            format!(
+                "Epoch: a{}/l{}/r{}",
+                self.state.analysis_epoch, self.state.layout_epoch, self.state.render_epoch
+            ),
         ];
         let info_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(160, 160, 180));
+        let max_x = area.x + area.width - 1;
         for (row, line) in lines.iter().enumerate() {
             let y = area.y + 2 + row as u16;
             if y >= area.y + area.height - 1 {
                 break;
             }
-            for (col, ch) in line.chars().enumerate() {
-                let x = area.x + 1 + col as u16;
-                if x >= area.x + area.width - 1 {
-                    break;
-                }
-                buf.set(x, y, info_cell.with_char(ch));
-            }
+            frame.print_text_clipped(area.x + 1, y, line, info_cell, max_x);
         }
     }
 
     /// Render the footer with mode indicator and key hints.
-    fn render_footer(&self, area: Rect, buf: &mut Buffer) {
+    fn render_footer(&self, area: Rect, frame: &mut Frame) {
         if area.is_empty() {
             return;
         }
@@ -580,67 +602,49 @@ impl MermaidMegaShowcaseScreen {
             ShowcaseMode::Search => PackedRgba::rgb(255, 200, 80),
         };
         let mode_cell = Cell::from_char(' ').with_fg(mode_color);
-        for (i, ch) in mode_str.chars().enumerate() {
-            let col = area.x + i as u16;
-            if col >= area.x + area.width {
-                break;
-            }
-            buf.set(col, area.y, mode_cell.with_char(ch));
-        }
+        let end =
+            frame.print_text_clipped(area.x, area.y, mode_str, mode_cell, area.x + area.width);
 
         let hints = " j/k:sample t:tier g:glyph p:palette Tab:node ?:help";
         let hint_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(100, 100, 120));
-        let hint_x = area.x + mode_str.len() as u16 + 2;
-        for (i, ch) in hints.chars().enumerate() {
-            let col = hint_x + i as u16;
-            if col >= area.x + area.width {
-                break;
-            }
-            buf.set(col, area.y, hint_cell.with_char(ch));
-        }
+        frame.print_text_clipped(end + 1, area.y, hints, hint_cell, area.x + area.width);
     }
 
     /// Render a placeholder diagram area.
-    fn render_diagram_placeholder(&self, area: Rect, buf: &mut Buffer) {
+    fn render_diagram_placeholder(&self, area: Rect, frame: &mut Frame) {
         if area.is_empty() {
             return;
         }
         let border = Cell::from_char(' ').with_fg(PackedRgba::rgb(60, 60, 80));
-        buf.draw_border(area, BorderChars::SQUARE, border);
+        frame.draw_border(area, BorderChars::SQUARE, border);
 
         let palette = DiagramPalette::from_preset(self.state.palette);
         let title = format!(
             " Diagram #{} [{}] ",
-            self.state.selected_sample,
-            self.state.palette
+            self.state.selected_sample, self.state.palette
         );
         let title_cell = Cell::from_char(' ').with_fg(palette.node_border);
-        for (i, ch) in title.chars().enumerate() {
-            let col = area.x + 1 + i as u16;
-            if col >= area.x + area.width - 1 {
-                break;
-            }
-            buf.set(col, area.y, title_cell.with_char(ch));
-        }
+        frame.print_text_clipped(
+            area.x + 1,
+            area.y,
+            &title,
+            title_cell,
+            area.x + area.width - 1,
+        );
 
         // Show palette preview as colored blocks
         let y = area.y + 2;
         if y < area.y + area.height - 1 {
             let label = "Palette: ";
             let label_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(140, 140, 160));
-            for (i, ch) in label.chars().enumerate() {
-                let col = area.x + 2 + i as u16;
-                if col < area.x + area.width - 1 {
-                    buf.set(col, y, label_cell.with_char(ch));
-                }
-            }
-            let block_x = area.x + 2 + label.len() as u16;
+            let end =
+                frame.print_text_clipped(area.x + 2, y, label, label_cell, area.x + area.width - 1);
+            let max_x = area.x + area.width - 1;
             for (i, fill) in palette.node_fills.iter().enumerate() {
-                let col = block_x + (i as u16 * 3);
-                if col + 2 < area.x + area.width - 1 {
-                    let cell = Cell::from_char('█').with_fg(*fill);
-                    buf.set(col, y, cell);
-                    buf.set(col + 1, y, cell);
+                let col = end + (i as u16 * 3);
+                if col + 2 < max_x {
+                    let swatch = Cell::from_char('█').with_fg(*fill);
+                    frame.print_text_clipped(col, y, "██", swatch, max_x);
                 }
             }
         }
@@ -651,10 +655,10 @@ impl Screen for MermaidMegaShowcaseScreen {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
-        if let Event::Key(key) = event {
-            if let Some(action) = self.handle_key(key) {
-                self.state.apply(action);
-            }
+        if let Event::Key(key) = event
+            && let Some(action) = self.handle_key(key)
+        {
+            self.state.apply(action);
         }
         Cmd::None
     }
@@ -664,32 +668,77 @@ impl Screen for MermaidMegaShowcaseScreen {
 
         // Render in layer order: background panels first, then diagram, then overlay.
         if !regions.controls.is_empty() {
-            self.render_controls(regions.controls, frame.buffer_mut());
+            self.render_controls(regions.controls, frame);
         }
         if !regions.side_panel.is_empty() {
-            self.render_side_panel(regions.side_panel, frame.buffer_mut());
+            self.render_side_panel(regions.side_panel, frame);
         }
-        self.render_diagram_placeholder(regions.diagram, frame.buffer_mut());
-        self.render_footer(regions.footer, frame.buffer_mut());
+        self.render_diagram_placeholder(regions.diagram, frame);
+        self.render_footer(regions.footer, frame);
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
-            HelpEntry { key: "j/↓", action: "Next sample" },
-            HelpEntry { key: "k/↑", action: "Previous sample" },
-            HelpEntry { key: "t", action: "Cycle tier" },
-            HelpEntry { key: "g", action: "Toggle glyph mode" },
-            HelpEntry { key: "b", action: "Cycle render mode" },
-            HelpEntry { key: "p/P", action: "Cycle palette" },
-            HelpEntry { key: "Tab", action: "Select next node" },
-            HelpEntry { key: "S-Tab", action: "Select previous node" },
-            HelpEntry { key: "/", action: "Search" },
-            HelpEntry { key: "+/-", action: "Zoom in/out" },
-            HelpEntry { key: "m", action: "Toggle metrics" },
-            HelpEntry { key: "c", action: "Toggle controls" },
-            HelpEntry { key: "d", action: "Toggle detail" },
-            HelpEntry { key: "?", action: "Toggle help" },
-            HelpEntry { key: "Esc", action: "Deselect / collapse" },
+            HelpEntry {
+                key: "j/↓",
+                action: "Next sample",
+            },
+            HelpEntry {
+                key: "k/↑",
+                action: "Previous sample",
+            },
+            HelpEntry {
+                key: "t",
+                action: "Cycle tier",
+            },
+            HelpEntry {
+                key: "g",
+                action: "Toggle glyph mode",
+            },
+            HelpEntry {
+                key: "b",
+                action: "Cycle render mode",
+            },
+            HelpEntry {
+                key: "p/P",
+                action: "Cycle palette",
+            },
+            HelpEntry {
+                key: "Tab",
+                action: "Select next node",
+            },
+            HelpEntry {
+                key: "S-Tab",
+                action: "Select previous node",
+            },
+            HelpEntry {
+                key: "/",
+                action: "Search",
+            },
+            HelpEntry {
+                key: "+/-",
+                action: "Zoom in/out",
+            },
+            HelpEntry {
+                key: "m",
+                action: "Toggle metrics",
+            },
+            HelpEntry {
+                key: "c",
+                action: "Toggle controls",
+            },
+            HelpEntry {
+                key: "d",
+                action: "Toggle detail",
+            },
+            HelpEntry {
+                key: "?",
+                action: "Toggle help",
+            },
+            HelpEntry {
+                key: "Esc",
+                action: "Deselect / collapse",
+            },
         ]
     }
 
@@ -718,7 +767,10 @@ mod tests {
         assert!(regions.diagram.height > 0);
         assert!(regions.footer.height > 0);
         assert!(regions.controls.height > 0);
-        assert!(regions.side_panel.width > 0, "metrics panel should be visible at 120 cols");
+        assert!(
+            regions.side_panel.width > 0,
+            "metrics panel should be visible at 120 cols"
+        );
     }
 
     #[test]
@@ -727,7 +779,10 @@ mod tests {
         let panels = PanelVisibility::default();
         let regions = LayoutRegions::compute(area, &panels);
 
-        assert_eq!(regions.side_panel.width, 0, "side panel should collapse at 80 cols");
+        assert_eq!(
+            regions.side_panel.width, 0,
+            "side panel should collapse at 80 cols"
+        );
         assert!(regions.diagram.width > 60);
     }
 
@@ -810,8 +865,10 @@ mod tests {
 
     #[test]
     fn state_to_config_applies_palette() {
-        let mut state = MermaidMegaState::default();
-        state.palette = DiagramPalettePreset::Neon;
+        let state = MermaidMegaState {
+            palette: DiagramPalettePreset::Neon,
+            ..MermaidMegaState::default()
+        };
         let config = state.to_config();
         assert_eq!(config.palette, DiagramPalettePreset::Neon);
     }
@@ -841,5 +898,24 @@ mod tests {
         assert_eq!(r1.footer, r2.footer);
         assert_eq!(r1.controls, r2.controls);
         assert_eq!(r1.side_panel, r2.side_panel);
+    }
+
+    #[test]
+    fn status_log_records_actions() {
+        let mut state = MermaidMegaState::default();
+        assert!(state.status_log.is_empty());
+        state.apply(MegaAction::CycleTier);
+        assert_eq!(state.status_log.len(), 1);
+        assert_eq!(state.status_log[0].action, "action");
+        assert!(state.status_log[0].detail.contains("CycleTier"));
+    }
+
+    #[test]
+    fn status_log_caps_at_limit() {
+        let mut state = MermaidMegaState::default();
+        for _ in 0..STATUS_LOG_CAP + 10 {
+            state.apply(MegaAction::CycleTier);
+        }
+        assert_eq!(state.status_log.len(), STATUS_LOG_CAP);
     }
 }

@@ -2,7 +2,10 @@
 
 //! FrankenTUI Demo Showcase binary entry point.
 
-use ftui_demo_showcase::app::{AppModel, ScreenId, VfxHarnessConfig, VfxHarnessModel};
+use ftui_demo_showcase::app::{
+    AppModel, MermaidHarnessConfig, MermaidHarnessModel, ScreenId, VfxHarnessConfig,
+    VfxHarnessModel,
+};
 use ftui_demo_showcase::cli;
 use ftui_demo_showcase::screens;
 use ftui_render::budget::{FrameBudgetConfig, PhaseBudgets};
@@ -62,6 +65,57 @@ fn main() {
             budget,
             frame_timing,
             forced_size: Some((opts.vfx_cols.max(1), opts.vfx_rows.max(1))),
+            ..ProgramConfig::default()
+        };
+        let config = apply_evidence_config(config);
+        match Program::with_config(model, config) {
+            Ok(mut program) => {
+                if let Err(e) = program.run() {
+                    eprintln!("Runtime error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    if opts.mermaid_harness {
+        let harness_config = MermaidHarnessConfig {
+            cols: opts.mermaid_cols,
+            rows: opts.mermaid_rows,
+            seed: opts.mermaid_seed,
+            jsonl_path: opts.mermaid_jsonl.clone(),
+            run_id: opts.mermaid_run_id.clone(),
+            exit_after_ms: opts.exit_after_ms,
+            tick_ms: opts.mermaid_tick_ms,
+        };
+        let model = match MermaidHarnessModel::new(harness_config) {
+            Ok(model) => model,
+            Err(e) => {
+                eprintln!("Failed to initialize Mermaid harness: {e}");
+                std::process::exit(1);
+            }
+        };
+        let budget = FrameBudgetConfig {
+            total: Duration::from_secs(2),
+            phase_budgets: PhaseBudgets {
+                diff: Duration::from_millis(500),
+                present: Duration::from_millis(500),
+                render: Duration::from_millis(1000),
+            },
+            allow_frame_skip: false,
+            degradation_cooldown: 5,
+            upgrade_threshold: 0.0,
+        };
+        let config = ProgramConfig {
+            screen_mode,
+            mouse: false,
+            budget,
+            forced_size: Some((opts.mermaid_cols.max(1), opts.mermaid_rows.max(1))),
             ..ProgramConfig::default()
         };
         let config = apply_evidence_config(config);

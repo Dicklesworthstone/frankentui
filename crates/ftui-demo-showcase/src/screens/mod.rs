@@ -31,6 +31,7 @@ pub mod log_search;
 pub mod macro_recorder;
 pub mod markdown_live_editor;
 pub mod markdown_rich_text;
+pub mod mermaid_mega_showcase;
 pub mod mermaid_showcase;
 pub mod mouse_playground;
 pub mod notifications;
@@ -276,6 +277,16 @@ pub const SCREEN_REGISTRY: &[ScreenMeta] = &[
         blurb: "Interactive Mermaid diagram showcase.",
         default_hotkey: None,
         tour_step_hint: Some("Mermaid engine"),
+    },
+    ScreenMeta {
+        id: ScreenId::MermaidMegaShowcase,
+        title: "Mermaid Mega Showcase",
+        short_label: "MermaidMega",
+        category: ScreenCategory::Visuals,
+        palette_tags: &["mermaid", "diagram", "interactive", "mega"],
+        blurb: "Comprehensive Mermaid diagram lab with all knobs.",
+        default_hotkey: None,
+        tour_step_hint: None,
     },
     ScreenMeta {
         id: ScreenId::VisualEffects,

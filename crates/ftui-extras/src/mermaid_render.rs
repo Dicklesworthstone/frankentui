@@ -3098,10 +3098,6 @@ fn draw_node_canvas(
             fill_polygon_colored(painter, &points, fill);
             draw_polygon_colored(painter, &points, border);
         }
-        _ => {
-            fill_rect_colored(painter, rect, fill);
-            draw_rect_border_colored(painter, rect, border);
-        }
     }
 }
 

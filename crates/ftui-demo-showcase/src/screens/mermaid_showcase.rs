@@ -1770,6 +1770,11 @@ impl MermaidShowcaseScreen {
         }
     }
 
+    /// Number of built-in samples (used by the E2E harness).
+    pub fn sample_count(&self) -> usize {
+        self.state.samples.len()
+    }
+
     fn build_config(&self) -> MermaidConfig {
         let mut config = MermaidConfig {
             glyph_mode: self.state.glyph_mode,
@@ -2023,9 +2028,8 @@ impl MermaidShowcaseScreen {
         }
 
         // Mode-independent keys
-        match event.code {
-            KeyCode::Char('?') => return Some(MermaidShowcaseAction::ToggleHelp),
-            _ => {}
+        if let KeyCode::Char('?') = event.code {
+            return Some(MermaidShowcaseAction::ToggleHelp);
         }
 
         // Mode-specific dispatch
