@@ -953,6 +953,7 @@ impl MermaidShowcaseState {
         if let Some(ref plan) = layout.degradation {
             snap.set_fallback(self.tier, plan);
         }
+        snap.error_count = Some(ir_parse.errors.len() as u32);
         self.metrics = snap;
         self.emit_metrics_jsonl(sample);
     }
@@ -1925,25 +1926,25 @@ impl MermaidShowcaseScreen {
             }
 
             // Error diagnostics section.
-            if let Some(ec) = metrics.error_count {
-                if ec > 0 {
+            if let Some(ec) = metrics.error_count
+                && ec > 0
+            {
+                lines.push(Line::from_spans(vec![
+                    Span::styled("Errors: ", muted),
+                    Span::styled(format!("{ec}"), Style::new().fg(theme::accent::ERROR)),
+                ]));
+                // Show first error message if available.
+                let errors = &self.cache.borrow().errors;
+                if let Some(first) = errors.first() {
+                    let msg = if first.message.len() > 40 {
+                        format!("{}...", &first.message[..37])
+                    } else {
+                        first.message.clone()
+                    };
                     lines.push(Line::from_spans(vec![
-                        Span::styled("Errors: ", muted),
-                        Span::styled(format!("{ec}"), Style::new().fg(theme::accent::ERROR)),
+                        Span::styled("  ", muted),
+                        Span::styled(msg, Style::new().fg(theme::accent::ERROR)),
                     ]));
-                    // Show first error message if available.
-                    let errors = &self.cache.borrow().errors;
-                    if let Some(first) = errors.first() {
-                        let msg = if first.message.len() > 40 {
-                            format!("{}...", &first.message[..37])
-                        } else {
-                            first.message.clone()
-                        };
-                        lines.push(Line::from_spans(vec![
-                            Span::styled("  ", muted),
-                            Span::styled(msg, Style::new().fg(theme::accent::ERROR)),
-                        ]));
-                    }
                 }
             }
         } else {

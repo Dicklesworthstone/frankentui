@@ -2610,6 +2610,7 @@ fn render_diagram_canvas_with_plan(
         &layout.edges,
         ir,
         &resolved_styles.edge_styles,
+        canvas_mode,
         &vp,
     );
     render_canvas_nodes(&mut painter, &layout.nodes, ir, &vp);
@@ -2635,6 +2636,7 @@ fn render_canvas_edges(
     edges: &[LayoutEdgePath],
     ir: &MermaidDiagramIr,
     edge_styles: &[ResolvedMermaidStyle],
+    canvas_mode: CanvasMode,
     vp: &CanvasViewport,
 ) {
     for edge_path in edges {
@@ -2672,6 +2674,11 @@ fn render_canvas_edges(
             }
             last = Some((x, y));
         }
+
+        // TODO(bd-ukp1f.5): arrowhead rendering not yet implemented.
+        // if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx) {
+        //     render_canvas_arrowheads(painter, edge_path, &ir_edge.arrow, canvas_mode, vp);
+        // }
     }
 }
 

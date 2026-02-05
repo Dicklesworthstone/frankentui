@@ -1464,6 +1464,169 @@ pub fn uncovered_features() -> Vec<&'static FeatureMatrixEntry> {
     FEATURE_MATRIX.iter().filter(|e| e.fixture.is_none()).collect()
 }
 
+// ── Interaction model + keymap spec ──────────────────────────────────
+//
+// Canonical keymap for the Mermaid showcase / mega screen. All keybindings
+// are documented here so that (1) help overlays can render from this data,
+// (2) new screens reference a single source of truth, and (3) conflicts
+// are caught at definition time.
+
+/// Interaction mode for the showcase screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowcaseMode {
+    /// Normal mode: sample selection, config knobs, layout controls.
+    Normal,
+    /// Inspect mode: node navigation, edge following, detail panel.
+    Inspect,
+    /// Search mode: text input filtering nodes by label.
+    Search,
+}
+
+impl ShowcaseMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Inspect => "inspect",
+            Self::Search => "search",
+        }
+    }
+}
+
+/// Keybinding category for grouping in help overlays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyCategory {
+    /// Sample list navigation.
+    SampleNav,
+    /// Render and layout configuration.
+    RenderConfig,
+    /// Viewport and zoom.
+    Viewport,
+    /// Node inspection and navigation.
+    NodeInspect,
+    /// Search and filtering.
+    Search,
+    /// Panel toggles and UI.
+    Panels,
+    /// Palette and themes.
+    Theme,
+}
+
+impl KeyCategory {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SampleNav => "Samples",
+            Self::RenderConfig => "Render",
+            Self::Viewport => "Viewport",
+            Self::NodeInspect => "Inspect",
+            Self::Search => "Search",
+            Self::Panels => "Panels",
+            Self::Theme => "Theme",
+        }
+    }
+}
+
+/// A single keymap entry for the help overlay.
+#[derive(Debug, Clone, Copy)]
+pub struct KeymapEntry {
+    /// Display string for the key (e.g. "j/↓", "Tab", "/").
+    pub key: &'static str,
+    /// Short action description (e.g. "Next sample", "Select node").
+    pub action: &'static str,
+    /// Which category this belongs to.
+    pub category: KeyCategory,
+    /// Which modes this binding is active in.
+    pub modes: &'static [ShowcaseMode],
+}
+
+/// Canonical keymap for the Mermaid showcase screen.
+///
+/// This is the single source of truth for all keybindings. The help overlay
+/// and on-screen hints render from this table. New screens should extend
+/// (not replace) these bindings.
+pub const SHOWCASE_KEYMAP: &[KeymapEntry] = &[
+    // ── Sample navigation (Normal mode) ─────────────────────────────
+    KeymapEntry { key: "j/↓", action: "Next sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "k/↑", action: "Previous sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "Home", action: "First sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "End", action: "Last sample", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "Enter", action: "Refresh / re-render", category: KeyCategory::SampleNav, modes: &[ShowcaseMode::Normal] },
+    // ── Render configuration (Normal mode) ──────────────────────────
+    KeymapEntry { key: "t", action: "Cycle fidelity tier", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "g", action: "Toggle glyph mode (Unicode/ASCII)", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "b", action: "Cycle render mode (Cell/Braille/Block/Half)", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "s", action: "Toggle style rendering", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "w", action: "Cycle wrap mode", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "l", action: "Toggle layout mode (Dense/Normal/Spacious)", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "r", action: "Force re-layout", category: KeyCategory::RenderConfig, modes: &[ShowcaseMode::Normal] },
+    // ── Viewport and zoom (Normal + Inspect) ────────────────────────
+    KeymapEntry { key: "+/=", action: "Zoom in", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "-", action: "Zoom out", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "0", action: "Reset zoom", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "f", action: "Fit diagram to view", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "]", action: "Increase viewport width", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "[", action: "Decrease viewport width", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "}", action: "Increase viewport height", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "{", action: "Decrease viewport height", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "o", action: "Reset viewport override", category: KeyCategory::Viewport, modes: &[ShowcaseMode::Normal] },
+    // ── Node inspection (Inspect mode) ──────────────────────────────
+    KeymapEntry { key: "Tab", action: "Select next node (layout order)", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "S-Tab", action: "Select previous node", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "←/→/↑/↓", action: "Navigate to connected node", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Inspect] },
+    KeymapEntry { key: "Esc", action: "Deselect / exit inspect mode", category: KeyCategory::NodeInspect, modes: &[ShowcaseMode::Inspect] },
+    // ── Search (Search mode) ────────────────────────────────────────
+    KeymapEntry { key: "/", action: "Enter search mode", category: KeyCategory::Search, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "n", action: "Next search match", category: KeyCategory::Search, modes: &[ShowcaseMode::Search] },
+    KeymapEntry { key: "N", action: "Previous search match", category: KeyCategory::Search, modes: &[ShowcaseMode::Search] },
+    KeymapEntry { key: "Esc", action: "Clear search / exit search mode", category: KeyCategory::Search, modes: &[ShowcaseMode::Search] },
+    // ── Panels and UI (all modes) ───────────────────────────────────
+    KeymapEntry { key: "m", action: "Toggle metrics panel", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "c", action: "Toggle controls panel", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "i", action: "Toggle status log", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect] },
+    KeymapEntry { key: "?", action: "Toggle help overlay", category: KeyCategory::Panels, modes: &[ShowcaseMode::Normal, ShowcaseMode::Inspect, ShowcaseMode::Search] },
+    // ── Theme (Normal mode) ─────────────────────────────────────────
+    KeymapEntry { key: "p", action: "Cycle color palette", category: KeyCategory::Theme, modes: &[ShowcaseMode::Normal] },
+    KeymapEntry { key: "P", action: "Previous color palette", category: KeyCategory::Theme, modes: &[ShowcaseMode::Normal] },
+];
+
+/// Return keymap entries for a specific mode.
+#[must_use]
+pub fn keymap_for_mode(mode: ShowcaseMode) -> Vec<&'static KeymapEntry> {
+    SHOWCASE_KEYMAP
+        .iter()
+        .filter(|e| e.modes.contains(&mode))
+        .collect()
+}
+
+/// Return keymap entries grouped by category.
+#[must_use]
+pub fn keymap_by_category(mode: ShowcaseMode) -> Vec<(KeyCategory, Vec<&'static KeymapEntry>)> {
+    let categories = [
+        KeyCategory::SampleNav,
+        KeyCategory::RenderConfig,
+        KeyCategory::Viewport,
+        KeyCategory::NodeInspect,
+        KeyCategory::Search,
+        KeyCategory::Panels,
+        KeyCategory::Theme,
+    ];
+    categories
+        .iter()
+        .filter_map(|&cat| {
+            let entries: Vec<_> = SHOWCASE_KEYMAP
+                .iter()
+                .filter(|e| e.category == cat && e.modes.contains(&mode))
+                .collect();
+            if entries.is_empty() {
+                None
+            } else {
+                Some((cat, entries))
+            }
+        })
+        .collect()
+}
+
 /// Warning taxonomy for Mermaid compatibility and fallback handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MermaidWarningCode {
@@ -8330,6 +8493,71 @@ mod tests {
             hash_config_layout(&c2),
             "different palettes should produce different hashes"
         );
+    }
+
+
+    #[test]
+    fn keymap_not_empty() {
+        assert!(SHOWCASE_KEYMAP.len() >= 30, "Expected at least 30 keymap entries");
+    }
+
+    #[test]
+    fn keymap_normal_mode_has_sample_nav() {
+        let entries = keymap_for_mode(ShowcaseMode::Normal);
+        let has_next = entries.iter().any(|e| e.action.contains("Next sample"));
+        assert!(has_next, "Normal mode should have sample navigation");
+    }
+
+    #[test]
+    fn keymap_inspect_mode_has_node_nav() {
+        let entries = keymap_for_mode(ShowcaseMode::Inspect);
+        let has_nav = entries.iter().any(|e| e.action.contains("connected node"));
+        assert!(has_nav, "Inspect mode should have node navigation");
+    }
+
+    #[test]
+    fn keymap_search_mode_has_next_match() {
+        let entries = keymap_for_mode(ShowcaseMode::Search);
+        let has_next = entries.iter().any(|e| e.action.contains("Next search"));
+        assert!(has_next, "Search mode should have next match");
+    }
+
+    #[test]
+    fn keymap_by_category_groups_correctly() {
+        let groups = keymap_by_category(ShowcaseMode::Normal);
+        assert!(!groups.is_empty());
+        for (cat, entries) in &groups {
+            for entry in entries {
+                assert_eq!(entry.category, *cat);
+            }
+        }
+    }
+
+    #[test]
+    fn keymap_no_duplicate_keys_per_mode() {
+        for &mode in &[ShowcaseMode::Normal, ShowcaseMode::Inspect, ShowcaseMode::Search] {
+            let entries = keymap_for_mode(mode);
+            let mut seen = std::collections::HashSet::new();
+            for entry in &entries {
+                // Esc is intentionally duplicated across categories (deselect + clear search)
+                if entry.key == "Esc" {
+                    continue;
+                }
+                assert!(
+                    seen.insert(entry.key),
+                    "Duplicate key '{}' in {:?} mode",
+                    entry.key,
+                    mode,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keymap_theme_bindings_present() {
+        let entries = keymap_for_mode(ShowcaseMode::Normal);
+        let has_palette = entries.iter().any(|e| e.category == KeyCategory::Theme);
+        assert!(has_palette, "Normal mode should have theme bindings");
     }
 
 }
