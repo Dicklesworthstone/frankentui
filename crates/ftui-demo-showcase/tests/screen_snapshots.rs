@@ -31,10 +31,9 @@ use serde_json::Value;
 // Helpers
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-fn with_terminal_env<F: FnOnce()>(f: F) {
-    f();
-}
+// Environment overrides are avoided here because std::env::set_var/remove_var
+// are unsafe in Rust 2024. Tests that require stable terminal metadata should
+// use explicit overrides (e.g., `terminal_caps_env()`).
 
 fn press(code: KeyCode) -> Event {
     Event::Key(KeyEvent {
@@ -113,6 +112,7 @@ fn i18n_stress_screen(
 
 #[test]
 fn guided_tour_overlay_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let mut app = AppModel::new();
     app.start_tour(0, 1.0);
     snapshot_app(&mut app, 80, 24, "guided_tour_overlay_80x24");
@@ -120,6 +120,7 @@ fn guided_tour_overlay_80x24() {
 
 #[test]
 fn guided_tour_overlay_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let mut app = AppModel::new();
     app.start_tour(1, 1.0);
     snapshot_app(&mut app, 120, 40, "guided_tour_overlay_120x40");
@@ -1065,9 +1066,18 @@ fn app_debug_overlay_120x40() {
 #[test]
 fn app_all_screens_80x24() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+
     for &id in ftui_demo_showcase::screens::screen_ids() {
         let mut app = AppModel::new();
         app.current_screen = id;
+        if id == ScreenId::TerminalCapabilities {
+            app.screens
+                .terminal_capabilities
+                .set_detected_profile_override(TerminalProfile::Modern);
+            app.screens
+                .terminal_capabilities
+                .set_env_override(terminal_caps_env());
+        }
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(80, 24, &mut pool);
         app.view(&mut frame);

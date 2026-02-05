@@ -47,6 +47,11 @@ use ftui_render::grapheme_pool::GraphemePool;
 // Test Utilities
 // =============================================================================
 
+#[allow(dead_code)]
+fn is_coverage_run() -> bool {
+    std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+}
+
 fn log_jsonl(test: &str, check: &str, passed: bool, notes: &str) {
     eprintln!(
         "{{\"test\":\"{test}\",\"check\":\"{check}\",\"passed\":{passed},\"notes\":\"{notes}\"}}"
@@ -732,10 +737,15 @@ fn perf_render_under_all_profiles() {
             "p95_ns": p95_ns,
         }));
 
+        let budget_ns = if is_coverage_run() {
+            12_000_000
+        } else {
+            5_000_000
+        };
         assert!(
-            avg_ns < 5_000_000,
-            "{profile:?} render exceeded 5ms budget: avg={}ns",
-            avg_ns
+            avg_ns < budget_ns,
+            "{profile:?} render exceeded {budget_ns}ns budget: avg={}ns",
+            avg_ns,
         );
     }
 

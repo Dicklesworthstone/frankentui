@@ -874,3 +874,109 @@ mod resize_handling {
         log_jsonl("resize", "query_responses", true, "");
     }
 }
+
+// =============================================================================
+// Scenario 5: Mouse Navigation via PTY
+// =============================================================================
+
+#[cfg(unix)]
+mod mouse_navigation {
+    use super::*;
+    use ftui_pty::{PtyConfig, spawn_command};
+    use portable_pty::CommandBuilder;
+
+    fn sgr_mouse_sequence(button: u16, x: u16, y: u16, press: bool) -> Vec<u8> {
+        let x = x.saturating_add(1);
+        let y = y.saturating_add(1);
+        let suffix = if press { 'M' } else { 'm' };
+        format!("\x1b[<{};{};{}{}", button, x, y, suffix).into_bytes()
+    }
+
+    fn find_mouse_event<'a>(output: &'a str, action: &str) -> Option<&'a str> {
+        let needle = format!("\"action\":\"{action}\"");
+        output.lines().find(|line| {
+            line.contains("\"event\":\"mouse_event\"") && line.contains(needle.as_str())
+        })
+    }
+
+    #[test]
+    fn e2e_mouse_tab_switches_screen() -> Result<(), String> {
+        let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
+            format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
+        })?;
+
+        let config = PtyConfig::default()
+            .with_size(120, 40)
+            .with_test_name("mouse_tab_switch")
+            .with_env("E2E_JSONL", "1")
+            .with_env("FTUI_DEMO_EXIT_AFTER_MS", "1800")
+            .logging(false);
+
+        let mut cmd = CommandBuilder::new(demo_bin);
+        cmd.arg("--screen=2");
+
+        let mut session =
+            spawn_command(config, cmd).map_err(|err| format!("spawn demo in PTY: {err}"))?;
+        std::thread::sleep(Duration::from_millis(250));
+        let _ = session.read_output_result();
+
+        let down = sgr_mouse_sequence(0, 1, 0, true);
+        session
+            .send_input(&down)
+            .map_err(|err| format!("send mouse down: {err}"))?;
+        std::thread::sleep(Duration::from_millis(60));
+        let _ = session.read_output_result();
+
+        let up = sgr_mouse_sequence(0, 1, 0, false);
+        session
+            .send_input(&up)
+            .map_err(|err| format!("send mouse up: {err}"))?;
+        std::thread::sleep(Duration::from_millis(120));
+        let _ = session.read_output_result();
+
+        let quit = key_to_sequence(KeyEvent::new(Key::Char('q'), Modifiers::NONE));
+        let _ = session.send_input(&quit);
+
+        let result = session.wait_and_drain(Duration::from_secs(6));
+        let output = session.output().to_vec();
+        match result {
+            Ok(status) if status.success() => {
+                let text = String::from_utf8_lossy(&output);
+                let Some(line) = find_mouse_event(&text, "switch_screen") else {
+                    let tail = text
+                        .chars()
+                        .rev()
+                        .take(2048)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>();
+                    return Err(format!(
+                        "mouse_event switch_screen not found in PTY output\nTAIL:\n{tail}"
+                    ));
+                };
+                let has_target = line.contains("\"target_screen\":\"Guided Tour\"");
+                log_jsonl(
+                    "mouse_tab",
+                    "switch_screen",
+                    has_target,
+                    "target=Guided Tour",
+                );
+                if !has_target {
+                    return Err(format!("mouse_event did not target Guided Tour: {line}"));
+                }
+                Ok(())
+            }
+            Ok(status) => {
+                let tail = String::from_utf8_lossy(&output);
+                Err(format!(
+                    "PTY exit status failure: {status:?}\nTAIL:\n{tail}"
+                ))
+            }
+            Err(err) => {
+                let tail = String::from_utf8_lossy(&output);
+                Err(format!("PTY wait_and_drain error: {err}\nTAIL:\n{tail}"))
+            }
+        }
+    }
+}

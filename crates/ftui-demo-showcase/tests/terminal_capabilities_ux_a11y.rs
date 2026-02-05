@@ -63,14 +63,32 @@ fn render_lines(screen: &TerminalCapabilitiesScreen, width: u16, height: u16) ->
     let mut lines = Vec::with_capacity(height as usize);
     for y in 0..height {
         let mut line = String::new();
+        let mut skip_continuations = 0usize;
         for x in 0..width {
-            if let Some(cell) = frame.buffer.get(x, y)
-                && let Some(ch) = cell.content.as_char()
-            {
-                line.push(ch);
-            } else {
-                line.push(' ');
+            if skip_continuations > 0 {
+                skip_continuations = skip_continuations.saturating_sub(1);
+                continue;
             }
+            if let Some(cell) = frame.buffer.get(x, y) {
+                if let Some(ch) = cell.content.as_char() {
+                    line.push(ch);
+                    continue;
+                }
+                if let Some(id) = cell.content.grapheme_id()
+                    && let Some(grapheme) = frame.pool.get(id)
+                {
+                    line.push_str(grapheme);
+                    let width = id.width();
+                    if width > 1 {
+                        skip_continuations = width.saturating_sub(1);
+                    }
+                    continue;
+                }
+                if cell.content.is_continuation() {
+                    continue;
+                }
+            }
+            line.push(' ');
         }
         lines.push(line);
     }

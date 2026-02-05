@@ -49,6 +49,19 @@ fn press(code: KeyCode) -> Event {
     })
 }
 
+fn is_coverage_run() -> bool {
+    if let Ok(value) = std::env::var("FTUI_COVERAGE") {
+        let value = value.to_ascii_lowercase();
+        if matches!(value.as_str(), "1" | "true" | "yes") {
+            return true;
+        }
+        if matches!(value.as_str(), "0" | "false" | "no") {
+            return false;
+        }
+    }
+    std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+}
+
 // =============================================================================
 // Stress Tests: Many Tasks
 // =============================================================================
@@ -156,20 +169,27 @@ fn stress_view_render_with_many_tasks() {
     render_times.sort();
     let p95_ns = render_times[render_times.len() * 95 / 100];
 
+    let budget_avg_ns = if is_coverage_run() {
+        5_000_000
+    } else {
+        2_000_000
+    };
+
     log_jsonl(&serde_json::json!({
         "test": "stress_view_render_with_many_tasks",
         "render_count": 50,
         "avg_ns": avg_ns,
         "max_ns": max_ns,
         "p95_ns": p95_ns,
+        "budget_avg_ns": budget_avg_ns,
     }));
 
-    // Budget: render should complete in < 2ms
-    // (CI environments may be slower than dev machines)
+    // Budget: render should complete in < 2ms (coverage runs are slower)
     assert!(
-        avg_ns < 2_000_000,
-        "Render latency exceeded budget: avg={}ns",
-        avg_ns
+        avg_ns < budget_avg_ns,
+        "Render latency exceeded budget: avg={}ns (budget={}ns)",
+        avg_ns,
+        budget_avg_ns
     );
 }
 
@@ -410,6 +430,12 @@ fn regression_gate_render_latency() {
     let p95 = render_times[render_times.len() * 95 / 100];
     let p99 = render_times[render_times.len() * 99 / 100];
 
+    let budget_p99_ns = if is_coverage_run() {
+        7_000_000
+    } else {
+        3_000_000
+    };
+
     log_jsonl(&serde_json::json!({
         "test": "regression_gate_render_latency",
         "schema_version": 1,
@@ -417,12 +443,16 @@ fn regression_gate_render_latency() {
         "p50_ns": p50,
         "p95_ns": p95,
         "p99_ns": p99,
-        "budget_p99_ns": 3_000_000,
+        "budget_p99_ns": budget_p99_ns,
     }));
 
-    // Regression gate: p99 must be < 3ms
-    // (Budget increased from 2ms to account for debug build overhead and CI variability)
-    assert!(p99 < 3_000_000, "Render latency regression: p99={}ns", p99);
+    // Regression gate: p99 must be < 3ms (coverage runs are slower)
+    assert!(
+        p99 < budget_p99_ns,
+        "Render latency regression: p99={}ns (budget={}ns)",
+        p99,
+        budget_p99_ns
+    );
 }
 
 // =============================================================================
