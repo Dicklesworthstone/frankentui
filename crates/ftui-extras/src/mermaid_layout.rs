@@ -12,9 +12,10 @@
 //! All output is deterministic: identical IR input produces identical layout.
 //! Coordinates are in abstract "world units", not terminal cells.
 
+use crate::diagram::visual_width;
 use crate::mermaid::{
-    GraphDirection, IrEndpoint, IrNodeId, MermaidConfig, MermaidDegradationPlan, MermaidDiagramIr,
-    MermaidFidelity, append_jsonl_line,
+    DiagramType, GraphDirection, IrEndpoint, IrNodeId, MermaidConfig, MermaidDegradationPlan,
+    MermaidDiagramIr, MermaidFidelity, append_jsonl_line,
 };
 
 // ── Layout output types ──────────────────────────────────────────────
@@ -99,6 +100,10 @@ pub struct LayoutStats {
     pub crossings: usize,
     pub ranks: usize,
     pub max_rank_width: usize,
+    /// Total number of bends across all edge paths.
+    pub total_bends: usize,
+    /// Average position variance within ranks (lower = more regular).
+    pub position_variance: f64,
 }
 
 /// Complete diagram layout result.
@@ -199,6 +204,65 @@ fn endpoint_node_idx(ir: &MermaidDiagramIr, ep: &IrEndpoint) -> Option<usize> {
     }
 }
 
+// ── Content-aware node sizing ────────────────────────────────────────
+
+/// Compute per-node (width, height) based on label text.
+///
+/// Nodes with labels wider than the default `node_width` get expanded
+/// to fit, with `label_padding` on each side. Nodes without labels
+/// keep the default size.
+fn compute_node_sizes(ir: &MermaidDiagramIr, spacing: &LayoutSpacing) -> Vec<(f64, f64)> {
+    ir.nodes
+        .iter()
+        .map(|node| {
+            let label_width = node
+                .label
+                .and_then(|lid| ir.labels.get(lid.0))
+                .map(|label| visual_width(&label.text) as f64)
+                .unwrap_or(0.0);
+
+            // For class diagram nodes with members, expand width for member text
+            // and add height for each member line plus separator.
+            let member_max_width = node
+                .members
+                .iter()
+                .map(|m| visual_width(m) as f64)
+                .fold(0.0_f64, f64::max);
+
+            let width = spacing
+                .node_width
+                .max(label_width + 2.0 * spacing.label_padding)
+                .max(member_max_width + 2.0 * spacing.label_padding);
+
+            // Each member adds 1 line; separator adds 1 line.
+            let member_height = if node.members.is_empty() {
+                0.0
+            } else {
+                1.0 + node.members.len() as f64
+            };
+            let height = spacing.node_height + member_height;
+            (width, height)
+        })
+        .collect()
+}
+
+// ── Cluster membership map ──────────────────────────────────────────
+
+/// Build a mapping from node index to optional cluster index.
+///
+/// Used during crossing minimization to keep cluster members contiguous.
+fn build_cluster_map(ir: &MermaidDiagramIr, n: usize) -> Vec<Option<usize>> {
+    let mut map = vec![None; n];
+    for (ci, cluster) in ir.clusters.iter().enumerate() {
+        for member in &cluster.members {
+            if member.0 < n {
+                map[member.0] = Some(ci);
+            }
+        }
+    }
+    map
+}
+
 // ── Phase 1: Rank assignment ─────────────────────────────────────────
 
 /// Assign ranks via longest-path layering (deterministic).
@@ -293,12 +357,21 @@ fn barycenter(_node: usize, prev_order: &[usize], neighbors: &[usize]) -> f64 {
 }
 
 /// One pass of barycenter ordering: reorder rank `r` based on rank `r-1`.
-fn barycenter_sweep_forward(rank_order: &mut [Vec<usize>], graph: &LayoutGraph, r: usize) {
+///
+/// When `cluster_map` is provided, cluster members are kept contiguous:
+/// nodes are sorted by `(cluster_barycenter, barycenter, node_id)`.
+fn barycenter_sweep_forward(
+    rank_order: &mut [Vec<usize>],
+    graph: &LayoutGraph,
+    r: usize,
+    cluster_map: &[Option<usize>],
+) {
     if r == 0 || r >= rank_order.len() {
         return;
     }
     let prev = rank_order[r - 1].clone();
-    let mut scored: Vec<(usize, f64)> = rank_order[r]
+
+    let scored: Vec<(usize, f64)> = rank_order[r]
         .iter()
         .map(|&v| {
             let bc = barycenter(v, &prev, &graph.rev[v]);
@@ -306,23 +379,32 @@ fn barycenter_sweep_forward(rank_order: &mut [Vec<usize>], graph: &LayoutGraph, 
         })
         .collect();
 
-    // Stable sort: ties broken by node ID.
-    scored.sort_by(|a, b| {
-        a.1.partial_cmp(&b.1)
+    let cluster_bary = cluster_barycenters(&scored, cluster_map);
+
+    let mut sorted = scored;
+    sorted.sort_by(|a, b| {
+        cluster_sort_key(a.0, a.1, cluster_map, &cluster_bary)
+            .partial_cmp(&cluster_sort_key(b.0, b.1, cluster_map, &cluster_bary))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| graph.node_ids[a.0].cmp(&graph.node_ids[b.0]))
     });
 
-    rank_order[r] = scored.into_iter().map(|(v, _)| v).collect();
+    rank_order[r] = sorted.into_iter().map(|(v, _)| v).collect();
 }
 
 /// One pass of barycenter ordering: reorder rank `r` based on rank `r+1`.
-fn barycenter_sweep_backward(rank_order: &mut [Vec<usize>], graph: &LayoutGraph, r: usize) {
+fn barycenter_sweep_backward(
+    rank_order: &mut [Vec<usize>],
+    graph: &LayoutGraph,
+    r: usize,
+    cluster_map: &[Option<usize>],
+) {
     if r + 1 >= rank_order.len() {
         return;
     }
     let next = rank_order[r + 1].clone();
-    let mut scored: Vec<(usize, f64)> = rank_order[r]
+
+    let scored: Vec<(usize, f64)> = rank_order[r]
         .iter()
         .map(|&v| {
             let bc = barycenter(v, &next, &graph.adj[v]);
@@ -330,13 +412,64 @@ fn barycenter_sweep_backward(rank_order: &mut [Vec<usize>], graph: &LayoutGraph,
         })
         .collect();
 
-    scored.sort_by(|a, b| {
-        a.1.partial_cmp(&b.1)
+    let cluster_bary = cluster_barycenters(&scored, cluster_map);
+
+    let mut sorted = scored;
+    sorted.sort_by(|a, b| {
+        cluster_sort_key(a.0, a.1, cluster_map, &cluster_bary)
+            .partial_cmp(&cluster_sort_key(b.0, b.1, cluster_map, &cluster_bary))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| graph.node_ids[a.0].cmp(&graph.node_ids[b.0]))
     });
 
-    rank_order[r] = scored.into_iter().map(|(v, _)| v).collect();
+    rank_order[r] = sorted.into_iter().map(|(v, _)| v).collect();
+}
+
+/// Compute barycenter for each cluster from its members' barycenters.
+fn cluster_barycenters(
+    scored: &[(usize, f64)],
+    cluster_map: &[Option<usize>],
+) -> std::collections::HashMap<usize, f64> {
+    let mut sums: std::collections::HashMap<usize, (f64, usize)> = std::collections::HashMap::new();
+    for &(v, bc) in scored {
+        if let Some(Some(ci)) = cluster_map.get(v) {
+            let entry = sums.entry(*ci).or_insert((0.0, 0));
+            if bc < f64::MAX {
+                entry.0 += bc;
+                entry.1 += 1;
+            }
+        }
+    }
+    sums.into_iter()
+        .map(|(ci, (sum, count))| {
+            if count > 0 {
+                (ci, sum / count as f64)
+            } else {
+                (ci, f64::MAX)
+            }
+        })
+        .collect()
+}
+
+/// Composite sort key: (cluster_barycenter, cluster_tag, node_barycenter).
+///
+/// Nodes in the same cluster share the cluster barycenter and cluster index,
+/// keeping them contiguous. Non-cluster nodes use `usize::MAX` as their
+/// cluster tag so they never interleave with cluster members at the same
+/// primary barycenter.
+fn cluster_sort_key(
+    node: usize,
+    bc: f64,
+    cluster_map: &[Option<usize>],
+    cluster_bary: &std::collections::HashMap<usize, f64>,
+) -> (f64, usize, f64) {
+    match cluster_map.get(node).copied().flatten() {
+        Some(ci) => {
+            let cb = cluster_bary.get(&ci).copied().unwrap_or(f64::MAX);
+            (cb, ci, bc)
+        }
+        None => (bc, usize::MAX, bc),
+    }
 }
 
 /// Count edge crossings between two adjacent ranks.
@@ -389,6 +522,7 @@ fn minimize_crossings(
     rank_order: &mut Vec<Vec<usize>>,
     graph: &LayoutGraph,
     max_iterations: usize,
+    cluster_map: &[Option<usize>],
 ) -> (usize, usize) {
     if rank_order.len() <= 1 {
         return (0, 0);
@@ -403,12 +537,12 @@ fn minimize_crossings(
 
         // Forward sweep.
         for r in 1..rank_order.len() {
-            barycenter_sweep_forward(rank_order, graph, r);
+            barycenter_sweep_forward(rank_order, graph, r, cluster_map);
         }
 
         // Backward sweep.
         for r in (0..rank_order.len().saturating_sub(1)).rev() {
-            barycenter_sweep_backward(rank_order, graph, r);
+            barycenter_sweep_backward(rank_order, graph, r, cluster_map);
         }
 
         let crossings = total_crossings(rank_order, graph);
@@ -438,77 +572,90 @@ fn assign_coordinates(
     direction: GraphDirection,
     spacing: &LayoutSpacing,
     n: usize,
+    node_sizes: &[(f64, f64)],
 ) -> Vec<LayoutRect> {
-    let mut rects = vec![
-        LayoutRect {
-            x: 0.0,
-            y: 0.0,
-            width: spacing.node_width,
-            height: spacing.node_height,
-        };
-        n
-    ];
+    let mut rects: Vec<LayoutRect> = (0..n)
+        .map(|i| {
+            let (w, h) = if i < node_sizes.len() {
+                node_sizes[i]
+            } else {
+                (spacing.node_width, spacing.node_height)
+            };
+            LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: w,
+                height: h,
+            }
+        })
+        .collect();
 
     let num_ranks = rank_order.len();
 
-    let (rank_step, order_step) = match direction {
-        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => (
-            spacing.node_height + spacing.rank_gap,
-            spacing.node_width + spacing.node_gap,
-        ),
-        GraphDirection::LR | GraphDirection::RL => (
-            spacing.node_width + spacing.rank_gap,
-            spacing.node_height + spacing.node_gap,
-        ),
+    // Rank step uses the maximum node dimension in the rank direction.
+    let max_rank_dim = match direction {
+        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => node_sizes
+            .iter()
+            .map(|s| s.1)
+            .fold(spacing.node_height, f64::max),
+        GraphDirection::LR | GraphDirection::RL => node_sizes
+            .iter()
+            .map(|s| s.0)
+            .fold(spacing.node_width, f64::max),
     };
+    let rank_step = max_rank_dim + spacing.rank_gap;
 
+    // Place nodes within each rank using accumulated widths.
     for (r, rank_nodes) in rank_order.iter().enumerate() {
-        for (order_idx, &node) in rank_nodes.iter().enumerate() {
-            let rank_coord = r as f64 * rank_step;
-            let order_coord = order_idx as f64 * order_step;
+        let mut order_offset = 0.0;
+        for &node in rank_nodes {
+            if node >= n {
+                continue;
+            }
 
+            let rank_coord = r as f64 * rank_step;
             let (x, y) = match direction {
-                GraphDirection::TB | GraphDirection::TD => (order_coord, rank_coord),
+                GraphDirection::TB | GraphDirection::TD => (order_offset, rank_coord),
                 GraphDirection::BT => {
                     let reversed_rank = num_ranks.saturating_sub(1).saturating_sub(r);
-                    let rank_y = reversed_rank as f64 * rank_step;
-                    (order_coord, rank_y)
+                    (order_offset, reversed_rank as f64 * rank_step)
                 }
-                GraphDirection::LR => (rank_coord, order_coord),
+                GraphDirection::LR => (rank_coord, order_offset),
                 GraphDirection::RL => {
                     let reversed_rank = num_ranks.saturating_sub(1).saturating_sub(r);
-                    let rank_x = reversed_rank as f64 * rank_step;
-                    (rank_x, order_coord)
+                    (reversed_rank as f64 * rank_step, order_offset)
                 }
             };
 
-            if node < n {
-                rects[node] = LayoutRect {
-                    x,
-                    y,
-                    width: spacing.node_width,
-                    height: spacing.node_height,
-                };
-            }
+            rects[node].x = x;
+            rects[node].y = y;
+
+            // Advance by this node's span + gap.
+            let node_span = match direction {
+                GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => rects[node].width,
+                GraphDirection::LR | GraphDirection::RL => rects[node].height,
+            };
+            order_offset += node_span + spacing.node_gap;
         }
     }
 
-    // Center each rank: shift nodes so the rank is centered relative to
-    // the widest rank.
-    let order_span = match direction {
-        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => spacing.node_width,
-        GraphDirection::LR | GraphDirection::RL => spacing.node_height,
-    };
-
+    // Center each rank relative to the widest rank.
     let rank_widths: Vec<f64> = rank_order
         .iter()
         .map(|nodes| {
             if nodes.is_empty() {
-                0.0
-            } else {
-                let count = nodes.len() as f64;
-                count * order_span + (count - 1.0) * spacing.node_gap
+                return 0.0;
             }
+            let total_span: f64 = nodes
+                .iter()
+                .filter(|&&v| v < n)
+                .map(|&v| match direction {
+                    GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => rects[v].width,
+                    GraphDirection::LR | GraphDirection::RL => rects[v].height,
+                })
+                .sum();
+            let gaps = (nodes.len().saturating_sub(1)) as f64 * spacing.node_gap;
+            total_span + gaps
         })
         .collect();
 
@@ -593,12 +740,16 @@ fn compute_cluster_bounds(
 
 /// Route edges as simple polylines between node centers.
 ///
-/// For edges spanning multiple ranks, adds a midpoint bend to avoid
-/// overlapping with other nodes. For adjacent-rank edges, draws direct lines.
+/// For edges spanning multiple ranks, inserts intermediate waypoints at each
+/// rank boundary with L-shaped bends when the source and target are offset.
+/// For adjacent-rank edges, draws direct lines.
 fn route_edges(
     ir: &MermaidDiagramIr,
     node_rects: &[LayoutRect],
+    ranks: &[usize],
+    rank_order: &[Vec<usize>],
     direction: GraphDirection,
+    spacing: &LayoutSpacing,
 ) -> Vec<LayoutEdgePath> {
     ir.edges
         .iter()
@@ -612,13 +763,23 @@ fn route_edges(
                     let from_center = node_rects[u].center();
                     let to_center = node_rects[v].center();
 
-                    // Compute connection points on node boundaries.
                     let from_port =
                         edge_port(&node_rects[u], from_center, to_center, direction, true);
                     let to_port =
                         edge_port(&node_rects[v], to_center, from_center, direction, false);
 
-                    vec![from_port, to_port]
+                    let from_rank = if u < ranks.len() { ranks[u] } else { 0 };
+                    let to_rank = if v < ranks.len() { ranks[v] } else { 0 };
+                    let rank_span = from_rank.abs_diff(to_rank);
+
+                    if rank_span <= 1 {
+                        vec![from_port, to_port]
+                    } else {
+                        multi_rank_waypoints(
+                            from_port, to_port, from_rank, to_rank, node_rects, rank_order,
+                            direction, spacing,
+                        )
+                    }
                 }
                 _ => vec![],
             };
@@ -629,6 +790,79 @@ fn route_edges(
             }
         })
         .collect()
+}
+
+/// Generate waypoints for an edge spanning multiple ranks.
+///
+/// Inserts intermediate points at each rank boundary, interpolating the
+/// cross-axis position linearly. This produces L-shaped bends when the
+/// source and target are horizontally (or vertically) offset.
+#[allow(clippy::too_many_arguments)]
+fn multi_rank_waypoints(
+    from_port: LayoutPoint,
+    to_port: LayoutPoint,
+    from_rank: usize,
+    to_rank: usize,
+    node_rects: &[LayoutRect],
+    rank_order: &[Vec<usize>],
+    direction: GraphDirection,
+    _spacing: &LayoutSpacing,
+) -> Vec<LayoutPoint> {
+    let mut waypoints = vec![from_port];
+
+    let (lo_rank, hi_rank) = if from_rank < to_rank {
+        (from_rank, to_rank)
+    } else {
+        (to_rank, from_rank)
+    };
+
+    let total_steps = (hi_rank - lo_rank) as f64;
+
+    for mid_rank in (lo_rank + 1)..hi_rank {
+        let t = (mid_rank - lo_rank) as f64 / total_steps;
+
+        // Interpolate both axes; which is "cross" vs "rank" depends on direction.
+        let interp_x = from_port.x + t * (to_port.x - from_port.x);
+        let interp_y = from_port.y + t * (to_port.y - from_port.y);
+
+        // For TB/TD/BT: rank axis = Y, cross axis = X.
+        // For LR/RL:    rank axis = X, cross axis = Y.
+        let (rank_fallback, cross_val) = match direction {
+            GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => (interp_y, interp_x),
+            GraphDirection::LR | GraphDirection::RL => (interp_x, interp_y),
+        };
+
+        // Find the rank-axis coordinate from existing nodes at this rank.
+        let rank_coord = rank_order
+            .get(mid_rank)
+            .and_then(|nodes| {
+                nodes.first().and_then(|&n| {
+                    node_rects.get(n).map(|r| match direction {
+                        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => {
+                            r.center().y
+                        }
+                        GraphDirection::LR | GraphDirection::RL => r.center().x,
+                    })
+                })
+            })
+            .unwrap_or(rank_fallback);
+
+        let point = match direction {
+            GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => LayoutPoint {
+                x: cross_val,
+                y: rank_coord,
+            },
+            GraphDirection::LR | GraphDirection::RL => LayoutPoint {
+                x: rank_coord,
+                y: cross_val,
+            },
+        };
+
+        waypoints.push(point);
+    }
+
+    waypoints.push(to_port);
+    waypoints
 }
 
 /// Compute the port point on a node boundary for an edge connection.
@@ -698,6 +932,124 @@ fn edge_port(
 
 // ── Public API ────────────────────────────────────────────────────────
 
+fn layout_sequence_diagram(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    spacing: &LayoutSpacing,
+) -> DiagramLayout {
+    let n = ir.nodes.len();
+    if n == 0 {
+        return DiagramLayout {
+            nodes: vec![],
+            clusters: vec![],
+            edges: vec![],
+            bounding_box: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            stats: LayoutStats {
+                iterations_used: 0,
+                max_iterations: config.layout_iteration_budget,
+                budget_exceeded: false,
+                crossings: 0,
+                ranks: 0,
+                max_rank_width: 0,
+                total_bends: 0,
+                position_variance: 0.0,
+            },
+            degradation: None,
+        };
+    }
+
+    let node_sizes = compute_node_sizes(ir, spacing);
+    let mut nodes = Vec::with_capacity(n);
+    let mut cursor_x = 0.0;
+    for (i, (width, height)) in node_sizes.iter().copied().enumerate() {
+        let rect = LayoutRect {
+            x: cursor_x,
+            y: 0.0,
+            width,
+            height,
+        };
+        let label_rect = ir.nodes[i].label.map(|_| LayoutRect {
+            x: rect.x + spacing.label_padding,
+            y: rect.y + spacing.label_padding,
+            width: rect.width - 2.0 * spacing.label_padding,
+            height: rect.height - 2.0 * spacing.label_padding,
+        });
+        nodes.push(LayoutNodeBox {
+            node_idx: i,
+            rect,
+            label_rect,
+            rank: 0,
+            order: i,
+        });
+        cursor_x += width + spacing.node_gap;
+    }
+
+    let message_gap = spacing.rank_gap.max(2.0);
+    let actor_height = nodes.iter().map(|n| n.rect.height).fold(0.0f64, f64::max);
+    let start_y = actor_height + spacing.rank_gap;
+    let mut edges = Vec::with_capacity(ir.edges.len());
+    for (idx, edge) in ir.edges.iter().enumerate() {
+        let Some(from_idx) = endpoint_node_idx(ir, &edge.from) else {
+            continue;
+        };
+        let Some(to_idx) = endpoint_node_idx(ir, &edge.to) else {
+            continue;
+        };
+        if from_idx >= n || to_idx >= n {
+            continue;
+        }
+        let from_rect = &nodes[from_idx].rect;
+        let to_rect = &nodes[to_idx].rect;
+        let y = start_y + idx as f64 * message_gap;
+        let x0 = from_rect.x + from_rect.width / 2.0;
+        let x1 = to_rect.x + to_rect.width / 2.0;
+        edges.push(LayoutEdgePath {
+            edge_idx: idx,
+            waypoints: vec![LayoutPoint { x: x0, y }, LayoutPoint { x: x1, y }],
+        });
+    }
+
+    let mut bounding_box = compute_bounding_box(&nodes, &[], &edges);
+    let lifeline_end = if edges.is_empty() {
+        start_y
+    } else {
+        start_y + (edges.len().saturating_sub(1) as f64) * message_gap + spacing.rank_gap
+    };
+    let bottom = bounding_box.y + bounding_box.height;
+    if lifeline_end > bottom {
+        bounding_box.height = lifeline_end - bounding_box.y;
+    }
+
+    let pos_var = compute_position_variance(&nodes);
+    let layout = DiagramLayout {
+        nodes,
+        clusters: vec![],
+        edges,
+        bounding_box,
+        stats: LayoutStats {
+            iterations_used: 0,
+            max_iterations: config.layout_iteration_budget,
+            budget_exceeded: false,
+            crossings: 0,
+            ranks: 1,
+            max_rank_width: n,
+            total_bends: 0,
+            position_variance: pos_var,
+        },
+        degradation: None,
+    };
+
+    let obj = evaluate_layout(&layout);
+    emit_layout_metrics_jsonl(config, &layout, &obj);
+
+    layout
+}
+
 /// Compute a deterministic layout for a Mermaid diagram IR.
 ///
 /// Returns a `DiagramLayout` with positioned nodes, clusters, and edges.
@@ -715,6 +1067,10 @@ pub fn layout_diagram_with_spacing(
     config: &MermaidConfig,
     spacing: &LayoutSpacing,
 ) -> DiagramLayout {
+    if ir.diagram_type == DiagramType::Sequence {
+        return layout_sequence_diagram(ir, config, spacing);
+    }
+
     let n = ir.nodes.len();
 
     // Empty diagram shortcut.
@@ -736,6 +1092,8 @@ pub fn layout_diagram_with_spacing(
                 crossings: 0,
                 ranks: 0,
                 max_rank_width: 0,
+                total_bends: 0,
+                position_variance: 0.0,
             },
             degradation: None,
         };
@@ -756,11 +1114,15 @@ pub fn layout_diagram_with_spacing(
     }
 
     let max_iterations = config.layout_iteration_budget;
-    let (iterations_used, crossings) = minimize_crossings(&mut rank_order, &graph, max_iterations);
+    let cluster_map = build_cluster_map(ir, n);
+    let (iterations_used, crossings) =
+        minimize_crossings(&mut rank_order, &graph, max_iterations, &cluster_map);
     let budget_exceeded = iterations_used >= max_iterations;
 
-    // Phase 3: Coordinate assignment.
-    let mut node_rects = assign_coordinates(&rank_order, &ranks, ir.direction, spacing, n);
+    // Phase 3: Coordinate assignment (content-aware sizing).
+    let node_sizes = compute_node_sizes(ir, spacing);
+    let mut node_rects =
+        assign_coordinates(&rank_order, &ranks, ir.direction, spacing, n, &node_sizes);
 
     // Phase 3b: Constraint-based compaction (3 passes max).
     compact_positions(
@@ -772,14 +1134,21 @@ pub fn layout_diagram_with_spacing(
         3,
     );
 
+    // Precompute per-node order within its rank to avoid repeated scans.
+    let mut order_map = vec![0usize; n];
+    for bucket in &rank_order {
+        for (order, &node_idx) in bucket.iter().enumerate() {
+            if node_idx < n {
+                order_map[node_idx] = order;
+            }
+        }
+    }
+
     // Build LayoutNodeBox list.
     let nodes: Vec<LayoutNodeBox> = (0..n)
         .map(|i| {
             let rank = ranks[i];
-            let order = rank_order
-                .get(rank)
-                .and_then(|bucket| bucket.iter().position(|&v| v == i))
-                .unwrap_or(0);
+            let order = order_map[i];
 
             let label_rect = ir.nodes[i].label.map(|_| {
                 let r = &node_rects[i];
@@ -805,10 +1174,10 @@ pub fn layout_diagram_with_spacing(
     let clusters = compute_cluster_bounds(ir, &node_rects, spacing);
 
     // Phase 5: Edge routing.
-    let edges = route_edges(ir, &node_rects, ir.direction);
+    let edges = route_edges(ir, &node_rects, &ranks, &rank_order, ir.direction, spacing);
 
-    // Compute bounding box.
-    let bounding_box = compute_bounding_box(&nodes, &clusters);
+    // Compute bounding box (includes edge waypoints).
+    let bounding_box = compute_bounding_box(&nodes, &clusters, &edges);
 
     // Degradation plan if budget was exceeded.
     let degradation = if budget_exceeded {
@@ -826,6 +1195,13 @@ pub fn layout_diagram_with_spacing(
 
     let max_rank_width = rank_order.iter().map(Vec::len).max().unwrap_or(0);
 
+    // Compute expanded stats.
+    let total_bends: usize = edges
+        .iter()
+        .map(|e| e.waypoints.len().saturating_sub(2))
+        .sum();
+    let pos_var = compute_position_variance(&nodes);
+
     let layout = DiagramLayout {
         nodes,
         clusters,
@@ -838,6 +1214,8 @@ pub fn layout_diagram_with_spacing(
             crossings,
             ranks: rank_order.len(),
             max_rank_width,
+            total_bends,
+            position_variance: pos_var,
         },
         degradation,
     };
@@ -849,7 +1227,11 @@ pub fn layout_diagram_with_spacing(
     layout
 }
 
-fn compute_bounding_box(nodes: &[LayoutNodeBox], clusters: &[LayoutClusterBox]) -> LayoutRect {
+fn compute_bounding_box(
+    nodes: &[LayoutNodeBox],
+    clusters: &[LayoutClusterBox],
+    edges: &[LayoutEdgePath],
+) -> LayoutRect {
     let mut rects: Vec<&LayoutRect> = nodes.iter().map(|n| &n.rect).collect();
     rects.extend(clusters.iter().map(|c| &c.rect));
 
@@ -865,6 +1247,26 @@ fn compute_bounding_box(nodes: &[LayoutNodeBox], clusters: &[LayoutClusterBox]) 
     let mut bounds = *rects[0];
     for &r in &rects[1..] {
         bounds = bounds.union(r);
+    }
+
+    // Expand to include edge waypoints.
+    for edge in edges {
+        for wp in &edge.waypoints {
+            if wp.x < bounds.x {
+                let delta = bounds.x - wp.x;
+                bounds.x = wp.x;
+                bounds.width += delta;
+            } else if wp.x > bounds.x + bounds.width {
+                bounds.width = wp.x - bounds.x;
+            }
+            if wp.y < bounds.y {
+                let delta = bounds.y - wp.y;
+                bounds.y = wp.y;
+                bounds.height += delta;
+            } else if wp.y > bounds.y + bounds.height {
+                bounds.height = wp.y - bounds.y;
+            }
+        }
     }
     bounds
 }
@@ -2040,8 +2442,15 @@ pub fn route_all_edges(
     let mut edge_groups: std::collections::BTreeMap<(usize, usize), Vec<usize>> =
         std::collections::BTreeMap::new();
     for (idx, edge) in ir.edges.iter().enumerate() {
-        let from = endpoint_node_idx(ir, &edge.from).unwrap_or(0);
-        let to = endpoint_node_idx(ir, &edge.to).unwrap_or(0);
+        let Some(from) = endpoint_node_idx(ir, &edge.from) else {
+            continue;
+        };
+        let Some(to) = endpoint_node_idx(ir, &edge.to) else {
+            continue;
+        };
+        if from >= layout.nodes.len() || to >= layout.nodes.len() {
+            continue;
+        }
         let key = if from <= to { (from, to) } else { (to, from) };
         edge_groups.entry(key).or_default().push(idx);
     }
@@ -2648,9 +3057,7 @@ fn edge_segment_rects(waypoints: &[LayoutPoint], thickness: f64) -> Vec<LayoutRe
 /// so that edges are routed around placed labels.
 #[must_use]
 pub fn label_reservation_rects(result: &LabelPlacementResult) -> Vec<LayoutRect> {
-    let mut rects = Vec::with_capacity(
-        result.node_labels.len() + result.edge_labels.len() + result.legend_labels.len(),
-    );
+    let mut rects = Vec::with_capacity(result.node_labels.len() + result.edge_labels.len());
     for label in &result.node_labels {
         rects.push(label.rect);
     }
@@ -2838,12 +3245,16 @@ pub fn compute_legend_layout(
 
 /// Truncate a legend entry to fit within max_chars, adding ellipsis if needed.
 fn truncate_legend_text(text: &str, max_chars: usize) -> (String, bool) {
-    if text.len() <= max_chars {
+    if max_chars == 0 {
+        return (String::new(), !text.is_empty());
+    }
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
         (text.to_string(), false)
     } else if max_chars <= 3 {
-        (text[..max_chars].to_string(), true)
+        (text.chars().take(max_chars).collect(), true)
     } else {
-        let mut truncated = text[..max_chars - 3].to_string();
+        let mut truncated: String = text.chars().take(max_chars - 3).collect();
         truncated.push_str("...");
         (truncated, true)
     }
@@ -2989,11 +3400,13 @@ mod tests {
             .map(|id| IrNode {
                 id: id.to_string(),
                 label: None,
+                shape: NodeShape::Rect,
                 classes: vec![],
                 style_ref: None,
                 span_primary: empty_span(),
                 span_all: vec![],
                 implicit: false,
+                members: vec![],
             })
             .collect();
 
@@ -3921,11 +4334,13 @@ mod tests {
                 IrNode {
                     id: id.to_string(),
                     label,
+                    shape: NodeShape::Rect,
                     classes: vec![],
                     style_ref: None,
                     span_primary: empty_span(),
                     span_all: vec![],
                     implicit: false,
+                    members: vec![],
                 }
             })
             .collect();
@@ -4963,6 +5378,315 @@ mod tests {
             assert_eq!(n1.order, n2.order, "star: node {} order", n1.node_idx);
         }
     }
+
+    // ── Content-aware node sizing tests ──────────────────────────────
+
+    fn make_labeled_ir_with_text(
+        nodes: &[(&str, &str)],
+        edges: &[(usize, usize)],
+        direction: GraphDirection,
+    ) -> MermaidDiagramIr {
+        let ir_labels: Vec<IrLabel> = nodes
+            .iter()
+            .map(|(_, label)| IrLabel {
+                text: label.to_string(),
+                span: empty_span(),
+            })
+            .collect();
+
+        let ir_nodes: Vec<IrNode> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| IrNode {
+                id: id.to_string(),
+                label: Some(IrLabelId(i)),
+                shape: NodeShape::Rect,
+                classes: vec![],
+                style_ref: None,
+                span_primary: empty_span(),
+                span_all: vec![],
+                implicit: false,
+                members: vec![],
+            })
+            .collect();
+
+        let ir_edges: Vec<IrEdge> = edges
+            .iter()
+            .map(|(from, to)| IrEdge {
+                from: IrEndpoint::Node(IrNodeId(*from)),
+                to: IrEndpoint::Node(IrNodeId(*to)),
+                arrow: "-->".to_string(),
+                label: None,
+                style_ref: None,
+                span: empty_span(),
+            })
+            .collect();
+
+        MermaidDiagramIr {
+            diagram_type: DiagramType::Graph,
+            direction,
+            nodes: ir_nodes,
+            edges: ir_edges,
+            ports: vec![],
+            clusters: vec![],
+            labels: ir_labels,
+            style_refs: vec![],
+            links: vec![],
+            meta: MermaidDiagramMeta {
+                diagram_type: DiagramType::Graph,
+                direction,
+                support_level: MermaidSupportLevel::Supported,
+                init: empty_init_parse(),
+                theme_overrides: MermaidThemeOverrides {
+                    theme: None,
+                    theme_variables: BTreeMap::new(),
+                },
+                guard: empty_guard_report(),
+            },
+        }
+    }
+
+    #[test]
+    fn content_aware_wider_label_wider_node() {
+        let ir = make_labeled_ir_with_text(
+            &[("A", "Hi"), ("B", "This is a very long label text")],
+            &[(0, 1)],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir, &default_config());
+        assert_eq!(layout.nodes.len(), 2);
+        assert!(
+            layout.nodes[1].rect.width > layout.nodes[0].rect.width,
+            "node B (long label) should be wider than node A (short label): B={}, A={}",
+            layout.nodes[1].rect.width,
+            layout.nodes[0].rect.width,
+        );
+    }
+
+    #[test]
+    fn content_aware_no_label_uses_default() {
+        let ir = make_simple_ir(&["A", "B"], &[(0, 1)], GraphDirection::TB);
+        let spacing = LayoutSpacing::default();
+        let layout = layout_diagram_with_spacing(&ir, &default_config(), &spacing);
+        // Without labels, all nodes get default width.
+        for node in &layout.nodes {
+            assert!(
+                (node.rect.width - spacing.node_width).abs() < 0.01,
+                "node without label should use default width"
+            );
+        }
+    }
+
+    // ── Cluster-aware crossing minimization tests ────────────────────
+
+    fn make_named_clustered_ir(
+        nodes: &[&str],
+        edges: &[(usize, usize)],
+        clusters: &[(&str, &[usize])],
+        direction: GraphDirection,
+    ) -> MermaidDiagramIr {
+        let ir_nodes: Vec<IrNode> = nodes
+            .iter()
+            .map(|id| IrNode {
+                id: id.to_string(),
+                label: None,
+                shape: NodeShape::Rect,
+                classes: vec![],
+                style_ref: None,
+                span_primary: empty_span(),
+                span_all: vec![],
+                implicit: false,
+                members: vec![],
+            })
+            .collect();
+
+        let ir_edges: Vec<IrEdge> = edges
+            .iter()
+            .map(|(from, to)| IrEdge {
+                from: IrEndpoint::Node(IrNodeId(*from)),
+                to: IrEndpoint::Node(IrNodeId(*to)),
+                arrow: "-->".to_string(),
+                label: None,
+                style_ref: None,
+                span: empty_span(),
+            })
+            .collect();
+
+        let ir_clusters: Vec<IrCluster> = clusters
+            .iter()
+            .enumerate()
+            .map(|(ci, (_, members))| IrCluster {
+                id: IrClusterId(ci),
+                title: None,
+                members: members.iter().map(|&m| IrNodeId(m)).collect(),
+                span: empty_span(),
+            })
+            .collect();
+
+        MermaidDiagramIr {
+            diagram_type: DiagramType::Graph,
+            direction,
+            nodes: ir_nodes,
+            edges: ir_edges,
+            ports: vec![],
+            clusters: ir_clusters,
+            labels: vec![],
+            style_refs: vec![],
+            links: vec![],
+            meta: MermaidDiagramMeta {
+                diagram_type: DiagramType::Graph,
+                direction,
+                support_level: MermaidSupportLevel::Supported,
+                init: empty_init_parse(),
+                theme_overrides: MermaidThemeOverrides {
+                    theme: None,
+                    theme_variables: BTreeMap::new(),
+                },
+                guard: empty_guard_report(),
+            },
+        }
+    }
+
+    #[test]
+    fn cluster_members_stay_contiguous() {
+        // Nodes B, C, D in a cluster at rank 1. They should remain adjacent.
+        // A -> B, A -> C, A -> D, A -> E, B -> F, C -> F, D -> F, E -> F
+        let ir = make_named_clustered_ir(
+            &["A", "B", "C", "D", "E", "F"],
+            &[
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (0, 4),
+                (1, 5),
+                (2, 5),
+                (3, 5),
+                (4, 5),
+            ],
+            &[("cluster1", &[1, 2, 3])],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir, &default_config());
+
+        // Find positions of cluster members (B=1, C=2, D=3) within rank 1.
+        let rank1_nodes: Vec<&LayoutNodeBox> =
+            layout.nodes.iter().filter(|n| n.rank == 1).collect();
+
+        let mut rank1_sorted = rank1_nodes.clone();
+        rank1_sorted.sort_by(|a, b| {
+            a.rect
+                .x
+                .partial_cmp(&b.rect.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Find indices of cluster members in sorted order.
+        let cluster_positions: Vec<usize> = rank1_sorted
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| [1, 2, 3].contains(&n.node_idx))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Cluster members should be contiguous (adjacent indices).
+        if cluster_positions.len() >= 2 {
+            for w in cluster_positions.windows(2) {
+                assert_eq!(
+                    w[1] - w[0],
+                    1,
+                    "cluster members should be contiguous, found positions {:?}",
+                    cluster_positions
+                );
+            }
+        }
+    }
+
+    // ── Multi-segment edge routing tests ─────────────────────────────
+
+    #[test]
+    fn multi_rank_edge_gets_intermediate_waypoints() {
+        // A -> B -> C -> D, plus A -> D (skips 3 ranks).
+        let ir = make_simple_ir(
+            &["A", "B", "C", "D"],
+            &[(0, 1), (1, 2), (2, 3), (0, 3)],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir, &default_config());
+
+        // Find the edge A -> D (index 3).
+        let long_edge = &layout.edges[3];
+        assert!(
+            long_edge.waypoints.len() > 2,
+            "multi-rank edge A->D should have intermediate waypoints, got {}",
+            long_edge.waypoints.len()
+        );
+
+        // Adjacent edges should have exactly 2 waypoints.
+        let short_edge = &layout.edges[0]; // A -> B
+        assert_eq!(
+            short_edge.waypoints.len(),
+            2,
+            "adjacent-rank edge should have exactly 2 waypoints"
+        );
+    }
+
+    #[test]
+    fn multi_rank_waypoints_increase_with_distance() {
+        // Chain: 0->1->2->3->4, plus long edge 0->4.
+        let ir = make_simple_ir(
+            &["A", "B", "C", "D", "E"],
+            &[(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir, &default_config());
+
+        let long_edge = &layout.edges[4]; // A -> E
+        // Should have 3 intermediate waypoints (at ranks 1, 2, 3) + 2 endpoints = 5.
+        assert!(
+            long_edge.waypoints.len() >= 4,
+            "4-rank edge should have >= 4 waypoints, got {}",
+            long_edge.waypoints.len()
+        );
+    }
+
+    // ── Expanded stats tests ─────────────────────────────────────────
+
+    #[test]
+    fn stats_total_bends_reflects_routing() {
+        // A -> B -> C -> D, plus A -> D (multi-rank edge with bends).
+        let ir = make_simple_ir(
+            &["A", "B", "C", "D"],
+            &[(0, 1), (1, 2), (2, 3), (0, 3)],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir, &default_config());
+
+        // total_bends should count bends from all edges.
+        let expected_bends: usize = layout
+            .edges
+            .iter()
+            .map(|e| e.waypoints.len().saturating_sub(2))
+            .sum();
+        assert_eq!(layout.stats.total_bends, expected_bends);
+    }
+
+    #[test]
+    fn stats_position_variance_is_finite() {
+        let ir = make_simple_ir(&["A", "B", "C"], &[(0, 1), (0, 2)], GraphDirection::TB);
+        let layout = layout_diagram(&ir, &default_config());
+        assert!(
+            layout.stats.position_variance.is_finite(),
+            "position_variance should be finite"
+        );
+    }
+
+    #[test]
+    fn empty_diagram_stats_have_zero_bends() {
+        let ir = make_simple_ir(&[], &[], GraphDirection::TB);
+        let layout = layout_diagram(&ir, &default_config());
+        assert_eq!(layout.stats.total_bends, 0);
+        assert!((layout.stats.position_variance - 0.0).abs() < f64::EPSILON);
+    }
 }
 
 // ── Label placement & collision avoidance tests ─────────────────────
@@ -5011,11 +5735,13 @@ mod label_tests {
                 IrNode {
                     id: id.to_string(),
                     label,
+                    shape: NodeShape::Rect,
                     classes: vec![],
                     style_ref: None,
                     span_primary: empty_span(),
                     span_all: vec![],
                     implicit: false,
+                    members: vec![],
                 }
             })
             .collect();
@@ -5640,6 +6366,13 @@ mod label_tests {
     }
 
     #[test]
+    fn truncate_legend_text_unicode_safe() {
+        let (text, truncated) = truncate_legend_text("猫の手も借りたい", 4);
+        assert_eq!(text.chars().count(), 4);
+        assert!(truncated);
+    }
+
+    #[test]
     fn build_link_footnotes_basic() {
         let links = vec![
             IrLink {
@@ -5663,20 +6396,24 @@ mod label_tests {
             IrNode {
                 id: "A".to_string(),
                 label: None,
+                shape: NodeShape::Rect,
                 classes: vec![],
                 style_ref: None,
                 span_primary: empty_span(),
                 span_all: vec![],
                 implicit: false,
+                members: vec![],
             },
             IrNode {
                 id: "B".to_string(),
                 label: None,
+                shape: NodeShape::Rect,
                 classes: vec![],
                 style_ref: None,
                 span_primary: empty_span(),
                 span_all: vec![],
                 implicit: false,
+                members: vec![],
             },
         ];
 
@@ -5710,20 +6447,24 @@ mod label_tests {
             IrNode {
                 id: "A".to_string(),
                 label: None,
+                shape: NodeShape::Rect,
                 classes: vec![],
                 style_ref: None,
                 span_primary: empty_span(),
                 span_all: vec![],
                 implicit: false,
+                members: vec![],
             },
             IrNode {
                 id: "B".to_string(),
                 label: None,
+                shape: NodeShape::Rect,
                 classes: vec![],
                 style_ref: None,
                 span_primary: empty_span(),
                 span_all: vec![],
                 implicit: false,
+                members: vec![],
             },
         ];
 

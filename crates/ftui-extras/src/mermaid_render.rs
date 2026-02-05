@@ -17,7 +17,8 @@ use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
 
 use crate::mermaid::{
-    MermaidConfig, MermaidDiagramIr, MermaidFidelity, MermaidGlyphMode, MermaidTier,
+    DiagramType, MermaidConfig, MermaidDiagramIr, MermaidError, MermaidErrorMode, MermaidFidelity,
+    MermaidGlyphMode, MermaidTier,
 };
 use crate::mermaid_layout::{
     DiagramLayout, LayoutClusterBox, LayoutEdgePath, LayoutNodeBox, LayoutRect,
@@ -341,6 +342,9 @@ impl MermaidRenderer {
 
         // Render order: clusters (background) → edges → nodes → labels.
         self.render_clusters(&layout.clusters, ir, &vp, buf);
+        if ir.diagram_type == DiagramType::Sequence {
+            self.render_sequence_lifelines(layout, &vp, buf);
+        }
         self.render_edges(&layout.edges, ir, &vp, buf);
         self.render_nodes(&layout.nodes, ir, &vp, buf);
     }
@@ -362,6 +366,9 @@ impl MermaidRenderer {
         // Render order: clusters (background) → edges → nodes.
         if plan.show_clusters {
             self.render_clusters(&layout.clusters, ir, &vp, buf);
+        }
+        if ir.diagram_type == DiagramType::Sequence {
+            self.render_sequence_lifelines(layout, &vp, buf);
         }
         self.render_edges_with_plan(&layout.edges, ir, &vp, plan, buf);
         self.render_nodes_with_plan(&layout.nodes, ir, &vp, plan, buf);
@@ -454,12 +461,23 @@ impl MermaidRenderer {
                 && let Some(label_id) = ir_node.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
-                let text = if plan.max_label_width > 0 {
-                    &truncate_label(&label.text, plan.max_label_width)
+                if !ir_node.members.is_empty() {
+                    // Class diagram node with compartments.
+                    self.render_class_compartments(
+                        cell_rect,
+                        &label.text,
+                        &ir_node.members,
+                        plan,
+                        buf,
+                    );
                 } else {
-                    &label.text
-                };
-                self.render_node_label(cell_rect, text, buf);
+                    let text = if plan.max_label_width > 0 {
+                        &truncate_label(&label.text, plan.max_label_width)
+                    } else {
+                        &label.text
+                    };
+                    self.render_node_label(cell_rect, text, buf);
+                }
             }
         }
     }
@@ -547,6 +565,24 @@ impl MermaidRenderer {
                 && let Some(label) = ir.labels.get(label_id.0)
             {
                 self.render_edge_label(edge_path, &label.text, vp, buf);
+            }
+        }
+    }
+
+    fn render_sequence_lifelines(&self, layout: &DiagramLayout, vp: &Viewport, buf: &mut Buffer) {
+        let line_cell = Cell::from_char(' ').with_fg(EDGE_FG);
+        let end_y = layout.bounding_box.y + layout.bounding_box.height;
+        for node in &layout.nodes {
+            let x = node.rect.x + node.rect.width / 2.0;
+            let y0 = node.rect.y + node.rect.height;
+            let (cx, cy0) = vp.to_cell(x, y0);
+            let (_, cy1) = vp.to_cell(x, end_y);
+            let (lo, hi) = if cy0 <= cy1 { (cy0, cy1) } else { (cy1, cy0) };
+            for (i, y) in (lo..=hi).enumerate() {
+                if i % 2 == 1 {
+                    continue;
+                }
+                self.merge_line_cell(cx, y, LINE_UP | LINE_DOWN, line_cell, buf);
             }
         }
     }
@@ -639,37 +675,33 @@ impl MermaidRenderer {
         if y0 == y1 {
             let lo = x0.min(x1);
             let hi = x0.max(x1);
-            let h_cell = cell.with_char(self.palette.border.horizontal);
             for (i, x) in (lo..=hi).enumerate() {
                 if i % 2 == 0 {
-                    buf.set(x, y0, h_cell);
+                    self.merge_line_cell(x, y0, LINE_LEFT | LINE_RIGHT, cell, buf);
                 }
             }
         } else if x0 == x1 {
             let lo = y0.min(y1);
             let hi = y0.max(y1);
-            let v_cell = cell.with_char(self.palette.border.vertical);
             for (i, y) in (lo..=hi).enumerate() {
                 if i % 2 == 0 {
-                    buf.set(x0, y, v_cell);
+                    self.merge_line_cell(x0, y, LINE_UP | LINE_DOWN, cell, buf);
                 }
             }
         } else {
             // Diagonal dashed — L-bend with every other cell blank.
-            let h_cell = cell.with_char(self.palette.border.horizontal);
-            let v_cell = cell.with_char(self.palette.border.vertical);
             let lo_x = x0.min(x1);
             let hi_x = x0.max(x1);
             for (i, x) in (lo_x..=hi_x).enumerate() {
                 if i % 2 == 0 {
-                    buf.set(x, y0, h_cell);
+                    self.merge_line_cell(x, y0, LINE_LEFT | LINE_RIGHT, cell, buf);
                 }
             }
             let lo_y = y0.min(y1);
             let hi_y = y0.max(y1);
             for (i, y) in (lo_y..=hi_y).enumerate() {
                 if i % 2 == 0 {
-                    buf.set(x1, y, v_cell);
+                    self.merge_line_cell(x1, y, LINE_UP | LINE_DOWN, cell, buf);
                 }
             }
         }
@@ -832,6 +864,94 @@ impl MermaidRenderer {
             buf.print_text_clipped(lx, ly, line, label_cell, max_x);
         }
     }
+
+    /// Render a class diagram node with compartments (name + members).
+    fn render_class_compartments(
+        &self,
+        cell_rect: Rect,
+        label_text: &str,
+        members: &[String],
+        plan: &RenderPlan,
+        buf: &mut Buffer,
+    ) {
+        let border_cell = Cell::from_char(' ').with_fg(NODE_FG);
+        let label_cell = Cell::from_char(' ').with_fg(LABEL_FG);
+        let member_cell = Cell::from_char(' ').with_fg(EDGE_FG);
+        let inner_w = cell_rect.width.saturating_sub(2) as usize;
+
+        if inner_w == 0 || cell_rect.height < 4 {
+            // Too small for compartments, fall back to normal label.
+            self.render_node_label(cell_rect, label_text, buf);
+            return;
+        }
+
+        let max_x = cell_rect
+            .x
+            .saturating_add(cell_rect.width)
+            .saturating_sub(1);
+
+        // Row 0 = top border (already drawn by draw_box)
+        // Row 1 = class name (centered)
+        let name_y = cell_rect.y.saturating_add(1);
+        let name_text = if plan.max_label_width > 0 {
+            truncate_label(label_text, plan.max_label_width)
+        } else {
+            label_text.to_string()
+        };
+        let name_pad = inner_w.saturating_sub(name_text.len()) / 2;
+        let name_x = cell_rect
+            .x
+            .saturating_add(1)
+            .saturating_add(name_pad as u16);
+        buf.print_text_clipped(name_x, name_y, &name_text, label_cell, max_x);
+
+        // Row 2 = separator line (├───┤)
+        let sep_y = cell_rect.y.saturating_add(2);
+        if sep_y
+            < cell_rect
+                .y
+                .saturating_add(cell_rect.height)
+                .saturating_sub(1)
+        {
+            let horiz = self.palette.border.horizontal;
+            buf.set(
+                cell_rect.x,
+                sep_y,
+                border_cell.with_char(self.palette.tee_right),
+            );
+            for col in 1..cell_rect.width.saturating_sub(1) {
+                buf.set(
+                    cell_rect.x.saturating_add(col),
+                    sep_y,
+                    border_cell.with_char(horiz),
+                );
+            }
+            buf.set(
+                cell_rect
+                    .x
+                    .saturating_add(cell_rect.width)
+                    .saturating_sub(1),
+                sep_y,
+                border_cell.with_char(self.palette.tee_left),
+            );
+        }
+
+        // Rows 3.. = member lines
+        let members_start_y = cell_rect.y.saturating_add(3);
+        let bottom_y = cell_rect
+            .y
+            .saturating_add(cell_rect.height)
+            .saturating_sub(1);
+        for (i, member) in members.iter().enumerate() {
+            let row_y = members_start_y.saturating_add(i as u16);
+            if row_y >= bottom_y {
+                break;
+            }
+            let member_text = truncate_label(member, inner_w);
+            let mx = cell_rect.x.saturating_add(1);
+            buf.print_text_clipped(mx, row_y, &member_text, member_cell, max_x);
+        }
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -949,6 +1069,351 @@ pub fn render_diagram_adaptive(
     plan
 }
 
+// ── Error Rendering ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct MermaidErrorRenderReport {
+    pub mode: MermaidErrorMode,
+    pub overlay: bool,
+    pub error_count: usize,
+    pub area: Rect,
+}
+
+/// Render a Mermaid error panel into the provided area.
+pub fn render_mermaid_error_panel(
+    errors: &[MermaidError],
+    source: &str,
+    config: &MermaidConfig,
+    area: Rect,
+    buf: &mut Buffer,
+) -> MermaidErrorRenderReport {
+    render_mermaid_error_internal(errors, source, config, area, buf, false)
+}
+
+/// Render a Mermaid error panel overlay (for partial render recovery).
+pub fn render_mermaid_error_overlay(
+    errors: &[MermaidError],
+    source: &str,
+    config: &MermaidConfig,
+    area: Rect,
+    buf: &mut Buffer,
+) -> MermaidErrorRenderReport {
+    render_mermaid_error_internal(errors, source, config, area, buf, true)
+}
+
+fn render_mermaid_error_internal(
+    errors: &[MermaidError],
+    source: &str,
+    config: &MermaidConfig,
+    area: Rect,
+    buf: &mut Buffer,
+    overlay: bool,
+) -> MermaidErrorRenderReport {
+    let mut report = MermaidErrorRenderReport {
+        mode: config.error_mode,
+        overlay,
+        error_count: errors.len(),
+        area,
+    };
+
+    if errors.is_empty() || area.is_empty() {
+        return report;
+    }
+
+    let mode = effective_error_mode(config.error_mode, area);
+    let target = if overlay {
+        compute_error_overlay_area(area, mode, errors.len())
+    } else {
+        area
+    };
+
+    if target.is_empty() {
+        return report;
+    }
+
+    match mode {
+        MermaidErrorMode::Panel => render_error_panel_section(target, errors, config, buf),
+        MermaidErrorMode::Raw => render_error_raw_section(target, errors, source, config, buf),
+        MermaidErrorMode::Both => {
+            let (top, bottom) = split_error_sections(target);
+            render_error_panel_section(top, errors, config, buf);
+            render_error_raw_section(bottom, errors, source, config, buf);
+        }
+    }
+
+    emit_error_render_jsonl(config, errors, mode, overlay, target);
+    report.mode = mode;
+    report.area = target;
+    report
+}
+
+const ERROR_PANEL_MIN_HEIGHT: u16 = 5;
+const ERROR_RAW_MIN_HEIGHT: u16 = 5;
+const ERROR_OVERLAY_MIN_WIDTH: u16 = 24;
+const ERROR_OVERLAY_MAX_WIDTH: u16 = 72;
+
+fn effective_error_mode(requested: MermaidErrorMode, area: Rect) -> MermaidErrorMode {
+    if area.height < ERROR_PANEL_MIN_HEIGHT {
+        return MermaidErrorMode::Panel;
+    }
+    match requested {
+        MermaidErrorMode::Panel => MermaidErrorMode::Panel,
+        MermaidErrorMode::Raw => {
+            if area.height >= ERROR_RAW_MIN_HEIGHT {
+                MermaidErrorMode::Raw
+            } else {
+                MermaidErrorMode::Panel
+            }
+        }
+        MermaidErrorMode::Both => {
+            if area.height >= ERROR_PANEL_MIN_HEIGHT + ERROR_RAW_MIN_HEIGHT {
+                MermaidErrorMode::Both
+            } else {
+                MermaidErrorMode::Panel
+            }
+        }
+    }
+}
+
+fn compute_error_overlay_area(area: Rect, mode: MermaidErrorMode, error_count: usize) -> Rect {
+    if area.is_empty() {
+        return area;
+    }
+
+    let width = if area.width < ERROR_OVERLAY_MIN_WIDTH {
+        area.width
+    } else {
+        area.width.min(ERROR_OVERLAY_MAX_WIDTH)
+    };
+
+    let base_height: u16 = match mode {
+        MermaidErrorMode::Panel => 6,
+        MermaidErrorMode::Raw => 6,
+        MermaidErrorMode::Both => 10,
+    };
+    let mut height = base_height.saturating_add(error_count as u16);
+    height = height.min(area.height).max(base_height.min(area.height));
+
+    Rect::new(area.x, area.y, width, height)
+}
+
+fn split_error_sections(area: Rect) -> (Rect, Rect) {
+    let min_section = ERROR_PANEL_MIN_HEIGHT;
+    let mut top_h = area.height / 2;
+    if top_h < min_section {
+        top_h = min_section.min(area.height);
+    }
+    let bottom_h = area.height.saturating_sub(top_h);
+    (
+        Rect::new(area.x, area.y, area.width, top_h),
+        Rect::new(area.x, area.y.saturating_add(top_h), area.width, bottom_h),
+    )
+}
+
+fn error_border_chars(config: &MermaidConfig) -> BorderChars {
+    match config.glyph_mode {
+        MermaidGlyphMode::Ascii => BorderChars::ASCII,
+        MermaidGlyphMode::Unicode => BorderChars::DOUBLE,
+    }
+}
+
+fn make_cell(fg: PackedRgba, bg: PackedRgba) -> Cell {
+    let mut cell = Cell::from_char(' ');
+    cell.fg = fg;
+    cell.bg = bg;
+    cell
+}
+
+fn inner_rect(area: Rect) -> Rect {
+    if area.width <= 2 || area.height <= 2 {
+        return Rect::default();
+    }
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+}
+
+fn render_error_panel_section(
+    area: Rect,
+    errors: &[MermaidError],
+    config: &MermaidConfig,
+    buf: &mut Buffer,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    let border = error_border_chars(config);
+    let border_cell = make_cell(PackedRgba::rgb(220, 80, 80), PackedRgba::rgb(32, 12, 12));
+    let fill_cell = make_cell(PackedRgba::rgb(240, 220, 220), PackedRgba::rgb(32, 12, 12));
+    let header_cell = make_cell(PackedRgba::rgb(255, 140, 140), PackedRgba::rgb(32, 12, 12));
+    let text_cell = make_cell(PackedRgba::rgb(240, 220, 220), PackedRgba::rgb(32, 12, 12));
+
+    buf.draw_box(area, border, border_cell, fill_cell);
+
+    let inner = inner_rect(area);
+    if inner.is_empty() {
+        return;
+    }
+
+    let mut y = inner.y;
+    let title = format!("Mermaid error ({})", errors.len());
+    buf.print_text_clipped(inner.x, y, &title, header_cell, inner.right());
+    y = y.saturating_add(1);
+
+    let max_width = inner.width as usize;
+    for error in errors {
+        if y >= inner.bottom() {
+            break;
+        }
+        let line = format!(
+            "L{}:{} {}",
+            error.span.start.line, error.span.start.col, error.message
+        );
+        y = write_wrapped_lines(buf, inner, y, &line, text_cell, max_width);
+        if y >= inner.bottom() {
+            break;
+        }
+        if let Some(expected) = &error.expected {
+            let expected_line = format!("expected: {}", expected.join(", "));
+            y = write_wrapped_lines(buf, inner, y, &expected_line, text_cell, max_width);
+        }
+    }
+}
+
+fn write_wrapped_lines(
+    buf: &mut Buffer,
+    inner: Rect,
+    mut y: u16,
+    text: &str,
+    cell: Cell,
+    max_width: usize,
+) -> u16 {
+    for line in wrap_text(text, max_width) {
+        if y >= inner.bottom() {
+            break;
+        }
+        buf.print_text_clipped(inner.x, y, &line, cell, inner.right());
+        y = y.saturating_add(1);
+    }
+    y
+}
+
+fn render_error_raw_section(
+    area: Rect,
+    errors: &[MermaidError],
+    source: &str,
+    config: &MermaidConfig,
+    buf: &mut Buffer,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    let border = error_border_chars(config);
+    let border_cell = make_cell(PackedRgba::rgb(160, 160, 160), PackedRgba::rgb(18, 18, 18));
+    let fill_cell = make_cell(PackedRgba::rgb(220, 220, 220), PackedRgba::rgb(18, 18, 18));
+    let header_cell = make_cell(PackedRgba::rgb(200, 200, 200), PackedRgba::rgb(18, 18, 18));
+    let line_cell = make_cell(PackedRgba::rgb(220, 220, 220), PackedRgba::rgb(18, 18, 18));
+    let line_no_cell = make_cell(PackedRgba::rgb(160, 160, 160), PackedRgba::rgb(18, 18, 18));
+    let error_cell = make_cell(PackedRgba::rgb(255, 220, 220), PackedRgba::rgb(64, 18, 18));
+
+    buf.draw_box(area, border, border_cell, fill_cell);
+
+    let inner = inner_rect(area);
+    if inner.is_empty() {
+        return;
+    }
+
+    let mut y = inner.y;
+    buf.print_text_clipped(inner.x, y, "Mermaid source", header_cell, inner.right());
+    y = y.saturating_add(1);
+
+    let max_lines = inner.bottom().saturating_sub(y) as usize;
+    if max_lines == 0 {
+        return;
+    }
+
+    let lines: Vec<&str> = source.lines().collect();
+    let total_lines = lines.len().max(1);
+    let mut error_lines: Vec<usize> = errors.iter().map(|e| e.span.start.line).collect();
+    error_lines.sort_unstable();
+    error_lines.dedup();
+
+    let focus_line = error_lines.first().copied().unwrap_or(1).min(total_lines);
+    let mut start_line = if focus_line > max_lines / 2 {
+        focus_line - max_lines / 2
+    } else {
+        1
+    };
+    if start_line + max_lines - 1 > total_lines {
+        start_line = total_lines.saturating_sub(max_lines).saturating_add(1);
+    }
+
+    let line_no_width = total_lines.to_string().len().max(2);
+
+    for i in 0..max_lines {
+        let line_no = start_line + i;
+        if line_no > total_lines {
+            break;
+        }
+
+        let prefix = format!("{:>width$} | ", line_no, width = line_no_width);
+        let line_text = lines.get(line_no.saturating_sub(1)).copied().unwrap_or("");
+        let is_error = error_lines.contains(&line_no);
+        let prefix_cell = if is_error { error_cell } else { line_no_cell };
+        let text_cell = if is_error { error_cell } else { line_cell };
+
+        let mut x = inner.x;
+        x = buf.print_text_clipped(x, y, &prefix, prefix_cell, inner.right());
+        buf.print_text_clipped(x, y, line_text, text_cell, inner.right());
+        y = y.saturating_add(1);
+    }
+}
+
+fn emit_error_render_jsonl(
+    config: &MermaidConfig,
+    errors: &[MermaidError],
+    mode: MermaidErrorMode,
+    overlay: bool,
+    area: Rect,
+) {
+    let Some(path) = config.log_path.as_deref() else {
+        return;
+    };
+    let error_entries: Vec<serde_json::Value> = errors
+        .iter()
+        .map(|err| {
+            serde_json::json!({
+                "code": err.code.as_str(),
+                "message": err.message.as_str(),
+                "line": err.span.start.line,
+                "col": err.span.start.col,
+            })
+        })
+        .collect();
+    let codes: Vec<&str> = errors.iter().map(|err| err.code.as_str()).collect();
+    let json = serde_json::json!({
+        "event": "mermaid_error_render",
+        "mode": mode.as_str(),
+        "overlay": overlay,
+        "error_count": errors.len(),
+        "codes": codes,
+        "errors": error_entries,
+        "area": {
+            "x": area.x,
+            "y": area.y,
+            "width": area.width,
+            "height": area.height,
+        },
+    });
+    let line = json.to_string();
+    let _ = crate::mermaid::append_jsonl_line(path, &line);
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -956,10 +1421,14 @@ mod tests {
     use super::*;
     use crate::mermaid::{
         DiagramType, GraphDirection, IrEdge, IrEndpoint, IrLabel, IrLabelId, IrNode,
-        MermaidDiagramMeta, MermaidGuardReport, MermaidInitConfig, MermaidInitParse,
-        MermaidSupportLevel, MermaidThemeOverrides, Position, Span,
+        MermaidCompatibilityMatrix, MermaidConfig, MermaidDiagramMeta, MermaidErrorMode,
+        MermaidFallbackPolicy, MermaidGuardReport, MermaidInitConfig, MermaidInitParse,
+        MermaidSupportLevel, MermaidThemeOverrides, NodeShape, Position, Span, normalize_ast_to_ir,
+        parse_with_diagnostics,
     };
-    use crate::mermaid_layout::{LayoutPoint, LayoutStats};
+    use crate::mermaid_layout::{LayoutPoint, LayoutStats, layout_diagram};
+    use std::fmt::Write as FmtWrite;
+    use std::path::Path;
 
     fn make_label(text: &str) -> IrLabel {
         IrLabel {
@@ -988,6 +1457,7 @@ mod tests {
             .map(|i| IrNode {
                 id: format!("n{i}"),
                 label: Some(IrLabelId(i)),
+                shape: NodeShape::Rect,
                 classes: vec![],
                 style_ref: None,
                 span_primary: Span {
@@ -1004,6 +1474,7 @@ mod tests {
                 },
                 span_all: vec![],
                 implicit: false,
+                members: vec![],
             })
             .collect();
 
@@ -1136,6 +1607,102 @@ mod tests {
                 position_variance: 0.0,
             },
             degradation: None,
+        }
+    }
+
+    fn buffer_to_text(buf: &Buffer) -> String {
+        let capacity = (buf.width() as usize + 1) * buf.height() as usize;
+        let mut out = String::with_capacity(capacity);
+
+        for y in 0..buf.height() {
+            if y > 0 {
+                out.push('\n');
+            }
+            for x in 0..buf.width() {
+                let cell = buf.get(x, y).expect("cell");
+                let ch = cell.content.as_char().unwrap_or(' ');
+                out.push(ch);
+            }
+        }
+
+        out
+    }
+
+    fn diff_text(expected: &str, actual: &str) -> String {
+        let expected_lines: Vec<&str> = expected.lines().collect();
+        let actual_lines: Vec<&str> = actual.lines().collect();
+
+        let max_lines = expected_lines.len().max(actual_lines.len());
+        let mut out = String::new();
+        let mut has_diff = false;
+
+        for i in 0..max_lines {
+            let exp = expected_lines.get(i).copied();
+            let act = actual_lines.get(i).copied();
+
+            match (exp, act) {
+                (Some(e), Some(a)) if e == a => {
+                    writeln!(out, " {e}").unwrap();
+                }
+                (Some(e), Some(a)) => {
+                    writeln!(out, "-{e}").unwrap();
+                    writeln!(out, "+{a}").unwrap();
+                    has_diff = true;
+                }
+                (Some(e), None) => {
+                    writeln!(out, "-{e}").unwrap();
+                    has_diff = true;
+                }
+                (None, Some(a)) => {
+                    writeln!(out, "+{a}").unwrap();
+                    has_diff = true;
+                }
+                (None, None) => {}
+            }
+        }
+
+        if has_diff { out } else { String::new() }
+    }
+
+    fn is_bless() -> bool {
+        std::env::var("BLESS").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    }
+
+    fn assert_buffer_snapshot_text(name: &str, buf: &Buffer) {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let path = base
+            .join("tests")
+            .join("snapshots")
+            .join(format!("{name}.txt.snap"));
+        let actual = buffer_to_text(buf);
+
+        if is_bless() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("failed to create snapshot directory");
+            }
+            std::fs::write(&path, &actual).expect("failed to write snapshot");
+            return;
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(expected) => {
+                if expected != actual {
+                    let diff = diff_text(&expected, &actual);
+                    std::panic::panic_any(format!(
+                        "=== Mermaid error snapshot mismatch: '{name}' ===\nFile: {}\nSet BLESS=1 to update.\n\nDiff (- expected, + actual):\n{diff}",
+                        path.display()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::panic::panic_any(format!(
+                    "=== No Mermaid error snapshot found: '{name}' ===\nExpected at: {}\nRun with BLESS=1 to create it.\n\nActual output:\n{actual}",
+                    path.display()
+                ));
+            }
+            Err(e) => {
+                std::panic::panic_any(format!("Failed to read snapshot '{}': {e}", path.display()));
+            }
         }
     }
 
@@ -1312,6 +1879,22 @@ mod tests {
     }
 
     #[test]
+    fn dashed_line_merges_at_intersection() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+        let mut buf = Buffer::new(12, 12);
+        let cell = Cell::from_char(' ').with_fg(EDGE_FG);
+
+        renderer.draw_dashed_segment(2, 6, 10, 6, cell, &mut buf);
+        renderer.draw_line_segment(6, 2, 6, 10, cell, &mut buf);
+
+        assert_eq!(
+            buf.get(6, 6).unwrap().content.as_char(),
+            Some('┼'),
+            "expected dashed line to merge at intersection"
+        );
+    }
+
+    #[test]
     fn diagonal_bend_uses_correct_corner_single_segment() {
         let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
         let mut buf = Buffer::new(12, 12);
@@ -1431,11 +2014,7 @@ mod tests {
 
         // Count cells that have horizontal line chars — should be roughly half.
         let line_count = (0..10u16)
-            .filter(|&x| {
-                buf.get(x, 1)
-                    .and_then(|c| c.content.as_char())
-                     == Some('─')
-            })
+            .filter(|&x| buf.get(x, 1).and_then(|c| c.content.as_char()) == Some('─'))
             .count();
         assert!(
             (4..=6).contains(&line_count),
@@ -1495,12 +2074,18 @@ mod tests {
             width: 80,
             height: 24,
         };
-        let config = MermaidConfig { tier_override: MermaidTier::Rich, ..Default::default() };
+        let config = MermaidConfig {
+            tier_override: MermaidTier::Rich,
+            ..Default::default()
+        };
         assert_eq!(
             select_fidelity(&config, &layout, area),
             MermaidFidelity::Rich
         );
-        let config = MermaidConfig { tier_override: MermaidTier::Compact, ..Default::default() };
+        let config = MermaidConfig {
+            tier_override: MermaidTier::Compact,
+            ..Default::default()
+        };
         assert_eq!(
             select_fidelity(&config, &layout, area),
             MermaidFidelity::Compact
@@ -1588,7 +2173,10 @@ mod tests {
             width: 80,
             height: 24,
         };
-        let config = MermaidConfig { tier_override: MermaidTier::Compact, ..Default::default() };
+        let config = MermaidConfig {
+            tier_override: MermaidTier::Compact,
+            ..Default::default()
+        };
         let plan = select_render_plan(&config, &layout, area);
         assert!(!plan.show_edge_labels, "compact should hide edge labels");
         assert!(plan.show_node_labels, "compact should keep node labels");
@@ -1606,7 +2194,10 @@ mod tests {
         };
         // Override to produce Outline via select_fidelity isn't easy,
         // so test the plan construction directly.
-        let config = MermaidConfig { tier_override: MermaidTier::Compact, ..Default::default() };
+        let config = MermaidConfig {
+            tier_override: MermaidTier::Compact,
+            ..Default::default()
+        };
         let plan = select_render_plan(&config, &layout, area);
         assert_eq!(plan.fidelity, MermaidFidelity::Compact);
     }
@@ -1622,7 +2213,10 @@ mod tests {
             width: 80,
             height: 24,
         };
-        let config = MermaidConfig { tier_override: MermaidTier::Normal, ..Default::default() };
+        let config = MermaidConfig {
+            tier_override: MermaidTier::Normal,
+            ..Default::default()
+        };
         let plan = select_render_plan(&config, &layout, area);
         let mut buf = Buffer::new(80, 24);
         renderer.render_with_plan(&layout, &ir, &plan, &mut buf);
@@ -1660,5 +2254,311 @@ mod tests {
         if legend.is_none() {
             assert_eq!(diagram.height, 6);
         }
+    }
+
+    // ──────────────────────────────────────────────────
+    // End-to-end integration tests: parse → IR → layout → render
+    // ──────────────────────────────────────────────────
+
+    /// Helper: run the full pipeline on source text and return (Buffer, RenderPlan).
+    fn e2e_render(source: &str, width: u16, height: u16) -> (Buffer, RenderPlan) {
+        let parsed = parse_with_diagnostics(source);
+        assert_ne!(
+            parsed.ast.diagram_type,
+            DiagramType::Unknown,
+            "parse should detect diagram type"
+        );
+        let config = MermaidConfig::default();
+        let matrix = MermaidCompatibilityMatrix::default();
+        let policy = MermaidFallbackPolicy::default();
+        let ir_parse = normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
+        assert!(
+            ir_parse.errors.is_empty(),
+            "IR normalization errors: {:?}",
+            ir_parse.errors
+        );
+        let layout = layout_diagram(&ir_parse.ir, &config);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let mut buf = Buffer::new(width, height);
+        let plan = render_diagram_adaptive(&layout, &ir_parse.ir, &config, area, &mut buf);
+        (buf, plan)
+    }
+
+    /// Count occurrences of a character in a buffer.
+    fn count_char_in_buf(buf: &Buffer, ch: char) -> usize {
+        (0..buf.height())
+            .flat_map(|y| (0..buf.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf.get(x, y).unwrap().content.as_char() == Some(ch))
+            .count()
+    }
+
+    /// Check that a buffer contains at least one non-space character.
+    fn buf_has_content(buf: &Buffer) -> bool {
+        (0..buf.height()).any(|y| {
+            (0..buf.width()).any(|x| {
+                let ch = buf.get(x, y).unwrap().content.as_char();
+                ch.is_some() && ch != Some(' ')
+            })
+        })
+    }
+
+    // -- graph_small at three sizes --
+
+    #[test]
+    fn e2e_graph_small_80x24() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_small.mmd");
+        let (buf, plan) = e2e_render(source, 80, 24);
+        assert!(buf_has_content(&buf), "buffer should have rendered content");
+        // graph_small has 3 nodes (Start, Decision, End).
+        // Each node box has a top-left corner.
+        let corners = count_char_in_buf(&buf, '\u{250c}'); // ┌
+        assert!(
+            corners >= 2,
+            "expected >=2 node corners at 80x24, got {corners}"
+        );
+        assert_eq!(plan.fidelity, MermaidFidelity::Normal);
+    }
+
+    #[test]
+    fn e2e_graph_small_120x40() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_small.mmd");
+        let (buf, plan) = e2e_render(source, 120, 40);
+        assert!(buf_has_content(&buf), "buffer should have rendered content");
+        let corners = count_char_in_buf(&buf, '\u{250c}');
+        assert!(
+            corners >= 2,
+            "expected >=2 node corners at 120x40, got {corners}"
+        );
+        // More space → should still be Normal or Rich.
+        assert!(
+            plan.fidelity == MermaidFidelity::Normal || plan.fidelity == MermaidFidelity::Rich,
+            "expected Normal or Rich fidelity at 120x40, got {:?}",
+            plan.fidelity
+        );
+    }
+
+    #[test]
+    fn e2e_graph_small_200x60() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_small.mmd");
+        let (buf, _plan) = e2e_render(source, 200, 60);
+        assert!(buf_has_content(&buf), "buffer should have rendered content");
+        let corners = count_char_in_buf(&buf, '\u{250c}');
+        assert!(
+            corners >= 2,
+            "expected >=2 node corners at 200x60, got {corners}"
+        );
+    }
+
+    // -- graph_medium with subgraph --
+
+    #[test]
+    fn e2e_graph_medium_80x24() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_medium.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert!(buf_has_content(&buf), "medium graph should render at 80x24");
+    }
+
+    #[test]
+    fn e2e_graph_medium_120x40() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_medium.mmd");
+        let (buf, _plan) = e2e_render(source, 120, 40);
+        assert!(
+            buf_has_content(&buf),
+            "medium graph should render at 120x40"
+        );
+    }
+
+    // -- graph_large at three sizes --
+
+    #[test]
+    fn e2e_graph_large_80x24() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_large.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert!(buf_has_content(&buf), "large graph should render at 80x24");
+    }
+
+    #[test]
+    fn e2e_graph_large_120x40() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_large.mmd");
+        let (buf, _plan) = e2e_render(source, 120, 40);
+        assert!(buf_has_content(&buf), "large graph should render at 120x40");
+    }
+
+    #[test]
+    fn e2e_graph_large_200x60() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_large.mmd");
+        let (buf, plan) = e2e_render(source, 200, 60);
+        assert!(buf_has_content(&buf), "large graph should render at 200x60");
+        // 12 nodes in 200x60 is spacious → Normal or Rich.
+        assert!(
+            plan.fidelity == MermaidFidelity::Normal || plan.fidelity == MermaidFidelity::Rich,
+            "expected Normal or Rich for large graph at 200x60, got {:?}",
+            plan.fidelity
+        );
+    }
+
+    // -- Pipeline validation tests --
+
+    #[test]
+    fn e2e_pipeline_produces_valid_ir_for_graph() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_small.mmd");
+        let parsed = parse_with_diagnostics(source);
+        assert_eq!(parsed.ast.diagram_type, DiagramType::Graph);
+        let config = MermaidConfig::default();
+        let matrix = MermaidCompatibilityMatrix::default();
+        let policy = MermaidFallbackPolicy::default();
+        let ir_parse = normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
+        assert!(ir_parse.errors.is_empty(), "no IR errors expected");
+        // graph_small has 3 nodes: A, B, C.
+        assert!(
+            ir_parse.ir.nodes.len() >= 3,
+            "expected >=3 IR nodes, got {}",
+            ir_parse.ir.nodes.len()
+        );
+        // graph_small has 3 edges: A→B, B→C, B→A.
+        assert!(
+            ir_parse.ir.edges.len() >= 3,
+            "expected >=3 IR edges, got {}",
+            ir_parse.ir.edges.len()
+        );
+    }
+
+    #[test]
+    fn e2e_sequence_basic_renders_messages() {
+        let source = "sequenceDiagram\nAlice->>Bob: Hello\nBob-->>Alice: Ok\n";
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert!(
+            buf_has_content(&buf),
+            "sequence diagram should render content"
+        );
+        let arrows = count_char_in_buf(&buf, '▶') + count_char_in_buf(&buf, '◀');
+        assert!(arrows > 0, "expected arrowheads in sequence render");
+        let verticals = count_char_in_buf(&buf, '│');
+        assert!(
+            verticals > 0,
+            "expected lifelines or borders in sequence render"
+        );
+    }
+
+    #[test]
+    fn e2e_layout_assigns_positions_for_graph() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_small.mmd");
+        let parsed = parse_with_diagnostics(source);
+        let config = MermaidConfig::default();
+        let matrix = MermaidCompatibilityMatrix::default();
+        let policy = MermaidFallbackPolicy::default();
+        let ir_parse = normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
+        let layout = layout_diagram(&ir_parse.ir, &config);
+        // Each node should have a position assigned.
+        assert!(
+            layout.nodes.len() >= 3,
+            "expected >=3 layout nodes, got {}",
+            layout.nodes.len()
+        );
+        // Bounding box should be non-zero.
+        assert!(
+            layout.bounding_box.width > 0.0 && layout.bounding_box.height > 0.0,
+            "layout bounding box should be non-zero: {:?}",
+            layout.bounding_box
+        );
+    }
+
+    #[test]
+    fn e2e_render_stays_within_buffer_bounds() {
+        // Verify no out-of-bounds writes happen (Buffer panics on OOB).
+        let source = include_str!("../tests/fixtures/mermaid/graph_large.mmd");
+        let (buf, _plan) = e2e_render(source, 40, 12);
+        // If we got here without panic, bounds are respected.
+        // Verify every cell is valid.
+        for y in 0..buf.height() {
+            for x in 0..buf.width() {
+                let _ = buf.get(x, y).expect("cell should be accessible");
+            }
+        }
+    }
+
+    #[test]
+    fn e2e_unicode_labels_render() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_unicode_labels.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert!(
+            buf_has_content(&buf),
+            "unicode label graph should render at 80x24"
+        );
+    }
+
+    #[test]
+    fn e2e_init_directive_graph_renders() {
+        let source = include_str!("../tests/fixtures/mermaid/graph_init_directive.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert!(
+            buf_has_content(&buf),
+            "graph with init directive should render at 80x24"
+        );
+    }
+
+    #[test]
+    fn snapshot_mermaid_error_panel_mode() {
+        let source = "graph TD\nclassDef\nA-->B\n";
+        let parsed = parse_with_diagnostics(source);
+        assert!(!parsed.errors.is_empty(), "expected parse errors");
+
+        let mut config = MermaidConfig::default();
+        config.error_mode = MermaidErrorMode::Panel;
+
+        let mut buf = Buffer::new(48, 12);
+        render_mermaid_error_panel(
+            &parsed.errors,
+            source,
+            &config,
+            Rect::from_size(48, 12),
+            &mut buf,
+        );
+        assert_buffer_snapshot_text("mermaid_error_panel", &buf);
+    }
+
+    #[test]
+    fn snapshot_mermaid_error_raw_mode() {
+        let source = "graph TD\nclassDef\nA-->B\n";
+        let parsed = parse_with_diagnostics(source);
+        assert!(!parsed.errors.is_empty(), "expected parse errors");
+
+        let mut config = MermaidConfig::default();
+        config.error_mode = MermaidErrorMode::Raw;
+
+        let mut buf = Buffer::new(48, 12);
+        render_mermaid_error_panel(
+            &parsed.errors,
+            source,
+            &config,
+            Rect::from_size(48, 12),
+            &mut buf,
+        );
+        assert_buffer_snapshot_text("mermaid_error_raw", &buf);
+    }
+
+    #[test]
+    fn snapshot_mermaid_error_both_mode() {
+        let source = "graph TD\nclassDef\nA-->B\n";
+        let parsed = parse_with_diagnostics(source);
+        assert!(!parsed.errors.is_empty(), "expected parse errors");
+
+        let mut config = MermaidConfig::default();
+        config.error_mode = MermaidErrorMode::Both;
+
+        let mut buf = Buffer::new(56, 16);
+        render_mermaid_error_panel(
+            &parsed.errors,
+            source,
+            &config,
+            Rect::from_size(56, 16),
+            &mut buf,
+        );
+        assert_buffer_snapshot_text("mermaid_error_both", &buf);
     }
 }

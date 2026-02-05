@@ -58,16 +58,33 @@ All env vars use the `FTUI_MERMAID_*` prefix:
 - `FTUI_MERMAID_CAPS_PROFILE` (string)
 - `FTUI_MERMAID_CAPABILITY_PROFILE` (string, alias)
 
+Note: `capability_profile` is parsed and stored for determinism, but currently
+serves as a reserved override (no behavioral change yet).
+
 ## Determinism
 
 - Environment overrides are parsed deterministically at runtime.
 - Invalid values are reported as structured `MermaidConfigError`s.
 - Rendering behavior must not depend on wall-clock time or non-deterministic IO.
 
-## Diagram IR + Normalization (Planned)
+## Engine Pipeline (Current)
 
-The AST is syntax-focused. The renderer/layout stack needs a semantic IR with
-stable, deterministic normalization so semantically equivalent inputs produce
+The Mermaid engine is split into deterministic phases:
+
+1. **Parse + diagnostics** (`parse_with_diagnostics`, `prepare_with_policy`).
+2. **Init directives** → `MermaidInitConfig`, `theme_overrides`, `init_config_hash`.
+3. **Compatibility + validation** → warnings/errors with spans.
+4. **Normalize** → `MermaidDiagramIr` (`normalize_ast_to_ir`) + guard/degradation plan.
+5. **Layout** → `DiagramLayout` (`layout_diagram` in `mermaid_layout`).
+6. **Render** → `Buffer` (`MermaidRenderer::render` in `mermaid_render`).
+
+When `log_path` is set, the engine appends JSONL evidence events
+(`mermaid_prepare`, `mermaid_guard`, `mermaid_links`).
+
+## Diagram IR + Normalization
+
+The AST is syntax-focused. The engine normalizes into a semantic IR with
+stable, deterministic ordering so semantically equivalent inputs produce
 identical IR.
 
 ### IR Core (Diagram-Agnostic)
@@ -95,6 +112,49 @@ as optional, diagram-specific payloads.
 7. Preserve class/style/link directives as raw references; resolve via `resolve_styles`
    with deterministic precedence and warnings (see below).
 8. Validate malformed ids/edges/ports and emit deterministic warnings with spans.
+
+## Layout + Routing (Implemented)
+
+Layout is deterministic and lives in `crates/ftui-extras/src/mermaid_layout.rs`.
+The engine uses a Sugiyama-style layered layout:
+
+- Rank assignment (longest-path from sources).
+- Ordering within ranks (barycenter crossing minimization).
+- Coordinate assignment (compact placement with spacing).
+- Cluster boundary computation.
+- Edge routing via waypoint paths.
+
+Output is in abstract world units (`DiagramLayout`) and includes `LayoutStats`
+such as crossings, rank count, total bends, and iteration/budget usage.
+
+## Renderer (Implemented)
+
+The terminal renderer in `crates/ftui-extras/src/mermaid_render.rs` maps the
+world-space layout into a `Buffer` and supports:
+
+- Unicode box-drawing glyphs with ASCII fallback (`MermaidGlyphMode`).
+- Render order: clusters → edges → nodes → labels.
+- Arrowheads, label truncation, and clipped text drawing.
+- Viewport fitting to the target `Rect` with a 1-cell margin.
+
+Current limitations:
+- Line styles are solid (dash/dot glyphs are reserved but not yet wired).
+- Diagonal segments are approximated with L-shaped bends.
+- Styling is minimal (palette-based colors; no per-edge style glyphs yet).
+
+## Scale Adaptation + Fidelity Tiers
+
+`MermaidTier` maps to `MermaidFidelity` (`rich`, `normal`, `compact`, `outline`).
+Guardrails (limits + budgets) may degrade fidelity deterministically:
+
+- **hide_labels** (nodes/edges/clusters).
+- **collapse_clusters** (remove cluster boxes).
+- **simplify_routing** (reduce route complexity).
+- **reduce_decoration** (drop class/style decoration).
+- **force_glyph_mode=ascii** in `outline`.
+
+The degradation plan is recorded in `MermaidGuardReport` and emitted to JSONL
+when `log_path` is configured.
 
 ## Validation Rules
 
@@ -149,21 +209,23 @@ Unsupported keys or invalid types are ignored with
 `mermaid/unsupported/directive` warnings. If `enable_init_directives=false`,
 init directives are ignored with the same warning.
 
-## Compatibility Matrix (Parser-Only)
+## Compatibility Matrix (Current)
 
-Current engine status is **parser‑only** for all diagram types. Rendering is
-expected to be **partial** until the TME renderer is complete.
+Parser + normalization are implemented for all listed types. Layout + rendering
+are currently graph-oriented (nodes/edges) and should be treated as **partial**
+outside flowchart/graph use cases.
 
 | Diagram Type | Support | Notes |
 | --- | --- | --- |
-| Graph / Flowchart | partial | Parsed into AST; renderer pending |
-| Sequence | partial | Parsed into AST; renderer pending |
-| State | partial | Parsed into AST; renderer pending |
-| Gantt | partial | Parsed into AST; renderer pending |
-| Class | partial | Parsed into AST; renderer pending |
-| ER | partial | Parsed into AST; renderer pending |
-| Mindmap | partial | Parsed into AST; renderer pending |
-| Pie | partial | Parsed into AST; renderer pending |
+| Graph / Flowchart | partial | Layout + renderer implemented (basic glyphs, labels, clusters). |
+| Sequence | partial | Parsed into AST; render path pending. |
+| State | partial | Parsed into AST; render path pending. |
+| Gantt | partial | Parsed into AST; render path pending. |
+| Class | partial | Parsed into AST; render path pending. |
+| ER | partial | Parsed into AST; render path pending. |
+| Mindmap | partial | Parsed into AST; render path pending. |
+| Pie | partial | Parsed into AST; render path pending. |
+| Unknown | Unsupported | Deterministic fallback (see below). |
 
 If a diagram type is **unsupported**, the fallback policy is to show an error
 panel (fatal compatibility report).
@@ -204,11 +266,11 @@ warnings instead of failing or producing unstable output.
 
 When encountering unsupported input, the engine degrades in a predictable order:
 
-1. **Diagram type unknown** → emit `MERMAID_UNSUPPORTED_DIAGRAM` and render an
+1. **Diagram type unknown** → emit `mermaid/unsupported/diagram` and render an
    error panel (or raw fenced text if `error_mode=raw`).
 2. **Config disabled** → render a disabled panel with a single‑line summary.
 3. **Unsupported statements** (e.g., advanced directives) → ignore and emit
-   `MERMAID_UNSUPPORTED_TOKEN` with span.
+   `mermaid/unsupported/feature` with span.
 4. **Limits exceeded** (`max_nodes`, `max_edges`, label limits) → clamp and emit
    `mermaid/limit/exceeded` with counts.
 5. **Budget exceeded** (`route_budget`, `layout_iteration_budget`) → degrade
@@ -220,8 +282,9 @@ Implementation note:
 - `ftui_extras::mermaid::validate_ast` applies the compatibility matrix plus
   `MermaidFallbackPolicy` to emit deterministic warnings/errors before layout.
 
-The **outline** fallback renders a deterministic, sorted list of nodes and
-edges (stable ordering by insertion + lexicographic tie‑break).
+The **outline** fallback is the lowest fidelity tier: labels are hidden, clusters
+are collapsed, decoration is reduced, and glyphs are forced to ASCII. Rendering
+still uses the deterministic layout/renderer pipeline.
 
 ## Complexity Guards + Degradation
 
@@ -257,6 +320,24 @@ Reserved for upcoming guard/degradation phases (not yet emitted):
 | `mermaid/disabled` | Config `enabled=false` | info |
 | `mermaid/parse/error` | Syntax error with span | error |
 
+## JSONL Evidence Logs
+
+If `log_path` is set, the engine emits deterministic JSONL events:
+
+- `mermaid_prepare`
+  - `diagram_type`, `init_config_hash`, `init_theme`, `init_theme_vars`
+  - `warnings`, `errors`
+- `mermaid_guard`
+  - `diagram_type`
+  - `complexity` (nodes/edges/labels/clusters/ports/style_refs/score)
+  - `label_limits` (over_chars, over_lines)
+  - `budget_estimates` (route_ops, layout_iterations)
+  - `guard_codes` (e.g., `mermaid/limit/exceeded`, `mermaid/budget/exceeded`)
+  - `degradation` (target_fidelity, hide_labels, collapse_clusters, simplify_routing,
+    reduce_decoration, force_glyph_mode)
+- `mermaid_links`
+  - `link_mode`, `total_count`, `allowed_count`, `blocked_count`
+
 ## Security Policy
 
 - **No HTML/JS execution**, ever. HTML is stripped or treated as literal text.
@@ -265,7 +346,59 @@ Reserved for upcoming guard/degradation phases (not yet emitted):
   `sanitize_mode` allows them.
 - All decisions must be logged deterministically with spans.
 
+## Hyperlink Policy
+
+Link directives are sanitized via `sanitize_url`:
+
+- **Blocked protocols** (always rejected): `javascript:`, `vbscript:`, `data:`,
+  `file:`, `blob:`.
+- **Strict mode** allows only: `http:`, `https:`, `mailto:`, `tel:` plus
+  relative paths (no protocol prefix).
+- **Lenient mode** allows any protocol not in the blocked list.
+
+Blocked links emit `mermaid/sanitized/input` warnings and are excluded from
+link resolution metrics.
+
 ## Debug Overlay
 
 The demo debug overlay renders a one-line Mermaid summary so active
 configuration is visible during interactive runs.
+
+## Usage (Current API)
+
+```rust
+use ftui_extras::mermaid::{
+    MermaidConfig, MermaidCompatibilityMatrix, MermaidFallbackPolicy, prepare, normalize_ast_to_ir,
+};
+use ftui_extras::mermaid_layout::layout_diagram;
+use ftui_extras::mermaid_render::MermaidRenderer;
+use ftui_core::geometry::Rect;
+use ftui_render::buffer::Buffer;
+
+let source = "graph TD; A-->B";
+let config = MermaidConfig::default();
+let matrix = MermaidCompatibilityMatrix::default();
+
+let prepared = prepare(source, &config, &matrix);
+let ir_parse = normalize_ast_to_ir(
+    &prepared.ast,
+    &config,
+    &matrix,
+    &MermaidFallbackPolicy::default(),
+);
+
+if ir_parse.errors.is_empty() {
+    let layout = layout_diagram(&ir_parse.ir, &config);
+    let renderer = MermaidRenderer::new(&config);
+    let mut buffer = Buffer::new(80, 24);
+    renderer.render(&layout, &ir_parse.ir, Rect::new(0, 0, 80, 24), &mut buffer);
+}
+```
+
+## Troubleshooting Width + Density
+
+- **Text too wide**: lower `max_label_chars`, `max_label_lines`, or set
+  `wrap_mode=wordchar`.
+- **Crowding**: set `tier_override=compact` or `outline`.
+- **Narrow terminals**: switch to `glyph_mode=ascii` to reduce width surprises.
+- **Diagnostics**: enable `FTUI_MERMAID_LOG_PATH` to capture guard + link events.

@@ -356,26 +356,18 @@ fn collect_widget_style_hashes(
     out
 }
 
-#[test]
-fn table_theme_parity_widget_vs_markdown() {
-    let header = ["Name", "Role", "Status"];
-    let rows = vec![
-        vec!["Ada", "Compiler wizard", "Active"],
-        vec!["Linus", "Kernel architect", "Active"],
-        vec!["Grace Hopper", "COBOL pioneer", "Retired"],
-        vec!["Ken", "UNIX co-creator", "Legend"],
-    ];
-
-    let theme = TableTheme::aurora();
-    let phase = 0.25;
-
+fn assert_table_parity(header: &[&str], rows: &[Vec<&str>], theme: TableTheme, phase: Option<f32>) {
     // Render markdown table (ensures markdown path is exercised).
-    let markdown = build_markdown_table(&header, &rows);
+    let markdown = build_markdown_table(header, rows);
     let markdown_theme = MarkdownTheme {
         table_theme: theme.clone(),
         ..Default::default()
     };
-    let renderer = MarkdownRenderer::new(markdown_theme).table_effect_phase(phase);
+    let renderer = MarkdownRenderer::new(markdown_theme);
+    let renderer = match phase {
+        Some(phase) => renderer.table_effect_phase(phase),
+        None => renderer,
+    };
     let rendered = renderer.render(&markdown);
     assert!(
         !rendered.is_empty(),
@@ -395,11 +387,14 @@ fn table_theme_parity_widget_vs_markdown() {
     let table = Table::new(widget_rows.clone(), constraints)
         .header(header_row)
         .theme(theme.clone())
-        .theme_phase(phase)
         .column_spacing(1);
+    let table = match phase {
+        Some(phase) => table.theme_phase(phase),
+        None => table,
+    };
 
     let mut pool = GraphemePool::new();
-    let intrinsic = intrinsic_widths(&header, &rows);
+    let intrinsic = intrinsic_widths(header, rows);
     let col_count = intrinsic.len().max(1);
     let column_spacing = 1u16;
     let table_width = intrinsic
@@ -439,12 +434,43 @@ fn table_theme_parity_widget_vs_markdown() {
     );
 
     // Compare resolved style hashes per row/section.
-    let markdown_styles = collect_markdown_style_hashes(&theme, 1, rows.len(), Some(phase));
-    let widget_styles = collect_widget_style_hashes(&theme, 1, rows.len(), Some(phase));
+    let markdown_styles = collect_markdown_style_hashes(&theme, 1, rows.len(), phase);
+    let widget_styles = collect_widget_style_hashes(&theme, 1, rows.len(), phase);
     assert_eq!(
         widget_styles,
         markdown_styles,
         "style hash mismatch:\n{}",
         format_style_hash_mismatch(&markdown_styles, &widget_styles)
     );
+}
+
+#[test]
+fn table_theme_parity_widget_vs_markdown() {
+    let header = ["Name", "Role", "Status"];
+    let rows = vec![
+        vec!["Ada", "Compiler wizard", "Active"],
+        vec!["Linus", "Kernel architect", "Active"],
+        vec!["Grace Hopper", "COBOL pioneer", "Retired"],
+        vec!["Ken", "UNIX co-creator", "Legend"],
+    ];
+
+    let theme = TableTheme::aurora();
+    let phase = Some(0.25);
+
+    assert_table_parity(&header, &rows, theme, phase);
+}
+
+#[test]
+fn table_theme_parity_widget_vs_markdown_terminal_classic() {
+    let header = ["Feature", "Notes"];
+    let rows = vec![
+        vec!["Inline mode", "Scrollback preserved"],
+        vec!["Diff engine", "Sparse, SIMD-friendly"],
+        vec!["Evidence logs", "Deterministic JSONL output"],
+    ];
+
+    let theme = TableTheme::terminal_classic();
+    let phase = None;
+
+    assert_table_parity(&header, &rows, theme, phase);
 }

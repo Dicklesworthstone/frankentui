@@ -48,11 +48,26 @@ impl Span {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MermaidErrorCode {
+    Parse,
+}
+
+impl MermaidErrorCode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Parse => "mermaid/error/parse",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MermaidError {
     pub message: String,
     pub span: Span,
     pub expected: Option<Vec<&'static str>>,
+    pub code: MermaidErrorCode,
 }
 
 impl MermaidError {
@@ -61,6 +76,7 @@ impl MermaidError {
             message: message.into(),
             span,
             expected: None,
+            code: MermaidErrorCode::Parse,
         }
     }
 
@@ -827,7 +843,7 @@ impl MermaidCompatibilityMatrix {
             state: MermaidSupportLevel::Partial,
             gantt: MermaidSupportLevel::Partial,
             class: MermaidSupportLevel::Partial,
-            er: MermaidSupportLevel::Partial,
+            er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
         }
@@ -857,7 +873,7 @@ impl Default for MermaidCompatibilityMatrix {
             state: MermaidSupportLevel::Partial,
             gantt: MermaidSupportLevel::Partial,
             class: MermaidSupportLevel::Partial,
-            er: MermaidSupportLevel::Partial,
+            er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
         }
@@ -1360,12 +1376,14 @@ pub fn apply_init_directives(
 struct NodeDraft {
     id: String,
     label: Option<String>,
+    shape: NodeShape,
     classes: Vec<String>,
     style: Option<(String, Span)>,
     spans: Vec<Span>,
     first_span: Span,
     insertion_idx: usize,
     implicit: bool,
+    members: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -1475,6 +1493,7 @@ fn split_endpoint(raw: &str) -> (String, Option<String>) {
 fn upsert_node(
     node_id: &str,
     label: Option<&str>,
+    shape: NodeShape,
     span: Span,
     implicit: bool,
     insertion_idx: usize,
@@ -1498,6 +1517,10 @@ fn upsert_node(
         if draft.label.is_none() {
             draft.label = label.map(str::to_string);
         }
+        // Prefer explicit shape over default Rect
+        if shape != NodeShape::Rect {
+            draft.shape = shape;
+        }
         return idx;
     }
     let idx = node_drafts.len();
@@ -1505,12 +1528,14 @@ fn upsert_node(
     node_drafts.push(NodeDraft {
         id: node_id.to_string(),
         label: label.map(str::to_string),
+        shape,
         classes: Vec::new(),
         style: None,
         spans: vec![span],
         first_span: span,
         insertion_idx,
         implicit,
+        members: Vec::new(),
     });
     if implicit && implicit_warned.insert(node_id.to_string()) {
         warnings.push(MermaidWarning::new(
@@ -1815,6 +1840,7 @@ pub fn normalize_ast_to_ir(
                 let _ = upsert_node(
                     &id,
                     node.label.as_deref(),
+                    node.shape,
                     node.span,
                     false,
                     idx,
@@ -1841,6 +1867,7 @@ pub fn normalize_ast_to_ir(
                 upsert_node(
                     &from,
                     None,
+                    NodeShape::Rect,
                     edge.span,
                     true,
                     idx,
@@ -1852,6 +1879,7 @@ pub fn normalize_ast_to_ir(
                 upsert_node(
                     &to,
                     None,
+                    NodeShape::Rect,
                     edge.span,
                     true,
                     idx,
@@ -1875,6 +1903,52 @@ pub fn normalize_ast_to_ir(
                     insertion_idx: idx,
                 });
             }
+            Statement::SequenceMessage(msg) => {
+                let from = normalize_id(&msg.from);
+                let to = normalize_id(&msg.to);
+                if from.is_empty() || to.is_empty() {
+                    warnings.push(MermaidWarning::new(
+                        MermaidWarningCode::InvalidEdge,
+                        "sequence message missing participant; ignoring",
+                        msg.span,
+                    ));
+                    continue;
+                }
+                upsert_node(
+                    &from,
+                    None,
+                    NodeShape::Rect,
+                    msg.span,
+                    true,
+                    idx,
+                    &mut node_map,
+                    &mut node_drafts,
+                    &mut implicit_warned,
+                    &mut warnings,
+                );
+                upsert_node(
+                    &to,
+                    None,
+                    NodeShape::Rect,
+                    msg.span,
+                    true,
+                    idx,
+                    &mut node_map,
+                    &mut node_drafts,
+                    &mut implicit_warned,
+                    &mut warnings,
+                );
+                edge_drafts.push(EdgeDraft {
+                    from,
+                    from_port: None,
+                    to,
+                    to_port: None,
+                    arrow: msg.arrow.clone(),
+                    label: msg.message.clone(),
+                    span: msg.span,
+                    insertion_idx: idx,
+                });
+            }
             Statement::ClassAssign {
                 targets,
                 classes,
@@ -1893,6 +1967,7 @@ pub fn normalize_ast_to_ir(
                     let idx = upsert_node(
                         &id,
                         None,
+                        NodeShape::Rect,
                         *span,
                         true,
                         idx,
@@ -1933,6 +2008,7 @@ pub fn normalize_ast_to_ir(
                 let idx = upsert_node(
                     &id,
                     None,
+                    NodeShape::Rect,
                     *span,
                     true,
                     idx,
@@ -1970,6 +2046,48 @@ pub fn normalize_ast_to_ir(
                     ));
                 }
             }
+            Statement::ClassDeclaration { name, span } => {
+                let id = normalize_id(name);
+                if !id.is_empty() {
+                    upsert_node(
+                        &id,
+                        Some(name),
+                        NodeShape::Rect,
+                        *span,
+                        false,
+                        idx,
+                        &mut node_map,
+                        &mut node_drafts,
+                        &mut implicit_warned,
+                        &mut warnings,
+                    );
+                    if let Some(cluster_idx) = cluster_stack.last().copied() {
+                        cluster_drafts[cluster_idx].members.push(id);
+                    }
+                }
+            }
+            Statement::ClassMember {
+                class,
+                member,
+                span,
+            } => {
+                let id = normalize_id(class);
+                if !id.is_empty() {
+                    let node_idx = upsert_node(
+                        &id,
+                        None,
+                        NodeShape::Rect,
+                        *span,
+                        true,
+                        idx,
+                        &mut node_map,
+                        &mut node_drafts,
+                        &mut implicit_warned,
+                        &mut warnings,
+                    );
+                    node_drafts[node_idx].members.push(member.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -2004,11 +2122,13 @@ pub fn normalize_ast_to_ir(
         nodes.push(IrNode {
             id: draft.id,
             label: label_id,
+            shape: draft.shape,
             classes: draft.classes,
             style_ref: None,
             span_primary: draft.first_span,
             span_all: draft.spans,
             implicit: draft.implicit,
+            members: draft.members,
         });
     }
 
@@ -2401,6 +2521,7 @@ pub struct Comment {
 pub struct Node {
     pub id: String,
     pub label: Option<String>,
+    pub shape: NodeShape,
     pub span: Span,
 }
 
@@ -2558,15 +2679,66 @@ pub struct IrLabel {
     pub span: Span,
 }
 
+/// Node shape as determined by the bracket syntax in Mermaid source.
+///
+/// Maps to visual representations in the terminal renderer:
+/// - `[text]` → `Rect`
+/// - `(text)` → `Rounded`
+/// - `([text])` → `Stadium`
+/// - `[[text]]` → `Subroutine`
+/// - `{text}` → `Diamond`
+/// - `{{text}}` → `Hexagon`
+/// - `((text))` → `Circle`
+/// - `>text]` → `Asymmetric`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeShape {
+    /// Default rectangular node: `[text]`
+    Rect,
+    /// Rounded corners: `(text)`
+    Rounded,
+    /// Pill/stadium shape: `([text])`
+    Stadium,
+    /// Subroutine (double vertical borders): `[[text]]`
+    Subroutine,
+    /// Diamond/rhombus: `{text}`
+    Diamond,
+    /// Hexagon: `{{text}}`
+    Hexagon,
+    /// Circle (double parentheses): `((text))`
+    Circle,
+    /// Asymmetric / flag shape: `>text]`
+    Asymmetric,
+}
+
+impl NodeShape {
+    /// Returns the string representation used in diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rect => "rect",
+            Self::Rounded => "rounded",
+            Self::Stadium => "stadium",
+            Self::Subroutine => "subroutine",
+            Self::Diamond => "diamond",
+            Self::Hexagon => "hexagon",
+            Self::Circle => "circle",
+            Self::Asymmetric => "asymmetric",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrNode {
     pub id: String,
     pub label: Option<IrLabelId>,
+    pub shape: NodeShape,
     pub classes: Vec<String>,
     pub style_ref: Option<IrStyleRefId>,
     pub span_primary: Span,
     pub span_all: Vec<Span>,
     pub implicit: bool,
+    /// Class diagram members (fields/methods) for compartment rendering.
+    pub members: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3169,7 +3341,7 @@ impl<'a> Lexer<'a> {
         }
         if b == b'\r' {
             self.advance_byte();
-            if self.peek_byte() == Some(b'\n') {
+            if self.peek_n_bytes(0) == Some(b'\n') {
                 self.advance_byte();
             }
             return Token {
@@ -3406,6 +3578,8 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
     let mut statements = Vec::new();
     let mut saw_header = false;
     let mut errors = Vec::new();
+    // Track ER entity attribute block: `ENTITY { type name constraint ... }`
+    let mut er_entity_block: Option<String> = None;
 
     for (idx, raw_line) in input.lines().enumerate() {
         let line_no = idx + 1;
@@ -3478,6 +3652,48 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
         match diagram_type {
             DiagramType::Graph | DiagramType::State | DiagramType::Class | DiagramType::Er => {
                 let er_mode = diagram_type == DiagramType::Er;
+                // ER entity attribute block: lines inside `ENTITY { ... }`.
+                if er_mode {
+                    if let Some(ref entity) = er_entity_block {
+                        if trimmed == "}" {
+                            er_entity_block = None;
+                            continue;
+                        }
+                        // Parse attribute line as "type name [constraint]".
+                        let attr_text = normalize_ws(trimmed);
+                        if !attr_text.is_empty() {
+                            statements.push(Statement::ClassMember {
+                                class: entity.clone(),
+                                member: attr_text,
+                                span,
+                            });
+                        }
+                        continue;
+                    }
+                    // Detect entity block opening: `ENTITY_NAME {`
+                    if let Some(brace_pos) = trimmed.find('{') {
+                        let entity_name = trimmed[..brace_pos].trim();
+                        if !entity_name.is_empty()
+                            && entity_name
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                        {
+                            let name = normalize_ws(entity_name);
+                            // Emit a node for the entity.
+                            statements.push(Statement::Node(Node {
+                                id: name.clone(),
+                                label: None,
+                                shape: NodeShape::Rect,
+                                span,
+                            }));
+                            let after_brace = trimmed[brace_pos + 1..].trim();
+                            if after_brace != "}" {
+                                er_entity_block = Some(name);
+                            }
+                            continue;
+                        }
+                    }
+                }
                 if let Some(edge) = parse_edge(trimmed, span, er_mode) {
                     if let Some(node) = edge_node(trimmed, span, er_mode) {
                         statements.push(Statement::Node(node));
@@ -4351,7 +4567,11 @@ fn parse_edge(line: &str, span: Span, er_mode: bool) -> Option<Edge> {
     if left.is_empty() || right.is_empty() {
         return None;
     }
-    let (label, right_id) = split_label(right);
+    let (label, right_id) = if er_mode {
+        split_er_label(right)
+    } else {
+        split_label(right)
+    };
     let from = parse_node_id(left)?;
     let to = parse_node_id(right_id)?;
     Some(Edge {
@@ -4378,41 +4598,116 @@ fn parse_node(line: &str, span: Span) -> Option<Node> {
     if line.is_empty() {
         return None;
     }
-    let (id, label) = parse_node_spec(line)?;
-    Some(Node { id, label, span })
+    let (id, label, shape) = parse_node_spec(line)?;
+    Some(Node {
+        id,
+        label,
+        shape,
+        span,
+    })
 }
 
-fn parse_node_spec(text: &str) -> Option<(String, Option<String>)> {
+fn parse_node_spec(text: &str) -> Option<(String, Option<String>, NodeShape)> {
     let text = text.trim();
     if text.is_empty() {
         return None;
     }
+
+    // Handle asymmetric shape: `>text]`
+    if let Some(id) = text
+        .strip_prefix('>')
+        .and_then(|rest| rest.find(']').map(|end| normalize_ws(rest[..end].trim())))
+        .filter(|id| !id.is_empty())
+    {
+        return Some((id, None, NodeShape::Asymmetric));
+    }
+
     let mut id = String::new();
-    let mut label = None;
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        if c == '[' || c == '(' || c == '{' {
-            let closing = match c {
-                '[' => ']',
-                '(' => ')',
-                '{' => '}',
-                _ => ']',
-            };
-            let rest: String = chars.collect();
-            if let Some(end) = rest.find(closing) {
-                label = Some(normalize_ws(rest[..end].trim()));
-            }
+    let mut chars = text.char_indices().peekable();
+
+    while let Some(&(_, c)) = chars.peek() {
+        if c == '[' || c == '(' || c == '{' || c == '>' {
             break;
         }
         if c.is_whitespace() {
             break;
         }
         id.push(c);
+        chars.next();
     }
+
     if id.is_empty() {
         return None;
     }
-    Some((normalize_ws(&id), label))
+
+    // Check if there's a bracket-delimited label + shape
+    let bracket_start: String = chars.map(|(_, c)| c).collect();
+    let bracket_start = bracket_start.trim();
+
+    if bracket_start.is_empty() {
+        return Some((normalize_ws(&id), None, NodeShape::Rect));
+    }
+
+    let (label, shape) = parse_bracket_shape(bracket_start);
+    Some((normalize_ws(&id), label, shape))
+}
+
+/// Detect node shape from the bracket syntax and extract the label text.
+fn parse_bracket_shape(text: &str) -> (Option<String>, NodeShape) {
+    // Double brackets: `((text))` → Circle
+    if text.starts_with("((")
+        && let Some(end) = text.find("))")
+    {
+        let label = normalize_ws(text[2..end].trim());
+        return (Some(label), NodeShape::Circle);
+    }
+    // Double curly: `{{text}}` → Hexagon
+    if text.starts_with("{{")
+        && let Some(end) = text.find("}}")
+    {
+        let label = normalize_ws(text[2..end].trim());
+        return (Some(label), NodeShape::Hexagon);
+    }
+    // Double square: `[[text]]` → Subroutine
+    if text.starts_with("[[")
+        && let Some(end) = text.find("]]")
+    {
+        let label = normalize_ws(text[2..end].trim());
+        return (Some(label), NodeShape::Subroutine);
+    }
+    // Stadium: `([text])` → Stadium
+    if text.starts_with("([")
+        && let Some(end) = text.find("])")
+    {
+        let label = normalize_ws(text[2..end].trim());
+        return (Some(label), NodeShape::Stadium);
+    }
+    // Asymmetric: `>text]`
+    if let Some(rest) = text.strip_prefix('>')
+        && let Some(end) = rest.find(']')
+    {
+        let label = normalize_ws(rest[..end].trim());
+        return (Some(label), NodeShape::Asymmetric);
+    }
+    // Single brackets with shape detection
+    let (open, close, shape) = if text.starts_with('[') {
+        ('[', ']', NodeShape::Rect)
+    } else if text.starts_with('(') {
+        ('(', ')', NodeShape::Rounded)
+    } else if text.starts_with('{') {
+        ('{', '}', NodeShape::Diamond)
+    } else {
+        return (None, NodeShape::Rect);
+    };
+
+    let inner = &text[1..];
+    if let Some(end) = inner.rfind(close) {
+        let label = normalize_ws(inner[..end].trim());
+        let _ = open; // used for pattern matching above
+        return (Some(label), shape);
+    }
+
+    (None, NodeShape::Rect)
 }
 
 fn parse_class_member(line: &str, span: Span) -> Option<Statement> {
@@ -4529,12 +4824,29 @@ fn split_label(text: &str) -> (Option<&str>, &str) {
     (None, trimmed)
 }
 
+/// Split ER relationship label from the right side of an ER edge.
+///
+/// ER syntax: `ENTITY : relationship_label` (colon-separated).
+fn split_er_label(text: &str) -> (Option<&str>, &str) {
+    let trimmed = text.trim();
+    // ER diagrams use `ENTITY : label` syntax for relationship labels.
+    if let Some(colon_pos) = trimmed.find(':') {
+        let entity = trimmed[..colon_pos].trim();
+        let label = trimmed[colon_pos + 1..].trim();
+        if !entity.is_empty() && !label.is_empty() {
+            return (Some(label), entity);
+        }
+    }
+    // Fallback: try standard |label| syntax.
+    split_label(trimmed)
+}
+
 fn parse_node_id(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
         return None;
     }
-    let (id, _) = parse_node_spec(text)?;
+    let (id, _, _) = parse_node_spec(text)?;
     Some(id)
 }
 
@@ -4644,9 +4956,41 @@ fn is_er_arrow_char(c: char) -> bool {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[allow(dead_code)]
+    static LOG_SEQ: AtomicUsize = AtomicUsize::new(0);
 
     fn is_coverage_run() -> bool {
         std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+    }
+
+    #[allow(dead_code)]
+    fn next_log_path(label: &str) -> String {
+        let seq = LOG_SEQ.fetch_add(1, Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "ftui_mermaid_{label}_{}_{}.jsonl",
+            std::process::id(),
+            seq
+        ));
+        path.to_string_lossy().to_string()
+    }
+
+    #[allow(dead_code)]
+    fn jsonl_event(path: &str, event: &str) -> serde_json::Value {
+        let content = std::fs::read_to_string(path).expect("read log");
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = serde_json::from_str(trimmed).expect("jsonl parse");
+            if value.get("event").and_then(|v| v.as_str()) == Some(event) {
+                return value;
+            }
+        }
+        panic!("missing jsonl event: {event}");
     }
 
     #[test]
@@ -4738,6 +5082,147 @@ mod tests {
             ast.statements
                 .iter()
                 .any(|s| matches!(s, Statement::Edge(_)))
+        );
+    }
+
+    #[test]
+    fn er_edge_preserves_relationship_label() {
+        let ast = parse("erDiagram\nCUSTOMER ||--o{ ORDER : places\n").expect("parse");
+        let edge = ast
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Statement::Edge(e) => Some(e),
+                _ => None,
+            })
+            .expect("should have edge");
+        assert_eq!(edge.from, "CUSTOMER");
+        assert_eq!(edge.to, "ORDER");
+        assert_eq!(edge.label.as_deref(), Some("places"));
+        assert_eq!(edge.arrow, "||--o{");
+    }
+
+    #[test]
+    fn er_edge_without_label() {
+        let ast = parse("erDiagram\nA ||--|| B\n").expect("parse");
+        let edge = ast
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Statement::Edge(e) => Some(e),
+                _ => None,
+            })
+            .expect("should have edge");
+        assert_eq!(edge.from, "A");
+        assert_eq!(edge.to, "B");
+        assert!(edge.label.is_none());
+    }
+
+    #[test]
+    fn er_entity_attributes_parsed_as_members() {
+        let input = "erDiagram\n    CUSTOMER {\n        string name PK\n        int age\n    }\n";
+        let ast = parse(input).expect("parse");
+        // CUSTOMER should be emitted as a node.
+        let nodes: Vec<_> = ast
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Node(n) => Some(&n.id),
+                _ => None,
+            })
+            .collect();
+        assert!(nodes.contains(&&"CUSTOMER".to_string()));
+        // Attributes should be ClassMember entries.
+        let members: Vec<_> = ast
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::ClassMember { class, member, .. } => {
+                    Some((class.clone(), member.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].0, "CUSTOMER");
+        assert_eq!(members[0].1, "string name PK");
+        assert_eq!(members[1].0, "CUSTOMER");
+        assert_eq!(members[1].1, "int age");
+    }
+
+    #[test]
+    fn er_multiple_entities_with_relationship() {
+        let input = concat!(
+            "erDiagram\n",
+            "    CUSTOMER {\n",
+            "        string name\n",
+            "    }\n",
+            "    ORDER {\n",
+            "        int id\n",
+            "        date created\n",
+            "    }\n",
+            "    CUSTOMER ||--o{ ORDER : places\n",
+        );
+        let ast = parse(input).expect("parse");
+        let node_ids: Vec<_> = ast
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Node(n) => Some(n.id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(node_ids.contains(&"CUSTOMER".to_string()));
+        assert!(node_ids.contains(&"ORDER".to_string()));
+        let edges: Vec<_> = ast
+            .statements
+            .iter()
+            .filter(|s| matches!(s, Statement::Edge(_)))
+            .collect();
+        assert_eq!(edges.len(), 1);
+        let members: Vec<_> = ast
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::ClassMember { class, member, .. } => {
+                    Some((class.clone(), member.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(members.len(), 3);
+    }
+
+    #[test]
+    fn er_cardinality_arrows() {
+        // Test various ER cardinality notations.
+        for (arrow, desc) in [
+            ("||--||", "one-to-one"),
+            ("||--o{", "one-to-zero-or-many"),
+            ("}o--o{", "many-to-many"),
+            ("|o--|{", "zero-or-one-to-one-or-many"),
+        ] {
+            let input = format!("erDiagram\nA {} B : {}", arrow, desc);
+            let ast = parse(&input).expect(&format!("parse {}", desc));
+            let edge = ast
+                .statements
+                .iter()
+                .find_map(|s| match s {
+                    Statement::Edge(e) => Some(e),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no edge for {}", desc));
+            assert_eq!(edge.arrow, arrow, "arrow for {}", desc);
+            assert_eq!(edge.label.as_deref(), Some(desc), "label for {}", desc);
+        }
+    }
+
+    #[test]
+    fn er_support_level_is_supported() {
+        let matrix = MermaidCompatibilityMatrix::default();
+        assert_eq!(
+            matrix.support_for(DiagramType::Er),
+            MermaidSupportLevel::Supported
         );
     }
 
@@ -6025,5 +6510,106 @@ mod tests {
         assert!(log_content.contains("\"total_count\":1"));
         assert!(log_content.contains("\"allowed_count\":1"));
         assert!(log_content.contains("\"blocked_count\":0"));
+    }
+
+    // ── NodeShape parsing tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_node_shape_rect() {
+        let (id, label, shape) = parse_node_spec("A[Hello]").unwrap();
+        assert_eq!(id, "A");
+        assert_eq!(label.as_deref(), Some("Hello"));
+        assert_eq!(shape, NodeShape::Rect);
+    }
+
+    #[test]
+    fn parse_node_shape_rounded() {
+        let (id, label, shape) = parse_node_spec("B(Round)").unwrap();
+        assert_eq!(id, "B");
+        assert_eq!(label.as_deref(), Some("Round"));
+        assert_eq!(shape, NodeShape::Rounded);
+    }
+
+    #[test]
+    fn parse_node_shape_diamond() {
+        let (id, label, shape) = parse_node_spec("C{Decision}").unwrap();
+        assert_eq!(id, "C");
+        assert_eq!(label.as_deref(), Some("Decision"));
+        assert_eq!(shape, NodeShape::Diamond);
+    }
+
+    #[test]
+    fn parse_node_shape_circle() {
+        let (id, label, shape) = parse_node_spec("D((Circle))").unwrap();
+        assert_eq!(id, "D");
+        assert_eq!(label.as_deref(), Some("Circle"));
+        assert_eq!(shape, NodeShape::Circle);
+    }
+
+    #[test]
+    fn parse_node_shape_hexagon() {
+        let (id, label, shape) = parse_node_spec("E{{Hex}}").unwrap();
+        assert_eq!(id, "E");
+        assert_eq!(label.as_deref(), Some("Hex"));
+        assert_eq!(shape, NodeShape::Hexagon);
+    }
+
+    #[test]
+    fn parse_node_shape_subroutine() {
+        let (id, label, shape) = parse_node_spec("F[[Sub]]").unwrap();
+        assert_eq!(id, "F");
+        assert_eq!(label.as_deref(), Some("Sub"));
+        assert_eq!(shape, NodeShape::Subroutine);
+    }
+
+    #[test]
+    fn parse_node_shape_stadium() {
+        let (id, label, shape) = parse_node_spec("G([Stadium])").unwrap();
+        assert_eq!(id, "G");
+        assert_eq!(label.as_deref(), Some("Stadium"));
+        assert_eq!(shape, NodeShape::Stadium);
+    }
+
+    #[test]
+    fn parse_node_shape_asymmetric() {
+        let (id, label, shape) = parse_node_spec("H>Flag]").unwrap();
+        assert_eq!(id, "H");
+        assert_eq!(label.as_deref(), Some("Flag"));
+        assert_eq!(shape, NodeShape::Asymmetric);
+    }
+
+    #[test]
+    fn parse_node_shape_bare_id_defaults_rect() {
+        let (id, label, shape) = parse_node_spec("NodeId").unwrap();
+        assert_eq!(id, "NodeId");
+        assert!(label.is_none());
+        assert_eq!(shape, NodeShape::Rect);
+    }
+
+    #[test]
+    fn parse_node_shape_propagates_through_ir() {
+        // Explicit node declarations before edges ensure shapes propagate
+        let src = "graph TD\nA[Rect]\nB(Round)\nC{Decision}\nD((Circle))\nA --> B\nC --> D\n";
+        let ast = parse(src).expect("parse");
+        let config = MermaidConfig::default();
+        let ir_parse = normalize_ast_to_ir(
+            &ast,
+            &config,
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+
+        let a = ir.nodes.iter().find(|n| n.id == "A").unwrap();
+        assert_eq!(a.shape, NodeShape::Rect);
+
+        let b = ir.nodes.iter().find(|n| n.id == "B").unwrap();
+        assert_eq!(b.shape, NodeShape::Rounded);
+
+        let c = ir.nodes.iter().find(|n| n.id == "C").unwrap();
+        assert_eq!(c.shape, NodeShape::Diamond);
+
+        let d = ir.nodes.iter().find(|n| n.id == "D").unwrap();
+        assert_eq!(d.shape, NodeShape::Circle);
     }
 }
