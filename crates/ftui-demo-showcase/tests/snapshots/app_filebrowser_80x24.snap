@@ -1,24 +1,24 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭─────────────────────────────────File Browser─────────────────────────────────╮
-│╭─────Project Tree──────╮ ╭──────Files (23 items)──────╮ ╭─Preview: DR .git──╮│
-││DR my-app              │ │? / DR home → DR user → DR │ │Directory  •  Size:││
-││├── DR src             │ │   N Perms             Size │ │Path: /home/user/pr││
-│││   ├── RS main.rs     │ │DR . drwxr-xr-x          -- │ │Preview:           ││
-│││   ├── RS lib.rs      │ │DR a drwxr-xr-x          -- │ │Directory contents:││
-│││   └── DR models      │ │DR d drwxr-xr-x          -- │ │  DR .git          ││
-│││       ├── RS user.rs │ │DR s drwxr-xr-x          -- │ │  DR assets        ││
-│││       └── RS post.rs │ │DR t drwxr-xr-x          -- │ │  DR docs          ││
-││├── DR tests           │ │DR t drwxr-xr-x          -- │ │  DR src           ││
-│││   ├── PY test_app.py │ │SY b lrwxr-xr-x        48 B │ │  DR target        ││
-│││   └── RS integration.│ │PY a -rwxr-xr-x      1.5 KB │ │  DR tests         ││
-││├── DR docs            │ │TM C -rw-r--r--       512 B │ │  SY build.sh      ││
-│││   ├── MD README.md   │ │TM c -rw-r--r--       256 B │ │  PY app.py        ││
-│││   └── MD API.md      │ │IM c -rw-r--r--    512.0 KB │ │                   ││
-││├── TM Cargo.toml      │ │JS d -rw-r--r--     10.2 KB │ │                   ││
-││├── JS package.json    │ │VI d -rw-r--r--     12.6 MB │ │                   ││
-││└── CF .gitignore      │ │RS l -rw-r--r--      4.1 KB │ │                   ││
-││                       │ │IM l -rw-r--r--    424.1 KB │ │                   ││
+│╭─────Project Tree──────╮ ╭──────Files (23 items)──────╮ ╭─Preview: ? .git──╮│
+││? my-app              │ │? / ? home → ? user → ? │ │Directory  •  Size:││
+││├── ? src             │ │   N Perms             Size │ │Path: /home/user/pr││
+│││   ├── ? main.rs     │ │? . drwxr-xr-x          -- │ │Preview:           ││
+│││   ├── ? lib.rs      │ │? a drwxr-xr-x          -- │ │Directory contents:││
+│││   └── ? models      │ │? d drwxr-xr-x          -- │ │  ? .git          ││
+│││       ├── ? user.rs │ │? s drwxr-xr-x          -- │ │  ? assets        ││
+│││       └── ? post.rs │ │? t drwxr-xr-x          -- │ │  ? docs          ││
+││├── ? tests           │ │? t drwxr-xr-x          -- │ │  ? src           ││
+│││   ├── ? test_app.py │ │? b lrwxr-xr-x        48 B │ │  ? target        ││
+│││   └── ? integration.│ │? a -rwxr-xr-x      1.5 KB │ │  ? tests         ││
+││├── ? docs            │ │? C -rw-r--r--       512 B │ │  ? build.sh      ││
+│││   ├── ? README.md   │ │? c -rw-r--r--       256 B │ │  ? app.py        ││
+│││   └── ? API.md      │ │? c -rw-r--r--    512.0 KB │ │                   ││
+││├── ? Cargo.toml      │ │? d -rw-r--r--     10.2 KB │ │                   ││
+││├── ? package.json    │ │? d -rw-r--r--     12.6 MB │ │                   ││
+││└── ? .gitignore      │ │? l -rw-r--r--      4.1 KB │ │                   ││
+││                       │ │? l -rw-r--r--    424.1 KB │ │                   ││
 │╰───────────────────────╯ ╰────────────────────────────╯ ╰───────────────────╯│
-│DR .git  | h/l: panels | j/k: navigate | g/G: first/last | Enter: open | Backs│
+│? .git  | h/l: panels | j/k: navigate | g/G: first/last | Enter: open | Backs│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- File Browser [9/38]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev    0x0 00:00 
+ File Browser [9/40]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev    0x0 00:00 

@@ -3,21 +3,21 @@
 │  File "src/main.rs", line 42, in main││Clock timer:   02:00 (0%)             │
 │   40 │ fn main() -> Result<()> {     ││                                      │
 │   41 │     let config = Config::load(││Spinners:                             │
-│ ❱42 │     app::run(config)?;        ││dots        ⠋                         │
+│ ❱ 42 │     app::run(config)?;        ││dots        ⠋                         │
 │   43 │     Ok(())                    ││line        |                         │
 │   44 │ }                             ││braille     ⠋                         │
 │  File "src/app.rs", line 128, in run │╰──────────────────────────────────────╯
 │   125 │ pub fn run(config: Config) ->│╭────────────Macro Recorder────────────╮
 │   126 │     let db = Database::connec││State: Idle                           │
 │   127 │     let server = Server::new(││Macro: none                           │
-│ ❱128 │     server.listen(config.port││Events: 0                             │
+│ ❱ 128 │     server.listen(config.port││Events: 0                             │
 │   129 │     Ok(())                   ││Duration: -                           │
 │   130 │ }                            ││Speed: 1.00x                          │
 │  File "src/database.rs", line 56, in │╰──────────────────────────────────────╯
 │   53 │ pub fn connect(url: &str) -> R│╭─────────────System Info──────────────╮
 │   54 │     let pool = Pool::builder()││FrankenTUI Demo Showcase              │
 │   55 │         .max_size(10)         ││                                      │
-│ ❱56 │         .build(url)?;         ││Framework: ftui (Rust)                │
+│ ❱ 56 │         .build(url)?;         ││Framework: ftui (Rust)                │
 │   57 │     Ok(Self { pool })         ││Rendering: 16-byte Cell model         │
 │   58 │ }                             ││Color: 24-bit true color (RGB)        │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯

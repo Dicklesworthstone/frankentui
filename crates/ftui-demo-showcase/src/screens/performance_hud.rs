@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Performance HUD + Render Budget Visualizer screen.
+//! Performance Challenge Mode — stress harness + degradation tiers.
 //!
 //! Demonstrates real-time performance monitoring with:
 //! - Tick interval measurement (ring buffer, 120 samples)
@@ -8,11 +8,13 @@
 //! - Latency percentiles (p50 / p95 / p99)
 //! - Braille-encoded sparkline of tick intervals
 //! - Render budget tracking with degradation tier indicators
+//! - Stress harness that simulates overload + recovery
 //! - Resettable counters and pauseable collection
 
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::env;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
@@ -27,6 +29,8 @@ use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
 
 use super::{HelpEntry, Screen};
+use crate::determinism;
+use crate::test_logging::{JsonlLogger, jsonl_enabled};
 use crate::theme;
 
 /// Maximum number of tick-interval samples in the ring buffer.
@@ -38,6 +42,56 @@ const BRAILLE_BLOCKS: [char; 9] = [
     ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
     '\u{2588}',
 ];
+
+/// Stress harness ramp/hold/cooldown constants.
+const STRESS_MAX_PENALTY_MS: f64 = 200.0;
+const STRESS_RAMP_RATE: f64 = 0.06;
+const STRESS_COOLDOWN_RATE: f64 = 0.08;
+const STRESS_HOLD_TICKS: u64 = 24;
+const STRESS_JITTER: f64 = 0.02;
+
+/// Stress harness state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StressMode {
+    Off,
+    RampUp,
+    Hold,
+    Cooldown,
+}
+
+impl StressMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::RampUp => "Ramp",
+            Self::Hold => "Peak",
+            Self::Cooldown => "Cool",
+        }
+    }
+
+    fn decision(self) -> &'static str {
+        match self {
+            Self::Off => "stable",
+            Self::RampUp | Self::Hold => "degrade",
+            Self::Cooldown => "recover",
+        }
+    }
+}
+
+fn perf_challenge_logger() -> Option<&'static JsonlLogger> {
+    if !jsonl_enabled() {
+        return None;
+    }
+    static LOGGER: OnceLock<JsonlLogger> = OnceLock::new();
+    Some(LOGGER.get_or_init(|| {
+        let run_id = determinism::demo_run_id().unwrap_or_else(|| "perf_challenge".to_string());
+        let seed = determinism::demo_seed(0);
+        JsonlLogger::new(run_id)
+            .with_seed(seed)
+            .with_context("screen_mode", determinism::demo_screen_mode())
+            .with_context("screen", "performance_challenge")
+    }))
+}
 
 /// Degradation tier based on estimated FPS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +136,24 @@ impl DegradationTier {
             Self::Safety => "\u{2588}\u{2591}\u{2591}\u{2591}",
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "Full",
+            Self::Reduced => "Reduced",
+            Self::Minimal => "Minimal",
+            Self::Safety => "Safety",
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::Full => 0,
+            Self::Reduced => 1,
+            Self::Minimal => 2,
+            Self::Safety => 3,
+        }
+    }
 }
 
 /// Display mode for the sparkline panel.
@@ -112,6 +184,22 @@ pub struct PerformanceHud {
     sparkline_mode: SparklineMode,
     /// Render budget target in milliseconds.
     budget_ms: f64,
+    /// Stress harness mode (ramp/hold/cooldown).
+    stress_mode: StressMode,
+    /// Stress level from 0.0 to 1.0.
+    stress_level: f64,
+    /// Remaining ticks to hold peak stress.
+    stress_hold_remaining: u64,
+    /// RNG state for deterministic stress jitter.
+    stress_rng: u64,
+    /// Stored seed for reset.
+    stress_seed: u64,
+    /// Last observed degradation tier.
+    last_tier: Option<DegradationTier>,
+    /// Tick when the tier last changed.
+    last_tier_change_tick: Option<u64>,
+    /// Last decision label (degrade/recover).
+    last_decision: Option<&'static str>,
     /// Fixed tick interval for deterministic fixtures (microseconds).
     deterministic_tick_us: Option<u64>,
     /// Optional override for views-per-tick in deterministic fixtures.
@@ -130,6 +218,7 @@ impl PerformanceHud {
             .ok()
             .and_then(|value| value.parse::<f64>().ok())
             .filter(|value| value.is_finite() && *value >= 0.0);
+        let seed = determinism::demo_seed(0).wrapping_add(0x9E3779B97F4A7C15);
         Self {
             tick_times_us: VecDeque::with_capacity(MAX_SAMPLES),
             last_tick: None,
@@ -140,6 +229,14 @@ impl PerformanceHud {
             paused: false,
             sparkline_mode: SparklineMode::Intervals,
             budget_ms: 16.67, // ~60 FPS target
+            stress_mode: StressMode::Off,
+            stress_level: 0.0,
+            stress_hold_remaining: STRESS_HOLD_TICKS,
+            stress_rng: seed,
+            stress_seed: seed,
+            last_tier: None,
+            last_tier_change_tick: None,
+            last_decision: None,
             deterministic_tick_us: None,
             forced_views_per_tick,
         }
@@ -155,12 +252,149 @@ impl PerformanceHud {
         self.last_tick = None;
     }
 
+    fn toggle_stress(&mut self) {
+        if self.stress_mode == StressMode::Off {
+            self.stress_mode = StressMode::RampUp;
+            self.stress_level = 0.0;
+            self.stress_hold_remaining = STRESS_HOLD_TICKS;
+        } else {
+            self.stress_mode = StressMode::Cooldown;
+        }
+    }
+
+    fn cool_down(&mut self) {
+        if self.stress_mode != StressMode::Off {
+            self.stress_mode = StressMode::Cooldown;
+        }
+    }
+
+    fn stress_penalty_ms(&self) -> f64 {
+        self.stress_level.clamp(0.0, 1.0) * STRESS_MAX_PENALTY_MS
+    }
+
+    fn simulated_frame_ms(&self) -> f64 {
+        let (_, avg_ms, ..) = self.stats();
+        let base = if avg_ms > 0.0 { avg_ms } else { self.budget_ms };
+        base + self.stress_penalty_ms()
+    }
+
+    fn simulated_fps(&self) -> f64 {
+        let sim_ms = self.simulated_frame_ms();
+        let views = if self.views_per_tick > 0.0 {
+            self.views_per_tick
+        } else {
+            1.0
+        };
+        if sim_ms > 0.0 {
+            views * 1000.0 / sim_ms
+        } else {
+            0.0
+        }
+    }
+
+    fn current_tier(&self) -> DegradationTier {
+        DegradationTier::from_fps(self.simulated_fps())
+    }
+
+    fn stress_jitter(&mut self) -> f64 {
+        self.stress_rng = self
+            .stress_rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
+        let raw = (self.stress_rng >> 33) as f64 / (1u64 << 31) as f64;
+        (raw - 0.5) * STRESS_JITTER
+    }
+
+    fn advance_stress(&mut self) {
+        if self.stress_mode == StressMode::Off {
+            self.stress_level = 0.0;
+            return;
+        }
+
+        match self.stress_mode {
+            StressMode::RampUp => {
+                let jitter = self.stress_jitter();
+                self.stress_level = (self.stress_level + STRESS_RAMP_RATE + jitter).clamp(0.0, 1.0);
+                if self.stress_level >= 1.0 {
+                    self.stress_mode = StressMode::Hold;
+                    self.stress_hold_remaining = STRESS_HOLD_TICKS;
+                }
+            }
+            StressMode::Hold => {
+                if self.stress_hold_remaining > 0 {
+                    self.stress_hold_remaining -= 1;
+                } else {
+                    self.stress_mode = StressMode::Cooldown;
+                }
+            }
+            StressMode::Cooldown => {
+                self.stress_level = (self.stress_level - STRESS_COOLDOWN_RATE).clamp(0.0, 1.0);
+                if self.stress_level <= 0.0 {
+                    self.stress_mode = StressMode::Off;
+                }
+            }
+            StressMode::Off => {}
+        }
+    }
+
+    fn update_tier_tracking(&mut self) {
+        let tier = self.current_tier();
+        if let Some(prev) = self.last_tier
+            && prev != tier
+        {
+            let decision = if tier.rank() > prev.rank() {
+                "degrade"
+            } else {
+                "recover"
+            };
+            self.last_decision = Some(decision);
+            self.last_tier_change_tick = Some(self.tick_count);
+            self.log_tier_change(prev, tier, decision);
+        }
+        self.last_tier = Some(tier);
+    }
+
+    fn log_tier_change(&self, from: DegradationTier, to: DegradationTier, decision: &str) {
+        let Some(logger) = perf_challenge_logger() else {
+            return;
+        };
+        let sim_ms = format!("{:.2}", self.simulated_frame_ms());
+        let penalty_ms = format!("{:.2}", self.stress_penalty_ms());
+        let level = format!("{:.2}", self.stress_level);
+        let mode = self.stress_mode.label();
+        let outcome = if self.stress_mode == StressMode::Off {
+            "idle"
+        } else {
+            "stress"
+        };
+        logger.log(
+            "perf_challenge_tier_change",
+            &[
+                ("tier_from", from.as_str()),
+                ("tier_to", to.as_str()),
+                ("frame_time_ms", &sim_ms),
+                ("penalty_ms", &penalty_ms),
+                ("stress_level", &level),
+                ("stress_mode", mode),
+                ("decision", decision),
+                ("outcome", outcome),
+            ],
+        );
+    }
+
     fn reset(&mut self) {
         self.tick_times_us.clear();
         self.last_tick = None;
         self.view_counter.set(0);
         self.prev_view_count = 0;
         self.views_per_tick = self.forced_views_per_tick.unwrap_or(0.0);
+        self.stress_mode = StressMode::Off;
+        self.stress_level = 0.0;
+        self.stress_hold_remaining = STRESS_HOLD_TICKS;
+        self.stress_rng = self.stress_seed;
+        self.last_tier = None;
+        self.last_tier_change_tick = None;
+        self.last_decision = None;
     }
 
     fn record_tick(&mut self) {
@@ -250,9 +484,12 @@ impl PerformanceHud {
         }
 
         let (tps, avg_ms, p50_ms, p95_ms, p99_ms, min_ms, max_ms) = self.stats();
-        let est_fps = self.views_per_tick * tps;
-        let tier = DegradationTier::from_fps(est_fps);
+        let est_fps = self.estimated_fps();
+        let sim_fps = self.simulated_fps();
+        let tier = self.current_tier();
         let views = self.view_counter.get();
+        let stress_pct = self.stress_level * 100.0;
+        let penalty_ms = self.stress_penalty_ms();
 
         let fps_color = match tier {
             DegradationTier::Full => theme::accent::SUCCESS,
@@ -261,6 +498,11 @@ impl PerformanceHud {
         };
 
         let paused_tag = if self.paused { " [PAUSED]" } else { "" };
+        let stress_style = if self.stress_mode == StressMode::Off {
+            Style::new().fg(theme::fg::MUTED)
+        } else {
+            Style::new().fg(fps_color)
+        };
 
         let p95_style = if p95_ms > 16.67 {
             Style::new().fg(theme::accent::WARNING)
@@ -275,8 +517,12 @@ impl PerformanceHud {
 
         let lines: Vec<(String, Style)> = vec![
             (
-                format!("  Est. FPS:   {est_fps:>8.1}{paused_tag}"),
+                format!("  Sim FPS:    {sim_fps:>8.1} ({})", tier.label()),
                 Style::new().fg(fps_color),
+            ),
+            (
+                format!("  Obs FPS:    {est_fps:>8.1}{paused_tag}"),
+                Style::new().fg(theme::fg::PRIMARY),
             ),
             (
                 format!("  Tick Rate:  {tps:>8.1} tps"),
@@ -321,6 +567,23 @@ impl PerformanceHud {
             ),
             (
                 format!("  V/Tick:     {:>8.2}", self.views_per_tick),
+                Style::new().fg(theme::fg::MUTED),
+            ),
+            (String::new(), Style::new()),
+            (
+                "  Stress Harness".into(),
+                Style::new().fg(theme::fg::SECONDARY),
+            ),
+            (
+                format!(
+                    "  Mode: {:<4} | Load {:>3.0}% (+{penalty_ms:.1}ms)",
+                    self.stress_mode.label(),
+                    stress_pct
+                ),
+                stress_style,
+            ),
+            (
+                format!("  Decision: {}", self.stress_mode.decision()),
                 Style::new().fg(theme::fg::MUTED),
             ),
         ];
@@ -468,11 +731,27 @@ impl PerformanceHud {
         }
 
         let (_, avg_ms, _, p95_ms, p99_ms, _, _) = self.stats();
-        let est_fps = self.estimated_fps();
-        let tier = DegradationTier::from_fps(est_fps);
+        let penalty_ms = self.stress_penalty_ms();
+        let effective_avg_ms = if avg_ms > 0.0 {
+            avg_ms + penalty_ms
+        } else {
+            self.budget_ms + penalty_ms
+        };
+        let effective_p95_ms = if p95_ms > 0.0 {
+            p95_ms + penalty_ms
+        } else {
+            effective_avg_ms
+        };
+        let effective_p99_ms = if p99_ms > 0.0 {
+            p99_ms + penalty_ms
+        } else {
+            effective_avg_ms
+        };
+        let sim_fps = self.simulated_fps();
+        let tier = self.current_tier();
 
         let budget_ratio = if self.budget_ms > 0.0 {
-            avg_ms / self.budget_ms
+            effective_avg_ms / self.budget_ms
         } else {
             0.0
         };
@@ -494,12 +773,12 @@ impl PerformanceHud {
                 Style::new().fg(theme::fg::SECONDARY),
             ),
             (
-                format!("  Actual: {avg_ms:.2}ms avg"),
-                if budget_ratio > 1.0 {
-                    Style::new().fg(theme::accent::ERROR)
-                } else {
-                    Style::new().fg(theme::fg::PRIMARY)
-                },
+                format!("  Observed: {avg_ms:.2}ms avg"),
+                Style::new().fg(theme::fg::PRIMARY),
+            ),
+            (
+                format!("  Simulated: {effective_avg_ms:.2}ms (+{penalty_ms:.1}ms)"),
+                Style::new().fg(tier_color),
             ),
             (
                 format!("  Usage:  {:.0}%", budget_ratio * 100.0),
@@ -515,18 +794,20 @@ impl PerformanceHud {
             ("  Budget Bar".into(), Style::new().fg(theme::fg::SECONDARY)),
         ];
 
-        for (i, (text, style)) in lines.iter().enumerate() {
-            if i >= inner.height as usize {
+        let mut cursor = 0usize;
+        for (text, style) in lines.iter() {
+            if cursor >= inner.height as usize {
                 break;
             }
-            let row = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+            let row = Rect::new(inner.x, inner.y + cursor as u16, inner.width, 1);
             Paragraph::new(text.as_str())
                 .style(*style)
                 .render(row, frame);
+            cursor += 1;
         }
 
         // Budget progress bar
-        let bar_row = 5;
+        let bar_row = cursor;
         if bar_row < inner.height as usize {
             let bar_width = inner.width.saturating_sub(4) as usize;
             let filled = ((budget_ratio.min(2.0) / 2.0) * bar_width as f64) as usize;
@@ -560,9 +841,52 @@ impl PerformanceHud {
                 .style(bar_style)
                 .render(bar_area, frame);
         }
+        cursor = bar_row + 2;
+
+        let stress_style = if self.stress_mode == StressMode::Off {
+            Style::new().fg(theme::fg::MUTED)
+        } else {
+            Style::new().fg(tier_color)
+        };
+        let last_change = if let Some(tick) = self.last_tier_change_tick {
+            let decision = self.last_decision.unwrap_or("stable");
+            format!("  Last change: tick {tick} ({decision})")
+        } else {
+            "  Last change: --".to_string()
+        };
+        let stress_lines: Vec<(String, Style)> = vec![
+            (
+                "  Stress Harness".into(),
+                Style::new().fg(theme::fg::SECONDARY),
+            ),
+            (
+                format!(
+                    "  Mode: {:<4} | Load {:>3.0}% | ~{sim_fps:.1}fps",
+                    self.stress_mode.label(),
+                    self.stress_level * 100.0
+                ),
+                stress_style,
+            ),
+            (
+                format!("  Decision: {}", self.stress_mode.decision()),
+                Style::new().fg(theme::fg::MUTED),
+            ),
+            (last_change, Style::new().fg(theme::fg::MUTED)),
+        ];
+
+        for (text, style) in stress_lines.iter() {
+            if cursor >= inner.height as usize {
+                break;
+            }
+            let row = Rect::new(inner.x, inner.y + cursor as u16, inner.width, 1);
+            Paragraph::new(text.as_str())
+                .style(*style)
+                .render(row, frame);
+            cursor += 1;
+        }
 
         // Degradation tier info
-        let tier_start = 7;
+        let tier_start = cursor + 1;
         let tier_lines: Vec<(String, Style)> = vec![
             (String::new(), Style::new()),
             (
@@ -650,15 +974,15 @@ impl PerformanceHud {
 
         // P95/P99 warnings at bottom
         let warn_start = tier_start + tier_lines.len();
-        if p95_ms > self.budget_ms && warn_start < inner.height as usize {
-            let warn = format!("  \u{26a0} p95 ({p95_ms:.1}ms) exceeds budget");
+        if effective_p95_ms > self.budget_ms && warn_start < inner.height as usize {
+            let warn = format!("  \u{26a0} p95 ({effective_p95_ms:.1}ms) exceeds budget");
             let row = Rect::new(inner.x, inner.y + warn_start as u16, inner.width, 1);
             Paragraph::new(&*warn)
                 .style(Style::new().fg(theme::accent::WARNING))
                 .render(row, frame);
         }
-        if p99_ms > self.budget_ms && warn_start + 1 < inner.height as usize {
-            let warn = format!("  \u{26a0} p99 ({p99_ms:.1}ms) exceeds budget");
+        if effective_p99_ms > self.budget_ms && warn_start + 1 < inner.height as usize {
+            let warn = format!("  \u{26a0} p99 ({effective_p99_ms:.1}ms) exceeds budget");
             let row = Rect::new(inner.x, inner.y + (warn_start + 1) as u16, inner.width, 1);
             Paragraph::new(&*warn)
                 .style(Style::new().fg(theme::accent::ERROR))
@@ -687,6 +1011,8 @@ impl Screen for PerformanceHud {
                         SparklineMode::Fps => SparklineMode::Intervals,
                     };
                 }
+                (KeyCode::Char('s'), Modifiers::NONE) => self.toggle_stress(),
+                (KeyCode::Char('c'), Modifiers::NONE) => self.cool_down(),
                 _ => {}
             }
         }
@@ -695,7 +1021,13 @@ impl Screen for PerformanceHud {
 
     fn tick(&mut self, tick_count: u64) {
         self.tick_count = tick_count;
+        if !self.paused {
+            self.advance_stress();
+        }
         self.record_tick();
+        if !self.paused {
+            self.update_tier_tracking();
+        }
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
@@ -715,7 +1047,7 @@ impl Screen for PerformanceHud {
             .split(area);
 
         // Title bar
-        let title = "PERFORMANCE HUD + RENDER BUDGET VISUALIZER";
+        let title = "PERFORMANCE CHALLENGE MODE — DEGRADATION TIERS";
         Paragraph::new(title)
             .style(
                 Style::new()
@@ -743,8 +1075,10 @@ impl Screen for PerformanceHud {
             SparklineMode::Fps => "FPS",
         };
         let pause_label = if self.paused { "resume" } else { "pause" };
+        let stress_label = self.stress_mode.label();
+        let tier_label = self.current_tier().as_str();
         let status = format!(
-            "r:reset | p:{pause_label} | m:mode({mode_label}) | samples:{}/{}",
+            "s:stress({stress_label}) | c:cool | r:reset | p:{pause_label} | m:mode({mode_label}) | tier:{tier_label} | samples:{}/{}",
             self.tick_times_us.len(),
             MAX_SAMPLES,
         );
@@ -760,6 +1094,14 @@ impl Screen for PerformanceHud {
                 action: "Reset all metrics",
             },
             HelpEntry {
+                key: "s",
+                action: "Toggle stress harness",
+            },
+            HelpEntry {
+                key: "c",
+                action: "Force cooldown / recovery",
+            },
+            HelpEntry {
                 key: "p",
                 action: "Pause/resume collection",
             },
@@ -771,11 +1113,11 @@ impl Screen for PerformanceHud {
     }
 
     fn title(&self) -> &'static str {
-        "Performance HUD"
+        "Performance Challenge"
     }
 
     fn tab_label(&self) -> &'static str {
-        "PerfHUD"
+        "PerfChal"
     }
 }
 
@@ -799,8 +1141,8 @@ mod tests {
         assert!(hud.tick_times_us.is_empty());
         assert!(!hud.paused);
         assert_eq!(hud.sparkline_mode, SparklineMode::Intervals);
-        assert_eq!(hud.title(), "Performance HUD");
-        assert_eq!(hud.tab_label(), "PerfHUD");
+        assert_eq!(hud.title(), "Performance Challenge");
+        assert_eq!(hud.tab_label(), "PerfChal");
     }
 
     #[test]
@@ -838,6 +1180,9 @@ mod tests {
         assert!(hud.tick_times_us.is_empty());
         assert_eq!(hud.view_counter.get(), 0);
         assert_eq!(hud.views_per_tick, 0.0);
+        assert_eq!(hud.stress_mode, StressMode::Off);
+        assert_eq!(hud.stress_level, 0.0);
+        assert!(hud.last_tier.is_none());
     }
 
     #[test]
@@ -858,6 +1203,25 @@ mod tests {
         assert_eq!(hud.sparkline_mode, SparklineMode::Fps);
         hud.update(&press(KeyCode::Char('m')));
         assert_eq!(hud.sparkline_mode, SparklineMode::Intervals);
+    }
+
+    #[test]
+    fn stress_toggle_and_cooldown() {
+        let mut hud = PerformanceHud::new();
+        assert_eq!(hud.stress_mode, StressMode::Off);
+        hud.update(&press(KeyCode::Char('s')));
+        assert_eq!(hud.stress_mode, StressMode::RampUp);
+        hud.update(&press(KeyCode::Char('c')));
+        assert_eq!(hud.stress_mode, StressMode::Cooldown);
+    }
+
+    #[test]
+    fn stress_penalty_increases_with_level() {
+        let mut hud = PerformanceHud::new();
+        hud.stress_level = 0.0;
+        let base = hud.stress_penalty_ms();
+        hud.stress_level = 0.5;
+        assert!(hud.stress_penalty_ms() > base);
     }
 
     #[test]

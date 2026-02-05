@@ -3,21 +3,21 @@
 │  File "src/main.rs", line 42, in main                    ││Clock timer:   01:59 (0%)                                 │
 │   40 │ fn main() -> Result<()> {                         ││                                                          │
 │   41 │     let config = Config::load()?;                 ││Spinners:                                                 │
-│ ❱42 │     app::run(config)?;                            ││dots        ⠋                                             │
+│ ❱ 42 │     app::run(config)?;                            ││dots        ⠋                                             │
 │   43 │     Ok(())                                        ││line        -                                             │
 │   44 │ }                                                 ││braille     ⠋                                             │
 │  File "src/app.rs", line 128, in run                     ││Progress: ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │
 │   125 │ pub fn run(config: Config) -> Result<()> {       ││                                                          │
 │   126 │     let db = Database::connect(&config.db_url)?; ││                                                          │
 │   127 │     let server = Server::new(db);                ││                                                          │
-│ ❱128 │     server.listen(config.port)?;                 ││                                                          │
+│ ❱ 128 │     server.listen(config.port)?;                 ││                                                          │
 │   129 │     Ok(())                                       ││                                                          │
 │   130 │ }                                                ││                                                          │
 │  File "src/database.rs", line 56, in connect             │╰──────────────────────────────────────────────────────────╯
 │   53 │ pub fn connect(url: &str) -> Result<Self> {       │╭──────────────────────Macro Recorder──────────────────────╮
 │   54 │     let pool = Pool::builder()                    ││State: Idle                                               │
 │   55 │         .max_size(10)                             ││Macro: none                                               │
-│ ❱56 │         .build(url)?;                             ││Events: 0                                                 │
+│ ❱ 56 │         .build(url)?;                             ││Events: 0                                                 │
 │   57 │     Ok(Self { pool })                             ││Duration: -                                               │
 │   58 │ }                                                 ││Speed: 1.00x                                              │
 │ConnectionError: failed to connect to database: connection││Loop: Off                                                 │

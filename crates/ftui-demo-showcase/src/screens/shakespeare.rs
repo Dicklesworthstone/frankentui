@@ -1697,6 +1697,15 @@ mod tests {
     }
 
     #[test]
+    fn shakespeare_search_ranges_case_insensitive() {
+        let ranges = search_ascii_case_insensitive_ranges("To Be or not", "to");
+        assert!(!ranges.is_empty());
+        let first = &ranges[0];
+        assert_eq!(first.range.start, 0);
+        assert_eq!(first.range.end, 2);
+    }
+
+    #[test]
     fn shakespeare_scroll_to_end() {
         let mut s = Shakespeare::new();
         s.viewport_height.set(40);

@@ -1,10 +1,10 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv │ -: Caps 
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
 ╭──────────────────────────────────────────────────────Dashboard───────────────────────────────────────────────────────╮
 │FRANKENTUI DASHBOARD                                                                                                  │
 │╭────────Plasma────────╮╭─────────Charts · Pulse──────────╮╭───────Code · Rust (1/28)────────╮╭─────────Info─────────╮│
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g:cycle · sparklines + mini bars ││// runtime.rs                    ││FrankenTUI Kernel · LI││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││CPU ▃ ▃▃▂▂▁▁▄▃▄▂▅▅▅▆▂▄▅▃▆▅▄▄▆ 46%││use std::{collections::HashMap, s││ INLINE   BRAILLE FX  ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿╔═══════════════════════ ? Keyboard Shortcuts ════════════════════════╗Status: NOMINAL │ Even││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿╔════════════════════════ ⌨ Keyboard Shortcuts ════════════════════════╗Status: NOMINAL │ Even││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│Navigation ▁   ▇▁▁    ▁ █▁▁▁▁█ 14││use ftui_core::event::Event;     │║FPS: 0  TicSize: 118x3││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[1-9, 0]                 Switch to screen by number:cell::Cell;     │║Events/s: 1Theme: Cybe││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[Tab]                    Next screense ftui_render::frame::Frame;   │║CPU:  46%  Alerts: 1  ││
@@ -37,4 +37,4 @@
 │╰────────────────────────────╯╰─────────────────────────────────────────────╯╰───────────────────────────────────────╯│
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Dashboard [2/37]  Cyberpunk Aurora             Tab: next screen · Shift+Tab: prev │ tick:0 frm:0             0x0 00:00 
+ Dashboard [2/40]  Cyberpunk Aurora             Tab: next screen · Shift+Tab: prev │ tick:0 frm:0             0x0 00:00 

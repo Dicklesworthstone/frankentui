@@ -15,10 +15,10 @@
 │project.                               │ │                                       │ │???       │Emoji        │6     │
 │                                       │ │                                       │ │café         │Latin+accent │4     │
 │Task Lists + Links                     │ │                                       │ │α β γ δ      │Greek        │7     │
-│? Inline mode + scrollback            │ │                                       │ │→ ← ↑ ↓      │Arrows       │7     │
-│? Deterministic output                │ │                                       │ ╰──────────────────────────────────╯
-│? Time-travel diff heatmap            │ │                                       │                                     
-│? Conformal frame-time predictor      │ │                                       │ ╭─────Wrap: Word | Align: Left─────╮
+│✓ Inline mode + scrollback             │ │                                       │ │→ ← ↑ ↓      │Arrows       │7     │
+│✓ Deterministic output                 │ │                                       │ ╰──────────────────────────────────╯
+│☐ Time-travel diff heatmap             │ │                                       │                                     
+│☐ Conformal frame-time predictor       │ │                                       │ ╭─────Wrap: Word | Align: Left─────╮
 │                                       │ │                                       │ │w: cycle wrap | a: cycle alignment│
 │Link: https://example.com              │ │                                       │ │The quick brown fox jumps over the│
 │                                       │ │                                       │ │lazy dog.                         │
@@ -31,10 +31,10 @@
 │                                       │ │                                       │ │                                  │
 │  pub fn choose(costs: &[f64; 3]) ->   │ │                                       │ │                                  │
 │Strategy {                             │ │                                       │ │                                  │
-│      let (idx, _) =                   │ │                                       │ │                                  │
-│costs.iter().enumerate().min_by(|a, b| │ │                                       │ │                                  │
-│a.1.total_cmp(b.1)).unwrap();          │ │  [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]│ │                                  │
+│      let (idx, _) = costs.iter().     │ │                                       │ │                                  │
+│enumerate().min_by(|a, b| a.1.         │ │                                       │ │                                  │
+│total_cmp(b.1)).unwrap();              │ │  [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]│ │                                  │
 │      match idx { 0 => Strategy::Full, │ │  Detection: 0 indicators | Uncertain  │ │                                  │
 │1 => Strategy::DirtyRows, _ =>         │ │  Confidence: 0% | Chars: 0/2955       │ │                                  │
-│Strategy::Redraw }                     │ │  Space: play/pause | r: restart | ↑↓: │ │                                  │
+│Strategy::Redraw }                     │ │  Space: play/pause | r: restart | f: t│ │                                  │
 ╰───────────────────────────────────────╯ ╰───────────────────────────────────────╯ ╰──────────────────────────────────╯

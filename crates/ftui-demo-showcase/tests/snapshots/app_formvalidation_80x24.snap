@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭───────────────────────────────Form Validation────────────────────────────────╮
 │Mode: Real-time [M to toggle]                  ╭────────Error Summary────────╮│
 │╭──────────────Registration Form──────────────╮│No validation errors         ││
@@ -21,4 +21,4 @@
 │Touched: 0/9 | Dirty: 0/9                      │                             ││
 │Tab/Arrow: navigate | Space: toggle | Enter: su╰─────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Form Validation [25/38]  Cyberpunk Aurora  Tab/Shift+Tab: next/prev  0x0 00:00 
+ Form Validation [25/40]  Cyberpunk Aurora  Tab/Shift+Tab: next/prev  0x0 00:00 

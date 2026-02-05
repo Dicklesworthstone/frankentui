@@ -25,10 +25,10 @@
 │project.                               │ │                                       │ │Supercalifragilisticexpialidocious│
 │                                       │ │                                       │ │is quite a long word that tests   │
 │Task Lists + Links                     │ │                                       │ │character-level wrapping behavior.│
-│? Inline mode + scrollback            │ │                                       │ │???? contains CJK characters  │
-│? Deterministic output                │ │                                       │ │that are double-width. ? Ferris  │
-│? Time-travel diff heatmap            │ │                                       │ │says hello!                       │
-│? Conformal frame-time predictor      │ │                                       │ │                                  │
+│✓ Inline mode + scrollback             │ │                                       │ │???? contains CJK characters  │
+│✓ Deterministic output                 │ │                                       │ │that are double-width. ? Ferris  │
+│☐ Time-travel diff heatmap             │ │                                       │ │says hello!                       │
+│☐ Conformal frame-time predictor       │ │                                       │ │                                  │
 │                                       │ │                                       │ │                                  │
 │Link: https://example.com              │ │                                       │ │                                  │
 │                                       │ │                                       │ │                                  │
@@ -36,5 +36,5 @@
 │                                       │ │  [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]│ │                                  │
 │─── rust ───                           │ │  Detection: 0 indicators | Uncertain  │ │                                  │
 │  #[derive(Debug, Clone)]              │ │  Confidence: 0% | Chars: 0/2955       │ │                                  │
-│  pub enum Strategy { Full, DirtyRows, │ │  Space: play/pause | r: restart | ↑↓: │ │                                  │
+│  pub enum Strategy { Full, DirtyRows, │ │  Space: play/pause | r: restart | f: t│ │                                  │
 ╰───────────────────────────────────────╯ ╰───────────────────────────────────────╯ ╰──────────────────────────────────╯

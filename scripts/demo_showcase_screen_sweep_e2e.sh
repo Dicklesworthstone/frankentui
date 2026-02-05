@@ -130,7 +130,7 @@ SCREENS=(
     "27|async_tasks|Async Tasks"
     "28|theme_studio|Theme Studio"
     "29|time_travel_studio|Time-Travel Studio"
-    "30|performance_hud|Performance HUD"
+    "30|performance_hud|Performance Challenge"
     "31|i18n_stress_lab|i18n Stress Lab"
     "32|voi_overlay|VOI Overlay"
     "33|inline_mode|Inline Mode"

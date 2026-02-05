@@ -25,10 +25,10 @@
 │project.                               │ │                                       │ │ialidocious is quite a long word t│
 │                                       │ │                                       │ │hat tests character-level wrapping│
 │Task Lists + Links                     │ │                                       │ │ behavior. ???? contains CJK c│
-│? Inline mode + scrollback            │ │                                       │ │haracters that are double-width.  │
-│? Deterministic output                │ │                                       │ │? Ferris says hello!             │
-│? Time-travel diff heatmap            │ │                                       │ │                                  │
-│? Conformal frame-time predictor      │ │                                       │ │                                  │
+│✓ Inline mode + scrollback             │ │                                       │ │haracters that are double-width.  │
+│✓ Deterministic output                 │ │                                       │ │? Ferris says hello!             │
+│☐ Time-travel diff heatmap             │ │                                       │ │                                  │
+│☐ Conformal frame-time predictor       │ │                                       │ │                                  │
 │                                       │ │                                       │ │                                  │
 │Link: https://example.com              │ │                                       │ │                                  │
 │                                       │ │                                       │ │                                  │
@@ -36,5 +36,5 @@
 │                                       │ │  [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]│ │                                  │
 │─── rust ───                           │ │  Detection: 0 indicators | Uncertain  │ │                                  │
 │  #[derive(Debug, Clone)]              │ │  Confidence: 0% | Chars: 0/2955       │ │                                  │
-│  pub enum Strategy { Full, DirtyRows, │ │  Space: play/pause | r: restart | ↑↓: │ │                                  │
+│  pub enum Strategy { Full, DirtyRows, │ │  Space: play/pause | r: restart | f: t│ │                                  │
 ╰───────────────────────────────────────╯ ╰───────────────────────────────────────╯ ╰──────────────────────────────────╯

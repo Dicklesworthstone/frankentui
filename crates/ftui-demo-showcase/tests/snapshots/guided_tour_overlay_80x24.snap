@@ -1,0 +1,24 @@
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
+╭──────────────────────────────────Dashboard───────────────────────────────────╮
+│FRANKENTUI DASHBOARD  ╭─────────────────────Guided Tour──────────────────────╮│
+│╭──────Plasma──────╮╭─│1/9 · Tour · LIVEse────────╮╭───Code · Rust (1/28)────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g│Speed 1.00x · Next 5.2sni b││// runtime.rs            ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││C│Dashboard▁▄▃▄▂▅▅▅▆▂▄▅▃▆ 46%││use std::{collections::Ha││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││M│Cinematic overview of key features and live tiles.    ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││N│Start here   ▇▁▁    ▁ █▁ 14││use ftui_core::event::Eve││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││O│Controls: Space pause · ←/→ step · Esc exitxplorer::Ce││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││E│Steps:░ DSK ███░░ IO  ░░░░░│╰─────────────────────────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │▶ Tour · Dashboard         │╭──────────Info───────────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │• Text · Shakespeare       ││Status:NOMINAL FPS:0     ││
+││Click → Visual Eff││C│• Text · Code Explorer     ││Click → Performance      ││
+│╰──────────────────╯╰─│• Core · Layout Lab────────╯╰─────────────────────────││
+│╭Text FX · 2-Up (1/28)│Legend: Tour Core Visuals Interact Text Systemsaming…╮││
+││Sample 1 of 3 · 2-Up ╰──────────────────────────────────────────────────────╯│
+││1 · None · S1        ││ INFO  00:02   CPU spike dete││                     │ │
+││2 · FadeIn · S2      ││                             ││                     │ │
+││## GFM Stress · Ledge││                             ││                     │ │
+││e: next set · click →││Click → Action Timeline      ││Click → Markdown     │ │
+│╰─────────────────────╯╰─────────────────────────────╯╰─────────────────────╯ │
+│g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit│
+╰──────────────────────────────────────────────────────────────────────────────╯
+ Dashboard [1/40]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     80x24 00:00 

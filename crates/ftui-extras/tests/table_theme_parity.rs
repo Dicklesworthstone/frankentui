@@ -20,6 +20,72 @@ struct RowStyleHash {
     hash: u64,
 }
 
+fn _format_vec_mismatch<T: std::fmt::Debug + PartialEq>(
+    label: &str,
+    left: &[T],
+    right: &[T],
+) -> String {
+    let mut lines = Vec::new();
+    let max_len = left.len().max(right.len());
+    for idx in 0..max_len {
+        let l = left.get(idx);
+        let r = right.get(idx);
+        if l != r {
+            lines.push(format!("{label}[{idx}]: left={l:?}, right={r:?}"));
+        }
+    }
+    if lines.is_empty() {
+        format!(
+            "{label}: no mismatches (len left={}, len right={})",
+            left.len(),
+            right.len()
+        )
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn _format_style_hash_mismatch(markdown: &[RowStyleHash], widget: &[RowStyleHash]) -> String {
+    let mut lines = Vec::new();
+    let max_len = markdown.len().max(widget.len());
+    for idx in 0..max_len {
+        let left = markdown.get(idx);
+        let right = widget.get(idx);
+        if left != right {
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    lines.push(format!(
+                        "{:?} row {}: markdown=0x{:016x}, widget=0x{:016x}",
+                        left.section, left.row_index, left.hash, right.hash
+                    ));
+                }
+                (Some(left), None) => {
+                    lines.push(format!(
+                        "{:?} row {}: markdown=0x{:016x}, widget=<missing>",
+                        left.section, left.row_index, left.hash
+                    ));
+                }
+                (None, Some(right)) => {
+                    lines.push(format!(
+                        "{:?} row {}: markdown=<missing>, widget=0x{:016x}",
+                        right.section, right.row_index, right.hash
+                    ));
+                }
+                (None, None) => {}
+            }
+        }
+    }
+    if lines.is_empty() {
+        format!(
+            "style hashes match (len markdown={}, len widget={})",
+            markdown.len(),
+            widget.len()
+        )
+    } else {
+        lines.join("\n")
+    }
+}
+
 fn build_markdown_table(header: &[&str], rows: &[Vec<&str>]) -> String {
     let mut out = String::new();
     out.push('|');

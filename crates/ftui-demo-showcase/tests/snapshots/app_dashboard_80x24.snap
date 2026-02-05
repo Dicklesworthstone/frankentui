@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Dashboard───────────────────────────────────╮
 │FRANKENTUI DASHBOARD                                                          │
 │╭──────Plasma──────╮╭───────Charts · Pulse────────╮╭───Code · Rust (1/28)────╮│
@@ -21,4 +21,4 @@
 │╰─────────────────────╯╰─────────────────────────────╯╰─────────────────────╯ │
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Dashboard [2/38]  Cyberpunk Aurora     Tab/Shift+Tab: next/prev      0x0 00:00 
+ Dashboard [2/40]  Cyberpunk Aurora     Tab/Shift+Tab: next/prev      0x0 00:00 

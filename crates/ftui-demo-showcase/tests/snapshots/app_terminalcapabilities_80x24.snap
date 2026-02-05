@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭────────────────────────────Terminal Capabilities─────────────────────────────╮
 │╭─────────────────────── Terminal Capability Explorer ───────────────────────╮│
 ││Profile: detected | View: Matrix                                            ││
@@ -21,4 +21,4 @@
 ││                                           ││TERM=xterm-256color            ││
 │╰───────────────────────────────────────────╯╰───────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Terminal Capabilities [12/38]        Tab/Shift+Tab: next/prev        0x0 00:00 
+ Terminal Capabilities [12/40]        Tab/Shift+Tab: next/prev        0x0 00:00 

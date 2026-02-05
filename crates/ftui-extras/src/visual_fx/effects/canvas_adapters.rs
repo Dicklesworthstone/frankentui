@@ -721,9 +721,21 @@ fn ping_pong(value: f64, min: f64, max: f64) -> f64 {
 #[inline]
 fn lerp_color(a: PackedRgba, b: PackedRgba, t: f64) -> PackedRgba {
     let t = t.clamp(0.0, 1.0);
-    let r = (a.r() as f64 + (b.r() as f64 - a.r() as f64) * t) as u8;
-    let g = (a.g() as f64 + (b.g() as f64 - a.g() as f64) * t) as u8;
-    let bl = (a.b() as f64 + (b.b() as f64 - a.b() as f64) * t) as u8;
+    if t <= 0.0 {
+        return PackedRgba::rgb(a.r(), a.g(), a.b());
+    }
+    if t >= 1.0 {
+        return PackedRgba::rgb(b.r(), b.g(), b.b());
+    }
+    let ar = a.r() as f64;
+    let ag = a.g() as f64;
+    let ab = a.b() as f64;
+    let br = b.r() as f64;
+    let bg = b.g() as f64;
+    let bb = b.b() as f64;
+    let r = (ar + (br - ar) * t) as u8;
+    let g = (ag + (bg - ag) * t) as u8;
+    let bl = (ab + (bb - ab) * t) as u8;
     PackedRgba::rgb(r, g, bl)
 }
 

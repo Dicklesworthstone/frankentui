@@ -839,7 +839,7 @@ if $CAN_SMOKE; then
 
         run_core_case "dashboard" 2 "cemg" 80 24
         run_core_case "layout_lab" 6 "2d+" 80 24
-        run_core_case "performance_hud" 30 "pm" 80 24
+        run_core_case "performance_hud" 30 "sm" 80 24
         run_core_case "notifications" 19 "s" 80 24
         run_core_case "nav_cycle" 2 $'\t\033[Z' 80 24
 

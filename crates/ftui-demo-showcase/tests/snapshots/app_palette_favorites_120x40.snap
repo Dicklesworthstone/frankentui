@@ -1,40 +1,40 @@
- Tour │ Core │ Visuals │ Interact │ Text │ Systems │                                                                    
- Dash │ Inline │                                                                                                        
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
 ╭──────────────────────────────────────────────────────Dashboard───────────────────────────────────────────────────────╮
 │FRANKENTUI DASHBOARD                                                                                                  │
 │╭────────Plasma────────╮╭─────────Charts · Pulse──────────╮╭───────Code · Rust (1/28)────────╮╭─────────Info─────────╮│
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g:cycle · sparklines + mini bars ││// runtime.rs                    ││FrankenTUI Kernel · LI││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿┌────────────────────────── Command Palette ───────────────────────────┐ INLINE   BRAILLE FX  ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│>Type to search...                                                    │Status: NOMINAL │ Even││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│> [App] Quit  Exit the application                                    │FPS: 0  TicSize: 118x3││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Help  Show or hide the keyboard shortcuts overlay     │Events/s: 1Theme: Cybe││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Cycle Theme  Switch to the next color theme                  │CPU:  46%  Alerts: 1  ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Debug Overlay  Show or hide the debug information pan…│NET:   14↓ Pipeline: B││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Performance HUD  Show or hide the performance metrics…│Frame:  0.0Headroom: +││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Evidence Ledger  Show VOI decisions with posterior ma…│                      ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││CPU ▃ ▃▃▂▂▁▁▄▃▄▂▅▅▅▆▂▄▅▃▆▅▄▄▆ 46%││use std::{collections::HashMap, s││ INLINE   BRAILLE FX  ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿┌────────────────────────── Command Palette ───────────────────────────┐Status: NOMINAL │ Even││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│>Type to search...                                                    │FPS: 0  TicSize: 118x3││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│> [App] Quit  Exit the application                                    │Events/s: 1Theme: Cybe││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Help  Show or hide the keyboard shortcuts overlay     │CPU:  46%  Alerts: 1  ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Cycle Theme  Switch to the next color theme                  │NET:   14↓ Pipeline: B││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Debug Overlay  Show or hide the debug information pan…│Frame:  0.0Headroom: +││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Performance HUD  Show or hide the performance metrics…│                      ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Explainability Cockpit  Show diff/resize/budget decis…│                      ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿└──────────────────────────────────────────────────────────────────────┘                      ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Tick(u64),                   ││                      ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Resize { w: u16, h: u16 },   ││CPU ██████░░░░░░░  46%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Log(String),                 ││MEM █████░░░░░░░░  41%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Quit,                        ││NET █░░░░░░░░░░░░   8%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││}                                ││FRM                n/a││
-││Click → Visual Effects││Click → Data Viz                 ││Click → Code Explorer            ││Click → Performance163││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Resize { w: u16, h: u16 },   ││                      ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Log(String),                 ││CPU ██████░░░░░░░  46%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Quit,                        ││MEM █████░░░░░░░░  41%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││}                                ││NET █░░░░░░░░░░░░   8%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││                                 ││FRM                n/a││
+││Click → Visual Effects││Click → Data Viz                 ││Click → Code ExplorerSync + 'stat││Click → Performance163││
 │╰──────────────────────╯╰─────────────────────────────────╯╰─────────────────────────────────╯╰──────────────────────╯│
 │╭───Text FX · 3-Up (1/28)────╮╭──────────────────Activity───────────────────╮╭───────Markdown · Streaming… 0%────────╮│
 ││Sample 1 of 3 · 3-Up stack  ││SEV TIME  COMP  MESSAGE                      ││▌                                      ││
 ││1 · None · S1               ││ INFO  00:02   CPU spike detected on core 3  ││                                       ││
-││# FX Lab                    ││                                             ││                                       ││
+││# FX Lab · Deterministic Spe││                                             ││                                       ││
 ││> *"Render truth, not pixels││                                             ││                                       ││
 ││2 · FadeIn · S2             ││                                             ││                                       ││
-││## GFM Stress               ││                                             ││                                       ││
-││1. **Bold** + _italic_      ││                                             ││                                       ││
+││## GFM Stress · Ledger      ││                                             ││                                       ││
+││1. **Bold** + _italic_ + ~~s││                                             ││                                       ││
 ││3 · FadeOut · S3            ││                                             ││                                       ││
-││### Mixed                   ││                                             ││                                       ││
+││### Runtime Ledger · Mixed  ││                                             ││                                       ││
 ││- [x] Tasks                 ││                                             ││                                       ││
 ││- [ ] Benchmarks            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
+││- [x] Evidence log          ││                                             ││                                       ││
 ││e: next set · click → Visual││Click → Action Timeline                      ││Click → Markdown                       ││
 │╰────────────────────────────╯╰─────────────────────────────────────────────╯╰───────────────────────────────────────╯│
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/36]  Cyberpunk Aurora                              tick:0 frm:0                              120x40 00:00 
+ Dashboard [2/40]  Cyberpunk Aurora           Tab: next screen · Shift+Tab: prev │ tick:0 frm:0            120x40 00:00 

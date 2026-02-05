@@ -26,6 +26,7 @@ fn lerp_color(a: PackedRgba, b: PackedRgba, t: f32) -> PackedRgba {
 }
 
 /// Built-in TableTheme preset identifiers.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TablePresetId {
     /// Luminous header with cool zebra rows.
@@ -49,6 +50,7 @@ pub enum TablePresetId {
 }
 
 /// Semantic table sections.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TableSection {
     /// Header row section.
@@ -60,6 +62,7 @@ pub enum TableSection {
 }
 
 /// Target selection for a table effect.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TableEffectTarget {
     /// Apply to an entire section (header/body/footer).
@@ -79,6 +82,7 @@ pub enum TableEffectTarget {
 }
 
 /// Scope used to resolve table effects without per-cell work.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct TableEffectScope {
     /// Section being rendered.
@@ -230,6 +234,7 @@ pub enum TableEffect {
 }
 
 /// How effect colors blend with the base style.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default)]
 pub enum BlendMode {
     #[default]
@@ -240,6 +245,7 @@ pub enum BlendMode {
 }
 
 /// Mask for which style channels effects are allowed to override.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct StyleMask {
     pub fg: bool,
@@ -450,6 +456,7 @@ pub struct TableThemeDiagnostics {
 ///
 /// This is a pure data representation (no rendering logic) that preserves
 /// the full TableTheme surface, including effects.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableThemeSpec {
     /// Schema version for forward-compatible parsing.
@@ -468,6 +475,7 @@ pub struct TableThemeSpec {
     pub effects: Vec<TableEffectRuleSpec>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableThemeStyleSpec {
     pub border: StyleSpec,
@@ -479,6 +487,7 @@ pub struct TableThemeStyleSpec {
     pub divider: StyleSpec,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct StyleSpec {
     pub fg: Option<RgbaSpec>,
@@ -487,6 +496,7 @@ pub struct StyleSpec {
     pub attrs: Vec<StyleAttr>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StyleAttr {
     Bold,
@@ -501,6 +511,7 @@ pub enum StyleAttr {
     CurlyUnderline,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RgbaSpec {
     pub r: u8,
@@ -528,17 +539,20 @@ impl From<RgbaSpec> for PackedRgba {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct GradientSpec {
     pub stops: Vec<GradientStopSpec>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GradientStopSpec {
     pub pos: f32,
     pub color: RgbaSpec,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum TableEffectSpec {
     Pulse {
@@ -564,6 +578,7 @@ pub enum TableEffectSpec {
     },
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableEffectRuleSpec {
     pub target: TableEffectTarget,
@@ -1841,9 +1856,10 @@ mod tests {
     fn effect_resolver_all_rows_excludes_header() {
         let base = Style::new().fg(PackedRgba::rgb(10, 10, 10));
         let mut theme = TableTheme::aurora();
+        // pulse_effect(fg, bg) - fg_a=fg_b=first_param, bg_a=bg_b=second_param
         theme.effects = vec![TableEffectRule::new(
             TableEffectTarget::AllRows,
-            pulse_effect(PackedRgba::rgb(5, 5, 5), PackedRgba::rgb(200, 0, 0)),
+            pulse_effect(PackedRgba::rgb(200, 0, 0), PackedRgba::rgb(5, 5, 5)),
         )];
 
         let resolver = theme.effect_resolver();
@@ -1860,9 +1876,10 @@ mod tests {
     fn effect_resolver_all_cells_includes_header_rows() {
         let base = Style::new().fg(PackedRgba::rgb(10, 10, 10));
         let mut theme = TableTheme::aurora();
+        // pulse_effect(fg, bg) - fg_a=fg_b=first_param, bg_a=bg_b=second_param
         theme.effects = vec![TableEffectRule::new(
             TableEffectTarget::AllCells,
-            pulse_effect(PackedRgba::rgb(5, 5, 5), PackedRgba::rgb(0, 200, 0)),
+            pulse_effect(PackedRgba::rgb(0, 200, 0), PackedRgba::rgb(5, 5, 5)),
         )];
 
         let resolver = theme.effect_resolver();

@@ -1,18 +1,18 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭───────────────────────────────────Advanced───────────────────────────────────╮
 │╭───────────Error Traceback───────────╮╭──────────Timers & Spinners──────────╮│
 ││── Application Error ──              ││Compact timer: 5m0s (0%)             ││
 ││  File "src/main.rs", line 42, in mai││Clock timer:   02:00 (0%)            ││
 ││   40 │ fn main() -> Result<()> {    ││                                     ││
 ││   41 │     let config = Config::load││Spinners:                            ││
-││ ❱42 │     app::run(config)?;       ││dots        ⠋                        ││
+││ ❱ 42 │     app::run(config)?;       ││dots        ⠋                        ││
 ││   43 │     Ok(())                   ││line        |                        ││
 ││   44 │ }                            │╰─────────────────────────────────────╯│
 ││  File "src/app.rs", line 128, in run│╭───────────Macro Recorder────────────╮│
 ││   125 │ pub fn run(config: Config) -││State: Idle                          ││
 ││   126 │     let db = Database::conne││Macro: none                          ││
 ││   127 │     let server = Server::new││Events: 0                            ││
-││ ❱128 │     server.listen(config.por││Duration: -                          ││
+││ ❱ 128 │     server.listen(config.por││Duration: -                          ││
 ││   129 │     Ok(())                  │╰─────────────────────────────────────╯│
 ││   130 │ }                           │╭─────────────System Info─────────────╮│
 ││  File "src/database.rs", line 56, in││FrankenTUI Demo Showcase             ││
@@ -21,4 +21,4 @@
 │╰─────────────────────────────────────╯╰─────────────────────────────────────╯│
 │Tick: 0 | Ctrl+←/→: panels | r: reset | Space: pause | Macro: r/p/l +/-       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Advanced [10/38]  Cyberpunk Aurora     Tab/Shift+Tab: next/prev      0x0 00:00 
+ Advanced [10/40]  Cyberpunk Aurora     Tab/Shift+Tab: next/prev      0x0 00:00 

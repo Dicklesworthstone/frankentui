@@ -1,16 +1,16 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭─────────────────────────────────Performance──────────────────────────────────╮
 │╭─────Virtualized List (10000 items)──────╮╭────────Performance Stats────────╮│
 ││[    0]  INFO server::http       Event #0││Total items:  10000              ││
 ││[    1] DEBUG db::pool           Event #0││Selected:     1 / 10000          ││
 ││[    2]  WARN auth::jwt          Event #0││Scroll:       0                  ││
-││[    3] ERROR cache::redis       Event #0││Viewport:     20 rows            ││
-││[    4] TRACE queue::worker      Event #0││Visible:      0..20              ││
+││[    3] ERROR cache::redis       Event #0││Viewport:     17 rows            ││
+││[    4] TRACE queue::worker      Event #0││Visible:      0..17              ││
 ││[    5]  INFO api::handler       Event #0││Progress:     0.0%               ││
 ││[    6] DEBUG core::runtime      Event #0││Tick:         0                  ││
 ││[    7]  WARN server::http       Event #0││                                 ││
 ││[    8] ERROR db::pool           Event #0││Only visible rows are rendered.  ││
-││[    9] TRACE auth::jwt          Event #0││Rendering 20 of 10000 items.     ││
+││[    9] TRACE auth::jwt          Event #0││Rendering 17 of 10000 items.     ││
 ││[   10]  INFO cache::redis       Event #0││░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ││
 ││[   11] DEBUG queue::worker      Event #0││                                 ││
 ││[   12]  WARN api::handler       Event #0││                                 ││
@@ -21,4 +21,4 @@
 │╰─────────────────────────────────────────╯╰─────────────────────────────────╯│
 │Item 1/10000 | j/k: scroll | Ctrl+D/U: page | g/G: jump                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Performance [14/38]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev    0x0 00:00 
+ Performance [14/40]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev    0x0 00:00 

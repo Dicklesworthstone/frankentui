@@ -12,6 +12,10 @@ readme = "../../README.md"
 [dependencies]
 ftui-render = { path = "../ftui-render", version = "0.1.0" }
 tracing = "0.1"
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
 
 [dev-dependencies]
 tracing-test = "0.2"

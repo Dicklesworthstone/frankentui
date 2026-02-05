@@ -1,7 +1,7 @@
 ╭────────────────────Registration Form─────────────────────╮╭───────────────────────Text Inputs────────────────────────╮
 │ NEEDS ATTN   REQ 0/3   ERR 1   FIELDS 3/6                ││ Search   Search...                                       │
 │Name *:         Enter your name...                        ││ Password Password                                        │
-│                ? Name is required                       ││                                                          │
+│                ⚠ Name is required                        ││                                                          │
 │Email *:        user@example.com                          │╰──────────────────────────────────────────────────────────╯
 │Role:             Developer                               │╭───────────────────────Text Editor────────────────────────╮
 │Theme:          (1) Light                                 ││1  Hello, world!                                          │

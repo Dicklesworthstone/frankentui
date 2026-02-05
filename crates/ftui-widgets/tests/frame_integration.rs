@@ -9,10 +9,14 @@
 //! - Respect degradation levels
 
 use ftui_core::geometry::Rect;
+use ftui_layout::Constraint;
 use ftui_render::budget::DegradationLevel;
-use ftui_render::cell::Cell;
+use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::{Frame, HitId};
 use ftui_render::grapheme_pool::GraphemePool;
+use ftui_style::{
+    TableEffect, TableEffectRule, TableEffectTarget, TableTheme, TableThemeDiagnostics,
+};
 use ftui_widgets::StatefulWidget;
 use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
@@ -23,6 +27,7 @@ use ftui_widgets::list::List;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::progress::ProgressBar;
 use ftui_widgets::rule::Rule;
+use ftui_widgets::table::{Row, Table, TableState};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
@@ -69,6 +74,61 @@ fn buffer_checksum(frame: &Frame) -> u64 {
         }
     }
     hasher.finish()
+}
+
+fn perf_rows(rows: usize, cols: usize) -> Vec<Row> {
+    (0..rows)
+        .map(|r| {
+            Row::new((0..cols).map(|c| format!("R{r:02}C{c:02}")))
+                .height(1)
+                .bottom_margin(0)
+        })
+        .collect()
+}
+
+fn perf_header(cols: usize) -> Row {
+    Row::new((0..cols).map(|c| format!("Col {c}"))).height(1)
+}
+
+fn perf_widths(cols: usize) -> Vec<Constraint> {
+    vec![Constraint::Fixed(12); cols]
+}
+
+fn theme_perf_variants() -> [(String, TableTheme, f32); 2] {
+    let base = TableTheme::aurora();
+    let highlight_fg = base.row_hover.fg.unwrap_or(PackedRgba::rgb(240, 245, 255));
+    let highlight_bg = base.row_hover.bg.unwrap_or(PackedRgba::rgb(40, 70, 110));
+    let effect = TableTheme::aurora().with_effect(
+        TableEffectRule::new(
+            TableEffectTarget::Row(0),
+            TableEffect::BreathingGlow {
+                fg: highlight_fg,
+                bg: highlight_bg,
+                intensity: 0.22,
+                speed: 1.0,
+                phase_offset: 0.25,
+                asymmetry: 0.12,
+            },
+        )
+        .priority(1),
+    );
+
+    [
+        ("baseline".to_string(), base, 0.0),
+        ("effect".to_string(), effect, 0.37),
+    ]
+}
+
+fn theme_diag_fields(diag: &TableThemeDiagnostics) -> Vec<(&'static str, String)> {
+    vec![
+        ("preset_id", format!("{:?}", diag.preset_id)),
+        ("style_hash", format!("{:016x}", diag.style_hash)),
+        ("effects_hash", format!("{:016x}", diag.effects_hash)),
+        ("effect_count", diag.effect_count.to_string()),
+        ("padding", diag.padding.to_string()),
+        ("column_gap", diag.column_gap.to_string()),
+        ("row_height", diag.row_height.to_string()),
+    ]
 }
 
 struct BufferWidget;
@@ -434,4 +494,81 @@ fn help_hints_focus_change_storm_e2e() {
         "layout rebuilds should be avoided for stable hint widths"
     );
     assert!(total_dirty_updates > 0, "dirty updates should be recorded");
+}
+
+#[test]
+fn table_theme_perf_baseline_vs_effect_jsonl() {
+    init_tracing();
+    info!("table theme perf baseline vs effects");
+
+    let log_enabled = jsonl_enabled();
+    let iterations = if std::env::var("CI").is_ok() { 120 } else { 40 };
+    let sizes: [(u16, u16); 2] = [(80, 24), (120, 40)];
+    let run_id = format!("bd-2k018-17-{}", std::process::id());
+
+    let rows = 12usize;
+    let cols = 4usize;
+    let rows_data = perf_rows(rows, cols);
+    let header = perf_header(cols);
+    let widths = perf_widths(cols);
+
+    for (width, height) in sizes {
+        let area = Rect::new(0, 0, width, height);
+        for (label, theme, phase) in theme_perf_variants() {
+            let mut pool = GraphemePool::new();
+            let mut frame = Frame::new(width, height, &mut pool);
+            let mut state = TableState::default();
+            let table = Table::new(rows_data.clone(), widths.clone())
+                .header(header.clone())
+                .theme(theme.clone())
+                .theme_phase(phase)
+                .column_spacing(theme.column_gap as u16);
+
+            if log_enabled {
+                let mut fields = vec![
+                    ("run_id", run_id.clone()),
+                    ("case", "table_theme_perf".to_string()),
+                    ("mode", label.clone()),
+                    ("width", width.to_string()),
+                    ("height", height.to_string()),
+                    ("iterations", iterations.to_string()),
+                    ("rows", rows.to_string()),
+                    ("cols", cols.to_string()),
+                    ("phase", format!("{phase:.3}")),
+                    ("alloc_tracking", "none".to_string()),
+                ];
+                let diag = theme.diagnostics();
+                fields.extend(theme_diag_fields(&diag));
+                log_jsonl("table_perf_env", &fields);
+            }
+
+            StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+            let start = Instant::now();
+            for _ in 0..iterations {
+                StatefulWidget::render(&table, area, &mut frame, &mut state);
+            }
+            let elapsed_us = start.elapsed().as_micros() as u64;
+            let per_iter_us = elapsed_us as f64 / iterations as f64;
+            let checksum = buffer_checksum(&frame);
+
+            if log_enabled {
+                let mut fields = vec![
+                    ("run_id", run_id.clone()),
+                    ("mode", label.clone()),
+                    ("width", width.to_string()),
+                    ("height", height.to_string()),
+                    ("iterations", iterations.to_string()),
+                    ("elapsed_us", elapsed_us.to_string()),
+                    ("per_iter_us", format!("{per_iter_us:.3}")),
+                    ("checksum", format!("{checksum:016x}")),
+                ];
+                let diag = theme.diagnostics();
+                fields.extend(theme_diag_fields(&diag));
+                log_jsonl("table_perf_summary", &fields);
+            }
+
+            assert_ne!(checksum, 0, "table render should populate buffer");
+        }
+    }
 }

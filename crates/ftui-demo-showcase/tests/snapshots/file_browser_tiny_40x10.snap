@@ -1,10 +1,10 @@
 ╭─────Project Tree──────╮ ╭Files (23 i╮ 
-│DR my-app              │ │? / DR hom│ 
-│├── DR src             │ │    Perms  │ 
-││   ├── RS main.rs     │ │DR  drwxr-x│ 
-││   ├── RS lib.rs      │ │DR  drwxr-x│ 
-││   └── DR models      │ │DR  drwxr-x│ 
-││       ├── RS user.rs │ │DR  drwxr-x│ 
-││       └── RS post.rs │ │DR  drwxr-x│ 
+│? my-app              │ │? / ? hom│ 
+│├── ? src             │ │    Perms  │ 
+││   ├── ? main.rs     │ │?  drwxr-x│ 
+││   ├── ? lib.rs      │ │?  drwxr-x│ 
+││   └── ? models      │ │?  drwxr-x│ 
+││       ├── ? user.rs │ │?  drwxr-x│ 
+││       └── ? post.rs │ │?  drwxr-x│ 
 ╰───────────────────────╯ ╰───────────╯ 
-DR .git  | h/l: panels | j/k: navigate |
+? .git  | h/l: panels | j/k: navigate |

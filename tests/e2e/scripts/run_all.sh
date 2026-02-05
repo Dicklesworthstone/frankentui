@@ -167,6 +167,9 @@ else
     if [[ -x "$SCRIPT_DIR/test_visual_fx_extras.sh" ]]; then
         run_suite "visual_fx_extras" "$SCRIPT_DIR/test_visual_fx_extras.sh"
     fi
+    if [[ -x "$SCRIPT_DIR/test_visual_fx_fps.sh" ]]; then
+        run_suite "visual_fx_fps" "$SCRIPT_DIR/test_visual_fx_fps.sh"
+    fi
     if [[ -x "$SCRIPT_DIR/test_text_effects_sweep.sh" ]]; then
         run_suite "text_effects_sweep" "$SCRIPT_DIR/test_text_effects_sweep.sh"
     fi

@@ -5,8 +5,9 @@
 //! This screen consolidates diff strategy, resize regime, and budget decisions
 //! into a single panel with a compact timeline for debugging.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -158,7 +159,10 @@ impl Default for ExplainabilityCockpit {
 
 impl ExplainabilityCockpit {
     pub fn new() -> Self {
-        let evidence_path = resolve_evidence_path();
+        Self::with_evidence_path(resolve_evidence_path())
+    }
+
+    pub fn with_evidence_path(evidence_path: Option<PathBuf>) -> Self {
         let mut cockpit = Self {
             data: empty_data(SourceStatus {
                 label: "source: (disabled)".to_string(),
@@ -175,7 +179,15 @@ impl ExplainabilityCockpit {
     }
 
     pub fn render_overlay(&self, frame: &mut Frame, area: Rect) {
-        self.render(frame, area, CockpitMode::Overlay);
+        let overlay_width = 74u16.min(area.width.saturating_sub(4));
+        let overlay_height = 18u16.min(area.height.saturating_sub(4));
+        if overlay_width < 40 || overlay_height < 10 {
+            return;
+        }
+        let x = area.x + area.width.saturating_sub(overlay_width).saturating_sub(1);
+        let y = area.y + area.height.saturating_sub(overlay_height).saturating_sub(1);
+        let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
+        self.render(frame, overlay_area, CockpitMode::Overlay);
     }
 
     fn refresh(&mut self, force: bool) {
@@ -208,8 +220,8 @@ impl ExplainabilityCockpit {
             }
         }
 
-        let contents = match fs::read_to_string(path) {
-            Ok(contents) => contents,
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
             Err(err) => {
                 self.data = empty_data(SourceStatus {
                     label: format!("source: {}", path.display()),
@@ -220,7 +232,26 @@ impl ExplainabilityCockpit {
             }
         };
 
-        let lines = tail_lines(&contents, MAX_EVIDENCE_LINES);
+        let reader = io::BufReader::new(file);
+        let mut ring: VecDeque<String> = VecDeque::new();
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(err) => {
+                    self.data = empty_data(SourceStatus {
+                        label: format!("source: {}", path.display()),
+                        status: format!("Failed to read evidence: {err}"),
+                        hint_lines: default_hint_lines(Some(path)),
+                    });
+                    return;
+                }
+            };
+            if ring.len() == MAX_EVIDENCE_LINES {
+                ring.pop_front();
+            }
+            ring.push_back(line);
+        }
+        let lines: Vec<&str> = ring.iter().map(|line| line.as_str()).collect();
         let parsed = parse_evidence_lines(&lines);
 
         self.last_modified = metadata.modified().ok();
@@ -721,14 +752,6 @@ fn resolve_evidence_path() -> Option<PathBuf> {
     None
 }
 
-fn tail_lines(contents: &str, max_lines: usize) -> Vec<&str> {
-    let lines: Vec<&str> = contents.lines().collect();
-    if lines.len() <= max_lines {
-        return lines;
-    }
-    lines[lines.len().saturating_sub(max_lines)..].to_vec()
-}
-
 fn parse_evidence_lines(lines: &[&str]) -> ParsedEvidence {
     let mut diff: Option<DiffSummary> = None;
     let mut resize: Option<ResizeSummary> = None;
@@ -916,9 +939,21 @@ fn value_string(value: &Value, key: &str) -> Option<String> {
 }
 
 fn value_f64(value: &Value, key: &str) -> Option<f64> {
-    value
-        .get(key)
-        .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|v| v as f64)))
+    value.get(key).and_then(|v| {
+        v.as_f64()
+            .or_else(|| v.as_u64().map(|v| v as f64))
+            .or_else(|| {
+                v.as_str().and_then(|raw| {
+                    let trimmed = raw.trim();
+                    let lowered = trimmed.to_ascii_lowercase();
+                    match lowered.as_str() {
+                        "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+                        "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+                        _ => trimmed.parse::<f64>().ok(),
+                    }
+                })
+            })
+    })
 }
 
 fn value_u64(value: &Value, key: &str) -> Option<u64> {

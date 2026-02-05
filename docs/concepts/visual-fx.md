@@ -19,6 +19,7 @@ All visual FX APIs are opt-in via `ftui-extras` Cargo features:
 - `visual-fx-plasma`: Plasma effect (depends on `visual-fx`).
 - `canvas`: Canvas adapters for sub-cell rendering (Braille/blocks) where available.
 - `fx-gpu`: Optional GPU acceleration (strictly opt-in; no GPU deps unless enabled).
+  - Backends enabled by default: Vulkan, GLES, DX12. Metal is intentionally disabled for now to avoid the unmaintained `paste` dependency; macOS will use CPU FX unless a Metal-safe path is added.
 
 ### GPU Runtime Flags
 

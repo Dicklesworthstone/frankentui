@@ -14,6 +14,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIB_DIR="$PROJECT_ROOT/tests/e2e/lib"
+TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+DEMO_BIN="$TARGET_DIR/release/ftui-demo-showcase"
 # shellcheck source=/dev/null
 source "$LIB_DIR/common.sh"
 # shellcheck source=/dev/null
@@ -21,12 +23,34 @@ source "$LIB_DIR/logging.sh"
 
 E2E_VFX_SEED="${E2E_VFX_SEED:-42}"
 E2E_VFX_FRAMES="${E2E_VFX_FRAMES:-6}"
+E2E_VFX_FPS_FRAMES="${E2E_VFX_FPS_FRAMES:-12}"
 E2E_VFX_TICK_MS="${E2E_VFX_TICK_MS:-16}"
 E2E_INLINE_UI_HEIGHT="${E2E_INLINE_UI_HEIGHT:-8}"
+E2E_VFX_INCLUDE_FPS="${E2E_VFX_INCLUDE_FPS:-1}"
 
-EFFECT_LABELS=("sampling" "metaballs" "plasma")
-MODES=("alt" "inline")
-SIZES=("80x24" "120x40")
+if [[ -n "${E2E_VFX_LABELS:-}" ]]; then
+    labels="${E2E_VFX_LABELS// /,}"
+    IFS=',' read -r -a EFFECT_LABELS <<< "$labels"
+else
+    EFFECT_LABELS=("sampling" "metaballs" "plasma")
+    if [[ "${E2E_VFX_INCLUDE_FPS:-1}" != "0" ]]; then
+        EFFECT_LABELS+=("doom" "quake")
+    fi
+fi
+
+if [[ -n "${E2E_VFX_MODES:-}" ]]; then
+    modes="${E2E_VFX_MODES// /,}"
+    IFS=',' read -r -a MODES <<< "$modes"
+else
+    MODES=("alt" "inline")
+fi
+
+if [[ -n "${E2E_VFX_SIZES:-}" ]]; then
+    sizes="${E2E_VFX_SIZES// /,}"
+    IFS=',' read -r -a SIZES <<< "$sizes"
+else
+    SIZES=("80x24" "120x40")
+fi
 
 if [[ -z "${E2E_PYTHON:-}" ]]; then
     echo "E2E_PYTHON is not set (python3/python not found)" >&2
@@ -41,6 +65,8 @@ effect_for_label() {
     local label="$1"
     case "$label" in
         sampling) echo "metaballs" ;;
+        doom) echo "doom-e1m1" ;;
+        quake) echo "quake-e1m1" ;;
         *) echo "$label" ;;
     esac
 }
@@ -49,7 +75,7 @@ parse_size() {
     local size="$1"
     local cols="${size%x*}"
     local rows="${size#*x}"
-    printf '%s %s' "$cols" "$rows"
+    printf '%s %s\n' "$cols" "$rows"
 }
 
 build_release() {
@@ -61,6 +87,12 @@ build_release() {
 
     if cargo build -p ftui-demo-showcase --release >"$LOG_FILE" 2>&1; then
         local duration_ms=$(( $(e2e_now_ms) - start_ms ))
+        if [[ ! -x "$DEMO_BIN" ]]; then
+            log_test_fail "$step_name" "binary not found at $DEMO_BIN"
+            record_result "$step_name" "failed" "$duration_ms" "$LOG_FILE" "binary not found at $DEMO_BIN"
+            finalize_summary "$E2E_RESULTS_DIR/summary.json"
+            exit 1
+        fi
         log_test_pass "$step_name"
         record_result "$step_name" "passed" "$duration_ms" "$LOG_FILE"
         return 0
@@ -111,6 +143,7 @@ golden_path = sys.argv[12] if len(sys.argv) > 12 and sys.argv[12] else ""
 schema_version = "vfx-jsonl-v1"
 errors = []
 frames = []
+inputs = []
 start = None
 
 if not os.path.exists(raw_path):
@@ -130,6 +163,9 @@ else:
             if event == "vfx_harness_start":
                 start = obj
                 continue
+            if event == "vfx_input":
+                inputs.append(obj)
+                continue
             if event == "vfx_frame":
                 frames.append(obj)
 
@@ -148,11 +184,40 @@ for idx, frame in enumerate(frames, 1):
     if frame.get("seed") != seed_expected:
         errors.append(f"frame {idx} seed mismatch: {frame.get('seed')} expected {seed_expected}")
 
+input_markers = {}
+input_required = ["timestamp", "run_id", "effect", "frame_idx", "action", "cols", "rows", "tick_ms", "seed"]
+for idx, entry in enumerate(inputs, 1):
+    missing = [k for k in input_required if k not in entry]
+    if missing:
+        errors.append(f"input {idx} missing keys {missing}")
+        continue
+    if entry.get("effect") != effect_expected:
+        errors.append(f"input {idx} effect mismatch: {entry.get('effect')} expected {effect_expected}")
+    if entry.get("cols") != cols or entry.get("rows") != rows:
+        errors.append(f"input {idx} dims mismatch: {entry.get('cols')}x{entry.get('rows')} expected {cols}x{rows}")
+    if entry.get("tick_ms") != tick_ms:
+        errors.append(f"input {idx} tick_ms mismatch: {entry.get('tick_ms')} expected {tick_ms}")
+    if entry.get("seed") != seed_expected:
+        errors.append(f"input {idx} seed mismatch: {entry.get('seed')} expected {seed_expected}")
+    frame_idx = entry.get("frame_idx")
+    action = entry.get("action")
+    if not isinstance(frame_idx, int):
+        errors.append(f"input {idx} frame_idx invalid: {frame_idx}")
+        continue
+    if not isinstance(action, str):
+        errors.append(f"input {idx} action invalid: {action}")
+        continue
+    input_markers.setdefault(frame_idx, []).append(action)
+
 if not frames:
     errors.append("no vfx_frame entries found")
 
 if frames_expected > 0 and len(frames) != frames_expected:
     errors.append(f"frame count mismatch: got {len(frames)} expected {frames_expected}")
+
+fps_case = label in ("doom", "quake")
+if fps_case and not inputs:
+    errors.append(f"no vfx_input entries found for fps effect {label}")
 
 run_id = None
 hash_key = None
@@ -176,6 +241,7 @@ with open(out_path, "w", encoding="utf-8") as out:
         timestamp = frames[0].get("timestamp")
     if not timestamp:
         timestamp = datetime.utcnow().isoformat() + "Z"
+    fps_estimate = round(1000.0 / tick_ms, 3) if tick_ms > 0 else 0.0
 
     start_record = {
         "schema_version": schema_version,
@@ -192,10 +258,12 @@ with open(out_path, "w", encoding="utf-8") as out:
         "seed": seed_expected,
         "hash_key": hash_key,
         "frames": len(frames),
+        "fps_estimate": fps_estimate,
     }
     out.write(json.dumps(start_record, separators=(",", ":")) + "\n")
 
     for frame in frames:
+        frame_idx = frame.get("frame_idx")
         record = {
             "schema_version": schema_version,
             "type": "vfx_frame",
@@ -204,15 +272,39 @@ with open(out_path, "w", encoding="utf-8") as out:
             "case_id": case_id,
             "effect": label,
             "effect_raw": frame.get("effect"),
-            "frame_idx": frame.get("frame_idx"),
+            "frame_idx": frame_idx,
             "hash": frame.get("hash"),
             "time": frame.get("time"),
+            "action": "frame",
             "mode": mode,
             "cols": frame.get("cols"),
             "rows": frame.get("rows"),
             "tick_ms": frame.get("tick_ms"),
             "seed": frame.get("seed"),
             "hash_key": frame.get("hash_key"),
+            "fps_estimate": fps_estimate,
+            "input_markers": input_markers.get(frame_idx, []),
+        }
+        out.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    for entry in inputs:
+        record = {
+            "schema_version": schema_version,
+            "type": "vfx_input",
+            "timestamp": entry.get("timestamp"),
+            "run_id": run_id,
+            "case_id": case_id,
+            "effect": label,
+            "effect_raw": entry.get("effect"),
+            "frame_idx": entry.get("frame_idx"),
+            "action": entry.get("action"),
+            "mode": mode,
+            "cols": entry.get("cols"),
+            "rows": entry.get("rows"),
+            "tick_ms": entry.get("tick_ms"),
+            "seed": entry.get("seed"),
+            "hash_key": entry.get("hash_key"),
+            "fps_estimate": fps_estimate,
         }
         out.write(json.dumps(record, separators=(",", ":")) + "\n")
 
@@ -275,18 +367,23 @@ run_vfx_case() {
     local start_ms
     start_ms="$(e2e_now_ms)"
 
+    local frames="$E2E_VFX_FRAMES"
+    if [[ "$label" == "doom" || "$label" == "quake" ]]; then
+        frames="$E2E_VFX_FPS_FRAMES"
+    fi
+
     local ui_arg="--ui-height=${E2E_INLINE_UI_HEIGHT}"
     if [[ "$mode" == "alt" ]]; then
         ui_arg="--ui-height=${E2E_INLINE_UI_HEIGHT}"
     fi
 
-    if ! "$PROJECT_ROOT/target/release/ftui-demo-showcase" \
+    if ! "$DEMO_BIN" \
         --screen-mode="$mode" \
         "$ui_arg" \
         --vfx-harness \
         --vfx-effect="$effect" \
         --vfx-tick-ms="$E2E_VFX_TICK_MS" \
-        --vfx-frames="$E2E_VFX_FRAMES" \
+        --vfx-frames="$frames" \
         --vfx-cols="$cols" \
         --vfx-rows="$rows" \
         --vfx-seed="$E2E_SEED" \
@@ -309,7 +406,7 @@ run_vfx_case() {
     fi
 
     if ! validate_and_enrich "$raw_jsonl" "$out_jsonl" "$label" "$effect" "$mode" "$cols" "$rows" \
-        "$E2E_VFX_TICK_MS" "$E2E_VFX_FRAMES" "$E2E_SEED" "$case_id" "$golden_file"; then
+        "$E2E_VFX_TICK_MS" "$frames" "$E2E_SEED" "$case_id" "$golden_file"; then
         local duration_ms=$(( $(e2e_now_ms) - start_ms ))
         log_test_fail "$name" "validation failed"
         record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "validation failed"

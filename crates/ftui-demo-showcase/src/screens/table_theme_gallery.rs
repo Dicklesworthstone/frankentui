@@ -28,8 +28,12 @@ const PREVIEW_PHASE: f32 = 0.35;
 const MIN_CARD_HEIGHT: u16 = 6;
 const CARD_DESC_LINES: u16 = 2;
 const PREVIEW_PANEL_HEIGHT: u16 = 7;
-const LEGEND_HEIGHT: u16 = 2;
+const LEGEND_HEIGHT: u16 = 3;
 const HIGHLIGHT_ROW_INDEX: usize = 1;
+const DEFAULT_EXPORT_PATH: &str = "table_theme_preset.json";
+const EXPORT_PATH_ENV: &str = "FTUI_TABLE_THEME_EXPORT_PATH";
+const IMPORT_PATH_ENV: &str = "FTUI_TABLE_THEME_IMPORT_PATH";
+const CLIPBOARD_ENV: &str = "FTUI_TABLE_THEME_CLIPBOARD";
 
 #[derive(Debug, Clone, Copy)]
 enum PresetKind {

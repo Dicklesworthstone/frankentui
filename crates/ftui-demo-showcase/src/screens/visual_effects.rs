@@ -3360,10 +3360,7 @@ impl DoomE1M1State {
         if width == 0 || height == 0 {
             return;
         }
-        let stride = match quality {
-            FxQuality::Off => 0,
-            _ => 1,
-        };
+        let stride = fx_stride_for_area(quality, width, height, 12_000);
         if stride == 0 {
             return;
         }
@@ -3386,7 +3383,7 @@ impl DoomE1M1State {
         let sky_bottom = (170, 205, 235);
         let floor_top = (182, 138, 100);
         let floor_bottom = (120, 86, 58);
-        let fill_stride = 1;
+        let fill_stride = stride;
         for py in (0..=max_y).step_by(fill_stride) {
             let (r, g, b) = if py <= horizon {
                 let denom = horizon.max(1) as f64;
@@ -4440,6 +4437,15 @@ fn reset_rand_state(seed: u64) {
     RAND_STATE.store(seed, Ordering::Relaxed);
 }
 
+fn effect_seed(effect: EffectType) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64 ^ RAND_SEED;
+    for byte in effect.key().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 fn rand_simple() -> f64 {
     let old = RAND_STATE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
@@ -4557,10 +4563,10 @@ fn fx_stride_for_area(quality: FxQuality, width: u16, height: u16, max_samples: 
 
 impl Default for VisualEffectsScreen {
     fn default() -> Self {
-        reset_rand_state(RAND_SEED);
         let plasma_palette = PlasmaPalette::Sunset;
         let markdown_panel = render_markdown(MARKDOWN_OVERLAY);
         let effect = initial_effect_from_env().unwrap_or(EffectType::Metaballs);
+        reset_rand_state(effect_seed(effect));
 
         Self {
             effect,
@@ -4654,6 +4660,7 @@ impl VisualEffectsScreen {
 
     fn switch_effect(&mut self, effect: EffectType) {
         self.effect = effect;
+        reset_rand_state(effect_seed(effect));
         self.fps_last_mouse = None;
         self.fps_input = FpsInputState::default();
         self.start_transition();
@@ -4664,6 +4671,7 @@ impl VisualEffectsScreen {
             return false;
         };
         self.effect = effect;
+        reset_rand_state(effect_seed(effect));
         self.fps_last_mouse = None;
         self.fps_input = FpsInputState::default();
         true
@@ -5899,6 +5907,14 @@ mod tests {
         screen.view(&mut frame, smaller);
         let len_after = screen.painter.borrow().buffer_len();
         assert_eq!(len_after, len_large);
+    }
+
+    #[test]
+    fn effect_seed_is_stable() {
+        let seed_a = effect_seed(EffectType::Metaballs);
+        let seed_b = effect_seed(EffectType::Metaballs);
+        assert_eq!(seed_a, seed_b);
+        assert_ne!(seed_a, effect_seed(EffectType::QuakeE1M1));
     }
 
     // =========================================================================

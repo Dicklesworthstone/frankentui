@@ -2291,4 +2291,25 @@ mod tests {
         assert_eq!(truncate_to_grapheme_count(text, 2), "a😀");
         assert_eq!(truncate_to_grapheme_count(text, 3), "a😀b");
     }
+
+    #[test]
+    fn code_explorer_result_sets_populated() {
+        assert!(!RESULT_SETS.is_empty());
+        for set in RESULT_SETS {
+            assert!(!set.is_empty());
+            for row in *set {
+                assert!(!row.play.is_empty());
+                assert!(!row.speaker.is_empty());
+                assert!(!row.line.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn code_explorer_schema_preview_populated() {
+        assert!(!SCHEMA_PREVIEW.is_empty());
+        for line in SCHEMA_PREVIEW {
+            assert!(!line.is_empty());
+        }
+    }
 }

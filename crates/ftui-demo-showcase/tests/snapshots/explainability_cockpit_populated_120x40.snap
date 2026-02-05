@@ -1,0 +1,40 @@
+Explainability Cockpit · source: /tmp/ftui_explainability_cockpit.jsonl                                                 
+Loaded 4 entries (4 lines)                                                                                              
+╭─────────────Diff Strategy─────────────╮╭────────Resize Regime (BOCPD)─────────╮╭──────────Budget Decisions───────────╮
+│Decision: dirty                        ││Decision: coalesce (burst)            ││Decision: degrade                    │
+│Why: strategy dirty                    ││Why: burst regime                     ││Frame: 20.00ms / 16.00ms             │
+│Posterior: μ=0.330 σ²=0.120 α=1.20     ││Evidence: LBF=1.23 (regime 0.50,      ││E-value: 0.400                       │
+│β=2.30                                 ││timing 0.30, rate 0.20)               ││Phase: steady                        │
+│Dirty rows: 5/24 (20.8%)               ││Render gap: 3.0ms                     ││Controller: degrade                  │
+│Hysteresis: applied (1.10x)            ││                                      ││                                     │
+│Coverage: tiles=7.0% cells=8.0%        ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+│                                       ││                                      ││                                     │
+╰───────────────────────────────────────╯╰──────────────────────────────────────╯╰─────────────────────────────────────╯
+╭──────────────────────────────────────────────────Decision Timeline───────────────────────────────────────────────────╮
+│diff   #  4 strategy dirty · μ=0.33 σ²=0.12                                                                           │
+│resize #  7 coalesce burst · LBF=1.23                                                                                 │
+│budget # 42 degrade budget · e=0.40                                                                                   │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

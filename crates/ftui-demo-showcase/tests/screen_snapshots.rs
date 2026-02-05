@@ -65,34 +65,6 @@ fn snapshot_app(app: &mut AppModel, width: u16, height: u16, name: &str) {
     assert_snapshot!(name, &frame.buffer);
 }
 
-struct EnvVarGuard {
-    key: String,
-    prev: Option<String>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &str, value: Option<&str>) -> Self {
-        let prev = env::var(key).ok();
-        match value {
-            Some(val) => env::set_var(key, val),
-            None => env::remove_var(key),
-        }
-        Self {
-            key: key.to_string(),
-            prev,
-        }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match self.prev.as_deref() {
-            Some(val) => env::set_var(&self.key, val),
-            None => env::remove_var(&self.key),
-        }
-    }
-}
-
 fn terminal_caps_env() -> ftui_demo_showcase::screens::terminal_capabilities::EnvSnapshot {
     ftui_demo_showcase::screens::terminal_capabilities::EnvSnapshot::from_values(
         "xterm-256color",
@@ -1948,8 +1920,8 @@ fn snapshot_player_zero_area() {
 #[test]
 fn snapshot_player_title() {
     let screen = ftui_demo_showcase::screens::snapshot_player::SnapshotPlayer::new();
-    assert_eq!(screen.title(), "Snapshot Player");
-    assert_eq!(screen.tab_label(), "Snapshots");
+    assert_eq!(screen.title(), "Time-Travel Studio");
+    assert_eq!(screen.tab_label(), "TimeTravel");
 }
 
 // ============================================================================
@@ -2182,9 +2154,10 @@ fn hyperlink_playground_focus_120x40() {
 
 #[test]
 fn explainability_cockpit_empty_80x24() {
-    let _guard_demo = EnvVarGuard::set("FTUI_DEMO_EVIDENCE_JSONL", None);
-    let _guard_harness = EnvVarGuard::set("FTUI_HARNESS_EVIDENCE_JSONL", None);
-    let screen = ftui_demo_showcase::screens::explainability_cockpit::ExplainabilityCockpit::new();
+    let screen =
+        ftui_demo_showcase::screens::explainability_cockpit::ExplainabilityCockpit::with_evidence_path(
+            None,
+        );
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(80, 24, &mut pool);
     let area = Rect::new(0, 0, 80, 24);
@@ -2204,10 +2177,11 @@ fn explainability_cockpit_populated_120x40() {
     .join("\n");
 
     fs::write(path, sample).expect("write explainability evidence fixture");
-    let _guard_demo = EnvVarGuard::set("FTUI_DEMO_EVIDENCE_JSONL", Some(path));
-    let _guard_harness = EnvVarGuard::set("FTUI_HARNESS_EVIDENCE_JSONL", None);
 
-    let screen = ftui_demo_showcase::screens::explainability_cockpit::ExplainabilityCockpit::new();
+    let screen =
+        ftui_demo_showcase::screens::explainability_cockpit::ExplainabilityCockpit::with_evidence_path(
+            Some(path.into()),
+        );
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(120, 40, &mut pool);
     let area = Rect::new(0, 0, 120, 40);

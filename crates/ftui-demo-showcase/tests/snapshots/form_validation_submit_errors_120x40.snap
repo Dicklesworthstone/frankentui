@@ -1,20 +1,20 @@
 Mode: Real-time [M to toggle]                                           ╭────────────────Error Summary─────────────────╮
 ╭──────────────────────────Registration Form───────────────────────────╮│• Username: Username is required              │
 │Username:         Enter username (required)                           ││• Email: Email is required                    │
-│                  ? Username is required                             ││• Password: Password is required              │
+│                  ⚠ Username is required                              ││• Password: Password is required              │
 │Email:            user@example.com                                    ││• Confirm Password: Please confirm your passwo│
-│                  ? Email is required                                ││• Role: Please select a role                  │
+│                  ⚠ Email is required                                 ││• Role: Please select a role                  │
 │Password:         Min 8 characters                                    ││• Accept Terms: You must accept the terms     │
-│                  ? Password is required                             ││                                              │
+│                  ⚠ Password is required                              ││                                              │
 │Confirm Password: Re-enter password                                   ││                                              │
-│                  ? Please confirm your password                     ││                                              │
+│                  ⚠ Please confirm your password                      ││                                              │
 │Age:                25                                                ││                                              │
 │Bio:              Max 100 characters                                  ││                                              │
 │Website:          https://example.com                                 ││                                              │
 │Role:               (Select a role)                                   ││                                              │
-│                  ? Please select a role                             ││                                              │
+│                  ⚠ Please select a role                              ││                                              │
 │Accept Terms:     [ ]                                                 ││                                              │
-│                  ? You must accept the terms                        ││                                              │
+│                  ⚠ You must accept the terms                         ││                                              │
 │                                                                      ││                                              │
 │                                                                      ││                                              │
 │                                                                      ││                                              │

@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭───────────────────────────────Performance HUD────────────────────────────────╮
 │PERFORMANCE HUD + RENDER BUDGET VISUALIZER                                    │
 │╭──────Real-Time Metrics───────╮╭Tick Intervals (µs╮╭─────Render Budget──────╮│
@@ -21,4 +21,4 @@
 │╰──────────────────────────────╯╰──────────────────╯╰────────────────────────╯│
 │r:reset | p:pause | m:mode(intervals) | samples:0/120                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Performance HUD [30/38]  Cyberpunk Aurora  Tab/Shift+Tab: next/prev  0x0 00:00 
+ Performance HUD [30/40]  Cyberpunk Aurora  Tab/Shift+Tab: next/prev  0x0 00:00 

@@ -1,29 +1,29 @@
-╭─────Project Tree──────╮ ╭──────────────Files (23 items)───────────────╮ ╭──────────────Preview: DR .git──────────────╮
-│DR my-app              │ │? / DR home → DR user → DR projects → DR my-│ │Directory  •  Size: --  •  Perms: drwxr-xr-x│
-│├── DR src             │ │   Name               Perms             Size │ │Path: /home/user/projects/my-app            │
-││   ├── RS main.rs     │ │DR .git               drwxr-xr-x          -- │ │Preview:                                    │
-││   ├── RS lib.rs      │ │DR assets             drwxr-xr-x          -- │ │Directory contents:                         │
-││   └── DR models      │ │DR docs               drwxr-xr-x          -- │ │  DR .git                                   │
-││       ├── RS user.rs │ │DR src                drwxr-xr-x          -- │ │  DR assets                                 │
-││       └── RS post.rs │ │DR target             drwxr-xr-x          -- │ │  DR docs                                   │
-│├── DR tests           │ │DR tests              drwxr-xr-x          -- │ │  DR src                                    │
-││   ├── PY test_app.py │ │SY build.sh           lrwxr-xr-x        48 B │ │  DR target                                 │
-││   └── RS integration.│ │PY app.py             -rwxr-xr-x      1.5 KB │ │  DR tests                                  │
-│├── DR docs            │ │TM Cargo.toml         -rw-r--r--       512 B │ │  SY build.sh                               │
-││   ├── MD README.md   │ │TM config.toml        -rw-r--r--       256 B │ │  PY app.py                                 │
-││   └── MD API.md      │ │IM cover.jpg          -rw-r--r--    512.0 KB │ │                                            │
-│├── TM Cargo.toml      │ │JS data.json          -rw-r--r--     10.2 KB │ │                                            │
-│├── JS package.json    │ │VI demo.mp4           -rw-r--r--     12.6 MB │ │                                            │
-│└── CF .gitignore      │ │RS lib.rs             -rw-r--r--      4.1 KB │ │                                            │
-│                       │ │IM logo.png           -rw-r--r--    424.1 KB │ │                                            │
-│                       │ │RS main.rs            -rw-r--r--      2.0 KB │ │                                            │
-│                       │ │RS mod.rs             -rw-r--r--       512 B │ │                                            │
-│                       │ │JS package.json       -rw-r--r--       384 B │ │                                            │
-│                       │ │MD README.md          -rw-r--r--      3.1 KB │ │                                            │
-│                       │ │PY scripts.py         -rwxr-xr-x      1.6 KB │ │                                            │
-│                       │ │TM settings.toml      -rw-r--r--       256 B │ │                                            │
-│                       │ │AU song.mp3           -rw-r--r--      3.4 MB │ │                                            │
-│                       │ │PY test_app.py        -rwxr-xr-x       892 B │ │                                            │
+╭─────Project Tree──────╮ ╭──────────────Files (23 items)───────────────╮ ╭──────────────Preview: ? .git──────────────╮
+│? my-app              │ │? / ? home → ? user → ? projects → ? my-│ │Directory  •  Size: --  •  Perms: drwxr-xr-x│
+│├── ? src             │ │   Name               Perms             Size │ │Path: /home/user/projects/my-app            │
+││   ├── ? main.rs     │ │? .git               drwxr-xr-x          -- │ │Preview:                                    │
+││   ├── ? lib.rs      │ │? assets             drwxr-xr-x          -- │ │Directory contents:                         │
+││   └── ? models      │ │? docs               drwxr-xr-x          -- │ │  ? .git                                   │
+││       ├── ? user.rs │ │? src                drwxr-xr-x          -- │ │  ? assets                                 │
+││       └── ? post.rs │ │? target             drwxr-xr-x          -- │ │  ? docs                                   │
+│├── ? tests           │ │? tests              drwxr-xr-x          -- │ │  ? src                                    │
+││   ├── ? test_app.py │ │? build.sh           lrwxr-xr-x        48 B │ │  ? target                                 │
+││   └── ? integration.│ │? app.py             -rwxr-xr-x      1.5 KB │ │  ? tests                                  │
+│├── ? docs            │ │? Cargo.toml         -rw-r--r--       512 B │ │  ? build.sh                               │
+││   ├── ? README.md   │ │? config.toml        -rw-r--r--       256 B │ │  ? app.py                                 │
+││   └── ? API.md      │ │? cover.jpg          -rw-r--r--    512.0 KB │ │                                            │
+│├── ? Cargo.toml      │ │? data.json          -rw-r--r--     10.2 KB │ │                                            │
+│├── ? package.json    │ │? demo.mp4           -rw-r--r--     12.6 MB │ │                                            │
+│└── ? .gitignore      │ │? lib.rs             -rw-r--r--      4.1 KB │ │                                            │
+│                       │ │? logo.png           -rw-r--r--    424.1 KB │ │                                            │
+│                       │ │? main.rs            -rw-r--r--      2.0 KB │ │                                            │
+│                       │ │? mod.rs             -rw-r--r--       512 B │ │                                            │
+│                       │ │? package.json       -rw-r--r--       384 B │ │                                            │
+│                       │ │? README.md          -rw-r--r--      3.1 KB │ │                                            │
+│                       │ │? scripts.py         -rwxr-xr-x      1.6 KB │ │                                            │
+│                       │ │? settings.toml      -rw-r--r--       256 B │ │                                            │
+│                       │ │? song.mp3           -rw-r--r--      3.4 MB │ │                                            │
+│                       │ │? test_app.py        -rwxr-xr-x       892 B │ │                                            │
 │                       │ │                                             │ │                                            │
 │                       │ │                                             │ │                                            │
 │                       │ │                                             │ │                                            │
@@ -37,4 +37,4 @@
 │                       │ │                                             │ │                                            │
 │                       │ │                                             │ │                                            │
 ╰───────────────────────╯ ╰─────────────────────────────────────────────╯ ╰────────────────────────────────────────────╯
-DR .git  | h/l: panels | j/k: navigate | g/G: first/last | Enter: open | Backspace: up | .: hidden                      
+? .git  | h/l: panels | j/k: navigate | g/G: first/last | Enter: open | Backspace: up | .: hidden                      

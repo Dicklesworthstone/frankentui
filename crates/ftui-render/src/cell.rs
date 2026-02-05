@@ -888,11 +888,13 @@ mod tests {
         let emoji = CellContent::from_char('🎉');
         assert_eq!(emoji.width(), 2);
 
+        // In non-CJK mode (the default), these "Ambiguous" width characters
+        // return width 1 per unicode-width. In CJK mode they would be 2.
         let bolt = CellContent::from_char('⚡');
-        assert_eq!(bolt.width(), 2);
+        assert_eq!(bolt.width(), 1);
 
         let gear = CellContent::from_char('⚙');
-        assert_eq!(gear.width(), 2);
+        assert_eq!(gear.width(), 1);
 
         let heart = CellContent::from_char('❤');
         assert_eq!(heart.width(), 1);

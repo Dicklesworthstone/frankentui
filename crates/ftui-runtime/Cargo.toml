@@ -49,7 +49,7 @@ unicode-width = "0.2.2"
 # Optional telemetry dependencies (feature-gated)
 opentelemetry = { version = "0.31", optional = true }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-blocking-client"], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
 tracing-subscriber = { version = "0.3", features = ["registry", "env-filter"], optional = true }
 

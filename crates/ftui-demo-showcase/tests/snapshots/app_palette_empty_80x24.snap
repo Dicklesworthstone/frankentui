@@ -1,24 +1,24 @@
- Tour │ Core │ Visuals │ Interact │ Text │ Systems │                            
- Dash │ Inline │                                                                
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Dashboard───────────────────────────────────╮
 │FRANKENTUI DASHBOARD                                                          │
-│╭─────────Plasm┌────────────── Command Palette ───────────────┐               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│>Type to search...                            │               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│> [App] Quit  Exit the application            │               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Visuals] Data Viz  Dense charts and small-…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Core] Advanced  Advanced widget patterns a…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Text] Markdown  Markdown rendering with st…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Dashboard  Cinematic overview of key…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Core] Layout Lab  Hands-on layout experime…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Text] Log Search  Search and filter logs w…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Text] Shakespeare  Live search over Shakes…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Systems] Performance  Render performance m…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Systems] Async Tasks  Async tasks and job …│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Systems] VOI Overlay  Value-of-information…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Inline Mode  Inline mode story and s…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿└──────────────────────────────────────────────┘               │
-││Click → Visual Effects⣿⣿⣿│FPS:0 78x19                                        │
-│╰─────────────────────────╯                                                   │
-│t:theme q:quit                                                                │
+│╭──────Plasma──────╮╭───────Charts · Pulse────────╮╭───Code · Rust (1/28)────╮│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿┌────────────── Command Palette ───────────────┐rs            ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│>Type to search...                            │ollections::Ha││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│> [App] Quit  Exit the application            │              ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Visuals] Data Viz  Dense charts and small-…│re::event::Eve││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Core] Advanced  Advanced widget patterns a…│e Explorer::Ce││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Text] Markdown  Markdown rendering with st…│──────────────╯│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Dashboard  Cinematic overview of key…│nfo───────────╮│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Core] Layout Lab  Hands-on layout experime…│NAL FPS:0     ││
+││Click → Visual│  [Text] Log Search  Search and filter logs w…│formance      ││
+│╰──────────────│  [Tour] Guided Tour  Cinematic auto-play tou…│──────────────╯│
+│╭Text FX · 2-Up│  [Text] Shakespeare  Live search over Shakes…│ · Streaming…╮ │
+││Sample 1 of 3 │  [Systems] Performance  Render performance m…│             │ │
+││1 · None · S1 │  [Systems] Async Tasks  Async tasks and job …│             │ │
+││2 · FadeIn · S│  [Systems] VOI Overlay  Value-of-information…│             │ │
+││## GFM Stress └──────────────────────────────────────────────┘             │ │
+││e: next set · click →││Click → Action Timeline      ││Click → Markdown     │ │
+│╰─────────────────────╯╰─────────────────────────────╯╰─────────────────────╯ │
+│g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/36]  Cyberpunk Aurora          tick:0 frm:0           80x24 00:00 
+ Dashboard [2/40]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     80x24 00:00 

@@ -1,24 +1,24 @@
-╭─────Project Tree──────╮ ╭──────Files (23 items)───────╮ ╭──Preview: DR .git──╮
-│DR my-app              │ │? / DR home → DR user → DR p│ │Directory  •  Size: │
-│├── DR src             │ │   Na Perms             Size │ │Path: /home/user/pro│
-││   ├── RS main.rs     │ │DR .g drwxr-xr-x          -- │ │Preview:            │
-││   ├── RS lib.rs      │ │DR as drwxr-xr-x          -- │ │Directory contents: │
-││   └── DR models      │ │DR do drwxr-xr-x          -- │ │  DR .git           │
-││       ├── RS user.rs │ │DR sr drwxr-xr-x          -- │ │  DR assets         │
-││       └── RS post.rs │ │DR ta drwxr-xr-x          -- │ │  DR docs           │
-│├── DR tests           │ │DR te drwxr-xr-x          -- │ │  DR src            │
-││   ├── PY test_app.py │ │SY bu lrwxr-xr-x        48 B │ │  DR target         │
-││   └── RS integration.│ │PY ap -rwxr-xr-x      1.5 KB │ │  DR tests          │
-│├── DR docs            │ │TM Ca -rw-r--r--       512 B │ │  SY build.sh       │
-││   ├── MD README.md   │ │TM co -rw-r--r--       256 B │ │  PY app.py         │
-││   └── MD API.md      │ │IM co -rw-r--r--    512.0 KB │ │                    │
-│├── TM Cargo.toml      │ │JS da -rw-r--r--     10.2 KB │ │                    │
-│├── JS package.json    │ │VI de -rw-r--r--     12.6 MB │ │                    │
-│└── CF .gitignore      │ │RS li -rw-r--r--      4.1 KB │ │                    │
-│                       │ │IM lo -rw-r--r--    424.1 KB │ │                    │
-│                       │ │RS ma -rw-r--r--      2.0 KB │ │                    │
-│                       │ │RS mo -rw-r--r--       512 B │ │                    │
-│                       │ │JS pa -rw-r--r--       384 B │ │                    │
-│                       │ │MD RE -rw-r--r--      3.1 KB │ │                    │
+╭─────Project Tree──────╮ ╭──────Files (23 items)───────╮ ╭──Preview: ? .git──╮
+│? my-app              │ │? / ? home → ? user → ? p│ │Directory  •  Size: │
+│├── ? src             │ │   Na Perms             Size │ │Path: /home/user/pro│
+││   ├── ? main.rs     │ │? .g drwxr-xr-x          -- │ │Preview:            │
+││   ├── ? lib.rs      │ │? as drwxr-xr-x          -- │ │Directory contents: │
+││   └── ? models      │ │? do drwxr-xr-x          -- │ │  ? .git           │
+││       ├── ? user.rs │ │? sr drwxr-xr-x          -- │ │  ? assets         │
+││       └── ? post.rs │ │? ta drwxr-xr-x          -- │ │  ? docs           │
+│├── ? tests           │ │? te drwxr-xr-x          -- │ │  ? src            │
+││   ├── ? test_app.py │ │? bu lrwxr-xr-x        48 B │ │  ? target         │
+││   └── ? integration.│ │? ap -rwxr-xr-x      1.5 KB │ │  ? tests          │
+│├── ? docs            │ │? Ca -rw-r--r--       512 B │ │  ? build.sh       │
+││   ├── ? README.md   │ │? co -rw-r--r--       256 B │ │  ? app.py         │
+││   └── ? API.md      │ │? co -rw-r--r--    512.0 KB │ │                    │
+│├── ? Cargo.toml      │ │? da -rw-r--r--     10.2 KB │ │                    │
+│├── ? package.json    │ │? de -rw-r--r--     12.6 MB │ │                    │
+│└── ? .gitignore      │ │? li -rw-r--r--      4.1 KB │ │                    │
+│                       │ │? lo -rw-r--r--    424.1 KB │ │                    │
+│                       │ │? ma -rw-r--r--      2.0 KB │ │                    │
+│                       │ │? mo -rw-r--r--       512 B │ │                    │
+│                       │ │? pa -rw-r--r--       384 B │ │                    │
+│                       │ │? RE -rw-r--r--      3.1 KB │ │                    │
 ╰───────────────────────╯ ╰─────────────────────────────╯ ╰────────────────────╯
-DR .git  | h/l: panels | j/k: navigate | g/G: first/last | Enter: open | Backspa
+? .git  | h/l: panels | j/k: navigate | g/G: first/last | Enter: open | Backspa

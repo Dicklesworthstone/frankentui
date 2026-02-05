@@ -703,7 +703,28 @@ const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
 fn fnv1a64_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
+    let mut i = 0;
+    let len = bytes.len();
+    while i + 8 <= len {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        hash ^= bytes[i + 1] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        hash ^= bytes[i + 2] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        hash ^= bytes[i + 3] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        hash ^= bytes[i + 4] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        hash ^= bytes[i + 5] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        hash ^= bytes[i + 6] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        hash ^= bytes[i + 7] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        i += 8;
+    }
+    for &b in &bytes[i..] {
         hash ^= b as u64;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
@@ -711,7 +732,9 @@ fn fnv1a64_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 fn fnv1a64_byte(hash: u64, b: u8) -> u64 {
-    fnv1a64_bytes(hash, &[b])
+    let mut hash = hash ^ (b as u64);
+    hash = hash.wrapping_mul(FNV_PRIME);
+    hash
 }
 
 fn fnv1a64_u16(hash: u64, v: u16) -> u64 {

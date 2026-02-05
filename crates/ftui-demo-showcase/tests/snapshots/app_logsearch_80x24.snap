@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Log Search──────────────────────────────────╮
 │╭ Log Viewer ────────────────────────────────────────────────────────────────╮│
 ││[     0]  INFO server::http       Request processed successfully            ││
@@ -21,4 +21,4 @@
 │╰────────────────────────────────────────────────────────────────────────────╯│
 │ NORMAL | lines: 50 | gen: 50                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Log Search [18/38]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     0x0 00:00 
+ Log Search [18/40]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     0x0 00:00 

@@ -2,7 +2,7 @@
 │[ 9980]  INFO api::handler       Event #09980: simulated log entry with payload dat││Total items:  10000              │
 │[ 9981] DEBUG core::runtime      Event #09981: simulated log entry with payload dat││Selected:     10000 / 10000      │
 │[ 9982]  WARN server::http       Event #09982: simulated log entry with payload dat││Scroll:       9980               │
-│[ 9983] ERROR db::pool           Event #09983: simulated log entry with payload dat││Viewport:     20 rows            │
+│[ 9983] ERROR db::pool           Event #09983: simulated log entry with payload dat││Viewport:     37 rows            │
 │[ 9984] TRACE auth::jwt          Event #09984: simulated log entry with payload dat││Visible:      9980..10000        │
 │[ 9985]  INFO cache::redis       Event #09985: simulated log entry with payload dat││Progress:     100.0%             │
 │[ 9986] DEBUG queue::worker      Event #09986: simulated log entry with payload dat││Tick:         0                  │

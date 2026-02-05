@@ -534,9 +534,15 @@ impl TelemetryConfig {
         ),
         TelemetryError,
     > {
+        use opentelemetry::KeyValue;
         use opentelemetry::trace::TracerProvider as _;
-        use opentelemetry_otlp::WithExportConfig;
+        use opentelemetry_otlp::{
+            Protocol as OtlpProtocol, WithExportConfig, WithHttpConfig, WithTonicConfig,
+        };
+        use opentelemetry_sdk::Resource;
         use opentelemetry_sdk::trace::SdkTracerProvider;
+        use std::collections::HashMap;
+        use std::str::FromStr;
 
         if !self.enabled {
             return Err(TelemetryError::ExporterInit(
@@ -544,23 +550,86 @@ impl TelemetryConfig {
             ));
         }
 
+        let endpoint = self
+            .endpoint
+            .as_deref()
+            .unwrap_or(self.protocol.default_endpoint());
+
+        let mut resource_kvs = Vec::new();
+        if let Some(service_name) = &self.service_name {
+            resource_kvs.push(KeyValue::new(fields::SERVICE_NAME, service_name.clone()));
+        }
+        if !self.resource_attributes.is_empty() {
+            let override_service_name = self.service_name.is_some();
+            for (key, value) in &self.resource_attributes {
+                if override_service_name && key == fields::SERVICE_NAME {
+                    continue;
+                }
+                resource_kvs.push(KeyValue::new(key.clone(), value.clone()));
+            }
+        }
+
         // Build the exporter
-        let exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_endpoint(self.endpoint.as_deref().unwrap_or("http://localhost:4318"))
-            .build()
-            .map_err(|e: opentelemetry_otlp::ExporterBuildError| {
-                TelemetryError::ExporterInit(e.to_string())
-            })?;
+        let exporter = match self.protocol {
+            Protocol::Grpc => {
+                let mut builder = opentelemetry_otlp::SpanExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(endpoint);
+                if !self.headers.is_empty() {
+                    use opentelemetry_otlp::tonic_types::metadata::{
+                        MetadataKey, MetadataMap, MetadataValue,
+                    };
+                    let mut metadata = MetadataMap::with_capacity(self.headers.len());
+                    for (key, value) in &self.headers {
+                        let key = key.trim();
+                        if key.is_empty() {
+                            continue;
+                        }
+                        let lower_key = key.to_ascii_lowercase();
+                        if let (Ok(meta_key), Ok(meta_value)) = (
+                            MetadataKey::from_str(&lower_key),
+                            MetadataValue::from_str(value),
+                        ) {
+                            metadata.insert(meta_key, meta_value);
+                        }
+                    }
+                    builder = builder.with_metadata(metadata);
+                }
+                builder
+                    .build()
+                    .map_err(|e: opentelemetry_otlp::ExporterBuildError| {
+                        TelemetryError::ExporterInit(e.to_string())
+                    })?
+            }
+            Protocol::HttpProtobuf => {
+                let mut builder = opentelemetry_otlp::SpanExporter::builder()
+                    .with_http()
+                    .with_protocol(OtlpProtocol::HttpBinary)
+                    .with_endpoint(endpoint);
+                if !self.headers.is_empty() {
+                    let headers: HashMap<String, String> = self
+                        .headers
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect();
+                    builder = builder.with_headers(headers);
+                }
+                builder
+                    .build()
+                    .map_err(|e: opentelemetry_otlp::ExporterBuildError| {
+                        TelemetryError::ExporterInit(e.to_string())
+                    })?
+            }
+        };
 
         // Build the provider with configured span processor.
+        let mut provider_builder = SdkTracerProvider::builder();
+        if !resource_kvs.is_empty() {
+            provider_builder = provider_builder.with_resource(Resource::new(resource_kvs));
+        }
         let provider = match self.processor {
-            SpanProcessorKind::Simple => SdkTracerProvider::builder()
-                .with_simple_exporter(exporter)
-                .build(),
-            SpanProcessorKind::Batch => SdkTracerProvider::builder()
-                .with_batch_exporter(exporter)
-                .build(),
+            SpanProcessorKind::Simple => provider_builder.with_simple_exporter(exporter).build(),
+            SpanProcessorKind::Batch => provider_builder.with_batch_exporter(exporter).build(),
         };
 
         // Get a tracer

@@ -507,7 +507,7 @@ pub enum ScreenId {
     ThemeStudio,
     /// Snapshot/Time Travel Player (bd-3sa7).
     SnapshotPlayer,
-    /// Performance HUD + Render Budget Visualizer (bd-3k3x).
+    /// Performance challenge mode (degradation tiers + stress harness) (bd-iuvb.15).
     PerformanceHud,
     /// Explainability cockpit (diff/resize/budget evidence) (bd-iuvb.4).
     ExplainabilityCockpit,
@@ -1246,6 +1246,136 @@ pub struct VfxHarnessConfig {
     pub perf_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum VfxHarnessInput {
+    Key {
+        code: KeyCode,
+        kind: KeyEventKind,
+        label: &'static str,
+    },
+    MouseMove {
+        x: u16,
+        y: u16,
+        label: &'static str,
+    },
+    MouseDown {
+        button: MouseButton,
+        label: &'static str,
+    },
+}
+
+impl VfxHarnessInput {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Key { label, .. }
+            | Self::MouseMove { label, .. }
+            | Self::MouseDown { label, .. } => label,
+        }
+    }
+
+    fn to_event(self) -> Event {
+        match self {
+            Self::Key { code, kind, .. } => Event::Key(KeyEvent::new(code).with_kind(kind)),
+            Self::MouseMove { x, y, .. } => {
+                Event::Mouse(MouseEvent::new(MouseEventKind::Moved, x, y))
+            }
+            Self::MouseDown { button, .. } => {
+                Event::Mouse(MouseEvent::new(MouseEventKind::Down(button), 0, 0))
+            }
+        }
+    }
+}
+
+const VFX_FPS_INPUT_SCRIPT: &[(u64, VfxHarnessInput)] = &[
+    (
+        1,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('w'),
+            kind: KeyEventKind::Press,
+            label: "w_down",
+        },
+    ),
+    (
+        2,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('d'),
+            kind: KeyEventKind::Press,
+            label: "d_down",
+        },
+    ),
+    (
+        3,
+        VfxHarnessInput::MouseMove {
+            x: 10,
+            y: 10,
+            label: "mouse_anchor",
+        },
+    ),
+    (
+        4,
+        VfxHarnessInput::MouseMove {
+            x: 20,
+            y: 12,
+            label: "mouse_look",
+        },
+    ),
+    (
+        5,
+        VfxHarnessInput::MouseDown {
+            button: MouseButton::Left,
+            label: "fire",
+        },
+    ),
+    (
+        6,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('d'),
+            kind: KeyEventKind::Release,
+            label: "d_up",
+        },
+    ),
+    (
+        7,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('w'),
+            kind: KeyEventKind::Release,
+            label: "w_up",
+        },
+    ),
+    (
+        8,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('a'),
+            kind: KeyEventKind::Press,
+            label: "a_down",
+        },
+    ),
+    (
+        9,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('a'),
+            kind: KeyEventKind::Release,
+            label: "a_up",
+        },
+    ),
+    (
+        10,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('s'),
+            kind: KeyEventKind::Press,
+            label: "s_down",
+        },
+    ),
+    (
+        11,
+        VfxHarnessInput::Key {
+            code: KeyCode::Char('s'),
+            kind: KeyEventKind::Release,
+            label: "s_up",
+        },
+    ),
+];
+
 pub enum VfxHarnessMsg {
     Event(Event),
     Quit,
@@ -1402,6 +1532,33 @@ impl VfxHarnessLogger {
             "{{\"event\":\"vfx_frame\",\"timestamp\":\"{timestamp}\",\"run_id\":\"{run_id}\",\"hash_key\":\"{}\",\"effect\":\"{effect}\",\"frame_idx\":{frame_idx},\"hash\":{hash},\"time\":{:.2},\"cols\":{},\"rows\":{},\"tick_ms\":{},\"seed\":{}}}",
             escape_json(&hash_key),
             sim_time,
+            guard.cols,
+            guard.rows,
+            guard.tick_ms,
+            guard.seed
+        );
+        writeln!(guard.writer, "{line}")?;
+        guard.writer.flush()
+    }
+
+    fn write_input_event(&self, frame_idx: u64, action: &str) -> std::io::Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| std::io::Error::other("logger lock poisoned"))?;
+        let run_id = escape_json(&guard.run_id);
+        let effect = escape_json(&guard.effect);
+        let hash_key = determinism::hash_key(
+            &determinism::demo_screen_mode(),
+            guard.cols,
+            guard.rows,
+            guard.seed,
+        );
+        let timestamp = determinism::chrono_like_timestamp();
+        let action = escape_json(action);
+        let line = format!(
+            "{{\"event\":\"vfx_input\",\"timestamp\":\"{timestamp}\",\"run_id\":\"{run_id}\",\"hash_key\":\"{}\",\"effect\":\"{effect}\",\"frame_idx\":{frame_idx},\"action\":\"{action}\",\"cols\":{},\"rows\":{},\"tick_ms\":{},\"seed\":{}}}",
+            escape_json(&hash_key),
             guard.cols,
             guard.rows,
             guard.tick_ms,
@@ -1594,6 +1751,24 @@ impl VfxHarnessModel {
             None
         }
     }
+
+    fn is_fps_script_effect(&self) -> bool {
+        matches!(self.screen.effect_key(), "doom-e1m1" | "quake-e1m1")
+    }
+
+    fn apply_fps_script(&mut self) {
+        if !self.is_fps_script_effect() {
+            return;
+        }
+        let frame_idx = self.tick_count;
+        for (script_frame, input) in VFX_FPS_INPUT_SCRIPT {
+            if *script_frame == frame_idx {
+                let event = input.to_event();
+                let _ = self.screen.update(&event);
+                let _ = self.logger.write_input_event(frame_idx, input.label());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1632,6 +1807,7 @@ impl Model for VfxHarnessModel {
                 Event::Tick => {
                     self.tick_count = self.tick_count.saturating_add(1);
                     self.started.set(true);
+                    self.apply_fps_script();
                     self.screen.tick(self.tick_count);
                     if let Some(max_frames) = self.max_frames
                         && self.tick_count >= max_frames
@@ -1765,6 +1941,8 @@ pub struct AppModel {
     perf_views_per_tick: f64,
     /// Performance HUD: previous view count snapshot (for computing views per tick).
     perf_prev_view_count: u64,
+    /// Last rendered checksum for guided tour JSONL logs.
+    tour_checksum: Cell<Option<u64>>,
     /// Last rendered hit grid (for mouse hit testing).
     last_hit_grid: RefCell<Option<HitGrid>>,
     /// Timestamp of last tick received (for stall detection).
@@ -1827,6 +2005,7 @@ impl AppModel {
             perf_view_counter: Cell::new(0),
             perf_views_per_tick: 0.0,
             perf_prev_view_count: 0,
+            tour_checksum: Cell::new(None),
             last_hit_grid: RefCell::new(None),
             tick_last_seen: None,
             tick_stall_last_log: Cell::new(None),
@@ -1888,6 +2067,12 @@ impl AppModel {
         let seed = tour_seed();
         let mode = tour_screen_mode();
         let caps_profile = tour_caps_profile();
+        let paused = self.tour.is_paused();
+        let checksum_json = self
+            .tour_checksum
+            .get()
+            .map(|hash| format!("\"0x{hash:016x}\""))
+            .unwrap_or_else(|| "null".to_string());
 
         let (step_id, screen_id, duration_ms) = if let Some(step) = step {
             (
@@ -1900,7 +2085,7 @@ impl AppModel {
         };
 
         let json = format!(
-            "{{\"seq\":{seq},\"ts_us\":{ts_us},\"event\":\"tour\",\"run_id\":\"{}\",\"action\":\"{}\",\"outcome\":\"{}\",\"step_id\":\"{}\",\"screen_id\":\"{}\",\"duration_ms\":{duration_ms},\"step_index\":{},\"step_count\":{},\"seed\":{seed},\"width\":{},\"height\":{},\"mode\":\"{}\",\"caps_profile\":\"{}\",\"speed\":{:.2},\"checksum\":null}}",
+            "{{\"seq\":{seq},\"ts_us\":{ts_us},\"event\":\"tour\",\"run_id\":\"{}\",\"action\":\"{}\",\"outcome\":\"{}\",\"step_id\":\"{}\",\"screen_id\":\"{}\",\"duration_ms\":{duration_ms},\"step_index\":{},\"step_count\":{},\"seed\":{seed},\"width\":{},\"height\":{},\"mode\":\"{}\",\"caps_profile\":\"{}\",\"speed\":{:.2},\"paused\":{paused},\"checksum\":{checksum_json}}}",
             json_escape(&run_id),
             json_escape(action),
             json_escape(outcome),
@@ -2947,6 +3132,12 @@ impl Model for AppModel {
         };
         crate::chrome::render_status_bar(&status_state, frame, chunks[2]);
 
+        if tour_log_path().is_some() {
+            let pool = &*frame.pool;
+            let hash = checksum_buffer(&frame.buffer, pool);
+            self.tour_checksum.set(Some(hash));
+        }
+
         self.cache_hit_grid(frame);
     }
 
@@ -3717,6 +3908,7 @@ impl AppModel {
 mod tests {
     use super::*;
     use ftui_render::grapheme_pool::GraphemePool;
+    use serial_test::serial;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -4026,6 +4218,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn lazy_screens_initialize_on_first_use() {
         let mut states = ScreenStates::default();
         let _ = take_screen_init_events();
@@ -4065,6 +4258,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn lazy_screen_init_logs_once_per_screen() {
         let mut app = AppModel::new();
         let _ = take_screen_init_events();
@@ -4125,7 +4319,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(screens::screen_registry().len(), 40);
+        assert_eq!(screens::screen_registry().len(), 39);
     }
 
     // -----------------------------------------------------------------------
@@ -4501,9 +4695,8 @@ mod tests {
     fn palette_includes_perf_hud_action() {
         let app = AppModel::new();
         // The palette should have the perf HUD action registered.
-        // Previous test counted ALL.len() + 4 global commands.
-        // Now we have 7 global commands (quit, help, theme, debug, perf_hud, evidence_ledger, explainability).
-        let expected = screens::screen_registry().len() + 7;
+        // 6 global commands: quit, help, theme, debug, perf_hud, evidence_ledger.
+        let expected = screens::screen_registry().len() + 6;
         assert_eq!(app.command_palette.action_count(), expected);
     }
 

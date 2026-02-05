@@ -145,10 +145,14 @@ impl DataViz {
         let rand_data: Vec<f64> = self.chart_data.random_series.iter().copied().collect();
         let colors = chart_palette();
         let gradients = sparkline_gradients();
+        let sine_last = self.chart_data.sine_series.back().copied().unwrap_or(0.0);
+        let cos_last = self.chart_data.cosine_series.back().copied().unwrap_or(0.0);
+        let rand_last = self.chart_data.random_series.back().copied().unwrap_or(0.0);
 
         // Labels and sparklines in alternating rows
         if !rows[0].is_empty() {
-            Paragraph::new("Sine wave:")
+            let label = format!("Sine wave: {:+.2}", sine_last);
+            Paragraph::new(label)
                 .style(Style::new().fg(theme::fg::SECONDARY))
                 .render(rows[0], frame);
         }
@@ -159,7 +163,8 @@ impl DataViz {
                 .render(rows[1], frame);
         }
         if !rows[2].is_empty() {
-            Paragraph::new("Cosine wave:")
+            let label = format!("Cosine wave: {:+.2}", cos_last);
+            Paragraph::new(label)
                 .style(Style::new().fg(theme::fg::SECONDARY))
                 .render(rows[2], frame);
         }
@@ -170,7 +175,8 @@ impl DataViz {
                 .render(rows[3], frame);
         }
         if !rows[4].is_empty() {
-            Paragraph::new("Random noise:")
+            let label = format!("Random noise: {:+.2}", rand_last);
+            Paragraph::new(label)
                 .style(Style::new().fg(theme::fg::SECONDARY))
                 .render(rows[4], frame);
         }

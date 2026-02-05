@@ -1,24 +1,24 @@
- Tour │ Core │ Visuals │ Interact │ Text │ Systems │                            
- Dash │ Inline │                                                                
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Dashboard───────────────────────────────────╮
 │FRANKENTUI DASHBOARD                                                          │
-│╭─────────Plasm┌────────────── Command Palette ───────────────┐               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│>Type to search...                            │               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│> [App] Quit  Exit the application            │               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Dashboard  Cinematic overview of key…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Inline Mode  Inline mode story and s…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Help  Show or hide the keyboa…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Cycle Theme  Switch to the next colo…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Debug Overlay  Show or hide t…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Performance HUD  Show or hide…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Evidence Ledger  Show VOI dec…│               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿└──────────────────────────────────────────────┘               │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│                                                   │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│                                                   │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│                                                   │
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│                                                   │
-││Click → Visual Effects⣿⣿⣿│FPS:0 78x19                                        │
-│╰─────────────────────────╯                                                   │
-│t:theme q:quit                                                                │
+│╭──────Plasma──────╮╭───────Charts · Pulse────────╮╭───Code · Rust (1/28)────╮│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿┌────────────── Command Palette ───────────────┐rs            ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│>Type to search...                            │ollections::Ha││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│> [App] Quit  Exit the application            │              ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Dashboard  Cinematic overview of key…│re::event::Eve││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Guided Tour  Cinematic auto-play tou…│e Explorer::Ce││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [Tour] Inline Mode  Inline mode story and s…│──────────────╯│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Toggle Help  Show or hide the keyboa…│nfo───────────╮│
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  [View] Cycle Theme  Switch to the next colo…│NAL FPS:0     ││
+││Click → Visual│  [View] Toggle Debug Overlay  Show or hide t…│formance      ││
+│╰──────────────│  [View] Toggle Performance HUD  Show or hide…│──────────────╯│
+│╭Text FX · 2-Up│  [View] Toggle Explainability Cockpit  Show …│ · Streaming…╮ │
+││Sample 1 of 3 └──────────────────────────────────────────────┘             │ │
+││1 · None · S1        ││ INFO  00:02   CPU spike dete││                     │ │
+││2 · FadeIn · S2      ││                             ││                     │ │
+││## GFM Stress · Ledge││                             ││                     │ │
+││e: next set · click →││Click → Action Timeline      ││Click → Markdown     │ │
+│╰─────────────────────╯╰─────────────────────────────╯╰─────────────────────╯ │
+│g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/36]  Cyberpunk Aurora          tick:0 frm:0           80x24 00:00 
+ Dashboard [2/40]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     80x24 00:00 

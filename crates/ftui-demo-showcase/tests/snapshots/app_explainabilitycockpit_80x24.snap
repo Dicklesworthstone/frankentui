@@ -1,0 +1,24 @@
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
+╭────────────────────────────Explainability Cockpit────────────────────────────╮
+│Explainability Cockpit · source: (disabled)                                   │
+│Evidence source disabled                                                      │
+│╭───────────────────────────Explainability Cockpit───────────────────────────╮│
+││Evidence source disabled                                                    ││
+││Enable evidence logging to populate this cockpit.                           ││
+││Set FTUI_DEMO_EVIDENCE_JSONL to a writable path.                            ││
+││Example: FTUI_DEMO_EVIDENCE_JSONL=/tmp/ftui_evidence.jsonl cargo run -p     ││
+││ftui-demo-showcase                                                          ││
+││                                                                            ││
+││                                                                            ││
+│╰────────────────────────────────────────────────────────────────────────────╯│
+│╭─────────────────────────────Decision Timeline──────────────────────────────╮│
+││No recent decisions.                                                        ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+│╰────────────────────────────────────────────────────────────────────────────╯│
+╰──────────────────────────────────────────────────────────────────────────────╯
+ Explainability Cockpit [31/40]       Tab/Shift+Tab: next/prev        0x0 00:00 

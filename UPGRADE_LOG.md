@@ -77,7 +77,7 @@ _TBD_
 
 ## Requires Attention
 
-- `paste` advisory is target-specific (macOS `metal` dependency). Patch to `pastey` is in place but not used on Linux; `cargo audit` still reports `paste` via `metal`/`wgpu` on this host. Verify macOS target resolution or accept warning for non-Apple builds.
+- `paste` advisory was removed by disabling the `metal` backend in `wgpu` (see Security Notes). MacOS GPU FX is currently disabled; revisit once `metal` no longer depends on `paste` or a safe fork is available.
 
 ---
 
@@ -93,7 +93,7 @@ _TBD_
 
 **Vulnerabilities resolved:**
 - RUSTSEC-2026-0002 (lru unsoundness) via upgrade to 0.16.3.
-- paste unmaintained advisory mitigated via workspace patch to pastey (drop-in replacement).
+- paste unmaintained advisory mitigated by removing the `metal` backend from `wgpu` features (no `paste` in the all-features graph). MacOS GPU FX currently falls back to CPU.
 - serial unmaintained advisory mitigated via portable-pty 0.9.0.
 
 **New advisories:** _None detected_

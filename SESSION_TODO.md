@@ -18,20 +18,20 @@
 - [x] Design: deterministic animation phase input (no implicit clocks)
 - [x] Implement live search updates on keystroke (no flicker)
 - [x] Implement animated highlight (phase-driven)
-- [ ] Update help/legend text for new controls (if needed)
-- [ ] Add/adjust unit tests for search + highlight logic
-- [ ] Add/adjust snapshot tests for highlighted state (80x24, 120x40)
-- [ ] Add/adjust E2E PTY logs if present for Shakespeare screen
+- [x] Update help/legend text for new controls (no new controls added)
+- [x] Add/adjust unit tests for search + highlight logic
+- [x] Add/adjust snapshot tests for highlighted state (80x24, 120x40)
+- [x] Add/adjust E2E PTY logs if present for Shakespeare screen (no new E2E coverage needed)
 
 - [x] **Code Explorer / SQLite feature boost** (bd-1e3w)
 - [x] Locate screen implementation file (`crates/ftui-demo-showcase/src/screens/code_explorer.rs`)
 - [x] Review current SQLite/Query Lab features + UX gaps
 - [x] Define feature boost scope (result preview + schema inspector + index map)
 - [x] Implement new feature(s) with deterministic data
-- [ ] Update help/legend text for new controls (if needed)
-- [ ] Add/adjust unit tests for new logic
-- [ ] Add/adjust snapshot tests (80x24, 120x40)
-- [ ] Add/adjust E2E PTY logs if present for Code Explorer screen
+- [x] Update help/legend text for new controls (no new controls added)
+- [x] Add/adjust unit tests for new logic
+- [x] Add/adjust snapshot tests (80x24, 120x40)
+- [x] Add/adjust E2E PTY logs if present for Code Explorer screen (no new E2E coverage needed)
 
 - [x] **Fix fmt parse blocker** in `crates/ftui-extras/src/mermaid.rs` (raw string delimiter for init directive JSON)
 

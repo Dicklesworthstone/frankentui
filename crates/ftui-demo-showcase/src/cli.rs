@@ -69,7 +69,7 @@ SCREENS:
    27  Async Tasks        Async task manager and queue diagnostics
    28  Theme Studio       Live palette editor and theme inspector
    29  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
-   30  Performance HUD    Real-time render budget and frame diagnostics
+   30  Performance Challenge Stress harness for degradation tiers
    31  Explainability     Diff/resize/budget evidence cockpit
    32  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
    33  VOI Overlay        Galaxy-Brain VOI debug overlay
@@ -79,7 +79,6 @@ SCREENS:
    37  Palette Evidence   Command palette evidence lab
    38  Determinism Lab    Checksum equivalence + determinism proofs
    39  Links              OSC-8 hyperlink playground + hit regions
-   40  Explainability     Diff/resize/budget evidence cockpit
 
 KEYBINDINGS:
     1-9, 0          Switch to screens 1-10 by number

@@ -1,4 +1,4 @@
- 1: Dash │ 2: Shakes │ 3: Code │ 4: Widgets │ 5: Layout │ 6: Forms │ 7: DataViz │ 8: Files │ 9: Adv │ 0: Perf │ -: Caps 
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
 ╭──────────────────────────────────────────────────────Dashboard───────────────────────────────────────────────────────╮
 │FRANKENTUI DASHBOARD                                                                                                  │
 │╭────────Plasma────────╮╭─────────Charts · Pulse──────────╮╭───────Code · Rust (1/28)────────╮╭─────────Info─────────╮│
@@ -21,20 +21,20 @@
 ││Click → Visual Effects││Click → Data Viz                 ││Click → Code ExplorerSync + 'stat││Click → Performance163││
 │╰──────────────────────╯╰─────────────────────────────────╯╰─────────────────────────────────╯╰──────────────────────╯│
 │╭───Text FX · 3-Up (1/28)────╮╭──────────────────Activity───────────────────╮╭───────Markdown · Streaming… 0%────────╮│
-││Sample 1 of 3 · 3-Up stack  ││● INFO 00:02 · CPU spike detected on core 3  ││▌                                      ││
-││1 · None · S1               ││                                             ││                                       ││
-││# FX Lab                    ││                                             ││                                       ││
+││Sample 1 of 3 · 3-Up stack  ││SEV TIME  COMP  MESSAGE                      ││▌                                      ││
+││1 · None · S1               ││ INFO  00:02   CPU spike detected on core 3  ││                                       ││
+││# FX Lab · Deterministic Spe││                                             ││                                       ││
 ││> *"Render truth, not pixels││                                             ││                                       ││
 ││2 · FadeIn · S2             ││                                             ││                                       ││
-││## GFM Stress               ││                                             ││                                       ││
-││1. **Bold** + _italic_      ││                                             ││                                       ││
+││## GFM Stress · Ledger      ││                                             ││                                       ││
+││1. **Bold** + _italic_ + ~~s││                                             ││                                       ││
 ││3 · FadeOut · S3            ││                                             ││                                       ││
-││### Mixed                   ││                                             ││                                       ││
+││### Runtime Ledger · Mixed  ││                                             ││                                       ││
 ││- [x] Tasks                 ││                                             ││                                       ││
 ││- [ ] Benchmarks            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
+││- [x] Evidence log          ││                                             ││                                       ││
 ││e: next set · click → Visual││Click → Action Timeline                      ││Click → Markdown                       ││
 │╰────────────────────────────╯╰─────────────────────────────────────────────╯╰───────────────────────────────────────╯│
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/34]  Cyberpunk Aurora                               tick:0 frm:0                                0x0 00:00 
+ Dashboard [2/40]  Cyberpunk Aurora             Tab: next screen · Shift+Tab: prev │ tick:0 frm:0             0x0 00:00 
