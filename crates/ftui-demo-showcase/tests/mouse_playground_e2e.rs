@@ -41,6 +41,7 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
+use ftui_demo_showcase::app::{AppModel, AppMsg, ScreenId};
 use ftui_demo_showcase::screens::Screen;
 use ftui_demo_showcase::screens::mouse_playground::{
     DiagnosticEventKind, Focus, MousePlayground, TelemetryHooks, reset_event_counter,
@@ -48,6 +49,7 @@ use ftui_demo_showcase::screens::mouse_playground::{
 use ftui_harness::assert_snapshot;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
+use ftui_runtime::program::Model;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -191,6 +193,43 @@ fn mouse_playground_wide_200x50() {
     let area = Rect::new(0, 0, 200, 50);
     playground.view(&mut frame, area);
     assert_snapshot!("mouse_playground_wide_200x50", &frame.buffer);
+}
+
+// ===========================================================================
+// Scenario 1b: Global Mouse Navigation (bd-ptyoh)
+// ===========================================================================
+
+#[test]
+fn e2e_mouse_tab_navigation_switches_screen() {
+    log_jsonl(
+        "mouse_nav_env",
+        &[
+            ("test", "e2e_mouse_tab_navigation_switches_screen"),
+            ("term_cols", "120"),
+            ("term_rows", "40"),
+        ],
+    );
+
+    let mut app = AppModel::new();
+    app.terminal_width = 120;
+    app.terminal_height = 40;
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    app.view(&mut frame);
+
+    let event = Event::Mouse(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+        0,
+    ));
+    let _ = app.update(AppMsg::from(event));
+
+    log_jsonl(
+        "mouse_nav_result",
+        &[("screen", app.current_screen.title())],
+    );
+    assert_eq!(app.current_screen, ScreenId::GuidedTour);
 }
 
 // ===========================================================================
