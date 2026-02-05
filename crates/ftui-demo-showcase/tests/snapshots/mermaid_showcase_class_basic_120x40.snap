@@ -3,7 +3,7 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │  Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
 │  Flow Dense [flow, L, dense,││                                                            ││Glyphs: unicode (g)     │ 
-│  Flow Long Labels [flow, M, ││                                                            ││Render: auto (b)        │ 
+│  Flow Long Labels [flow, M, ││                                                            ││Render: braille (b)     │ 
 │  Flow Unicode [flow, S, unic││                                                            ││Wrap: wordchar (w)      │ 
 │  Flow Styles [flow, M, class││                                                            ││Styles: on (s)          │ 
 │  Sequence Mini [sequence, S,││                                                            ││Zoom: 100% (+/-)        │ 
@@ -11,7 +11,7 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │  Sequence Dense [sequence, L││                            User                            ││Metrics: on (m)         │ 
 │> Class Basic [class, S, inhe││                                                            ││                        │ 
 │  Class Members [class, M, fi││                                                            ││                        │ 
-│  State Basic [state, S, star││                 ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀                 ││                        │ 
+│  State Basic [state, S, star││                 ⢀                        ⡀                 ││                        │ 
 │  State Composite [state, M, ││                 ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                 ││                        │ 
 │  ER Basic [er, M, cardinalit││                 ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                 ││                        │ 
 │  Gantt Basic [gantt, M, sect││                 ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                 ││                        │ 
@@ -21,10 +21,10 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │  Pie Many [pie, M, many-slic││                   ⣀⠤⠊⠁               ⠉⠢⢄⡀                  ││                        │ 
 │  Gitgraph Basic [unsupported││                ⡠⠔⠊                      ⠈⠒⠤⡀⢠              │╰────────────────────────╯ 
 │  Journey Basic [unsupported,││ ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣭⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤        ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣬⣿⣧⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤ │╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.05 ms          │ 
-│                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Layout: 0.05 ms         │ 
+│  Requirement Basic [unsuppor││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.04 ms          │ 
+│                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Layout: 0.04 ms         │ 
 │                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Render: 0.00 ms         │ 
-│                             ││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉        ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉ ││Viewport: auto          │ 
+│                             ││ ⠉                       ⠉        ⠉                       ⠉ ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
 │                             ││           Admin                            Order           ││Iters: 1                │ 
 │                             ││                                                            ││Score: 44.10            │ 
@@ -37,4 +37,4 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 ╰─────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰────────────────────────╯ 
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.046087ms | layout
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.037891ms | layout

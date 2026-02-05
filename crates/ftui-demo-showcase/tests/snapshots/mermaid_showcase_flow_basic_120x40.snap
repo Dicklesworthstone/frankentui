@@ -3,7 +3,7 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │> Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
 │  Flow Dense [flow, L, dense,││                                                            ││Glyphs: unicode (g)     │ 
-│  Flow Long Labels [flow, M, ││                                                            ││Render: auto (b)        │ 
+│  Flow Long Labels [flow, M, ││                                                            ││Render: braille (b)     │ 
 │  Flow Unicode [flow, S, unic││                                                            ││Wrap: wordchar (w)      │ 
 │  Flow Styles [flow, M, class││                                                            ││Styles: on (s)          │ 
 │  Sequence Mini [sequence, S,││                                                            ││Zoom: 100% (+/-)        │ 
@@ -13,17 +13,17 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Class Members [class, M, fi││                                                            ││                        │ 
 │  State Basic [state, S, star││                                                            ││                        │ 
 │  State Composite [state, M, ││                                                            ││                        │ 
-│  ER Basic [er, M, cardinalit││                                             Yes  OK        ││                        │ 
-│  Gantt Basic [gantt, M, sect││                                           ⢠⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤ ││                        │ 
+│  ER Basic [er, M, cardinalit││                                                  OK        ││                        │ 
+│  Gantt Basic [gantt, M, sect││                                           ⢠⣤             ⣤ ││                        │ 
 │  Mindmap Seed [mindmap, S, t││                                           ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                        │ 
 │  Mindmap Deep [mindmap, L, d││ ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀            ⢀⣀         ⢀⡨⢻⠻⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿ ││                        │ 
-│  Pie Basic [pie, S, title, s││ ⣿⣿⣿⣿⣿Start⣿⣿⣿⣿⣿⡇   ⢠⣀ ⢀⣀⣤⣴Check⣷⣦⣤⣀⡀ ⡠⠔⠁                   ││                        │ 
-│  Pie Many [pie, M, many-slic││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠉⠉⠉⠹⠛⠉⠙⠛⠻⠿⢿⣿⣿⣿⣿⣿⠿⠟⠛⠋⠉⠢⢄                    ││                        │ 
+│  Pie Basic [pie, S, title, s││ ⣿    Start    ⣿⡇   ⢠⣀     Check      ⡠⠔⠁                   ││                        │ 
+│  Pie Many [pie, M, many-slic││ ⣿             ⣿⡏⠉⠉⠉⠹⠛⠉              ⠉⠢⢄                    ││                        │ 
 │  Gitgraph Basic [unsupported││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉         ⠑⠢⣰⣰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │╰────────────────────────╯ 
 │  Journey Basic [unsupported,││                                         ⠈⠉⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││                                           ⠘⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛ ││Parse: 0.12 ms          │ 
+│  Requirement Basic [unsuppor││                                           ⠘⠛             ⠛ ││Parse: 0.07 ms          │ 
 │                             ││                                                  Fix       ││Layout: 0.05 ms         │ 
-│                             ││                                             No             ││Render: 0.00 ms         │ 
+│                             ││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
 │                             ││                                                            ││Iters: 1                │ 
@@ -37,4 +37,4 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 ╰─────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰────────────────────────╯ 
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.116629995ms | lay
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.067747995ms | lay

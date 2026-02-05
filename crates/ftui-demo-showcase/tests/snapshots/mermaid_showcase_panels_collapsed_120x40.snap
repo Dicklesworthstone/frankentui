@@ -13,17 +13,17 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Class Members [class, M, fi││                                                            ││                        │ 
 │  State Basic [state, S, star││                                                            ││                        │ 
 │  State Composite [state, M, ││                                                            ││                        │ 
-│  ER Basic [er, M, cardinalit││                                             Yes  OK        ││                        │ 
-│  Gantt Basic [gantt, M, sect││                                           ⢠⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤ ││                        │ 
+│  ER Basic [er, M, cardinalit││                                                  OK        ││                        │ 
+│  Gantt Basic [gantt, M, sect││                                           ⢠⣤             ⣤ ││                        │ 
 │  Mindmap Seed [mindmap, S, t││                                           ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                        │ 
 │  Mindmap Deep [mindmap, L, d││ ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀            ⢀⣀         ⢀⡨⢻⠻⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿ ││                        │ 
-│  Pie Basic [pie, S, title, s││ ⣿⣿⣿⣿⣿Start⣿⣿⣿⣿⣿⡇   ⢠⣀ ⢀⣀⣤⣴Check⣷⣦⣤⣀⡀ ⡠⠔⠁                   ││                        │ 
-│  Pie Many [pie, M, many-slic││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠉⠉⠉⠹⠛⠉⠙⠛⠻⠿⢿⣿⣿⣿⣿⣿⠿⠟⠛⠋⠉⠢⢄                    ││                        │ 
+│  Pie Basic [pie, S, title, s││ ⣿    Start    ⣿⡇   ⢠⣀     Check      ⡠⠔⠁                   ││                        │ 
+│  Pie Many [pie, M, many-slic││ ⣿             ⣿⡏⠉⠉⠉⠹⠛⠉              ⠉⠢⢄                    ││                        │ 
 │  Gitgraph Basic [unsupported││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉         ⠑⠢⣰⣰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ ││                        │ 
 │  Journey Basic [unsupported,││                                         ⠈⠉⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                        │ 
-│  Requirement Basic [unsuppor││                                           ⠘⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛ ││                        │ 
+│  Requirement Basic [unsuppor││                                           ⠘⠛             ⠛ ││                        │ 
 │                             ││                                                  Fix       ││                        │ 
-│                             ││                                             No             ││                        │ 
+│                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 

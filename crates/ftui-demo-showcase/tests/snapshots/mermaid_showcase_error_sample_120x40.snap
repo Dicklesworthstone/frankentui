@@ -3,7 +3,7 @@ Mermaid Showcase | Gitgraph Basic (20/22) | Layout: Auto | Score: - | Viewport: 
 │  Flow Basic [flow, S, branch││╔══════════════════════════════════════════════════════════╗││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││║Mermaid error (2)                                         ║││Tier: auto (t)          │ 
 │  Flow Dense [flow, L, dense,││║L1:1 expected Mermaid diagram header                      ║││Glyphs: unicode (g)     │ 
-│  Flow Long Labels [flow, M, ││║expected: graph, flowchart, sequenceDiagram,              ║││Render: auto (b)        │ 
+│  Flow Long Labels [flow, M, ││║expected: graph, flowchart, sequenceDiagram,              ║││Render: braille (b)     │ 
 │  Flow Unicode [flow, S, unic││║stateDiagram, gantt, classDiagram, erDiagram, mindmap, pie║││Wrap: wordchar (w)      │ 
 │  Flow Styles [flow, M, class││║L1:1 unsupported diagram type                             ║││Styles: on (s)          │ 
 │  Sequence Mini [sequence, S,││║                                                          ║││Zoom: 100% (+/-)        │ 

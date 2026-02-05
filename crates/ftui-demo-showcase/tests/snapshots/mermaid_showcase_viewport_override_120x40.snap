@@ -3,7 +3,7 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: 88x
 │> Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
 │  Flow Dense [flow, L, dense,││                                                            ││Glyphs: unicode (g)     │ 
-│  Flow Long Labels [flow, M, ││                                                            ││Render: auto (b)        │ 
+│  Flow Long Labels [flow, M, ││                                                            ││Render: braille (b)     │ 
 │  Flow Unicode [flow, S, unic││                                                            ││Wrap: wordchar (w)      │ 
 │  Flow Styles [flow, M, class││                                                            ││Styles: on (s)          │ 
 │  Sequence Mini [sequence, S,││                                                            ││Zoom: 100% (+/-)        │ 
@@ -11,21 +11,21 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: 88x
 │  Sequence Dense [sequence, L││                                                            ││Metrics: on (m)         │ 
 │  Class Basic [class, S, inhe││                                                            ││                        │ 
 │  Class Members [class, M, fi││                                                            ││                        │ 
-│  State Basic [state, S, star││                                                   Yes      ││                        │ 
+│  State Basic [state, S, star││                                                            ││                        │ 
 │  State Composite [state, M, ││                                                            ││                        │ 
-│  ER Basic [er, M, cardinalit││                                                  ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        │ 
+│  ER Basic [er, M, cardinalit││                                                  ⢸         ││                        │ 
 │  Gantt Basic [gantt, M, sect││                                                ⢀⣀⣸⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        │ 
 │  Mindmap Seed [mindmap, S, t││                                               ⣀⠔⠹⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        │ 
-│  Mindmap Deep [mindmap, L, d││⣶⣶⣶⣶⣶⣶⣶⣶⣶⡆                ⣀⣀⣤⣴⣶⣤⣄⣀          ⢀⡠⠊   ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠉││                        │ 
-│  Pie Basic [pie, S, title, s││t⣿⣿⣿⣿⣿⣿⣿⣿⡇      ⢠⣀ ⢀⣀⣤⣤⣶⣾⣿⣿Check⣿⣿⣿⣷⣶⣦⣤⣀⡀ ⡠⠔⠁               ││                        │ 
-│  Pie Many [pie, M, many-slic││⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠉⠉⠉⠉⠉⠉⠹⠛⠉⠙⠛⠻⠿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⠟⠛⠋⠉⠢⢄                ││                        │ 
-│  Gitgraph Basic [unsupported││⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇               ⠈⠉⠙⠛⠻⠿⠛⠛⠉⠉         ⠑⠢⡀   ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀│╰────────────────────────╯ 
+│  Mindmap Deep [mindmap, L, d││         ⡆                                  ⢀⡠⠊   ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠉││                        │ 
+│  Pie Basic [pie, S, title, s││t        ⡇      ⢠⣀ ⢀       Check        ⡀ ⡠⠔⠁               ││                        │ 
+│  Pie Many [pie, M, many-slic││         ⡏⠉⠉⠉⠉⠉⠉⠹⠛⠉⠙                    ⠋⠉⠢⢄                ││                        │ 
+│  Gitgraph Basic [unsupported││         ⠇                                  ⠑⠢⡀   ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀│╰────────────────────────╯ 
 │  Journey Basic [unsupported,││                                              ⠈⠒⢄⢠⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿│╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││                                                ⠐⠛⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿││Parse: 0.05 ms          │ 
-│                             ││                                                  ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿││Layout: 0.04 ms         │ 
+│  Requirement Basic [unsuppor││                                                ⠐⠛⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿││Parse: 0.06 ms          │ 
+│                             ││                                                  ⢸         ││Layout: 0.04 ms         │ 
 │                             ││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: 88x26         │ 
-│                             ││                                                   No       ││Zoom: 100%              │ 
+│                             ││                                                            ││Zoom: 100%              │ 
 │                             ││                                                            ││Iters: 1                │ 
 │                             ││                                                            ││Score: 0.77             │ 
 │                             ││                                                            ││Cross: 0                │ 
@@ -37,4 +37,4 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: 88x
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 ╰─────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰────────────────────────╯ 
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.047169ms | layout
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.05818ms | layout 

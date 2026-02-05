@@ -3,7 +3,7 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │> Flow Basic [flow, S, branch, decision]          ││                                                                                                      ││Layout: Auto (l)                          │
 │  Flow Subgraphs [flow, M, subgraph, clusters]    ││                                                                                                      ││Tier: auto (t)                            │
 │  Flow Dense [flow, L, dense, dag]                ││                                                                                                      ││Glyphs: unicode (g)                       │
-│  Flow Long Labels [flow, M, labels, wrap]        ││                                                                                                      ││Render: auto (b)                          │
+│  Flow Long Labels [flow, M, labels, wrap]        ││                                                                                                      ││Render: braille (b)                       │
 │  Flow Unicode [flow, S, unicode, labels]         ││                                                                                                      ││Wrap: wordchar (w)                        │
 │  Flow Styles [flow, M, classdef, style]          ││                                                                                                      ││Styles: on (s)                            │
 │  Sequence Mini [sequence, S, compact]            ││                                                                                                      ││Zoom: 100% (+/-)                          │
@@ -20,23 +20,23 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Pie Basic [pie, S, title, showdata]             ││                                                                                                      ││                                          │
 │  Pie Many [pie, M, many-slices]                  ││                                                                                                      ││                                          │
 │  Gitgraph Basic [unsupported, M, unsupported]    ││                                                                                       OK             ││                                          │
-│  Journey Basic [unsupported, M, unsupported]     ││                                                                            Yes                       ││                                          │
+│  Journey Basic [unsupported, M, unsupported]     ││                                                                                                      ││                                          │
 │  Requirement Basic [unsupported, M, unsupported] ││                                                                                                      ││                                          │
-│                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│                                                  ││                                                                          ⢸⣿                        ⣿ ││                                          │
 │                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
 │                                                  ││                                                                        ⢐⢶⢾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
 │                                                  ││                                                                      ⡠⠒⠁⠈⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
-│                                                  ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                 ⢀⣀⣤⣤⣶⣾⣿⣶⣦⣤⣀⡀          ⣀⠔⠉                                ││                                          │
-│                                                  ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿Start⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇        ⣄⡀ ⣀⣠⣤⣴⣶⣿⣿⣿⣿Check⣿⣿⣿⣿⣿⣷⣶⣤⣄⣀ ⢀⠤⠊                                   ││                                          │
-│                                                  ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠉⠉⠉⠉⠉⠉⠉⠉⠟⠋⠉⠛⠛⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⠛⠛⠉⠑⠤⡀                                   ││                                          │
-│                                                  ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                 ⠉⠙⠛⠻⠿⢿⣿⠿⠿⠛⠋⠉⠁        ⠈⠒⢄                                 ││                                          │
+│                                                  ││ ⣿                        ⣿⡇                                       ⣀⠔⠉                                ││                                          │
+│                                                  ││ ⣿         Start          ⣿⡇        ⣄⡀          Check           ⢀⠤⠊                                   ││                                          │
+│                                                  ││ ⣿                        ⣿⡏⠉⠉⠉⠉⠉⠉⠉⠉⠟⠋⠉                        ⠉⠑⠤⡀                                   ││                                          │
+│                                                  ││ ⣿                        ⣿⡇                                      ⠈⠒⢄                                 ││                                          │
 │                                                  ││                                                                     ⠉⠢⣀  ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╰──────────────────────────────────────────╯
 │                                                  ││                                                                        ⢑⣼⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╭─────────────────Metrics──────────────────╮
-│                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.12 ms                            │
-│                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Layout: 0.04 ms                           │
+│                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.13 ms                            │
+│                                                  ││                                                                          ⢸⣿                        ⣿ ││Layout: 0.10 ms                           │
 │                                                  ││                                                                                                      ││Render: 0.00 ms                           │
 │                                                  ││                                                                                      Fix             ││Viewport: auto                            │
-│                                                  ││                                                                            No                        ││Zoom: 100%                                │
+│                                                  ││                                                                                                      ││Zoom: 100%                                │
 │                                                  ││                                                                                                      ││Iters: 1                                  │
 │                                                  ││                                                                                                      ││Score: 0.77                               │
 │                                                  ││                                                                                                      ││Cross: 0                                  │
@@ -57,4 +57,4 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │                                                  ││                                                                                                      ││                                          │
 │                                                  ││                                                                                                      ││                                          │
 ╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────╯
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.11709ms | layout 0.044554ms | render 0ms                                                         
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.129825ms | layout 0.102804ms | render 0ms                                                        

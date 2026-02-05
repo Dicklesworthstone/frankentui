@@ -5,11 +5,11 @@ Mermaid Showca╭─────────────── Help (? to close)
 │  Flow Dense │      Home / End  First / last sample             │OK           │
 │  Flow Long L│           Enter  Re-render sample              Ye│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
 │  Flow Unicod│             Tab  Select next node             ⢐⢶⢾│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│  Flow Styles│           S-Tab  Select previous nodek⣦⣤⣄⣀ ⢀⡠⠊⠁⠈ │             │
-│  Sequence Mi│               /  Enter search mode⠿⣿⣿⡿⠿⠟⠛⠋⠉⠑⠢⡀   │             │
+│  Flow Styles│           S-Tab  Select previous nodek   ⣀ ⢀⡠⠊⠁⠈ │             │
+│  Sequence Mi│               /  Enter search mode       ⠋⠉⠑⠢⡀   │             │
 │  Sequence Ch│  Render Config                               ⠈⢑⣼⣼│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
 │  Sequence De│               l  Cycle layout mode              ⢸│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│  Class Basic│               r  Force re-layout               No│Fix          │
+│  Class Basic│               r  Force re-layout                 │Fix          │
 │  Class Membe│               t  Cycle tier                      │             │
 │  State Basic│               g  Toggle glyph mode               │             │
 │  State Compo│               b  Cycle render mode───────────────│─────────────╯

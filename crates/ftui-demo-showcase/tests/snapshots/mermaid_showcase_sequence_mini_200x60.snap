@@ -3,7 +3,7 @@ Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport:
 │  Flow Basic [flow, S, branch, decision]          ││                                                                                                      ││Layout: Auto (l)                          │
 │  Flow Subgraphs [flow, M, subgraph, clusters]    ││                                                                                                      ││Tier: auto (t)                            │
 │  Flow Dense [flow, L, dense, dag]                ││                                                                                                      ││Glyphs: unicode (g)                       │
-│  Flow Long Labels [flow, M, labels, wrap]        ││                                                                                                      ││Render: auto (b)                          │
+│  Flow Long Labels [flow, M, labels, wrap]        ││                                                                                                      ││Render: braille (b)                       │
 │  Flow Unicode [flow, S, unicode, labels]         ││                                                                                                      ││Wrap: wordchar (w)                        │
 │  Flow Styles [flow, M, classdef, style]          ││                                                                                                      ││Styles: on (s)                            │
 │> Sequence Mini [sequence, S, compact]            ││                                                                                                      ││Zoom: 100% (+/-)                          │
@@ -57,4 +57,4 @@ Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport:
 │                                                  ││                            │                                             │                           ││                                          │
 │                                                  ││                                                                                                      ││                                          │
 ╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────╯
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.017864ms | layout 0.01092ms | render 0ms                                                         
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.018594999ms | layout 0.012093ms | render 0ms                                                     

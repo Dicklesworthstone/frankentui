@@ -1,5 +1,5 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Tier:auto Glyph:unicode Render:auto Wrap:wordchar Layout:auto Palette:default│
+│ Tier:auto Glyph:unicode Render:braille Wrap:wordchar Layout:auto Palette:defa│
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -11,8 +11,8 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│ ⣶⣶⣶Input⣶⣶⣶ ⣀⡄  ⢰⣶Reject⣶⣶⣶ ⣀⡄  ⢰⣶Validate⣶⡆⢀⣠   ⣶Transform⣶⣶ ⣀⡄ ⣶⣶Output⣶⣶⣶ │
-│ ⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠉retry⠿⠿⠿⠿⠿⠿raw⠿⠉error⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠏data⠉⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠉result⠿⠿⠿⠿⠿⠿⠿⠿ │
+│ ⣶  Input  ⣶ ⣀⡄  ⢰ Reject  ⣶ ⣀⡄  ⢰⣶Validate⣶⡆⢀⣠   ⣶Transform ⣶ ⣀⡄ ⣶ Output  ⣶ │
+│ ⠿         ⠿⠉retry         ⠿⠉error⠿        ⠿⠏data⠉⠿          ⠿⠉resu         ⠿ │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -20,5 +20,5 @@
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-NORMAL  j/k:sample t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help       
+NORMAL  j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size
                                                                                 

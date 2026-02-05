@@ -1,5 +1,5 @@
 ┌────────────────────────────────╭─ Help (? to close) ────────────────────────────────╮────────────────────────────────┐
-│ Tier:auto Glyph:unicode Render:│                                                    │0% VP:auto                      │
+│ Tier:auto Glyph:unicode Render:│                                                    │:100% VP:auto Gen:n24 b2 d25% l6│
 │                                │ Navigation                                         │                                │
 │                                │  j / Down        Next sample                       │                                │
 │                                │  k / Up          Previous sample                   │                                │
@@ -32,9 +32,9 @@
 │                                │  c               Toggle controls strip             │    ││                          │
 │                                │  d               Toggle detail panel               │    ││                          │
 │                                │  i               Toggle status log                 │    ││                          │
+│                                │  e               Toggle diagnostics (errors)       │    ││                          │
 │                                │  ?               Toggle this help overlay          │    ││                          │
 │                                │  Esc             Deselect node / exit search / col │    ││                          │
-│                                │                                                    │    ││                          │
 └────────────────────────────────│                                                    │────┘└──────────────────────────┘
-NORMAL  j/k:sample t:tier p:palet│                                                    │                                 
+NORMAL  j/k:sample u/U:nodes x/X:│                                                    │t ?:help                         
                                  ╰────────────────────────────────────────────────────╯                                 

@@ -1,5 +1,5 @@
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Tier:auto Glyph:unicode Render:auto Wrap:wordchar Layout:auto Palette:default Zoom:100% VP:88x26                     │
+│ Tier:auto Glyph:unicode Render:braille Wrap:wordchar Layout:auto Palette:default Zoom:100% VP:88x26 Gen:n24 b2 d25% l│
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -9,7 +9,7 @@
 │                                                                                          ││Mode: normal              │
 │                                                                                          ││Sample: Flow Basic        │
 │                                   ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                   ││Palette: default          │
-│                                   ⣿⣿⣿⣿⣿⣿⣿Start⣿⣿⣿⣿⣿⣿⣿⣿                                   ││Node: -                   │
+│                                   ⣿⣿⣿⣿⣿⣿ Start  ⣿⣿⣿⣿⣿⣿                                   ││Node: -                   │
 │                                   ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                   ││Epoch: a0/l0/r3           │
 │                                             ⡇                                            ││VP: 88x26 (override)      │
 │                                             ⡇                                            ││                          │
@@ -23,18 +23,18 @@
 │                                    ⡠⠔⠊            ⠈⠒⠤⡀                                   ││                          │
 │                                ⢠⣧⠔⠉                  ⠈⠑⢤⣧                                ││                          │
 │                      ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿Yes     ⣿⣿⣿⣿⣿No⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                      ││                          │
-│                      ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿OK⣿⣿      ⣿Error⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                      ││                          │
+│                      ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿   OK         Error  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                      ││                          │
 │                      ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿      ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                      ││                          │
 │                                ⠑⠢⢄                    ⢀⠤⠒⠁                               ││                          │
 │                                   ⠉⠢⢄⡀             ⣀⠤⠊⠁                                  ││                          │
 │                                      ⠈⠒⠤⡀       ⡠⠔⠊                                      ││                          │
 │                                         ⠈⠑⢤⣧⢠⣧⠔⠉                                         ││                          │
 │                                   ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                   ││                          │
-│                                   ⣿⣿⣿⣿⣿⣿⣿⣿End⣿⣿⣿⣿⣿⣿⣿⣿⣿                                   ││                          │
+│                                   ⣿⣿⣿⣿⣿⣿  End   ⣿⣿⣿⣿⣿⣿                                   ││                          │
 │                                   ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                   ││                          │
 │                                                                                          ││                          │
 │                                                                                          ││                          │
 │                                                                                          ││                          │
 └──────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────┘
-NORMAL  j/k:sample t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help                                               
+NORMAL  j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help                         
                                                                                                                         

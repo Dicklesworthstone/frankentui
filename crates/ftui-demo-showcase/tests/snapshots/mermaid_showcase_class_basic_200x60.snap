@@ -3,7 +3,7 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │  Flow Basic [flow, S, branch, decision]          ││                                                                                                      ││Layout: Auto (l)                          │
 │  Flow Subgraphs [flow, M, subgraph, clusters]    ││                                                                                                      ││Tier: auto (t)                            │
 │  Flow Dense [flow, L, dense, dag]                ││                                                                                                      ││Glyphs: unicode (g)                       │
-│  Flow Long Labels [flow, M, labels, wrap]        ││                                                                                                      ││Render: auto (b)                          │
+│  Flow Long Labels [flow, M, labels, wrap]        ││                                                                                                      ││Render: braille (b)                       │
 │  Flow Unicode [flow, S, unicode, labels]         ││                                                                                                      ││Wrap: wordchar (w)                        │
 │  Flow Styles [flow, M, classdef, style]          ││                                                                                                      ││Styles: on (s)                            │
 │  Sequence Mini [sequence, S, compact]            ││                                                                                                      ││Zoom: 100% (+/-)                          │
@@ -17,7 +17,7 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │  Gantt Basic [gantt, M, sections, tasks]         ││                                                                                                      ││                                          │
 │  Mindmap Seed [mindmap, S, tree]                 ││                                                                                                      ││                                          │
 │  Mindmap Deep [mindmap, L, deep, wide]           ││                                                                                                      ││                                          │
-│  Pie Basic [pie, S, title, showdata]             ││                             ⢰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⡆                             ││                                          │
+│  Pie Basic [pie, S, title, showdata]             ││                             ⢰                                          ⡆                             ││                                          │
 │  Pie Many [pie, M, many-slices]                  ││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
 │  Gitgraph Basic [unsupported, M, unsupported]    ││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
 │  Journey Basic [unsupported, M, unsupported]     ││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
@@ -38,7 +38,7 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │                                                  ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Viewport: auto                            │
 │                                                  ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Zoom: 100%                                │
 │                                                  ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Iters: 1                                  │
-│                                                  ││ ⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇            ⠸⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿ ││Score: 44.10                              │
+│                                                  ││ ⠿                                         ⠿⠇            ⠸⠿                                         ⠿ ││Score: 44.10                              │
 │                                                  ││                                                                                                      ││Cross: 0                                  │
 │                                                  ││                                                                                                      ││Bends: 0                                  │
 │                                                  ││                                                                                                      ││Sym: 1.00                                 │
@@ -57,4 +57,4 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │                                                  ││                                                                                                      ││                                          │
 │                                                  ││                                                                                                      ││                                          │
 ╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────╯
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.044744ms | layout 0.03696ms | render 0ms                                                         
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.039074ms | layout 0.040276002ms | render 0ms                                                     

@@ -1,0 +1,20 @@
+Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score:
+╭─────────╭───────── Help (? to close) ──────────╮─────────╮
+│> Flow Ba│  Navlow, S, branch, decision]        │         │
+│  Flow Su│         j/k  Samplegraph, clusters]  │         │
+│  Flow De│       Enter  Re-render]              │         │
+│  Flow Lo│  Viewls [flow, M, labels, wrap]      │         │
+╰─────────│           l  Layout──────────────────│─────────╯
+╭─────────│         +/-  Zoomwport───────────────│─────────╮
+│         │           ?  Help                    │         │
+│         │  Panels                        ⢀⣀⣀⣀⣀⣀│⣀⣀⣀⣀⣀⣀⣀⣀ │
+│         │           m  Metrics         OK   ⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿ │
+│         │         Esc  Collapse       ⢀⡨⢻⢻⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿ │
+│ ⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⡇   ⢠⣀ ⢀⣀⣠⣤⣴⣶⣾⣿⣶⣶⣤⣄⣀⡀ ⡠⠔⠁        │         │
+│ ⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⡏⠉⠉⠉⠹⠛⠉⠉⠛⠛⠻⠿⠿⣿⣿⡿⠿⠿⠛⠛⠉⠉⠢⢄         │         │
+│         │                             ⠑⠢⣰⣸⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿ │
+│         │                              Fix  ⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿ │
+│         │                                ⠈⠉⠉⠉⠉⠉│⠉⠉⠉⠉⠉⠉⠉⠉ │
+│         ╰──────────────────────────────────────╯         │
+╰──────────────────────────────────────────────────────────╯
+j/k sample  Enter render  ? help                            

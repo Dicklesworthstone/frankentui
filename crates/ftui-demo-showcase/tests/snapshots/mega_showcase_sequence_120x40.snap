@@ -1,5 +1,5 @@
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Tier:auto Glyph:unicode Render:auto Wrap:wordchar Layout:auto Palette:default Zoom:100% VP:auto                      │
+│ Tier:auto Glyph:unicode Render:braille Wrap:wordchar Layout:auto Palette:default Zoom:100% VP:auto Gen:n24 b2 d25% l6│
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -19,8 +19,8 @@
 │                                                                                          ││Cache: 0/0                │
 │                                                                                          ││Last: MISS                │
 │                                                                                          ││                          │
-│ ⣿⣿⣿⣿Input⣿⣿⣿⡇⢀⣠    ⣿⣿⣿Reject⣿⣿⣿⡇⢀⣠   ⢸⣿⣿Validate⣿⣿⡇⢀⣠   ⢸⣿⣿Transform⣿⣿⡇⢀⣠  ⢸⣿⣿Output⣿⣿⣿⣿ ││                          │
-│ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠙retry⣿⣿⣿⣿⣿⣿⣿raw⣿⣿⡏error⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏data⠉⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏result⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                          │
+│ ⣿   Input   ⡇⢀⣠    ⣿  Reject  ⣿⡇⢀⣠   ⢸⣿ Validate ⣿⡇⢀⣠   ⢸⣿ Transform ⣿⡇⢀⣠  ⢸  Output   ⣿ ││                          │
+│ ⣿           ⡏⠙retry⣿          ⣿⡏error⢹⣿          ⣿⡏data⠉⢹⣿           ⣿⡏resul           ⣿ ││                          │
 │                                                                                          ││                          │
 │                                                                                          ││                          │
 │                                                                                          ││                          │
@@ -36,5 +36,5 @@
 │                                                                                          ││                          │
 │                                                                                          ││                          │
 └──────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────┘
-NORMAL  j/k:sample t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help                                               
+NORMAL  j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help                         
                                                                                                                         

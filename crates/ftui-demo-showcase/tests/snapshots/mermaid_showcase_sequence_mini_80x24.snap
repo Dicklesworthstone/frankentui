@@ -21,4 +21,4 @@ Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport:
 │  Pie Many [pie, M, ma││Zoom: 100%                                            │
 │  Gitgraph Basic [unsu││Iters: 0                                              │
 ╰──────────────────────╯╰──────────────────────────────────────────────────────╯
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m met
+j/k sample  Enter render  l layout  +/- zoom  m metrics  ? help                 
