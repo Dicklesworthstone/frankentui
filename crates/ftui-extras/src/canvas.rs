@@ -228,6 +228,29 @@ impl Painter {
         }
     }
 
+    /// Draw a filled convex polygon.
+    pub fn polygon_filled(&mut self, points: &[(i32, i32)]) {
+        if points.len() < 3 {
+            return;
+        }
+        let (mut min_x, mut max_x) = (points[0].0, points[0].0);
+        let (mut min_y, mut max_y) = (points[0].1, points[0].1);
+        for &(x, y) in points.iter().skip(1) {
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                if point_in_convex_polygon(x, y, points) {
+                    self.point(x, y);
+                }
+            }
+        }
+    }
+
     /// Draw a circle outline using the midpoint algorithm.
     pub fn circle(&mut self, cx: i32, cy: i32, radius: i32) {
         if radius <= 0 {
@@ -543,6 +566,26 @@ impl Painter {
         }
         None
     }
+}
+
+fn point_in_convex_polygon(x: i32, y: i32, points: &[(i32, i32)]) -> bool {
+    let mut sign: i32 = 0;
+    let len = points.len();
+    for i in 0..len {
+        let (x0, y0) = points[i];
+        let (x1, y1) = points[(i + 1) % len];
+        let cross = (x - x0) * (y1 - y0) - (y - y0) * (x1 - x0);
+        if cross == 0 {
+            continue;
+        }
+        let s = cross.signum();
+        if sign == 0 {
+            sign = s;
+        } else if sign != s {
+            return false;
+        }
+    }
+    true
 }
 
 /// Canvas widget that renders a [`Painter`]'s pixel buffer.
