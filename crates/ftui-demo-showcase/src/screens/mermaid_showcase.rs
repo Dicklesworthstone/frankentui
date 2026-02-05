@@ -175,6 +175,209 @@ struct MermaidSample {
     source: &'static str,
 }
 
+// =============================================================================
+// Feature Matrix: Mermaid capabilities → demo coverage
+// =============================================================================
+//
+// This matrix maps every supported diagram family and syntax feature to the
+// sample(s) that exercise it. Gaps are noted as TODOs for future samples.
+//
+// ## Diagram Families
+//
+// | Family       | Type Enum   | Samples                              | Coverage |
+// |-------------|-------------|--------------------------------------|----------|
+// | Flowchart   | Graph       | Flow Basic, Subgraphs, Dense,        | Good     |
+// |             |             | Long Labels, Unicode, Styles         |          |
+// | Sequence    | Sequence    | Seq Mini, Seq Checkout, Seq Dense    | Good     |
+// | Class       | Class       | Class Basic, Class Members           | Moderate |
+// | State       | State       | State Basic, State Composite         | Moderate |
+// | ER          | Er          | ER Basic                             | Minimal  |
+// | Gantt       | Gantt       | Gantt Basic                          | Minimal  |
+// | Mindmap     | Mindmap     | Mindmap Seed, Mindmap Deep           | Moderate |
+// | Pie         | Pie         | Pie Basic, Pie Many                  | Good     |
+// | Gitgraph    | (unsupported) | Gitgraph Basic (fallback test)     | N/A      |
+// | Journey     | (unsupported) | Journey Basic (fallback test)       | N/A      |
+// | Requirement | (unsupported) | Requirement Basic (fallback test)   | N/A      |
+//
+// ## Syntax Features
+//
+// | Feature               | Samples That Exercise It          | Gaps/TODOs                    |
+// |----------------------|-----------------------------------|-------------------------------|
+// | Node shapes: []      | Flow Basic, all flow samples      | —                             |
+// | Node shapes: {}      | Flow Basic (decision diamond)     | —                             |
+// | Node shapes: ()      | (none explicitly)                 | TODO: rounded node sample     |
+// | Node shapes: ([])    | (none explicitly)                 | TODO: stadium shape sample    |
+// | Node shapes: [[]]    | (none explicitly)                 | TODO: subroutine sample       |
+// | Node shapes: {{}}    | (none explicitly)                 | TODO: hexagon sample          |
+// | Node shapes: (())    | (none explicitly)                 | TODO: circle shape sample     |
+// | Node shapes: >]      | (none explicitly)                 | TODO: asymmetric shape sample |
+// | Edge labels          | Flow Basic, Flow Long Labels,     | —                             |
+// |                      | Flow Subgraphs                    |                               |
+// | Dotted edges -.->    | Sequence Checkout                 | TODO: flow sample with dotted |
+// | Thick edges ==>      | (none explicitly)                 | TODO: thick edge sample       |
+// | Bidir edges <-->     | (none explicitly)                 | TODO: bidirectional sample    |
+// | Endpoint markers o/x | (none explicitly)                 | TODO: marker endpoint sample  |
+// | Subgraphs            | Flow Subgraphs                    | —                             |
+// | Nested subgraphs     | Flow Subgraphs                    | —                             |
+// | classDef             | Flow Styles                       | —                             |
+// | style directive      | Flow Styles                       | —                             |
+// | linkStyle            | (none explicitly)                 | TODO: linkStyle sample        |
+// | init directives      | (off by default)                  | TODO: init directive sample   |
+// | click/link           | (off by default)                  | TODO: link sample             |
+// | Unicode labels       | Flow Unicode                      | —                             |
+// | Long/wrap labels     | Flow Long Labels                  | —                             |
+// | ER cardinality       | ER Basic                          | —                             |
+// | Class members        | Class Members                     | —                             |
+// | State composites     | State Composite                   | —                             |
+// | State notes          | State Composite                   | —                             |
+// | Gantt sections       | Gantt Basic                       | —                             |
+// | Gantt tasks          | Gantt Basic                       | —                             |
+// | Pie showData         | Pie Basic                         | —                             |
+// | Pie many slices      | Pie Many                          | —                             |
+// | Mindmap deep nesting | Mindmap Deep                      | —                             |
+//
+// ## Layout Directions
+//
+// | Direction | Samples                  | Gaps/TODOs                          |
+// |-----------|--------------------------|-------------------------------------|
+// | LR        | Flow Basic               | —                                   |
+// | TB        | Flow Subgraphs, most     | —                                   |
+// | RL        | (none explicitly)        | TODO: RL direction sample           |
+// | BT        | (none explicitly)        | TODO: BT direction sample           |
+//
+// ## Rendering Features
+//
+// | Feature         | Exercised By        | Notes                               |
+// |----------------|---------------------|-------------------------------------|
+// | Braille mode   | Runtime toggle (r)  | All samples via render_mode cycling  |
+// | Block mode     | Runtime toggle (r)  | All samples via render_mode cycling  |
+// | HalfBlock mode | Runtime toggle (r)  | All samples via render_mode cycling  |
+// | CellOnly mode  | Runtime toggle (r)  | All samples via render_mode cycling  |
+// | Zoom in/out    | Runtime toggle (+/-) | All samples                         |
+// | Palette cycle  | Runtime toggle (s)  | All samples                         |
+// | Tier control   | Runtime toggle (t)  | All samples                         |
+// | Wrap mode      | Runtime toggle (w)  | All samples via wrap_mode cycling    |
+//
+// ## Stress/Performance Features
+//
+// | Feature           | Samples                 | Notes                           |
+// |------------------|-------------------------|----------------------------------|
+// | Large graph      | Flow Dense (>20 nodes)  | Edge crossing stress             |
+// | Many messages    | Sequence Dense          | Tight vertical spacing           |
+// | Deep hierarchy   | Mindmap Deep (5 levels) | Layout depth stress              |
+// | Many pie slices  | Pie Many (6+ slices)    | Small-slice rendering            |
+// | Long labels      | Flow Long Labels        | Wrapping/truncation stress       |
+// | Unicode width    | Flow Unicode            | CJK/emoji width handling         |
+//
+// ## Sample Purpose Registry
+//
+// Every sample below has a declared purpose and feature coverage tag.
+// The `features` field lists syntax features exercised.
+// The `edge_cases` field lists rendering edge cases tested.
+// The `tags` field provides searchable categories.
+// =============================================================================
+
+/// Known diagram feature tag for coverage tracking.
+///
+/// Each tag represents a specific Mermaid syntax or rendering capability.
+/// Samples declare which tags they exercise via their `features` field.
+/// Gaps (features with no sample) are listed below as TODOs.
+const KNOWN_FEATURE_TAGS: &[&str] = &[
+    // Syntax features
+    "basic-nodes",
+    "edge-labels",
+    "subgraph",
+    "classDef",
+    "style",
+    "unicode-labels",
+    "long-labels",
+    "many-nodes",
+    "many-edges",
+    // Sequence features
+    "messages",
+    "responses",
+    "round-trip",
+    "multi-actor",
+    "many-messages",
+    // Class features
+    "relations",
+    "class-members",
+    // State features
+    "state-edges",
+    "substates",
+    "notes",
+    // ER features
+    "er-arrows",
+    // Gantt features
+    "title",
+    "sections",
+    // Mindmap features
+    "indent",
+    "multi-level",
+    // Pie features
+    "showData",
+    "labels",
+    // Unsupported diagram fallback
+    "branches",
+    "commits",
+    "scores",
+    "requirements",
+];
+
+/// Features known to be supported but lacking dedicated samples.
+/// Each entry is (feature_tag, description).
+const FEATURE_GAPS: &[(&str, &str)] = &[
+    (
+        "node-rounded",
+        "Rounded node shape () — no sample exercises this",
+    ),
+    (
+        "node-stadium",
+        "Stadium node shape ([]) — no sample exercises this",
+    ),
+    (
+        "node-subroutine",
+        "Subroutine node shape [[]] — no sample exercises this",
+    ),
+    (
+        "node-hexagon",
+        "Hexagon node shape {{}} — no sample exercises this",
+    ),
+    (
+        "node-circle",
+        "Circle node shape (()) — no sample exercises this",
+    ),
+    (
+        "node-asymmetric",
+        "Asymmetric node shape >] — no sample exercises this",
+    ),
+    (
+        "dotted-edges",
+        "Dotted edges -.-> in flowcharts — only used in sequence",
+    ),
+    ("thick-edges", "Thick edges ==> — no sample exercises this"),
+    (
+        "bidir-edges",
+        "Bidirectional edges <--> — no sample exercises this",
+    ),
+    (
+        "endpoint-markers",
+        "Endpoint markers o--o, x--x — no sample exercises this",
+    ),
+    (
+        "linkStyle",
+        "linkStyle directive — no sample exercises this",
+    ),
+    (
+        "direction-rl",
+        "Right-to-left layout — no sample exercises this",
+    ),
+    (
+        "direction-bt",
+        "Bottom-to-top layout — no sample exercises this",
+    ),
+];
+
 const DEFAULT_SAMPLES: &[MermaidSample] = &[
     MermaidSample {
         name: "Flow Basic",
@@ -1726,10 +1929,7 @@ impl MermaidShowcaseScreen {
                 if ec > 0 {
                     lines.push(Line::from_spans(vec![
                         Span::styled("Errors: ", muted),
-                        Span::styled(
-                            format!("{ec}"),
-                            Style::new().fg(theme::accent::ERROR),
-                        ),
+                        Span::styled(format!("{ec}"), Style::new().fg(theme::accent::ERROR)),
                     ]));
                     // Show first error message if available.
                     let errors = &self.cache.borrow().errors;
@@ -2911,6 +3111,90 @@ mod tests {
             "compactness should be non-null for valid sample"
         );
     }
+
+    // --- Error UX + diagnostics (bd-20fop) ---
+
+    #[test]
+    fn error_count_zero_for_valid_sample() {
+        let s = new_state();
+        // Valid samples should have error_count == 0.
+        assert_eq!(
+            s.metrics.error_count.unwrap_or(0),
+            0,
+            "valid sample should have zero errors"
+        );
+    }
+
+    #[test]
+    fn error_count_in_jsonl_output() {
+        let s = new_state();
+        let sample = s.selected_sample().expect("sample");
+        let line = s.metrics_jsonl_line(sample, 0, None, 0, "test");
+        let value: Value = serde_json::from_str(&line).expect("valid json");
+        // error_count field should be present and typed correctly.
+        assert!(
+            value["error_count"].is_number() || value["error_count"].is_null(),
+            "error_count must be number or null, got {:?}",
+            value["error_count"]
+        );
+    }
+
+    #[test]
+    fn error_count_jsonl_zero_for_valid_sample() {
+        let s = new_state();
+        let sample = s.selected_sample().expect("sample");
+        let line = s.metrics_jsonl_line(sample, 0, None, 0, "test");
+        let value: Value = serde_json::from_str(&line).expect("valid json");
+        assert_eq!(
+            value["error_count"].as_u64().unwrap_or(999),
+            0,
+            "valid sample JSONL should report error_count=0"
+        );
+    }
+
+    #[test]
+    fn has_render_error_false_for_valid_sample() {
+        let screen = new_screen();
+        assert!(
+            !screen.has_render_error(),
+            "valid sample should not have render errors"
+        );
+    }
+
+    #[test]
+    fn status_ok_for_valid_sample() {
+        let s = new_state();
+        // Valid sample with no errors and no fallback should be "OK".
+        assert!(
+            s.metrics.fallback_tier.is_none(),
+            "valid sample should not trigger fallback"
+        );
+        assert_eq!(
+            s.metrics.error_count.unwrap_or(0),
+            0,
+            "valid sample should have no errors"
+        );
+    }
+
+    #[test]
+    fn metrics_error_count_field_survives_layout_rebuild() {
+        let mut s = new_state();
+        // Set error count manually and verify it persists across normalize.
+        s.metrics.error_count = Some(3);
+        // After changing layout mode, metrics are rebuilt; error_count should
+        // be re-derived from the actual parse (not the manual value).
+        s.layout_mode = LayoutMode::Dense;
+        s.render_epoch += 1;
+        s.normalize();
+        // After normalize + recompute, error_count should reflect the actual
+        // parse result (0 for valid sample, not our injected 3).
+        assert_eq!(
+            s.metrics.error_count.unwrap_or(999),
+            0,
+            "error_count should be refreshed from actual parse, not stale"
+        );
+    }
+
     // --- Status log ---
 
     #[test]
