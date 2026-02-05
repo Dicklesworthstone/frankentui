@@ -794,6 +794,13 @@ impl MermaidRenderer {
             {
                 self.render_edge_label(edge_path, &label.text, plan.max_label_width, vp, buf);
             }
+
+            // ER cardinality labels at edge endpoints (bd-1rnqg).
+            if ir.diagram_type == DiagramType::Er
+                && let Some(ir_edge) = ir.edges.get(edge_path.edge_idx)
+            {
+                render_er_cardinality(edge_path, &ir_edge.arrow, vp, buf);
+            }
         }
     }
 
@@ -1641,7 +1648,6 @@ pub fn render_diagram_adaptive(
     plan
 }
 
-
 // ── ER Cardinality Rendering (bd-1rnqg) ────────────────────────────
 
 /// Parsed ER cardinality markers for the two endpoints of a relationship.
@@ -1690,12 +1696,7 @@ fn cardinality_label(marker: &str) -> &'static str {
 }
 
 /// Render ER cardinality labels near the endpoints of an edge.
-fn render_er_cardinality(
-    edge_path: &LayoutEdgePath,
-    arrow: &str,
-    vp: &Viewport,
-    buf: &mut Buffer,
-) {
+fn render_er_cardinality(edge_path: &LayoutEdgePath, arrow: &str, vp: &Viewport, buf: &mut Buffer) {
     let Some(card) = parse_er_cardinality(arrow) else {
         return;
     };
@@ -3955,5 +3956,194 @@ mod tests {
         // Render rank boundary overlay alone.
         render_overlay_ranks(&layout, area, &mut buf);
         // No crash is success.
+    }
+
+    // ── ER Diagram Integration Tests (bd-1rnqg) ────────────────────────
+
+    #[test]
+    fn er_cardinality_parse_one_to_many() {
+        let card = parse_er_cardinality("||--o{").expect("should parse");
+        assert_eq!(card.left, "||");
+        assert_eq!(card.right, "o{");
+    }
+
+    #[test]
+    fn er_cardinality_parse_many_to_many() {
+        let card = parse_er_cardinality("}o--o{").expect("should parse");
+        assert_eq!(card.left, "}o");
+        assert_eq!(card.right, "o{");
+    }
+
+    #[test]
+    fn er_cardinality_parse_one_to_one() {
+        let card = parse_er_cardinality("||--||").expect("should parse");
+        assert_eq!(card.left, "||");
+        assert_eq!(card.right, "||");
+    }
+
+    #[test]
+    fn er_cardinality_parse_dotted_line() {
+        let card = parse_er_cardinality("|o..||").expect("should parse");
+        assert_eq!(card.left, "|o");
+        assert_eq!(card.right, "||");
+    }
+
+    #[test]
+    fn er_cardinality_label_values() {
+        assert_eq!(cardinality_label("||"), "1");
+        assert_eq!(cardinality_label("o{"), "0..*");
+        assert_eq!(cardinality_label("}o"), "0..*");
+        assert_eq!(cardinality_label("|{"), "1..*");
+        assert_eq!(cardinality_label("{|"), "1..*");
+        assert_eq!(cardinality_label("o|"), "0..1");
+        assert_eq!(cardinality_label("|o"), "0..1");
+    }
+
+    #[test]
+    fn er_diagram_full_pipeline() {
+        // End-to-end: parse → IR → layout → render for a basic ER diagram.
+        let input = concat!(
+            "erDiagram\n",
+            "    CUSTOMER ||--o{ ORDER : places\n",
+            "    ORDER ||--|{ LINE_ITEM : contains\n",
+        );
+        let prepared = parse_with_diagnostics(input);
+        assert!(
+            prepared.errors.is_empty(),
+            "parse errors: {:?}",
+            prepared.errors
+        );
+        let ir_parse = normalize_ast_to_ir(
+            &prepared.ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+        assert_eq!(ir.diagram_type, DiagramType::Er);
+        assert!(ir.nodes.len() >= 3, "should have at least 3 entities");
+        assert!(ir.edges.len() >= 2, "should have at least 2 relationships");
+
+        // Layout.
+        let layout = layout_diagram(ir, &MermaidConfig::default());
+        assert_eq!(layout.nodes.len(), ir.nodes.len());
+
+        // Render at 80x24.
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::new(80, 24);
+        let plan = render_diagram_adaptive(&layout, ir, &MermaidConfig::default(), area, &mut buf);
+        assert!(
+            plan.fidelity != MermaidFidelity::Outline || area.width < 40,
+            "80x24 should not be outline fidelity for 3 nodes"
+        );
+    }
+
+    #[test]
+    fn er_diagram_with_attributes_pipeline() {
+        let input = concat!(
+            "erDiagram\n",
+            "    CUSTOMER {\n",
+            "        string name PK\n",
+            "        int age\n",
+            "    }\n",
+            "    ORDER {\n",
+            "        int id PK\n",
+            "        date created\n",
+            "    }\n",
+            "    CUSTOMER ||--o{ ORDER : places\n",
+        );
+        let prepared = parse_with_diagnostics(input);
+        assert!(prepared.errors.is_empty());
+        let ir_parse = normalize_ast_to_ir(
+            &prepared.ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+
+        // CUSTOMER and ORDER should have members (attributes).
+        let customer = ir.nodes.iter().find(|n| n.id == "CUSTOMER");
+        assert!(customer.is_some(), "CUSTOMER entity should exist");
+        assert!(
+            customer.unwrap().members.len() >= 2,
+            "CUSTOMER should have at least 2 attributes"
+        );
+
+        let order = ir.nodes.iter().find(|n| n.id == "ORDER");
+        assert!(order.is_some(), "ORDER entity should exist");
+        assert!(
+            order.unwrap().members.len() >= 2,
+            "ORDER should have at least 2 attributes"
+        );
+
+        // Render.
+        let layout = layout_diagram(ir, &MermaidConfig::default());
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::new(120, 40);
+        let _plan = render_diagram_adaptive(&layout, ir, &MermaidConfig::default(), area, &mut buf);
+    }
+
+    #[test]
+    fn er_diagram_at_multiple_sizes() {
+        let input = concat!(
+            "erDiagram\n",
+            "    A ||--o{ B : rel1\n",
+            "    B ||--|{ C : rel2\n",
+            "    C }o--|| A : rel3\n",
+        );
+        let prepared = parse_with_diagnostics(input);
+        assert!(prepared.errors.is_empty());
+        let ir_parse = normalize_ast_to_ir(
+            &prepared.ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+        let layout = layout_diagram(ir, &MermaidConfig::default());
+
+        for (w, h) in [(80, 24), (120, 40), (200, 60), (40, 12)] {
+            let area = Rect::new(0, 0, w, h);
+            let mut buf = Buffer::new(w, h);
+            let _plan =
+                render_diagram_adaptive(&layout, ir, &MermaidConfig::default(), area, &mut buf);
+        }
+    }
+
+    #[test]
+    fn er_cardinality_render_does_not_crash() {
+        // Verify cardinality rendering doesn't crash on edge cases.
+        let input = "erDiagram\nA ||--o{ B : places\n";
+        let prepared = parse_with_diagnostics(input);
+        let ir_parse = normalize_ast_to_ir(
+            &prepared.ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+        let layout = layout_diagram(ir, &MermaidConfig::default());
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::new(80, 24);
+        let _plan = render_diagram_adaptive(&layout, ir, &MermaidConfig::default(), area, &mut buf);
+    }
+
+    #[test]
+    fn er_edge_without_label_renders() {
+        let input = "erDiagram\nA ||--|| B\n";
+        let prepared = parse_with_diagnostics(input);
+        assert!(prepared.errors.is_empty());
+        let ir_parse = normalize_ast_to_ir(
+            &prepared.ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+        let layout = layout_diagram(ir, &MermaidConfig::default());
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::new(80, 24);
+        let _plan = render_diagram_adaptive(&layout, ir, &MermaidConfig::default(), area, &mut buf);
     }
 }
