@@ -49,25 +49,348 @@ impl LayoutMode {
 #[derive(Debug, Clone, Copy)]
 struct MermaidSample {
     name: &'static str,
-    source: &'static str,
+    kind: &'static str,
+    complexity: &'static str,
     tags: &'static [&'static str],
+    features: &'static [&'static str],
+    edge_cases: &'static [&'static str],
+    source: &'static str,
 }
 
 const DEFAULT_SAMPLES: &[MermaidSample] = &[
     MermaidSample {
         name: "Flow Basic",
-        source: "graph LR\nA[Start] --> B{Check}\nB -->|Yes| C[OK]\nB -->|No| D[Fix]",
-        tags: &["flow", "basic"],
+        kind: "flow",
+        complexity: "S",
+        tags: &["branch", "decision"],
+        features: &["edge-labels", "basic-nodes"],
+        edge_cases: &[],
+        source: r#"graph LR
+A[Start] --> B{Check}
+B -->|Yes| C[OK]
+B -->|No| D[Fix]"#,
+    },
+    MermaidSample {
+        name: "Flow Subgraphs",
+        kind: "flow",
+        complexity: "M",
+        tags: &["subgraph", "clusters"],
+        features: &["subgraph", "edge-labels"],
+        edge_cases: &["nested-grouping"],
+        source: r#"graph TB
+  subgraph Cluster_A
+    A1[Ingress] --> A2[Parse]
+  end
+  subgraph Cluster_B
+    B1[Store] --> B2[Report]
+  end
+  A2 -->|ok| B1
+  A2 -->|err| B2"#,
+    },
+    MermaidSample {
+        name: "Flow Dense",
+        kind: "flow",
+        complexity: "L",
+        tags: &["dense", "dag"],
+        features: &["many-nodes", "many-edges"],
+        edge_cases: &["edge-crossing"],
+        source: r#"graph LR
+  A-->B
+  A-->C
+  B-->D
+  C-->D
+  D-->E
+  E-->F
+  F-->G
+  C-->H
+  H-->I
+  I-->J
+  J-->K"#,
+    },
+    MermaidSample {
+        name: "Flow Long Labels",
+        kind: "flow",
+        complexity: "M",
+        tags: &["labels", "wrap"],
+        features: &["long-labels", "edge-labels"],
+        edge_cases: &["long-text"],
+        source: r#"graph TD
+  A[This is a very long label that should wrap or truncate neatly] --> B[Another extremely verbose node label]
+  B --> C{Decision with a long question that should still render}
+  C -->|Yes| D[Proceed to the next step]
+  C -->|No| E[Abort with a meaningful explanation]"#,
+    },
+    MermaidSample {
+        name: "Flow Unicode",
+        kind: "flow",
+        complexity: "S",
+        tags: &["unicode", "labels"],
+        features: &["unicode-labels"],
+        edge_cases: &["non-ascii"],
+        source: r#"graph LR
+  A[Δ Start] --> B[β-Compute]
+  B --> C[東京]
+  C --> D[naïve café]"#,
+    },
+    MermaidSample {
+        name: "Flow Styles",
+        kind: "flow",
+        complexity: "M",
+        tags: &["classdef", "style"],
+        features: &["classDef", "style"],
+        edge_cases: &["style-lines"],
+        source: r#"graph LR
+  A[Primary] --> B[Secondary]
+  B --> C[Accent]
+  classDef hot fill:#ff6b6b,stroke:#333,stroke-width:2px;
+  class A hot;
+  style C fill:#6bc5ff,stroke:#333,stroke-width:2px;"#,
     },
     MermaidSample {
         name: "Sequence Mini",
-        source: "sequenceDiagram\nAlice->>Bob: Hello\nBob-->>Alice: Hi!",
-        tags: &["sequence", "compact"],
+        kind: "sequence",
+        complexity: "S",
+        tags: &["compact"],
+        features: &["messages", "responses"],
+        edge_cases: &[],
+        source: r#"sequenceDiagram
+  Alice->>Bob: Hello
+  Bob-->>Alice: Hi!"#,
+    },
+    MermaidSample {
+        name: "Sequence Checkout",
+        kind: "sequence",
+        complexity: "M",
+        tags: &["multi-hop", "api"],
+        features: &["round-trip", "multi-actor"],
+        edge_cases: &["mixed-arrows"],
+        source: r#"sequenceDiagram
+  Client->>API: POST /checkout
+  API->>Auth: Validate token
+  Auth-->>API: OK
+  API->>DB: Create order
+  DB-->>API: id=42
+  API-->>Client: 201 Created"#,
+    },
+    MermaidSample {
+        name: "Sequence Dense",
+        kind: "sequence",
+        complexity: "L",
+        tags: &["dense", "timing"],
+        features: &["many-messages"],
+        edge_cases: &["tight-spacing"],
+        source: r#"sequenceDiagram
+  User->>UI: Click
+  UI->>API: Fetch
+  API-->>UI: 200 OK
+  UI-->>User: Render
+  User->>UI: Scroll
+  UI->>API: Prefetch
+  API-->>UI: 204
+  UI-->>User: Update"#,
+    },
+    MermaidSample {
+        name: "Class Basic",
+        kind: "class",
+        complexity: "S",
+        tags: &["inheritance", "association"],
+        features: &["relations"],
+        edge_cases: &[],
+        source: r#"classDiagram
+  class User
+  class Admin
+  class Order
+  User <|-- Admin
+  User --> Order"#,
+    },
+    MermaidSample {
+        name: "Class Members",
+        kind: "class",
+        complexity: "M",
+        tags: &["fields", "methods"],
+        features: &["class-members"],
+        edge_cases: &["long-member-lines"],
+        source: r#"classDiagram
+  class Account
+  class Ledger
+  Account : +id: UUID
+  Account : +balance: f64
+  Account : +deposit(amount)
+  Ledger : +entries: Vec
+  Account --> Ledger"#,
+    },
+    MermaidSample {
+        name: "State Basic",
+        kind: "state",
+        complexity: "S",
+        tags: &["start-end"],
+        features: &["state-edges"],
+        edge_cases: &[],
+        source: r#"stateDiagram-v2
+  [*] --> Idle
+  Idle --> Busy: start
+  Busy --> Idle: done
+  Busy --> [*]: exit"#,
+    },
+    MermaidSample {
+        name: "State Composite",
+        kind: "state",
+        complexity: "M",
+        tags: &["composite", "notes"],
+        features: &["substates", "notes"],
+        edge_cases: &["nested-blocks"],
+        source: r#"stateDiagram-v2
+  [*] --> Working
+  state Working {
+    Draft --> Review
+    Review --> Approved
+    Review --> Rejected
+  }
+  Working --> [*]
+  note right of Review: ensure QA"#,
+    },
+    MermaidSample {
+        name: "ER Basic",
+        kind: "er",
+        complexity: "M",
+        tags: &["cardinality", "relations"],
+        features: &["er-arrows"],
+        edge_cases: &[],
+        source: r#"erDiagram
+  CUSTOMER ||--o{ ORDER : places
+  ORDER ||--|{ LINE_ITEM : contains
+  PRODUCT ||--o{ LINE_ITEM : in"#,
+    },
+    MermaidSample {
+        name: "Gantt Basic",
+        kind: "gantt",
+        complexity: "M",
+        tags: &["sections", "tasks"],
+        features: &["title", "sections"],
+        edge_cases: &["date-meta"],
+        source: r#"gantt
+  title Release Plan
+  section Build
+  Design :a1, 2024-01-01, 5d
+  Implement :after a1, 7d
+  section Launch
+  QA : 2024-01-10, 3d
+  Release : milestone, 2024-01-14, 1d"#,
     },
     MermaidSample {
         name: "Mindmap Seed",
-        source: "mindmap\n  root\n    alpha\n    beta\n      beta-1\n      beta-2",
-        tags: &["mindmap", "tree"],
+        kind: "mindmap",
+        complexity: "S",
+        tags: &["tree"],
+        features: &["indent"],
+        edge_cases: &[],
+        source: r#"mindmap
+  root
+    alpha
+    beta
+      beta-1
+      beta-2"#,
+    },
+    MermaidSample {
+        name: "Mindmap Deep",
+        kind: "mindmap",
+        complexity: "L",
+        tags: &["deep", "wide"],
+        features: &["multi-level"],
+        edge_cases: &["many-nodes"],
+        source: r#"mindmap
+  roadmap
+    discover
+      interviews
+      audit
+        perf
+        ux
+    build
+      api
+        auth
+        data
+      ui
+        shell
+        widgets
+    launch
+      beta
+      ga"#,
+    },
+    MermaidSample {
+        name: "Pie Basic",
+        kind: "pie",
+        complexity: "S",
+        tags: &["title", "showdata"],
+        features: &["title", "showData"],
+        edge_cases: &[],
+        source: r#"pie showData
+  title Market Share
+  "Alpha": 38
+  "Beta": 27
+  "Gamma": 20
+  "Delta": 15"#,
+    },
+    MermaidSample {
+        name: "Pie Many",
+        kind: "pie",
+        complexity: "M",
+        tags: &["many-slices"],
+        features: &["labels"],
+        edge_cases: &["small-slices"],
+        source: r#"pie
+  title Segments
+  Core: 35
+  Edge: 22
+  Mobile: 18
+  Infra: 12
+  Labs: 8
+  Other: 5"#,
+    },
+    MermaidSample {
+        name: "Gitgraph Basic",
+        kind: "gitgraph",
+        complexity: "M",
+        tags: &["unsupported"],
+        features: &["branches", "commits"],
+        edge_cases: &["unsupported-diagram"],
+        source: r#"gitGraph
+  commit
+  branch feature
+  checkout feature
+  commit
+  checkout main
+  merge feature"#,
+    },
+    MermaidSample {
+        name: "Journey Basic",
+        kind: "journey",
+        complexity: "M",
+        tags: &["unsupported"],
+        features: &["sections", "scores"],
+        edge_cases: &["unsupported-diagram"],
+        source: r#"journey
+  title User Onboarding
+  section Discover
+    Landing: 5: User
+    Signup: 4: User
+  section Activate
+    Tutorial: 3: User
+    First task: 5: User"#,
+    },
+    MermaidSample {
+        name: "Requirement Basic",
+        kind: "requirement",
+        complexity: "M",
+        tags: &["unsupported"],
+        features: &["requirements"],
+        edge_cases: &["unsupported-diagram"],
+        source: r#"requirementDiagram
+  requirement req1 {
+    id: 1
+    text: Must render diagrams
+    risk: high
+    verifyMethod: test
+  }"#,
     },
 ];
 
@@ -215,6 +538,10 @@ impl MermaidShowcaseState {
                 };
                 self.render_epoch = self.render_epoch.saturating_add(1);
             }
+            MermaidShowcaseAction::CollapsePanels => {
+                self.controls_visible = false;
+                self.metrics_visible = false;
+            }
         }
     }
 }
@@ -238,6 +565,7 @@ enum MermaidShowcaseAction {
     ToggleGlyphMode,
     ToggleStyles,
     CycleWrapMode,
+    CollapsePanels,
 }
 
 /// Mermaid showcase screen scaffold (state + key handling).
@@ -281,6 +609,7 @@ impl MermaidShowcaseScreen {
             KeyCode::Char('g') => Some(MermaidShowcaseAction::ToggleGlyphMode),
             KeyCode::Char('s') => Some(MermaidShowcaseAction::ToggleStyles),
             KeyCode::Char('w') => Some(MermaidShowcaseAction::CycleWrapMode),
+            KeyCode::Esc => Some(MermaidShowcaseAction::CollapsePanels),
             _ => None,
         }
     }
@@ -381,10 +710,14 @@ impl MermaidShowcaseScreen {
             } else {
                 "  "
             };
-            let tag_str = if sample.tags.is_empty() {
+            let mut meta_parts: Vec<&str> = Vec::with_capacity(2 + sample.tags.len());
+            meta_parts.push(sample.kind);
+            meta_parts.push(sample.complexity);
+            meta_parts.extend_from_slice(sample.tags);
+            let tag_str = if meta_parts.is_empty() {
                 String::new()
             } else {
-                format!(" [{}]", sample.tags.join(", "))
+                format!(" [{}]", meta_parts.join(", "))
             };
             lines.push(format!("{prefix}{}{}", sample.name, tag_str));
         }
@@ -663,6 +996,10 @@ impl Screen for MermaidShowcaseScreen {
             HelpEntry {
                 key: "w",
                 action: "Cycle wrap mode",
+            },
+            HelpEntry {
+                key: "Esc",
+                action: "Collapse panels",
             },
         ]
     }

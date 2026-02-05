@@ -198,6 +198,50 @@ Command flow:
 ## 8) Visual Composition Notes
 - Viewport must be the dominant visual region at all sizes.
 - Sample list should always remain discoverable, even if collapsed.
+
+---
+
+## 9) Sample Library Catalog (bd-2nkmi.2)
+
+Flow (S/M/L)
+- Flow Basic — branch + decision
+- Flow Subgraphs — clustered groups + edge labels
+- Flow Dense — many nodes/edges, crossings
+- Flow Long Labels — wrapping stress
+- Flow Unicode — non-ASCII labels
+- Flow Styles — classDef/style directives
+
+Sequence (S/M/L)
+- Sequence Mini — basic request/response
+- Sequence Checkout — multi-hop API flow
+- Sequence Dense — tight spacing, repeated hops
+
+Class (S/M)
+- Class Basic — inheritance + association
+- Class Members — fields/methods
+
+State (S/M)
+- State Basic — start/end tokens
+- State Composite — nested state block + note
+
+ER (M)
+- ER Basic — cardinality + relationship labels
+
+Gantt (M)
+- Gantt Basic — title, sections, tasks
+
+Mindmap (S/L)
+- Mindmap Seed — minimal tree
+- Mindmap Deep — multi-level roadmap
+
+Pie (S/M)
+- Pie Basic — title + showData
+- Pie Many — many slices
+
+Unsupported (kept for coverage + future support)
+- Gitgraph Basic — gitGraph
+- Journey Basic — journey
+- Requirement Basic — requirementDiagram
 - Use clear semantic colors: status (OK/WARN/ERR), active toggles, and timers.
 - Keep key hints visible at bottom when space allows.
 
