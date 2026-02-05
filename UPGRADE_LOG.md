@@ -1,9 +1,9 @@
 # Dependency Upgrade Log
 
-**Date:** 2026-02-04
-**Project:** frankentui
+**Date:** 2026-02-05
+**Project:** FrankenTUI
 **Language:** Rust
-**Manifest:** Cargo.toml (workspace)
+**Manifest:** Cargo.toml
 
 ---
 
@@ -11,9 +11,9 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total dependencies** | 27 |
-| **Updated** | 8 |
-| **Skipped** | 0 |
+| **Total dependencies** | 38 |
+| **Updated** | 14 |
+| **Skipped** | 24 |
 | **Failed (rolled back)** | 0 |
 | **Requires attention** | 0 |
 
@@ -21,82 +21,149 @@
 
 ## Successfully Updated
 
-### lru: 0.12 → 0.16.3
-- **Breaking:** Yes (API changes since 0.12; will verify on build)
-- **Tests:** `cargo test -p ftui-text` ✓
-- **Notes:** Updated to fix RUSTSEC-2026-0002 (unsoundness in 0.12.x).
+### bytemuck: 1.15.0 → 1.25.0
+**Notes:** Updated optional dependency in `crates/ftui-extras/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
-### portable-pty: 0.8/0.8.1 → 0.9.0
-- **Breaking:** Possible (major version bump from 0.8 → 0.9)
-- **Tests:** `cargo check --all-targets` + `cargo clippy --all-targets -- -D warnings` ✓ (targeted tests pending)
-- **Notes:** Updated to avoid `serial` unmaintained advisory; portable-pty 0.9.0 is latest stable.
+### math-text-transform: 0.1 → 0.1.1
+**Notes:** Updated optional dependency in `crates/ftui-extras/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
-### signal-hook: 0.3.18 → 0.4.3
-- **Breaking:** Yes (0.4.0 changed `low_level::pipe` signature to accept raw fd)
-- **Tests:** `cargo test -p ftui-core` ✓
-- **Notes:** No usage of `low_level::pipe` in ftui-core; iterator-based handling unaffected.
+### proptest: 1.x → 1.7.0
+**Notes:** Updated dev-dependency across ftui workspace crates (most were `1`, ftui-demo-showcase was `1.4`). `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
-### pollster: 0.3.0 → 0.4.0
-- **Breaking:** None noted (0.4.0 allows `block_on` to accept `IntoFuture`)
-- **Tests:** `cargo check -p ftui-extras --features fx-gpu` ✓
-- **Notes:** GPU feature stack builds cleanly with new pollster.
+### serde: 1.x → 1.0.227
+**Notes:** Updated across ftui workspace `Cargo.toml` files. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
-### pulldown-cmark: 0.12.2 → 0.13.0
-- **Breaking:** Possible (0.13.0 adds extensions and parser changes)
-- **Tests:** `cargo check -p ftui-extras --features markdown` ✓
-- **Notes:** Markdown feature compiles cleanly; no API changes observed in use.
+### serde_json: 1.x → 1.0.145
+**Notes:** Updated across ftui workspace `Cargo.toml` files. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
-### vte: 0.13.1 → 0.15.0
-- **Breaking:** Yes (parser `advance` now accepts `&[u8]`)
-- **Tests:** `cargo check -p ftui-extras --features terminal` ✓
-- **Notes:** Updated `AnsiParser::parse` to pass slices to `Parser::advance`.
+### tempfile: 3 → 3.22.0
+**Notes:** Updated in `crates/ftui-runtime/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
-### regex: 1.12.2 → 1.12.3
-- **Breaking:** None (patch release with performance fixes)
-- **Tests:** `cargo check -p ftui-widgets --features regex-search` ✓
-- **Notes:** Pinned to 1.12.3 for explicit-version stability.
+### time: 0.3 → 0.3.44
+**Notes:** Updated in `crates/ftui-pty/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
-### criterion: 0.5/0.6 → 0.8.2
-- **Breaking:** None for current bench usage (API remains compatible)
-- **Tests:** `cargo check --all-targets` ✓
-- **Notes:** Bench targets compile with criterion 0.8.2 across all crates.
+### tracing: 0.1 → 0.1.41
+**Notes:** Updated across ftui workspace `Cargo.toml` files. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
+
+### tracing-subscriber: 0.3 → 0.3.20
+**Notes:** Updated across ftui workspace `Cargo.toml` files. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
+
+### ropey: 1.6 → 1.6.1
+**Notes:** Updated in `crates/ftui-text/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
+
+### rustc-hash: 2 → 2.1.1
+**Notes:** Updated in `crates/ftui-text/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
+
+### unicode-bidi: 0.3 → 0.3.18
+**Notes:** Updated optional dependency in `crates/ftui-text/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
+
+### unicode-normalization: 0.1 → 0.1.24
+**Notes:** Updated optional dependency in `crates/ftui-text/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
+
+### tracing-test: 0.2 → 0.2.5
+**Notes:** Updated dev-dependency in `crates/ftui-text/Cargo.toml` and `crates/ftui-style/Cargo.toml`. `cargo check`, `cargo clippy`, and `cargo fmt` clean.
 
 ---
 
 ## Skipped
 
-_TBD_
+### base64: 0.22.1 → 0.22.1
+**Reason:** Already on latest stable (docs.rs shows 0.22.1).
+
+### bitflags: 2.10.0 → 2.10.0
+**Reason:** Already on latest stable (docs.rs shows 2.10.0).
+
+### crossterm: 0.29.0 → 0.29.0
+**Reason:** Already on latest stable (docs.rs shows 0.29.0).
+
+### criterion: 0.8.2 → 0.8.2
+**Reason:** Already on latest stable (docs.rs shows 0.8.2).
+
+### image: 0.25.9 → 0.25.9
+**Reason:** Already on latest stable (docs.rs shows 0.25.9).
+
+### unicode-width: 0.2.2 → 0.2.2
+**Reason:** Already on latest stable (docs.rs shows 0.2.2).
+
+### lru: 0.16.3 → 0.16.3
+**Reason:** Already on latest stable (changelog shows 0.16.3 latest).
+
+### memchr: 2.7.6 → 2.7.6
+**Reason:** Already on latest stable (docs.rs shows 2.7.6).
+
+### opentelemetry: 0.31.0 → 0.31.0
+**Reason:** Already on latest stable (docs.rs shows 0.31.0).
+
+### opentelemetry-otlp: 0.31.0 → 0.31.0
+**Reason:** Already on latest stable (docs.rs shows 0.31.0).
+
+### opentelemetry_sdk: 0.31.0 → 0.31.0
+**Reason:** Already on latest stable (docs.rs shows 0.31.0).
+
+### pollster: 0.4.0 → 0.4.0
+**Reason:** Already on latest stable (docs.rs shows 0.4.0).
+
+### portable-pty: 0.9.0 → 0.9.0
+**Reason:** Already on latest stable (docs.rs shows 0.9.0).
+
+### pulldown-cmark: 0.13.0 → 0.13.0
+**Reason:** Already on latest stable (docs.rs shows 0.13.0).
+
+### regex: 1.12.3 → 1.12.3
+**Reason:** Already on latest stable (docs.rs page exists for 1.12.3).
+
+### serial_test: 3.2.0 → 3.2.0
+**Reason:** Already on latest stable (docs.rs shows 3.2.0).
+
+### signal-hook: 0.4.3 → 0.4.3
+**Reason:** Already on latest stable (crates.io API shows 0.4.3 max_version).
+
+### smallvec: 1.15.1 → 1.15.1
+**Reason:** Already on latest stable (docs.rs shows 1.15.1).
+
+### unicode-display-width: 0.3.0 → 0.3.0
+**Reason:** Already on latest stable (docs.rs shows 0.3.0).
+
+### unicode-segmentation: 1.12.0 → 1.12.0
+**Reason:** Already on latest stable (docs.rs shows 1.12.0).
+
+### unicodeit: 0.2.0 → 0.2.0
+**Reason:** Already on latest stable (crates.io shows 0.2.0).
+
+### vte: 0.15.0 → 0.15.0
+**Reason:** Already on latest stable (docs.rs shows 0.15.0).
+
+### wgpu: 28.0.0 → 28.0.0
+**Reason:** Already on latest stable (docs.rs shows 28.0.0).
+
+### tracing-opentelemetry: 0.32.0 → 0.32.0
+**Reason:** Already on latest stable (crates.io API shows 0.32.0 max_version).
 
 ---
 
 ## Failed Updates (Rolled Back)
 
-_TBD_
+_None yet._
 
 ---
 
 ## Requires Attention
 
-- `paste` advisory was removed by disabling the `metal` backend in `wgpu` (see Security Notes). MacOS GPU FX is currently disabled; revisit once `metal` no longer depends on `paste` or a safe fork is available.
+_None yet._
 
 ---
 
 ## Deprecation Warnings Fixed
 
-| Package | Warning | Fix Applied |
-|---------|---------|-------------|
-| _TBD_ | _TBD_ | _TBD_ |
+_None yet._
 
 ---
 
 ## Security Notes
 
-**Vulnerabilities resolved:**
-- RUSTSEC-2026-0002 (lru unsoundness) via upgrade to 0.16.3.
-- paste unmaintained advisory mitigated by removing the `metal` backend from `wgpu` features (no `paste` in the all-features graph). MacOS GPU FX currently falls back to CPU.
-- serial unmaintained advisory mitigated via portable-pty 0.9.0.
+**Vulnerabilities resolved:** None detected
 
-**New advisories:** _None detected_
+**New advisories:** None detected
 
 **Audit command:** `cargo audit`
 
@@ -106,7 +173,7 @@ _TBD_
 
 - [ ] All tests passing
 - [ ] No deprecation warnings
-- [ ] Manual smoke test performed
+- [ ] Manual smoke test performed (if needed)
 - [ ] Documentation updated (if needed)
 - [ ] Changes committed
 
@@ -116,36 +183,19 @@ _TBD_
 
 ```bash
 # Update commands
-manual edits (Cargo.toml + patch)
-`cargo update -p lru -p paste`
-`cargo update -p signal-hook`
-`cargo update -p pollster`
-`cargo update -p pulldown-cmark`
-`cargo update -p vte`
-`cargo update -p regex`
-
-# Version research
-docs.rs + changelog review (lru, portable-pty, pastey, signal-hook, pollster, vte, regex, criterion)
-release notes (pulldown-cmark 0.13.0)
+cargo update -p bytemuck
+cargo update -p rustc-hash@2.1.1 -p ropey -p unicode-bidi -p unicode-normalization
 
 # Test commands
-`cargo check --all-targets`
-`cargo clippy --all-targets -- -D warnings`
-`cargo fmt`
-`cargo fmt --check`
-`cargo test -p ftui-text`
-`cargo test -p ftui-core`
-`cargo check -p ftui-extras --features fx-gpu`
-`cargo check -p ftui-extras --features markdown`
-`cargo check -p ftui-extras --features terminal`
-`cargo check -p ftui-widgets --features regex-search`
+cargo check --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 
 # Audit commands
-cargo audit
 ```
 
 ---
 
 ## Notes
 
-Tracking updates per dependency per deps-update workflow. Pending scope confirmation from user.
+Initial log created. Updates will be appended per dependency.

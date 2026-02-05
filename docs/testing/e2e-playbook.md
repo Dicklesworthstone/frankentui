@@ -173,6 +173,16 @@ On failures, the suite prints:
 - Hex dumps of the first 512 bytes of PTY output
 - Printable tail excerpts (via `strings`)
 
+## CI Gate Tightening Checklist
+
+When tightening E2E JSONL gates (bd-1mzp6):
+
+- Ensure `E2E_JSONL_VALIDATE_MODE=strict` in CI for all PTY scripts.
+- Validate hashes via the golden registry (mode/size/seed keyed).
+- Require a `jsonl_run_end` event (schema v1) for each run.
+- Fail fast on missing JSONL file, schema mismatch, or hash mismatch.
+- Update `docs/testing/e2e-coverage-matrix.md` when new cells are enforced.
+
 ## Running a Single Suite
 
 ```bash

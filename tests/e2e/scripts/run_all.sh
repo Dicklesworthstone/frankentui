@@ -158,6 +158,9 @@ else
     if [[ -x "$SCRIPT_DIR/test_virtualized_search.sh" ]]; then
         run_suite "virtualized_search" "$SCRIPT_DIR/test_virtualized_search.sh"
     fi
+    if [[ -x "$SCRIPT_DIR/test_inline_story.sh" ]]; then
+        run_suite "inline_story" "$SCRIPT_DIR/test_inline_story.sh"
+    fi
     if [[ -x "$SCRIPT_DIR/test_layout_composer_resize.sh" ]]; then
         run_suite "layout_composer_resize" "$SCRIPT_DIR/test_layout_composer_resize.sh"
     fi

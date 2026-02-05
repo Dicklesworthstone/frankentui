@@ -90,6 +90,37 @@ Scored by: **Impact × Confidence / Effort** (Score ≥ 2.0 = implement)
 
 ---
 
+## VFX Hotspot Matrix (Template)
+
+Use this template for Visual Effects profiling passes (bd-3e1t.5.x).
+
+### Capture Inputs
+
+- Screen/Effect: `VisualEffects::<name>`
+- Mode/Size: `alt 120x40` (or `inline 80x24`)
+- Seed: `FTUI_DEMO_SEED=<n>`
+- Scenario: `steady` | `burst` | `resize` | `startup`
+
+### Metrics (per run)
+
+- `init_ms` (time to first frame)
+- `frame_ms_p50`, `frame_ms_p95`, `frame_ms_p99`
+- `allocs_per_frame` (if available)
+- `hash_stability` (determinism check)
+
+### Hotspot Table
+
+| Screen/Effect | Scenario | Size/Mode | Top Hotspots | Evidence | Hypothesis | Candidate Fix | Expected Gain | Risk |
+|---|---|---|---|---|---|---|---|---|
+| Doom/Quake | startup | 120x40 alt | `pick_spawn`, `wall_distance` | flamegraph | expensive full scan | bounded scan + cache | 2-4x startup | low |
+
+### Scoring (same formula)
+
+Score each candidate with **Impact × Confidence / Effort**. Track at least one
+“no‑code” idea (cache key, precompute, or lazy init) to keep risk low.
+
+---
+
 ## Hotspots Identified
 
 1. **Buffer::fill** - Largest time consumer for full-screen operations

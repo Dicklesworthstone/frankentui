@@ -157,6 +157,54 @@ Preset requirements:
 - Deterministic, tasteful effects (no flashing).
 - No reliance on terminal truecolor; degrade gracefully to nearest palette.
 
+## JSON Export/Import (TableThemeSpec)
+
+The export/import format is `TableThemeSpec` (pure data, no rendering logic).
+It is **strict** (`deny_unknown_fields`) and versioned for forward compatibility.
+
+Key fields:
+- `version` (u8): schema version. Current: `1`.
+- `name` (optional string): human-friendly label (max 64 chars).
+- `preset_id` (optional enum): original preset identifier, if derived.
+- `padding`, `column_gap`, `row_height` (u8): layout parameters.
+- `styles`: `border`, `header`, `row`, `row_alt`, `row_selected`, `row_hover`, `divider`.
+- `effects`: array of effect rules with target, effect, priority, blend_mode, style_mask.
+
+Validation constraints (current):
+- `effects` length ≤ 64.
+- `styles.*.attrs` length ≤ 16.
+- `gradient.stops` length in `[1, 16]`.
+- `padding`, `column_gap` in `[0, 8]`.
+- `row_height` in `[1, 8]`.
+- `speed` ≤ 10.0, `phase_offset` ≤ 1.0, `intensity` ≤ 1.0, `asymmetry` ≤ 0.9.
+
+Minimal example (abridged):
+
+```json
+{
+  "version": 1,
+  "name": "my-dense-preset",
+  "preset_id": null,
+  "padding": 1,
+  "column_gap": 1,
+  "row_height": 1,
+  "styles": {
+    "border": {"fg":{"r":120,"g":130,"b":140,"a":255},"bg":null,"underline":null,"attrs":["Bold"]},
+    "header": {"fg":{"r":235,"g":240,"b":255,"a":255},"bg":null,"underline":null,"attrs":["Bold"]},
+    "row": {"fg":null,"bg":null,"underline":null,"attrs":[]},
+    "row_alt": {"fg":null,"bg":{"r":24,"g":28,"b":36,"a":255},"underline":null,"attrs":[]},
+    "row_selected": {"fg":null,"bg":null,"underline":null,"attrs":[]},
+    "row_hover": {"fg":null,"bg":null,"underline":null,"attrs":[]},
+    "divider": {"fg":{"r":70,"g":80,"b":95,"a":255},"bg":null,"underline":null,"attrs":[]}
+  },
+  "effects": []
+}
+```
+
+Export/import flow:
+- Export: `TableThemeSpec::from_theme(&theme)` → JSON.
+- Import: parse JSON → `TableThemeSpec::validate()` → `into_theme()`.
+
 ## Cookbook: Practical Overrides
 
 ### 1) Override Header + Zebra Colors
