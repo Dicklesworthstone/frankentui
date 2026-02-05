@@ -523,7 +523,7 @@ impl Default for MermaidConfig {
         Self {
             enabled: true,
             glyph_mode: MermaidGlyphMode::Unicode,
-            render_mode: MermaidRenderMode::Auto,
+            render_mode: MermaidRenderMode::Braille,
             tier_override: MermaidTier::Auto,
             max_nodes: 200,
             max_edges: 400,

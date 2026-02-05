@@ -12,7 +12,7 @@
 //! All output is deterministic: identical IR input produces identical layout.
 //! Coordinates are in abstract "world units", not terminal cells.
 
-use crate::diagram::visual_width;
+use crate::diagram::{grapheme_width, visual_width};
 use crate::mermaid::{
     DiagramType, GraphDirection, IrEndpoint, IrNodeId, MermaidConfig, MermaidDegradationPlan,
     MermaidDiagramIr, MermaidFidelity, append_jsonl_line,
@@ -2525,9 +2525,16 @@ impl RouteGrid {
         for node in nodes {
             mark_rect_occupied(&mut occupied, cols, rows, cell_size, &origin, &node.rect);
         }
-        // Mark cluster boundary cells as occupied.
+        // Mark cluster boundary cells as occupied (interior remains routable).
         for cluster in clusters {
-            mark_rect_occupied(&mut occupied, cols, rows, cell_size, &origin, &cluster.rect);
+            mark_rect_boundary_occupied(
+                &mut occupied,
+                cols,
+                rows,
+                cell_size,
+                &origin,
+                &cluster.rect,
+            );
         }
 
         Self {
@@ -2541,8 +2548,8 @@ impl RouteGrid {
 
     /// Convert a world-space point to grid coordinates.
     fn to_grid(&self, p: LayoutPoint) -> (usize, usize) {
-        let col = ((p.x - self.origin.x) / self.cell_size).round().max(0.0) as usize;
-        let row = ((p.y - self.origin.y) / self.cell_size).round().max(0.0) as usize;
+        let col = ((p.x - self.origin.x) / self.cell_size).floor().max(0.0) as usize;
+        let row = ((p.y - self.origin.y) / self.cell_size).floor().max(0.0) as usize;
         (
             col.min(self.cols.saturating_sub(1)),
             row.min(self.rows.saturating_sub(1)),
@@ -2552,8 +2559,8 @@ impl RouteGrid {
     /// Convert grid coordinates back to world space (center of cell).
     fn to_world(&self, col: usize, row: usize) -> LayoutPoint {
         LayoutPoint {
-            x: self.origin.x + col as f64 * self.cell_size,
-            y: self.origin.y + row as f64 * self.cell_size,
+            x: self.origin.x + (col as f64 + 0.5) * self.cell_size,
+            y: self.origin.y + (row as f64 + 0.5) * self.cell_size,
         }
     }
 
@@ -2565,6 +2572,48 @@ impl RouteGrid {
         !self.occupied[row * self.cols + col]
     }
 
+    fn snap_to_free(&self, col: usize, row: usize) -> (usize, usize) {
+        if self.is_free(col, row) {
+            return (col, row);
+        }
+
+        let max_radius = self.cols.max(self.rows);
+        let start_c = col as isize;
+        let start_r = row as isize;
+
+        for dist in 1..=max_radius {
+            let dist = dist as isize;
+            for dr in -dist..=dist {
+                let dc = dist - dr.abs();
+                let mut candidates = [0isize; 2];
+                let mut count = 0;
+                candidates[count] = dc;
+                count += 1;
+                if dc != 0 {
+                    candidates[count] = -dc;
+                    count += 1;
+                }
+                for &candidate in candidates.iter().take(count) {
+                    let nc = start_c + candidate;
+                    let nr = start_r + dr;
+                    if nc < 0 || nr < 0 {
+                        continue;
+                    }
+                    let nc = nc as usize;
+                    let nr = nr as usize;
+                    if nc >= self.cols || nr >= self.rows {
+                        continue;
+                    }
+                    if self.is_free(nc, nr) {
+                        return (nc, nr);
+                    }
+                }
+            }
+        }
+
+        (col, row)
+    }
+
     /// Find a path between two world-space points using BFS.
     ///
     /// Returns waypoints in world space, or a direct line if no path found.
@@ -2572,6 +2621,8 @@ impl RouteGrid {
     pub fn find_path(&self, from: LayoutPoint, to: LayoutPoint) -> Vec<LayoutPoint> {
         let (sc, sr) = self.to_grid(from);
         let (ec, er) = self.to_grid(to);
+        let (sc, sr) = self.snap_to_free(sc, sr);
+        let (ec, er) = self.snap_to_free(ec, er);
 
         if sc == ec && sr == er {
             return vec![from, to];
@@ -2673,6 +2724,38 @@ fn mark_rect_occupied(
     }
 }
 
+fn mark_rect_boundary_occupied(
+    grid: &mut [bool],
+    cols: usize,
+    rows: usize,
+    cell_size: f64,
+    origin: &LayoutPoint,
+    rect: &LayoutRect,
+) {
+    let c0 = ((rect.x - origin.x) / cell_size).floor().max(0.0) as usize;
+    let r0 = ((rect.y - origin.y) / cell_size).floor().max(0.0) as usize;
+    let c1 = ((rect.x + rect.width - origin.x) / cell_size).ceil() as usize;
+    let r1 = ((rect.y + rect.height - origin.y) / cell_size).ceil() as usize;
+
+    let c1 = c1.min(cols);
+    let r1 = r1.min(rows);
+    if c0 >= c1 || r0 >= r1 {
+        return;
+    }
+
+    for r in r0..r1 {
+        for c in c0..c1 {
+            let on_top = r == r0;
+            let on_bottom = r + 1 == r1;
+            let on_left = c == c0;
+            let on_right = c + 1 == c1;
+            if on_top || on_bottom || on_left || on_right {
+                grid[r * cols + c] = true;
+            }
+        }
+    }
+}
+
 // ── A* routing with bend penalties ───────────────────────────────────
 
 /// Cost weights for A* routing decisions.
@@ -2746,7 +2829,7 @@ struct AStarState {
 
 impl PartialEq for AStarState {
     fn eq(&self, other: &Self) -> bool {
-        self.f_cost == other.f_cost
+        self.f_cost == other.f_cost && self.col == other.col && self.row == other.row
     }
 }
 
@@ -3436,36 +3519,46 @@ fn measure_text(text: &str, config: &LabelPlacementConfig) -> (f64, f64, bool) {
     if text.is_empty() {
         return (0.0, 0.0, false);
     }
-    let max_chars_per_line = (config.max_label_width / config.char_width)
+    let max_cols_per_line = (config.max_label_width / config.char_width)
         .floor()
         .max(1.0) as usize;
 
-    // Split on explicit newlines, then wrap each line.
-    let mut lines: Vec<usize> = Vec::new(); // char count per wrapped line
+    // Split on explicit newlines, then wrap each line by display width
+    // (not character count) so CJK/wide characters are measured correctly.
+    let mut lines: Vec<usize> = Vec::new(); // display width per wrapped line
     for raw_line in text.lines() {
         if raw_line.is_empty() {
             lines.push(0);
         } else {
-            let chars: Vec<char> = raw_line.chars().collect();
-            for chunk in chars.chunks(max_chars_per_line) {
-                lines.push(chunk.len());
+            let mut line_width: usize = 0;
+            for ch in raw_line.chars() {
+                let mut buf = [0u8; 4];
+                let ch_w = grapheme_width(ch.encode_utf8(&mut buf));
+                if line_width + ch_w > max_cols_per_line && line_width > 0 {
+                    lines.push(line_width);
+                    line_width = ch_w;
+                } else {
+                    line_width += ch_w;
+                }
             }
+            lines.push(line_width);
         }
     }
 
     // Handle text that doesn't end with a newline but has content.
     if lines.is_empty() {
-        lines.push(text.chars().count().min(max_chars_per_line));
+        lines.push(visual_width(text).min(max_cols_per_line));
     }
 
-    let was_truncated = lines.len() > config.max_lines
-        || text.chars().count() > max_chars_per_line * config.max_lines;
+    let total_display_cols = visual_width(text);
+    let was_truncated =
+        lines.len() > config.max_lines || total_display_cols > max_cols_per_line * config.max_lines;
 
     // Truncate vertically.
     let visible_lines = lines.len().min(config.max_lines);
-    let max_line_chars = lines[..visible_lines].iter().copied().max().unwrap_or(0);
+    let max_line_width = lines[..visible_lines].iter().copied().max().unwrap_or(0);
 
-    let width = (max_line_chars as f64 * config.char_width).min(config.max_label_width);
+    let width = (max_line_width as f64 * config.char_width).min(config.max_label_width);
     let height = (visible_lines as f64 * config.line_height).min(config.max_label_height);
 
     (width, height, was_truncated)
@@ -4741,6 +4834,36 @@ mod tests {
         let p = LayoutPoint { x: 5.0, y: 1.5 };
         let path = grid.find_path(p, p);
         assert_eq!(path.len(), 2);
+    }
+
+    #[test]
+    fn route_grid_roundtrip_cell_center() {
+        let grid = RouteGrid {
+            cols: 10,
+            rows: 8,
+            cell_size: 2.0,
+            origin: LayoutPoint { x: 0.0, y: 0.0 },
+            occupied: vec![false; 80],
+        };
+        let pt = grid.to_world(4, 6);
+        let (c, r) = grid.to_grid(pt);
+        assert_eq!((c, r), (4, 6));
+    }
+
+    #[test]
+    fn route_grid_snap_to_free_avoids_occupied_cell() {
+        let mut grid = RouteGrid {
+            cols: 3,
+            rows: 3,
+            cell_size: 1.0,
+            origin: LayoutPoint { x: 0.0, y: 0.0 },
+            occupied: vec![false; 9],
+        };
+        grid.occupied[4] = true; // center cell
+
+        let (c, r) = grid.snap_to_free(1, 1);
+        assert_ne!((c, r), (1, 1));
+        assert!(grid.is_free(c, r));
     }
 
     #[test]

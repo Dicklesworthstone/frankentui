@@ -58,6 +58,8 @@ const BUFFER_CAPACITY: usize = 64 * 1024;
 /// fill gaps with buffer content). This is a shortest-path problem on a small
 /// state graph per row.
 mod cost_model {
+    use smallvec::SmallVec;
+
     use super::ChangeRun;
 
     /// Number of decimal digits needed to represent `n`.
@@ -145,9 +147,12 @@ mod cost_model {
     }
 
     /// Row emission plan (possibly multiple merged spans).
+    ///
+    /// Uses SmallVec<[RowSpan; 4]> to avoid heap allocation for the common case
+    /// of 1-4 spans per row. RowSpan is 6 bytes, so 4 spans = 24 bytes inline.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct RowPlan {
-        spans: Vec<RowSpan>,
+        spans: SmallVec<[RowSpan; 4]>,
         total_cost: usize,
     }
 
@@ -165,6 +170,17 @@ mod cost_model {
         }
     }
 
+    /// Reusable scratch buffers for `plan_row_reuse`, avoiding per-call heap
+    /// allocations. Store one instance in `Presenter` and pass it into every
+    /// `plan_row_reuse` call so that the buffers are reused across rows and
+    /// frames.
+    #[derive(Debug, Default)]
+    pub struct RowPlanScratch {
+        prefix_cells: Vec<usize>,
+        dp: Vec<usize>,
+        prev: Vec<usize>,
+    }
+
     /// Compute the optimal emission plan for a set of runs on the same row.
     ///
     /// This is a shortest-path / DP partitioning problem over contiguous run
@@ -174,21 +190,37 @@ mod cost_model {
     /// Gap cells cost ~1 byte each (character content), plus potential style
     /// overhead estimated at 1 byte per gap cell (conservative).
     pub fn plan_row(row_runs: &[ChangeRun], prev_x: Option<u16>, prev_y: Option<u16>) -> RowPlan {
+        let mut scratch = RowPlanScratch::default();
+        plan_row_reuse(row_runs, prev_x, prev_y, &mut scratch)
+    }
+
+    /// Like `plan_row` but reuses heap allocations via the provided scratch
+    /// buffers, eliminating per-call allocations in the hot path.
+    pub fn plan_row_reuse(
+        row_runs: &[ChangeRun],
+        prev_x: Option<u16>,
+        prev_y: Option<u16>,
+        scratch: &mut RowPlanScratch,
+    ) -> RowPlan {
         debug_assert!(!row_runs.is_empty());
 
         let row_y = row_runs[0].y;
         let run_count = row_runs.len();
 
+        // Resize scratch buffers (no-op if already large enough).
+        scratch.prefix_cells.clear();
+        scratch.prefix_cells.resize(run_count + 1, 0);
+        scratch.dp.clear();
+        scratch.dp.resize(run_count, usize::MAX);
+        scratch.prev.clear();
+        scratch.prev.resize(run_count, 0);
+
         // Prefix sum of changed cell counts for O(1) segment cost.
-        let mut prefix_cells = vec![0usize; run_count + 1];
         for (i, run) in row_runs.iter().enumerate() {
-            prefix_cells[i + 1] = prefix_cells[i] + run.len() as usize;
+            scratch.prefix_cells[i + 1] = scratch.prefix_cells[i] + run.len() as usize;
         }
 
         // DP over segments: dp[j] is min cost to emit runs[0..=j].
-        let mut dp = vec![usize::MAX; run_count];
-        let mut prev = vec![0usize; run_count];
-
         for j in 0..run_count {
             let mut best_cost = usize::MAX;
             let mut best_i = j;
@@ -198,7 +230,7 @@ mod cost_model {
             // Once the gap exceeds ~20 cells, merging is strictly worse than moving.
             // We use 32 as a conservative safety bound.
             for i in (0..=j).rev() {
-                let changed_cells = prefix_cells[j + 1] - prefix_cells[i];
+                let changed_cells = scratch.prefix_cells[j + 1] - scratch.prefix_cells[i];
                 let total_cells = (row_runs[j].x1 - row_runs[i].x0 + 1) as usize;
                 let gap_cells = total_cells - changed_cells;
 
@@ -217,7 +249,7 @@ mod cost_model {
                 let gap_overhead = gap_cells * 2; // conservative: char + style amortized
                 let emit_cost = changed_cells + gap_overhead;
 
-                let prev_cost = if i == 0 { 0 } else { dp[i - 1] };
+                let prev_cost = if i == 0 { 0 } else { scratch.dp[i - 1] };
                 let cost = prev_cost
                     .saturating_add(move_cost)
                     .saturating_add(emit_cost);
@@ -228,15 +260,15 @@ mod cost_model {
                 }
             }
 
-            dp[j] = best_cost;
-            prev[j] = best_i;
+            scratch.dp[j] = best_cost;
+            scratch.prev[j] = best_i;
         }
 
         // Reconstruct spans from back to front.
-        let mut spans = Vec::new();
+        let mut spans: SmallVec<[RowSpan; 4]> = SmallVec::new();
         let mut j = run_count - 1;
         loop {
-            let i = prev[j];
+            let i = scratch.prev[j];
             spans.push(RowSpan {
                 y: row_y,
                 x0: row_runs[i].x0,
@@ -251,7 +283,7 @@ mod cost_model {
 
         RowPlan {
             spans,
-            total_cost: dp[run_count - 1],
+            total_cost: scratch.dp[run_count - 1],
         }
     }
 }
@@ -300,6 +332,11 @@ pub struct Presenter<W: Write> {
     cursor_y: Option<u16>,
     /// Terminal capabilities for conditional output.
     capabilities: TerminalCapabilities,
+    /// Reusable scratch buffers for the cost-model DP, avoiding per-row
+    /// heap allocations in the hot presentation path.
+    plan_scratch: cost_model::RowPlanScratch,
+    /// Reusable buffer for change runs, avoiding per-frame allocation.
+    runs_buf: Vec<ChangeRun>,
 }
 
 impl<W: Write> Presenter<W> {
@@ -312,6 +349,8 @@ impl<W: Write> Presenter<W> {
             cursor_x: None,
             cursor_y: None,
             capabilities,
+            plan_scratch: cost_model::RowPlanScratch::default(),
+            runs_buf: Vec::new(),
         }
     }
 
@@ -351,9 +390,9 @@ impl<W: Write> Presenter<W> {
         #[cfg(feature = "tracing")]
         let _guard = _span.enter();
 
-        // Calculate runs upfront for stats
-        let runs = diff.runs();
-        let run_count = runs.len();
+        // Calculate runs upfront for stats, reusing the runs buffer.
+        diff.runs_into(&mut self.runs_buf);
+        let run_count = self.runs_buf.len();
         let cells_changed = diff.len();
 
         // Start stats collection
@@ -366,7 +405,7 @@ impl<W: Write> Presenter<W> {
         }
 
         // Emit diff using run grouping for efficiency
-        self.emit_runs(buffer, &runs, pool, links)?;
+        self.emit_runs_reuse(buffer, pool, links)?;
 
         // Reset style at end (clean state for next frame)
         ansi::sgr_reset(&mut self.writer)?;
@@ -401,6 +440,7 @@ impl<W: Write> Presenter<W> {
     /// Groups runs by row, then for each row decides whether to emit runs
     /// individually (sparse) or merge them (write through gaps) based on
     /// byte cost estimation.
+    #[allow(dead_code)] // Kept for reference; production path uses emit_runs_reuse
     fn emit_runs(
         &mut self,
         buffer: &Buffer,
@@ -429,6 +469,60 @@ impl<W: Write> Presenter<W> {
             let row_runs = &runs[row_start..i];
 
             let plan = cost_model::plan_row(row_runs, self.cursor_x, self.cursor_y);
+
+            #[cfg(feature = "tracing")]
+            tracing::trace!(
+                row = row_y,
+                spans = plan.spans().len(),
+                cost = plan.total_cost(),
+                "row plan"
+            );
+
+            for span in plan.spans() {
+                self.move_cursor_optimal(span.x0, span.y)?;
+                for x in span.x0..=span.x1 {
+                    let cell = buffer.get_unchecked(x, span.y);
+                    self.emit_cell(x, cell, pool, links)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Like `emit_runs` but uses the internal `runs_buf` and `plan_scratch`
+    /// to avoid per-row and per-frame allocations.
+    fn emit_runs_reuse(
+        &mut self,
+        buffer: &Buffer,
+        pool: Option<&GraphemePool>,
+        links: Option<&LinkRegistry>,
+    ) -> io::Result<()> {
+        #[cfg(feature = "tracing")]
+        let _span = tracing::debug_span!("emit_diff");
+        #[cfg(feature = "tracing")]
+        let _guard = _span.enter();
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!(run_count = self.runs_buf.len(), "emitting runs (reuse)");
+
+        // Group runs by row and apply cost model per row
+        let mut i = 0;
+        while i < self.runs_buf.len() {
+            let row_y = self.runs_buf[i].y;
+
+            // Collect all runs on this row
+            let row_start = i;
+            while i < self.runs_buf.len() && self.runs_buf[i].y == row_y {
+                i += 1;
+            }
+            let row_runs = &self.runs_buf[row_start..i];
+
+            let plan = cost_model::plan_row_reuse(
+                row_runs,
+                self.cursor_x,
+                self.cursor_y,
+                &mut self.plan_scratch,
+            );
 
             #[cfg(feature = "tracing")]
             tracing::trace!(

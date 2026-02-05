@@ -122,6 +122,38 @@ Rules:
 - Metrics panel expanded (>= 18 rows).
 - Optional mini log panel for last 8 events (layout/route warnings).
 
+### 4.4 Status Log Panel (Spec + Schema)
+Purpose: deterministic, testable summary of recent activity and warnings.
+
+Placement rules:
+- Render only at 200x60 or when explicitly toggled on.
+- Default height: 8 rows (one row per event).
+- If space constrained, truncate oldest events first.
+
+Event types (fixed set):
+- `render_start`
+- `render_done`
+- `layout_warning`
+- `route_warning`
+- `fallback_used`
+- `error`
+
+Schema fields (per entry):
+- `schema_version` (string, e.g. `mermaid-statuslog-v1`)
+- `ts_ms` (u64, monotonic ms from run start)
+- `sample` (string, sample id/name)
+- `mode` (string, `inline` or `altscreen`)
+- `dims` (string, `COLSxROWS`)
+- `layout_mode` (string)
+- `fidelity` (string)
+- `event` (string, from the fixed set)
+- `status` (string, `ok|warn|error`)
+- `message` (string, short human summary)
+
+Update cadence:
+- Append one entry per render step and warning.
+- Never reorder; stable ordering for snapshot/E2E validation.
+
 ---
 
 ## 5) Interaction Model + Keybindings

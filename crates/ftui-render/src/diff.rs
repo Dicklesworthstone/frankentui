@@ -312,6 +312,11 @@ pub struct TileDiffConfig {
     pub tile_w: u16,
     /// Tile height in cells (clamped to [8, 64]).
     pub tile_h: u16,
+    /// Skip scanning clean rows when building tile counts.
+    ///
+    /// When true, the tile build only scans rows marked dirty, reducing
+    /// build cost for sparse updates. Disable to force full-row scans.
+    pub skip_clean_rows: bool,
     /// Minimum total cells required before enabling tiles.
     pub min_cells_for_tiles: usize,
     /// Dense cell ratio threshold for falling back to non-tile diff.
@@ -328,6 +333,7 @@ impl Default for TileDiffConfig {
             enabled: true,
             tile_w: 16,
             tile_h: 8,
+            skip_clean_rows: true,
             min_cells_for_tiles: 12_000,
             dense_cell_ratio: 0.25,
             dense_tile_ratio: 0.60,
@@ -353,6 +359,12 @@ impl TileDiffConfig {
     /// Set minimum cell count required before tiles are considered.
     pub fn with_min_cells_for_tiles(mut self, min_cells: usize) -> Self {
         self.min_cells_for_tiles = min_cells;
+        self
+    }
+
+    /// Toggle skipping clean rows during tile build.
+    pub fn with_skip_clean_rows(mut self, skip: bool) -> Self {
+        self.skip_clean_rows = skip;
         self
     }
 
@@ -453,6 +465,17 @@ pub struct TileDiffBuilder {
     dirty_tiles: Vec<bool>,
 }
 
+/// Inputs required to build a tile diff plan.
+#[derive(Debug, Clone, Copy)]
+pub struct TileDiffInput<'a> {
+    pub width: u16,
+    pub height: u16,
+    pub dirty_rows: &'a [bool],
+    pub dirty_bits: &'a [u8],
+    pub dirty_cells: usize,
+    pub dirty_all: bool,
+}
+
 /// Successful tile build with reusable buffers.
 #[derive(Debug, Clone)]
 pub struct TileDiffPlan<'a> {
@@ -475,15 +498,19 @@ impl TileDiffBuilder {
         Self::default()
     }
 
-    pub fn build<'a>(
+    pub fn build<'a, 'b>(
         &'a mut self,
         config: &TileDiffConfig,
-        width: u16,
-        height: u16,
-        dirty_bits: &[u8],
-        dirty_cells: usize,
-        dirty_all: bool,
+        input: TileDiffInput<'b>,
     ) -> TileDiffBuild<'a> {
+        let TileDiffInput {
+            width,
+            height,
+            dirty_rows,
+            dirty_bits,
+            dirty_cells,
+            dirty_all,
+        } = input;
         let tile_w = clamp_tile_size(config.tile_w);
         let tile_h = clamp_tile_size(config.tile_h);
         let width_usize = width as usize;
@@ -556,8 +583,19 @@ impl TileDiffBuilder {
         let tile_w_usize = tile_w as usize;
         let tile_h_usize = tile_h as usize;
         let mut overflow = false;
+        let mut scanned_cells = 0usize;
 
+        debug_assert_eq!(dirty_rows.len(), height_usize);
         for y in 0..height_usize {
+            let row_dirty = if config.skip_clean_rows {
+                dirty_rows.get(y).copied().unwrap_or(true)
+            } else {
+                true
+            };
+            if !row_dirty {
+                continue;
+            }
+            scanned_cells = scanned_cells.saturating_add(width_usize);
             let row_start = y * width_usize;
             let tile_y = y / tile_h_usize;
             for x in 0..width_usize {
@@ -601,7 +639,7 @@ impl TileDiffBuilder {
         };
         stats.scanned_tiles = dirty_tiles;
         stats.skipped_tiles = total_tiles.saturating_sub(dirty_tiles);
-        stats.sat_build_cells = total_cells;
+        stats.sat_build_cells = scanned_cells;
         stats.scan_cells_estimate = dirty_tiles * tile_w_usize * tile_h_usize;
 
         if stats.dirty_tile_ratio >= config.dense_tile_ratio {
@@ -721,11 +759,14 @@ fn compute_dirty_changes(
     *tile_stats_out = None;
     let tile_build = tile_builder.build(
         tile_config,
-        width,
-        height,
-        new.dirty_bits(),
-        new.dirty_cell_count(),
-        new.dirty_all(),
+        TileDiffInput {
+            width,
+            height,
+            dirty_rows: dirty,
+            dirty_bits: new.dirty_bits(),
+            dirty_cells: new.dirty_cell_count(),
+            dirty_all: new.dirty_all(),
+        },
     );
 
     if let TileDiffBuild::UseTiles(plan) = tile_build {
@@ -1079,6 +1120,45 @@ impl BufferDiff {
         tracing::trace!(run_count = runs.len(), "runs coalesced");
 
         runs
+    }
+
+    /// Like `runs()` but writes into a caller-provided buffer, avoiding
+    /// per-frame allocation when the buffer is reused across frames.
+    pub fn runs_into(&self, out: &mut Vec<ChangeRun>) {
+        out.clear();
+
+        #[cfg(feature = "tracing")]
+        let _span = tracing::debug_span!("diff_runs_into", changes = self.changes.len());
+        #[cfg(feature = "tracing")]
+        let _guard = _span.enter();
+
+        if self.changes.is_empty() {
+            return;
+        }
+
+        let sorted = &self.changes;
+        let len = sorted.len();
+        let mut i = 0;
+
+        while i < len {
+            let (x0, y) = sorted[i];
+            let mut x1 = x0;
+            i += 1;
+
+            while i < len {
+                let (x, yy) = sorted[i];
+                if yy != y || x != x1.saturating_add(1) {
+                    break;
+                }
+                x1 = x;
+                i += 1;
+            }
+
+            out.push(ChangeRun::new(y, x0, x1));
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!(run_count = out.len(), "runs coalesced (reuse)");
     }
 
     /// Iterate over changed positions.
@@ -2176,6 +2256,7 @@ mod tests {
             enabled: true,
             tile_w: 8,
             tile_h: 8,
+            skip_clean_rows: true,
             min_cells_for_tiles: 0,
             dense_cell_ratio: 1.1,
             dense_tile_ratio: 1.1,
@@ -2197,6 +2278,7 @@ mod tests {
             enabled: true,
             tile_w: 8,
             tile_h: 8,
+            skip_clean_rows: true,
             min_cells_for_tiles: 0,
             dense_cell_ratio: 1.1,
             dense_tile_ratio: 0.05,
@@ -2205,6 +2287,47 @@ mod tests {
 
         let stats = tile_stats_for_config(&old, &new, config);
         assert_eq!(stats.fallback, Some(TileDiffFallback::DenseTiles));
+    }
+
+    #[test]
+    fn tile_builder_skips_clean_rows_when_enabled() {
+        let width = 200;
+        let height = 60;
+        let old = Buffer::new(width, height);
+        let mut new = old.clone();
+        new.clear_dirty();
+        new.set_raw(3, 0, Cell::from_char('X'));
+        new.set_raw(4, 10, Cell::from_char('Y'));
+
+        let dirty_rows = new.dirty_row_count().max(1);
+        let total_cells = width as usize * height as usize;
+        let expected_skip_cells = dirty_rows * width as usize;
+
+        let base = TileDiffConfig {
+            enabled: true,
+            tile_w: 16,
+            tile_h: 8,
+            min_cells_for_tiles: 0,
+            dense_cell_ratio: 1.1,
+            dense_tile_ratio: 1.1,
+            max_tiles: usize::MAX,
+            ..Default::default()
+        };
+        let config_full = TileDiffConfig {
+            skip_clean_rows: false,
+            ..base.clone()
+        };
+        let config_skip = TileDiffConfig {
+            skip_clean_rows: true,
+            ..base
+        };
+
+        let stats_full = tile_stats_for_config(&old, &new, config_full);
+        let stats_skip = tile_stats_for_config(&old, &new, config_skip);
+
+        assert_eq!(stats_full.sat_build_cells, total_cells);
+        assert_eq!(stats_skip.sat_build_cells, expected_skip_cells);
+        assert!(stats_skip.sat_build_cells < stats_full.sat_build_cells);
     }
 
     fn lcg_next(state: &mut u64) -> u64 {
