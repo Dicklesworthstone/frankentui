@@ -5429,7 +5429,7 @@ mod tests {
 
     #[test]
     fn resolve_styles_multiple_class_merge() {
-        let input = "graph TD\nclassDef a fill:#f00\nclassDef b stroke:#0f0\nclass A a,b\nA-->B\n";
+        let input = "graph TD\nclassDef a fill:#f00\nclassDef b stroke:#0f0\nclass A a b\nA-->B\n";
         let ast = parse(input).expect("parse");
         let ir_parse = normalize_ast_to_ir(
             &ast,

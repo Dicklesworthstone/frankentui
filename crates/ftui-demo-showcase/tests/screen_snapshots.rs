@@ -1073,9 +1073,6 @@ fn app_all_screens_80x24() {
         if id == ScreenId::TerminalCapabilities {
             app.screens
                 .terminal_capabilities
-                .set_detected_profile_override(TerminalProfile::Modern);
-            app.screens
-                .terminal_capabilities
                 .set_env_override(terminal_caps_env());
         }
         let mut pool = GraphemePool::new();

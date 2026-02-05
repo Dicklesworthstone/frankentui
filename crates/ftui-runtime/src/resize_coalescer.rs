@@ -3051,4 +3051,231 @@ mod tests {
             assert!((sum - 1.0).abs() < 1e-9, "Posterior must remain normalized");
         }
     }
+
+    // =========================================================================
+    // Evidence JSONL field validation tests (bd-plwf)
+    // =========================================================================
+
+    #[test]
+    fn evidence_decision_jsonl_contains_all_required_fields() {
+        let log = DecisionLog {
+            timestamp: Instant::now(),
+            elapsed_ms: 16.5,
+            event_idx: 1,
+            dt_ms: 16.0,
+            event_rate: 62.5,
+            regime: Regime::Steady,
+            action: "apply",
+            pending_size: Some((100, 40)),
+            applied_size: Some((100, 40)),
+            time_since_render_ms: 16.2,
+            coalesce_ms: Some(16.0),
+            forced: false,
+        };
+
+        let jsonl = log.to_jsonl("test-run-1", ScreenMode::AltScreen, 100, 40);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&jsonl).expect("Decision JSONL must be valid JSON");
+
+        // Schema fields
+        assert_eq!(
+            parsed["schema_version"].as_str().unwrap(),
+            EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(parsed["run_id"].as_str().unwrap(), "test-run-1");
+        assert_eq!(parsed["event_idx"].as_u64().unwrap(), 1);
+        assert_eq!(parsed["screen_mode"].as_str().unwrap(), "altscreen");
+        assert_eq!(parsed["cols"].as_u64().unwrap(), 100);
+        assert_eq!(parsed["rows"].as_u64().unwrap(), 40);
+
+        // Event-specific fields
+        assert_eq!(parsed["event"].as_str().unwrap(), "decision");
+        assert!(parsed["elapsed_ms"].as_f64().is_some());
+        assert!(parsed["dt_ms"].as_f64().is_some());
+        assert!(parsed["event_rate"].as_f64().is_some());
+        assert_eq!(parsed["regime"].as_str().unwrap(), "steady");
+        assert_eq!(parsed["action"].as_str().unwrap(), "apply");
+        assert_eq!(parsed["pending_w"].as_u64().unwrap(), 100);
+        assert_eq!(parsed["pending_h"].as_u64().unwrap(), 40);
+        assert_eq!(parsed["applied_w"].as_u64().unwrap(), 100);
+        assert_eq!(parsed["applied_h"].as_u64().unwrap(), 40);
+        assert!(parsed["time_since_render_ms"].as_f64().is_some());
+        assert!(parsed["coalesce_ms"].as_f64().is_some());
+        assert!(!parsed["forced"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn evidence_decision_jsonl_null_fields_when_no_pending() {
+        let log = DecisionLog {
+            timestamp: Instant::now(),
+            elapsed_ms: 0.0,
+            event_idx: 0,
+            dt_ms: 0.0,
+            event_rate: 0.0,
+            regime: Regime::Steady,
+            action: "skip_same_size",
+            pending_size: None,
+            applied_size: None,
+            time_since_render_ms: 0.0,
+            coalesce_ms: None,
+            forced: false,
+        };
+
+        let jsonl = log.to_jsonl("test-run-2", ScreenMode::AltScreen, 80, 24);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&jsonl).expect("Decision JSONL must be valid JSON");
+
+        assert!(parsed["pending_w"].is_null());
+        assert!(parsed["pending_h"].is_null());
+        assert!(parsed["applied_w"].is_null());
+        assert!(parsed["applied_h"].is_null());
+        assert!(parsed["coalesce_ms"].is_null());
+    }
+
+    #[test]
+    fn evidence_config_jsonl_contains_all_fields() {
+        let config = test_config();
+        let jsonl = config.to_jsonl("cfg-run", ScreenMode::AltScreen, 80, 24, 0);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&jsonl).expect("Config JSONL must be valid JSON");
+
+        assert_eq!(parsed["event"].as_str().unwrap(), "config");
+        assert_eq!(
+            parsed["schema_version"].as_str().unwrap(),
+            EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(parsed["steady_delay_ms"].as_u64().unwrap(), 16);
+        assert_eq!(parsed["burst_delay_ms"].as_u64().unwrap(), 40);
+        assert_eq!(parsed["hard_deadline_ms"].as_u64().unwrap(), 100);
+        assert!(parsed["burst_enter_rate"].as_f64().is_some());
+        assert!(parsed["burst_exit_rate"].as_f64().is_some());
+        assert_eq!(parsed["cooldown_frames"].as_u64().unwrap(), 3);
+        assert_eq!(parsed["rate_window_size"].as_u64().unwrap(), 8);
+    }
+
+    #[test]
+    fn evidence_inline_screen_mode_string() {
+        let log = DecisionLog {
+            timestamp: Instant::now(),
+            elapsed_ms: 0.0,
+            event_idx: 0,
+            dt_ms: 0.0,
+            event_rate: 0.0,
+            regime: Regime::Burst,
+            action: "coalesce",
+            pending_size: Some((120, 40)),
+            applied_size: None,
+            time_since_render_ms: 5.0,
+            coalesce_ms: None,
+            forced: false,
+        };
+
+        let jsonl = log.to_jsonl("inline-run", ScreenMode::Inline { ui_height: 12 }, 120, 40);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&jsonl).expect("JSONL must be valid JSON");
+
+        assert_eq!(parsed["screen_mode"].as_str().unwrap(), "inline");
+        assert_eq!(parsed["regime"].as_str().unwrap(), "burst");
+    }
+
+    #[test]
+    fn resize_scheduling_steady_applies_within_steady_delay() {
+        let config = CoalescerConfig {
+            steady_delay_ms: 20,
+            burst_delay_ms: 50,
+            hard_deadline_ms: 200,
+            enable_logging: true,
+            ..test_config()
+        };
+        let base = Instant::now();
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        // Single resize in steady mode
+        let action = c.handle_resize_at(100, 40, base);
+        // First resize may or may not apply immediately depending on implementation
+        match action {
+            CoalesceAction::ApplyResize { width, height, .. } => {
+                assert_eq!(width, 100);
+                assert_eq!(height, 40);
+            }
+            CoalesceAction::None | CoalesceAction::ShowPlaceholder => {
+                // Tick past steady delay to get the apply
+                let later = base + Duration::from_millis(25);
+                let action = c.tick_at(later);
+                if let CoalesceAction::ApplyResize { width, height, .. } = action {
+                    assert_eq!(width, 100);
+                    assert_eq!(height, 40);
+                }
+            }
+        }
+
+        // Verify final applied size
+        assert_eq!(c.last_applied(), (100, 40));
+    }
+
+    #[test]
+    fn resize_scheduling_burst_regime_coalesces_rapid_events() {
+        let config = CoalescerConfig {
+            steady_delay_ms: 16,
+            burst_delay_ms: 40,
+            hard_deadline_ms: 100,
+            burst_enter_rate: 10.0,
+            enable_logging: true,
+            ..test_config()
+        };
+        let base = Instant::now();
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+        let mut apply_count = 0u32;
+
+        // Rapid resize events (20 events at 50ms intervals = 20 Hz)
+        for i in 0..20 {
+            let t = base + Duration::from_millis(i * 50);
+            let action = c.handle_resize_at(80 + (i as u16), 24, t);
+            if matches!(action, CoalesceAction::ApplyResize { .. }) {
+                apply_count += 1;
+            }
+            // Tick between events
+            let tick_t = t + Duration::from_millis(10);
+            let tick_action = c.tick_at(tick_t);
+            if matches!(tick_action, CoalesceAction::ApplyResize { .. }) {
+                apply_count += 1;
+            }
+        }
+
+        // Should have coalesced: fewer applies than events
+        assert!(
+            apply_count < 20,
+            "Expected coalescing: {apply_count} applies for 20 events"
+        );
+        // But should still have rendered at least once
+        assert!(apply_count > 0, "Should have at least one apply");
+    }
+
+    #[test]
+    fn evidence_summary_jsonl_includes_checksum() {
+        let config = CoalescerConfig {
+            enable_logging: true,
+            ..test_config()
+        };
+        let base = Instant::now();
+        let mut c = ResizeCoalescer::new(config, (80, 24));
+
+        // Generate some events
+        c.handle_resize_at(100, 40, base + Duration::from_millis(10));
+        c.tick_at(base + Duration::from_millis(30));
+
+        let all_lines = c.evidence_to_jsonl();
+        let summary_line = all_lines.lines().last().expect("Should have summary line");
+        let parsed: serde_json::Value =
+            serde_json::from_str(summary_line).expect("Summary JSONL line must be valid JSON");
+
+        assert_eq!(parsed["event"].as_str().unwrap(), "summary");
+        assert!(parsed["decisions"].as_u64().is_some());
+        assert!(parsed["applies"].as_u64().is_some());
+        assert!(parsed["forced_applies"].as_u64().is_some());
+        assert!(parsed["coalesces"].as_u64().is_some());
+        assert!(parsed["skips"].as_u64().is_some());
+        assert!(parsed["regime"].as_str().is_some());
+        assert!(parsed["checksum"].as_str().is_some());
+    }
 }
