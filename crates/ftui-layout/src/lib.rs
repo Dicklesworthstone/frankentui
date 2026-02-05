@@ -581,8 +581,9 @@ impl Flex {
                         let count = sizes.len() - 1; // usize
                         // Use usize division to prevent overflow/panic
                         let base = (leftover as usize / count) as u16;
-                        let rem = (leftover as usize % count) as u16;
-                        let extra = base + if (i as u16) < rem { 1 } else { 0 };
+                        let rem = leftover as usize % count;
+                        // Compare i (usize) with rem (usize) to avoid truncation for large i
+                        let extra = base + if i < rem { 1 } else { 0 };
                         current_pos = current_pos.saturating_add(extra);
                     }
                 }

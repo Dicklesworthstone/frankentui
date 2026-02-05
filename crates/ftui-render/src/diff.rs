@@ -1095,6 +1095,18 @@ impl BufferDiff {
 
 #[cfg(test)]
 mod tests {
+    fn is_coverage_run() -> bool {
+        if let Ok(value) = std::env::var("FTUI_COVERAGE") {
+            let value = value.to_ascii_lowercase();
+            if matches!(value.as_str(), "1" | "true" | "yes") {
+                return true;
+            }
+            if matches!(value.as_str(), "0" | "false" | "no") {
+                return false;
+            }
+        }
+        std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+    }
     use super::*;
     use crate::cell::{Cell, PackedRgba};
 
@@ -1602,7 +1614,8 @@ mod tests {
             width, height, samples, iters_per_sample, p50, p95, p99, mean, variance, last_checksum
         );
 
-        let budget_us = 500u64; // ~500µs per diff for 200x50 in debug
+        #[allow(unexpected_cfgs)]
+        let budget_us = if is_coverage_run() { 3_000u64 } else { 500u64 };
         assert!(
             p95 <= budget_us,
             "Diff too slow: p95={p95}µs (budget {budget_us}µs) for {width}x{height}"

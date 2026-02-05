@@ -521,7 +521,13 @@ impl InputParser {
             57_356 => Some(KeyCode::Home),
             57_357 => Some(KeyCode::End),
             // F1-F24 (57_364-57_387)
-            57_364..=57_387 => Some(KeyCode::F((key_code - 57_364 + 1) as u8)),
+            57_364..=57_387 => {
+                // Safety: range is [57_364, 57_387], so (key_code - 57_364 + 1) is [1, 24]
+                // which fits in u8. We use debug_assert to catch any future range changes.
+                let f_num = key_code - 57_364 + 1;
+                debug_assert!(f_num <= 24, "F-key number {f_num} exceeds F24");
+                Some(KeyCode::F(f_num as u8))
+            }
             // Reserved/unhandled Kitty keycodes return None
             57_358..=57_363 | 57_388..=63_743 => None,
             // Unicode codepoints

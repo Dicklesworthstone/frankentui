@@ -1399,29 +1399,27 @@ impl<'t> RenderState<'t> {
                 self.needs_blank = true;
             }
             TagEnd::TableHead => {
-                if let Some(table) = self.table_state.as_mut()
-                    && !table.current_row.is_empty()
-                {
-                    let row = TableRow {
-                        cells: std::mem::take(&mut table.current_row),
-                        is_header: true,
-                    };
-                    table.rows.push(row);
+                if let Some(table) = self.table_state.as_mut() {
+                    if !table.current_row.is_empty() {
+                        let row = TableRow {
+                            cells: std::mem::take(&mut table.current_row),
+                            is_header: true,
+                        };
+                        table.rows.push(row);
+                    }
+                    table.in_head = false;
                 }
             }
             TagEnd::TableRow => {
                 if let Some(table) = self.table_state.as_mut()
                     && !table.current_row.is_empty()
                 {
-                    let is_header = table.in_head && table.rows.is_empty();
+                    let is_header = table.in_head;
                     let row = TableRow {
                         cells: std::mem::take(&mut table.current_row),
                         is_header,
                     };
                     table.rows.push(row);
-                    if table.in_head && is_header {
-                        table.in_head = false;
-                    }
                 }
             }
             TagEnd::TableCell => {
@@ -1439,9 +1437,10 @@ impl<'t> RenderState<'t> {
                 if let Some(table) = self.table_state.as_mut()
                     && !table.current_row.is_empty()
                 {
+                    let is_header = table.in_head;
                     let row = TableRow {
                         cells: std::mem::take(&mut table.current_row),
-                        is_header: table.in_head,
+                        is_header,
                     };
                     table.rows.push(row);
                 }

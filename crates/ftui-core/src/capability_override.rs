@@ -71,6 +71,11 @@ pub struct CapabilityOverride {
     pub true_color: Option<bool>,
     pub colors_256: Option<bool>,
 
+    // Glyph support
+    pub unicode_box_drawing: Option<bool>,
+    pub unicode_emoji: Option<bool>,
+    pub double_width: Option<bool>,
+
     // Advanced features
     pub sync_output: Option<bool>,
     pub osc8_hyperlinks: Option<bool>,
@@ -98,6 +103,9 @@ impl CapabilityOverride {
         Self {
             true_color: None,
             colors_256: None,
+            unicode_box_drawing: None,
+            unicode_emoji: None,
+            double_width: None,
             sync_output: None,
             osc8_hyperlinks: None,
             scroll_region: None,
@@ -118,6 +126,9 @@ impl CapabilityOverride {
         Self {
             true_color: Some(false),
             colors_256: Some(false),
+            unicode_box_drawing: Some(false),
+            unicode_emoji: Some(false),
+            double_width: Some(false),
             sync_output: Some(false),
             osc8_hyperlinks: Some(false),
             scroll_region: Some(false),
@@ -138,6 +149,9 @@ impl CapabilityOverride {
         Self {
             true_color: Some(true),
             colors_256: Some(true),
+            unicode_box_drawing: Some(true),
+            unicode_emoji: Some(true),
+            double_width: Some(true),
             sync_output: Some(true),
             osc8_hyperlinks: Some(true),
             scroll_region: Some(true),
@@ -158,6 +172,9 @@ impl CapabilityOverride {
         Self {
             true_color: None,
             colors_256: Some(true),
+            unicode_box_drawing: None,
+            unicode_emoji: None,
+            double_width: None,
             sync_output: Some(false),
             osc8_hyperlinks: Some(false),
             scroll_region: Some(true),
@@ -185,6 +202,27 @@ impl CapabilityOverride {
     #[must_use]
     pub const fn colors_256(mut self, value: Option<bool>) -> Self {
         self.colors_256 = value;
+        self
+    }
+
+    /// Override Unicode box drawing support.
+    #[must_use]
+    pub const fn unicode_box_drawing(mut self, value: Option<bool>) -> Self {
+        self.unicode_box_drawing = value;
+        self
+    }
+
+    /// Override emoji glyph support.
+    #[must_use]
+    pub const fn unicode_emoji(mut self, value: Option<bool>) -> Self {
+        self.unicode_emoji = value;
+        self
+    }
+
+    /// Override double-width glyph support.
+    #[must_use]
+    pub const fn double_width(mut self, value: Option<bool>) -> Self {
+        self.double_width = value;
         self
     }
 
@@ -270,6 +308,9 @@ impl CapabilityOverride {
     pub const fn is_empty(&self) -> bool {
         self.true_color.is_none()
             && self.colors_256.is_none()
+            && self.unicode_box_drawing.is_none()
+            && self.unicode_emoji.is_none()
+            && self.double_width.is_none()
             && self.sync_output.is_none()
             && self.osc8_hyperlinks.is_none()
             && self.scroll_region.is_none()
@@ -291,6 +332,15 @@ impl CapabilityOverride {
         }
         if let Some(v) = self.colors_256 {
             caps.colors_256 = v;
+        }
+        if let Some(v) = self.unicode_box_drawing {
+            caps.unicode_box_drawing = v;
+        }
+        if let Some(v) = self.unicode_emoji {
+            caps.unicode_emoji = v;
+        }
+        if let Some(v) = self.double_width {
+            caps.double_width = v;
         }
         if let Some(v) = self.sync_output {
             caps.sync_output = v;
@@ -514,10 +564,12 @@ mod tests {
         let over = CapabilityOverride::new()
             .true_color(Some(true))
             .colors_256(Some(true))
+            .unicode_box_drawing(Some(false))
             .mouse_sgr(Some(false));
 
         assert_eq!(over.true_color, Some(true));
         assert_eq!(over.colors_256, Some(true));
+        assert_eq!(over.unicode_box_drawing, Some(false));
         assert_eq!(over.mouse_sgr, Some(false));
         assert!(over.sync_output.is_none());
     }
@@ -527,11 +579,13 @@ mod tests {
         let base = TerminalCapabilities::dumb();
         let over = CapabilityOverride::new()
             .true_color(Some(true))
-            .colors_256(Some(true));
+            .colors_256(Some(true))
+            .unicode_box_drawing(Some(true));
 
         let result = over.apply_to(base);
         assert!(result.true_color);
         assert!(result.colors_256);
+        assert!(result.unicode_box_drawing);
         // Unchanged fields remain from base
         assert!(!result.mouse_sgr);
     }
@@ -628,6 +682,9 @@ mod tests {
             let caps = TerminalCapabilities::with_overrides();
             assert!(!caps.true_color);
             assert!(!caps.colors_256);
+            assert!(!caps.unicode_box_drawing);
+            assert!(!caps.unicode_emoji);
+            assert!(!caps.double_width);
         });
     }
 
