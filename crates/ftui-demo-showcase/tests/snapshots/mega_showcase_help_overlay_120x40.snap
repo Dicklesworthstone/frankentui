@@ -1,0 +1,40 @@
+┌────────────────────────────────╭─ Help (? to close) ────────────────────────────────╮────────────────────────────────┐
+│ Tier:auto Glyph:unicode Render:│                                                    │0% VP:auto                      │
+│                                │ Navigation                                         │                                │
+│                                │  j / Down        Next sample                       │                                │
+│                                │  k / Up          Previous sample                   │                                │
+└────────────────────────────────│  Tab             Select next node                  │────────────────────────────────┘
+┌ Flow Basic [default] ──────────│  S-Tab           Select previous node              │────┐┌ Metrics ─────────────────┐
+│                                │  /               Enter search mode                 │    ││                          │
+│                                │                                                    │    ││Mode: normal              │
+│                                │ Render Config                                      │    ││Sample: Flow Basic        │
+│                                │  t               Cycle tier (Auto/Compact/Normal/R │    ││Palette: default          │
+│                                │  g               Toggle glyph mode (Unicode/ASCII) │    ││Node: -                   │
+│                                │  b               Cycle render mode (Auto/Cell/Brai │    ││Epoch: a0/l0/r0           │
+│                                │  s               Toggle styles (classDef/style)    │    ││VP: auto                  │
+│                                │  w               Cycle wrap mode (None/Word/Char/W │    ││                          │
+│                                │  l               Cycle layout mode (Dense/Normal/S │    ││Parse: -                  │
+│                                │  r               Force relayout                    │    ││Layout: -                 │
+│                                │  p / P           Cycle palette forward / backward  │    ││Render: -                 │
+│                                │                                                    │    ││Cache: 0/0                │
+│                                │ Viewport                                           │    ││Last: MISS                │
+│                                │  + / =           Zoom in                           │    ││                          │
+│                                │  -               Zoom out                          │    ││                          │
+│                                │  0               Reset zoom (+ clear pan)          │    ││                          │
+│                              ⢀⣆│  f               Fit to view (+ clear pan)         │    ││                          │
+│                  ⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣾⣿│  H / J / K / L   Pan left / down / up / right      │    ││                          │
+│                  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  ] / [           Increase / decrease viewport widt │    ││                          │
+│                  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  } / {           Increase / decrease viewport heig │    ││                          │
+│                  ⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⡿⠿│  o               Reset viewport override           │    ││                          │
+│                              ⠈⠑│                                                    │    ││                          │
+│                                │ Panels                                             │    ││                          │
+│                                │  m               Toggle metrics panel              │    ││                          │
+│                                │  c               Toggle controls strip             │    ││                          │
+│                                │  d               Toggle detail panel               │    ││                          │
+│                                │  i               Toggle status log                 │    ││                          │
+│                                │  ?               Toggle this help overlay          │    ││                          │
+│                                │  Esc             Deselect node / exit search / col │    ││                          │
+│                                │                                                    │    ││                          │
+└────────────────────────────────│                                                    │────┘└──────────────────────────┘
+NORMAL  j/k:sample t:tier p:palet│                                                    │                                 
+                                 ╰────────────────────────────────────────────────────╯                                 
