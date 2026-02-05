@@ -69,7 +69,11 @@ pub struct DotParseError {
 
 impl std::fmt::Display for DotParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DOT parse error at {}:{}: {}", self.line, self.col, self.message)
+        write!(
+            f,
+            "DOT parse error at {}:{}: {}",
+            self.line, self.col, self.message
+        )
     }
 }
 
@@ -232,7 +236,8 @@ impl<'a> DotParser<'a> {
                 message: format!(
                     "expected '{}', found '{}'",
                     c as char,
-                    self.peek().map_or("EOF".to_string(), |b| (b as char).to_string())
+                    self.peek()
+                        .map_or("EOF".to_string(), |b| (b as char).to_string())
                 ),
                 line: self.line,
                 col: self.col,
@@ -372,8 +377,16 @@ impl<'a> DotParser<'a> {
         self.labels.push(IrLabel {
             text: text.to_string(),
             span: Span {
-                start: Position { line: 0, col: 0, byte: 0 },
-                end: Position { line: 0, col: 0, byte: 0 },
+                start: Position {
+                    line: 0,
+                    col: 0,
+                    byte: 0,
+                },
+                end: Position {
+                    line: 0,
+                    col: 0,
+                    byte: 0,
+                },
             },
         });
         id
@@ -419,7 +432,10 @@ impl<'a> DotParser<'a> {
         self.skip_whitespace();
 
         // Optional "strict"
-        if self.input[self.pos..].to_ascii_lowercase().starts_with("strict") {
+        if self.input[self.pos..]
+            .to_ascii_lowercase()
+            .starts_with("strict")
+        {
             for _ in 0..6 {
                 self.advance();
             }
@@ -427,7 +443,6 @@ impl<'a> DotParser<'a> {
         }
 
         // graph or digraph
-        let keyword_start = self.pos;
         let lower = self.input[self.pos..].to_ascii_lowercase();
         if lower.starts_with("digraph") {
             self.is_digraph = true;
@@ -450,7 +465,11 @@ impl<'a> DotParser<'a> {
         self.skip_whitespace();
 
         // Optional graph name
-        let _graph_name = if self.peek() != Some(b'{') { self.read_id() } else { None };
+        let _graph_name = if self.peek() != Some(b'{') {
+            self.read_id()
+        } else {
+            None
+        };
 
         self.expect_char(b'{')?;
         self.parse_body(None)?;
@@ -640,7 +659,11 @@ impl<'a> DotParser<'a> {
         self.skip_whitespace();
 
         // Optional subgraph name
-        let name = if self.peek() != Some(b'{') { self.read_id() } else { None };
+        let name = if self.peek() != Some(b'{') {
+            self.read_id()
+        } else {
+            None
+        };
 
         let cluster_id = IrClusterId(self.clusters.len());
         let title = name.as_ref().map(|n| {
