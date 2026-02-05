@@ -3926,7 +3926,11 @@ fn parse_class_line(
         return Some(Err(MermaidError::new("class missing target(s)", span)
             .with_expected(vec!["class <id[,id...]> <class>"])));
     }
-    let classes: Vec<String> = parts.map(normalize_ws).filter(|s| !s.is_empty()).collect();
+    let classes: Vec<String> = parts
+        .flat_map(|token| token.split(','))
+        .map(normalize_ws)
+        .filter(|s| !s.is_empty())
+        .collect();
     let class_name = normalize_ws(targets_raw);
     if diagram_type == DiagramType::Class {
         if classes.is_empty() {
@@ -4860,6 +4864,24 @@ mod tests {
         assert!(guard.label_limit_exceeded);
         assert_eq!(guard.label_chars_over, 1);
         assert_eq!(guard.label_lines_over, 0);
+    }
+
+    #[test]
+    fn find_arrow_skips_bracket_content() {
+        // Arrow chars inside brackets (e.g. "oo" in "too", "--" in labels)
+        // must not be detected as arrows.
+        let ast = parse("graph TD\nA[too cool]\n").expect("parse");
+        let nodes: Vec<_> = ast
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Node(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(nodes.len(), 1, "should parse as a single node, not edge");
+        assert_eq!(nodes[0].id, "A");
+        assert_eq!(nodes[0].label.as_deref(), Some("too cool"));
     }
 
     #[test]
