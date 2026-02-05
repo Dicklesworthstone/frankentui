@@ -534,6 +534,8 @@ struct MermaidMetricsSnapshot {
     label_collisions: Option<u32>,
     fallback_tier: Option<MermaidTier>,
     fallback_reason: Option<&'static str>,
+    /// Number of parse/IR errors encountered.
+    error_count: Option<u32>,
 }
 
 impl MermaidMetricsSnapshot {
@@ -817,6 +819,7 @@ impl MermaidShowcaseState {
             self.metrics.edge_length_variance,
         );
         push_opt_u32(&mut json, "label_collisions", self.metrics.label_collisions);
+        push_opt_u32(&mut json, "error_count", self.metrics.error_count);
         if let Some(tier) = self.metrics.fallback_tier {
             json.push_str(&format!(",\"fallback_tier\":\"{tier}\""));
         }
@@ -1210,6 +1213,7 @@ impl MermaidShowcaseScreen {
             let mut errors = Vec::new();
             errors.extend(parsed.errors);
             errors.extend(ir_parse.errors);
+            metrics.error_count = Some(errors.len() as u32);
             cache.errors = errors;
             cache.ir = Some(ir_parse.ir);
             cache.analysis_epoch = self.state.analysis_epoch;
@@ -1223,8 +1227,10 @@ impl MermaidShowcaseScreen {
             let layout_start = Instant::now();
             let layout = mermaid_layout::layout_diagram_with_spacing(ir, &config, &spacing);
             let parse_ms = metrics.parse_ms;
+            let error_count = metrics.error_count;
             let mut snap = MermaidMetricsSnapshot::from_layout(&layout);
             snap.parse_ms = parse_ms;
+            snap.error_count = error_count;
             snap.layout_ms = Some(layout_start.elapsed().as_secs_f32() * 1000.0);
             if let Some(ref plan) = layout.degradation {
                 snap.set_fallback(self.state.tier, plan);
@@ -1713,6 +1719,32 @@ impl MermaidShowcaseScreen {
                     Span::styled("Reason: ", muted),
                     Span::styled(reason, Style::new().fg(theme::accent::WARNING)),
                 ]));
+            }
+
+            // Error diagnostics section.
+            if let Some(ec) = metrics.error_count {
+                if ec > 0 {
+                    lines.push(Line::from_spans(vec![
+                        Span::styled("Errors: ", muted),
+                        Span::styled(
+                            format!("{ec}"),
+                            Style::new().fg(theme::accent::ERROR),
+                        ),
+                    ]));
+                    // Show first error message if available.
+                    let errors = &self.cache.borrow().errors;
+                    if let Some(first) = errors.first() {
+                        let msg = if first.message.len() > 40 {
+                            format!("{}...", &first.message[..37])
+                        } else {
+                            first.message.clone()
+                        };
+                        lines.push(Line::from_spans(vec![
+                            Span::styled("  ", muted),
+                            Span::styled(msg, Style::new().fg(theme::accent::ERROR)),
+                        ]));
+                    }
+                }
             }
         } else {
             lines.push(Line::from_spans(vec![Span::styled(
