@@ -9,6 +9,7 @@
 
 use crate::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
 use crate::text_width;
+use unicode_width::UnicodeWidthChar;
 
 /// Environment variable to override glyph mode (`unicode` or `ascii`).
 const ENV_GLYPH_MODE: &str = "FTUI_GLYPH_MODE";
@@ -16,6 +17,12 @@ const ENV_GLYPH_MODE: &str = "FTUI_GLYPH_MODE";
 const ENV_GLYPH_EMOJI: &str = "FTUI_GLYPH_EMOJI";
 /// Legacy environment variable to disable emoji (`1/0/true/false`).
 const ENV_NO_EMOJI: &str = "FTUI_NO_EMOJI";
+/// Environment variable to override line drawing support (`1/0/true/false`).
+const ENV_GLYPH_LINE_DRAWING: &str = "FTUI_GLYPH_LINE_DRAWING";
+/// Environment variable to override Unicode arrow support (`1/0/true/false`).
+const ENV_GLYPH_ARROWS: &str = "FTUI_GLYPH_ARROWS";
+/// Environment variable to override double-width glyph support (`1/0/true/false`).
+const ENV_GLYPH_DOUBLE_WIDTH: &str = "FTUI_GLYPH_DOUBLE_WIDTH";
 
 /// Overall glyph rendering mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +60,8 @@ pub struct GlyphPolicy {
     pub emoji: bool,
     /// Whether ambiguous-width glyphs should be treated as double-width.
     pub cjk_width: bool,
+    /// Whether terminal supports double-width glyphs (CJK/emoji).
+    pub double_width: bool,
     /// Whether Unicode line drawing should be used.
     pub unicode_line_drawing: bool,
     /// Whether Unicode arrows/symbols should be used.
@@ -63,7 +72,7 @@ impl GlyphPolicy {
     /// Detect policy using environment variables and detected terminal caps.
     #[must_use]
     pub fn detect() -> Self {
-        let caps = TerminalCapabilities::detect();
+        let caps = TerminalCapabilities::with_overrides();
         Self::from_env_with(|key| std::env::var(key).ok(), &caps)
     }
 
@@ -74,16 +83,40 @@ impl GlyphPolicy {
         F: Fn(&str) -> Option<String>,
     {
         let mode = detect_mode(&get_env, caps);
-        let emoji = detect_emoji(&get_env, caps, mode);
-        let cjk_width = text_width::cjk_width_from_env(get_env);
+        let (mut emoji, emoji_overridden) = detect_emoji(&get_env, caps, mode);
+        let double_width = detect_double_width(&get_env, caps);
+        let cjk_width = text_width::cjk_width_from_env(|key| get_env(key));
+        if !double_width && !emoji_overridden {
+            emoji = false;
+        }
 
-        let unicode_line_drawing = mode == GlyphMode::Unicode;
-        let unicode_arrows = mode == GlyphMode::Unicode;
+        let mut unicode_line_drawing = mode == GlyphMode::Unicode && caps.unicode_box_drawing;
+        if let Some(value) = env_override_bool(&get_env, ENV_GLYPH_LINE_DRAWING) {
+            unicode_line_drawing = value;
+        }
+        if mode == GlyphMode::Ascii {
+            unicode_line_drawing = false;
+        }
+        if unicode_line_drawing && !glyphs_fit_narrow(LINE_DRAWING_GLYPHS, cjk_width) {
+            unicode_line_drawing = false;
+        }
+
+        let mut unicode_arrows = mode == GlyphMode::Unicode;
+        if let Some(value) = env_override_bool(&get_env, ENV_GLYPH_ARROWS) {
+            unicode_arrows = value;
+        }
+        if mode == GlyphMode::Ascii {
+            unicode_arrows = false;
+        }
+        if unicode_arrows && !glyphs_fit_narrow(ARROW_GLYPHS, cjk_width) {
+            unicode_arrows = false;
+        }
 
         Self {
             mode,
             emoji,
             cjk_width,
+            double_width,
             unicode_line_drawing,
             unicode_arrows,
         }
@@ -94,16 +127,22 @@ impl GlyphPolicy {
     pub fn to_json(&self) -> String {
         format!(
             concat!(
-                r#"{{"glyph_mode":"{}","emoji":{},"cjk_width":{},"unicode_line_drawing":{},"unicode_arrows":{}}}"#
+                r#"{{"glyph_mode":"{}","emoji":{},"cjk_width":{},"double_width":{},"unicode_line_drawing":{},"unicode_arrows":{}}}"#
             ),
             self.mode.as_str(),
             self.emoji,
             self.cjk_width,
+            self.double_width,
             self.unicode_line_drawing,
             self.unicode_arrows
         )
     }
 }
+
+const LINE_DRAWING_GLYPHS: &[char] = &[
+    '─', '│', '┌', '┐', '└', '┘', '┬', '┴', '├', '┤', '┼', '╭', '╮', '╯', '╰',
+];
+const ARROW_GLYPHS: &[char] = &['→', '←', '↑', '↓', '↔', '↕', '⇢', '⇠', '⇡', '⇣'];
 
 fn detect_mode<F>(get_env: &F, caps: &TerminalCapabilities) -> GlyphMode
 where
@@ -115,6 +154,10 @@ where
         return parsed;
     }
 
+    if !caps.unicode_box_drawing {
+        return GlyphMode::Ascii;
+    }
+
     match caps.profile() {
         TerminalProfile::Dumb | TerminalProfile::Vt100 | TerminalProfile::LinuxConsole => {
             GlyphMode::Ascii
@@ -123,60 +166,38 @@ where
     }
 }
 
-fn detect_emoji<F>(get_env: &F, caps: &TerminalCapabilities, mode: GlyphMode) -> bool
+fn detect_emoji<F>(get_env: &F, caps: &TerminalCapabilities, mode: GlyphMode) -> (bool, bool)
 where
     F: Fn(&str) -> Option<String>,
 {
     if mode == GlyphMode::Ascii {
-        return false;
+        return (false, false);
     }
 
-    if let Some(value) = get_env(ENV_GLYPH_EMOJI)
-        && let Some(parsed) = parse_bool(&value)
-    {
-        return parsed;
+    if let Some(value) = env_override_bool(get_env, ENV_GLYPH_EMOJI) {
+        return (value, true);
     }
 
-    if let Some(value) = get_env(ENV_NO_EMOJI)
-        && let Some(parsed) = parse_bool(&value)
-    {
-        return !parsed;
+    if let Some(value) = env_override_bool(get_env, ENV_NO_EMOJI) {
+        return (!value, true);
     }
 
-    if matches!(
-        caps.profile(),
-        TerminalProfile::Dumb | TerminalProfile::Vt100 | TerminalProfile::LinuxConsole
-    ) {
-        return false;
-    }
-
-    let term_program = get_env("TERM_PROGRAM")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if is_known_emoji_terminal(&term_program) {
-        return true;
-    }
-
-    let term = get_env("TERM").unwrap_or_default().to_ascii_lowercase();
-    if is_known_emoji_terminal(&term) {
-        return true;
+    if !caps.unicode_emoji {
+        return (false, false);
     }
 
     // Default to true; users can explicitly disable.
-    true
+    (true, false)
 }
 
-fn is_known_emoji_terminal(value: &str) -> bool {
-    value.contains("wezterm")
-        || value.contains("alacritty")
-        || value.contains("iterm")
-        || value.contains("ghostty")
-        || value.contains("kitty")
-        || value.contains("xterm")
-        || value.contains("256color")
-        || value.contains("vscode")
-        || value.contains("rio")
-        || value.contains("hyper")
+fn detect_double_width<F>(get_env: &F, caps: &TerminalCapabilities) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if let Some(value) = env_override_bool(get_env, ENV_GLYPH_DOUBLE_WIDTH) {
+        return value;
+    }
+    caps.double_width
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -185,6 +206,34 @@ fn parse_bool(value: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn env_override_bool<F>(get_env: &F, key: &str) -> Option<bool>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    get_env(key).and_then(|value| parse_bool(&value))
+}
+
+fn glyph_width(ch: char, cjk_width: bool) -> usize {
+    if ch.is_ascii() {
+        return match ch {
+            '\t' | '\n' | '\r' => 1,
+            ' '..='~' => 1,
+            _ => 0,
+        };
+    }
+    if cjk_width {
+        ch.width_cjk().unwrap_or(0)
+    } else {
+        ch.width().unwrap_or(0)
+    }
+}
+
+fn glyphs_fit_narrow(glyphs: &[char], cjk_width: bool) -> bool {
+    glyphs
+        .iter()
+        .all(|&glyph| glyph_width(glyph, cjk_width) == 1)
 }
 
 #[cfg(test)]
@@ -240,5 +289,45 @@ mod tests {
         let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
 
         assert!(policy.cjk_width);
+    }
+
+    #[test]
+    fn caps_disable_box_drawing_forces_ascii_mode() {
+        let env = map_env(&[]);
+        let mut caps = TerminalCapabilities::modern();
+        caps.unicode_box_drawing = false;
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Ascii);
+        assert!(!policy.unicode_line_drawing);
+        assert!(!policy.unicode_arrows);
+    }
+
+    #[test]
+    fn caps_disable_emoji_disables_emoji_policy() {
+        let env = map_env(&[]);
+        let mut caps = TerminalCapabilities::modern();
+        caps.unicode_emoji = false;
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(!policy.emoji);
+    }
+
+    #[test]
+    fn line_drawing_env_override_disables_unicode_lines() {
+        let env = map_env(&[(ENV_GLYPH_LINE_DRAWING, "0")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(!policy.unicode_line_drawing);
+    }
+
+    #[test]
+    fn glyph_double_width_env_overrides_cjk_width() {
+        let env = map_env(&[(ENV_GLYPH_DOUBLE_WIDTH, "0"), ("FTUI_TEXT_CJK_WIDTH", "1")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(!policy.cjk_width);
     }
 }

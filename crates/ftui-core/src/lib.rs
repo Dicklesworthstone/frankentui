@@ -80,6 +80,9 @@ pub mod text_width {
     where
         F: Fn(&str) -> Option<String>,
     {
+        if let Some(value) = get_env("FTUI_GLYPH_DOUBLE_WIDTH") {
+            return env_flag(&value);
+        }
         if let Some(value) = get_env("FTUI_TEXT_CJK_WIDTH").or_else(|| get_env("FTUI_CJK_WIDTH")) {
             return env_flag(&value);
         }

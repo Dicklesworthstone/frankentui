@@ -2660,6 +2660,253 @@ pub fn label_reservation_rects(result: &LabelPlacementResult) -> Vec<LayoutRect>
     rects
 }
 
+// ── Legend / Footnote layout primitives (bd-1oa1y) ───────────────────
+
+/// Placement strategy for the legend region relative to the diagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegendPlacement {
+    /// Legend appears below the diagram bounding box.
+    Below,
+    /// Legend appears to the right of the diagram bounding box.
+    Right,
+}
+
+/// Configuration for legend layout.
+#[derive(Debug, Clone, Copy)]
+pub struct LegendConfig {
+    /// Where to place the legend relative to the diagram.
+    pub placement: LegendPlacement,
+    /// Maximum height (in world units) the legend may occupy.
+    /// Entries beyond this height are truncated with an overflow indicator.
+    pub max_height: f64,
+    /// Maximum width (in world units) for the legend region.
+    /// For Below: defaults to diagram width. For Right: fixed column width.
+    pub max_width: f64,
+    /// Gap between the diagram bounding box and the legend region.
+    pub gap: f64,
+    /// Padding inside the legend region.
+    pub padding: f64,
+    /// Character width in world units (for text measurement).
+    pub char_width: f64,
+    /// Line height in world units.
+    pub line_height: f64,
+    /// Maximum characters per legend entry before truncation.
+    pub max_entry_chars: usize,
+}
+
+impl Default for LegendConfig {
+    fn default() -> Self {
+        Self {
+            placement: LegendPlacement::Below,
+            max_height: 10.0,
+            max_width: 60.0,
+            gap: 1.0,
+            padding: 0.5,
+            char_width: 1.0,
+            line_height: 1.0,
+            max_entry_chars: 56,
+        }
+    }
+}
+
+/// A single entry in the legend region.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LegendEntry {
+    /// Display text for this entry (e.g. "[1] https://example.com (Node A)").
+    pub text: String,
+    /// Bounding rectangle in world units.
+    pub rect: LayoutRect,
+    /// Whether the entry text was truncated.
+    pub was_truncated: bool,
+}
+
+/// The computed legend region layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LegendLayout {
+    /// Bounding rectangle of the entire legend region.
+    pub region: LayoutRect,
+    /// Individual legend entries with positions.
+    pub entries: Vec<LegendEntry>,
+    /// How the legend is placed relative to the diagram.
+    pub placement: LegendPlacement,
+    /// Number of entries that were truncated due to max_height.
+    pub overflow_count: usize,
+}
+
+impl LegendLayout {
+    /// Returns true if the legend has no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Compute the legend layout for link footnotes and spilled labels.
+///
+/// Takes the diagram bounding box, resolved links (from [`LinkResolution`]),
+/// spilled labels, and config. Returns a deterministic layout that does not
+/// overlap the diagram.
+#[must_use]
+pub fn compute_legend_layout(
+    diagram_bbox: &LayoutRect,
+    footnotes: &[String],
+    config: &LegendConfig,
+) -> LegendLayout {
+    if footnotes.is_empty() {
+        return LegendLayout {
+            region: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            entries: Vec::new(),
+            placement: config.placement,
+            overflow_count: 0,
+        };
+    }
+
+    // Compute legend origin based on placement.
+    let (origin_x, origin_y, available_width) = match config.placement {
+        LegendPlacement::Below => {
+            let x = diagram_bbox.x;
+            let y = diagram_bbox.y + diagram_bbox.height + config.gap;
+            let w = config.max_width.min(diagram_bbox.width.max(20.0));
+            (x, y, w)
+        }
+        LegendPlacement::Right => {
+            let x = diagram_bbox.x + diagram_bbox.width + config.gap;
+            let y = diagram_bbox.y;
+            (x, y, config.max_width)
+        }
+    };
+
+    let inner_width = available_width - config.padding * 2.0;
+    let max_text_chars = (inner_width / config.char_width).floor().max(1.0) as usize;
+    let max_text_chars = max_text_chars.min(config.max_entry_chars);
+
+    let mut entries = Vec::new();
+    let mut current_y = origin_y + config.padding;
+    let max_y = origin_y + config.max_height;
+    let mut overflow_count = 0;
+
+    for footnote_text in footnotes {
+        // Check if we've exceeded max height.
+        if current_y + config.line_height > max_y {
+            overflow_count = footnotes.len() - entries.len();
+            break;
+        }
+
+        // Truncate entry text if needed.
+        let (display_text, was_truncated) = truncate_legend_text(footnote_text, max_text_chars);
+
+        let entry_rect = LayoutRect {
+            x: origin_x + config.padding,
+            y: current_y,
+            width: display_text.len() as f64 * config.char_width,
+            height: config.line_height,
+        };
+
+        entries.push(LegendEntry {
+            text: display_text,
+            rect: entry_rect,
+            was_truncated,
+        });
+
+        current_y += config.line_height;
+    }
+
+    // Compute actual region bounds.
+    let actual_height = (current_y - origin_y) + config.padding;
+    let actual_width =
+        entries.iter().map(|e| e.rect.width).fold(0.0_f64, f64::max) + config.padding * 2.0;
+
+    let region = LayoutRect {
+        x: origin_x,
+        y: origin_y,
+        width: actual_width.min(available_width),
+        height: actual_height.min(config.max_height),
+    };
+
+    LegendLayout {
+        region,
+        entries,
+        placement: config.placement,
+        overflow_count,
+    }
+}
+
+/// Truncate a legend entry to fit within max_chars, adding ellipsis if needed.
+fn truncate_legend_text(text: &str, max_chars: usize) -> (String, bool) {
+    if text.len() <= max_chars {
+        (text.to_string(), false)
+    } else if max_chars <= 3 {
+        (text[..max_chars].to_string(), true)
+    } else {
+        let mut truncated = text[..max_chars - 3].to_string();
+        truncated.push_str("...");
+        (truncated, true)
+    }
+}
+
+/// Build footnote text lines from resolved links.
+///
+/// Each link produces a line like: `[1] https://example.com (Node A)`
+/// Only allowed (non-blocked) links are included.
+#[must_use]
+pub fn build_link_footnotes(
+    links: &[crate::mermaid::IrLink],
+    nodes: &[crate::mermaid::IrNode],
+) -> Vec<String> {
+    let mut footnotes = Vec::new();
+    let mut footnote_num = 1;
+
+    for link in links {
+        if link.sanitize_outcome != crate::mermaid::LinkSanitizeOutcome::Allowed {
+            continue;
+        }
+
+        let node_label = nodes
+            .get(link.target.0)
+            .map(|n| n.id.as_str())
+            .unwrap_or("?");
+
+        let line = if let Some(tip) = &link.tooltip {
+            format!("[{}] {} ({} - {})", footnote_num, link.url, node_label, tip)
+        } else {
+            format!("[{}] {} ({})", footnote_num, link.url, node_label)
+        };
+
+        footnotes.push(line);
+        footnote_num += 1;
+    }
+
+    footnotes
+}
+
+/// Emit legend layout metrics to JSONL evidence log.
+pub fn emit_legend_jsonl(config: &MermaidConfig, legend: &LegendLayout) {
+    let Some(path) = config.log_path.as_deref() else {
+        return;
+    };
+    if legend.is_empty() {
+        return;
+    }
+    let json = serde_json::json!({
+        "event": "mermaid_legend",
+        "legend_mode": match legend.placement {
+            LegendPlacement::Below => "below",
+            LegendPlacement::Right => "right",
+        },
+        "legend_height": legend.region.height,
+        "legend_width": legend.region.width,
+        "legend_lines": legend.entries.len(),
+        "overflow_count": legend.overflow_count,
+    });
+    let line = json.to_string();
+    let _ = crate::mermaid::append_jsonl_line(path, &line);
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2771,6 +3018,7 @@ mod tests {
             clusters: vec![],
             labels: vec![],
             style_refs: vec![],
+            links: vec![],
             meta: MermaidDiagramMeta {
                 diagram_type: DiagramType::Graph,
                 direction,
@@ -3713,6 +3961,7 @@ mod tests {
             clusters: vec![],
             labels,
             style_refs: vec![],
+            links: vec![],
             meta: MermaidDiagramMeta {
                 diagram_type: DiagramType::Graph,
                 direction,
@@ -4802,6 +5051,7 @@ mod label_tests {
             clusters: vec![],
             labels,
             style_refs: vec![],
+            links: vec![],
             meta: MermaidDiagramMeta {
                 diagram_type: DiagramType::Graph,
                 direction,
@@ -5177,5 +5427,330 @@ mod label_tests {
         assert_eq!(offsets[0], (0.0, 0.0));
         assert_eq!(offsets[1], (0.0, -1.0));
         assert_eq!(offsets[2], (1.0, 0.0));
+    }
+
+    // --- Legend / Footnote layout tests (bd-1oa1y) ---
+
+    #[test]
+    fn legend_empty_input_returns_empty() {
+        let bbox = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let legend = compute_legend_layout(&bbox, &[], &LegendConfig::default());
+        assert!(legend.is_empty());
+        assert_eq!(legend.entries.len(), 0);
+        assert_eq!(legend.overflow_count, 0);
+    }
+
+    #[test]
+    fn legend_below_placement_basic() {
+        let bbox = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let footnotes = vec![
+            "[1] https://example.com (A)".to_string(),
+            "[2] https://other.com (B)".to_string(),
+        ];
+        let config = LegendConfig::default();
+        let legend = compute_legend_layout(&bbox, &footnotes, &config);
+
+        assert!(!legend.is_empty());
+        assert_eq!(legend.entries.len(), 2);
+        assert_eq!(legend.placement, LegendPlacement::Below);
+        assert_eq!(legend.overflow_count, 0);
+        // Legend should be below the diagram.
+        assert!(legend.region.y >= bbox.y + bbox.height);
+    }
+
+    #[test]
+    fn legend_right_placement_basic() {
+        let bbox = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let footnotes = vec!["[1] https://example.com (A)".to_string()];
+        let config = LegendConfig {
+            placement: LegendPlacement::Right,
+            ..LegendConfig::default()
+        };
+        let legend = compute_legend_layout(&bbox, &footnotes, &config);
+
+        assert_eq!(legend.placement, LegendPlacement::Right);
+        // Legend should be to the right of the diagram.
+        assert!(legend.region.x >= bbox.x + bbox.width);
+    }
+
+    #[test]
+    fn legend_no_overlap_with_diagram() {
+        let bbox = LayoutRect {
+            x: 5.0,
+            y: 5.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let footnotes: Vec<String> = (0..5)
+            .map(|i| format!("[{}] https://example.com/page{} (Node{})", i + 1, i, i))
+            .collect();
+
+        for placement in [LegendPlacement::Below, LegendPlacement::Right] {
+            let config = LegendConfig {
+                placement,
+                ..LegendConfig::default()
+            };
+            let legend = compute_legend_layout(&bbox, &footnotes, &config);
+
+            // No overlap: legend region must not intersect diagram bbox.
+            let no_overlap = legend.region.x + legend.region.width <= bbox.x
+                || legend.region.x >= bbox.x + bbox.width
+                || legend.region.y + legend.region.height <= bbox.y
+                || legend.region.y >= bbox.y + bbox.height;
+            assert!(no_overlap, "legend {:?} overlaps diagram", placement);
+        }
+    }
+
+    #[test]
+    fn legend_max_height_truncates_entries() {
+        let bbox = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        // 20 footnotes but max_height only allows ~3 lines.
+        let footnotes: Vec<String> = (0..20)
+            .map(|i| format!("[{}] https://example.com/{}", i + 1, i))
+            .collect();
+        let config = LegendConfig {
+            max_height: 3.5, // 0.5 padding + 3 lines of 1.0
+            ..LegendConfig::default()
+        };
+        let legend = compute_legend_layout(&bbox, &footnotes, &config);
+
+        assert!(legend.entries.len() < 20);
+        assert!(legend.overflow_count > 0);
+        assert_eq!(legend.entries.len() + legend.overflow_count, 20);
+    }
+
+    #[test]
+    fn legend_entry_truncation() {
+        let bbox = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 30.0,
+            height: 10.0,
+        };
+        let long_url =
+            "[1] https://very-long-domain-name.example.com/this/is/a/very/long/path (LongNodeName)"
+                .to_string();
+        let footnotes = vec![long_url.clone()];
+        let config = LegendConfig {
+            max_entry_chars: 30,
+            ..LegendConfig::default()
+        };
+        let legend = compute_legend_layout(&bbox, &footnotes, &config);
+
+        assert_eq!(legend.entries.len(), 1);
+        assert!(legend.entries[0].was_truncated);
+        assert!(legend.entries[0].text.ends_with("..."));
+        assert!(legend.entries[0].text.len() <= 30);
+    }
+
+    #[test]
+    fn legend_entries_are_vertically_stacked() {
+        let bbox = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let footnotes = vec![
+            "[1] https://a.com (A)".to_string(),
+            "[2] https://b.com (B)".to_string(),
+            "[3] https://c.com (C)".to_string(),
+        ];
+        let config = LegendConfig::default();
+        let legend = compute_legend_layout(&bbox, &footnotes, &config);
+
+        assert_eq!(legend.entries.len(), 3);
+        // Each entry should be below the previous one.
+        for i in 1..legend.entries.len() {
+            assert!(
+                legend.entries[i].rect.y > legend.entries[i - 1].rect.y,
+                "entry {} not below entry {}",
+                i,
+                i - 1
+            );
+        }
+    }
+
+    #[test]
+    fn legend_deterministic() {
+        let bbox = LayoutRect {
+            x: 3.0,
+            y: 5.0,
+            width: 50.0,
+            height: 30.0,
+        };
+        let footnotes: Vec<String> = (0..8)
+            .map(|i| format!("[{}] https://example.com/{}", i + 1, i))
+            .collect();
+        let config = LegendConfig::default();
+
+        let l1 = compute_legend_layout(&bbox, &footnotes, &config);
+        let l2 = compute_legend_layout(&bbox, &footnotes, &config);
+
+        assert_eq!(l1, l2, "legend layout must be deterministic");
+    }
+
+    #[test]
+    fn truncate_legend_text_short() {
+        let (text, truncated) = truncate_legend_text("hello", 10);
+        assert_eq!(text, "hello");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_legend_text_exact() {
+        let (text, truncated) = truncate_legend_text("hello", 5);
+        assert_eq!(text, "hello");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_legend_text_long() {
+        let (text, truncated) = truncate_legend_text("hello world!", 8);
+        assert_eq!(text, "hello...");
+        assert!(truncated);
+        assert_eq!(text.len(), 8);
+    }
+
+    #[test]
+    fn truncate_legend_text_very_short_max() {
+        let (text, truncated) = truncate_legend_text("hello", 2);
+        assert_eq!(text, "he");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn build_link_footnotes_basic() {
+        let links = vec![
+            IrLink {
+                kind: LinkKind::Click,
+                target: IrNodeId(0),
+                url: "https://example.com".to_string(),
+                tooltip: Some("Go here".to_string()),
+                sanitize_outcome: LinkSanitizeOutcome::Allowed,
+                span: empty_span(),
+            },
+            IrLink {
+                kind: LinkKind::Link,
+                target: IrNodeId(1),
+                url: "https://other.com".to_string(),
+                tooltip: None,
+                sanitize_outcome: LinkSanitizeOutcome::Allowed,
+                span: empty_span(),
+            },
+        ];
+        let nodes = vec![
+            IrNode {
+                id: "A".to_string(),
+                label: None,
+                classes: vec![],
+                style_ref: None,
+                span_primary: empty_span(),
+                span_all: vec![],
+                implicit: false,
+            },
+            IrNode {
+                id: "B".to_string(),
+                label: None,
+                classes: vec![],
+                style_ref: None,
+                span_primary: empty_span(),
+                span_all: vec![],
+                implicit: false,
+            },
+        ];
+
+        let footnotes = build_link_footnotes(&links, &nodes);
+        assert_eq!(footnotes.len(), 2);
+        assert_eq!(footnotes[0], "[1] https://example.com (A - Go here)");
+        assert_eq!(footnotes[1], "[2] https://other.com (B)");
+    }
+
+    #[test]
+    fn build_link_footnotes_skips_blocked() {
+        let links = vec![
+            IrLink {
+                kind: LinkKind::Click,
+                target: IrNodeId(0),
+                url: "https://safe.com".to_string(),
+                tooltip: None,
+                sanitize_outcome: LinkSanitizeOutcome::Allowed,
+                span: empty_span(),
+            },
+            IrLink {
+                kind: LinkKind::Click,
+                target: IrNodeId(1),
+                url: "javascript:xss".to_string(),
+                tooltip: None,
+                sanitize_outcome: LinkSanitizeOutcome::Blocked,
+                span: empty_span(),
+            },
+        ];
+        let nodes = vec![
+            IrNode {
+                id: "A".to_string(),
+                label: None,
+                classes: vec![],
+                style_ref: None,
+                span_primary: empty_span(),
+                span_all: vec![],
+                implicit: false,
+            },
+            IrNode {
+                id: "B".to_string(),
+                label: None,
+                classes: vec![],
+                style_ref: None,
+                span_primary: empty_span(),
+                span_all: vec![],
+                implicit: false,
+            },
+        ];
+
+        let footnotes = build_link_footnotes(&links, &nodes);
+        assert_eq!(footnotes.len(), 1);
+        assert_eq!(footnotes[0], "[1] https://safe.com (A)");
+    }
+
+    #[test]
+    fn legend_gap_respected() {
+        let bbox = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let footnotes = vec!["[1] https://example.com (A)".to_string()];
+        let config = LegendConfig {
+            gap: 3.0,
+            ..LegendConfig::default()
+        };
+        let legend = compute_legend_layout(&bbox, &footnotes, &config);
+
+        // Legend should be at least gap distance from diagram.
+        assert!(
+            legend.region.y >= bbox.y + bbox.height + config.gap - 0.01,
+            "legend gap not respected"
+        );
     }
 }

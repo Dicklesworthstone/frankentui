@@ -62,6 +62,9 @@ mod text_width {
     fn use_cjk_width() -> bool {
         static CJK_WIDTH: OnceLock<bool> = OnceLock::new();
         *CJK_WIDTH.get_or_init(|| {
+            if let Ok(value) = std::env::var("FTUI_GLYPH_DOUBLE_WIDTH") {
+                return env_flag(&value);
+            }
             if let Ok(value) =
                 std::env::var("FTUI_TEXT_CJK_WIDTH").or_else(|_| std::env::var("FTUI_CJK_WIDTH"))
             {
