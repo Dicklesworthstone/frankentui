@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv │         
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
 ╭────────────────────────────────────────────────────Forms & Input─────────────────────────────────────────────────────╮
 │╭────────────────────Registration Form────────────────────╮╭───────────────────────Text Inputs───────────────────────╮│
 ││ DRAFT   REQ 0/3   ERR 0   FIELDS 3/6                    ││ Search   Search...                                      ││
@@ -37,4 +37,4 @@
 │╰─────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────────╯│
 │Editing: Name (field 1/6) | Required: 0/3 | Undo:0 Redo:0 | Errors: 0 | Ctrl+U: Show history                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Forms & Input [7/38]  High Contrast A11y:HC LT     Tab: next screen · Shift+Tab: prev │ tick:0 frm:0      120x40 00:00 
+ Forms & Input [7/39]  High Contrast A11y:HC LT     Tab: next screen · Shift+Tab: prev │ tick:0 frm:0      120x40 00:00 

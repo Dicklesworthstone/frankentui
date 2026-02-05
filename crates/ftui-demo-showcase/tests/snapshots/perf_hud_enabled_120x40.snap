@@ -1,40 +1,40 @@
- 1: Dash │ 2: Shakes │ 3: Code │ 4: Widgets │ 5: Layout │ 6: Forms │ 7: DataViz │ 8: Files │ 9: Adv │ 0: Perf │         
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
 ╭╭───────────────────Perf HUD───────────────────╮──────Dashboard───────────────────────────────────────────────────────╮
 ││ Render FPS: 60.0                             │                                                                      │
-││ Tick rate:     50.0 /s                       │──────────╮╭──────────────Code───────────────╮╭─────────Info─────────╮│
-││ Tick avg:     20.00 ms                       │▃▆▅▄▄▆▆▅▆▇││// FrankenTUI                    ││FPS: 0                ││
-││ Tick p95:     30.00 ms                       │█▂▆▅▄▂▇▅▆█││use ftui::*;                     ││118x36                ││
-││ Tick p99:     30.00 ms                       │ █▁▁▁▁█▁ ▁││                                 ││Cyberpunk Aurora      ││
-││ Tick range: 10.0..30.0 ms                    │          ││fn main() {                      ││Tick: 30              ││
-││                                              │          ││  App::run()                     ││                      ││
-││ Views:      100                              │          ││}                                ││                      ││
-││ Ticks:      42                               │          ││                                 ││                      ││
-││ Screen:     Dashboard                        │          ││                                 ││                      ││
-││ Terminal:   120x40                           │          ││                                 ││                      ││
-││ Samples:    11/120                           │          ││                                 ││                      ││
-││                                              │          ││                                 ││                      ││
-││   ▁▂▃▄▄▅▆▇█                                  │          ││                                 ││                      ││
-│╰──────────────────────────────────────────────╯          ││                                 ││                      ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││                                 ││                      ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││                                 ││CPU ██████░░░░░░░  46%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││                                 ││MEM █████░░░░░░░░  41%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││                                 ││DSK █████████░░░░  67%││
+││ Tick rate:     50.0 /s                       │──────────╮╭───────Code · Rust (1/28)────────╮╭─────────Info─────────╮│
+││ Tick avg:     20.00 ms                       │mini bars ││// runtime.rs                    ││FrankenTUI Kernel · LI││
+││ Tick p95:     30.00 ms                       │▃▆▅▄▄▆ 46%││use std::{collections::HashMap, s││ INLINE   BRAILLE FX  ││
+││ Tick p99:     30.00 ms                       │█▂▆▅▄▂ 41%││                                 ││Status: NOMINAL │ Even││
+││ Tick range: 10.0..30.0 ms                    │ █▁▁▁▁█ 14││use ftui_core::event::Event;     ││FPS: 0  TicSize: 118x3││
+││                                              │  ▁   ▁149││use ftui_render::cell::Cell;     ││Events/s: 1Theme: Cybe││
+││ Views:      100                              │IO  ░   7%││use ftui_render::frame::Frame;   ││CPU:  46%  Alerts: 1  ││
+││ Ticks:      42                               │          ││use ftui_runtime::{Cmd, Model, Pr││NET:   14↓ Pipeline: B││
+││ Screen:     Dashboard                        │          ││                                 ││Frame:  0.0Headroom: +││
+││ Terminal:   120x40                           │          ││#[derive(Debug, Clone)]          ││                      ││
+││ Samples:    11/120                           │          ││enum Msg {                       ││                      ││
+││                                              │          ││    Tick(u64),                   ││                      ││
+││   ▁▂▃▄▄▅▆▇█                                  │          ││    Resize { w: u16, h: u16 },   ││                      ││
+│╰──────────────────────────────────────────────╯          ││    Log(String),                 ││CPU ██████░░░░░░░  46%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││    Quit,                        ││MEM █████░░░░░░░░  41%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││}                                ││NET █░░░░░░░░░░░░   8%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                                 ││                                 ││FRM                n/a││
+││Click → Visual Effects││Click → Data Viz                 ││Click → Code ExplorerSync + 'stat││Click → Performance163││
 │╰──────────────────────╯╰─────────────────────────────────╯╰─────────────────────────────────╯╰──────────────────────╯│
-│╭─────────Statistics─────────╮╭──────────────────Activity───────────────────╮╭───────────────Markdown────────────────╮│
-││24S 45W 7E                  ││- 00:02 CPU spike detected on core 3         ││Bold italic `code` E=mc²               ││
-││                            ││                                             ││✓ TUI framework                        ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
-││                            ││                                             ││                                       ││
+│╭───Text FX · 3-Up (1/28)────╮╭──────────────────Activity───────────────────╮╭───────Markdown · Streaming… 0%────────╮│
+││Sample 1 of 3 · 3-Up stack  ││SEV TIME  COMP  MESSAGE                      ││▌                                      ││
+││1 · None · S1               ││ INFO  00:02   CPU spike detected on core 3  ││                                       ││
+││# FX Lab · Deterministic Spe││                                             ││                                       ││
+││> *"Render truth, not pixels││                                             ││                                       ││
+││2 · FadeIn · S2             ││                                             ││                                       ││
+││## GFM Stress · Ledger      ││                                             ││                                       ││
+││1. **Bold** + _italic_ + ~~s││                                             ││                                       ││
+││3 · FadeOut · S3            ││                                             ││                                       ││
+││### Runtime Ledger · Mixed  ││                                             ││                                       ││
+││- [x] Tasks                 ││                                             ││                                       ││
+││- [ ] Benchmarks            ││                                             ││                                       ││
+││- [x] Evidence log          ││                                             ││                                       ││
+││e: next set · click → Visual││Click → Action Timeline                      ││Click → Markdown                       ││
 │╰────────────────────────────╯╰─────────────────────────────────────────────╯╰───────────────────────────────────────╯│
-│1-9:screens | Tab:next | t:theme | ?:help | q:quit                                                                    │
+│g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/24]  Cyberpunk Aurora                             tick:42 frm:0                              120x40 00:04 
+ Dashboard [2/39]  Cyberpunk Aurora           Tab: next screen · Shift+Tab: prev │ tick:42 frm:0           120x40 00:04 

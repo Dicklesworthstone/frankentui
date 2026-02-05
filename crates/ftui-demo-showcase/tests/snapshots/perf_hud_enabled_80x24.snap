@@ -1,24 +1,24 @@
- 1: Dash │ 2: Shakes │ 3: Code │ 4: Widgets │ 5: Layout │ 6: Forms │ 7: DataViz 
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭╭───────────────────Perf HUD───────────────────╮──────────────────────────────╮
 ││ Render FPS: 60.0                             │                              │
-││ Tick rate:     50.0 /s                       │──╮╭──────────Code───────────╮│
-││ Tick avg:     20.00 ms                       │▄▆││// FrankenTUI            ││
-││ Tick p95:     30.00 ms                       │▄▂││use ftui::*;             ││
-││ Tick p99:     30.00 ms                       │▁▁││                         ││
-││ Tick range: 10.0..30.0 ms                    │  ││fn main() {              ││
-││                                              │  ││  App::run()             ││
-││ Views:      100                              │  │╰─────────────────────────╯│
+││ Tick rate:     50.0 /s                       │──╮╭───Code · Rust (1/28)────╮│
+││ Tick avg:     20.00 ms                       │ b││// runtime.rs            ││
+││ Tick p95:     30.00 ms                       │6%││use std::{collections::Ha││
+││ Tick p99:     30.00 ms                       │1%││                         ││
+││ Tick range: 10.0..30.0 ms                    │14││use ftui_core::event::Eve││
+││                                              │49││Click → Code Explorer::Ce││
+││ Views:      100                              │░░│╰─────────────────────────╯│
 ││ Ticks:      42                               │  │╭──────────Info───────────╮│
-││ Screen:     Dashboard                        │  ││FPS: 0                   ││
-││ Terminal:   80x24                            │  ││78x20                    ││
+││ Screen:     Dashboard                        │  ││Status:NOMINAL FPS:0     ││
+││ Terminal:   80x24                            │  ││Click → Performance      ││
 ││ Samples:    11/120                           │──╯╰─────────────────────────╯│
-││                                              │──Activity───────────────────╮│
-││   ▁▂▃▄▄▅▆▇█                                  │e detected on core 3         ││
-│╰──────────────────────────────────────────────╯                             ││
-││                             ││                                             ││
-││                             ││                                             ││
-││                             ││                                             ││
-│╰─────────────────────────────╯╰─────────────────────────────────────────────╯│
-│1-9:screens | Tab:next | t:theme | ?:help | q:quit                            │
+││                                              │─────╮╭Markdown · Streaming…╮ │
+││   ▁▂▃▄▄▅▆▇█                                  │     ││▌                    │ │
+│╰──────────────────────────────────────────────╯ dete││                     │ │
+││2 · FadeIn · S2      ││                             ││                     │ │
+││## GFM Stress · Ledge││                             ││                     │ │
+││e: next set · click →││Click → Action Timeline      ││Click → Markdown     │ │
+│╰─────────────────────╯╰─────────────────────────────╯╰─────────────────────╯ │
+│g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/24]  Cyberpunk Aurora          tick:42 frm:0          80x24 00:04 
+ Dashboard [2/39]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     80x24 00:04 

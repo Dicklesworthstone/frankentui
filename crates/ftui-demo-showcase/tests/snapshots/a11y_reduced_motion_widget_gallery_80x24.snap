@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭────────────────────────────────Widget Gallery────────────────────────────────╮
 │▸ A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │  │
 │╭TextInput────╮╭Masked Input─╮╭Command Palette────────╮╭Log Viewer───────────╮│
@@ -21,4 +21,4 @@
 │╰───────╯╰──────╯╰───────────╯                         ╰─────────────────────╯│
 │*.......                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Widget Gallery [5/38] A11y:RM       Tab/Shift+Tab: next/prev       80x24 00:00 
+ Widget Gallery [5/39] A11y:RM       Tab/Shift+Tab: next/prev       80x24 00:00 

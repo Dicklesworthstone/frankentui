@@ -2,16 +2,16 @@
 ╭────────────────────────────Terminal Capabilities─────────────────────────────╮
 │╭─────────────────────── Terminal Capability Explorer ───────────────────────╮│
 ││Profile: detected | View: Matrix                                            ││
-││Color depth: mono | Mux: no | Sync output: yes                              ││
-││Scroll region: yes | Hyperlinks: no | Clipboard: yes | overrides: none      ││
+││Color depth: truecolor | Mux: no | Sync output: yes                         ││
+││Scroll region: yes | Hyperlinks: yes | Clipboard: yes | overrides: none     ││
 │╰────────────────────────────────────────────────────────────────────────────╯│
 │╭ Capability Matrix ────────────────────────╮╭ Details ──────────────────────╮│
 ││Capability          │Detected │Effective│Fa││Capability: True color (24-bit)││
-││True color (24-bit) │no       │no       │mo││Detected: no                   ││
-││256-color palette   │no       │no       │mo││Effective: no                  ││
-││Synchronized output │yes      │yes      │en││Fallback: mono                 ││
-││Scroll region (DECST│yes      │yes      │en││Reason: Conservative default (i││
-││OSC 8 hyperlinks    │no       │no       │pl││                               ││
+││True color (24-bit) │yes      │yes      │en││Detected: yes                  ││
+││256-color palette   │yes      │yes      │en││Effective: yes                 ││
+││Synchronized output │yes      │yes      │en││Fallback: enabled              ││
+││Scroll region (DECST│yes      │yes      │en││Reason: Detected via env heuris││
+││OSC 8 hyperlinks    │yes      │yes      │en││                               ││
 ││Kitty keyboard proto│yes      │yes      │en│╰───────────────────────────────╯│
 ││Focus events        │yes      │yes      │en│╭ Fallback Policy ──────────────╮│
 ││Bracketed paste     │yes      │yes      │en││Sync output: yes (enabled)     ││
@@ -21,4 +21,4 @@
 ││                                           ││TERM=xterm-256color            ││
 │╰───────────────────────────────────────────╯╰───────────────────────────────╯│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Terminal Capabilities [12/40]        Tab/Shift+Tab: next/prev        0x0 00:00 
+ Terminal Capabilities [12/39]        Tab/Shift+Tab: next/prev        0x0 00:00 

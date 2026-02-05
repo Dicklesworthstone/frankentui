@@ -1,4 +1,4 @@
- 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv │         
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
 ╭────────────────────────────────────────────────────Widget Gallery────────────────────────────────────────────────────╮
 │▸ A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F: Layout │   G: Utility │   H: Advance│
 │╭TextInput────────────╮╭Masked Input────────╮╭Command Palette─────────────────────╮╭Log Viewer───────────────────────╮│
@@ -37,4 +37,4 @@
 │╰───────────╯╰──────────╯╰──────────────────╯╰────────────────────────────────────╯╰─────────────────────────────────╯│
 │*.......                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Widget Gallery [5/38]  Cyberpunk Aurora A11y:LT     Tab: next screen · Shift+Tab: prev │ tick:0 frm:0     120x40 00:00 
+ Widget Gallery [5/39]  Cyberpunk Aurora A11y:LT     Tab: next screen · Shift+Tab: prev │ tick:0 frm:0     120x40 00:00 
