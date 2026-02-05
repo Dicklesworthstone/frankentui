@@ -1,24 +1,24 @@
 FRANKENTUI DASHBOARD                                                            
-╭──────Plasma──────╮╭────────────Charts────────────╮╭───────────Code───────────╮
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││CPU ▃ ▃▃▂▂▁▁▄▃▄▂▅▅▅▆▂▄▅▃▆▅▄▄▆▆││// FrankenTUI             │
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││MEM ▅▂ ▃▁▄▄▂▂▇▅▃▅▂▃▄▆▄▇█▂▆▅▄▂▇││use ftui::*;              │
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││NET ▁▁▁▁▁  ▁   ▇▁▁    ▁ █▁▁▁▁█││                          │
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││fn main() {               │
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││  App::run()              │
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││}                         │
+╭──────Plasma──────╮╭────────Charts · Pulse────────╮╭────Code · Rust (1/28)────╮
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g:cycle · sparklines + mini ba││// runtime.rs             │
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││CPU ▃ ▃▃▂▂▁▁▄▃▄▂▅▅▅▆▂▄▅▃▆▅ 46%││use std::{collections::Has│
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││MEM ▅▂ ▃▁▄▄▂▂▇▅▃▅▂▃▄▆▄▇█▂▆ 41%││                          │
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││NET ▁▁▁▁▁  ▁   ▇▁▁    ▁ █▁▁ 14││use ftui_core::event::Even│
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││OUT ▁▁▁▃▁█  ▁▁ ▁  ▁▁▇    ▁ 149││use ftui_render::cell::Cel│
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││EPS █  77% DSK ███░░ IO  ░░░░░││Click → Code Explorere::Fr│
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              │╰──────────────────────────╯
 │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              │╭───────────Info───────────╮
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││FPS: 0                    │
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││80x24                     │
-│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││High Contrast             │
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││Status:NOMINAL FPS:0      │
+│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                              ││EPS:1150  80x24           │
+│Click → Visual Eff││Click → Data Viz              ││Click → Performance       │
 ╰──────────────────╯╰──────────────────────────────╯╰──────────────────────────╯
-╭──────────Statistics──────────╮╭───────────────────Activity───────────────────╮
-│28S 45W 7E                    ││- 00:02 CPU spike detected on core 3          │
-│                              ││                                              │
-│                              ││                                              │
-│                              ││                                              │
-│                              ││                                              │
-│                              ││                                              │
-│                              ││                                              │
-╰──────────────────────────────╯╰──────────────────────────────────────────────╯
-1-9:screens | Tab:next | t:theme | ?:help | q:quit                              
+╭Text FX · 2-Up (1/28)─╮╭───────────Activity───────────╮╭Markdown · Streaming… ╮
+│Sample 1 of 3 · 2-Up s││SEV TIME  COMP  MESSAGE       ││▌                     │
+│1 · None · S1         ││ INFO  00:02   CPU spike detec││                      │
+│# FX Lab · Determinist││                              ││                      │
+│2 · FadeIn · S2       ││                              ││                      │
+│## GFM Stress · Ledger││                              ││                      │
+│1. **Bold** + _italic_││                              ││                      │
+│e: next set · click → ││Click → Action Timeline       ││Click → Markdown      │
+╰──────────────────────╯╰──────────────────────────────╯╰──────────────────────╯
+g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit  

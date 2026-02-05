@@ -40,12 +40,16 @@
 
 #[cfg(feature = "diagram")]
 use crate::diagram;
+#[cfg(feature = "syntax")]
+use crate::syntax::{HighlightTheme, SyntaxHighlighter};
 use ftui_render::cell::PackedRgba;
 use ftui_style::{Style, TableEffectScope, TableSection, TableTheme};
 use ftui_text::text::{Line, Span, Text};
 use pulldown_cmark::{
     Alignment, BlockQuoteKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
+#[cfg(feature = "syntax")]
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // GFM Auto-Detection
@@ -901,6 +905,8 @@ pub struct MarkdownRenderer {
     rule_width: u16,
     table_max_width: Option<u16>,
     table_effect_phase: Option<f32>,
+    #[cfg(feature = "syntax")]
+    syntax_highlighter: Option<Arc<SyntaxHighlighter>>,
 }
 
 impl MarkdownRenderer {
@@ -912,6 +918,8 @@ impl MarkdownRenderer {
             rule_width: 40,
             table_max_width: None,
             table_effect_phase: None,
+            #[cfg(feature = "syntax")]
+            syntax_highlighter: None,
         }
     }
 
@@ -938,6 +946,22 @@ impl MarkdownRenderer {
         self
     }
 
+    /// Enable syntax highlighting for code blocks with a custom theme.
+    #[cfg(feature = "syntax")]
+    #[must_use]
+    pub fn with_syntax_theme(mut self, theme: HighlightTheme) -> Self {
+        self.syntax_highlighter = Some(Arc::new(SyntaxHighlighter::with_theme(theme)));
+        self
+    }
+
+    /// Enable syntax highlighting for code blocks with a shared highlighter.
+    #[cfg(feature = "syntax")]
+    #[must_use]
+    pub fn with_syntax_highlighter(mut self, highlighter: Arc<SyntaxHighlighter>) -> Self {
+        self.syntax_highlighter = Some(highlighter);
+        self
+    }
+
     /// Render a Markdown string into styled [`Text`].
     ///
     /// Parses the input as GitHub-Flavored Markdown with all extensions enabled:
@@ -959,6 +983,10 @@ impl MarkdownRenderer {
             self.table_max_width,
             self.table_effect_phase,
         );
+        #[cfg(feature = "syntax")]
+        {
+            builder.syntax_highlighter = self.syntax_highlighter.as_deref();
+        }
         builder.process(parser);
         builder.finish()
     }
@@ -1124,6 +1152,8 @@ struct RenderState<'t> {
     rule_width: u16,
     table_max_width: Option<u16>,
     table_effect_phase: Option<f32>,
+    #[cfg(feature = "syntax")]
+    syntax_highlighter: Option<&'t SyntaxHighlighter>,
     lines: Vec<Line>,
     current_spans: Vec<Span<'static>>,
     style_stack: Vec<StyleContext>,
@@ -1166,6 +1196,8 @@ impl<'t> RenderState<'t> {
             rule_width,
             table_max_width,
             table_effect_phase,
+            #[cfg(feature = "syntax")]
+            syntax_highlighter: None,
             lines: Vec::new(),
             current_spans: Vec::new(),
             style_stack: Vec::new(),
@@ -2114,6 +2146,26 @@ impl<'t> RenderState<'t> {
                     self.theme.code_inline.dim(),
                 ));
             }
+
+            #[cfg(feature = "syntax")]
+            if let Some(highlighter) = self.syntax_highlighter
+                && !matches!(lang_lower, "mermaid" | "math" | "latex" | "tex")
+            {
+                let code_for_highlight = code.strip_suffix('\n').unwrap_or(&code);
+                let highlighted = highlighter.highlight(code_for_highlight, lang_str);
+                for line in highlighted.lines() {
+                    let mut spans = Vec::with_capacity(line.len().saturating_add(1));
+                    spans.push(Span::styled("  ", style));
+                    for span in line.spans() {
+                        let merged = span.style.map(|s| s.merge(&style)).unwrap_or(style);
+                        let mut out_span = span.clone();
+                        out_span.style = Some(merged);
+                        spans.push(out_span);
+                    }
+                    self.lines.push(Line::from_spans(spans));
+                }
+                return;
+            }
         }
 
         // Regular code block
@@ -2439,6 +2491,62 @@ mod tests {
     }
 
     #[test]
+    fn markdown_table_alignment_variants() {
+        let md = "| Left | Center | Right |\n| :--- | :----: | ----: |\n| a | b | c |";
+        let text = render_markdown(md);
+        let content = plain(&text);
+        let row_line = content
+            .lines()
+            .find(|line| line.starts_with('│') && line.contains('a') && line.contains('b'))
+            .expect("table row line");
+        let segments: Vec<&str> = row_line.split('│').collect();
+        assert_eq!(segments.len(), 5);
+        assert_eq!(segments[1], " a    ");
+        assert_eq!(segments[2], "   b    ");
+        assert_eq!(segments[3], "     c ");
+    }
+
+    #[test]
+    fn markdown_table_escaped_pipe() {
+        let md = r"| Col |\n| --- |\n| A \| B |";
+        let text = render_markdown(md);
+        let content = plain(&text);
+        assert!(content.contains("A | B"));
+    }
+
+    #[test]
+    fn markdown_table_br_cell_keeps_single_row() {
+        let md = "| Col |\n| --- |\n| line1<br>line2 |";
+        let text = render_markdown(md);
+        let content = plain(&text);
+        let row_line = content
+            .lines()
+            .find(|line| line.starts_with('│') && line.contains("line1"))
+            .expect("table row line");
+        assert!(row_line.contains("line1 line2"));
+    }
+
+    #[test]
+    fn markdown_table_border_alignment_for_varied_widths() {
+        let md = "| H1 | H2 |\n| --- | --- |\n| short | loooooong |";
+        let text = render_markdown(md);
+        let content = plain(&text);
+        let lines: Vec<&str> = content
+            .lines()
+            .filter(|line| {
+                line.starts_with('┌')
+                    || line.starts_with('├')
+                    || line.starts_with('│')
+                    || line.starts_with('└')
+            })
+            .collect();
+        let expected = lines.first().expect("table lines").len();
+        for line in lines {
+            assert_eq!(line.len(), expected);
+        }
+    }
+
+    #[test]
     fn render_nested_blockquotes() {
         let md = "> Level 1\n> > Level 2\n> > > Level 3";
         let text = render_markdown(md);
@@ -2720,6 +2828,26 @@ The end.
         assert!(text.width() <= 20);
         let content = plain(&text);
         assert!(content.contains('…'));
+    }
+
+    #[test]
+    fn markdown_table_truncation_keeps_borders_aligned() {
+        let md = "| Col A | Column B |\n| --- | --- |\n| superlongvalue | evenlongervalue |\n";
+        let text = MarkdownRenderer::new(MarkdownTheme::default())
+            .table_max_width(20)
+            .render(md);
+        let content = plain(&text);
+        let top_len = content
+            .lines()
+            .find(|line| line.starts_with('┌'))
+            .expect("top border")
+            .len();
+        let row_len = content
+            .lines()
+            .find(|line| line.starts_with('│') && line.contains('…'))
+            .expect("row line with ellipsis")
+            .len();
+        assert_eq!(row_len, top_len);
     }
 
     #[test]

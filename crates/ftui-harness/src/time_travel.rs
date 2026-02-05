@@ -324,13 +324,6 @@ impl TimeTravel {
             return;
         }
 
-        let compressed = match &self.last_buffer {
-            Some(prev) if prev.width() == buf.width() && prev.height() == buf.height() => {
-                CompressedFrame::delta(buf, prev)
-            }
-            _ => CompressedFrame::full(buf),
-        };
-
         // Evict oldest if at capacity
         if self.snapshots.len() >= self.capacity {
             // When dropping the oldest frame (index 0), we must ensure the
@@ -354,6 +347,17 @@ impl TimeTravel {
             self.snapshots.pop_front();
             self.metadata.pop_front();
         }
+
+        let compressed = if self.snapshots.is_empty() {
+            CompressedFrame::full(buf)
+        } else {
+            match &self.last_buffer {
+                Some(prev) if prev.width() == buf.width() && prev.height() == buf.height() => {
+                    CompressedFrame::delta(buf, prev)
+                }
+                _ => CompressedFrame::full(buf),
+            }
+        };
 
         self.snapshots.push_back(compressed);
         self.metadata.push_back(metadata);

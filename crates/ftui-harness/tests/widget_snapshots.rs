@@ -7,11 +7,14 @@
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::{Rect, Sides};
 use ftui_harness::{assert_snapshot, assert_snapshot_ansi};
+use ftui_layout::Constraint;
 use ftui_render::buffer::Buffer;
-use ftui_render::cell::Cell;
+use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_render::grapheme_pool::GraphemePool;
-use ftui_style::Style;
+use ftui_style::{
+    Style, TableEffect, TableEffectRule, TableEffectTarget, TablePresetId, TableTheme,
+};
 use ftui_text::{Span, Text, WrapMode};
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::BorderType;
@@ -25,8 +28,48 @@ use ftui_widgets::padding::Padding;
 use ftui_widgets::panel::Panel;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ftui_widgets::table::{Row, Table, TableState};
 use ftui_widgets::{StatefulWidget, Widget};
 use std::time::{Duration, Instant};
+
+// ---------------------------------------------------------------------------
+// Table snapshot helpers
+// ---------------------------------------------------------------------------
+
+fn preset_label(preset: Option<TablePresetId>) -> &'static str {
+    match preset {
+        Some(TablePresetId::Aurora) => "aurora",
+        Some(TablePresetId::Graphite) => "graphite",
+        Some(TablePresetId::Neon) => "neon",
+        Some(TablePresetId::Slate) => "slate",
+        Some(TablePresetId::Solar) => "solar",
+        Some(TablePresetId::Orchard) => "orchard",
+        Some(TablePresetId::Paper) => "paper",
+        Some(TablePresetId::Midnight) => "midnight",
+        Some(TablePresetId::TerminalClassic) => "terminal_classic",
+        None => "custom",
+    }
+}
+
+fn assert_table_snapshot_ansi(name: &str, buf: &Buffer, theme: &TableTheme, phase: f32) {
+    let diagnostics = theme.diagnostics();
+    let preset = preset_label(diagnostics.preset_id);
+    let result = std::panic::catch_unwind(|| {
+        assert_snapshot_ansi!(name, buf);
+    });
+    if let Err(err) = result {
+        eprintln!(
+            "Table snapshot meta: preset={preset} phase={phase:.2} \
+style_hash={:#x} effects_hash={:#x} padding={} column_gap={} row_height={}",
+            diagnostics.style_hash,
+            diagnostics.effects_hash,
+            diagnostics.padding,
+            diagnostics.column_gap,
+            diagnostics.row_height,
+        );
+        std::panic::resume_unwind(err);
+    }
+}
 
 // ============================================================================
 // Block
@@ -219,6 +262,165 @@ fn snapshot_columns_padding() {
     let mut frame = Frame::new(17, 5, &mut pool);
     columns.render(area, &mut frame);
     assert_snapshot!("columns_padding", &frame.buffer);
+}
+
+// ============================================================================
+// Table
+// ============================================================================
+
+#[test]
+fn snapshot_table_theme_aurora_header_zebra() {
+    let theme = TableTheme::aurora();
+    let phase = 0.0;
+    let table = Table::new(
+        [
+            Row::new(["Mercury", "0.39", "rocky"]),
+            Row::new(["Venus", "0.72", "rocky"]),
+            Row::new(["Earth", "1.00", "life"]),
+        ],
+        [
+            Constraint::Fixed(10),
+            Constraint::Fixed(6),
+            Constraint::Fixed(6),
+        ],
+    )
+    .header(Row::new(["Name", "AU", "Class"]))
+    .block(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded),
+    )
+    .theme(theme.clone())
+    .theme_phase(phase)
+    .column_spacing(1);
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(32, 7, &mut pool);
+    Widget::render(&table, Rect::new(0, 0, 32, 7), &mut frame);
+    assert_table_snapshot_ansi(
+        "table_theme_aurora_header_zebra_phase_0_00",
+        &frame.buffer,
+        &theme,
+        phase,
+    );
+}
+
+#[test]
+fn snapshot_table_theme_graphite_selected_hover() {
+    let theme = TableTheme::graphite();
+    let phase = 0.0;
+    let table = Table::new(
+        [
+            Row::new(["Alpha", "A"]),
+            Row::new(["Beta", "B"]),
+            Row::new(["Gamma", "C"]),
+        ],
+        [Constraint::Fixed(10), Constraint::Fixed(6)],
+    )
+    .theme(theme.clone())
+    .theme_phase(phase)
+    .column_spacing(1);
+
+    let mut state = TableState::default();
+    state.selected = Some(1);
+    state.hovered = Some(2);
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(20, 4, &mut pool);
+    StatefulWidget::render(&table, Rect::new(0, 0, 20, 4), &mut frame, &mut state);
+    assert_table_snapshot_ansi(
+        "table_theme_graphite_selected_hover_phase_0_00",
+        &frame.buffer,
+        &theme,
+        phase,
+    );
+}
+
+#[test]
+fn snapshot_table_theme_pulse_phase() {
+    let theme = TableTheme::aurora().with_effect(TableEffectRule::new(
+        TableEffectTarget::Row(1),
+        TableEffect::Pulse {
+            fg_a: PackedRgba::rgb(240, 245, 255),
+            fg_b: PackedRgba::rgb(255, 255, 255),
+            bg_a: PackedRgba::rgb(24, 36, 54),
+            bg_b: PackedRgba::rgb(60, 90, 140),
+            speed: 1.0,
+            phase_offset: 0.0,
+        },
+    ));
+    let phase = 0.25;
+    let table = Table::new(
+        [
+            Row::new(["Cold", "0.2"]),
+            Row::new(["Warm", "0.6"]),
+            Row::new(["Hot", "0.9"]),
+        ],
+        [Constraint::Fixed(8), Constraint::Fixed(6)],
+    )
+    .theme(theme.clone())
+    .theme_phase(phase)
+    .column_spacing(1);
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(20, 4, &mut pool);
+    Widget::render(&table, Rect::new(0, 0, 20, 4), &mut frame);
+    assert_table_snapshot_ansi(
+        "table_theme_aurora_pulse_phase_0_25",
+        &frame.buffer,
+        &theme,
+        phase,
+    );
+}
+
+#[test]
+fn snapshot_table_layout_spacing_padding_row_height() {
+    let theme = TableTheme::terminal_classic()
+        .with_padding(1)
+        .with_column_gap(2)
+        .with_row_height(2);
+    let column_gap = theme.column_gap;
+    let row_height = theme.row_height;
+    let pad = " ".repeat(theme.padding as usize);
+    let padded = |text: &str| Text::raw(format!("{pad}{text}{pad}"));
+
+    let table = Table::new(
+        [
+            Row::new([
+                Text::raw(format!("{pad}ID{pad}\n{pad}--{pad}")),
+                Text::raw(format!("{pad}Name{pad}\n{pad}----{pad}")),
+            ])
+            .height(row_height as u16),
+            Row::new([padded("01"), padded("Alice")]).height(row_height as u16),
+        ],
+        [Constraint::Fixed(8), Constraint::Fixed(10)],
+    )
+    .theme(theme)
+    .theme_phase(0.0)
+    .column_spacing(column_gap as u16);
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(22, 5, &mut pool);
+    Widget::render(&table, Rect::new(0, 0, 22, 5), &mut frame);
+    assert_snapshot!("table_layout_padding_row_height", &frame.buffer);
+}
+
+#[test]
+fn snapshot_table_fit_content_wide_glyphs() {
+    let table = Table::new(
+        [
+            Row::new(["ID", "Label"]),
+            Row::new(["🦀", "Rustacean"]),
+            Row::new(["漢", "漢字"]),
+        ],
+        [Constraint::FitContent, Constraint::FitContent],
+    )
+    .column_spacing(2);
+
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(24, 4, &mut pool);
+    Widget::render(&table, Rect::new(0, 0, 24, 4), &mut frame);
+    assert_snapshot!("table_fit_content_wide_glyphs", &frame.buffer);
 }
 
 // ============================================================================

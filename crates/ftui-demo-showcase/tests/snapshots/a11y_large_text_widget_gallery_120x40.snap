@@ -1,40 +1,40 @@
- 1: Dash │ 2: Shakes │ 3: Code │ 4: Widgets │ 5: Layout │ 6: Forms │ 7: DataViz │ 8: Files │ 9: Adv │ 0: Perf │ -: Caps 
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv │         
 ╭────────────────────────────────────────────────────Widget Gallery────────────────────────────────────────────────────╮
 │▸ A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │   F: Layout │   G: Utility │   H: Advance│
-│╭TextInput────────────────────────────────────────────────╮╭Masked Input─────────────────────────────────────────────╮│
-││demo@example.com                                         ││••••••                                                   ││
-│╰─────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────────╯│
-│╭TextArea────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│
-││1  FrankenTUI text area                                                                                             ││
-││2  - Multi-line editing                                                                                             ││
-││3  - Soft wrap enabled                                                                                              ││
-││4  - Line numbers                                                                                                   ││
-│╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│
-│╭Checkboxes + Radios──────────────────────────────────────╮╭Select + Number + Slider─────────────────────────────────╮│
-││[ ] Enable autosave                                      ││Select: [High ▾]                                         ││
-││[x] Sync on save                                         ││Number: [-]  42  [+]                                     ││
-││( ) Light theme                                          ││Slider: 30%  [■■■■■─────]                                ││
-││(*) Dark theme                                           ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-││                                                         ││                                                         ││
-│╰─────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────────╯│
+│╭TextInput────────────╮╭Masked Input────────╮╭Command Palette─────────────────────╮╭Log Viewer───────────────────────╮│
+││demo@example.com     ││••••••              ││                                    ││INFO  boot: FrankenTUI demo      ││
+││                     ││                    ││   ┌───── Command Palette ──────┐   ││started                          ││
+││                     ││                    ││   │>Type to search...          │   ││DEBUG layout: resolved 6         ││
+││                     ││                    ││   │> [App] Quit  Exit the appl…│   ││constraints                      ││
+││                     ││                    ││   │  [File] Open File  Open a …│   ││WARN  io: slow disk detected,    ││
+│╰─────────────────────╯╰────────────────────╯│   │  [File] Save File  Save cu…│   ││using cache                      ││
+│╭TextArea───────────────────────────────────╮│   │  [View] Cycle Theme  Switc…│   ││INFO  render: diff cells=512     ││
+││1  FrankenTUI text area                    ││   │  [View] Toggle Performance…│   ││runs=18 bytes=9.6KB              ││
+││2  - Multi-line editing                    ││   └────────────────────────────┘   ││INFO  net: connected to telemetry││
+││3  - Soft wrap enabled                     ││                                    ││endpoint                         ││
+││4  - Line numbers                          │╰────────────────────────────────────╯│ERROR auth: token expired,       ││
+││                                           │╭File Picker─────────────────────────╮│refresh scheduled                ││
+││                                           ││.                                   │╰─────────────────────────────────╯│
+││                                           ││> ? benches                        │╭ProgressBar──────────────────────╮│
+││                                           ││  ? data                           ││               0%                ││
+││                                           ││  ? proptest-regressions           ││               25%               ││
+││                                           ││  ? src                            ││               50%               ││
+││                                           ││  ? tests                          ││               75%               ││
+││                                           ││    .ubsignore                      ││              100%               ││
+││                                           ││    a.out                           ││                                 ││
+│╰───────────────────────────────────────────╯│    Cargo.toml                      ││                                 ││
+│╭Checkboxes ╮╭Select + N╮╭Validation + Timer╮│                                    │╰─────────────────────────────────╯│
+││[ ] Enable ││Select: [H││! Invalid email a…│╰────────────────────────────────────╯╭Spinners─────────────────────────╮│
+││[x] Sync on││Number: [-││ETA  00:59        │╭Notifications───────────────────────╮│⠋ Loading (DOTS)                 ││
+││( ) Light t││Slider: 30││? j/k Navigate … ││                                    │╰─────────────────────────────────╯│
+││(*) Dark th││          ││                  ││                                    │╭Toast────────────────────────────╮│
+││           ││          ││                  ││                                    ││┌───────────────────────────────┐││
+││           ││          ││                  ││                                    │││Success                        │││
+││           ││          ││                  ││                                    │││✓ Settings saved successfully  │││
+││           ││          ││                  ││                                    ││└───────────────────────────────┘││
+││           ││          ││                  ││                                    ││                                 ││
+││           ││          ││                  ││                                    ││                                 ││
+│╰───────────╯╰──────────╯╰──────────────────╯╰────────────────────────────────────╯╰─────────────────────────────────╯│
 │*.......                                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Widget Gallery [4/28]  Cyberpunk Aurora A11y:LT                       tick:0 frm:0                        120x40 00:00 
+ Widget Gallery [5/38]  Cyberpunk Aurora A11y:LT     Tab: next screen · Shift+Tab: prev │ tick:0 frm:0     120x40 00:00 

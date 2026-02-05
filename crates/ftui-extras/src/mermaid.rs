@@ -9,6 +9,8 @@
 //! - AST for common diagram elements
 
 use core::{fmt, mem};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::env;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -807,6 +809,416 @@ impl MermaidCompatibilityMatrix {
     }
 }
 
+impl Default for MermaidCompatibilityMatrix {
+    fn default() -> Self {
+        Self {
+            graph: MermaidSupportLevel::Supported,
+            sequence: MermaidSupportLevel::Partial,
+            state: MermaidSupportLevel::Partial,
+            gantt: MermaidSupportLevel::Partial,
+            class: MermaidSupportLevel::Partial,
+            er: MermaidSupportLevel::Partial,
+            mindmap: MermaidSupportLevel::Partial,
+            pie: MermaidSupportLevel::Partial,
+        }
+    }
+}
+
+/// Compatibility warning emitted during validation/fallback analysis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MermaidWarning {
+    pub code: MermaidWarningCode,
+    pub message: String,
+    pub span: Span,
+}
+
+impl MermaidWarning {
+    fn new(code: MermaidWarningCode, message: impl Into<String>, span: Span) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            span,
+        }
+    }
+}
+
+/// Action to apply when encountering unsupported Mermaid input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MermaidFallbackAction {
+    Ignore,
+    Warn,
+    Error,
+}
+
+/// Policy controlling how unsupported Mermaid features are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MermaidFallbackPolicy {
+    pub unsupported_diagram: MermaidFallbackAction,
+    pub unsupported_directive: MermaidFallbackAction,
+    pub unsupported_style: MermaidFallbackAction,
+    pub unsupported_link: MermaidFallbackAction,
+    pub unsupported_feature: MermaidFallbackAction,
+}
+
+impl Default for MermaidFallbackPolicy {
+    fn default() -> Self {
+        Self {
+            unsupported_diagram: MermaidFallbackAction::Error,
+            unsupported_directive: MermaidFallbackAction::Warn,
+            unsupported_style: MermaidFallbackAction::Warn,
+            unsupported_link: MermaidFallbackAction::Warn,
+            unsupported_feature: MermaidFallbackAction::Warn,
+        }
+    }
+}
+
+/// Validation output for a Mermaid AST.
+#[derive(Debug, Clone, Default)]
+pub struct MermaidValidation {
+    pub warnings: Vec<MermaidWarning>,
+    pub errors: Vec<MermaidError>,
+}
+
+impl MermaidValidation {
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+/// Compatibility report for a parsed Mermaid AST.
+#[derive(Debug, Clone)]
+pub struct MermaidCompatibilityReport {
+    pub diagram_support: MermaidSupportLevel,
+    pub warnings: Vec<MermaidWarning>,
+    pub fatal: bool,
+}
+
+impl MermaidCompatibilityReport {
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        !self.fatal
+    }
+}
+
+/// Parsed init directive configuration (subset of Mermaid schema).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MermaidInitConfig {
+    pub theme: Option<String>,
+    pub theme_variables: BTreeMap<String, String>,
+    pub flowchart_direction: Option<GraphDirection>,
+}
+
+impl MermaidInitConfig {
+    fn merge_from(&mut self, other: MermaidInitConfig) {
+        if other.theme.is_some() {
+            self.theme = other.theme;
+        }
+        if !other.theme_variables.is_empty() {
+            self.theme_variables.extend(other.theme_variables);
+        }
+        if other.flowchart_direction.is_some() {
+            self.flowchart_direction = other.flowchart_direction;
+        }
+    }
+}
+
+/// Result of parsing one or more init directives.
+#[derive(Debug, Clone)]
+pub struct MermaidInitParse {
+    pub config: MermaidInitConfig,
+    pub warnings: Vec<MermaidWarning>,
+    pub errors: Vec<MermaidError>,
+}
+
+impl MermaidInitParse {
+    fn empty() -> Self {
+        Self {
+            config: MermaidInitConfig::default(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+}
+
+/// Parse a single Mermaid init directive payload into a config subset.
+#[must_use]
+pub fn parse_init_directive(
+    payload: &str,
+    span: Span,
+    policy: &MermaidFallbackPolicy,
+) -> MermaidInitParse {
+    let mut out = MermaidInitParse::empty();
+    let value: Value = match serde_json::from_str(payload) {
+        Ok(value) => value,
+        Err(err) => {
+            out.errors.push(MermaidError::new(
+                format!("invalid init directive json: {err}"),
+                span,
+            ));
+            return out;
+        }
+    };
+    let obj = match value.as_object() {
+        Some(obj) => obj,
+        None => {
+            apply_fallback_action(
+                policy.unsupported_directive,
+                MermaidWarningCode::UnsupportedDirective,
+                "init directive must be a JSON object; ignoring",
+                span,
+                &mut out.warnings,
+                &mut out.errors,
+            );
+            return out;
+        }
+    };
+    let mut keys: Vec<&String> = obj.keys().collect();
+    keys.sort();
+    for key in keys {
+        let entry = &obj[key];
+        match key.as_str() {
+            "theme" => {
+                if let Some(theme) = entry.as_str() {
+                    let trimmed = theme.trim();
+                    if trimmed.is_empty() {
+                        apply_fallback_action(
+                            policy.unsupported_directive,
+                            MermaidWarningCode::UnsupportedDirective,
+                            "init theme is empty; ignoring",
+                            span,
+                            &mut out.warnings,
+                            &mut out.errors,
+                        );
+                    } else {
+                        out.config.theme = Some(trimmed.to_string());
+                    }
+                } else {
+                    apply_fallback_action(
+                        policy.unsupported_directive,
+                        MermaidWarningCode::UnsupportedDirective,
+                        "init theme must be a string; ignoring",
+                        span,
+                        &mut out.warnings,
+                        &mut out.errors,
+                    );
+                }
+            }
+            "themeVariables" => {
+                if let Some(vars) = entry.as_object() {
+                    let mut var_keys: Vec<&String> = vars.keys().collect();
+                    var_keys.sort();
+                    for var_key in var_keys {
+                        let value = &vars[var_key];
+                        if let Some(value) = value_to_string(value) {
+                            out.config
+                                .theme_variables
+                                .insert(var_key.to_string(), value);
+                        } else {
+                            apply_fallback_action(
+                                policy.unsupported_directive,
+                                MermaidWarningCode::UnsupportedDirective,
+                                "init themeVariables values must be string/number/bool",
+                                span,
+                                &mut out.warnings,
+                                &mut out.errors,
+                            );
+                        }
+                    }
+                } else {
+                    apply_fallback_action(
+                        policy.unsupported_directive,
+                        MermaidWarningCode::UnsupportedDirective,
+                        "init themeVariables must be an object; ignoring",
+                        span,
+                        &mut out.warnings,
+                        &mut out.errors,
+                    );
+                }
+            }
+            "flowchart" => {
+                if let Some(flowchart) = entry.as_object() {
+                    let mut flow_keys: Vec<&String> = flowchart.keys().collect();
+                    flow_keys.sort();
+                    for flow_key in flow_keys {
+                        let value = &flowchart[flow_key];
+                        match flow_key.as_str() {
+                            "direction" => {
+                                if let Some(direction) = value.as_str() {
+                                    if let Some(parsed) = GraphDirection::parse(direction) {
+                                        out.config.flowchart_direction = Some(parsed);
+                                    } else {
+                                        apply_fallback_action(
+                                            policy.unsupported_directive,
+                                            MermaidWarningCode::UnsupportedDirective,
+                                            "init flowchart.direction must be TB|TD|LR|RL|BT",
+                                            span,
+                                            &mut out.warnings,
+                                            &mut out.errors,
+                                        );
+                                    }
+                                } else {
+                                    apply_fallback_action(
+                                        policy.unsupported_directive,
+                                        MermaidWarningCode::UnsupportedDirective,
+                                        "init flowchart.direction must be a string",
+                                        span,
+                                        &mut out.warnings,
+                                        &mut out.errors,
+                                    );
+                                }
+                            }
+                            _ => {
+                                apply_fallback_action(
+                                    policy.unsupported_directive,
+                                    MermaidWarningCode::UnsupportedDirective,
+                                    "unsupported init flowchart key; ignoring",
+                                    span,
+                                    &mut out.warnings,
+                                    &mut out.errors,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    apply_fallback_action(
+                        policy.unsupported_directive,
+                        MermaidWarningCode::UnsupportedDirective,
+                        "init flowchart must be an object; ignoring",
+                        span,
+                        &mut out.warnings,
+                        &mut out.errors,
+                    );
+                }
+            }
+            _ => {
+                apply_fallback_action(
+                    policy.unsupported_directive,
+                    MermaidWarningCode::UnsupportedDirective,
+                    "unsupported init key; ignoring",
+                    span,
+                    &mut out.warnings,
+                    &mut out.errors,
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Merge all init directives in an AST into a single config.
+#[must_use]
+pub fn collect_init_config(
+    ast: &MermaidAst,
+    config: &MermaidConfig,
+    policy: &MermaidFallbackPolicy,
+) -> MermaidInitParse {
+    if !config.enable_init_directives {
+        return MermaidInitParse::empty();
+    }
+    let mut merged = MermaidInitConfig::default();
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    for directive in &ast.directives {
+        if let DirectiveKind::Init { payload } = &directive.kind {
+            let parsed = parse_init_directive(payload, directive.span, policy);
+            merged.merge_from(parsed.config);
+            warnings.extend(parsed.warnings);
+            errors.extend(parsed.errors);
+        }
+    }
+    MermaidInitParse {
+        config: merged,
+        warnings,
+        errors,
+    }
+}
+
+fn value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+/// Evaluate compatibility warnings and fallback policy for a Mermaid AST.
+#[must_use]
+pub fn compatibility_report(
+    ast: &MermaidAst,
+    config: &MermaidConfig,
+    matrix: &MermaidCompatibilityMatrix,
+) -> MermaidCompatibilityReport {
+    let diagram_support = matrix.support_for(ast.diagram_type);
+    let mut warnings = Vec::new();
+    let mut fatal = false;
+
+    if diagram_support == MermaidSupportLevel::Unsupported {
+        fatal = true;
+        warnings.push(MermaidWarning::new(
+            MermaidWarningCode::UnsupportedDiagram,
+            "diagram type is not supported",
+            Span::at_line(1, 1),
+        ));
+    }
+
+    for statement in &ast.statements {
+        match statement {
+            Statement::Directive(dir) => match dir.kind {
+                DirectiveKind::Init { .. } if !config.enable_init_directives => {
+                    warnings.push(MermaidWarning::new(
+                        MermaidWarningCode::UnsupportedDirective,
+                        "init directives disabled; ignoring",
+                        dir.span,
+                    ));
+                }
+                DirectiveKind::Raw => warnings.push(MermaidWarning::new(
+                    MermaidWarningCode::UnsupportedDirective,
+                    "raw directives are not supported; ignoring",
+                    dir.span,
+                )),
+                _ => {}
+            },
+            Statement::ClassDef { span, .. }
+            | Statement::ClassAssign { span, .. }
+            | Statement::Style { span, .. }
+            | Statement::LinkStyle { span, .. } => {
+                if !config.enable_styles {
+                    warnings.push(MermaidWarning::new(
+                        MermaidWarningCode::UnsupportedStyle,
+                        "styles disabled; ignoring",
+                        *span,
+                    ));
+                }
+            }
+            Statement::Link { span, .. } => {
+                if !config.enable_links {
+                    warnings.push(MermaidWarning::new(
+                        MermaidWarningCode::UnsupportedLink,
+                        "links disabled; ignoring",
+                        *span,
+                    ));
+                }
+            }
+            Statement::Raw { span, .. } => {
+                warnings.push(MermaidWarning::new(
+                    MermaidWarningCode::UnsupportedFeature,
+                    "unrecognized statement; ignoring",
+                    *span,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    MermaidCompatibilityReport {
+        diagram_support,
+        warnings,
+        fatal,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphDirection {
     TB,
@@ -814,6 +1226,19 @@ pub enum GraphDirection {
     LR,
     RL,
     BT,
+}
+
+impl GraphDirection {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tb" => Some(Self::TB),
+            "td" => Some(Self::TD),
+            "lr" => Some(Self::LR),
+            "rl" => Some(Self::RL),
+            "bt" => Some(Self::BT),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1188,6 +1613,9 @@ impl<'a> Lexer<'a> {
             if !is_ident_continue(c) {
                 break;
             }
+            if c == '-' && self.peek_byte().is_some_and(|b| is_arrow_char(b as char)) {
+                break;
+            }
             self.advance_byte();
         }
         let text = &self.input[start_idx..self.idx];
@@ -1366,8 +1794,9 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
         }
         match diagram_type {
             DiagramType::Graph | DiagramType::State | DiagramType::Class | DiagramType::Er => {
-                if let Some(edge) = parse_edge(trimmed, span) {
-                    if let Some(node) = edge_node(trimmed, span) {
+                let er_mode = diagram_type == DiagramType::Er;
+                if let Some(edge) = parse_edge(trimmed, span, er_mode) {
+                    if let Some(node) = edge_node(trimmed, span, er_mode) {
                         statements.push(Statement::Node(node));
                     }
                     statements.push(Statement::Edge(edge));
@@ -1439,6 +1868,154 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
             statements,
         },
         errors,
+    }
+}
+
+pub fn validate_ast(
+    ast: &MermaidAst,
+    config: &MermaidConfig,
+    matrix: &MermaidCompatibilityMatrix,
+) -> MermaidValidation {
+    validate_ast_with_policy(ast, config, matrix, &MermaidFallbackPolicy::default())
+}
+
+pub fn validate_ast_with_policy(
+    ast: &MermaidAst,
+    config: &MermaidConfig,
+    matrix: &MermaidCompatibilityMatrix,
+    policy: &MermaidFallbackPolicy,
+) -> MermaidValidation {
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+
+    if matrix.support_for(ast.diagram_type) == MermaidSupportLevel::Unsupported {
+        let span = ast
+            .statements
+            .first()
+            .map(statement_span)
+            .unwrap_or_else(|| Span::at_line(1, 1));
+        apply_fallback_action(
+            policy.unsupported_diagram,
+            MermaidWarningCode::UnsupportedDiagram,
+            "unsupported diagram type",
+            span,
+            &mut warnings,
+            &mut errors,
+        );
+    }
+
+    for statement in &ast.statements {
+        match statement {
+            Statement::Directive(dir) => match &dir.kind {
+                DirectiveKind::Init { .. } => {
+                    if !config.enable_init_directives {
+                        apply_fallback_action(
+                            policy.unsupported_directive,
+                            MermaidWarningCode::UnsupportedDirective,
+                            "init directives disabled",
+                            dir.span,
+                            &mut warnings,
+                            &mut errors,
+                        );
+                    }
+                }
+                DirectiveKind::Raw => {
+                    apply_fallback_action(
+                        policy.unsupported_directive,
+                        MermaidWarningCode::UnsupportedDirective,
+                        "unsupported directive",
+                        dir.span,
+                        &mut warnings,
+                        &mut errors,
+                    );
+                }
+            },
+            Statement::ClassDef { span, .. }
+            | Statement::ClassAssign { span, .. }
+            | Statement::Style { span, .. }
+            | Statement::LinkStyle { span, .. } => {
+                if !config.enable_styles {
+                    apply_fallback_action(
+                        policy.unsupported_style,
+                        MermaidWarningCode::UnsupportedStyle,
+                        "styles disabled",
+                        *span,
+                        &mut warnings,
+                        &mut errors,
+                    );
+                }
+            }
+            Statement::Link { span, .. } => {
+                if !config.enable_links || config.link_mode == MermaidLinkMode::Off {
+                    apply_fallback_action(
+                        policy.unsupported_link,
+                        MermaidWarningCode::UnsupportedLink,
+                        "links disabled",
+                        *span,
+                        &mut warnings,
+                        &mut errors,
+                    );
+                }
+            }
+            Statement::Raw { span, .. } => {
+                apply_fallback_action(
+                    policy.unsupported_feature,
+                    MermaidWarningCode::UnsupportedFeature,
+                    "unsupported statement",
+                    *span,
+                    &mut warnings,
+                    &mut errors,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let init_parse = collect_init_config(ast, config, policy);
+    warnings.extend(init_parse.warnings);
+    errors.extend(init_parse.errors);
+
+    MermaidValidation { warnings, errors }
+}
+
+fn apply_fallback_action(
+    action: MermaidFallbackAction,
+    code: MermaidWarningCode,
+    message: &str,
+    span: Span,
+    warnings: &mut Vec<MermaidWarning>,
+    errors: &mut Vec<MermaidError>,
+) {
+    match action {
+        MermaidFallbackAction::Ignore => {}
+        MermaidFallbackAction::Warn => warnings.push(MermaidWarning::new(code, message, span)),
+        MermaidFallbackAction::Error => errors.push(MermaidError::new(message, span)),
+    }
+}
+
+fn statement_span(statement: &Statement) -> Span {
+    match statement {
+        Statement::Directive(dir) => dir.span,
+        Statement::Comment(comment) => comment.span,
+        Statement::SubgraphStart { span, .. } => *span,
+        Statement::SubgraphEnd { span } => *span,
+        Statement::Direction { span, .. } => *span,
+        Statement::ClassDeclaration { span, .. } => *span,
+        Statement::ClassDef { span, .. } => *span,
+        Statement::ClassAssign { span, .. } => *span,
+        Statement::Style { span, .. } => *span,
+        Statement::LinkStyle { span, .. } => *span,
+        Statement::Link { span, .. } => *span,
+        Statement::Node(node) => node.span,
+        Statement::Edge(edge) => edge.span,
+        Statement::SequenceMessage(msg) => msg.span,
+        Statement::ClassMember { span, .. } => *span,
+        Statement::GanttTitle { span, .. } => *span,
+        Statement::GanttSection { span, .. } => *span,
+        Statement::GanttTask(task) => task.span,
+        Statement::PieEntry(entry) => entry.span,
+        Statement::MindmapNode(node) => node.span,
+        Statement::Raw { span, .. } => *span,
     }
 }
 
@@ -1793,8 +2370,12 @@ fn parse_header(line: &str) -> Option<(DiagramType, Option<GraphDirection>)> {
     None
 }
 
-fn parse_edge(line: &str, span: Span) -> Option<Edge> {
-    let (start, end, arrow) = find_arrow(line)?;
+fn parse_edge(line: &str, span: Span, er_mode: bool) -> Option<Edge> {
+    let (start, end, arrow) = if er_mode {
+        find_er_arrow(line)?
+    } else {
+        find_arrow(line)?
+    };
     let left = line[..start].trim();
     let right = line[end..].trim();
     if left.is_empty() || right.is_empty() {
@@ -1812,8 +2393,12 @@ fn parse_edge(line: &str, span: Span) -> Option<Edge> {
     })
 }
 
-fn edge_node(line: &str, span: Span) -> Option<Node> {
-    let (start, _, _) = find_arrow(line)?;
+fn edge_node(line: &str, span: Span, er_mode: bool) -> Option<Node> {
+    let (start, _, _) = if er_mode {
+        find_er_arrow(line)?
+    } else {
+        find_arrow(line)?
+    };
     let left = line[..start].trim();
     parse_node(left, span)
 }
@@ -1987,13 +2572,21 @@ fn parse_node_id(text: &str) -> Option<String> {
 }
 
 fn find_arrow(line: &str) -> Option<(usize, usize, &str)> {
+    find_arrow_with(line, is_arrow_char)
+}
+
+fn find_er_arrow(line: &str) -> Option<(usize, usize, &str)> {
+    find_arrow_with(line, is_er_arrow_char)
+}
+
+fn find_arrow_with(line: &str, is_arrow: fn(char) -> bool) -> Option<(usize, usize, &str)> {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0usize;
     while i < chars.len() {
-        if is_arrow_char(chars[i]) {
+        if is_arrow(chars[i]) {
             let start = i;
             let mut j = i + 1;
-            while j < chars.len() && is_arrow_char(chars[j]) {
+            while j < chars.len() && is_arrow(chars[j]) {
                 j += 1;
             }
             if j - start >= 2 {
@@ -2062,6 +2655,10 @@ fn is_ident_continue(c: char) -> bool {
 
 fn is_arrow_char(c: char) -> bool {
     matches!(c, '-' | '.' | '=' | '<' | '>' | 'o' | 'x' | '*')
+}
+
+fn is_er_arrow_char(c: char) -> bool {
+    is_arrow_char(c) || matches!(c, '|' | '{' | '}')
 }
 
 #[cfg(test)]
@@ -2215,6 +2812,61 @@ mod tests {
             })
             .expect("directive");
         assert!(matches!(directive.kind, DirectiveKind::Init { .. }));
+    }
+
+    #[test]
+    fn parse_init_directive_supported_keys() {
+        let payload = r##"{"theme":"dark","themeVariables":{"primaryColor":"#ffcc00","spacing":2},"flowchart":{"direction":"LR"}}"##;
+        let parsed = parse_init_directive(
+            payload,
+            Span::at_line(1, payload.len()),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(parsed.errors.is_empty());
+        assert_eq!(parsed.config.theme.as_deref(), Some("dark"));
+        assert_eq!(
+            parsed
+                .config
+                .theme_variables
+                .get("primaryColor")
+                .map(String::as_str),
+            Some("#ffcc00")
+        );
+        assert_eq!(
+            parsed
+                .config
+                .theme_variables
+                .get("spacing")
+                .map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(parsed.config.flowchart_direction, Some(GraphDirection::LR));
+    }
+
+    #[test]
+    fn parse_init_directive_reports_invalid_json() {
+        let payload = "{invalid}";
+        let parsed = parse_init_directive(
+            payload,
+            Span::at_line(1, payload.len()),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(!parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn collect_init_config_merges_last_wins() {
+        let ast = parse(
+            "graph TD\n%%{init: {\"theme\":\"dark\"}}%%\n%%{init: {\"theme\":\"base\",\"flowchart\":{\"direction\":\"TB\"}}}%%\nA-->B\n",
+        )
+        .expect("parse");
+        let config = MermaidConfig {
+            enable_init_directives: true,
+            ..Default::default()
+        };
+        let parsed = collect_init_config(&ast, &config, &MermaidFallbackPolicy::default());
+        assert_eq!(parsed.config.theme.as_deref(), Some("base"));
+        assert_eq!(parsed.config.flowchart_direction, Some(GraphDirection::TB));
     }
 
     #[test]
@@ -2394,6 +3046,61 @@ mod tests {
     }
 
     #[test]
+    fn mermaid_compat_matrix_default_marks_graph_supported() {
+        let matrix = MermaidCompatibilityMatrix::default();
+        assert_eq!(
+            matrix.support_for(DiagramType::Graph),
+            MermaidSupportLevel::Supported
+        );
+        assert_eq!(
+            matrix.support_for(DiagramType::Sequence),
+            MermaidSupportLevel::Partial
+        );
+    }
+
+    #[test]
+    fn validate_ast_flags_disabled_links_and_styles() {
+        let ast = parse(
+            "graph TD\nclassDef hot fill:#f00\nstyle A fill:#f00\nclick A \"https://example.com\" \"tip\"\nA-->B\n",
+        )
+        .expect("parse");
+        let config = MermaidConfig {
+            enable_links: false,
+            enable_styles: false,
+            ..Default::default()
+        };
+        let validation = validate_ast(&ast, &config, &MermaidCompatibilityMatrix::default());
+        assert!(
+            validation
+                .warnings
+                .iter()
+                .any(|w| w.code == MermaidWarningCode::UnsupportedStyle)
+        );
+        assert!(
+            validation
+                .warnings
+                .iter()
+                .any(|w| w.code == MermaidWarningCode::UnsupportedLink)
+        );
+    }
+
+    #[test]
+    fn validate_ast_flags_disabled_init_directive() {
+        let ast = parse("graph TD\n%%{init: {\"theme\":\"dark\"}}%%\nA-->B\n").expect("parse");
+        let config = MermaidConfig {
+            enable_init_directives: false,
+            ..Default::default()
+        };
+        let validation = validate_ast(&ast, &config, &MermaidCompatibilityMatrix::default());
+        assert!(
+            validation
+                .warnings
+                .iter()
+                .any(|w| w.code == MermaidWarningCode::UnsupportedDirective)
+        );
+    }
+
+    #[test]
     fn mermaid_warning_codes_are_stable() {
         let codes = [
             MermaidWarningCode::UnsupportedDiagram,
@@ -2409,6 +3116,59 @@ mod tests {
         assert_eq!(
             MermaidWarningCode::UnsupportedDiagram.as_str(),
             "mermaid/unsupported/diagram"
+        );
+    }
+
+    #[test]
+    fn compatibility_report_flags_disabled_features() {
+        let input = "graph TD\n%%{init: {\"theme\":\"dark\"}}%%\nclassDef hot fill:#f00\nclick A \"https://example.com\" \"tip\"\n";
+        let ast = parse(input).expect("parse");
+        let config = MermaidConfig {
+            enable_init_directives: false,
+            enable_styles: false,
+            enable_links: false,
+            ..MermaidConfig::default()
+        };
+        let report =
+            compatibility_report(&ast, &config, &MermaidCompatibilityMatrix::parser_only());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == MermaidWarningCode::UnsupportedDirective)
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == MermaidWarningCode::UnsupportedStyle)
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == MermaidWarningCode::UnsupportedLink)
+        );
+    }
+
+    #[test]
+    fn compatibility_report_marks_unknown_diagram_fatal() {
+        let ast = MermaidAst {
+            diagram_type: DiagramType::Unknown,
+            direction: None,
+            directives: Vec::new(),
+            statements: Vec::new(),
+        };
+        let config = MermaidConfig::default();
+        let report =
+            compatibility_report(&ast, &config, &MermaidCompatibilityMatrix::parser_only());
+        assert!(report.fatal);
+        assert_eq!(report.diagram_support, MermaidSupportLevel::Unsupported);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == MermaidWarningCode::UnsupportedDiagram)
         );
     }
 }

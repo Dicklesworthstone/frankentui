@@ -9,6 +9,7 @@
 //! Feature-gated behind `syntax`. Zero impact on core rendering when disabled.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -772,6 +773,50 @@ impl Tokenizer for PlainTokenizer {
             return (Vec::new(), state);
         }
         (vec![Token::new(TokenKind::Text, 0..line.len())], state)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DiffTokenizer (unified diff highlights)
+// ---------------------------------------------------------------------------
+
+/// Tokenizer for unified diff/patch output.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiffTokenizer;
+
+impl Tokenizer for DiffTokenizer {
+    fn name(&self) -> &'static str {
+        "Diff"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["diff", "patch"]
+    }
+
+    fn tokenize_line(&self, line: &str, state: LineState) -> (Vec<Token>, LineState) {
+        if line.is_empty() {
+            return (Vec::new(), state);
+        }
+
+        let kind = if line.starts_with("+++") || line.starts_with("---") {
+            TokenKind::Attribute
+        } else if line.starts_with("@@") {
+            TokenKind::KeywordControl
+        } else if line.starts_with('+') {
+            TokenKind::Keyword
+        } else if line.starts_with('-') {
+            TokenKind::Error
+        } else if line.starts_with("diff ")
+            || line.starts_with("index ")
+            || line.starts_with("new file")
+            || line.starts_with("deleted file")
+        {
+            TokenKind::Comment
+        } else {
+            TokenKind::Text
+        };
+
+        (vec![Token::new(kind, 0..line.len())], state)
     }
 }
 
@@ -1712,6 +1757,58 @@ pub fn zig_tokenizer() -> GenericTokenizer {
     })
 }
 
+/// Create a generic tokenizer configured for Mermaid diagrams.
+pub fn mermaid_tokenizer() -> GenericTokenizer {
+    GenericTokenizer::new(GenericTokenizerConfig {
+        name: "Mermaid",
+        extensions: &["mmd", "mermaid"],
+        keywords: &[
+            "graph",
+            "flowchart",
+            "sequenceDiagram",
+            "classDiagram",
+            "stateDiagram",
+            "erDiagram",
+            "journey",
+            "gantt",
+            "pie",
+            "mindmap",
+            "timeline",
+            "gitGraph",
+            "C4Context",
+            "C4Container",
+            "C4Component",
+            "C4Dynamic",
+            "C4Deployment",
+        ],
+        control_keywords: &[
+            "subgraph",
+            "end",
+            "direction",
+            "click",
+            "style",
+            "linkStyle",
+            "classDef",
+            "class",
+            "state",
+            "note",
+            "participant",
+            "actor",
+            "loop",
+            "alt",
+            "opt",
+            "par",
+            "and",
+            "else",
+            "rect",
+        ],
+        type_keywords: &["TB", "BT", "LR", "RL"],
+        line_comment: "%%",
+        block_comment_start: "%%{",
+        block_comment_end: "}%%",
+    })
+}
+
 /// Create a generic tokenizer configured for TypeScript.
 pub fn typescript_tokenizer() -> GenericTokenizer {
     GenericTokenizer::new(GenericTokenizerConfig {
@@ -2292,6 +2389,15 @@ pub struct SyntaxHighlighter {
     theme: HighlightTheme,
 }
 
+impl fmt::Debug for SyntaxHighlighter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SyntaxHighlighter")
+            .field("tokenizer_count", &self.registry.tokenizers.len())
+            .field("theme", &self.theme)
+            .finish()
+    }
+}
+
 impl Default for SyntaxHighlighter {
     fn default() -> Self {
         Self::new()
@@ -2328,9 +2434,11 @@ impl SyntaxHighlighter {
         registry.register(Box::new(elixir_tokenizer()));
         registry.register(Box::new(haskell_tokenizer()));
         registry.register(Box::new(zig_tokenizer()));
+        registry.register(Box::new(mermaid_tokenizer()));
         registry.register(Box::new(JsonTokenizer));
         registry.register(Box::new(TomlTokenizer));
         registry.register(Box::new(MarkdownTokenizer));
+        registry.register(Box::new(DiffTokenizer));
         registry.register(Box::new(PlainTokenizer));
         Self {
             registry,
@@ -2366,6 +2474,14 @@ impl SyntaxHighlighter {
     #[must_use]
     pub fn languages(&self) -> Vec<&str> {
         self.registry.names()
+    }
+
+    /// Return true if the highlighter recognizes the language identifier.
+    ///
+    /// The identifier can be a file extension (e.g. "rs") or tokenizer name.
+    #[must_use]
+    pub fn supports_language(&self, lang: &str) -> bool {
+        self.registry.for_extension(lang).is_some() || self.registry.by_name(lang).is_some()
     }
 
     /// Highlight code using a language identifier (extension or name).
@@ -4062,9 +4178,11 @@ fn main() {
         reg.register(Box::new(elixir_tokenizer()));
         reg.register(Box::new(haskell_tokenizer()));
         reg.register(Box::new(zig_tokenizer()));
+        reg.register(Box::new(mermaid_tokenizer()));
         reg.register(Box::new(JsonTokenizer));
         reg.register(Box::new(TomlTokenizer));
         reg.register(Box::new(MarkdownTokenizer));
+        reg.register(Box::new(DiffTokenizer));
         reg.register(Box::new(PlainTokenizer));
 
         assert!(reg.for_extension("rs").is_some());
@@ -4092,11 +4210,13 @@ fn main() {
         assert!(reg.for_extension("ex").is_some());
         assert!(reg.for_extension("hs").is_some());
         assert!(reg.for_extension("zig").is_some());
+        assert!(reg.for_extension("mmd").is_some());
         assert!(reg.for_extension("json").is_some());
         assert!(reg.for_extension("toml").is_some());
         assert!(reg.for_extension("md").is_some());
+        assert!(reg.for_extension("diff").is_some());
         assert!(reg.for_extension("txt").is_some());
-        assert_eq!(reg.len(), 26);
+        assert_eq!(reg.len(), 28);
     }
 
     // -- Token range validation across all tokenizers -------------------------
@@ -4113,6 +4233,8 @@ fn main() {
                 "# Heading\n\n```rust\nlet x = 1;\n```\n\n[link](url)",
                 &MarkdownTokenizer,
             ),
+            ("@@ -1,2 +1,2 @@\n-old line\n+new line\n", &DiffTokenizer),
+            ("graph LR\nA-->B\n", &mermaid_tokenizer()),
             ("fn main() { let x = 42; }", &rust_tokenizer()),
             ("def foo():\n    return 42", &python_tokenizer()),
             (
@@ -4212,6 +4334,8 @@ fn main() {
         assert!(langs.contains(&"JSON"));
         assert!(langs.contains(&"TOML"));
         assert!(langs.contains(&"Markdown"));
+        assert!(langs.contains(&"Mermaid"));
+        assert!(langs.contains(&"Diff"));
         assert!(langs.contains(&"Plain"));
     }
 

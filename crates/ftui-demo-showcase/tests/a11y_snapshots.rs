@@ -17,7 +17,7 @@ use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_demo_showcase::app::{AppModel, AppMsg};
 use ftui_demo_showcase::screens::Screen;
-use ftui_demo_showcase::theme::{self, ScopedA11yLock, ScopedThemeLock};
+use ftui_demo_showcase::theme::{self, ScopedRenderLock};
 use ftui_harness::assert_snapshot;
 use ftui_harness::determinism::DeterminismFixture;
 use ftui_render::frame::Frame;
@@ -154,9 +154,8 @@ fn log_transition_e2e(
 // Test Helpers
 // ---------------------------------------------------------------------------
 
-// NOTE: This module uses ScopedA11yLock from theme.rs which acquires GLOBAL_A11Y_LOCK,
-// ensuring proper coordination with unit tests that also use the same lock.
-// This prevents race conditions when unit tests and integration tests run in parallel.
+// NOTE: This module uses ScopedRenderLock from theme.rs to acquire both theme and
+// a11y locks in a consistent order, preventing deadlocks in parallel test runs.
 
 struct A11yTestContext {
     app: AppModel,
@@ -197,23 +196,20 @@ impl A11yTestContext {
     fn render_and_snapshot(mut self, name: &str, width: u16, height: u16) {
         let setup_elapsed = self.setup_start.elapsed();
 
-        // Acquire the global a11y lock with the desired settings.
-        // This uses GLOBAL_A11Y_LOCK from theme.rs, coordinating with unit tests.
+        // Acquire the global theme+a11y lock with the desired settings.
         let motion_scale = if self.app.a11y.reduced_motion {
             0.0
         } else {
             1.0
         };
-        let _a11y_lock = ScopedA11yLock::new(self.app.a11y.large_text, motion_scale);
-
-        // Always set theme state explicitly for test isolation
-        // Use HighContrast theme to match app behavior in apply_a11y_settings()
+        // Always set theme state explicitly for test isolation.
+        // Use HighContrast theme to match app behavior in apply_a11y_settings().
         let theme_id = if self.app.a11y.high_contrast {
             theme::ThemeId::HighContrast
         } else {
             theme::ThemeId::CyberpunkAurora
         };
-        let _theme_lock = ScopedThemeLock::new(theme_id);
+        let _render_lock = ScopedRenderLock::new(theme_id, self.app.a11y.large_text, motion_scale);
 
         // Update terminal dimensions for proper rendering
         self.app.terminal_width = width;
@@ -258,18 +254,15 @@ fn render_screen_with_a11y<S: Screen>(
     width: u16,
     height: u16,
 ) -> Frame<'static> {
-    // Acquire the global a11y lock with the desired settings.
-    // This uses GLOBAL_A11Y_LOCK from theme.rs, coordinating with unit tests.
+    // Acquire the global theme+a11y lock with the desired settings.
     let motion_scale = if a11y.reduced_motion { 0.0 } else { 1.0 };
-    let _a11y_lock = ScopedA11yLock::new(a11y.large_text, motion_scale);
-
-    // Always set theme state explicitly for test isolation
+    // Always set theme state explicitly for test isolation.
     let theme_id = if a11y.high_contrast {
         theme::ThemeId::HighContrast
     } else {
         theme::ThemeId::CyberpunkAurora
     };
-    let _theme_lock = ScopedThemeLock::new(theme_id);
+    let _render_lock = ScopedRenderLock::new(theme_id, a11y.large_text, motion_scale);
 
     let pool = Box::leak(Box::new(GraphemePool::new()));
     let mut frame = Frame::new(width, height, pool);
@@ -296,9 +289,8 @@ fn render_transition_step(
     } else {
         theme::ThemeId::CyberpunkAurora
     };
-    let _theme_lock = ScopedThemeLock::new(theme_id);
-    theme::set_motion_scale(if app.a11y.reduced_motion { 0.0 } else { 1.0 });
-    theme::set_large_text(app.a11y.large_text);
+    let motion_scale = if app.a11y.reduced_motion { 0.0 } else { 1.0 };
+    let _render_lock = ScopedRenderLock::new(theme_id, app.a11y.large_text, motion_scale);
 
     app.terminal_width = width;
     app.terminal_height = height;
@@ -742,9 +734,7 @@ fn a11y_accessibility_panel_all_modes_120x40() {
 
 #[test]
 fn a11y_zero_area_high_contrast() {
-    // Use ScopedA11yLock for coordination with unit tests
-    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::HighContrast, false, 1.0);
     let mut app = AppModel::new();
     app.a11y.high_contrast = true;
     let mut pool = GraphemePool::new();
@@ -755,8 +745,7 @@ fn a11y_zero_area_high_contrast() {
 
 #[test]
 fn a11y_zero_area_large_text() {
-    // Use ScopedA11yLock for coordination with unit tests - sets large_text=true
-    let _a11y_lock = ScopedA11yLock::new(true, 1.0);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, true, 1.0);
     let mut app = AppModel::new();
     app.a11y.large_text = true;
     let mut pool = GraphemePool::new();
@@ -767,9 +756,7 @@ fn a11y_zero_area_large_text() {
 
 #[test]
 fn a11y_zero_area_all_modes() {
-    // Use ScopedA11yLock for coordination with unit tests - sets large_text=true, motion_scale=0.0
-    let _a11y_lock = ScopedA11yLock::new(true, 0.0);
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::HighContrast, true, 0.0);
     let mut app = AppModel::new();
     app.a11y = theme::A11ySettings::all();
     let mut pool = GraphemePool::new();
@@ -828,8 +815,6 @@ fn a11y_settings_none_equals_default() {
 #[test]
 fn a11y_transition_high_contrast_roundtrip() {
     // Invariant: toggling high-contrast on/off should round-trip to baseline.
-    // Use ScopedA11yLock for coordination with unit tests
-    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     let run_id = generate_run_id();
     let start = Instant::now();
@@ -894,8 +879,6 @@ fn a11y_transition_high_contrast_roundtrip() {
 #[test]
 fn a11y_transition_reduced_motion_roundtrip() {
     // Invariant: reduced-motion toggles should be stable and round-trip cleanly.
-    // Use ScopedA11yLock for coordination with unit tests
-    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     app.current_screen = ftui_demo_showcase::app::ScreenId::DataViz;
     let run_id = generate_run_id();
@@ -961,8 +944,6 @@ fn a11y_transition_reduced_motion_roundtrip() {
 #[test]
 fn a11y_transition_large_text_roundtrip() {
     // Invariant: large-text toggles should be stable and round-trip cleanly.
-    // Use ScopedA11yLock for coordination with unit tests
-    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     let run_id = generate_run_id();
     let start = Instant::now();
@@ -1027,8 +1008,6 @@ fn a11y_transition_large_text_roundtrip() {
 #[test]
 fn a11y_transition_all_modes_roundtrip() {
     // Failure modes: theme globals leak or motion scale persists after toggling off.
-    // Use ScopedA11yLock for coordination with unit tests
-    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
     let mut app = AppModel::new();
     let run_id = generate_run_id();
     let start = Instant::now();
@@ -1096,10 +1075,7 @@ fn a11y_transition_all_modes_roundtrip() {
 
 #[test]
 fn a11y_panel_visible_80x24() {
-    // Acquire scoped theme lock for test isolation in parallel test execution
-    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::CyberpunkAurora);
-    theme::set_motion_scale(1.0);
-    theme::set_large_text(false);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
     let mut app = AppModel::new();
     app.a11y_panel_visible = true;
     let mut pool = GraphemePool::new();
@@ -1110,10 +1086,7 @@ fn a11y_panel_visible_80x24() {
 
 #[test]
 fn a11y_panel_visible_120x40() {
-    // Acquire scoped theme lock for test isolation in parallel test execution
-    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::CyberpunkAurora);
-    theme::set_motion_scale(1.0);
-    theme::set_large_text(false);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::CyberpunkAurora, false, 1.0);
     let mut app = AppModel::new();
     app.a11y_panel_visible = true;
     let mut pool = GraphemePool::new();
@@ -1124,10 +1097,7 @@ fn a11y_panel_visible_120x40() {
 
 #[test]
 fn a11y_panel_with_high_contrast_120x40() {
-    // Acquire scoped theme lock for test isolation in parallel test execution
-    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::HighContrast);
-    theme::set_motion_scale(1.0);
-    theme::set_large_text(false);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::HighContrast, false, 1.0);
     let mut app = AppModel::new();
     app.a11y_panel_visible = true;
     app.a11y.high_contrast = true;
@@ -1139,10 +1109,7 @@ fn a11y_panel_with_high_contrast_120x40() {
 
 #[test]
 fn a11y_panel_with_all_modes_120x40() {
-    // Acquire scoped theme lock for test isolation in parallel test execution
-    let _guard = theme::ScopedThemeLock::new(theme::ThemeId::HighContrast);
-    theme::set_large_text(true);
-    theme::set_motion_scale(0.0);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::HighContrast, true, 0.0);
     let mut app = AppModel::new();
     app.a11y_panel_visible = true;
     app.a11y = theme::A11ySettings::all();
@@ -1158,9 +1125,7 @@ fn a11y_panel_with_all_modes_120x40() {
 
 #[test]
 fn a11y_determinism_high_contrast() {
-    // Use ScopedA11yLock for coordination with unit tests
-    let _a11y_lock = ScopedA11yLock::new(false, 1.0);
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::HighContrast, false, 1.0);
     // Render twice and verify identical output
     let mut app1 = AppModel::new();
     app1.a11y.high_contrast = true;
@@ -1184,9 +1149,7 @@ fn a11y_determinism_high_contrast() {
 
 #[test]
 fn a11y_determinism_all_modes() {
-    // Use ScopedA11yLock for coordination with unit tests - sets large_text=true, motion_scale=0.0
-    let _a11y_lock = ScopedA11yLock::new(true, 0.0);
-    let _theme_lock = ScopedThemeLock::new(theme::ThemeId::HighContrast);
+    let _render_lock = ScopedRenderLock::new(theme::ThemeId::HighContrast, true, 0.0);
     // Render twice with all a11y modes and verify identical output
     let mut app1 = AppModel::new();
     app1.a11y = theme::A11ySettings::all();

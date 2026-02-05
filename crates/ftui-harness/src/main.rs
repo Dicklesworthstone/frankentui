@@ -180,6 +180,7 @@ enum HarnessView {
     WidgetBudget,
     TileSkip,
     SpanDiff,
+    SelectorStorm,
     #[allow(dead_code)]
     EffectQueue,
     LocaleContext,
@@ -799,6 +800,7 @@ impl Model for AgentHarness {
             HarnessView::WidgetBudget => self.view_widget_budget(frame),
             HarnessView::TileSkip => self.view_tile_skip(frame),
             HarnessView::SpanDiff => self.view_span_diff(frame),
+            HarnessView::SelectorStorm => self.view_selector_storm(frame),
             HarnessView::EffectQueue => self.view_effect_queue(frame),
             HarnessView::LocaleContext => self.view_locale_context(frame),
         }
@@ -988,6 +990,57 @@ impl AgentHarness {
 
         for (x, y) in curr_positions {
             frame.buffer.set_raw(x, y, Cell::from_char('X'));
+        }
+    }
+
+    fn view_selector_storm(&self, frame: &mut Frame) {
+        self.apply_theme_base(frame);
+        frame.buffer.clear_dirty();
+
+        let width = frame.buffer.width();
+        let height = frame.buffer.height();
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let frame_idx = self.spinner_state.current_frame as u16;
+        let phase_len = 6_u16;
+        let phase = (frame_idx / phase_len) % 2;
+
+        if phase == 0 {
+            let span_len = (width / 10).clamp(2, 12);
+            let rows = [0, height / 2, height.saturating_sub(1)];
+            for (i, row) in rows.iter().enumerate() {
+                if *row >= height {
+                    continue;
+                }
+                let offset = frame_idx.wrapping_add((i as u16).saturating_mul(7));
+                let start = offset % width;
+                for dx in 0..span_len {
+                    let x = start.saturating_add(dx);
+                    if x >= width {
+                        break;
+                    }
+                    frame.buffer.set_raw(x, *row, Cell::from_char('x'));
+                }
+            }
+        } else {
+            let fill_char = if frame_idx.is_multiple_of(2) {
+                '#'
+            } else {
+                '@'
+            };
+            if width <= 1 || height <= 1 {
+                frame.buffer.set_raw(0, 0, Cell::from_char(fill_char));
+                return;
+            }
+            let x_end = width.saturating_sub(1);
+            let y_end = height.saturating_sub(1);
+            for y in 1..y_end {
+                for x in 1..x_end {
+                    frame.buffer.set_raw(x, y, Cell::from_char(fill_char));
+                }
+            }
         }
     }
 
@@ -1756,6 +1809,7 @@ fn main() -> std::io::Result<()> {
         "widget-budget" | "widget_budget" | "budget" => HarnessView::WidgetBudget,
         "tile-skip" | "tile_skip" | "tile" => HarnessView::TileSkip,
         "span-diff" | "span_diff" | "span" => HarnessView::SpanDiff,
+        "selector-storm" | "selector_storm" | "selector" => HarnessView::SelectorStorm,
         "locale-context" | "locale_context" | "locale" => HarnessView::LocaleContext,
         _ => HarnessView::Default,
     };

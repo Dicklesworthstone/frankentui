@@ -1,24 +1,24 @@
- 1: Dash │ 2: Shakes │ 3: Code │ 4: Widgets │ 5: Layout │ 6: Forms │ 7: DataViz 
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │  
 ╭────────────────────────────────Widget Gallery────────────────────────────────╮
 │▸ A: Inputs │   B: Display │   C: Status │   D: Data Viz │   E: Navigation │  │
-│╭TextInput────────────────────────────╮╭Masked Input─────────────────────────╮│
-││demo@example.com                     ││••••••                               ││
-│╰─────────────────────────────────────╯╰─────────────────────────────────────╯│
-│╭TextArea────────────────────────────────────────────────────────────────────╮│
-││1  FrankenTUI text area                                                     ││
-││2  - Multi-line editing                                                     ││
-││3  - Soft wrap enabled                                                      ││
-││4  - Line numbers                                                           ││
-│╰────────────────────────────────────────────────────────────────────────────╯│
-│╭Checkboxes + Radios──────────────────╮╭Select + Number + Slider─────────────╮│
-││[ ] Enable autosave                  ││Select: [High ▾]                     ││
-││[x] Sync on save                     ││Number: [-]  42  [+]                 ││
-││( ) Light theme                      ││Slider: 30%  [■■■■■─────]            ││
-││(*) Dark theme                       ││                                     ││
-││                                     ││                                     ││
-││                                     ││                                     ││
-││                                     ││                                     ││
-│╰─────────────────────────────────────╯╰─────────────────────────────────────╯│
+│╭TextInput────╮╭Masked Input─╮╭Command Palette────────╮╭Log Viewer───────────╮│
+││@example.com ││••••••       ││                       ││INFO  boot:          ││
+││             ││             ││                       ││FrankenTUI demo      ││
+│╰─────────────╯╰─────────────╯│                       ││started              ││
+│╭TextArea────────────────────╮│                       ││DEBUG layout:        ││
+││1  FrankenTUI text area     │╰───────────────────────╯│resolved 6         1 ││
+││2  - Multi-line editing     │╭File Picker────────────╮╰─────────────────────╯│
+││3  - Soft wrap enabled      ││.                      │╭ProgressBar──────────╮│
+││4  - Line numbers           ││> ? benches           ││         0%          ││
+││                            ││  ? data              ││         25%         ││
+││                            ││  ? proptest-regressio││         50%         ││
+│╰────────────────────────────╯╰───────────────────────╯╰─────────────────────╯│
+│╭Checkbo╮╭Select╮╭Validation ╮╭Notifications──────────╮╭Spinners─────────────╮│
+││[ ] Ena││Select││! Invalid …││                       ││⠋ Loading (DOTS)     ││
+││[x] Syn││Number││ETA  00:59 ││                       │╰─────────────────────╯│
+││( ) Lig││Slider││? …       ││                       │╭Toast────────────────╮│
+││(*) Dar││      ││           │╰───────────────────────╯│                     ││
+│╰───────╯╰──────╯╰───────────╯                         ╰─────────────────────╯│
 │*.......                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Widget Gallery [4/28]  Cyberpunk Aurora A11y:RM    tick:0 frm:0    80x24 00:00 
+ Widget Gallery [5/38] A11y:RM       Tab/Shift+Tab: next/prev       80x24 00:00 
