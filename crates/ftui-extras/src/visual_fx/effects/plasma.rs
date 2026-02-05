@@ -377,19 +377,27 @@ impl PlasmaPalette {
         PackedRgba::rgb(r, g, b)
     }
 
+    /// Fixed-point RGB lerp using u32 arithmetic (avoids f64 per channel).
     #[inline]
     fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
+        let t256 = (t.clamp(0.0, 1.0) * 256.0) as u32;
+        let inv = 256 - t256;
         (
-            (a.0 as f64 + (b.0 as f64 - a.0 as f64) * t) as u8,
-            (a.1 as f64 + (b.1 as f64 - a.1 as f64) * t) as u8,
-            (a.2 as f64 + (b.2 as f64 - a.2 as f64) * t) as u8,
+            ((a.0 as u32 * inv + b.0 as u32 * t256) >> 8) as u8,
+            ((a.1 as u32 * inv + b.1 as u32 * t256) >> 8) as u8,
+            ((a.2 as u32 * inv + b.2 as u32 * t256) >> 8) as u8,
         )
     }
 
+    /// Fixed-point color lerp using u32 arithmetic (avoids f64 per channel).
     #[inline]
     fn lerp_color(a: PackedRgba, b: PackedRgba, t: f64) -> PackedRgba {
-        let (r, g, blue) = Self::lerp_rgb((a.r(), a.g(), a.b()), (b.r(), b.g(), b.b()), t);
-        PackedRgba::rgb(r, g, blue)
+        let t256 = (t.clamp(0.0, 1.0) * 256.0) as u32;
+        let inv = 256 - t256;
+        let r = ((a.r() as u32 * inv + b.r() as u32 * t256) >> 8) as u8;
+        let g = ((a.g() as u32 * inv + b.g() as u32 * t256) >> 8) as u8;
+        let bl = ((a.b() as u32 * inv + b.b() as u32 * t256) >> 8) as u8;
+        PackedRgba::rgb(r, g, bl)
     }
 
     #[inline]
@@ -615,8 +623,11 @@ impl PlasmaFx {
         let h = ctx.height as f64;
         let time = ctx.time_seconds;
 
-        // Use simplified wave for Minimal quality
-        let use_simplified = ctx.quality == FxQuality::Minimal;
+        // Quality tiers:
+        // - Full: 6 wave components (v1-v6) with sqrt-based radial waves
+        // - Reduced: 4 wave components (v1-v4 skipping expensive sqrt radials)
+        // - Minimal: 3 wave components (v1-v3, cheapest)
+        let quality = ctx.quality;
         let breath = 0.85 + 0.15 * (time * 0.3).sin();
 
         // Precompute x-dependent terms once per frame (no per-frame allocation).
@@ -639,9 +650,14 @@ impl PlasmaFx {
                 let v1 = scratch.v1[dx as usize];
                 let v3 = ((x + y) * 1.2 + time * 0.6).sin();
 
-                let wave = if use_simplified {
+                let wave = if quality == FxQuality::Minimal {
                     let value = (v1 + v2 + v3) / 3.0;
                     (value + 1.0) / 2.0
+                } else if quality == FxQuality::Reduced {
+                    // 4 components: skip sqrt-based v4/v5, keep interference v6
+                    let v6 = (scratch.sin_x2[dx as usize] * cos_y2 + time * 0.5).sin();
+                    let value = (v1 + v2 + v3 + v6) / 4.0;
+                    ((value * breath) + 1.0) / 2.0
                 } else {
                     let v4 = ((scratch.x_sq[dx as usize] + y_sq).sqrt() * 2.0 - time * 1.2).sin();
                     let v5 = ((scratch.x_center_sq[dx as usize] + y_center_sq).sqrt() * 1.8 + time)

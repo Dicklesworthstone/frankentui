@@ -4,7 +4,7 @@
 │╭────────Plasma────────╮╭─────────Charts · Pulse──────────╮╭───────Code · Rust│Frame: 0──────╮╭─────────Info─────────││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g:cycle · sparklines + mini bars ││// runtime.rs     │Screen: DashboardrankenTUI Kernel · LI││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││CPU ▃ ▃▃▂▂▁▁▄▃▄▂▅▅▅▆▂▄▅▃▆▅▄▄▆ 46%││use std::{collecti│Size: 120x40 s││ INLINE   BRAILLE FX  ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││MEM ▅▂ ▃▁▄▄▂▂▇▅▃▅▂▃▄▆▄▇█▂▆▅▄▂ 41%││                  │Mermaid: on · unicode · autoNAL │ Even││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││MEM ▅▂ ▃▁▄▄▂▂▇▅▃▅▂▃▄▆▄▇█▂▆▅▄▂ 41%││                  │Mermaid: on · unicode · auto · auto · ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││NET ▁▁▁▁▁  ▁   ▇▁▁    ▁ █▁▁▁▁█ 14││use ftui_core::eve│t::Event;     ││FPS: 0  TicSize: 118x3││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││OUT ▁▁▁▃▁█  ▁▁ ▁  ▁▁▇    ▁   ▁149││use ftui_render::c╰──────────────────────────────────────╯│
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││EPS ██  77% DSK █  67% IO  ░   7%││use ftui_render::frame::Frame;   ││CPU:  46%  Alerts: 1  ││
@@ -37,4 +37,4 @@
 │╰────────────────────────────╯╰─────────────────────────────────────────────╯╰───────────────────────────────────────╯│
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Dashboard [2/40]  Cyberpunk Aurora           Tab: next screen · Shift+Tab: prev │ tick:0 frm:0            120x40 00:00 
+ Dashboard [2/41]  Cyberpunk Aurora           Tab: next screen · Shift+Tab: prev │ tick:0 frm:0            120x40 00:00 

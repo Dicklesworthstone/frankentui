@@ -1,7 +1,7 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Dashboard───────────────────────────────────╮
 │FRANKENTUI DASHBOARD  ╭─────────────────────Guided Tour──────────────────────╮│
-│╭──────Plasma──────╮╭─│1/9 · Tour · LIVEse────────╮╭───Code · Rust (1/28)────││
+│╭──────Plasma──────╮╭─│1/10 · Tour · LIVEe────────╮╭───Code · Rust (1/28)────││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g│Speed 1.00x · Next 5.2sni b││// runtime.rs            ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││C│Dashboard▁▄▃▄▂▅▅▅▆▂▄▅▃▆ 46%││use std::{collections::Ha││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││M│Cinematic overview of key features and live tiles.    ││
@@ -21,4 +21,4 @@
 │╰─────────────────────╯╰─────────────────────────────╯╰─────────────────────╯ │
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit│
 ╰──────────────────────────────────────────────────────────────────────────────╯
- Dashboard [1/40]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     80x24 00:00 
+ Dashboard [1/41]  Cyberpunk Aurora    Tab/Shift+Tab: next/prev     80x24 00:00 

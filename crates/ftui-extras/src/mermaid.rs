@@ -131,6 +131,147 @@ impl fmt::Display for MermaidGlyphMode {
     }
 }
 
+/// Mermaid render mode (cell vs sub-cell canvas).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MermaidRenderMode {
+    /// Auto-detect best mode from terminal capabilities.
+    Auto,
+    /// Force classic cell-based rendering (no sub-cell canvas).
+    CellOnly,
+    /// Braille (2×4 sub-cells per terminal cell).
+    Braille,
+    /// Block (2×2 sub-cells per terminal cell).
+    Block,
+    /// Half-block (1×2 sub-cells per terminal cell).
+    HalfBlock,
+}
+
+impl MermaidRenderMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "cell" | "cellonly" | "cell-only" | "cell_only" | "cells" => Some(Self::CellOnly),
+            "braille" | "brl" => Some(Self::Braille),
+            "block" | "blocks" => Some(Self::Block),
+            "halfblock" | "half-block" | "half_block" | "half" => Some(Self::HalfBlock),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::CellOnly => "cell",
+            Self::Braille => "braille",
+            Self::Block => "block",
+            Self::HalfBlock => "halfblock",
+        }
+    }
+}
+
+impl fmt::Display for MermaidRenderMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Named color palette preset for diagram rendering.
+///
+/// Each preset remaps node fills, edge colors, cluster backgrounds, and text
+/// colors. Use [`DiagramPalettePreset::as_str`] / [`DiagramPalettePreset::parse`]
+/// for round-trip string conversion (env vars, CLI args, config files).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagramPalettePreset {
+    /// Blue nodes, gray edges — current default look.
+    Default,
+    /// Navy/teal/gray — professional, muted palette.
+    Corporate,
+    /// Cyan/magenta/green on dark background — high energy.
+    Neon,
+    /// White/gray/black only — works on any terminal.
+    Monochrome,
+    /// Soft muted colors — easy on eyes.
+    Pastel,
+    /// WCAG AAA compliant, bold primary colors.
+    HighContrast,
+}
+
+impl DiagramPalettePreset {
+    /// Parse from a string value (case-insensitive).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "default" | "def" => Some(Self::Default),
+            "corporate" | "corp" | "professional" => Some(Self::Corporate),
+            "neon" | "glow" | "dark" => Some(Self::Neon),
+            "monochrome" | "mono" | "bw" | "grayscale" => Some(Self::Monochrome),
+            "pastel" | "soft" | "light" => Some(Self::Pastel),
+            "high-contrast" | "highcontrast" | "high_contrast" | "hc" | "accessible" => {
+                Some(Self::HighContrast)
+            }
+            _ => None,
+        }
+    }
+
+    /// Stable string identifier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Corporate => "corporate",
+            Self::Neon => "neon",
+            Self::Monochrome => "monochrome",
+            Self::Pastel => "pastel",
+            Self::HighContrast => "high-contrast",
+        }
+    }
+
+    /// All available presets in definition order.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Default,
+            Self::Corporate,
+            Self::Neon,
+            Self::Monochrome,
+            Self::Pastel,
+            Self::HighContrast,
+        ]
+    }
+
+    /// Next preset in cycle order (wraps around).
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Corporate,
+            Self::Corporate => Self::Neon,
+            Self::Neon => Self::Monochrome,
+            Self::Monochrome => Self::Pastel,
+            Self::Pastel => Self::HighContrast,
+            Self::HighContrast => Self::Default,
+        }
+    }
+
+    /// Previous preset in cycle order (wraps around).
+    #[must_use]
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Default => Self::HighContrast,
+            Self::Corporate => Self::Default,
+            Self::Neon => Self::Corporate,
+            Self::Monochrome => Self::Neon,
+            Self::Pastel => Self::Monochrome,
+            Self::HighContrast => Self::Pastel,
+        }
+    }
+}
+
+impl fmt::Display for DiagramPalettePreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Fidelity tier override for Mermaid rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MermaidTier {
@@ -306,6 +447,7 @@ impl fmt::Display for MermaidErrorMode {
 
 const ENV_MERMAID_ENABLE: &str = "FTUI_MERMAID_ENABLE";
 const ENV_MERMAID_GLYPH_MODE: &str = "FTUI_MERMAID_GLYPH_MODE";
+const ENV_MERMAID_RENDER_MODE: &str = "FTUI_MERMAID_RENDER_MODE";
 const ENV_MERMAID_TIER: &str = "FTUI_MERMAID_TIER";
 const ENV_MERMAID_MAX_NODES: &str = "FTUI_MERMAID_MAX_NODES";
 const ENV_MERMAID_MAX_EDGES: &str = "FTUI_MERMAID_MAX_EDGES";
@@ -324,12 +466,14 @@ const ENV_MERMAID_LOG_PATH: &str = "FTUI_MERMAID_LOG_PATH";
 const ENV_MERMAID_CACHE_ENABLED: &str = "FTUI_MERMAID_CACHE_ENABLED";
 const ENV_MERMAID_CAPS_PROFILE: &str = "FTUI_MERMAID_CAPS_PROFILE";
 const ENV_MERMAID_CAPABILITY_PROFILE: &str = "FTUI_MERMAID_CAPABILITY_PROFILE";
+const ENV_MERMAID_PALETTE: &str = "FTUI_MERMAID_PALETTE";
 
 /// Mermaid engine configuration (deterministic, env-overridable).
 ///
 /// # Environment Variables
 /// - `FTUI_MERMAID_ENABLE` (bool)
 /// - `FTUI_MERMAID_GLYPH_MODE` = unicode|ascii
+/// - `FTUI_MERMAID_RENDER_MODE` = auto|cell|braille|block|halfblock
 /// - `FTUI_MERMAID_TIER` = compact|normal|rich|auto
 /// - `FTUI_MERMAID_MAX_NODES` (usize)
 /// - `FTUI_MERMAID_MAX_EDGES` (usize)
@@ -347,10 +491,12 @@ const ENV_MERMAID_CAPABILITY_PROFILE: &str = "FTUI_MERMAID_CAPABILITY_PROFILE";
 /// - `FTUI_MERMAID_LOG_PATH` (string path)
 /// - `FTUI_MERMAID_CACHE_ENABLED` (bool)
 /// - `FTUI_MERMAID_CAPS_PROFILE` / `FTUI_MERMAID_CAPABILITY_PROFILE` (string)
+/// - `FTUI_MERMAID_PALETTE` = default|corporate|neon|monochrome|pastel|high-contrast
 #[derive(Debug, Clone)]
 pub struct MermaidConfig {
     pub enabled: bool,
     pub glyph_mode: MermaidGlyphMode,
+    pub render_mode: MermaidRenderMode,
     pub tier_override: MermaidTier,
     pub max_nodes: usize,
     pub max_edges: usize,
@@ -369,6 +515,7 @@ pub struct MermaidConfig {
     pub cache_enabled: bool,
     pub capability_profile: Option<String>,
     pub debug_overlay: bool,
+    pub palette: DiagramPalettePreset,
 }
 
 impl Default for MermaidConfig {
@@ -376,6 +523,7 @@ impl Default for MermaidConfig {
         Self {
             enabled: true,
             glyph_mode: MermaidGlyphMode::Unicode,
+            render_mode: MermaidRenderMode::Auto,
             tier_override: MermaidTier::Auto,
             max_nodes: 200,
             max_edges: 400,
@@ -394,6 +542,7 @@ impl Default for MermaidConfig {
             cache_enabled: true,
             capability_profile: None,
             debug_overlay: false,
+            palette: DiagramPalettePreset::Default,
         }
     }
 }
@@ -476,8 +625,8 @@ impl MermaidConfig {
     pub fn summary_short(&self) -> String {
         let enabled = if self.enabled { "on" } else { "off" };
         format!(
-            "Mermaid: {enabled} · {} · {}",
-            self.glyph_mode, self.tier_override
+            "Mermaid: {enabled} · {} · {} · {} · {}",
+            self.glyph_mode, self.render_mode, self.tier_override, self.palette
         )
     }
 }
@@ -507,6 +656,17 @@ where
                 "glyph_mode",
                 value,
                 "expected unicode|ascii",
+            )),
+        }
+    }
+
+    if let Some(value) = get(ENV_MERMAID_RENDER_MODE) {
+        match MermaidRenderMode::parse(&value) {
+            Some(parsed) => config.render_mode = parsed,
+            None => errors.push(MermaidConfigError::new(
+                "render_mode",
+                value,
+                "expected auto|cell|braille|block|halfblock",
             )),
         }
     }
@@ -694,6 +854,17 @@ where
         } else {
             Some(trimmed.to_string())
         };
+    }
+
+    if let Some(value) = get(ENV_MERMAID_PALETTE) {
+        match DiagramPalettePreset::parse(&value) {
+            Some(parsed) => config.palette = parsed,
+            None => errors.push(MermaidConfigError::new(
+                "palette",
+                value,
+                "expected default|corporate|neon|monochrome|pastel|high-contrast",
+            )),
+        }
     }
 
     if let Err(mut validation) = config.validate() {
@@ -890,6 +1061,7 @@ pub fn hash_ir(ir: &MermaidDiagramIr) -> u64 {
 pub fn hash_config_layout(config: &MermaidConfig) -> u64 {
     let mut h = FNV1A_OFFSET;
     fnv1a_hash_str(&mut h, config.glyph_mode.as_str());
+    fnv1a_hash_str(&mut h, config.render_mode.as_str());
     fnv1a_hash_str(&mut h, config.tier_override.as_str());
     fnv1a_hash_usize(&mut h, config.max_nodes);
     fnv1a_hash_usize(&mut h, config.max_edges);
@@ -907,6 +1079,7 @@ pub fn hash_config_layout(config: &MermaidConfig) -> u64 {
     } else {
         fnv1a_hash_bool(&mut h, false);
     }
+    fnv1a_hash_str(&mut h, config.palette.as_str());
     h
 }
 
@@ -6773,6 +6946,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert(ENV_MERMAID_ENABLE, "0");
         env.insert(ENV_MERMAID_GLYPH_MODE, "ascii");
+        env.insert(ENV_MERMAID_RENDER_MODE, "block");
         env.insert(ENV_MERMAID_TIER, "rich");
         env.insert(ENV_MERMAID_WRAP_MODE, "wordchar");
         env.insert(ENV_MERMAID_ENABLE_LINKS, "1");
@@ -6787,6 +6961,7 @@ mod tests {
 
         assert!(!config.enabled);
         assert_eq!(config.glyph_mode, MermaidGlyphMode::Ascii);
+        assert_eq!(config.render_mode, MermaidRenderMode::Block);
         assert_eq!(config.tier_override, MermaidTier::Rich);
         assert_eq!(config.wrap_mode, MermaidWrapMode::WordChar);
         assert!(config.enable_links);
@@ -6813,10 +6988,12 @@ mod tests {
     fn mermaid_config_invalid_values_reported() {
         let mut env = HashMap::new();
         env.insert(ENV_MERMAID_GLYPH_MODE, "nope");
+        env.insert(ENV_MERMAID_RENDER_MODE, "pizza");
         env.insert(ENV_MERMAID_TIER, "mega");
 
         let parsed = from_env_with(|key| env.get(key).map(|value| value.to_string()));
         assert!(parsed.errors.iter().any(|err| err.field == "glyph_mode"));
+        assert!(parsed.errors.iter().any(|err| err.field == "render_mode"));
         assert!(parsed.errors.iter().any(|err| err.field == "tier_override"));
     }
 

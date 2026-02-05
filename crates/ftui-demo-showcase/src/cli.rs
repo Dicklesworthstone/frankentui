@@ -55,31 +55,32 @@ SCREENS:
    13  Macro Recorder     Record/replay input macros and scenarios
    14  Performance        Frame budget, caching, virtualization
    15  Markdown           Rich text and markdown rendering
-   16  Visual Effects     Animated braille and canvas effects
-   17  Responsive         Breakpoint-driven responsive layout demo
-   18  Log Search         Live log search and filter demo
-   19  Notifications      Toast notification system demo
-   20  Action Timeline    Event timeline with filtering and severity
-   21  Sizing             Content-aware intrinsic sizing demo
-   22  Layout Inspector   Constraint solver visual inspector
-   23  Text Editor        Advanced multi-line text editor with search
-   24  Mouse Playground   Mouse hit-testing and interaction demo
-   25  Form Validation    Comprehensive form validation demo
-   26  Virtualized Search Fuzzy search in 100K+ items demo
-   27  Async Tasks        Async task manager and queue diagnostics
-   28  Theme Studio       Live palette editor and theme inspector
-   29  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
-   30  Performance Challenge Stress harness for degradation tiers
-   31  Explainability     Diff/resize/budget evidence cockpit
-   32  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
-   33  VOI Overlay        Galaxy-Brain VOI debug overlay
-   34  Inline Mode        Inline scrollback + chrome story
-   35  Accessibility      Accessibility control panel + contrast checks
-   36  Widget Builder     Interactive widget composition sandbox
-   37  Palette Evidence   Command palette evidence lab
-   38  Determinism Lab    Checksum equivalence + determinism proofs
-   39  Links              OSC-8 hyperlink playground + hit regions
-   40  Kanban Board       Interactive Kanban board with drag-drop
+   16  Mermaid Showcase   Mermaid diagrams with layout diagnostics
+   17  Visual Effects     Animated braille and canvas effects
+   18  Responsive         Breakpoint-driven responsive layout demo
+   19  Log Search         Live log search and filter demo
+   20  Notifications      Toast notification system demo
+   21  Action Timeline    Event timeline with filtering and severity
+   22  Sizing             Content-aware intrinsic sizing demo
+   23  Layout Inspector   Constraint solver visual inspector
+   24  Text Editor        Advanced multi-line text editor with search
+   25  Mouse Playground   Mouse hit-testing and interaction demo
+   26  Form Validation    Comprehensive form validation demo
+   27  Virtualized Search Fuzzy search in 100K+ items demo
+   28  Async Tasks        Async task manager and queue diagnostics
+   29  Theme Studio       Live palette editor and theme inspector
+   30  Time-Travel Studio A/B compare + diff heatmap of recorded snapshots
+   31  Performance Challenge Stress harness for degradation tiers
+   32  Explainability     Diff/resize/budget evidence cockpit
+   33  i18n Stress Lab    Unicode width, RTL, emoji, and truncation
+   34  VOI Overlay        Galaxy-Brain VOI debug overlay
+   35  Inline Mode        Inline scrollback + chrome story
+   36  Accessibility      Accessibility control panel + contrast checks
+   37  Widget Builder     Interactive widget composition sandbox
+   38  Palette Evidence   Command palette evidence lab
+   39  Determinism Lab    Checksum equivalence + determinism proofs
+   40  Links              OSC-8 hyperlink playground + hit regions
+   41  Kanban Board       Interactive Kanban board with drag-drop
 
 KEYBINDINGS:
     1-9, 0          Switch to screens 1-10 by number
@@ -604,8 +605,13 @@ mod tests {
     }
 
     #[test]
-    fn help_text_contains_visual_effects_as_screen_16() {
-        assert!(HELP_TEXT.contains("16  Visual Effects"));
+    fn help_text_contains_mermaid_showcase_as_screen_16() {
+        assert!(HELP_TEXT.contains("16  Mermaid Showcase"));
+    }
+
+    #[test]
+    fn help_text_contains_visual_effects_as_screen_17() {
+        assert!(HELP_TEXT.contains("17  Visual Effects"));
     }
 
     #[test]

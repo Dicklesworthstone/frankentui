@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! Optional feature-gated extensions for FrankenTUI.
 //!
 //! Each module is behind a Cargo feature flag and can be enabled independently.
@@ -44,6 +42,17 @@
 //! | `visual-fx` | [`visual_fx`] | Feature-gated visual FX primitives (backdrops, CPU/GPU adapters) |
 //! | `fx-gpu` | `visual_fx::gpu` | Optional GPU acceleration for metaballs (silent CPU fallback) |
 //! | `help` | [`help`] | Contextual help system with tooltips |
+
+#![forbid(unsafe_code)]
+
+#[cfg(test)]
+use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
+#[cfg(test)]
+use std::alloc::System;
+
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 #[cfg(feature = "canvas")]
 pub mod canvas;
@@ -128,3 +137,6 @@ pub mod visual_fx;
 
 #[cfg(feature = "help")]
 pub mod help;
+
+#[cfg(feature = "doom")]
+pub mod doom;

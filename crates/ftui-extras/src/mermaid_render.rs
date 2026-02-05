@@ -11,15 +11,21 @@
 //! ```
 
 use ftui_core::geometry::Rect;
+use ftui_core::glyph_policy::{GlyphMode, GlyphPolicy};
+use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
 use ftui_core::text_width::display_width;
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::drawing::{BorderChars, Draw};
+use std::str::FromStr;
 
+#[cfg(feature = "canvas")]
+use crate::canvas::{Mode as CanvasMode, Painter};
 use crate::mermaid::{
-    DiagramType, IrPieEntry, LinkSanitizeOutcome, MermaidConfig, MermaidDiagramIr, MermaidError,
-    MermaidErrorMode, MermaidFidelity, MermaidGlyphMode, MermaidLinkMode, MermaidStrokeDash,
-    MermaidTier, ResolvedMermaidStyle, resolve_styles,
+    DiagramPalettePreset, DiagramType, IrPieEntry, LinkSanitizeOutcome, MermaidConfig,
+    MermaidDiagramIr, MermaidError, MermaidErrorMode, MermaidFidelity, MermaidGlyphMode,
+    MermaidLinkMode, MermaidRenderMode, MermaidStrokeDash, MermaidTier, NodeShape,
+    ResolvedMermaidStyle, resolve_styles,
 };
 use crate::mermaid_layout::{
     DiagramLayout, LayoutClusterBox, LayoutEdgePath, LayoutNodeBox, LayoutRect,
@@ -97,6 +103,137 @@ const LINE_ALL: u8 = LINE_UP | LINE_DOWN | LINE_LEFT | LINE_RIGHT;
 
 // ── Scale Adaptation + Fidelity Tiers ────────────────────────────────
 
+/// State passed into the renderer to control selection highlights.
+///
+/// When a node is selected, its border renders in accent color and
+/// connected edges render in directional accent colors.
+#[derive(Debug, Clone, Default)]
+pub struct SelectionState {
+    /// Index of the currently selected node (into IR nodes vec), if any.
+    pub selected_node: Option<usize>,
+    /// Indices of edges going out from the selected node.
+    pub outgoing_edges: Vec<usize>,
+    /// Indices of edges coming in to the selected node.
+    pub incoming_edges: Vec<usize>,
+}
+
+impl SelectionState {
+    /// Build selection state from a selected node index and the IR.
+    #[must_use]
+    pub fn from_selected(node_idx: usize, ir: &MermaidDiagramIr) -> Self {
+        use crate::mermaid::{IrEndpoint, IrNodeId};
+        let target = IrEndpoint::Node(IrNodeId(node_idx));
+        let mut outgoing = Vec::new();
+        let mut incoming = Vec::new();
+        for (ei, edge) in ir.edges.iter().enumerate() {
+            if edge.from == target {
+                outgoing.push(ei);
+            }
+            if edge.to == target {
+                incoming.push(ei);
+            }
+        }
+        Self {
+            selected_node: Some(node_idx),
+            outgoing_edges: outgoing,
+            incoming_edges: incoming,
+        }
+    }
+
+    /// Returns true if there is no selection.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.selected_node.is_none()
+    }
+
+    /// Check if an edge index is highlighted (incoming or outgoing).
+    #[must_use]
+    pub fn edge_highlight(&self, edge_idx: usize) -> Option<PackedRgba> {
+        if self.outgoing_edges.contains(&edge_idx) {
+            Some(HIGHLIGHT_EDGE_OUT_FG)
+        } else if self.incoming_edges.contains(&edge_idx) {
+            Some(HIGHLIGHT_EDGE_IN_FG)
+        } else {
+            None
+        }
+    }
+}
+
+/// Build an adjacency list from IR edges: for each node, the list of
+/// (neighbor_node_idx, edge_idx, is_outgoing) tuples.
+#[must_use]
+pub fn build_adjacency(ir: &MermaidDiagramIr) -> Vec<Vec<(usize, usize, bool)>> {
+    use crate::mermaid::IrEndpoint;
+    let n = ir.nodes.len();
+    let mut adj = vec![Vec::new(); n];
+    for (ei, edge) in ir.edges.iter().enumerate() {
+        let from_idx = match edge.from {
+            IrEndpoint::Node(id) => Some(id.0),
+            IrEndpoint::Port(_) => None,
+        };
+        let to_idx = match edge.to {
+            IrEndpoint::Node(id) => Some(id.0),
+            IrEndpoint::Port(_) => None,
+        };
+        if let (Some(fi), Some(ti)) = (from_idx, to_idx) {
+            if fi < n {
+                adj[fi].push((ti, ei, true));
+            }
+            if ti < n {
+                adj[ti].push((fi, ei, false));
+            }
+        }
+    }
+    adj
+}
+
+/// Find the nearest connected neighbor in a spatial direction.
+///
+/// `direction`: 0=up, 1=right, 2=down, 3=left.
+/// Returns the neighbor node index, or None if no neighbor in that direction.
+#[must_use]
+pub fn navigate_direction(
+    node_idx: usize,
+    direction: u8,
+    adjacency: &[Vec<(usize, usize, bool)>],
+    layout: &DiagramLayout,
+) -> Option<usize> {
+    let neighbors = adjacency.get(node_idx)?;
+    if neighbors.is_empty() {
+        return None;
+    }
+    let current = layout.nodes.iter().find(|n| n.node_idx == node_idx)?;
+    let cx = current.rect.x + current.rect.width / 2.0;
+    let cy = current.rect.y + current.rect.height / 2.0;
+
+    let mut best: Option<(usize, f64)> = None;
+    for &(neighbor_idx, _, _) in neighbors {
+        let neighbor = layout.nodes.iter().find(|n| n.node_idx == neighbor_idx)?;
+        let nx = neighbor.rect.x + neighbor.rect.width / 2.0;
+        let ny = neighbor.rect.y + neighbor.rect.height / 2.0;
+        let dx = nx - cx;
+        let dy = ny - cy;
+
+        // Check if neighbor is roughly in the requested direction
+        let in_direction = match direction {
+            0 => dy < -0.1, // up
+            1 => dx > 0.1,  // right
+            2 => dy > 0.1,  // down
+            3 => dx < -0.1, // left
+            _ => false,
+        };
+        if !in_direction {
+            continue;
+        }
+
+        let dist = dx * dx + dy * dy;
+        if best.is_none() || dist < best.unwrap().1 {
+            best = Some((neighbor_idx, dist));
+        }
+    }
+    best.map(|(idx, _)| idx)
+}
+
 /// Rendering plan derived from fidelity tier selection.
 ///
 /// Controls how much detail is rendered based on available terminal area
@@ -117,6 +254,59 @@ pub struct RenderPlan {
     pub diagram_area: Rect,
     /// Area reserved for a footnote/legend region (if any).
     pub legend_area: Option<Rect>,
+}
+
+#[allow(dead_code)]
+fn glyph_policy_for_config(config: &MermaidConfig) -> GlyphPolicy {
+    if let Some(ref profile_name) = config.capability_profile
+        && let Ok(profile) = TerminalProfile::from_str(profile_name)
+    {
+        let caps = TerminalCapabilities::from_profile(profile);
+        if cfg!(test) {
+            return GlyphPolicy::from_env_with(|_| None, &caps);
+        }
+        return GlyphPolicy::from_env_with(|key| std::env::var(key).ok(), &caps);
+    }
+    if cfg!(test) {
+        let caps = TerminalCapabilities::dumb();
+        return GlyphPolicy::from_env_with(|_| None, &caps);
+    }
+    GlyphPolicy::detect()
+}
+
+#[allow(dead_code)]
+fn resolve_render_mode(config: &MermaidConfig, policy: &GlyphPolicy) -> MermaidRenderMode {
+    if config.glyph_mode == MermaidGlyphMode::Ascii || policy.mode == GlyphMode::Ascii {
+        return MermaidRenderMode::CellOnly;
+    }
+
+    if config.render_mode != MermaidRenderMode::Auto {
+        return config.render_mode;
+    }
+
+    // Heuristic: treat emoji-capable Unicode terminals as Braille-ready.
+    if policy.unicode_box_drawing && policy.double_width && policy.emoji {
+        return MermaidRenderMode::Braille;
+    }
+    if policy.unicode_box_drawing {
+        return MermaidRenderMode::Block;
+    }
+    if policy.double_width {
+        return MermaidRenderMode::HalfBlock;
+    }
+
+    MermaidRenderMode::CellOnly
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn canvas_mode_for_render_mode(render_mode: MermaidRenderMode) -> CanvasMode {
+    match render_mode {
+        MermaidRenderMode::Braille => CanvasMode::Braille,
+        MermaidRenderMode::Block => CanvasMode::Block,
+        MermaidRenderMode::HalfBlock => CanvasMode::HalfBlock,
+        _ => CanvasMode::Braille,
+    }
 }
 
 /// Select the fidelity tier based on viewport density and scale.
@@ -311,13 +501,92 @@ impl Viewport {
     }
 }
 
+// ── Canvas viewport mapping (sub-cell resolution) ───────────────────────
+
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct PixelRect {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+/// Maps abstract layout coordinates to canvas sub-pixel coordinates.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+#[cfg(feature = "canvas")]
+struct CanvasViewport {
+    scale_x: f64,
+    scale_y: f64,
+    offset_x: f64,
+    offset_y: f64,
+    max_x: i32,
+    max_y: i32,
+}
+
+#[cfg(feature = "canvas")]
+impl CanvasViewport {
+    /// Fit layout bounds into a sub-cell grid for the given area/mode.
+    #[allow(dead_code)]
+    fn fit(bounding_box: &LayoutRect, area: Rect, mode: CanvasMode) -> Self {
+        let px_width = area.width.saturating_mul(mode.cols_per_cell()) as i32;
+        let px_height = area.height.saturating_mul(mode.rows_per_cell()) as i32;
+        let max_x = px_width.saturating_sub(1);
+        let max_y = px_height.saturating_sub(1);
+
+        let margin_x = f64::from(mode.cols_per_cell());
+        let margin_y = f64::from(mode.rows_per_cell());
+        let avail_w = (px_width as f64).max(1.0) - 2.0 * margin_x;
+        let avail_h = (px_height as f64).max(1.0) - 2.0 * margin_y;
+
+        let bb_w = bounding_box.width.max(1.0);
+        let bb_h = bounding_box.height.max(1.0);
+        let scale = (avail_w / bb_w).min(avail_h / bb_h).max(0.1);
+
+        let used_w = bb_w * scale;
+        let used_h = bb_h * scale;
+        let pad_x = (avail_w - used_w) / 2.0;
+        let pad_y = (avail_h - used_h) / 2.0;
+
+        Self {
+            scale_x: scale,
+            scale_y: scale,
+            offset_x: margin_x + pad_x - bounding_box.x * scale,
+            offset_y: margin_y + pad_y - bounding_box.y * scale,
+            max_x,
+            max_y,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn to_pixel(&self, x: f64, y: f64) -> (i32, i32) {
+        let px = (x * self.scale_x + self.offset_x).round();
+        let py = (y * self.scale_y + self.offset_y).round();
+        let px = px.clamp(0.0, self.max_x as f64) as i32;
+        let py = py.clamp(0.0, self.max_y as f64) as i32;
+        (px, py)
+    }
+
+    #[allow(dead_code)]
+    fn to_pixel_rect(&self, r: &LayoutRect) -> PixelRect {
+        let (x0, y0) = self.to_pixel(r.x, r.y);
+        let (x1, y1) = self.to_pixel(r.x + r.width, r.y + r.height);
+        let width = (x1 - x0).max(1);
+        let height = (y1 - y0).max(1);
+        PixelRect {
+            x: x0,
+            y: y0,
+            width,
+            height,
+        }
+    }
+}
+
 // ── Color palette for diagram elements ──────────────────────────────────
 
-const NODE_FG: PackedRgba = PackedRgba::WHITE;
+#[allow(dead_code)] // Used by canvas rendering path
 const EDGE_FG: PackedRgba = PackedRgba::rgb(150, 150, 150);
-const LABEL_FG: PackedRgba = PackedRgba::WHITE;
-const CLUSTER_FG: PackedRgba = PackedRgba::rgb(100, 160, 220);
-const CLUSTER_TITLE_FG: PackedRgba = PackedRgba::rgb(100, 160, 220);
 #[allow(dead_code)] // Used by upcoming pie chart rendering
 const PIE_SLICE_COLORS: [PackedRgba; 8] = [
     PackedRgba::rgb(231, 76, 60),
@@ -331,6 +600,221 @@ const PIE_SLICE_COLORS: [PackedRgba; 8] = [
 ];
 const DEFAULT_EDGE_LABEL_WIDTH: usize = 16;
 const STATE_CONTAINER_CLASS: &str = "state_container";
+
+// ── Selection / highlight colors ──────────────────────────────────────
+
+/// Accent color for outgoing edges from the selected node.
+const HIGHLIGHT_EDGE_OUT_FG: PackedRgba = PackedRgba::rgb(80, 220, 255);
+/// Accent color for incoming edges to the selected node.
+const HIGHLIGHT_EDGE_IN_FG: PackedRgba = PackedRgba::rgb(255, 180, 80);
+
+// ── Diagram color palette ────────────────────────────────────────────
+
+/// Color palette for diagram rendering.
+///
+/// Each preset defines colors for every visual element. The renderer reads
+/// from this palette instead of hardcoded constants, allowing theme switching
+/// at runtime via [`DiagramPalettePreset`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagramPalette {
+    /// Cycling fill colors for nodes (indexed by node position mod len).
+    pub node_fills: [PackedRgba; 8],
+    /// Default node border color.
+    pub node_border: PackedRgba,
+    /// Default node label text color.
+    pub node_text: PackedRgba,
+    /// Default edge line color.
+    pub edge_color: PackedRgba,
+    /// Edge label text color.
+    pub edge_label_color: PackedRgba,
+    /// Cluster border color.
+    pub cluster_border: PackedRgba,
+    /// Cluster title text color.
+    pub cluster_title: PackedRgba,
+    /// Accent color for selection highlighting.
+    pub accent: PackedRgba,
+    /// Accent color for outgoing edges from selected node.
+    pub accent_outgoing: PackedRgba,
+    /// Accent color for incoming edges to selected node.
+    pub accent_incoming: PackedRgba,
+}
+
+impl DiagramPalette {
+    /// Build a palette from a preset name.
+    #[must_use]
+    pub fn from_preset(preset: DiagramPalettePreset) -> Self {
+        match preset {
+            DiagramPalettePreset::Default => Self::default_palette(),
+            DiagramPalettePreset::Corporate => Self::corporate(),
+            DiagramPalettePreset::Neon => Self::neon(),
+            DiagramPalettePreset::Monochrome => Self::monochrome(),
+            DiagramPalettePreset::Pastel => Self::pastel(),
+            DiagramPalettePreset::HighContrast => Self::high_contrast(),
+        }
+    }
+
+    /// Default: blue tones, gray edges, white text — the original look.
+    #[must_use]
+    pub const fn default_palette() -> Self {
+        Self {
+            node_fills: [
+                PackedRgba::rgb(52, 101, 164),
+                PackedRgba::rgb(78, 154, 107),
+                PackedRgba::rgb(143, 89, 161),
+                PackedRgba::rgb(196, 160, 56),
+                PackedRgba::rgb(52, 152, 219),
+                PackedRgba::rgb(155, 89, 182),
+                PackedRgba::rgb(46, 204, 113),
+                PackedRgba::rgb(230, 126, 34),
+            ],
+            node_border: PackedRgba::WHITE,
+            node_text: PackedRgba::WHITE,
+            edge_color: PackedRgba::rgb(150, 150, 150),
+            edge_label_color: PackedRgba::WHITE,
+            cluster_border: PackedRgba::rgb(100, 160, 220),
+            cluster_title: PackedRgba::rgb(100, 160, 220),
+            accent: PackedRgba::rgb(80, 220, 255),
+            accent_outgoing: PackedRgba::rgb(80, 220, 255),
+            accent_incoming: PackedRgba::rgb(255, 180, 80),
+        }
+    }
+
+    /// Corporate: navy/teal/gray — professional, muted palette.
+    #[must_use]
+    pub const fn corporate() -> Self {
+        Self {
+            node_fills: [
+                PackedRgba::rgb(34, 49, 63),
+                PackedRgba::rgb(22, 160, 133),
+                PackedRgba::rgb(41, 128, 185),
+                PackedRgba::rgb(44, 62, 80),
+                PackedRgba::rgb(39, 174, 96),
+                PackedRgba::rgb(52, 73, 94),
+                PackedRgba::rgb(26, 188, 156),
+                PackedRgba::rgb(127, 140, 141),
+            ],
+            node_border: PackedRgba::rgb(189, 195, 199),
+            node_text: PackedRgba::rgb(236, 240, 241),
+            edge_color: PackedRgba::rgb(127, 140, 141),
+            edge_label_color: PackedRgba::rgb(189, 195, 199),
+            cluster_border: PackedRgba::rgb(52, 73, 94),
+            cluster_title: PackedRgba::rgb(149, 165, 166),
+            accent: PackedRgba::rgb(26, 188, 156),
+            accent_outgoing: PackedRgba::rgb(26, 188, 156),
+            accent_incoming: PackedRgba::rgb(230, 126, 34),
+        }
+    }
+
+    /// Neon: cyan/magenta/green on dark background — high energy.
+    #[must_use]
+    pub const fn neon() -> Self {
+        Self {
+            node_fills: [
+                PackedRgba::rgb(0, 255, 255),
+                PackedRgba::rgb(255, 0, 255),
+                PackedRgba::rgb(0, 255, 128),
+                PackedRgba::rgb(255, 255, 0),
+                PackedRgba::rgb(128, 0, 255),
+                PackedRgba::rgb(255, 128, 0),
+                PackedRgba::rgb(0, 128, 255),
+                PackedRgba::rgb(255, 0, 128),
+            ],
+            node_border: PackedRgba::rgb(0, 255, 255),
+            node_text: PackedRgba::rgb(0, 0, 0),
+            edge_color: PackedRgba::rgb(0, 200, 200),
+            edge_label_color: PackedRgba::rgb(180, 255, 180),
+            cluster_border: PackedRgba::rgb(128, 0, 255),
+            cluster_title: PackedRgba::rgb(200, 100, 255),
+            accent: PackedRgba::rgb(255, 0, 255),
+            accent_outgoing: PackedRgba::rgb(0, 255, 255),
+            accent_incoming: PackedRgba::rgb(255, 255, 0),
+        }
+    }
+
+    /// Monochrome: white/gray/black — works on any terminal.
+    #[must_use]
+    pub const fn monochrome() -> Self {
+        Self {
+            node_fills: [
+                PackedRgba::rgb(200, 200, 200),
+                PackedRgba::rgb(180, 180, 180),
+                PackedRgba::rgb(160, 160, 160),
+                PackedRgba::rgb(140, 140, 140),
+                PackedRgba::rgb(200, 200, 200),
+                PackedRgba::rgb(180, 180, 180),
+                PackedRgba::rgb(160, 160, 160),
+                PackedRgba::rgb(140, 140, 140),
+            ],
+            node_border: PackedRgba::WHITE,
+            node_text: PackedRgba::rgb(0, 0, 0),
+            edge_color: PackedRgba::rgb(180, 180, 180),
+            edge_label_color: PackedRgba::WHITE,
+            cluster_border: PackedRgba::rgb(200, 200, 200),
+            cluster_title: PackedRgba::rgb(220, 220, 220),
+            accent: PackedRgba::WHITE,
+            accent_outgoing: PackedRgba::WHITE,
+            accent_incoming: PackedRgba::rgb(180, 180, 180),
+        }
+    }
+
+    /// Pastel: soft muted colors — easy on eyes.
+    #[must_use]
+    pub const fn pastel() -> Self {
+        Self {
+            node_fills: [
+                PackedRgba::rgb(174, 198, 207),
+                PackedRgba::rgb(179, 222, 193),
+                PackedRgba::rgb(253, 253, 150),
+                PackedRgba::rgb(244, 154, 194),
+                PackedRgba::rgb(207, 186, 240),
+                PackedRgba::rgb(255, 218, 185),
+                PackedRgba::rgb(162, 210, 223),
+                PackedRgba::rgb(195, 177, 225),
+            ],
+            node_border: PackedRgba::rgb(180, 180, 200),
+            node_text: PackedRgba::rgb(40, 40, 60),
+            edge_color: PackedRgba::rgb(160, 160, 180),
+            edge_label_color: PackedRgba::rgb(80, 80, 100),
+            cluster_border: PackedRgba::rgb(200, 180, 220),
+            cluster_title: PackedRgba::rgb(140, 120, 160),
+            accent: PackedRgba::rgb(120, 180, 220),
+            accent_outgoing: PackedRgba::rgb(120, 180, 220),
+            accent_incoming: PackedRgba::rgb(244, 154, 194),
+        }
+    }
+
+    /// High-contrast: WCAG AAA compliant, bold primary colors.
+    #[must_use]
+    pub const fn high_contrast() -> Self {
+        Self {
+            node_fills: [
+                PackedRgba::rgb(255, 255, 0),
+                PackedRgba::rgb(0, 255, 0),
+                PackedRgba::rgb(255, 165, 0),
+                PackedRgba::rgb(0, 255, 255),
+                PackedRgba::rgb(255, 105, 180),
+                PackedRgba::rgb(0, 191, 255),
+                PackedRgba::rgb(255, 215, 0),
+                PackedRgba::rgb(50, 205, 50),
+            ],
+            node_border: PackedRgba::WHITE,
+            node_text: PackedRgba::rgb(0, 0, 0),
+            edge_color: PackedRgba::WHITE,
+            edge_label_color: PackedRgba::WHITE,
+            cluster_border: PackedRgba::rgb(255, 255, 0),
+            cluster_title: PackedRgba::rgb(255, 255, 0),
+            accent: PackedRgba::rgb(255, 0, 0),
+            accent_outgoing: PackedRgba::rgb(255, 0, 0),
+            accent_incoming: PackedRgba::rgb(0, 255, 0),
+        }
+    }
+
+    /// Get the fill color for a node at the given index (cycles through fills).
+    #[must_use]
+    pub const fn node_fill_for(&self, index: usize) -> PackedRgba {
+        self.node_fills[index % self.node_fills.len()]
+    }
+}
 
 // ── Edge line style ──────────────────────────────────────────────────
 
@@ -373,7 +857,8 @@ fn edge_line_style(arrow: &str, style: Option<&ResolvedMermaidStyle>) -> EdgeLin
 
 /// Renders a [`DiagramLayout`] into a terminal [`Buffer`].
 pub struct MermaidRenderer {
-    palette: GlyphPalette,
+    glyphs: GlyphPalette,
+    colors: DiagramPalette,
     glyph_mode: MermaidGlyphMode,
 }
 
@@ -382,7 +867,8 @@ impl MermaidRenderer {
     #[must_use]
     pub fn new(config: &MermaidConfig) -> Self {
         Self {
-            palette: GlyphPalette::for_mode(config.glyph_mode),
+            glyphs: GlyphPalette::for_mode(config.glyph_mode),
+            colors: DiagramPalette::from_preset(config.palette),
             glyph_mode: config.glyph_mode,
         }
     }
@@ -391,7 +877,18 @@ impl MermaidRenderer {
     #[must_use]
     pub fn with_mode(mode: MermaidGlyphMode) -> Self {
         Self {
-            palette: GlyphPalette::for_mode(mode),
+            glyphs: GlyphPalette::for_mode(mode),
+            colors: DiagramPalette::default_palette(),
+            glyph_mode: mode,
+        }
+    }
+
+    /// Create a renderer with explicit glyph mode and color palette.
+    #[must_use]
+    pub fn with_mode_and_palette(mode: MermaidGlyphMode, palette: DiagramPalettePreset) -> Self {
+        Self {
+            glyphs: GlyphPalette::for_mode(mode),
+            colors: DiagramPalette::from_preset(palette),
             glyph_mode: mode,
         }
     }
@@ -494,7 +991,7 @@ impl MermaidRenderer {
             && let Some(title) = ir.labels.get(title_id.0).map(|l| l.text.as_str())
             && content_area.height > 0
         {
-            let title_cell = Cell::from_char(' ').with_fg(LABEL_FG);
+            let title_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
             let mut title_text = title.to_string();
             if max_label_width > 0 {
                 title_text = truncate_label(&title_text, max_label_width);
@@ -611,7 +1108,7 @@ impl MermaidRenderer {
         if legend.is_empty() || legend.width < 3 {
             return;
         }
-        let label_cell = Cell::from_char(' ').with_fg(LABEL_FG);
+        let label_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
         let mark_char = match self.glyph_mode {
             MermaidGlyphMode::Unicode => '■',
             MermaidGlyphMode::Ascii => '#',
@@ -642,9 +1139,9 @@ impl MermaidRenderer {
         max_label_width: usize,
         buf: &mut Buffer,
     ) {
-        let label_cell = Cell::from_char(' ').with_fg(LABEL_FG);
-        let line_cell = Cell::from_char(' ').with_fg(EDGE_FG);
-        let leader_char = self.palette.dot_h;
+        let label_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
+        let line_cell = Cell::from_char(' ').with_fg(self.colors.edge_color);
+        let leader_char = self.glyphs.dot_h;
         let area_x0 = area.x as i32;
         let area_x1 = (area.x + area.width).saturating_sub(1) as i32;
         let area_y0 = area.y as i32;
@@ -758,7 +1255,7 @@ impl MermaidRenderer {
         plan: &RenderPlan,
         buf: &mut Buffer,
     ) {
-        let edge_cell = Cell::from_char(' ').with_fg(EDGE_FG);
+        let edge_cell = Cell::from_char(' ').with_fg(self.colors.edge_color);
         for edge_path in edges {
             let waypoints: Vec<(u16, u16)> = edge_path
                 .waypoints
@@ -804,6 +1301,301 @@ impl MermaidRenderer {
         }
     }
 
+    // ── Shape-aware node rendering ─────────────────────────────────────
+
+    /// Draw a node shape into the buffer, returning label inset (left, top, right, bottom).
+    ///
+    /// Each shape variant draws its distinctive border and returns the inset
+    /// that the label renderer should use to avoid overlapping the border.
+    fn draw_shaped_node(
+        &self,
+        cell_rect: Rect,
+        shape: NodeShape,
+        border_cell: Cell,
+        fill_cell: Cell,
+        buf: &mut Buffer,
+    ) -> (u16, u16, u16, u16) {
+        let w = cell_rect.width;
+        let h = cell_rect.height;
+        match shape {
+            NodeShape::Rect => {
+                buf.draw_box(cell_rect, self.glyphs.border, border_cell, fill_cell);
+                (1, 1, 1, 1)
+            }
+            NodeShape::Rounded | NodeShape::Circle => {
+                let chars = match self.glyph_mode {
+                    MermaidGlyphMode::Unicode => BorderChars::ROUNDED,
+                    MermaidGlyphMode::Ascii => BorderChars::ASCII,
+                };
+                buf.draw_box(cell_rect, chars, border_cell, fill_cell);
+                (1, 1, 1, 1)
+            }
+            NodeShape::Stadium => self.draw_stadium(cell_rect, w, h, border_cell, fill_cell, buf),
+            NodeShape::Subroutine => {
+                self.draw_subroutine(cell_rect, w, h, border_cell, fill_cell, buf)
+            }
+            NodeShape::Diamond => {
+                if w < 5 || h < 3 {
+                    buf.draw_box(cell_rect, self.glyphs.border, border_cell, fill_cell);
+                    return (1, 1, 1, 1);
+                }
+                self.draw_diamond(cell_rect, w, h, border_cell, fill_cell, buf)
+            }
+            NodeShape::Hexagon => self.draw_hexagon(cell_rect, w, h, border_cell, fill_cell, buf),
+            NodeShape::Asymmetric => {
+                self.draw_asymmetric(cell_rect, w, h, border_cell, fill_cell, buf)
+            }
+        }
+    }
+
+    /// Stadium shape: rounded corners with double horizontal lines.
+    fn draw_stadium(
+        &self,
+        r: Rect,
+        w: u16,
+        h: u16,
+        bc: Cell,
+        fc: Cell,
+        buf: &mut Buffer,
+    ) -> (u16, u16, u16, u16) {
+        let (tl, tr, bl, br, horiz, vert) = match self.glyph_mode {
+            MermaidGlyphMode::Unicode => ('╭', '╮', '╰', '╯', '═', '│'),
+            MermaidGlyphMode::Ascii => ('(', ')', '(', ')', '=', '|'),
+        };
+        // Fill interior
+        for row in 1..h.saturating_sub(1) {
+            for col in 1..w.saturating_sub(1) {
+                buf.set(r.x + col, r.y + row, fc);
+            }
+        }
+        // Top/bottom borders
+        buf.set(r.x, r.y, bc.with_char(tl));
+        buf.set(r.x + w - 1, r.y, bc.with_char(tr));
+        buf.set(r.x, r.y + h - 1, bc.with_char(bl));
+        buf.set(r.x + w - 1, r.y + h - 1, bc.with_char(br));
+        for col in 1..w.saturating_sub(1) {
+            buf.set(r.x + col, r.y, bc.with_char(horiz));
+            buf.set(r.x + col, r.y + h - 1, bc.with_char(horiz));
+        }
+        // Side borders
+        for row in 1..h.saturating_sub(1) {
+            buf.set(r.x, r.y + row, bc.with_char(vert));
+            buf.set(r.x + w - 1, r.y + row, bc.with_char(vert));
+        }
+        (2, 1, 2, 1)
+    }
+
+    /// Subroutine shape: double vertical borders with inner vertical lines.
+    fn draw_subroutine(
+        &self,
+        r: Rect,
+        w: u16,
+        h: u16,
+        bc: Cell,
+        fc: Cell,
+        buf: &mut Buffer,
+    ) -> (u16, u16, u16, u16) {
+        // Draw standard box first
+        buf.draw_box(r, self.glyphs.border, bc, fc);
+        // Add inner vertical lines (double-border effect)
+        let (dbl_vert, inner_vert) = match self.glyph_mode {
+            MermaidGlyphMode::Unicode => ('║', '│'),
+            MermaidGlyphMode::Ascii => ('|', '|'),
+        };
+        // Outer double-verticals
+        for row in 1..h.saturating_sub(1) {
+            buf.set(r.x, r.y + row, bc.with_char(dbl_vert));
+            buf.set(r.x + w - 1, r.y + row, bc.with_char(dbl_vert));
+        }
+        // Inner single-verticals (if wide enough)
+        if w >= 4 {
+            for row in 1..h.saturating_sub(1) {
+                buf.set(r.x + 1, r.y + row, bc.with_char(inner_vert));
+                buf.set(r.x + w - 2, r.y + row, bc.with_char(inner_vert));
+            }
+        }
+        (2, 1, 2, 1)
+    }
+
+    /// Diamond shape: diagonal borders converging to a peak.
+    fn draw_diamond(
+        &self,
+        r: Rect,
+        w: u16,
+        h: u16,
+        bc: Cell,
+        fc: Cell,
+        buf: &mut Buffer,
+    ) -> (u16, u16, u16, u16) {
+        let (fwd, bck) = match self.glyph_mode {
+            MermaidGlyphMode::Unicode => ('╱', '╲'),
+            MermaidGlyphMode::Ascii => ('/', '\\'),
+        };
+        let half_h = h / 2;
+        // Draw each row
+        for row in 0..h {
+            let dist = half_h.abs_diff(row);
+            let taper = half_h.saturating_sub(dist);
+            // Linear interpolation: peak row gets width 2, middle gets full width
+            let row_width = w
+                .checked_sub(2)
+                .and_then(|delta| delta.checked_mul(taper))
+                .and_then(|num| num.checked_div(half_h))
+                .map(|scale| 2 + scale)
+                .unwrap_or(w);
+            let left = (w - row_width) / 2;
+            let right = left + row_width - 1;
+            // Draw left and right diagonal chars
+            if row <= half_h {
+                buf.set(r.x + left, r.y + row, bc.with_char(bck));
+                buf.set(r.x + right, r.y + row, bc.with_char(fwd));
+            } else {
+                buf.set(r.x + left, r.y + row, bc.with_char(fwd));
+                buf.set(r.x + right, r.y + row, bc.with_char(bck));
+            }
+            // Fill interior
+            for col in (left + 1)..right {
+                buf.set(r.x + col, r.y + row, fc);
+            }
+        }
+        let inset_x = (w / 4).max(2);
+        let inset_y = (h / 4).max(1);
+        (inset_x, inset_y, inset_x, inset_y)
+    }
+
+    /// Hexagon shape: angled top/bottom edges with straight sides.
+    fn draw_hexagon(
+        &self,
+        r: Rect,
+        w: u16,
+        h: u16,
+        bc: Cell,
+        fc: Cell,
+        buf: &mut Buffer,
+    ) -> (u16, u16, u16, u16) {
+        let (fwd, bck, horiz, vert) = match self.glyph_mode {
+            MermaidGlyphMode::Unicode => ('╱', '╲', '─', '│'),
+            MermaidGlyphMode::Ascii => ('/', '\\', '-', '|'),
+        };
+        let diag = (h / 2).min(w / 4).max(1);
+        // Fill interior
+        for row in 0..h {
+            for col in 0..w {
+                buf.set(r.x + col, r.y + row, fc);
+            }
+        }
+        // Top edge: ╱───╲
+        buf.set(r.x + diag - 1, r.y, bc.with_char(fwd));
+        buf.set(r.x + w - diag, r.y, bc.with_char(bck));
+        for col in diag..(w - diag) {
+            buf.set(r.x + col, r.y, bc.with_char(horiz));
+        }
+        // Bottom edge: ╲───╱
+        buf.set(r.x + diag - 1, r.y + h - 1, bc.with_char(bck));
+        buf.set(r.x + w - diag, r.y + h - 1, bc.with_char(fwd));
+        for col in diag..(w - diag) {
+            buf.set(r.x + col, r.y + h - 1, bc.with_char(horiz));
+        }
+        // Left/right angled sides + middle vertical
+        for row in 1..h.saturating_sub(1) {
+            let frac = if h <= 2 {
+                0
+            } else {
+                let mid = (h - 1) / 2;
+                if row <= mid {
+                    diag.saturating_sub(diag * row / mid.max(1))
+                } else {
+                    diag.saturating_sub(diag * (h - 1 - row) / mid.max(1))
+                }
+            };
+            buf.set(r.x + frac, r.y + row, bc.with_char(vert));
+            buf.set(r.x + w - 1 - frac, r.y + row, bc.with_char(vert));
+        }
+        (diag + 1, 1, diag + 1, 1)
+    }
+
+    /// Asymmetric shape: standard left side, pointed right (flag shape).
+    fn draw_asymmetric(
+        &self,
+        r: Rect,
+        w: u16,
+        h: u16,
+        bc: Cell,
+        fc: Cell,
+        buf: &mut Buffer,
+    ) -> (u16, u16, u16, u16) {
+        let (tl, bl, vert, horiz, point) = match self.glyph_mode {
+            MermaidGlyphMode::Unicode => ('┌', '└', '│', '─', '▷'),
+            MermaidGlyphMode::Ascii => ('+', '+', '|', '-', '>'),
+        };
+        let point_depth = (w / 4).max(1);
+        let mid = h / 2;
+        // Fill interior
+        for row in 1..h.saturating_sub(1) {
+            for col in 1..w.saturating_sub(1) {
+                buf.set(r.x + col, r.y + row, fc);
+            }
+        }
+        // Left side
+        buf.set(r.x, r.y, bc.with_char(tl));
+        buf.set(r.x, r.y + h - 1, bc.with_char(bl));
+        for row in 1..h.saturating_sub(1) {
+            buf.set(r.x, r.y + row, bc.with_char(vert));
+        }
+        // Top and bottom
+        for col in 1..w.saturating_sub(point_depth) {
+            buf.set(r.x + col, r.y, bc.with_char(horiz));
+            buf.set(r.x + col, r.y + h - 1, bc.with_char(horiz));
+        }
+        // Right point
+        buf.set(r.x + w - 1, r.y + mid, bc.with_char(point));
+        (1, 1, point_depth + 1, 1)
+    }
+
+    /// Render a node label with shape-specific insets.
+    fn render_node_label_with_inset(
+        &self,
+        cell_rect: Rect,
+        text: &str,
+        inset: (u16, u16, u16, u16),
+        buf: &mut Buffer,
+    ) {
+        let (il, it, ir, ib) = inset;
+        let inner_w = cell_rect.width.saturating_sub(il + ir) as usize;
+        let inner_h = cell_rect.height.saturating_sub(it + ib) as usize;
+        if inner_w == 0 || inner_h == 0 {
+            return;
+        }
+
+        let max_x = cell_rect
+            .x
+            .saturating_add(cell_rect.width)
+            .saturating_sub(ir)
+            .saturating_sub(1);
+        let label_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
+
+        let mut lines = wrap_text(text, inner_w);
+        if lines.len() > inner_h {
+            lines.truncate(inner_h);
+            if let Some(last) = lines.last_mut() {
+                *last = append_ellipsis(last, inner_w);
+            }
+        }
+
+        let pad_y = inner_h.saturating_sub(lines.len()) / 2;
+
+        for (i, line) in lines.iter().enumerate() {
+            let line_width = display_width(line).min(inner_w);
+            let pad_x = (inner_w.saturating_sub(line_width)) / 2;
+            let lx = cell_rect.x.saturating_add(il).saturating_add(pad_x as u16);
+            let ly = cell_rect
+                .y
+                .saturating_add(it)
+                .saturating_add(pad_y as u16 + i as u16);
+            buf.print_text_clipped(lx, ly, line, label_cell, max_x);
+        }
+    }
+
     /// Render nodes respecting the fidelity plan.
     fn render_nodes_with_plan(
         &self,
@@ -813,7 +1605,7 @@ impl MermaidRenderer {
         plan: &RenderPlan,
         buf: &mut Buffer,
     ) {
-        let border_cell = Cell::from_char(' ').with_fg(NODE_FG);
+        let border_cell = Cell::from_char(' ').with_fg(self.colors.node_border);
         let fill_cell = Cell::from_char(' ');
 
         for node in nodes {
@@ -846,7 +1638,8 @@ impl MermaidRenderer {
                 continue;
             }
 
-            buf.draw_box(cell_rect, self.palette.border, border_cell, fill_cell);
+            let inset =
+                self.draw_shaped_node(cell_rect, ir_node.shape, border_cell, fill_cell, buf);
 
             // Labels only if plan allows.
             if plan.show_node_labels
@@ -868,7 +1661,183 @@ impl MermaidRenderer {
                     } else {
                         &label.text
                     };
+                    self.render_node_label_with_inset(cell_rect, text, inset, buf);
+                }
+            }
+        }
+    }
+
+    /// Render labels (and ER cardinality markers) without drawing node/edge geometry.
+    #[allow(dead_code)]
+    fn render_labels_with_plan(
+        &self,
+        nodes: &[LayoutNodeBox],
+        edges: &[LayoutEdgePath],
+        ir: &MermaidDiagramIr,
+        vp: &Viewport,
+        plan: &RenderPlan,
+        buf: &mut Buffer,
+    ) {
+        if plan.show_edge_labels {
+            for edge_path in edges {
+                if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx)
+                    && let Some(label_id) = ir_edge.label
+                    && let Some(label) = ir.labels.get(label_id.0)
+                {
+                    self.render_edge_label(edge_path, &label.text, plan.max_label_width, vp, buf);
+                }
+            }
+        }
+
+        if ir.diagram_type == DiagramType::Er {
+            for edge_path in edges {
+                if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx) {
+                    render_er_cardinality(edge_path, &ir_edge.arrow, vp, buf);
+                }
+            }
+        }
+
+        if !plan.show_node_labels {
+            return;
+        }
+
+        for node in nodes {
+            let ir_node = match ir.nodes.get(node.node_idx) {
+                Some(node) => node,
+                None => continue,
+            };
+            if ir_node
+                .classes
+                .iter()
+                .any(|class| class == STATE_CONTAINER_CLASS)
+            {
+                continue;
+            }
+            let cell_rect = vp.to_cell_rect(&node.rect);
+            if let Some(label_id) = ir_node.label
+                && let Some(label) = ir.labels.get(label_id.0)
+            {
+                if !ir_node.members.is_empty() {
+                    self.render_class_compartments(
+                        cell_rect,
+                        &label.text,
+                        &ir_node.members,
+                        plan.max_label_width,
+                        buf,
+                    );
+                } else {
+                    let text = if plan.max_label_width > 0 {
+                        &truncate_label(&label.text, plan.max_label_width)
+                    } else {
+                        &label.text
+                    };
                     self.render_node_label(cell_rect, text, buf);
+                }
+            }
+        }
+    }
+
+    /// Render with fidelity plan and selection highlighting.
+    ///
+    /// When `selection` has a selected node, that node and its connected
+    /// edges are rendered with accent colors on top of the normal diagram.
+    pub fn render_with_selection(
+        &self,
+        layout: &DiagramLayout,
+        ir: &MermaidDiagramIr,
+        plan: &RenderPlan,
+        selection: &SelectionState,
+        buf: &mut Buffer,
+    ) {
+        // Render the base diagram first
+        self.render_with_plan(layout, ir, plan, buf);
+
+        // Overlay selection highlights
+        if !selection.is_empty() {
+            let vp = Viewport::fit(&layout.bounding_box, plan.diagram_area);
+            self.render_selection_highlights(&layout.nodes, &layout.edges, ir, &vp, selection, buf);
+        }
+    }
+
+    /// Overlay highlight rendering for selected node and connected edges.
+    fn render_selection_highlights(
+        &self,
+        nodes: &[LayoutNodeBox],
+        edges: &[LayoutEdgePath],
+        ir: &MermaidDiagramIr,
+        vp: &Viewport,
+        selection: &SelectionState,
+        buf: &mut Buffer,
+    ) {
+        // Highlight connected edges first (so node border draws on top)
+        let highlight_cell = Cell::from_char(' ');
+        for edge_path in edges {
+            if let Some(color) = selection.edge_highlight(edge_path.edge_idx) {
+                let cell = highlight_cell.with_fg(color);
+                let waypoints: Vec<(u16, u16)> = edge_path
+                    .waypoints
+                    .iter()
+                    .map(|p| vp.to_cell(p.x, p.y))
+                    .collect();
+                for pair in waypoints.windows(2) {
+                    let (x0, y0) = pair[0];
+                    let (x1, y1) = pair[1];
+                    self.draw_line_segment(x0, y0, x1, y1, cell, buf);
+                }
+                // Redraw arrowhead in highlight color
+                if waypoints.len() >= 2 {
+                    let (tx, ty) = waypoints[waypoints.len() - 1];
+                    let (px, py) = waypoints[waypoints.len() - 2];
+                    let ah = self.arrowhead_char(px, py, tx, ty);
+                    buf.set(tx, ty, cell.with_char(ah));
+                }
+            }
+        }
+
+        // Highlight selected node border
+        if let Some(selected_idx) = selection.selected_node
+            && let Some(node) = nodes.iter().find(|n| n.node_idx == selected_idx)
+        {
+            let cell_rect = vp.to_cell_rect(&node.rect);
+            if cell_rect.width >= 2 && cell_rect.height >= 2 {
+                // Draw highlighted border on top of existing shape
+                let x0 = cell_rect.x;
+                let y0 = cell_rect.y;
+                let x1 = x0 + cell_rect.width.saturating_sub(1);
+                let y1 = y0 + cell_rect.height.saturating_sub(1);
+
+                // Re-draw border cells with accent color (preserve char, change fg)
+                for col in x0..=x1 {
+                    if let Some(c) = buf.get(col, y0) {
+                        buf.set(col, y0, c.with_fg(self.colors.accent));
+                    }
+                    if let Some(c) = buf.get(col, y1) {
+                        buf.set(col, y1, c.with_fg(self.colors.accent));
+                    }
+                }
+                for row in y0..=y1 {
+                    if let Some(c) = buf.get(x0, row) {
+                        buf.set(x0, row, c.with_fg(self.colors.accent));
+                    }
+                    if let Some(c) = buf.get(x1, row) {
+                        buf.set(x1, row, c.with_fg(self.colors.accent));
+                    }
+                }
+                // Also recolor the label text for the selected node
+                if let Some(ir_node) = ir.nodes.get(selected_idx)
+                    && let Some(label_id) = ir_node.label
+                    && ir.labels.get(label_id.0).is_some()
+                {
+                    // Recolor interior text cells
+                    for row in (y0 + 1)..y1 {
+                        for col in (x0 + 1)..x1 {
+                            if let Some(c) = buf.get(col, row)
+                                && c.content.as_char().unwrap_or(' ') != ' '
+                            {
+                                buf.set(col, row, c.with_fg(self.colors.accent));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -883,13 +1852,13 @@ impl MermaidRenderer {
         vp: &Viewport,
         buf: &mut Buffer,
     ) {
-        let border_cell = Cell::from_char(' ').with_fg(CLUSTER_FG);
+        let border_cell = Cell::from_char(' ').with_fg(self.colors.cluster_border);
         for cluster in clusters {
             let cell_rect = vp.to_cell_rect(&cluster.rect);
             if cell_rect.width < 2 || cell_rect.height < 2 {
                 continue;
             }
-            buf.draw_border(cell_rect, self.palette.border, border_cell);
+            buf.draw_border(cell_rect, self.glyphs.border, border_cell);
 
             // Render cluster title if available.
             if let Some(title_rect) = &cluster.title_rect
@@ -898,7 +1867,7 @@ impl MermaidRenderer {
                 && let Some(label) = ir.labels.get(label_id.0)
             {
                 let tr = vp.to_cell_rect(title_rect);
-                let title_cell = Cell::from_char(' ').with_fg(CLUSTER_TITLE_FG);
+                let title_cell = Cell::from_char(' ').with_fg(self.colors.cluster_title);
                 let max_w = tr.width.saturating_sub(1);
                 let text = truncate_label(&label.text, max_w as usize);
                 buf.print_text_clipped(
@@ -922,7 +1891,7 @@ impl MermaidRenderer {
         edge_styles: &[ResolvedMermaidStyle],
         buf: &mut Buffer,
     ) {
-        let edge_cell = Cell::from_char(' ').with_fg(EDGE_FG);
+        let edge_cell = Cell::from_char(' ').with_fg(self.colors.edge_color);
         for edge_path in edges {
             let waypoints: Vec<(u16, u16)> = edge_path
                 .waypoints
@@ -963,7 +1932,7 @@ impl MermaidRenderer {
     }
 
     fn render_sequence_lifelines(&self, layout: &DiagramLayout, vp: &Viewport, buf: &mut Buffer) {
-        let line_cell = Cell::from_char(' ').with_fg(EDGE_FG);
+        let line_cell = Cell::from_char(' ').with_fg(self.colors.edge_color);
         let end_y = layout.bounding_box.y + layout.bounding_box.height;
         for node in &layout.nodes {
             let x = node.rect.x + node.rect.width / 2.0;
@@ -994,7 +1963,7 @@ impl MermaidRenderer {
 
     #[allow(dead_code)]
     fn line_bits_for_char(&self, ch: char) -> Option<u8> {
-        let p = &self.palette;
+        let p = &self.glyphs;
         match ch {
             c if c == p.border.horizontal => Some(LINE_LEFT | LINE_RIGHT),
             c if c == p.border.vertical => Some(LINE_UP | LINE_DOWN),
@@ -1013,7 +1982,7 @@ impl MermaidRenderer {
 
     #[allow(dead_code)]
     fn line_char_for_bits(&self, bits: u8) -> char {
-        let p = &self.palette;
+        let p = &self.glyphs;
         match bits {
             b if b == (LINE_LEFT | LINE_RIGHT) || b == LINE_LEFT || b == LINE_RIGHT => {
                 p.border.horizontal
@@ -1171,9 +2140,9 @@ impl MermaidRenderer {
             return;
         }
         let dot = if horizontal {
-            self.palette.dot_h
+            self.glyphs.dot_h
         } else {
-            self.palette.dot_v
+            self.glyphs.dot_v
         };
         buf.set(x, y, cell.with_char(dot));
     }
@@ -1226,14 +2195,14 @@ impl MermaidRenderer {
         let dy = i32::from(to_y) - i32::from(from_y);
         if dx.abs() >= dy.abs() {
             if dx >= 0 {
-                self.palette.arrow_right
+                self.glyphs.arrow_right
             } else {
-                self.palette.arrow_left
+                self.glyphs.arrow_left
             }
         } else if dy >= 0 {
-            self.palette.arrow_down
+            self.glyphs.arrow_down
         } else {
-            self.palette.arrow_up
+            self.glyphs.arrow_up
         }
     }
 
@@ -1258,7 +2227,7 @@ impl MermaidRenderer {
         } else {
             truncate_label(text, max_label_width)
         };
-        let label_cell = Cell::from_char(' ').with_fg(LABEL_FG);
+        let label_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
         buf.print_text(cx.saturating_add(1), cy, &label, label_cell);
     }
 
@@ -1271,7 +2240,7 @@ impl MermaidRenderer {
         vp: &Viewport,
         buf: &mut Buffer,
     ) {
-        let border_cell = Cell::from_char(' ').with_fg(NODE_FG);
+        let border_cell = Cell::from_char(' ').with_fg(self.colors.node_border);
         let fill_cell = Cell::from_char(' ');
 
         for node in nodes {
@@ -1294,7 +2263,8 @@ impl MermaidRenderer {
                 continue;
             }
 
-            buf.draw_box(cell_rect, self.palette.border, border_cell, fill_cell);
+            let inset =
+                self.draw_shaped_node(cell_rect, ir_node.shape, border_cell, fill_cell, buf);
 
             // Render label (and class compartments if applicable) inside the node.
             if let Some(label_id) = ir_node.label
@@ -1309,7 +2279,7 @@ impl MermaidRenderer {
                         buf,
                     );
                 } else {
-                    self.render_node_label(cell_rect, &label.text, buf);
+                    self.render_node_label_with_inset(cell_rect, &label.text, inset, buf);
                 }
             }
         }
@@ -1331,7 +2301,7 @@ impl MermaidRenderer {
 
         buf.fill(area, Cell::from_char(' '));
 
-        let cell = Cell::from_char(' ').with_fg(EDGE_FG);
+        let cell = Cell::from_char(' ').with_fg(self.colors.edge_color);
         let max_x = area.right();
         let mut y = area.y;
 
@@ -1379,7 +2349,7 @@ impl MermaidRenderer {
             .x
             .saturating_add(cell_rect.width)
             .saturating_sub(1);
-        let label_cell = Cell::from_char(' ').with_fg(LABEL_FG);
+        let label_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
 
         let mut lines = wrap_text(text, inner_w);
 
@@ -1416,9 +2386,9 @@ impl MermaidRenderer {
         max_label_width: usize,
         buf: &mut Buffer,
     ) {
-        let border_cell = Cell::from_char(' ').with_fg(NODE_FG);
-        let label_cell = Cell::from_char(' ').with_fg(LABEL_FG);
-        let member_cell = Cell::from_char(' ').with_fg(EDGE_FG);
+        let border_cell = Cell::from_char(' ').with_fg(self.colors.node_border);
+        let label_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
+        let member_cell = Cell::from_char(' ').with_fg(self.colors.edge_color);
         let inner_w = cell_rect.width.saturating_sub(2) as usize;
 
         if inner_w == 0 || cell_rect.height < 4 {
@@ -1456,11 +2426,11 @@ impl MermaidRenderer {
                 .saturating_add(cell_rect.height)
                 .saturating_sub(1)
         {
-            let horiz = self.palette.border.horizontal;
+            let horiz = self.glyphs.border.horizontal;
             buf.set(
                 cell_rect.x,
                 sep_y,
-                border_cell.with_char(self.palette.tee_right),
+                border_cell.with_char(self.glyphs.tee_right),
             );
             for col in 1..cell_rect.width.saturating_sub(1) {
                 buf.set(
@@ -1475,7 +2445,7 @@ impl MermaidRenderer {
                     .saturating_add(cell_rect.width)
                     .saturating_sub(1),
                 sep_y,
-                border_cell.with_char(self.palette.tee_left),
+                border_cell.with_char(self.glyphs.tee_left),
             );
         }
 
@@ -1610,6 +2580,307 @@ fn truncate_line_to_width(text: &str, max_width: usize) -> String {
 
 // ── Convenience API ─────────────────────────────────────────────────────
 
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn render_diagram_canvas_with_plan(
+    layout: &DiagramLayout,
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    plan: &RenderPlan,
+    render_mode: MermaidRenderMode,
+    buf: &mut Buffer,
+) {
+    if ir.diagram_type == DiagramType::Pie {
+        let renderer = MermaidRenderer::new(config);
+        renderer.render_with_plan(layout, ir, plan, buf);
+        return;
+    }
+    if layout.nodes.is_empty() || plan.diagram_area.is_empty() {
+        return;
+    }
+
+    let canvas_mode = canvas_mode_for_render_mode(render_mode);
+    let mut painter = Painter::for_area(plan.diagram_area, canvas_mode);
+    painter.clear();
+    let vp = CanvasViewport::fit(&layout.bounding_box, plan.diagram_area, canvas_mode);
+
+    let resolved_styles = resolve_styles(ir);
+    render_canvas_edges(
+        &mut painter,
+        &layout.edges,
+        ir,
+        &resolved_styles.edge_styles,
+        &vp,
+    );
+    render_canvas_nodes(&mut painter, &layout.nodes, ir, &vp);
+
+    let style = ftui_style::Style::new().fg(EDGE_FG);
+    painter.render_to_buffer(plan.diagram_area, buf, style);
+
+    let cell_vp = Viewport::fit(&layout.bounding_box, plan.diagram_area);
+    let renderer = MermaidRenderer::new(config);
+    if plan.show_clusters {
+        renderer.render_clusters(&layout.clusters, ir, &cell_vp, buf);
+    }
+    if ir.diagram_type == DiagramType::Sequence {
+        renderer.render_sequence_lifelines(layout, &cell_vp, buf);
+    }
+    renderer.render_labels_with_plan(&layout.nodes, &layout.edges, ir, &cell_vp, plan, buf);
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn render_canvas_edges(
+    painter: &mut Painter,
+    edges: &[LayoutEdgePath],
+    ir: &MermaidDiagramIr,
+    edge_styles: &[ResolvedMermaidStyle],
+    vp: &CanvasViewport,
+) {
+    for edge_path in edges {
+        let line_style = ir
+            .edges
+            .get(edge_path.edge_idx)
+            .map(|e| edge_line_style(&e.arrow, edge_styles.get(edge_path.edge_idx)))
+            .unwrap_or(EdgeLineStyle::Solid);
+        let mut last: Option<(i32, i32)> = None;
+        let mut prev_dir: Option<(i32, i32)> = None;
+        for point in &edge_path.waypoints {
+            let (x, y) = vp.to_pixel(point.x, point.y);
+            if let Some((px, py)) = last {
+                if px == x && py == y {
+                    continue;
+                }
+                let dir = (signum_i32(x - px), signum_i32(y - py));
+                if let Some(prev) = prev_dir
+                    && ((prev.0 == 0 && dir.1 == 0) || (prev.1 == 0 && dir.0 == 0))
+                {
+                    let diag = (prev.0 + dir.0, prev.1 + dir.1);
+                    if diag.0 != 0 && diag.1 != 0 {
+                        draw_canvas_line_segment(
+                            painter,
+                            px,
+                            py,
+                            px + diag.0,
+                            py + diag.1,
+                            line_style,
+                        );
+                    }
+                }
+                draw_canvas_line_segment(painter, px, py, x, y, line_style);
+                prev_dir = Some(dir);
+            }
+            last = Some((x, y));
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_canvas_line_segment(
+    painter: &mut Painter,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    style: EdgeLineStyle,
+) {
+    match style {
+        EdgeLineStyle::Solid => painter.line(x0, y0, x1, y1),
+        EdgeLineStyle::Dashed => draw_canvas_line_pattern(painter, x0, y0, x1, y1, 6, 4),
+        EdgeLineStyle::Dotted => draw_canvas_line_pattern(painter, x0, y0, x1, y1, 1, 2),
+        EdgeLineStyle::Thick => draw_canvas_thick_line(painter, x0, y0, x1, y1),
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_canvas_line_pattern(
+    painter: &mut Painter,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    on_len: usize,
+    off_len: usize,
+) {
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx: i32 = if x0 < x1 { 1 } else { -1 };
+    let sy: i32 = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let mut cx = x0;
+    let mut cy = y0;
+
+    let mut draw_on = true;
+    let mut remaining = on_len.max(1);
+
+    loop {
+        if draw_on {
+            painter.point(cx, cy);
+        }
+
+        if cx == x1 && cy == y1 {
+            break;
+        }
+
+        let e2 = 2 * err;
+        if e2 >= dy {
+            if cx == x1 {
+                break;
+            }
+            err += dy;
+            cx += sx;
+        }
+        if e2 <= dx {
+            if cy == y1 {
+                break;
+            }
+            err += dx;
+            cy += sy;
+        }
+
+        remaining = remaining.saturating_sub(1);
+        if remaining == 0 {
+            draw_on = !draw_on;
+            remaining = if draw_on { on_len } else { off_len };
+            if remaining == 0 {
+                remaining = 1;
+            }
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn draw_canvas_thick_line(painter: &mut Painter, x0: i32, y0: i32, x1: i32, y1: i32) {
+    painter.line(x0, y0, x1, y1);
+    let (ox, oy) = thick_offset(x0, y0, x1, y1);
+    if ox != 0 || oy != 0 {
+        painter.line(x0 + ox, y0 + oy, x1 + ox, y1 + oy);
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn thick_offset(x0: i32, y0: i32, x1: i32, y1: i32) -> (i32, i32) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    if dx == 0 && dy == 0 {
+        return (0, 0);
+    }
+    if dx.abs() >= dy.abs() {
+        let oy = if dy >= 0 { 1 } else { -1 };
+        (0, oy)
+    } else {
+        let ox = if dx >= 0 { 1 } else { -1 };
+        (ox, 0)
+    }
+}
+
+#[cfg(feature = "canvas")]
+fn signum_i32(value: i32) -> i32 {
+    if value > 0 {
+        1
+    } else if value < 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn render_canvas_nodes(
+    painter: &mut Painter,
+    nodes: &[LayoutNodeBox],
+    ir: &MermaidDiagramIr,
+    vp: &CanvasViewport,
+) {
+    for node in nodes {
+        let ir_node = match ir.nodes.get(node.node_idx) {
+            Some(node) => node,
+            None => continue,
+        };
+        if ir_node
+            .classes
+            .iter()
+            .any(|class| class == STATE_CONTAINER_CLASS)
+        {
+            continue;
+        }
+        let rect = vp.to_pixel_rect(&node.rect);
+        draw_node_outline_canvas(painter, rect, ir_node.shape);
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn draw_node_outline_canvas(painter: &mut Painter, rect: PixelRect, shape: NodeShape) {
+    let w = rect.width.max(1);
+    let h = rect.height.max(1);
+    if w <= 1 || h <= 1 {
+        painter.point(rect.x, rect.y);
+        return;
+    }
+
+    match shape {
+        NodeShape::Circle => {
+            let radius = (w.min(h) / 2).max(1);
+            let cx = rect.x + w / 2;
+            let cy = rect.y + h / 2;
+            painter.circle(cx, cy, radius);
+        }
+        NodeShape::Diamond => {
+            let top = (rect.x + w / 2, rect.y);
+            let right = (rect.x + w - 1, rect.y + h / 2);
+            let bottom = (rect.x + w / 2, rect.y + h - 1);
+            let left = (rect.x, rect.y + h / 2);
+            draw_polygon(painter, &[top, right, bottom, left]);
+        }
+        NodeShape::Hexagon => {
+            let dx = (w / 4).max(1);
+            let top_left = (rect.x + dx, rect.y);
+            let top_right = (rect.x + w - dx - 1, rect.y);
+            let right = (rect.x + w - 1, rect.y + h / 2);
+            let bottom_right = (rect.x + w - dx - 1, rect.y + h - 1);
+            let bottom_left = (rect.x + dx, rect.y + h - 1);
+            let left = (rect.x, rect.y + h / 2);
+            draw_polygon(
+                painter,
+                &[top_left, top_right, right, bottom_right, bottom_left, left],
+            );
+        }
+        NodeShape::Asymmetric => {
+            let tip = (rect.x + w - 1, rect.y + h / 2);
+            let top = (rect.x, rect.y);
+            let mid_top = (rect.x + w - 2, rect.y);
+            let mid_bottom = (rect.x + w - 2, rect.y + h - 1);
+            let bottom = (rect.x, rect.y + h - 1);
+            draw_polygon(painter, &[top, mid_top, tip, mid_bottom, bottom]);
+        }
+        NodeShape::Subroutine => {
+            painter.rect(rect.x, rect.y, w, h);
+            if w > 3 {
+                painter.line(rect.x + 1, rect.y, rect.x + 1, rect.y + h - 1);
+                painter.line(rect.x + w - 2, rect.y, rect.x + w - 2, rect.y + h - 1);
+            }
+        }
+        _ => {
+            painter.rect(rect.x, rect.y, w, h);
+        }
+    }
+}
+
+#[cfg(feature = "canvas")]
+#[allow(dead_code)]
+fn draw_polygon(painter: &mut Painter, points: &[(i32, i32)]) {
+    if points.len() < 2 {
+        return;
+    }
+    for idx in 0..points.len() {
+        let (x0, y0) = points[idx];
+        let (x1, y1) = points[(idx + 1) % points.len()];
+        painter.line(x0, y0, x1, y1);
+    }
+}
+
 /// Render a mermaid diagram into a buffer area using default settings.
 ///
 /// This is a convenience function that combines layout computation and rendering.
@@ -1621,8 +2892,7 @@ pub fn render_diagram(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let renderer = MermaidRenderer::new(config);
-    renderer.render(layout, ir, area, buf);
+    let _plan = render_diagram_adaptive(layout, ir, config, area, buf);
 }
 
 /// Render with automatic scale adaptation and fidelity tier selection.
@@ -1637,8 +2907,26 @@ pub fn render_diagram_adaptive(
     buf: &mut Buffer,
 ) -> RenderPlan {
     let plan = select_render_plan(config, layout, ir, area);
-    let renderer = MermaidRenderer::new(config);
-    renderer.render_with_plan(layout, ir, &plan, buf);
+    #[cfg(feature = "canvas")]
+    let use_canvas = {
+        let policy = glyph_policy_for_config(config);
+        let render_mode = resolve_render_mode(config, &policy);
+        render_mode != MermaidRenderMode::CellOnly
+    };
+    #[cfg(not(feature = "canvas"))]
+    let use_canvas = false;
+
+    if !use_canvas {
+        let renderer = MermaidRenderer::new(config);
+        renderer.render_with_plan(layout, ir, &plan, buf);
+    } else {
+        #[cfg(feature = "canvas")]
+        {
+            let policy = glyph_policy_for_config(config);
+            let rm = resolve_render_mode(config, &policy);
+            render_diagram_canvas_with_plan(layout, ir, config, &plan, rm, buf);
+        }
+    }
     if config.debug_overlay {
         render_debug_overlay(layout, ir, &plan, area, buf);
         let info = collect_overlay_info(layout, ir, &plan);
@@ -2585,6 +3873,18 @@ mod tests {
         out
     }
 
+    #[cfg(feature = "canvas")]
+    fn trim_trailing_spaces(text: &str) -> String {
+        let mut out = String::new();
+        for (idx, line) in text.lines().enumerate() {
+            if idx > 0 {
+                out.push('\n');
+            }
+            out.push_str(line.trim_end());
+        }
+        out
+    }
+
     fn diff_text(expected: &str, actual: &str) -> String {
         let expected_lines: Vec<&str> = expected.lines().collect();
         let actual_lines: Vec<&str> = actual.lines().collect();
@@ -3157,6 +4457,52 @@ mod tests {
         assert_eq!(
             select_fidelity(&config, &empty_layout, area),
             MermaidFidelity::Normal
+        );
+    }
+
+    // --- Render mode selection ---
+
+    #[test]
+    fn render_mode_auto_selects_braille_for_kitty() {
+        let caps = TerminalCapabilities::from_profile(TerminalProfile::Kitty);
+        let policy = GlyphPolicy::from_env_with(|_| None, &caps);
+        let config = MermaidConfig::default();
+        assert_eq!(
+            resolve_render_mode(&config, &policy),
+            MermaidRenderMode::Braille
+        );
+    }
+
+    #[test]
+    fn render_mode_auto_selects_block_for_xterm() {
+        let caps = TerminalCapabilities::from_profile(TerminalProfile::Xterm);
+        let policy = GlyphPolicy::from_env_with(|_| None, &caps);
+        let config = MermaidConfig::default();
+        assert_eq!(
+            resolve_render_mode(&config, &policy),
+            MermaidRenderMode::Block
+        );
+    }
+
+    #[test]
+    fn render_mode_auto_selects_cell_only_for_vt100() {
+        let caps = TerminalCapabilities::from_profile(TerminalProfile::Vt100);
+        let policy = GlyphPolicy::from_env_with(|_| None, &caps);
+        let config = MermaidConfig::default();
+        assert_eq!(
+            resolve_render_mode(&config, &policy),
+            MermaidRenderMode::CellOnly
+        );
+    }
+
+    #[test]
+    fn render_mode_auto_selects_cell_only_for_dumb() {
+        let caps = TerminalCapabilities::from_profile(TerminalProfile::Dumb);
+        let policy = GlyphPolicy::from_env_with(|_| None, &caps);
+        let config = MermaidConfig::default();
+        assert_eq!(
+            resolve_render_mode(&config, &policy),
+            MermaidRenderMode::CellOnly
         );
     }
 
@@ -4145,5 +5491,576 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::new(80, 24);
         let _plan = render_diagram_adaptive(&layout, ir, &MermaidConfig::default(), area, &mut buf);
+    }
+
+    // ── Canvas edge rendering tests ───────────────────────────────────
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_edge_solid_horizontal() {
+        let mut painter = Painter::new(16, 4, CanvasMode::Braille);
+        draw_canvas_line_segment(&mut painter, 0, 1, 15, 1, EdgeLineStyle::Solid);
+        assert!(painter.get(0, 1));
+        assert!(painter.get(8, 1));
+        assert!(painter.get(15, 1));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_edge_diagonal_line() {
+        let mut painter = Painter::new(8, 8, CanvasMode::Braille);
+        draw_canvas_line_segment(&mut painter, 0, 0, 7, 7, EdgeLineStyle::Solid);
+        assert!(painter.get(0, 0));
+        assert!(painter.get(4, 4));
+        assert!(painter.get(7, 7));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_edge_dashed_pattern_skips() {
+        let mut painter = Painter::new(16, 4, CanvasMode::Braille);
+        draw_canvas_line_segment(&mut painter, 0, 1, 15, 1, EdgeLineStyle::Dashed);
+        assert!(painter.get(0, 1));
+        assert!(painter.get(4, 1));
+        assert!(!painter.get(7, 1));
+        assert!(painter.get(12, 1));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_edge_dotted_pattern_skips() {
+        let mut painter = Painter::new(16, 4, CanvasMode::Braille);
+        draw_canvas_line_segment(&mut painter, 0, 1, 15, 1, EdgeLineStyle::Dotted);
+        assert!(painter.get(0, 1));
+        assert!(!painter.get(1, 1));
+        assert!(!painter.get(2, 1));
+        assert!(painter.get(3, 1));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_edge_thick_adds_parallel_line() {
+        let mut painter = Painter::new(16, 4, CanvasMode::Braille);
+        draw_canvas_line_segment(&mut painter, 0, 1, 15, 1, EdgeLineStyle::Thick);
+        assert!(painter.get(6, 1));
+        assert!(painter.get(6, 2));
+    }
+
+    #[test]
+    #[cfg(feature = "canvas")]
+    fn canvas_braille_snapshot_five_node_graph() {
+        let input = concat!(
+            "graph LR\n",
+            "A-->B\n",
+            "B-->C\n",
+            "C-->D\n",
+            "D-->E\n",
+            "A-->E\n",
+        );
+        let prepared = parse_with_diagnostics(input);
+        assert!(prepared.errors.is_empty());
+        let ir_parse = normalize_ast_to_ir(
+            &prepared.ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let ir = &ir_parse.ir;
+        let layout = layout_diagram(ir, &MermaidConfig::default());
+        let area = Rect::new(0, 0, 40, 12);
+        let config = MermaidConfig {
+            render_mode: MermaidRenderMode::Braille,
+            tier_override: MermaidTier::Normal,
+            capability_profile: Some("kitty".to_string()),
+            ..MermaidConfig::default()
+        };
+        let mut buf = Buffer::new(area.width, area.height);
+        let _plan = render_diagram_adaptive(&layout, ir, &config, area, &mut buf);
+        let text = trim_trailing_spaces(&buffer_to_text(&buf));
+        if std::env::var("FTUI_SNAPSHOT").is_ok() {
+            println!("{text}");
+        }
+        let expected = concat!(
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+            " ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤  ⡤⠤⠤⠤⠤⢤\n",
+            " ⠓⠒⠒⠒⠒⠚⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠛⠛⠛⠛⠛⠛⠉⠉⠓⠒⠒⠒⠒⠚\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
+        );
+        assert_eq!(text, expected);
+    }
+
+    // ── Shape rendering tests ──────────────────────────────────────
+
+    fn render_single_shape(shape: NodeShape, w: u16, h: u16) -> String {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+        let border_cell = Cell::from_char(' ').with_fg(PackedRgba::WHITE);
+        let fill_cell = Cell::from_char(' ');
+        let rect = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::new(w, h);
+        let _inset = renderer.draw_shaped_node(rect, shape, border_cell, fill_cell, &mut buf);
+        buffer_to_text(&buf)
+    }
+
+    fn render_single_shape_ascii(shape: NodeShape, w: u16, h: u16) -> String {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Ascii);
+        let border_cell = Cell::from_char(' ').with_fg(PackedRgba::WHITE);
+        let fill_cell = Cell::from_char(' ');
+        let rect = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::new(w, h);
+        let _inset = renderer.draw_shaped_node(rect, shape, border_cell, fill_cell, &mut buf);
+        buffer_to_text(&buf)
+    }
+
+    #[test]
+    fn shape_rect_renders_square_border() {
+        let text = render_single_shape(NodeShape::Rect, 8, 4);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('┌'), "top-left corner");
+        assert!(lines[0].contains('┐'), "top-right corner");
+        assert!(lines[3].contains('└'), "bottom-left corner");
+        assert!(lines[3].contains('┘'), "bottom-right corner");
+        assert!(lines[1].contains('│'), "vertical border");
+    }
+
+    #[test]
+    fn shape_rounded_renders_round_corners() {
+        let text = render_single_shape(NodeShape::Rounded, 8, 4);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('╭'), "top-left");
+        assert!(lines[0].contains('╮'), "top-right");
+        assert!(lines[3].contains('╰'), "bottom-left");
+        assert!(lines[3].contains('╯'), "bottom-right");
+    }
+
+    #[test]
+    fn shape_circle_renders_round_corners() {
+        let text = render_single_shape(NodeShape::Circle, 8, 4);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('╭'), "top-left");
+        assert!(lines[3].contains('╯'), "bottom-right");
+    }
+
+    #[test]
+    fn shape_stadium_renders_double_horizontal() {
+        let text = render_single_shape(NodeShape::Stadium, 10, 4);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('╭'), "top-left rounded");
+        assert!(lines[0].contains('═'), "double horizontal");
+        assert!(lines[0].contains('╮'), "top-right rounded");
+    }
+
+    #[test]
+    fn shape_subroutine_renders_double_verticals() {
+        let text = render_single_shape(NodeShape::Subroutine, 10, 5);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[1].contains('║'), "double vertical");
+        assert!(lines[1].contains('│'), "inner vertical");
+    }
+
+    #[test]
+    fn shape_diamond_renders_diagonals() {
+        let text = render_single_shape(NodeShape::Diamond, 10, 7);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('╱'), "top fwd slash");
+        assert!(lines[0].contains('╲'), "top back slash");
+        let last = lines.len() - 1;
+        assert!(lines[last].contains('╲'), "bottom bck slash");
+        assert!(lines[last].contains('╱'), "bottom fwd slash");
+    }
+
+    #[test]
+    fn shape_hexagon_renders_angled_sides() {
+        let text = render_single_shape(NodeShape::Hexagon, 12, 5);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('╱'), "hex top fwd");
+        assert!(lines[0].contains('─'), "hex top horiz");
+        assert!(lines[0].contains('╲'), "hex top bck");
+        assert!(lines[2].contains('│'), "hex mid vert");
+    }
+
+    #[test]
+    fn shape_asymmetric_renders_flag() {
+        let text = render_single_shape(NodeShape::Asymmetric, 10, 5);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with('┌'), "left top");
+        assert!(lines[4].starts_with('└'), "left bottom");
+        let mid = 2;
+        assert!(lines[mid].contains('▷'), "right point");
+    }
+
+    #[test]
+    fn shape_diamond_small_fallback() {
+        let text = render_single_shape(NodeShape::Diamond, 2, 2);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('┌'), "small diamond fallback");
+    }
+
+    #[test]
+    fn shape_ascii_fallback() {
+        let text = render_single_shape_ascii(NodeShape::Rounded, 8, 4);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('+'), "ascii fallback corners");
+        assert!(lines[0].contains('-'), "ascii fallback horiz");
+    }
+
+    #[test]
+    fn shape_stadium_ascii_fallback() {
+        let text = render_single_shape_ascii(NodeShape::Stadium, 10, 4);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains('('), "ascii stadium left");
+        assert!(lines[0].contains('='), "ascii stadium horiz");
+        assert!(lines[0].contains(')'), "ascii stadium right");
+    }
+
+    #[test]
+    fn all_shapes_render_without_panic() {
+        let shapes = [
+            NodeShape::Rect,
+            NodeShape::Rounded,
+            NodeShape::Stadium,
+            NodeShape::Subroutine,
+            NodeShape::Diamond,
+            NodeShape::Hexagon,
+            NodeShape::Circle,
+            NodeShape::Asymmetric,
+        ];
+        for shape in shapes {
+            for &(w, h) in &[(3u16, 3u16), (5, 5), (8, 4), (10, 7), (15, 10), (20, 12)] {
+                let _text = render_single_shape(shape, w, h);
+                let _ascii = render_single_shape_ascii(shape, w, h);
+            }
+        }
+    }
+
+    #[test]
+    fn shape_label_insets_are_sane() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+        let border_cell = Cell::from_char(' ').with_fg(PackedRgba::WHITE);
+        let fill_cell = Cell::from_char(' ');
+
+        let shapes_and_expected: &[(NodeShape, bool)] = &[
+            (NodeShape::Rect, false),
+            (NodeShape::Rounded, false),
+            (NodeShape::Circle, false),
+            (NodeShape::Stadium, true),
+            (NodeShape::Subroutine, true),
+            (NodeShape::Diamond, true),
+            (NodeShape::Hexagon, true),
+            (NodeShape::Asymmetric, true),
+        ];
+
+        for &(shape, wider_inset) in shapes_and_expected {
+            let rect = Rect::new(0, 0, 12, 8);
+            let mut buf = Buffer::new(12, 8);
+            let (l, t, r, b) =
+                renderer.draw_shaped_node(rect, shape, border_cell, fill_cell, &mut buf);
+            assert!(l >= 1, "{shape:?} left inset {l}");
+            assert!(t >= 1, "{shape:?} top inset {t}");
+            assert!(r >= 1, "{shape:?} right inset {r}");
+            assert!(b >= 1, "{shape:?} bottom inset {b}");
+            if wider_inset {
+                assert!(l >= 2 || r >= 2, "{shape:?} should have wider inset");
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_shape_ir_renders_without_panic() {
+        let shapes = [
+            NodeShape::Rect,
+            NodeShape::Rounded,
+            NodeShape::Diamond,
+            NodeShape::Hexagon,
+        ];
+        let mut ir = make_ir(4, vec![(0, 1), (1, 2), (2, 3)]);
+        for (i, shape) in shapes.iter().enumerate() {
+            ir.nodes[i].shape = *shape;
+        }
+        let layout = layout_diagram(&ir, &MermaidConfig::default());
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::new(80, 24);
+        let renderer = MermaidRenderer::new(&MermaidConfig::default());
+        renderer.render(&layout, &ir, area, &mut buf);
+    }
+
+    // ── Selection highlighting tests ──────────────────────────────────
+
+    #[test]
+    fn selection_state_from_selected_finds_edges() {
+        let ir = make_ir(3, vec![(0, 1), (1, 2), (2, 0)]);
+        let sel = SelectionState::from_selected(1, &ir);
+        assert_eq!(sel.selected_node, Some(1));
+        assert_eq!(sel.outgoing_edges.len(), 1); // edge 1->2
+        assert_eq!(sel.incoming_edges.len(), 1); // edge 0->1
+    }
+
+    #[test]
+    fn selection_state_empty_by_default() {
+        let sel = SelectionState::default();
+        assert!(sel.is_empty());
+        assert_eq!(sel.edge_highlight(0), None);
+    }
+
+    #[test]
+    fn selection_edge_highlight_colors() {
+        let ir = make_ir(3, vec![(0, 1), (1, 2), (2, 0)]);
+        let sel = SelectionState::from_selected(1, &ir);
+        // Edge 0->1 is incoming to node 1
+        assert!(sel.edge_highlight(0).is_some());
+        // Edge 1->2 is outgoing from node 1
+        assert!(sel.edge_highlight(1).is_some());
+        // Edge 2->0 is unrelated to node 1
+        assert!(sel.edge_highlight(2).is_none());
+        // Incoming and outgoing should have different colors
+        assert_ne!(sel.edge_highlight(0), sel.edge_highlight(1));
+    }
+
+    #[test]
+    fn build_adjacency_correct() {
+        let ir = make_ir(3, vec![(0, 1), (1, 2)]);
+        let adj = build_adjacency(&ir);
+        assert_eq!(adj.len(), 3);
+        // Node 0: outgoing to 1
+        assert_eq!(adj[0].len(), 1);
+        assert_eq!(adj[0][0].0, 1); // neighbor
+        assert!(adj[0][0].2); // outgoing
+        // Node 1: incoming from 0, outgoing to 2
+        assert_eq!(adj[1].len(), 2);
+        // Node 2: incoming from 1
+        assert_eq!(adj[2].len(), 1);
+        assert!(!adj[2][0].2); // incoming
+    }
+
+    #[test]
+    fn navigate_direction_finds_neighbor() {
+        let ir = make_ir(3, vec![(0, 1), (1, 2)]);
+        let config = MermaidConfig::default();
+        let layout = layout_diagram(&ir, &config);
+        let adj = build_adjacency(&ir);
+
+        // From node 0, try navigating in all directions
+        // At least one direction should find node 1
+        let mut found = false;
+        for dir in 0..4u8 {
+            if let Some(idx) = navigate_direction(0, dir, &adj, &layout) {
+                assert_eq!(idx, 1);
+                found = true;
+            }
+        }
+        assert!(found, "Should find node 1 in some direction from node 0");
+    }
+
+    #[test]
+    fn render_with_selection_does_not_panic() {
+        let ir = make_ir(3, vec![(0, 1), (1, 2)]);
+        let config = MermaidConfig::default();
+        let layout = layout_diagram(&ir, &config);
+        let plan = crate::mermaid_render::select_render_plan(
+            &config,
+            &layout,
+            &ir,
+            Rect::new(0, 0, 80, 24),
+        );
+        let mut buf = Buffer::new(80, 24);
+        let renderer = MermaidRenderer::new(&config);
+        let selection = SelectionState::from_selected(1, &ir);
+        renderer.render_with_selection(&layout, &ir, &plan, &selection, &mut buf);
+    }
+
+    #[test]
+    fn render_with_selection_highlights_selected_node() {
+        let ir = make_ir(3, vec![(0, 1), (1, 2)]);
+        let config = MermaidConfig::default();
+        let layout = layout_diagram(&ir, &config);
+        let plan = crate::mermaid_render::select_render_plan(
+            &config,
+            &layout,
+            &ir,
+            Rect::new(0, 0, 80, 24),
+        );
+
+        // Render without selection
+        let mut buf_normal = Buffer::new(80, 24);
+        let renderer = MermaidRenderer::new(&config);
+        renderer.render_with_plan(&layout, &ir, &plan, &mut buf_normal);
+
+        // Render with selection
+        let mut buf_selected = Buffer::new(80, 24);
+        let selection = SelectionState::from_selected(1, &ir);
+        renderer.render_with_selection(&layout, &ir, &plan, &selection, &mut buf_selected);
+
+        // Buffers should differ (selected node has different colors)
+        let mut differs = false;
+        for y in 0..24u16 {
+            for x in 0..80u16 {
+                let c1 = buf_normal.get(x, y);
+                let c2 = buf_selected.get(x, y);
+                if let (Some(a), Some(b)) = (c1, c2)
+                    && !a.bits_eq(b)
+                {
+                    differs = true;
+                    break;
+                }
+            }
+            if differs {
+                break;
+            }
+        }
+        assert!(differs, "Selected rendering should differ from normal");
+    }
+
+    #[test]
+    fn render_with_empty_selection_matches_normal() {
+        let ir = make_ir(3, vec![(0, 1), (1, 2)]);
+        let config = MermaidConfig::default();
+        let layout = layout_diagram(&ir, &config);
+        let plan = crate::mermaid_render::select_render_plan(
+            &config,
+            &layout,
+            &ir,
+            Rect::new(0, 0, 80, 24),
+        );
+
+        // Render with plan
+        let mut buf_plan = Buffer::new(80, 24);
+        let renderer = MermaidRenderer::new(&config);
+        renderer.render_with_plan(&layout, &ir, &plan, &mut buf_plan);
+
+        // Render with empty selection (should be identical)
+        let mut buf_sel = Buffer::new(80, 24);
+        let selection = SelectionState::default();
+        renderer.render_with_selection(&layout, &ir, &plan, &selection, &mut buf_sel);
+
+        // Should be identical
+        let mut same = true;
+        for y in 0..24u16 {
+            for x in 0..80u16 {
+                if let (Some(a), Some(b)) = (buf_plan.get(x, y), buf_sel.get(x, y))
+                    && !a.bits_eq(b)
+                {
+                    same = false;
+                    break;
+                }
+            }
+        }
+        assert!(same, "Empty selection should produce identical output");
+    }
+
+    #[test]
+    fn palette_default_has_expected_node_border() {
+        let palette = DiagramPalette::default_palette();
+        assert_eq!(palette.node_border, PackedRgba::WHITE);
+        assert_eq!(palette.node_text, PackedRgba::WHITE);
+    }
+
+    #[test]
+    fn palette_from_preset_all_variants() {
+        use crate::mermaid::DiagramPalettePreset;
+        for &preset in DiagramPalettePreset::all() {
+            let palette = DiagramPalette::from_preset(preset);
+            // Every palette must have 8 fill colors
+            assert_eq!(palette.node_fills.len(), 8, "preset={}", preset);
+            // Accent colors must be non-zero (not black)
+            assert_ne!(
+                palette.accent,
+                PackedRgba::rgb(0, 0, 0),
+                "accent for {}",
+                preset
+            );
+        }
+    }
+
+    #[test]
+    fn palette_neon_has_dark_text() {
+        let palette = DiagramPalette::neon();
+        assert_eq!(palette.node_text, PackedRgba::rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn palette_monochrome_has_no_color() {
+        let palette = DiagramPalette::monochrome();
+        // All fills should be grayscale (r == g == b)
+        for fill in &palette.node_fills {
+            let r = fill.r();
+            let g = fill.g();
+            let b = fill.b();
+            assert_eq!(r, g, "monochrome fill not gray: ({r},{g},{b})");
+            assert_eq!(g, b, "monochrome fill not gray: ({r},{g},{b})");
+        }
+    }
+
+    #[test]
+    fn palette_high_contrast_bright_fills() {
+        let palette = DiagramPalette::high_contrast();
+        // High-contrast fills should have at least one bright channel
+        for (i, fill) in palette.node_fills.iter().enumerate() {
+            let max_chan = fill.r().max(fill.g()).max(fill.b());
+            assert!(
+                max_chan >= 180,
+                "high-contrast fill[{i}] not bright enough: max={max_chan}"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_fill_cycling() {
+        let palette = DiagramPalette::default_palette();
+        assert_eq!(palette.node_fill_for(0), palette.node_fills[0]);
+        assert_eq!(palette.node_fill_for(8), palette.node_fills[0]);
+        assert_eq!(palette.node_fill_for(3), palette.node_fills[3]);
+    }
+
+    #[test]
+    fn renderer_uses_config_palette() {
+        use crate::mermaid::DiagramPalettePreset;
+        let config = MermaidConfig {
+            palette: DiagramPalettePreset::Neon,
+            ..MermaidConfig::default()
+        };
+        let renderer = MermaidRenderer::new(&config);
+        assert_eq!(renderer.colors.node_text, PackedRgba::rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn renderer_with_mode_and_palette() {
+        use crate::mermaid::DiagramPalettePreset;
+        let renderer = MermaidRenderer::with_mode_and_palette(
+            MermaidGlyphMode::Unicode,
+            DiagramPalettePreset::Corporate,
+        );
+        assert_eq!(renderer.colors, DiagramPalette::corporate());
+    }
+
+    #[test]
+    fn palette_preset_parse_roundtrip() {
+        use crate::mermaid::DiagramPalettePreset;
+        for &preset in DiagramPalettePreset::all() {
+            let s = preset.as_str();
+            let parsed = DiagramPalettePreset::parse(s).unwrap();
+            assert_eq!(parsed, preset, "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn palette_preset_next_prev_cycle() {
+        use crate::mermaid::DiagramPalettePreset;
+        let start = DiagramPalettePreset::Default;
+        let mut current = start;
+        for _ in 0..6 {
+            current = current.next();
+        }
+        assert_eq!(current, start, "next() should cycle back after 6 steps");
+        current = start;
+        for _ in 0..6 {
+            current = current.prev();
+        }
+        assert_eq!(current, start, "prev() should cycle back after 6 steps");
     }
 }

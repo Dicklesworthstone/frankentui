@@ -1,0 +1,16 @@
+%% fixture_id: state_composite
+%% purpose: composite states, start/end nodes, notes
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Active: start
+  state Active {
+    [*] --> Working
+    Working --> Waiting
+    Waiting --> [*]
+  }
+  note right of Active: composite state
+  note left of Waiting
+    multi line note
+  end note
+  Active --> Idle: stop
+  Active --> [*]

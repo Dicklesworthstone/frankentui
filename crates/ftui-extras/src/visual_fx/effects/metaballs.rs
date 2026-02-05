@@ -72,6 +72,7 @@ impl MetaballsPalette {
         }
     }
 
+    #[allow(dead_code)]
     #[inline]
     fn color_at(self, hue: f64, intensity: f64, theme: &ThemeInputs) -> PackedRgba {
         let stops = self.stops(theme);
@@ -381,15 +382,20 @@ impl BackdropFx for MetaballsFx {
         let (glow, threshold) = self.params.thresholds();
         let eps = 0.0001;
 
+        // Hoist palette stops and bg_base outside the pixel loop to avoid
+        // recomputing per-pixel. The stops array and bg_base are constant
+        // for the entire frame.
+        let stops = self.params.palette.stops(ctx.theme);
+        let bg_base = ctx.theme.bg_base;
+
         #[cfg(feature = "fx-gpu")]
         if gpu::gpu_enabled() {
             self.sync_gpu_ball_cache();
-            let stops = self.params.palette.stops(ctx.theme);
             if gpu::render_metaballs(
                 ctx,
                 glow,
                 threshold,
-                ctx.theme.bg_base,
+                bg_base,
                 stops,
                 &self.gpu_ball_cache,
                 out,
@@ -397,6 +403,8 @@ impl BackdropFx for MetaballsFx {
                 return;
             }
         }
+
+        let inv_threshold_range = 1.0 / (threshold - glow);
 
         for dy in 0..ctx.height {
             let ny = self.y_coords[dy as usize];
@@ -435,11 +443,13 @@ impl BackdropFx for MetaballsFx {
                         1.0
                     } else {
                         // Smooth-step easing for organic glow falloff
-                        let t = (sum - glow) / (threshold - glow);
+                        let t = (sum - glow) * inv_threshold_range;
                         t * t * (3.0 - 2.0 * t)
                     };
 
-                    out[idx] = self.params.palette.color_at(avg_hue, intensity, ctx.theme);
+                    // Inline color_at: gradient_color + lerp with bg_base
+                    let base = gradient_color(&stops, avg_hue);
+                    out[idx] = lerp_color(bg_base, base, intensity);
                 } else {
                     out[idx] = PackedRgba::TRANSPARENT;
                 }
@@ -459,13 +469,18 @@ fn ping_pong(value: f64, min: f64, max: f64) -> f64 {
     min + v
 }
 
+/// Fixed-point color lerp using u32 arithmetic (avoids f64 per channel).
+///
+/// t is clamped to [0.0, 1.0] and scaled to 0..256 for 8.8 fixed-point blending.
 #[inline]
 fn lerp_color(a: PackedRgba, b: PackedRgba, t: f64) -> PackedRgba {
-    let t = t.clamp(0.0, 1.0);
-    let r = (a.r() as f64 + (b.r() as f64 - a.r() as f64) * t) as u8;
-    let g = (a.g() as f64 + (b.g() as f64 - a.g() as f64) * t) as u8;
-    let b = (a.b() as f64 + (b.b() as f64 - a.b() as f64) * t) as u8;
-    PackedRgba::rgb(r, g, b)
+    // Convert t to 0..256 fixed-point (8 fractional bits)
+    let t256 = (t.clamp(0.0, 1.0) * 256.0) as u32;
+    let inv = 256 - t256;
+    let r = ((a.r() as u32 * inv + b.r() as u32 * t256) >> 8) as u8;
+    let g = ((a.g() as u32 * inv + b.g() as u32 * t256) >> 8) as u8;
+    let bl = ((a.b() as u32 * inv + b.b() as u32 * t256) >> 8) as u8;
+    PackedRgba::rgb(r, g, bl)
 }
 
 #[inline]

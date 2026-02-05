@@ -393,7 +393,7 @@ impl Painter {
     }
 
     /// Render this painter's pixels into a cell grid.
-    fn render_to_buffer(&self, area: Rect, buf: &mut Buffer, style: Style) {
+    pub(crate) fn render_to_buffer(&self, area: Rect, buf: &mut Buffer, style: Style) {
         let cols = self.mode.cols_per_cell() as i32;
         let rows = self.mode.rows_per_cell() as i32;
 

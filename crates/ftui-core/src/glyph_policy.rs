@@ -62,6 +62,8 @@ pub struct GlyphPolicy {
     pub cjk_width: bool,
     /// Whether terminal supports double-width glyphs (CJK/emoji).
     pub double_width: bool,
+    /// Whether terminal supports Unicode box-drawing characters.
+    pub unicode_box_drawing: bool,
     /// Whether Unicode line drawing should be used.
     pub unicode_line_drawing: bool,
     /// Whether Unicode arrows/symbols should be used.
@@ -93,7 +95,8 @@ impl GlyphPolicy {
             emoji = false;
         }
 
-        let mut unicode_line_drawing = mode == GlyphMode::Unicode && caps.unicode_box_drawing;
+        let unicode_box_drawing = caps.unicode_box_drawing;
+        let mut unicode_line_drawing = mode == GlyphMode::Unicode && unicode_box_drawing;
         if let Some(value) = env_override_bool(&get_env, ENV_GLYPH_LINE_DRAWING) {
             unicode_line_drawing = value;
         }
@@ -120,6 +123,7 @@ impl GlyphPolicy {
             emoji,
             cjk_width,
             double_width,
+            unicode_box_drawing,
             unicode_line_drawing,
             unicode_arrows,
         }
@@ -130,12 +134,13 @@ impl GlyphPolicy {
     pub fn to_json(&self) -> String {
         format!(
             concat!(
-                r#"{{"glyph_mode":"{}","emoji":{},"cjk_width":{},"double_width":{},"unicode_line_drawing":{},"unicode_arrows":{}}}"#
+                r#"{{"glyph_mode":"{}","emoji":{},"cjk_width":{},"double_width":{},"unicode_box_drawing":{},"unicode_line_drawing":{},"unicode_arrows":{}}}"#
             ),
             self.mode.as_str(),
             self.emoji,
             self.cjk_width,
             self.double_width,
+            self.unicode_box_drawing,
             self.unicode_line_drawing,
             self.unicode_arrows
         )
@@ -396,7 +401,7 @@ mod tests {
 
         assert_eq!(
             policy.to_json(),
-            r#"{"glyph_mode":"unicode","emoji":false,"cjk_width":true,"double_width":true,"unicode_line_drawing":false,"unicode_arrows":false}"#
+            r#"{"glyph_mode":"unicode","emoji":false,"cjk_width":true,"double_width":true,"unicode_box_drawing":true,"unicode_line_drawing":false,"unicode_arrows":false}"#
         );
     }
 

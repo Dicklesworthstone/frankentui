@@ -103,6 +103,7 @@ help = [
   "dep:unicode-segmentation",
   "dep:unicode-display-width",
 ]
+doom = ["canvas", "dep:ftui-core", "dep:ftui-render", "dep:ftui-style"]
 
 [dev-dependencies]
 tracing = "0.1.41"

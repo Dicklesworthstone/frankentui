@@ -1231,6 +1231,39 @@ fn mindmap_subtree_height(
     height
 }
 
+type MindmapChildEntry = (usize, f64);
+type MindmapSplit = (Vec<MindmapChildEntry>, Vec<MindmapChildEntry>, f64, f64);
+
+fn mindmap_split_root_children(
+    child_entries: &[MindmapChildEntry],
+    vertical_gap: f64,
+) -> MindmapSplit {
+    let mut left: Vec<MindmapChildEntry> = Vec::new();
+    let mut right: Vec<MindmapChildEntry> = Vec::new();
+    let mut left_total = 0.0;
+    let mut right_total = 0.0;
+    for &entry in child_entries {
+        if right_total <= left_total {
+            right_total += entry.1 + vertical_gap;
+            right.push(entry);
+        } else {
+            left_total += entry.1 + vertical_gap;
+            left.push(entry);
+        }
+    }
+    let left_height = if left.is_empty() {
+        0.0
+    } else {
+        (left_total - vertical_gap).max(0.0)
+    };
+    let right_height = if right.is_empty() {
+        0.0
+    } else {
+        (right_total - vertical_gap).max(0.0)
+    };
+    (left, right, left_height, right_height)
+}
+
 #[allow(dead_code, clippy::too_many_arguments)]
 fn mindmap_layout_side_children(
     entries: &[(usize, f64)],
@@ -1318,19 +1351,8 @@ fn mindmap_place_children(
     child_entries.sort_unstable_by_key(|(idx, _)| *idx);
 
     if is_root {
-        let mut left: Vec<(usize, f64)> = Vec::new();
-        let mut right: Vec<(usize, f64)> = Vec::new();
-        let mut left_total = 0.0;
-        let mut right_total = 0.0;
-        for entry in child_entries {
-            if right_total <= left_total {
-                right_total += entry.1 + vertical_gap;
-                right.push(entry);
-            } else {
-                left_total += entry.1 + vertical_gap;
-                left.push(entry);
-            }
-        }
+        let (left, right, _left_height, _right_height) =
+            mindmap_split_root_children(&child_entries, vertical_gap);
         mindmap_layout_side_children(
             &right,
             1.0,
@@ -1454,14 +1476,28 @@ fn layout_mindmap_diagram(
     let root_gap = spacing.rank_gap.max(4.0);
     let mut cursor_y = 0.0;
     for root in roots.iter().copied() {
-        let root_height = mindmap_subtree_height(
-            root,
-            &children,
-            &node_sizes,
-            vertical_gap,
-            &mut memo,
-            &mut visiting,
-        );
+        let root_height = if children[root].is_empty() {
+            node_sizes[root].1
+        } else {
+            let mut child_entries: Vec<(usize, f64)> = children[root]
+                .iter()
+                .map(|&child| {
+                    let height = mindmap_subtree_height(
+                        child,
+                        &children,
+                        &node_sizes,
+                        vertical_gap,
+                        &mut memo,
+                        &mut visiting,
+                    );
+                    (child, height)
+                })
+                .collect();
+            child_entries.sort_unstable_by_key(|(idx, _)| *idx);
+            let (_left, _right, left_height, right_height) =
+                mindmap_split_root_children(&child_entries, vertical_gap);
+            node_sizes[root].1.max(left_height.max(right_height))
+        };
         let center = LayoutPoint {
             x: 0.0,
             y: cursor_y + root_height / 2.0,
@@ -2232,24 +2268,35 @@ fn count_aligned_nodes(nodes: &[LayoutNodeBox]) -> usize {
     }
     let max_rank = nodes.iter().map(|n| n.rank).max().unwrap_or(0);
     let mut aligned = 0;
+    let mut counts = vec![0usize; max_rank + 1];
+    for node in nodes {
+        counts[node.rank] += 1;
+    }
+    let mut per_rank: Vec<Vec<f64>> = counts
+        .iter()
+        .map(|&count| Vec::with_capacity(count))
+        .collect();
+    for node in nodes {
+        let center_x = node.rect.x + node.rect.width * 0.5;
+        per_rank[node.rank].push(center_x);
+    }
 
-    for r in 0..=max_rank {
-        let mut xs: Vec<f64> = nodes
-            .iter()
-            .filter(|n| n.rank == r)
-            .map(|n| n.rect.center().x)
-            .collect();
+    for xs in &mut per_rank {
         if xs.is_empty() {
             continue;
         }
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = xs[xs.len() / 2];
-        for &x in &xs {
+        let mid = xs.len() / 2;
+        xs.select_nth_unstable_by(mid, |a, b| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let median = xs[mid];
+        for &x in xs.iter() {
             if (x - median).abs() < 0.1 {
                 aligned += 1;
             }
         }
     }
+
     aligned
 }
 
@@ -3148,12 +3195,8 @@ pub fn route_all_edges(
                 ops_used += diag.cells_explored;
 
                 // Mark route cells as occupied for crossing penalty.
-                for wp in &waypoints {
-                    let (c, r) = grid.to_grid(*wp);
-                    let gi = r * grid.cols + c;
-                    if gi < occupied_routes.len() {
-                        occupied_routes[gi] = true;
-                    }
+                if !diag.fallback {
+                    mark_route_cells(&grid, &waypoints, &mut occupied_routes);
                 }
 
                 all_diags.push(diag);
@@ -3230,6 +3273,63 @@ fn apply_offset(
                 },
             )
         }
+    }
+}
+
+fn mark_route_cells(grid: &RouteGrid, waypoints: &[LayoutPoint], occupied_routes: &mut [bool]) {
+    if waypoints.is_empty() {
+        return;
+    }
+
+    let mut prev = grid.to_grid(waypoints[0]);
+    let mark_cell = |col: usize, row: usize, occupied_routes: &mut [bool]| {
+        let idx = row * grid.cols + col;
+        if idx < occupied_routes.len() {
+            occupied_routes[idx] = true;
+        }
+    };
+
+    mark_cell(prev.0, prev.1, occupied_routes);
+
+    for &wp in waypoints.iter().skip(1) {
+        let next = grid.to_grid(wp);
+        if prev == next {
+            continue;
+        }
+
+        if prev.0 == next.0 {
+            let (min_r, max_r) = if prev.1 <= next.1 {
+                (prev.1, next.1)
+            } else {
+                (next.1, prev.1)
+            };
+            for row in min_r..=max_r {
+                mark_cell(prev.0, row, occupied_routes);
+            }
+        } else if prev.1 == next.1 {
+            let (min_c, max_c) = if prev.0 <= next.0 {
+                (prev.0, next.0)
+            } else {
+                (next.0, prev.0)
+            };
+            for col in min_c..=max_c {
+                mark_cell(col, prev.1, occupied_routes);
+            }
+        } else {
+            // Fallback for unexpected diagonal: walk a Manhattan path.
+            let mut col = prev.0;
+            let mut row = prev.1;
+            while col != next.0 {
+                col = if col < next.0 { col + 1 } else { col - 1 };
+                mark_cell(col, row, occupied_routes);
+            }
+            while row != next.1 {
+                row = if row < next.1 { row + 1 } else { row - 1 };
+                mark_cell(col, row, occupied_routes);
+            }
+        }
+
+        prev = next;
     }
 }
 
@@ -4842,14 +4942,38 @@ mod tests {
         let mut config = default_config();
         config.layout_iteration_budget = 200;
 
+        const GOLDEN_CHECKSUM: usize = 0x0000_0000_004d_ff30;
         let mut checksum = 0usize;
+        let region = stats_alloc::Region::new(crate::GLOBAL);
         for _ in 0..200 {
             let layout = layout_diagram(&ir, &config);
             checksum = checksum.wrapping_add(layout.nodes.len());
             checksum = checksum.wrapping_add(layout.stats.crossings);
             checksum = checksum.wrapping_add(layout.stats.total_bends);
         }
-        std::hint::black_box(checksum);
+        let stats = region.change();
+        eprintln!(
+            "perf_large_graph_layout checksum=0x{checksum:016x} allocs={} bytes_allocated={} reallocs={} deallocs={} bytes_deallocated={} bytes_reallocated={}",
+            stats.allocations,
+            stats.bytes_allocated,
+            stats.reallocations,
+            stats.deallocations,
+            stats.bytes_deallocated,
+            stats.bytes_reallocated
+        );
+        assert_eq!(
+            checksum, GOLDEN_CHECKSUM,
+            "golden checksum changed; update if layout output intentionally changed"
+        );
+        std::hint::black_box((
+            checksum,
+            stats.allocations,
+            stats.bytes_allocated,
+            stats.reallocations,
+            stats.deallocations,
+            stats.bytes_deallocated,
+            stats.bytes_reallocated,
+        ));
     }
 
     fn make_dense_rank_ir(
@@ -4964,6 +5088,29 @@ mod tests {
 
         assert_eq!(wp1, wp2, "A* must be deterministic");
         assert_eq!(d1, d2, "diagnostics must be deterministic");
+    }
+
+    #[test]
+    fn mark_route_cells_marks_segments() {
+        let grid = RouteGrid {
+            cols: 6,
+            rows: 4,
+            cell_size: 1.0,
+            origin: LayoutPoint { x: 0.0, y: 0.0 },
+            occupied: vec![false; 24],
+        };
+        let mut occupied_routes = vec![false; grid.cols * grid.rows];
+        let waypoints = vec![
+            LayoutPoint { x: 1.0, y: 2.0 },
+            LayoutPoint { x: 4.0, y: 2.0 },
+        ];
+
+        mark_route_cells(&grid, &waypoints, &mut occupied_routes);
+
+        for col in 1..=4 {
+            let idx = 2 * grid.cols + col;
+            assert!(occupied_routes[idx], "col {col} should be marked");
+        }
     }
 
     #[test]

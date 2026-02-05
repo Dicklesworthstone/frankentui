@@ -2,24 +2,142 @@
 
 //! Mermaid showcase screen — state + command handling scaffold.
 
+use std::cell::RefCell;
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
-use ftui_extras::mermaid::{MermaidGlyphMode, MermaidTier, MermaidWrapMode};
+use ftui_extras::mermaid;
+use ftui_extras::mermaid::{
+    MermaidCompatibilityMatrix, MermaidConfig, MermaidDiagramIr, MermaidError,
+    MermaidFallbackPolicy, MermaidGlyphMode, MermaidRenderMode, MermaidTier, MermaidWrapMode,
+};
+use ftui_extras::mermaid_layout;
+use ftui_extras::mermaid_render;
 use ftui_layout::{Constraint, Flex};
+use ftui_render::buffer::Buffer;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
+use ftui_text::{Line, Span, Text};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
 
 use super::{HelpEntry, Screen};
+use crate::determinism;
+use crate::test_logging::{TEST_JSONL_SCHEMA, escape_json, jsonl_enabled};
 use crate::theme;
 
 const ZOOM_STEP: f32 = 0.1;
 const ZOOM_MIN: f32 = 0.2;
 const ZOOM_MAX: f32 = 3.0;
+const VIEWPORT_OVERRIDE_DEFAULT_COLS: u16 = 80;
+const VIEWPORT_OVERRIDE_DEFAULT_ROWS: u16 = 24;
+const VIEWPORT_OVERRIDE_MIN_COLS: u16 = 1;
+const VIEWPORT_OVERRIDE_MIN_ROWS: u16 = 1;
+const VIEWPORT_OVERRIDE_STEP_COLS: i16 = 4;
+const VIEWPORT_OVERRIDE_STEP_ROWS: i16 = 2;
+
+const MERMAID_JSONL_EVENT: &str = "mermaid_render";
+static MERMAID_JSONL_SEQ: AtomicU64 = AtomicU64::new(0);
+
+// ── Performance thresholds (good / ok / bad) ────────────────────────
+/// Parse time thresholds in milliseconds.
+const PARSE_MS_GOOD: f32 = 1.0;
+const PARSE_MS_OK: f32 = 5.0;
+/// Layout time thresholds in milliseconds.
+const LAYOUT_MS_GOOD: f32 = 5.0;
+const LAYOUT_MS_OK: f32 = 20.0;
+/// Render time thresholds in milliseconds.
+const RENDER_MS_GOOD: f32 = 8.0;
+const RENDER_MS_OK: f32 = 16.0;
+/// Objective score thresholds (lower is better).
+const SCORE_GOOD: f32 = 5.0;
+const SCORE_OK: f32 = 15.0;
+/// Edge crossing thresholds (lower is better).
+const CROSSINGS_GOOD: u32 = 0;
+const CROSSINGS_OK: u32 = 3;
+/// Symmetry thresholds (higher is better, 0.0-1.0).
+const SYMMETRY_GOOD: f32 = 0.7;
+const SYMMETRY_OK: f32 = 0.4;
+/// Compactness thresholds (higher is better, 0.0-1.0).
+const COMPACTNESS_GOOD: f32 = 0.3;
+const COMPACTNESS_OK: f32 = 0.1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetricLevel {
+    Good,
+    Ok,
+    Bad,
+}
+
+impl MetricLevel {
+    /// Return the foreground color for this metric level.
+    fn color(self) -> theme::ColorToken {
+        match self {
+            Self::Good => theme::accent::SUCCESS,
+            Self::Ok => theme::accent::WARNING,
+            Self::Bad => theme::accent::ERROR,
+        }
+    }
+}
+
+/// Classify a "lower is better" metric.
+fn classify_lower(value: f32, good: f32, ok: f32) -> MetricLevel {
+    if value <= good {
+        MetricLevel::Good
+    } else if value <= ok {
+        MetricLevel::Ok
+    } else {
+        MetricLevel::Bad
+    }
+}
+
+/// Classify a "lower is better" integer metric.
+fn classify_lower_u32(value: u32, good: u32, ok: u32) -> MetricLevel {
+    if value <= good {
+        MetricLevel::Good
+    } else if value <= ok {
+        MetricLevel::Ok
+    } else {
+        MetricLevel::Bad
+    }
+}
+
+/// Classify a "higher is better" metric.
+fn classify_higher(value: f32, good: f32, ok: f32) -> MetricLevel {
+    if value >= good {
+        MetricLevel::Good
+    } else if value >= ok {
+        MetricLevel::Ok
+    } else {
+        MetricLevel::Bad
+    }
+}
+
+fn push_opt_f32(json: &mut String, key: &str, value: Option<f32>) {
+    json.push_str(&format!(",\"{key}\":"));
+    if let Some(v) = value
+        && v.is_finite()
+    {
+        json.push_str(&format!("{v:.3}"));
+    } else {
+        json.push_str("null");
+    }
+}
+
+fn push_opt_u32(json: &mut String, key: &str, value: Option<u32>) {
+    json.push_str(&format!(",\"{key}\":"));
+    if let Some(v) = value {
+        json.push_str(&v.to_string());
+    } else {
+        json.push_str("null");
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LayoutMode {
@@ -400,11 +518,75 @@ struct MermaidMetricsSnapshot {
     layout_ms: Option<f32>,
     render_ms: Option<f32>,
     layout_iterations: Option<u32>,
+    /// Composite layout quality score (lower is better).
     objective_score: Option<f32>,
+    /// Edge crossing count (lower is better).
     constraint_violations: Option<u32>,
+    /// Total edge bends/waypoints (lower is better).
+    bends: Option<u32>,
+    /// Symmetry across center axis (0.0-1.0, higher is better).
+    symmetry: Option<f32>,
+    /// Compactness: node area / bounding box area (0.0-1.0, higher is better).
+    compactness: Option<f32>,
+    /// Edge length variance (lower = more uniform).
+    edge_length_variance: Option<f32>,
+    /// Label collision count (lower is better).
+    label_collisions: Option<u32>,
     fallback_tier: Option<MermaidTier>,
     fallback_reason: Option<&'static str>,
 }
+
+impl MermaidMetricsSnapshot {
+    /// Populate layout quality metrics from a `DiagramLayout` result.
+    ///
+    /// Uses `evaluate_layout` to compute the composite LayoutObjective,
+    /// then stores each metric field for consistent display.
+    fn from_layout(layout: &ftui_extras::mermaid_layout::DiagramLayout) -> Self {
+        let objective = ftui_extras::mermaid_layout::evaluate_layout(layout);
+        Self {
+            layout_iterations: Some(layout.stats.iterations_used as u32),
+            objective_score: Some(objective.score as f32),
+            constraint_violations: Some(objective.crossings as u32),
+            bends: Some(objective.bends as u32),
+            symmetry: Some(objective.symmetry as f32),
+            compactness: Some(objective.compactness as f32),
+            edge_length_variance: Some(objective.edge_length_variance as f32),
+            label_collisions: Some(objective.label_collisions as u32),
+            ..Self::default()
+        }
+    }
+
+    /// Populate fallback fields from a degradation plan.
+    fn set_fallback(
+        &mut self,
+        tier: MermaidTier,
+        plan: &ftui_extras::mermaid::MermaidDegradationPlan,
+    ) {
+        self.fallback_tier = Some(tier);
+        self.fallback_reason = Some(if plan.collapse_clusters {
+            "clusters_collapsed"
+        } else if plan.simplify_routing {
+            "routing_simplified"
+        } else if plan.hide_labels {
+            "labels_hidden"
+        } else if plan.reduce_decoration {
+            "decoration_reduced"
+        } else if plan.force_glyph_mode.is_some() {
+            "glyph_mode_forced"
+        } else {
+            "layout_budget_exceeded"
+        });
+    }
+}
+
+/// A single entry in the status log.
+#[derive(Debug, Clone)]
+struct StatusLogEntry {
+    action: &'static str,
+    detail: String,
+}
+
+const STATUS_LOG_CAP: usize = 50;
 
 #[derive(Debug)]
 struct MermaidShowcaseState {
@@ -413,41 +595,278 @@ struct MermaidShowcaseState {
     layout_mode: LayoutMode,
     tier: MermaidTier,
     glyph_mode: MermaidGlyphMode,
+    render_mode: MermaidRenderMode,
     wrap_mode: MermaidWrapMode,
     styles_enabled: bool,
     metrics_visible: bool,
     controls_visible: bool,
     viewport_zoom: f32,
     viewport_pan: (i16, i16),
+    viewport_size_override: Option<(u16, u16)>,
+    analysis_epoch: u64,
+    layout_epoch: u64,
     render_epoch: u64,
     metrics: MermaidMetricsSnapshot,
+    status_log: Vec<StatusLogEntry>,
+    status_log_visible: bool,
+}
+
+#[derive(Debug)]
+struct MermaidRenderCache {
+    analysis_epoch: u64,
+    layout_epoch: u64,
+    render_epoch: u64,
+    viewport: (u16, u16),
+    zoom: f32,
+    ir: Option<MermaidDiagramIr>,
+    layout: Option<mermaid_layout::DiagramLayout>,
+    buffer: Buffer,
+    metrics: MermaidMetricsSnapshot,
+    errors: Vec<MermaidError>,
+    cache_hits: u64,
+    cache_misses: u64,
+    last_cache_hit: bool,
+}
+
+impl MermaidRenderCache {
+    fn empty() -> Self {
+        Self {
+            analysis_epoch: u64::MAX,
+            layout_epoch: u64::MAX,
+            render_epoch: u64::MAX,
+            viewport: (0, 0),
+            zoom: 1.0,
+            ir: None,
+            layout: None,
+            buffer: Buffer::new(1, 1),
+            metrics: MermaidMetricsSnapshot::default(),
+            errors: Vec::new(),
+            cache_hits: 0,
+            cache_misses: 0,
+            last_cache_hit: false,
+        }
+    }
 }
 
 impl MermaidShowcaseState {
     fn new() -> Self {
-        Self {
+        let mut state = Self {
             samples: DEFAULT_SAMPLES.to_vec(),
             selected_index: 0,
             layout_mode: LayoutMode::Auto,
             tier: MermaidTier::Auto,
             glyph_mode: MermaidGlyphMode::Unicode,
+            render_mode: MermaidRenderMode::Auto,
             wrap_mode: MermaidWrapMode::WordChar,
             styles_enabled: true,
             metrics_visible: true,
             controls_visible: true,
             viewport_zoom: 1.0,
             viewport_pan: (0, 0),
+            viewport_size_override: None,
+            analysis_epoch: 0,
+            layout_epoch: 0,
             render_epoch: 0,
             metrics: MermaidMetricsSnapshot::default(),
+            status_log: Vec::new(),
+            status_log_visible: false,
+        };
+        state.recompute_metrics();
+        state
+    }
+
+    fn log_action(&mut self, action: &'static str, detail: String) {
+        if self.status_log.len() >= STATUS_LOG_CAP {
+            self.status_log.remove(0);
         }
+        self.status_log.push(StatusLogEntry { action, detail });
     }
 
     fn selected_sample(&self) -> Option<MermaidSample> {
         self.samples.get(self.selected_index).copied()
     }
 
-    fn clamp_zoom(&mut self) {
+    fn normalize(&mut self) {
         self.viewport_zoom = self.viewport_zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        self.clamp_viewport_override();
+        self.recompute_metrics();
+    }
+    /// Run the parse/layout pipeline for the current sample and populate metrics.
+    fn recompute_metrics(&mut self) {
+        let sample = match self.selected_sample() {
+            Some(s) => s,
+            None => {
+                self.metrics = MermaidMetricsSnapshot::default();
+                return;
+            }
+        };
+        let source = sample.source;
+
+        let config = MermaidConfig {
+            glyph_mode: self.glyph_mode,
+            render_mode: self.render_mode,
+            tier_override: self.tier,
+            wrap_mode: self.wrap_mode,
+            enable_styles: self.styles_enabled,
+            ..MermaidConfig::default()
+        };
+        let matrix = MermaidCompatibilityMatrix::default();
+        let policy = MermaidFallbackPolicy::default();
+
+        let t0 = std::time::Instant::now();
+        let ast = match ftui_extras::mermaid::parse(source) {
+            Ok(ast) => ast,
+            Err(_) => {
+                self.metrics = MermaidMetricsSnapshot::default();
+                return;
+            }
+        };
+        let parse_elapsed = t0.elapsed();
+
+        let ir_parse = ftui_extras::mermaid::normalize_ast_to_ir(&ast, &config, &matrix, &policy);
+
+        let t1 = std::time::Instant::now();
+        let spacing = match self.layout_mode {
+            LayoutMode::Dense => mermaid_layout::LayoutSpacing {
+                rank_gap: 2.0,
+                node_gap: 2.0,
+                ..mermaid_layout::LayoutSpacing::default()
+            },
+            LayoutMode::Spacious => mermaid_layout::LayoutSpacing {
+                rank_gap: 6.0,
+                node_gap: 5.0,
+                ..mermaid_layout::LayoutSpacing::default()
+            },
+            LayoutMode::Auto => mermaid_layout::LayoutSpacing::default(),
+        };
+        let layout = mermaid_layout::layout_diagram_with_spacing(&ir_parse.ir, &config, &spacing);
+        let layout_elapsed = t1.elapsed();
+
+        let mut snap = MermaidMetricsSnapshot::from_layout(&layout);
+        snap.parse_ms = Some(parse_elapsed.as_secs_f32() * 1000.0);
+        snap.layout_ms = Some(layout_elapsed.as_secs_f32() * 1000.0);
+        if let Some(ref plan) = layout.degradation {
+            snap.set_fallback(self.tier, plan);
+        }
+        self.metrics = snap;
+        self.emit_metrics_jsonl(sample);
+    }
+
+    fn emit_metrics_jsonl(&self, sample: MermaidSample) {
+        if !jsonl_enabled() {
+            return;
+        }
+        let seq = MERMAID_JSONL_SEQ.fetch_add(1, Ordering::Relaxed);
+        let run_id = determinism::demo_run_id();
+        let seed = determinism::demo_seed(0);
+        let screen_mode = determinism::demo_screen_mode();
+        let line = self.metrics_jsonl_line(sample, seq, run_id.as_deref(), seed, &screen_mode);
+        let _ = writeln!(std::io::stderr(), "{line}");
+    }
+
+    fn metrics_jsonl_line(
+        &self,
+        sample: MermaidSample,
+        seq: u64,
+        run_id: Option<&str>,
+        seed: u64,
+        screen_mode: &str,
+    ) -> String {
+        let mut json = String::new();
+        json.push('{');
+        json.push_str(&format!("\"schema_version\":\"{}\"", TEST_JSONL_SCHEMA));
+        json.push_str(&format!(",\"event\":\"{}\"", MERMAID_JSONL_EVENT));
+        json.push_str(&format!(",\"seq\":{seq}"));
+        if let Some(run_id) = run_id {
+            json.push_str(&format!(",\"run_id\":\"{}\"", escape_json(run_id)));
+        }
+        json.push_str(&format!(",\"seed\":{seed}"));
+        json.push_str(&format!(
+            ",\"screen_mode\":\"{}\"",
+            escape_json(screen_mode)
+        ));
+        json.push_str(&format!(",\"sample\":\"{}\"", escape_json(sample.name)));
+        json.push_str(&format!(
+            ",\"layout_mode\":\"{}\"",
+            self.layout_mode.as_str()
+        ));
+        json.push_str(&format!(",\"tier\":\"{}\"", self.tier));
+        json.push_str(&format!(",\"glyph_mode\":\"{}\"", self.glyph_mode));
+        json.push_str(&format!(",\"wrap_mode\":\"{}\"", self.wrap_mode));
+        json.push_str(&format!(",\"render_epoch\":{}", self.render_epoch));
+        push_opt_f32(&mut json, "parse_ms", self.metrics.parse_ms);
+        push_opt_f32(&mut json, "layout_ms", self.metrics.layout_ms);
+        push_opt_f32(&mut json, "render_ms", self.metrics.render_ms);
+        push_opt_u32(
+            &mut json,
+            "layout_iterations",
+            self.metrics.layout_iterations,
+        );
+        push_opt_f32(&mut json, "objective_score", self.metrics.objective_score);
+        push_opt_u32(
+            &mut json,
+            "constraint_violations",
+            self.metrics.constraint_violations,
+        );
+        push_opt_u32(&mut json, "bends", self.metrics.bends);
+        push_opt_f32(&mut json, "symmetry", self.metrics.symmetry);
+        push_opt_f32(&mut json, "compactness", self.metrics.compactness);
+        push_opt_f32(
+            &mut json,
+            "edge_length_variance",
+            self.metrics.edge_length_variance,
+        );
+        push_opt_u32(&mut json, "label_collisions", self.metrics.label_collisions);
+        if let Some(tier) = self.metrics.fallback_tier {
+            json.push_str(&format!(",\"fallback_tier\":\"{tier}\""));
+        }
+        if let Some(reason) = self.metrics.fallback_reason {
+            json.push_str(&format!(",\"fallback_reason\":\"{}\"", escape_json(reason)));
+        }
+        json.push('}');
+        json
+    }
+
+    fn clamp_viewport_override(&mut self) {
+        if let Some((cols, rows)) = self.viewport_size_override {
+            let cols = cols.max(VIEWPORT_OVERRIDE_MIN_COLS);
+            let rows = rows.max(VIEWPORT_OVERRIDE_MIN_ROWS);
+            self.viewport_size_override = Some((cols, rows));
+        }
+    }
+
+    fn adjust_viewport_override(&mut self, delta_cols: i16, delta_rows: i16) {
+        let (cols, rows) = self.viewport_size_override.unwrap_or((
+            VIEWPORT_OVERRIDE_DEFAULT_COLS,
+            VIEWPORT_OVERRIDE_DEFAULT_ROWS,
+        ));
+        let cols = (cols as i32 + delta_cols as i32)
+            .clamp(VIEWPORT_OVERRIDE_MIN_COLS as i32, u16::MAX as i32) as u16;
+        let rows = (rows as i32 + delta_rows as i32)
+            .clamp(VIEWPORT_OVERRIDE_MIN_ROWS as i32, u16::MAX as i32) as u16;
+        let next = Some((cols, rows));
+        if self.viewport_size_override != next {
+            self.viewport_size_override = next;
+            self.bump_render();
+        }
+    }
+
+    fn bump_analysis(&mut self) {
+        self.analysis_epoch = self.analysis_epoch.saturating_add(1);
+    }
+
+    fn bump_layout(&mut self) {
+        self.layout_epoch = self.layout_epoch.saturating_add(1);
+    }
+
+    fn bump_render(&mut self) {
+        self.render_epoch = self.render_epoch.saturating_add(1);
+    }
+
+    fn bump_all(&mut self) {
+        self.bump_analysis();
+        self.bump_layout();
+        self.bump_render();
     }
 
     fn apply_action(&mut self, action: MermaidShowcaseAction) {
@@ -455,59 +874,80 @@ impl MermaidShowcaseState {
             MermaidShowcaseAction::NextSample => {
                 if !self.samples.is_empty() {
                     self.selected_index = (self.selected_index + 1) % self.samples.len();
-                    self.render_epoch = self.render_epoch.saturating_add(1);
+                    self.bump_all();
+                    let name = self.samples[self.selected_index].name;
+                    self.log_action("sample", name.to_string());
                 }
             }
             MermaidShowcaseAction::PrevSample => {
                 if !self.samples.is_empty() {
                     self.selected_index =
                         (self.selected_index + self.samples.len() - 1) % self.samples.len();
-                    self.render_epoch = self.render_epoch.saturating_add(1);
+                    self.bump_all();
+                    let name = self.samples[self.selected_index].name;
+                    self.log_action("sample", name.to_string());
                 }
             }
             MermaidShowcaseAction::FirstSample => {
                 if !self.samples.is_empty() {
                     self.selected_index = 0;
-                    self.render_epoch = self.render_epoch.saturating_add(1);
+                    self.bump_all();
+                    self.log_action("sample", "first".to_string());
                 }
             }
             MermaidShowcaseAction::LastSample => {
                 if !self.samples.is_empty() {
                     self.selected_index = self.samples.len() - 1;
-                    self.render_epoch = self.render_epoch.saturating_add(1);
+                    self.bump_all();
+                    self.log_action("sample", "last".to_string());
                 }
             }
             MermaidShowcaseAction::Refresh => {
-                self.render_epoch = self.render_epoch.saturating_add(1);
+                self.bump_all();
+                self.log_action("refresh", String::new());
             }
             MermaidShowcaseAction::ZoomIn => {
                 self.viewport_zoom += ZOOM_STEP;
-                self.clamp_zoom();
+                self.log_action("zoom", format!("{:.0}%", self.viewport_zoom * 100.0));
             }
             MermaidShowcaseAction::ZoomOut => {
                 self.viewport_zoom -= ZOOM_STEP;
-                self.clamp_zoom();
+                self.log_action("zoom", format!("{:.0}%", self.viewport_zoom * 100.0));
             }
             MermaidShowcaseAction::ZoomReset => {
                 self.viewport_zoom = 1.0;
                 self.viewport_pan = (0, 0);
+                self.log_action("zoom", "reset".to_string());
             }
             MermaidShowcaseAction::FitToView => {
                 self.viewport_zoom = 1.0;
                 self.viewport_pan = (0, 0);
+                self.log_action("fit", String::new());
             }
             MermaidShowcaseAction::ToggleLayoutMode => {
                 self.layout_mode = self.layout_mode.next();
-                self.render_epoch = self.render_epoch.saturating_add(1);
+                self.bump_layout();
+                self.bump_render();
+                self.log_action("layout", self.layout_mode.as_str().to_string());
             }
             MermaidShowcaseAction::ForceRelayout => {
-                self.render_epoch = self.render_epoch.saturating_add(1);
+                self.bump_layout();
+                self.bump_render();
+                self.log_action("relayout", String::new());
             }
             MermaidShowcaseAction::ToggleMetrics => {
                 self.metrics_visible = !self.metrics_visible;
+                self.log_action(
+                    "metrics",
+                    if self.metrics_visible { "on" } else { "off" }.to_string(),
+                );
             }
             MermaidShowcaseAction::ToggleControls => {
                 self.controls_visible = !self.controls_visible;
+                self.log_action(
+                    "controls",
+                    if self.controls_visible { "on" } else { "off" }.to_string(),
+                );
             }
             MermaidShowcaseAction::CycleTier => {
                 self.tier = match self.tier {
@@ -516,18 +956,36 @@ impl MermaidShowcaseState {
                     MermaidTier::Normal => MermaidTier::Compact,
                     MermaidTier::Compact => MermaidTier::Auto,
                 };
-                self.render_epoch = self.render_epoch.saturating_add(1);
+                self.bump_all();
+                self.log_action("tier", self.tier.to_string());
             }
             MermaidShowcaseAction::ToggleGlyphMode => {
                 self.glyph_mode = match self.glyph_mode {
                     MermaidGlyphMode::Unicode => MermaidGlyphMode::Ascii,
                     MermaidGlyphMode::Ascii => MermaidGlyphMode::Unicode,
                 };
-                self.render_epoch = self.render_epoch.saturating_add(1);
+                self.bump_render();
+                self.log_action("glyph", self.glyph_mode.to_string());
+            }
+            MermaidShowcaseAction::CycleRenderMode => {
+                self.render_mode = match self.render_mode {
+                    MermaidRenderMode::Auto => MermaidRenderMode::Braille,
+                    MermaidRenderMode::Braille => MermaidRenderMode::Block,
+                    MermaidRenderMode::Block => MermaidRenderMode::HalfBlock,
+                    MermaidRenderMode::HalfBlock => MermaidRenderMode::CellOnly,
+                    MermaidRenderMode::CellOnly => MermaidRenderMode::Auto,
+                };
+                self.bump_render();
+                self.log_action("render", self.render_mode.to_string());
             }
             MermaidShowcaseAction::ToggleStyles => {
                 self.styles_enabled = !self.styles_enabled;
-                self.render_epoch = self.render_epoch.saturating_add(1);
+                self.bump_analysis();
+                self.bump_render();
+                self.log_action(
+                    "styles",
+                    if self.styles_enabled { "on" } else { "off" }.to_string(),
+                );
             }
             MermaidShowcaseAction::CycleWrapMode => {
                 self.wrap_mode = match self.wrap_mode {
@@ -536,13 +994,44 @@ impl MermaidShowcaseState {
                     MermaidWrapMode::Char => MermaidWrapMode::WordChar,
                     MermaidWrapMode::WordChar => MermaidWrapMode::None,
                 };
-                self.render_epoch = self.render_epoch.saturating_add(1);
+                self.bump_layout();
+                self.bump_render();
+                self.log_action("wrap", self.wrap_mode.to_string());
+            }
+            MermaidShowcaseAction::IncreaseViewportWidth => {
+                self.adjust_viewport_override(VIEWPORT_OVERRIDE_STEP_COLS, 0);
+                self.log_action("viewport", "width +".to_string());
+            }
+            MermaidShowcaseAction::DecreaseViewportWidth => {
+                self.adjust_viewport_override(-VIEWPORT_OVERRIDE_STEP_COLS, 0);
+                self.log_action("viewport", "width -".to_string());
+            }
+            MermaidShowcaseAction::IncreaseViewportHeight => {
+                self.adjust_viewport_override(0, VIEWPORT_OVERRIDE_STEP_ROWS);
+                self.log_action("viewport", "height +".to_string());
+            }
+            MermaidShowcaseAction::DecreaseViewportHeight => {
+                self.adjust_viewport_override(0, -VIEWPORT_OVERRIDE_STEP_ROWS);
+                self.log_action("viewport", "height -".to_string());
+            }
+            MermaidShowcaseAction::ResetViewportOverride => {
+                if self.viewport_size_override.is_some() {
+                    self.viewport_size_override = None;
+                    self.bump_render();
+                    self.log_action("viewport", "reset".to_string());
+                }
             }
             MermaidShowcaseAction::CollapsePanels => {
                 self.controls_visible = false;
                 self.metrics_visible = false;
+                self.status_log_visible = false;
+                self.log_action("panels", "collapsed".to_string());
+            }
+            MermaidShowcaseAction::ToggleStatusLog => {
+                self.status_log_visible = !self.status_log_visible;
             }
         }
+        self.normalize();
     }
 }
 
@@ -563,14 +1052,22 @@ enum MermaidShowcaseAction {
     ToggleControls,
     CycleTier,
     ToggleGlyphMode,
+    CycleRenderMode,
     ToggleStyles,
     CycleWrapMode,
+    IncreaseViewportWidth,
+    DecreaseViewportWidth,
+    IncreaseViewportHeight,
+    DecreaseViewportHeight,
+    ResetViewportOverride,
     CollapsePanels,
+    ToggleStatusLog,
 }
 
 /// Mermaid showcase screen scaffold (state + key handling).
 pub struct MermaidShowcaseScreen {
     state: MermaidShowcaseState,
+    cache: RefCell<MermaidRenderCache>,
 }
 
 impl Default for MermaidShowcaseScreen {
@@ -583,7 +1080,252 @@ impl MermaidShowcaseScreen {
     pub fn new() -> Self {
         Self {
             state: MermaidShowcaseState::new(),
+            cache: RefCell::new(MermaidRenderCache::empty()),
         }
+    }
+
+    fn build_config(&self) -> MermaidConfig {
+        let mut config = MermaidConfig {
+            glyph_mode: self.state.glyph_mode,
+            tier_override: self.state.tier,
+            render_mode: self.state.render_mode,
+            wrap_mode: self.state.wrap_mode,
+            enable_styles: self.state.styles_enabled,
+            ..MermaidConfig::default()
+        };
+
+        match self.state.layout_mode {
+            LayoutMode::Auto => {}
+            LayoutMode::Dense => {
+                config.layout_iteration_budget = 400;
+                config.route_budget = 8_000;
+            }
+            LayoutMode::Spacious => {
+                config.layout_iteration_budget = 140;
+                config.route_budget = 3_000;
+            }
+        }
+
+        config
+    }
+
+    fn layout_spacing(&self) -> mermaid_layout::LayoutSpacing {
+        match self.state.layout_mode {
+            LayoutMode::Dense => mermaid_layout::LayoutSpacing {
+                rank_gap: 2.0,
+                node_gap: 2.0,
+                ..mermaid_layout::LayoutSpacing::default()
+            },
+            LayoutMode::Spacious => mermaid_layout::LayoutSpacing {
+                rank_gap: 6.0,
+                node_gap: 5.0,
+                ..mermaid_layout::LayoutSpacing::default()
+            },
+            LayoutMode::Auto => mermaid_layout::LayoutSpacing::default(),
+        }
+    }
+
+    fn target_viewport_size(&self, inner: Rect) -> (u16, u16) {
+        if let Some((cols, rows)) = self.state.viewport_size_override {
+            (cols.max(1), rows.max(1))
+        } else {
+            (inner.width.max(1), inner.height.max(1))
+        }
+    }
+
+    fn has_render_error(&self) -> bool {
+        !self.cache.borrow().errors.is_empty()
+    }
+
+    fn ensure_render_cache(&self, inner: Rect) {
+        let (width, height) = self.target_viewport_size(inner);
+        let zoom = self.state.viewport_zoom;
+        let render_width = (f32::from(width) * zoom)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+        let render_height = (f32::from(height) * zoom)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16;
+
+        let mut cache = self.cache.borrow_mut();
+        let zoom_matches = (cache.zoom - zoom).abs() <= f32::EPSILON;
+        let mut analysis_needed = cache.analysis_epoch != self.state.analysis_epoch;
+        let mut layout_needed = cache.layout_epoch != self.state.layout_epoch;
+        let mut render_needed = cache.render_epoch != self.state.render_epoch
+            || cache.viewport != (width, height)
+            || !zoom_matches;
+
+        if cache.ir.is_none() {
+            analysis_needed = true;
+        }
+        if cache.layout.is_none() {
+            layout_needed = true;
+        }
+
+        if !analysis_needed && !layout_needed && !render_needed {
+            cache.cache_hits = cache.cache_hits.saturating_add(1);
+            cache.last_cache_hit = true;
+            return;
+        }
+        cache.cache_misses = cache.cache_misses.saturating_add(1);
+        cache.last_cache_hit = false;
+
+        if self.state.selected_sample().is_none() {
+            if render_needed {
+                let msg = "No samples loaded.";
+                let area = Rect::new(0, 0, render_width, render_height);
+                let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+                let mut tmp_frame = Frame::new(render_width, render_height, &mut pool);
+                Paragraph::new(msg)
+                    .style(Style::new().fg(theme::fg::MUTED))
+                    .render(area, &mut tmp_frame);
+                let mut buffer = Buffer::new(render_width, render_height);
+                buffer.copy_from(&tmp_frame.buffer, area, 0, 0);
+                cache.buffer = buffer;
+                cache.viewport = (width, height);
+                cache.zoom = zoom;
+                cache.render_epoch = self.state.render_epoch;
+            }
+            cache.analysis_epoch = self.state.analysis_epoch;
+            cache.layout_epoch = self.state.layout_epoch;
+            cache.ir = None;
+            cache.layout = None;
+            cache.metrics = MermaidMetricsSnapshot::default();
+            cache.errors.clear();
+            return;
+        }
+
+        let sample = self.state.selected_sample().expect("sample present");
+        let config = self.build_config();
+        let matrix = MermaidCompatibilityMatrix::default();
+        let policy = MermaidFallbackPolicy::default();
+        let mut metrics = cache.metrics;
+
+        if analysis_needed {
+            let parse_start = Instant::now();
+            let parsed = mermaid::parse_with_diagnostics(sample.source);
+            metrics.parse_ms = Some(parse_start.elapsed().as_secs_f32() * 1000.0);
+
+            let ir_parse = mermaid::normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
+            let mut errors = Vec::new();
+            errors.extend(parsed.errors);
+            errors.extend(ir_parse.errors);
+            cache.errors = errors;
+            cache.ir = Some(ir_parse.ir);
+            cache.analysis_epoch = self.state.analysis_epoch;
+            layout_needed = true;
+            render_needed = true;
+        }
+
+        if layout_needed {
+            let ir = cache.ir.as_ref().expect("layout requires cached IR");
+            let spacing = self.layout_spacing();
+            let layout_start = Instant::now();
+            let layout = mermaid_layout::layout_diagram_with_spacing(ir, &config, &spacing);
+            let parse_ms = metrics.parse_ms;
+            let mut snap = MermaidMetricsSnapshot::from_layout(&layout);
+            snap.parse_ms = parse_ms;
+            snap.layout_ms = Some(layout_start.elapsed().as_secs_f32() * 1000.0);
+            if let Some(ref plan) = layout.degradation {
+                snap.set_fallback(self.state.tier, plan);
+            }
+            metrics = snap;
+            cache.layout = Some(layout);
+            cache.layout_epoch = self.state.layout_epoch;
+            render_needed = true;
+        }
+
+        if render_needed {
+            let ir = cache.ir.as_ref().expect("render requires cached IR");
+            let layout = cache
+                .layout
+                .as_ref()
+                .expect("render requires cached layout");
+            let mut buffer = Buffer::new(render_width, render_height);
+            let area = Rect::new(0, 0, render_width, render_height);
+            let render_start = Instant::now();
+            let _plan =
+                mermaid_render::render_diagram_adaptive(layout, ir, &config, area, &mut buffer);
+            metrics.render_ms = Some(render_start.elapsed().as_secs_f32() * 1000.0);
+
+            if !cache.errors.is_empty() {
+                let has_content = !ir.nodes.is_empty()
+                    || !ir.edges.is_empty()
+                    || !ir.labels.is_empty()
+                    || !ir.clusters.is_empty();
+                if has_content {
+                    mermaid_render::render_mermaid_error_overlay(
+                        &cache.errors,
+                        sample.source,
+                        &config,
+                        area,
+                        &mut buffer,
+                    );
+                } else {
+                    mermaid_render::render_mermaid_error_panel(
+                        &cache.errors,
+                        sample.source,
+                        &config,
+                        area,
+                        &mut buffer,
+                    );
+                }
+            }
+
+            cache.buffer = buffer;
+            cache.viewport = (width, height);
+            cache.zoom = zoom;
+            cache.render_epoch = self.state.render_epoch;
+        }
+
+        cache.metrics = metrics;
+    }
+
+    fn blit_buffer(&self, frame: &mut Frame, area: Rect, buf: &Buffer, pan: (i16, i16)) {
+        let view_w = area.width;
+        let view_h = area.height;
+        let buf_w = buf.width();
+        let buf_h = buf.height();
+        if view_w == 0 || view_h == 0 || buf_w == 0 || buf_h == 0 {
+            return;
+        }
+
+        let pan_x = i32::from(pan.0);
+        let pan_y = i32::from(pan.1);
+
+        let (src_x, dst_x, copy_w) = if buf_w >= view_w {
+            let center = ((buf_w - view_w) / 2) as i32;
+            let max_src = (buf_w - view_w) as i32;
+            let src = (center + pan_x).clamp(0, max_src);
+            (src as u16, area.x, view_w)
+        } else {
+            let center = ((view_w - buf_w) / 2) as i32;
+            let min_dst = i32::from(area.x);
+            let max_dst = min_dst + (view_w - buf_w) as i32;
+            let dst = (min_dst + center + pan_x).clamp(min_dst, max_dst);
+            (0, dst as u16, buf_w)
+        };
+
+        let (src_y, dst_y, copy_h) = if buf_h >= view_h {
+            let center = ((buf_h - view_h) / 2) as i32;
+            let max_src = (buf_h - view_h) as i32;
+            let src = (center + pan_y).clamp(0, max_src);
+            (src as u16, area.y, view_h)
+        } else {
+            let center = ((view_h - buf_h) / 2) as i32;
+            let min_dst = i32::from(area.y);
+            let max_dst = min_dst + (view_h - buf_h) as i32;
+            let dst = (min_dst + center + pan_y).clamp(min_dst, max_dst);
+            (0, dst as u16, buf_h)
+        };
+
+        if copy_w == 0 || copy_h == 0 {
+            return;
+        }
+
+        frame
+            .buffer
+            .copy_from(buf, Rect::new(src_x, src_y, copy_w, copy_h), dst_x, dst_y);
     }
 
     fn handle_key(&self, event: &KeyEvent) -> Option<MermaidShowcaseAction> {
@@ -607,9 +1349,16 @@ impl MermaidShowcaseScreen {
             KeyCode::Char('c') => Some(MermaidShowcaseAction::ToggleControls),
             KeyCode::Char('t') => Some(MermaidShowcaseAction::CycleTier),
             KeyCode::Char('g') => Some(MermaidShowcaseAction::ToggleGlyphMode),
+            KeyCode::Char('b') => Some(MermaidShowcaseAction::CycleRenderMode),
             KeyCode::Char('s') => Some(MermaidShowcaseAction::ToggleStyles),
             KeyCode::Char('w') => Some(MermaidShowcaseAction::CycleWrapMode),
+            KeyCode::Char(']') => Some(MermaidShowcaseAction::IncreaseViewportWidth),
+            KeyCode::Char('[') => Some(MermaidShowcaseAction::DecreaseViewportWidth),
+            KeyCode::Char('}') => Some(MermaidShowcaseAction::IncreaseViewportHeight),
+            KeyCode::Char('{') => Some(MermaidShowcaseAction::DecreaseViewportHeight),
+            KeyCode::Char('o') => Some(MermaidShowcaseAction::ResetViewportOverride),
             KeyCode::Escape => Some(MermaidShowcaseAction::CollapsePanels),
+            KeyCode::Char('i') => Some(MermaidShowcaseAction::ToggleStatusLog),
             _ => None,
         }
     }
@@ -642,19 +1391,31 @@ impl MermaidShowcaseScreen {
             .unwrap_or("None");
         let total = self.state.samples.len();
         let index = self.state.selected_index.saturating_add(1).min(total);
-        let status = if self.state.metrics.fallback_tier.is_some() {
+        let score_str = self
+            .state
+            .metrics
+            .objective_score
+            .map_or_else(|| "-".to_string(), |s| format!("{s:.1}"));
+        let viewport = if let Some((cols, rows)) = self.state.viewport_size_override {
+            format!("Viewport: {cols}x{rows} (override)")
+        } else {
+            "Viewport: auto".to_string()
+        };
+        let status = if self.has_render_error() {
+            "ERR"
+        } else if self.state.metrics.fallback_tier.is_some() {
             "WARN"
         } else {
             "OK"
         };
         let text = format!(
-            "Mermaid Showcase | Sample: {} ({}/{}) | Layout: {} | Tier: {} | Glyphs: {} | {}",
+            "Mermaid Showcase | {} ({}/{}) | Layout: {} | Score: {} | {} | {}",
             sample,
             index,
             total,
             self.state.layout_mode.as_str(),
-            self.state.tier,
-            self.state.glyph_mode,
+            score_str,
+            viewport,
             status
         );
         Paragraph::new(text)
@@ -667,7 +1428,7 @@ impl MermaidShowcaseScreen {
             return;
         }
 
-        let hint = "j/k sample  l layout  r relayout  +/- zoom  m metrics  t tier";
+        let hint = "j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier";
         let metrics = if self.state.metrics_visible {
             format!(
                 "parse {}ms | layout {}ms | render {}ms",
@@ -746,21 +1507,9 @@ impl MermaidShowcaseScreen {
             return;
         }
 
-        let sample = self.state.selected_sample();
-        let mut lines = Vec::new();
-        if let Some(sample) = sample {
-            lines.push(format!("Sample: {}", sample.name));
-            lines.push(String::new());
-            for line in sample.source.lines() {
-                lines.push(line.to_string());
-            }
-        } else {
-            lines.push("No samples loaded.".to_string());
-        }
-
-        Paragraph::new(lines.join("\n"))
-            .style(Style::new().fg(theme::fg::MUTED))
-            .render(inner, frame);
+        self.ensure_render_cache(inner);
+        let cache = self.cache.borrow();
+        self.blit_buffer(frame, inner, &cache.buffer, self.state.viewport_pan);
     }
 
     fn render_controls_panel(&self, frame: &mut Frame, area: Rect) {
@@ -786,6 +1535,7 @@ impl MermaidShowcaseScreen {
             format!("Layout: {} (l)", self.state.layout_mode.as_str()),
             format!("Tier: {} (t)", self.state.tier),
             format!("Glyphs: {} (g)", self.state.glyph_mode),
+            format!("Render: {} (b)", self.state.render_mode),
             format!("Wrap: {} (w)", self.state.wrap_mode),
             format!(
                 "Styles: {} (s)",
@@ -832,36 +1582,188 @@ impl MermaidShowcaseScreen {
         }
 
         let metrics = &self.state.metrics;
-        let mut lines = Vec::new();
+        let mut lines: Vec<Line> = Vec::new();
         if self.state.metrics_visible {
-            lines.push(format!("Parse: {} ms", metrics.parse_ms.unwrap_or(0.0)));
-            lines.push(format!("Layout: {} ms", metrics.layout_ms.unwrap_or(0.0)));
-            lines.push(format!("Render: {} ms", metrics.render_ms.unwrap_or(0.0)));
-            lines.push(format!(
-                "Iterations: {}",
-                metrics.layout_iterations.unwrap_or(0)
-            ));
-            lines.push(format!(
-                "Objective: {}",
-                metrics.objective_score.unwrap_or(0.0)
-            ));
-            lines.push(format!(
-                "Violations: {}",
-                metrics.constraint_violations.unwrap_or(0)
-            ));
+            let muted = Style::new().fg(theme::fg::MUTED);
+
+            // Parse timing.
+            let parse_val = metrics.parse_ms.unwrap_or(0.0);
+            let parse_level = classify_lower(parse_val, PARSE_MS_GOOD, PARSE_MS_OK);
+            lines.push(Line::from_spans(vec![
+                Span::styled("Parse: ", muted),
+                Span::styled(
+                    format!("{parse_val:.2} ms"),
+                    Style::new().fg(parse_level.color()),
+                ),
+            ]));
+
+            // Layout timing.
+            let layout_val = metrics.layout_ms.unwrap_or(0.0);
+            let layout_level = classify_lower(layout_val, LAYOUT_MS_GOOD, LAYOUT_MS_OK);
+            lines.push(Line::from_spans(vec![
+                Span::styled("Layout: ", muted),
+                Span::styled(
+                    format!("{layout_val:.2} ms"),
+                    Style::new().fg(layout_level.color()),
+                ),
+            ]));
+
+            // Render timing.
+            let render_val = metrics.render_ms.unwrap_or(0.0);
+            let render_level = classify_lower(render_val, RENDER_MS_GOOD, RENDER_MS_OK);
+            lines.push(Line::from_spans(vec![
+                Span::styled("Render: ", muted),
+                Span::styled(
+                    format!("{render_val:.2} ms"),
+                    Style::new().fg(render_level.color()),
+                ),
+            ]));
+
+            // Viewport info (neutral).
+            if let Some((cols, rows)) = self.state.viewport_size_override {
+                lines.push(Line::from_spans(vec![Span::styled(
+                    format!("Viewport: {cols}x{rows}"),
+                    muted,
+                )]));
+            } else {
+                lines.push(Line::from_spans(vec![Span::styled(
+                    "Viewport: auto",
+                    muted,
+                )]));
+            }
+            lines.push(Line::from_spans(vec![Span::styled(
+                format!("Zoom: {:.0}%", self.state.viewport_zoom * 100.0),
+                muted,
+            )]));
+
+            // Iterations (neutral).
+            lines.push(Line::from_spans(vec![Span::styled(
+                format!("Iters: {}", metrics.layout_iterations.unwrap_or(0)),
+                muted,
+            )]));
+
+            // Objective score.
+            let score_val = metrics.objective_score.unwrap_or(0.0);
+            let score_level = classify_lower(score_val, SCORE_GOOD, SCORE_OK);
+            lines.push(Line::from_spans(vec![
+                Span::styled("Score: ", muted),
+                Span::styled(
+                    format!("{score_val:.2}"),
+                    Style::new().fg(score_level.color()),
+                ),
+            ]));
+
+            // Crossings.
+            let cross_val = metrics.constraint_violations.unwrap_or(0);
+            let cross_level = classify_lower_u32(cross_val, CROSSINGS_GOOD, CROSSINGS_OK);
+            lines.push(Line::from_spans(vec![
+                Span::styled("Cross: ", muted),
+                Span::styled(format!("{cross_val}"), Style::new().fg(cross_level.color())),
+            ]));
+
+            // Bends (neutral).
+            lines.push(Line::from_spans(vec![Span::styled(
+                format!("Bends: {}", metrics.bends.unwrap_or(0)),
+                muted,
+            )]));
+
+            // Symmetry (higher is better).
+            let sym_val = metrics.symmetry.unwrap_or(0.0);
+            let sym_level = classify_higher(sym_val, SYMMETRY_GOOD, SYMMETRY_OK);
+            lines.push(Line::from_spans(vec![
+                Span::styled("Sym: ", muted),
+                Span::styled(format!("{sym_val:.2}"), Style::new().fg(sym_level.color())),
+            ]));
+
+            // Compactness (higher is better).
+            let comp_val = metrics.compactness.unwrap_or(0.0);
+            let comp_level = classify_higher(comp_val, COMPACTNESS_GOOD, COMPACTNESS_OK);
+            lines.push(Line::from_spans(vec![
+                Span::styled("Comp: ", muted),
+                Span::styled(
+                    format!("{comp_val:.2}"),
+                    Style::new().fg(comp_level.color()),
+                ),
+            ]));
+
+            // Edge length variance (neutral).
+            lines.push(Line::from_spans(vec![Span::styled(
+                format!(
+                    "Edge var: {:.2}",
+                    metrics.edge_length_variance.unwrap_or(0.0)
+                ),
+                muted,
+            )]));
+
+            // Label collisions (neutral).
+            lines.push(Line::from_spans(vec![Span::styled(
+                format!("Label col: {}", metrics.label_collisions.unwrap_or(0)),
+                muted,
+            )]));
+
+            // Fallback info (warning color).
             if let Some(tier) = metrics.fallback_tier {
-                lines.push(format!("Fallback: {}", tier));
+                lines.push(Line::from_spans(vec![
+                    Span::styled("Fallback: ", muted),
+                    Span::styled(format!("{tier}"), Style::new().fg(theme::accent::WARNING)),
+                ]));
             }
             if let Some(reason) = metrics.fallback_reason {
-                lines.push(format!("Reason: {}", reason));
+                lines.push(Line::from_spans(vec![
+                    Span::styled("Reason: ", muted),
+                    Span::styled(reason, Style::new().fg(theme::accent::WARNING)),
+                ]));
             }
         } else {
-            lines.push("Metrics hidden (press m)".to_string());
+            lines.push(Line::from_spans(vec![Span::styled(
+                "Metrics hidden (press m)",
+                Style::new().fg(theme::fg::MUTED),
+            )]));
         }
 
-        Paragraph::new(lines.join("\n"))
-            .style(Style::new().fg(theme::fg::MUTED))
-            .render(inner, frame);
+        let text = Text::from_lines(lines);
+        Paragraph::new(text).render(inner, frame);
+    }
+
+    fn render_status_log(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Status Log")
+            .title_alignment(Alignment::Center)
+            .style(Style::new().fg(theme::fg::PRIMARY).bg(theme::bg::DEEP));
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let max_lines = inner.height as usize;
+        let start = self.state.status_log.len().saturating_sub(max_lines);
+        let mut lines = Vec::new();
+        for entry in &self.state.status_log[start..] {
+            if entry.detail.is_empty() {
+                lines.push(entry.action.to_string());
+            } else {
+                lines.push(format!("{}: {}", entry.action, entry.detail));
+            }
+        }
+        if lines.is_empty() {
+            lines.push("No events yet.".to_string());
+        }
+
+        Paragraph::new(lines.join(
+            "
+",
+        ))
+        .style(Style::new().fg(theme::fg::MUTED))
+        .render(inner, frame);
     }
 }
 
@@ -904,16 +1806,76 @@ impl Screen for MermaidShowcaseScreen {
             if right.is_empty() {
                 return;
             }
-            if self.state.controls_visible && self.state.metrics_visible && right.height >= 12 {
-                let rows = Flex::vertical()
-                    .constraints([Constraint::Percentage(55.0), Constraint::Min(6)])
-                    .split(right);
-                self.render_controls_panel(frame, rows[0]);
-                self.render_metrics_panel(frame, rows[1]);
-            } else if self.state.controls_visible {
-                self.render_controls_panel(frame, right);
-            } else if self.state.metrics_visible {
-                self.render_metrics_panel(frame, right);
+
+            // Collect which panels are visible.
+            let show_controls = self.state.controls_visible;
+            let show_metrics = self.state.metrics_visible;
+            let show_log = self.state.status_log_visible;
+            let panel_count = show_controls as u8 + show_metrics as u8 + show_log as u8;
+
+            match panel_count {
+                0 => {}
+                1 => {
+                    if show_controls {
+                        self.render_controls_panel(frame, right);
+                    } else if show_metrics {
+                        self.render_metrics_panel(frame, right);
+                    } else {
+                        self.render_status_log(frame, right);
+                    }
+                }
+                2 if right.height >= 12 => {
+                    let rows = Flex::vertical()
+                        .constraints([Constraint::Percentage(55.0), Constraint::Min(5)])
+                        .split(right);
+                    let mut slot = 0;
+                    if show_controls {
+                        self.render_controls_panel(frame, rows[slot]);
+                        slot += 1;
+                    }
+                    if show_metrics {
+                        self.render_metrics_panel(frame, rows[slot]);
+                        slot += 1;
+                    }
+                    if show_log && slot < 2 {
+                        self.render_status_log(frame, rows[slot]);
+                    }
+                }
+                2 => {
+                    // Not enough height for two panels; show first visible one.
+                    if show_controls {
+                        self.render_controls_panel(frame, right);
+                    } else if show_metrics {
+                        self.render_metrics_panel(frame, right);
+                    } else {
+                        self.render_status_log(frame, right);
+                    }
+                }
+                _ if right.height >= 18 => {
+                    // All three panels.
+                    let rows = Flex::vertical()
+                        .constraints([
+                            Constraint::Percentage(40.0),
+                            Constraint::Percentage(35.0),
+                            Constraint::Min(4),
+                        ])
+                        .split(right);
+                    self.render_controls_panel(frame, rows[0]);
+                    self.render_metrics_panel(frame, rows[1]);
+                    self.render_status_log(frame, rows[2]);
+                }
+                _ => {
+                    // All visible but not enough height; show controls + metrics.
+                    if right.height >= 12 {
+                        let rows = Flex::vertical()
+                            .constraints([Constraint::Percentage(55.0), Constraint::Min(5)])
+                            .split(right);
+                        self.render_controls_panel(frame, rows[0]);
+                        self.render_metrics_panel(frame, rows[1]);
+                    } else {
+                        self.render_controls_panel(frame, right);
+                    }
+                }
             }
             return;
         }
@@ -970,6 +1932,18 @@ impl Screen for MermaidShowcaseScreen {
                 action: "Zoom in/out",
             },
             HelpEntry {
+                key: "] / [",
+                action: "Viewport width +/-",
+            },
+            HelpEntry {
+                key: "} / {",
+                action: "Viewport height +/-",
+            },
+            HelpEntry {
+                key: "o",
+                action: "Reset viewport override",
+            },
+            HelpEntry {
                 key: "f",
                 action: "Fit to viewport",
             },
@@ -983,11 +1957,15 @@ impl Screen for MermaidShowcaseScreen {
             },
             HelpEntry {
                 key: "t",
-                action: "Cycle fidelity tier",
+                action: "Cycle tier",
             },
             HelpEntry {
                 key: "g",
                 action: "Toggle glyph mode",
+            },
+            HelpEntry {
+                key: "b",
+                action: "Cycle render mode",
             },
             HelpEntry {
                 key: "s",
@@ -996,6 +1974,10 @@ impl Screen for MermaidShowcaseScreen {
             HelpEntry {
                 key: "w",
                 action: "Cycle wrap mode",
+            },
+            HelpEntry {
+                key: "i",
+                action: "Toggle status log",
             },
             HelpEntry {
                 key: "Esc",
@@ -1017,6 +1999,7 @@ impl Screen for MermaidShowcaseScreen {
 mod tests {
     use super::*;
     use ftui_core::event::{KeyEventKind, Modifiers};
+    use serde_json::Value;
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -1043,6 +2026,7 @@ mod tests {
         assert_eq!(s.layout_mode, LayoutMode::Auto);
         assert_eq!(s.viewport_zoom, 1.0);
         assert_eq!(s.viewport_pan, (0, 0));
+        assert!(s.viewport_size_override.is_none());
         assert!(s.styles_enabled);
         assert!(s.metrics_visible);
         assert!(s.controls_visible);
@@ -1171,6 +2155,32 @@ mod tests {
         assert_eq!(s.viewport_pan, (0, 0));
     }
 
+    #[test]
+    fn viewport_override_increase_sets_default() {
+        let mut s = new_state();
+        let epoch = s.render_epoch;
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportWidth);
+        let expected_cols =
+            (VIEWPORT_OVERRIDE_DEFAULT_COLS as i32 + VIEWPORT_OVERRIDE_STEP_COLS as i32) as u16;
+        let expected_rows = VIEWPORT_OVERRIDE_DEFAULT_ROWS;
+        assert_eq!(
+            s.viewport_size_override,
+            Some((expected_cols, expected_rows))
+        );
+        assert_eq!(s.render_epoch, epoch + 1);
+    }
+
+    #[test]
+    fn viewport_override_reset_clears() {
+        let mut s = new_state();
+        s.apply_action(MermaidShowcaseAction::IncreaseViewportHeight);
+        assert!(s.viewport_size_override.is_some());
+        let epoch = s.render_epoch;
+        s.apply_action(MermaidShowcaseAction::ResetViewportOverride);
+        assert!(s.viewport_size_override.is_none());
+        assert_eq!(s.render_epoch, epoch + 1);
+    }
+
     // --- Layout mode ---
 
     #[test]
@@ -1275,6 +2285,32 @@ mod tests {
         let mut s = new_state();
         let epoch = s.render_epoch;
         s.apply_action(MermaidShowcaseAction::ToggleGlyphMode);
+        assert_eq!(s.render_epoch, epoch + 1);
+    }
+
+    // --- Render mode ---
+
+    #[test]
+    fn render_mode_cycles() {
+        let mut s = new_state();
+        assert_eq!(s.render_mode, MermaidRenderMode::Auto);
+        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
+        assert_eq!(s.render_mode, MermaidRenderMode::Braille);
+        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
+        assert_eq!(s.render_mode, MermaidRenderMode::Block);
+        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
+        assert_eq!(s.render_mode, MermaidRenderMode::HalfBlock);
+        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
+        assert_eq!(s.render_mode, MermaidRenderMode::CellOnly);
+        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
+        assert_eq!(s.render_mode, MermaidRenderMode::Auto);
+    }
+
+    #[test]
+    fn render_mode_bumps_epoch() {
+        let mut s = new_state();
+        let epoch = s.render_epoch;
+        s.apply_action(MermaidShowcaseAction::CycleRenderMode);
         assert_eq!(s.render_epoch, epoch + 1);
     }
 
@@ -1482,6 +2518,16 @@ mod tests {
     }
 
     #[test]
+    fn key_b_maps_to_render_mode() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('b')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::CycleRenderMode)
+        ));
+    }
+
+    #[test]
     fn key_s_maps_to_styles() {
         let screen = new_screen();
         let action = screen.handle_key(&press(KeyCode::Char('s')));
@@ -1493,6 +2539,56 @@ mod tests {
         let screen = new_screen();
         let action = screen.handle_key(&press(KeyCode::Char('w')));
         assert!(matches!(action, Some(MermaidShowcaseAction::CycleWrapMode)));
+    }
+
+    #[test]
+    fn key_right_bracket_maps_to_width_increase() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char(']')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::IncreaseViewportWidth)
+        ));
+    }
+
+    #[test]
+    fn key_left_bracket_maps_to_width_decrease() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('[')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::DecreaseViewportWidth)
+        ));
+    }
+
+    #[test]
+    fn key_right_brace_maps_to_height_increase() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('}')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::IncreaseViewportHeight)
+        ));
+    }
+
+    #[test]
+    fn key_left_brace_maps_to_height_decrease() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('{')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::DecreaseViewportHeight)
+        ));
+    }
+
+    #[test]
+    fn key_o_maps_to_reset_viewport() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('o')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::ResetViewportOverride)
+        ));
     }
 
     #[test]
@@ -1529,7 +2625,7 @@ mod tests {
     fn keybindings_list_not_empty() {
         let screen = new_screen();
         let bindings = screen.keybindings();
-        assert!(bindings.len() >= 14);
+        assert!(bindings.len() >= 15);
     }
 
     #[test]
@@ -1591,5 +2687,293 @@ mod tests {
                 sample.name
             );
         }
+    }
+    // --- Metrics integration ---
+
+    #[test]
+    fn metrics_populated_on_init() {
+        let s = new_state();
+        assert!(s.metrics.parse_ms.is_some(), "parse_ms should be set");
+        assert!(s.metrics.layout_ms.is_some(), "layout_ms should be set");
+        assert!(
+            s.metrics.objective_score.is_some(),
+            "objective_score should be set"
+        );
+        assert!(
+            s.metrics.layout_iterations.is_some(),
+            "layout_iterations should be set"
+        );
+    }
+
+    #[test]
+    fn metrics_update_on_sample_change() {
+        let mut s = new_state();
+        let score_before = s.metrics.objective_score;
+        s.apply_action(MermaidShowcaseAction::NextSample);
+        assert!(
+            s.metrics.objective_score.is_some(),
+            "score should be set after sample change"
+        );
+        assert!(score_before.is_some());
+    }
+
+    #[test]
+    fn metrics_update_on_layout_mode_change() {
+        let mut s = new_state();
+        s.apply_action(MermaidShowcaseAction::ToggleLayoutMode);
+        assert!(
+            s.metrics.layout_iterations.is_some(),
+            "iterations should be set after layout mode change"
+        );
+        assert_eq!(s.layout_mode, LayoutMode::Dense);
+    }
+
+    #[test]
+    fn metrics_quality_fields_populated() {
+        let s = new_state();
+        assert!(s.metrics.constraint_violations.is_some(), "crossings");
+        assert!(s.metrics.bends.is_some(), "bends");
+        assert!(s.metrics.symmetry.is_some(), "symmetry");
+        assert!(s.metrics.compactness.is_some(), "compactness");
+        assert!(
+            s.metrics.edge_length_variance.is_some(),
+            "edge_length_variance"
+        );
+        assert!(s.metrics.label_collisions.is_some(), "label_collisions");
+    }
+
+    #[test]
+    fn metrics_recomputed_for_all_samples() {
+        let mut s = new_state();
+        let mut populated = 0usize;
+        for _ in 0..s.samples.len() {
+            // Some diagram types may not fully support layout yet;
+            // check that at least parse_ms or layout_ms is populated.
+            if s.metrics.parse_ms.is_some() || s.metrics.layout_ms.is_some() {
+                populated += 1;
+            }
+            s.apply_action(MermaidShowcaseAction::NextSample);
+        }
+        // At least half the samples should produce valid metrics.
+        assert!(
+            populated > s.samples.len() / 2,
+            "expected most samples to produce metrics, got {}/{}",
+            populated,
+            s.samples.len()
+        );
+    }
+
+    #[test]
+    fn metrics_jsonl_line_includes_required_fields() {
+        let s = new_state();
+        let sample = s.selected_sample().expect("sample");
+        let line = s.metrics_jsonl_line(sample, 7, Some("run-1"), 123, "alt");
+        let value: Value = serde_json::from_str(&line).expect("json parse");
+
+        assert_eq!(
+            value["schema_version"].as_str().unwrap_or_default(),
+            TEST_JSONL_SCHEMA
+        );
+        assert_eq!(
+            value["event"].as_str().unwrap_or_default(),
+            MERMAID_JSONL_EVENT
+        );
+        assert_eq!(value["seq"].as_u64().unwrap_or_default(), 7);
+        assert_eq!(value["run_id"].as_str().unwrap_or_default(), "run-1");
+        assert_eq!(value["seed"].as_u64().unwrap_or_default(), 123);
+        assert_eq!(value["screen_mode"].as_str().unwrap_or_default(), "alt");
+        assert_eq!(value["sample"].as_str().unwrap_or_default(), sample.name);
+        assert_eq!(
+            value["layout_mode"].as_str().unwrap_or_default(),
+            s.layout_mode.as_str()
+        );
+        assert_eq!(
+            value["tier"].as_str().unwrap_or_default(),
+            s.tier.to_string()
+        );
+        assert_eq!(
+            value["glyph_mode"].as_str().unwrap_or_default(),
+            s.glyph_mode.to_string()
+        );
+        assert_eq!(
+            value["wrap_mode"].as_str().unwrap_or_default(),
+            s.wrap_mode.to_string()
+        );
+        assert!(value["parse_ms"].is_number());
+        assert!(value["layout_ms"].is_number());
+        // render_ms is only set during actual view() rendering; may be null here.
+        assert!(value["render_ms"].is_number() || value["render_ms"].is_null());
+
+        // Validate quality metric fields are present and typed correctly.
+        // All are emitted as number or null by push_opt_f32/push_opt_u32.
+        assert!(value["render_epoch"].is_number(), "render_epoch missing");
+        assert!(
+            value["layout_iterations"].is_number() || value["layout_iterations"].is_null(),
+            "layout_iterations must be number or null, got {:?}",
+            value["layout_iterations"]
+        );
+        assert!(
+            value["objective_score"].is_number() || value["objective_score"].is_null(),
+            "objective_score must be number or null, got {:?}",
+            value["objective_score"]
+        );
+        assert!(
+            value["constraint_violations"].is_number() || value["constraint_violations"].is_null(),
+            "constraint_violations must be number or null, got {:?}",
+            value["constraint_violations"]
+        );
+        assert!(
+            value["bends"].is_number() || value["bends"].is_null(),
+            "bends must be number or null, got {:?}",
+            value["bends"]
+        );
+        assert!(
+            value["symmetry"].is_number() || value["symmetry"].is_null(),
+            "symmetry must be number or null, got {:?}",
+            value["symmetry"]
+        );
+        assert!(
+            value["compactness"].is_number() || value["compactness"].is_null(),
+            "compactness must be number or null, got {:?}",
+            value["compactness"]
+        );
+        assert!(
+            value["edge_length_variance"].is_number() || value["edge_length_variance"].is_null(),
+            "edge_length_variance must be number or null, got {:?}",
+            value["edge_length_variance"]
+        );
+        assert!(
+            value["label_collisions"].is_number() || value["label_collisions"].is_null(),
+            "label_collisions must be number or null, got {:?}",
+            value["label_collisions"]
+        );
+    }
+
+    /// Validate that JSONL quality metrics are populated (non-null) for a valid sample.
+    #[test]
+    fn metrics_jsonl_quality_fields_populated() {
+        let s = new_state();
+        let sample = s.selected_sample().expect("sample");
+        let line = s.metrics_jsonl_line(sample, 0, None, 0, "test");
+        let value: Value = serde_json::from_str(&line).expect("valid json");
+
+        // For a valid flowchart sample, quality fields should be populated.
+        assert!(
+            value["layout_iterations"].is_number(),
+            "layout_iterations should be non-null for valid sample"
+        );
+        assert!(
+            value["objective_score"].is_number(),
+            "objective_score should be non-null for valid sample"
+        );
+        assert!(
+            value["bends"].is_number(),
+            "bends should be non-null for valid sample"
+        );
+        assert!(
+            value["symmetry"].is_number(),
+            "symmetry should be non-null for valid sample"
+        );
+        assert!(
+            value["compactness"].is_number(),
+            "compactness should be non-null for valid sample"
+        );
+    }
+    // --- Status log ---
+
+    #[test]
+    fn status_log_starts_empty() {
+        let s = new_state();
+        assert!(s.status_log.is_empty());
+        assert!(!s.status_log_visible);
+    }
+
+    #[test]
+    fn toggle_status_log() {
+        let mut s = new_state();
+        assert!(!s.status_log_visible);
+        s.apply_action(MermaidShowcaseAction::ToggleStatusLog);
+        assert!(s.status_log_visible);
+        s.apply_action(MermaidShowcaseAction::ToggleStatusLog);
+        assert!(!s.status_log_visible);
+    }
+
+    #[test]
+    fn actions_produce_log_entries() {
+        let mut s = new_state();
+        s.apply_action(MermaidShowcaseAction::NextSample);
+        assert_eq!(s.status_log.len(), 1);
+        assert_eq!(s.status_log[0].action, "sample");
+
+        s.apply_action(MermaidShowcaseAction::ZoomIn);
+        assert_eq!(s.status_log.len(), 2);
+        assert_eq!(s.status_log[1].action, "zoom");
+
+        s.apply_action(MermaidShowcaseAction::ToggleLayoutMode);
+        assert_eq!(s.status_log.len(), 3);
+        assert_eq!(s.status_log[2].action, "layout");
+    }
+
+    #[test]
+    fn status_log_capped_at_limit() {
+        let mut s = new_state();
+        for _ in 0..(STATUS_LOG_CAP + 10) {
+            s.apply_action(MermaidShowcaseAction::ZoomIn);
+        }
+        assert!(s.status_log.len() <= STATUS_LOG_CAP);
+    }
+
+    #[test]
+    fn collapse_panels_hides_status_log() {
+        let mut s = new_state();
+        s.status_log_visible = true;
+        s.apply_action(MermaidShowcaseAction::CollapsePanels);
+        assert!(!s.status_log_visible);
+    }
+
+    #[test]
+    fn key_i_maps_to_status_log() {
+        let screen = new_screen();
+        let action = screen.handle_key(&press(KeyCode::Char('i')));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::ToggleStatusLog)
+        ));
+    }
+
+    #[test]
+    fn classify_lower_boundaries() {
+        assert_eq!(classify_lower(0.5, 1.0, 5.0), MetricLevel::Good);
+        assert_eq!(classify_lower(1.0, 1.0, 5.0), MetricLevel::Good);
+        assert_eq!(classify_lower(3.0, 1.0, 5.0), MetricLevel::Ok);
+        assert_eq!(classify_lower(5.0, 1.0, 5.0), MetricLevel::Ok);
+        assert_eq!(classify_lower(6.0, 1.0, 5.0), MetricLevel::Bad);
+    }
+
+    #[test]
+    fn classify_lower_u32_boundaries() {
+        assert_eq!(classify_lower_u32(0, 0, 3), MetricLevel::Good);
+        assert_eq!(classify_lower_u32(1, 0, 3), MetricLevel::Ok);
+        assert_eq!(classify_lower_u32(3, 0, 3), MetricLevel::Ok);
+        assert_eq!(classify_lower_u32(4, 0, 3), MetricLevel::Bad);
+    }
+
+    #[test]
+    fn classify_higher_boundaries() {
+        assert_eq!(classify_higher(0.8, 0.7, 0.4), MetricLevel::Good);
+        assert_eq!(classify_higher(0.7, 0.7, 0.4), MetricLevel::Good);
+        assert_eq!(classify_higher(0.5, 0.7, 0.4), MetricLevel::Ok);
+        assert_eq!(classify_higher(0.4, 0.7, 0.4), MetricLevel::Ok);
+        assert_eq!(classify_higher(0.3, 0.7, 0.4), MetricLevel::Bad);
+    }
+
+    #[test]
+    fn metric_level_colors_distinct() {
+        let g = MetricLevel::Good.color();
+        let o = MetricLevel::Ok.color();
+        let b = MetricLevel::Bad.color();
+        assert_ne!(g, o);
+        assert_ne!(g, b);
+        assert_ne!(o, b);
     }
 }
