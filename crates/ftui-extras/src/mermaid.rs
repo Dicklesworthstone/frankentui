@@ -2174,6 +2174,15 @@ pub fn normalize_ast_to_ir(
         guard,
     };
 
+    // Resolve link/click directives into IR links.
+    let ir_node_map: std::collections::HashMap<String, IrNodeId> = node_map
+        .iter()
+        .map(|(k, &v)| (k.clone(), IrNodeId(v)))
+        .collect();
+    let link_resolution = resolve_links(&ast, config, &ir_node_map);
+    warnings.extend(link_resolution.warnings.clone());
+    let resolved_links = link_resolution.links.clone();
+
     let mut ir = MermaidDiagramIr {
         diagram_type: ast.diagram_type,
         direction,
@@ -2183,12 +2192,14 @@ pub fn normalize_ast_to_ir(
         clusters,
         labels,
         style_refs,
+        links: resolved_links,
         meta,
     };
 
     let degradation = ir.meta.guard.degradation.clone();
     apply_degradation(&degradation, &mut ir);
     emit_guard_jsonl(config, &ir.meta);
+    emit_link_jsonl(config, &link_resolution);
 
     MermaidIrParse {
         ir,
@@ -2602,6 +2613,42 @@ pub struct IrStyleRef {
     pub target: IrStyleTarget,
     pub style: String,
     pub span: Span,
+}
+
+// --- Link/Click IR types (bd-25df9) ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IrLinkId(pub usize);
+
+/// Outcome of URL sanitization for a single link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkSanitizeOutcome {
+    /// URL passed sanitization.
+    Allowed,
+    /// URL was blocked by protocol policy.
+    Blocked,
+}
+
+/// A resolved link from a `click`/`link` directive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrLink {
+    pub kind: LinkKind,
+    pub target: IrNodeId,
+    pub url: String,
+    pub tooltip: Option<String>,
+    pub sanitize_outcome: LinkSanitizeOutcome,
+    pub span: Span,
+}
+
+/// Result of link resolution for a diagram.
+#[derive(Debug, Clone)]
+pub struct LinkResolution {
+    pub links: Vec<IrLink>,
+    pub link_mode: MermaidLinkMode,
+    pub total_count: usize,
+    pub allowed_count: usize,
+    pub blocked_count: usize,
+    pub warnings: Vec<MermaidWarning>,
 }
 
 // --- Style property parsing and resolution (bd-17w24) ---
@@ -3025,6 +3072,7 @@ pub struct MermaidDiagramIr {
     pub clusters: Vec<IrCluster>,
     pub labels: Vec<IrLabel>,
     pub style_refs: Vec<IrStyleRef>,
+    pub links: Vec<IrLink>,
     pub meta: MermaidDiagramMeta,
 }
 
@@ -3735,6 +3783,165 @@ pub(crate) fn append_jsonl_line(path: &str, line: &str) -> std::io::Result<()> {
     buf.push_str(line);
     buf.push('\n');
     file.write_all(buf.as_bytes())
+}
+
+// --- Link/Click rendering + hyperlink policy (bd-25df9) ---
+
+/// Dangerous URL protocols that are always blocked.
+const BLOCKED_PROTOCOLS: &[&str] = &["javascript:", "vbscript:", "data:", "file:", "blob:"];
+
+/// Protocols allowed in strict sanitization mode.
+const STRICT_ALLOWED_PROTOCOLS: &[&str] = &["http:", "https:", "mailto:", "tel:"];
+
+/// Sanitize a URL according to the given sanitize mode.
+///
+/// Returns `Allowed` if the URL passes, `Blocked` if it was rejected.
+/// In strict mode, only explicitly allowed protocols pass.
+/// In lenient mode, only explicitly dangerous protocols are blocked.
+#[must_use]
+pub fn sanitize_url(url: &str, mode: MermaidSanitizeMode) -> LinkSanitizeOutcome {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return LinkSanitizeOutcome::Blocked;
+    }
+
+    // Normalize for protocol detection: lowercase, strip whitespace within protocol prefix.
+    let lower = trimmed.to_ascii_lowercase();
+
+    // Block dangerous protocols in all modes.
+    for proto in BLOCKED_PROTOCOLS {
+        if lower.starts_with(proto) {
+            return LinkSanitizeOutcome::Blocked;
+        }
+    }
+
+    match mode {
+        MermaidSanitizeMode::Strict => {
+            // In strict mode, require an allowed protocol or treat as relative path.
+            // Relative paths (no colon before first slash) are allowed.
+            if let Some(colon_pos) = lower.find(':') {
+                if lower
+                    .find('/')
+                    .is_some_and(|slash_pos| colon_pos > slash_pos)
+                {
+                    // Colon comes after slash, treat as relative path.
+                    return LinkSanitizeOutcome::Allowed;
+                }
+                // Has a protocol prefix - must be in allowed list.
+                let prefix = &lower[..=colon_pos];
+                if STRICT_ALLOWED_PROTOCOLS.contains(&prefix) {
+                    LinkSanitizeOutcome::Allowed
+                } else {
+                    LinkSanitizeOutcome::Blocked
+                }
+            } else {
+                // No colon at all: relative path or anchor - allowed.
+                LinkSanitizeOutcome::Allowed
+            }
+        }
+        MermaidSanitizeMode::Lenient => {
+            // Already passed blocked protocol check above.
+            LinkSanitizeOutcome::Allowed
+        }
+    }
+}
+
+/// Resolve link directives from an AST into `IrLink` entries.
+///
+/// Collects `Statement::Link` entries, resolves target node IDs, sanitizes URLs,
+/// and returns a `LinkResolution` with metrics.
+#[must_use]
+pub fn resolve_links(
+    ast: &MermaidAst,
+    config: &MermaidConfig,
+    node_map: &std::collections::HashMap<String, IrNodeId>,
+) -> LinkResolution {
+    let mut links = Vec::new();
+    let mut warnings = Vec::new();
+    let mut blocked_count = 0;
+
+    if !config.enable_links || config.link_mode == MermaidLinkMode::Off {
+        return LinkResolution {
+            links,
+            link_mode: config.link_mode,
+            total_count: 0,
+            allowed_count: 0,
+            blocked_count: 0,
+            warnings,
+        };
+    }
+
+    for statement in &ast.statements {
+        if let Statement::Link {
+            kind,
+            target,
+            url,
+            tooltip,
+            span,
+        } = statement
+        {
+            let outcome = sanitize_url(url, config.sanitize_mode);
+            if outcome == LinkSanitizeOutcome::Blocked {
+                blocked_count += 1;
+                warnings.push(MermaidWarning::new(
+                    MermaidWarningCode::SanitizedInput,
+                    format!("blocked URL for node '{}': protocol not allowed", target),
+                    *span,
+                ));
+            }
+
+            if let Some(&node_id) = node_map.get(target.as_str()) {
+                links.push(IrLink {
+                    kind: *kind,
+                    target: node_id,
+                    url: url.clone(),
+                    tooltip: tooltip.clone(),
+                    sanitize_outcome: outcome,
+                    span: *span,
+                });
+            } else {
+                warnings.push(MermaidWarning::new(
+                    MermaidWarningCode::UnsupportedLink,
+                    format!("link target '{}' not found in diagram", target),
+                    *span,
+                ));
+            }
+        }
+    }
+
+    let total_count = links.len();
+    let allowed_count = links
+        .iter()
+        .filter(|l| l.sanitize_outcome == LinkSanitizeOutcome::Allowed)
+        .count();
+
+    LinkResolution {
+        links,
+        link_mode: config.link_mode,
+        total_count,
+        allowed_count,
+        blocked_count,
+        warnings,
+    }
+}
+
+/// Emit link resolution metrics to JSONL evidence log.
+fn emit_link_jsonl(config: &MermaidConfig, resolution: &LinkResolution) {
+    let Some(path) = config.log_path.as_deref() else {
+        return;
+    };
+    if resolution.total_count == 0 && resolution.blocked_count == 0 {
+        return;
+    }
+    let json = serde_json::json!({
+        "event": "mermaid_links",
+        "link_mode": resolution.link_mode.as_str(),
+        "total_count": resolution.total_count,
+        "allowed_count": resolution.allowed_count,
+        "blocked_count": resolution.blocked_count,
+    });
+    let line = json.to_string();
+    let _ = append_jsonl_line(path, &line);
 }
 
 fn apply_fallback_action(
@@ -5468,5 +5675,355 @@ mod tests {
             a_style.properties.stroke,
             Some(MermaidColor::Rgb(0, 255, 0))
         );
+    }
+
+    // --- Link/Click Rendering + Hyperlink Policy tests (bd-25df9) ---
+
+    #[test]
+    fn sanitize_url_blocks_javascript() {
+        assert_eq!(
+            sanitize_url("javascript:alert(1)", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+        assert_eq!(
+            sanitize_url("javascript:alert(1)", MermaidSanitizeMode::Lenient),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_blocks_data_uri() {
+        assert_eq!(
+            sanitize_url("data:text/html,<h1>XSS</h1>", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+        assert_eq!(
+            sanitize_url("data:text/html,<h1>XSS</h1>", MermaidSanitizeMode::Lenient),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_blocks_vbscript() {
+        assert_eq!(
+            sanitize_url("vbscript:MsgBox", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_blocks_file_protocol() {
+        assert_eq!(
+            sanitize_url("file:///etc/passwd", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+        assert_eq!(
+            sanitize_url("file:///etc/passwd", MermaidSanitizeMode::Lenient),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_blocks_blob() {
+        assert_eq!(
+            sanitize_url("blob:http://evil.com/abc", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_allows_https_strict() {
+        assert_eq!(
+            sanitize_url("https://example.com", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn sanitize_url_allows_http_strict() {
+        assert_eq!(
+            sanitize_url("http://example.com", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn sanitize_url_allows_mailto_strict() {
+        assert_eq!(
+            sanitize_url("mailto:user@example.com", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn sanitize_url_allows_tel_strict() {
+        assert_eq!(
+            sanitize_url("tel:+1234567890", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn sanitize_url_blocks_ftp_strict() {
+        assert_eq!(
+            sanitize_url("ftp://files.example.com", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_allows_ftp_lenient() {
+        assert_eq!(
+            sanitize_url("ftp://files.example.com", MermaidSanitizeMode::Lenient),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn sanitize_url_allows_relative_path() {
+        assert_eq!(
+            sanitize_url("/docs/readme.md", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+        assert_eq!(
+            sanitize_url("./page.html", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn sanitize_url_allows_anchor() {
+        assert_eq!(
+            sanitize_url("#section-1", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn sanitize_url_blocks_empty() {
+        assert_eq!(
+            sanitize_url("", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+        assert_eq!(
+            sanitize_url("   ", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_case_insensitive() {
+        assert_eq!(
+            sanitize_url("JAVASCRIPT:alert(1)", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Blocked
+        );
+        assert_eq!(
+            sanitize_url("JavaScript:alert(1)", MermaidSanitizeMode::Lenient),
+            LinkSanitizeOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn sanitize_url_relative_with_colon_in_path() {
+        // Colon in path segment (not a protocol) should be allowed.
+        assert_eq!(
+            sanitize_url("/path/to/file:123", MermaidSanitizeMode::Strict),
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn resolve_links_disabled_returns_empty() {
+        let ast = parse("graph TD\nA-->B\nclick A \"https://example.com\"\n").expect("parse");
+        let config = MermaidConfig {
+            enable_links: false,
+            ..MermaidConfig::default()
+        };
+        let node_map: HashMap<String, IrNodeId> = HashMap::new();
+        let resolution = resolve_links(&ast, &config, &node_map);
+        assert_eq!(resolution.total_count, 0);
+        assert_eq!(resolution.allowed_count, 0);
+        assert_eq!(resolution.blocked_count, 0);
+        assert!(resolution.links.is_empty());
+    }
+
+    #[test]
+    fn resolve_links_off_mode_returns_empty() {
+        let ast = parse("graph TD\nA-->B\nclick A \"https://example.com\"\n").expect("parse");
+        let config = MermaidConfig {
+            enable_links: true,
+            link_mode: MermaidLinkMode::Off,
+            ..MermaidConfig::default()
+        };
+        let node_map: HashMap<String, IrNodeId> = HashMap::new();
+        let resolution = resolve_links(&ast, &config, &node_map);
+        assert!(resolution.links.is_empty());
+    }
+
+    #[test]
+    fn resolve_links_collects_click_directives() {
+        let ast = parse("graph TD\nA-->B\nclick A \"https://example.com\" \"Go to site\"\n")
+            .expect("parse");
+        let config = MermaidConfig {
+            enable_links: true,
+            link_mode: MermaidLinkMode::Footnote,
+            ..MermaidConfig::default()
+        };
+        let mut node_map: HashMap<String, IrNodeId> = HashMap::new();
+        node_map.insert("A".to_string(), IrNodeId(0));
+        node_map.insert("B".to_string(), IrNodeId(1));
+
+        let resolution = resolve_links(&ast, &config, &node_map);
+        assert_eq!(resolution.total_count, 1);
+        assert_eq!(resolution.allowed_count, 1);
+        assert_eq!(resolution.blocked_count, 0);
+        assert_eq!(resolution.links[0].kind, LinkKind::Click);
+        assert_eq!(resolution.links[0].url, "https://example.com");
+        assert_eq!(resolution.links[0].tooltip.as_deref(), Some("Go to site"));
+        assert_eq!(resolution.links[0].target, IrNodeId(0));
+        assert_eq!(
+            resolution.links[0].sanitize_outcome,
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn resolve_links_blocks_dangerous_urls() {
+        let ast = parse("graph TD\nA-->B\nclick A \"javascript:alert(1)\"\n").expect("parse");
+        let config = MermaidConfig {
+            enable_links: true,
+            link_mode: MermaidLinkMode::Inline,
+            sanitize_mode: MermaidSanitizeMode::Strict,
+            ..MermaidConfig::default()
+        };
+        let mut node_map: HashMap<String, IrNodeId> = HashMap::new();
+        node_map.insert("A".to_string(), IrNodeId(0));
+        node_map.insert("B".to_string(), IrNodeId(1));
+
+        let resolution = resolve_links(&ast, &config, &node_map);
+        assert_eq!(resolution.total_count, 1);
+        assert_eq!(resolution.allowed_count, 0);
+        assert_eq!(resolution.blocked_count, 1);
+        assert_eq!(
+            resolution.links[0].sanitize_outcome,
+            LinkSanitizeOutcome::Blocked
+        );
+        assert!(
+            resolution
+                .warnings
+                .iter()
+                .any(|w| w.code == MermaidWarningCode::SanitizedInput)
+        );
+    }
+
+    #[test]
+    fn resolve_links_warns_on_missing_target() {
+        let ast = parse("graph TD\nA-->B\nclick Z \"https://example.com\"\n").expect("parse");
+        let config = MermaidConfig {
+            enable_links: true,
+            link_mode: MermaidLinkMode::Footnote,
+            ..MermaidConfig::default()
+        };
+        let mut node_map: HashMap<String, IrNodeId> = HashMap::new();
+        node_map.insert("A".to_string(), IrNodeId(0));
+        node_map.insert("B".to_string(), IrNodeId(1));
+
+        let resolution = resolve_links(&ast, &config, &node_map);
+        // Link with missing target is not added to links list
+        assert_eq!(resolution.total_count, 0);
+        assert!(
+            resolution
+                .warnings
+                .iter()
+                .any(|w| w.code == MermaidWarningCode::UnsupportedLink)
+        );
+    }
+
+    #[test]
+    fn resolve_links_multiple_links() {
+        let src = "graph TD\nA-->B\nB-->C\nclick A \"https://a.com\"\nclick B \"https://b.com\"\nclick C \"javascript:xss\"\n";
+        let ast = parse(src).expect("parse");
+        let config = MermaidConfig {
+            enable_links: true,
+            link_mode: MermaidLinkMode::Footnote,
+            sanitize_mode: MermaidSanitizeMode::Strict,
+            ..MermaidConfig::default()
+        };
+        let mut node_map: HashMap<String, IrNodeId> = HashMap::new();
+        node_map.insert("A".to_string(), IrNodeId(0));
+        node_map.insert("B".to_string(), IrNodeId(1));
+        node_map.insert("C".to_string(), IrNodeId(2));
+
+        let resolution = resolve_links(&ast, &config, &node_map);
+        assert_eq!(resolution.total_count, 3);
+        assert_eq!(resolution.allowed_count, 2);
+        assert_eq!(resolution.blocked_count, 1);
+        assert_eq!(resolution.link_mode, MermaidLinkMode::Footnote);
+    }
+
+    #[test]
+    fn normalize_ir_includes_resolved_links() {
+        let src = "graph TD\nA-->B\nclick A \"https://example.com\"\n";
+        let ast = parse(src).expect("parse");
+        let config = MermaidConfig {
+            enable_links: true,
+            link_mode: MermaidLinkMode::Footnote,
+            ..MermaidConfig::default()
+        };
+        let ir_parse = normalize_ast_to_ir(
+            &ast,
+            &config,
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert_eq!(ir_parse.ir.links.len(), 1);
+        assert_eq!(ir_parse.ir.links[0].url, "https://example.com");
+        assert_eq!(
+            ir_parse.ir.links[0].sanitize_outcome,
+            LinkSanitizeOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn normalize_ir_links_empty_when_disabled() {
+        let src = "graph TD\nA-->B\nclick A \"https://example.com\"\n";
+        let ast = parse(src).expect("parse");
+        let config = MermaidConfig::default(); // enable_links is false by default
+        let ir_parse = normalize_ast_to_ir(
+            &ast,
+            &config,
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(ir_parse.ir.links.is_empty());
+    }
+
+    #[test]
+    fn link_resolution_jsonl_evidence() {
+        let log_path = format!("/tmp/ftui_test_link_jsonl_{}.jsonl", std::process::id());
+        // Clean up from any prior run.
+        let _ = std::fs::remove_file(&log_path);
+
+        let src = "graph TD\nA-->B\nclick A \"https://example.com\"\n";
+        let ast = parse(src).expect("parse");
+        let config = MermaidConfig {
+            enable_links: true,
+            link_mode: MermaidLinkMode::Footnote,
+            log_path: Some(log_path.clone()),
+            ..MermaidConfig::default()
+        };
+        let _ir_parse = normalize_ast_to_ir(
+            &ast,
+            &config,
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let log_content = std::fs::read_to_string(&log_path).expect("read log");
+        let _ = std::fs::remove_file(&log_path);
+        assert!(log_content.contains("mermaid_links"));
+        assert!(log_content.contains("\"link_mode\":\"footnote\""));
+        assert!(log_content.contains("\"total_count\":1"));
+        assert!(log_content.contains("\"allowed_count\":1"));
+        assert!(log_content.contains("\"blocked_count\":0"));
     }
 }
