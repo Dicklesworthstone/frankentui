@@ -1104,14 +1104,8 @@ mod tests {
             dir.len() > 2,
             "directory icon should be emoji, got: {dir:?}"
         );
-        assert!(
-            file.len() > 2,
-            "file icon should be emoji, got: {file:?}"
-        );
-        assert!(
-            sym.len() > 2,
-            "symlink icon should be emoji, got: {sym:?}"
-        );
+        assert!(file.len() > 2, "file icon should be emoji, got: {file:?}");
+        assert!(sym.len() > 2, "symlink icon should be emoji, got: {sym:?}");
     }
 
     /// Regression: breadcrumbs contain home emoji.
@@ -1127,24 +1121,9 @@ mod tests {
     /// Regression: entry_icon returns emoji for all entry kinds.
     #[test]
     fn entry_icon_returns_emoji_for_all_kinds() {
-        let dir_entry = FileEntry {
-            name: "src".to_string(),
-            kind: FileKind::Directory,
-            size: 0,
-            modified: "now".to_string(),
-        };
-        let file_entry = FileEntry {
-            name: "main.rs".to_string(),
-            kind: FileKind::File,
-            size: 100,
-            modified: "now".to_string(),
-        };
-        let sym_entry = FileEntry {
-            name: "link".to_string(),
-            kind: FileKind::Symlink,
-            size: 0,
-            modified: "now".to_string(),
-        };
+        let dir_entry = FileEntry::new("src", FileKind::Directory);
+        let file_entry = FileEntry::new("main.rs", FileKind::File);
+        let sym_entry = FileEntry::new("link", FileKind::Symlink);
 
         for (entry, label) in [
             (&dir_entry, "directory"),

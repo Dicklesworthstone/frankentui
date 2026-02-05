@@ -3642,4 +3642,143 @@ mod tests {
             );
         }
     }
+
+    // --- Sample Registry tests ---
+
+    #[test]
+    fn registry_all_returns_all_samples() {
+        assert_eq!(SampleRegistry::all().len(), DEFAULT_SAMPLES.len());
+    }
+
+    #[test]
+    fn registry_by_family_flow() {
+        let flow = SampleRegistry::by_family(SampleFamily::Flow);
+        assert!(
+            flow.len() >= 5,
+            "Expected at least 5 flow samples, got {}",
+            flow.len()
+        );
+        for s in &flow {
+            assert_eq!(s.family, SampleFamily::Flow);
+        }
+    }
+
+    #[test]
+    fn registry_by_family_unsupported() {
+        let unsup = SampleRegistry::by_family(SampleFamily::Unsupported);
+        assert_eq!(unsup.len(), 3);
+        for s in &unsup {
+            assert!(s.edge_cases.contains(&"unsupported-diagram"));
+        }
+    }
+
+    #[test]
+    fn registry_by_complexity_small() {
+        let small = SampleRegistry::by_complexity(SampleComplexity::S);
+        assert!(small.len() >= 3);
+        for s in &small {
+            assert_eq!(s.complexity, SampleComplexity::S);
+        }
+    }
+
+    #[test]
+    fn registry_by_min_complexity_medium() {
+        let medium_plus = SampleRegistry::by_min_complexity(SampleComplexity::M);
+        for s in &medium_plus {
+            assert!(s.complexity >= SampleComplexity::M);
+        }
+    }
+
+    #[test]
+    fn registry_by_feature() {
+        let edge_label = SampleRegistry::by_feature("edge-labels");
+        assert!(
+            edge_label.len() >= 2,
+            "Expected at least 2 samples with edge-labels"
+        );
+        for s in &edge_label {
+            assert!(s.features.contains(&"edge-labels"));
+        }
+    }
+
+    #[test]
+    fn registry_by_id() {
+        let sample = SampleRegistry::by_id("flow-basic");
+        assert!(sample.is_some(), "Should find flow-basic by id");
+        assert_eq!(sample.unwrap().name, "Flow Basic");
+    }
+
+    #[test]
+    fn registry_by_id_not_found() {
+        assert!(SampleRegistry::by_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn registry_by_max_size() {
+        let small_vp = SampleRegistry::by_max_size(40, 12);
+        assert!(!small_vp.is_empty(), "Some samples should fit in 40x12");
+        for s in &small_vp {
+            assert!(s.default_size.width <= 40);
+            assert!(s.default_size.height <= 12);
+        }
+    }
+
+    #[test]
+    fn registry_select_combined() {
+        let result = SampleRegistry::select(
+            Some(SampleFamily::Flow),
+            Some(SampleComplexity::S),
+            None,
+            None,
+        );
+        assert!(!result.is_empty());
+        for s in &result {
+            assert_eq!(s.family, SampleFamily::Flow);
+            assert_eq!(s.complexity, SampleComplexity::S);
+        }
+    }
+
+    #[test]
+    fn registry_select_none_returns_all() {
+        let result = SampleRegistry::select(None, None, None, None);
+        assert_eq!(result.len(), DEFAULT_SAMPLES.len());
+    }
+
+    #[test]
+    fn all_samples_have_unique_ids() {
+        let mut ids: Vec<&str> = DEFAULT_SAMPLES.iter().map(|s| s.id).collect();
+        ids.sort();
+        let orig_len = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), orig_len, "Duplicate sample ids found");
+    }
+
+    #[test]
+    fn all_families_have_samples() {
+        for family in SampleFamily::ALL {
+            if *family == SampleFamily::Unsupported {
+                continue;
+            }
+            let samples = SampleRegistry::by_family(*family);
+            assert!(!samples.is_empty(), "Family {:?} has no samples", family);
+        }
+    }
+
+    #[test]
+    fn sample_default_sizes_reasonable() {
+        for sample in DEFAULT_SAMPLES {
+            assert!(
+                sample.default_size.width >= 20 && sample.default_size.width <= 200,
+                "Sample {} has unreasonable width {}",
+                sample.name,
+                sample.default_size.width
+            );
+            assert!(
+                sample.default_size.height >= 5 && sample.default_size.height <= 100,
+                "Sample {} has unreasonable height {}",
+                sample.name,
+                sample.default_size.height
+            );
+        }
+    }
 }
