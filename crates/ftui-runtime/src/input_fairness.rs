@@ -802,4 +802,292 @@ mod tests {
         assert!(!decision.yield_to_input);
         assert_eq!(decision.reason, InterventionReason::None);
     }
+
+    // =========================================================================
+    // Fairness guard + resize scheduling integration tests (bd-plwf)
+    // =========================================================================
+
+    #[test]
+    fn fairness_decision_fields_match_state() {
+        let mut guard = InputFairnessGuard::new();
+        let now = Instant::now();
+
+        // No pending input → decision has no pending latency
+        let d = guard.check_fairness(now);
+        assert!(d.pending_input_latency.is_none());
+        assert_eq!(d.reason, InterventionReason::None);
+        assert!(!d.yield_to_input);
+        assert!(d.should_process);
+        assert!((d.jain_index - 1.0).abs() < f64::EPSILON);
+
+        // Signal input, then check fairness later
+        guard.input_arrived(now);
+        let later = now + Duration::from_millis(10);
+        let d = guard.check_fairness(later);
+        assert!(d.pending_input_latency.is_some());
+        let lat = d.pending_input_latency.unwrap();
+        assert!(lat >= Duration::from_millis(10));
+    }
+
+    #[test]
+    fn jain_index_exact_values() {
+        let mut guard = InputFairnessGuard::new();
+        let now = Instant::now();
+
+        // Equal allocation: x = y = 100ms → F = 1.0
+        guard.event_processed(EventType::Input, Duration::from_millis(100), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(100), now);
+        let j = guard.jain_index();
+        assert!(
+            (j - 1.0).abs() < 1e-9,
+            "Equal allocation should yield 1.0, got {j}"
+        );
+
+        guard.reset();
+
+        // Extreme imbalance: x = 1ms, y = 100ms
+        // F = (1 + 100)^2 / (2 * (1 + 10000)) = 10201 / 20002 ≈ 0.51
+        guard.event_processed(EventType::Input, Duration::from_millis(1), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(100), now);
+        let j = guard.jain_index();
+        assert!(j > 0.5, "F should be > 0.5 for two types, got {j}");
+        assert!(j < 0.6, "F should be < 0.6 for 1:100 ratio, got {j}");
+    }
+
+    #[test]
+    fn jain_index_bounded_across_ratios() {
+        // Jain's index with n=2 types is always in [0.5, 1.0].
+        let ratios: &[(u64, u64)] = &[
+            (0, 0),
+            (1, 0),
+            (0, 1),
+            (1, 1),
+            (1, 1000),
+            (1000, 1),
+            (50, 50),
+            (100, 1),
+            (999, 1),
+        ];
+        for &(input_ms, resize_ms) in ratios {
+            let mut guard = InputFairnessGuard::new();
+            let now = Instant::now();
+            if input_ms > 0 {
+                guard.event_processed(EventType::Input, Duration::from_millis(input_ms), now);
+            }
+            if resize_ms > 0 {
+                guard.event_processed(EventType::Resize, Duration::from_millis(resize_ms), now);
+            }
+            let j = guard.jain_index();
+            assert!(
+                (0.5..=1.0).contains(&j),
+                "Jain index out of bounds for ({input_ms}, {resize_ms}): {j}"
+            );
+        }
+    }
+
+    #[test]
+    fn intervention_reason_priority_order() {
+        // InputLatency > ResizeDominance > FairnessIndex
+        let config = FairnessConfig {
+            input_priority_threshold: Duration::from_millis(20),
+            dominance_threshold: 2,
+            fairness_threshold: 0.9, // High threshold to easily trigger
+            enabled: true,
+        };
+        let mut guard = InputFairnessGuard::with_config(config);
+        let now = Instant::now();
+
+        // Set up conditions for all three reasons:
+        // 1. Pending input with high latency
+        guard.input_arrived(now);
+        // 2. Resize dominance (3 consecutive resizes)
+        guard.event_processed(EventType::Resize, Duration::from_millis(50), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(50), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(50), now);
+
+        // Check fairness well past latency threshold
+        let later = now + Duration::from_millis(100);
+        let d = guard.check_fairness(later);
+
+        // InputLatency should win (highest priority)
+        assert_eq!(
+            d.reason,
+            InterventionReason::InputLatency,
+            "InputLatency should have highest priority"
+        );
+        assert!(d.yield_to_input);
+    }
+
+    #[test]
+    fn resize_dominance_triggers_after_threshold() {
+        let config = FairnessConfig {
+            dominance_threshold: 3,
+            ..FairnessConfig::default()
+        };
+        let mut guard = InputFairnessGuard::with_config(config);
+        let now = Instant::now();
+
+        // Need pending input for dominance to matter
+        guard.input_arrived(now);
+
+        // 2 resizes → no intervention
+        guard.event_processed(EventType::Resize, Duration::from_millis(10), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(10), now);
+        let d = guard.check_fairness(now);
+        assert_eq!(d.reason, InterventionReason::None);
+
+        // Signal input again (previous check cleared it)
+        guard.input_arrived(now);
+
+        // 3rd resize → dominance triggers
+        guard.event_processed(EventType::Resize, Duration::from_millis(10), now);
+        let d = guard.check_fairness(now);
+        assert_eq!(d.reason, InterventionReason::ResizeDominance);
+        assert!(d.yield_to_input);
+    }
+
+    #[test]
+    fn intervention_counts_track_each_reason() {
+        let config = FairnessConfig {
+            input_priority_threshold: Duration::from_millis(10),
+            dominance_threshold: 2,
+            fairness_threshold: 0.8,
+            enabled: true,
+        };
+        let mut guard = InputFairnessGuard::with_config(config);
+        let now = Instant::now();
+
+        // Trigger InputLatency intervention
+        guard.input_arrived(now);
+        let later = now + Duration::from_millis(50);
+        guard.check_fairness(later);
+
+        let counts = guard.intervention_counts();
+        assert_eq!(counts.input_latency, 1);
+        assert_eq!(counts.resize_dominance, 0);
+        assert_eq!(counts.fairness_index, 0);
+
+        // Trigger ResizeDominance intervention
+        guard.input_arrived(now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(10), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(10), now);
+        guard.check_fairness(now);
+
+        let counts = guard.intervention_counts();
+        assert_eq!(counts.resize_dominance, 1);
+    }
+
+    #[test]
+    fn fairness_stable_across_repeated_check_cycles() {
+        let mut guard = InputFairnessGuard::new();
+        let now = Instant::now();
+
+        // Simulate balanced workload over 50 cycles
+        for i in 0..50 {
+            let t = now + Duration::from_millis(i * 16);
+            guard.event_processed(EventType::Input, Duration::from_millis(5), t);
+            guard.event_processed(EventType::Resize, Duration::from_millis(5), t);
+            let d = guard.check_fairness(t);
+
+            // With balanced processing, no intervention should fire
+            assert!(!d.yield_to_input, "Unexpected intervention at cycle {i}");
+            // Jain index should remain near 1.0
+            assert!(
+                d.jain_index > 0.95,
+                "Jain index degraded at cycle {i}: {}",
+                d.jain_index
+            );
+        }
+
+        let stats = guard.stats();
+        assert_eq!(stats.events_processed, 100);
+        assert_eq!(stats.input_events, 50);
+        assert_eq!(stats.resize_events, 50);
+        assert_eq!(stats.total_interventions, 0);
+    }
+
+    #[test]
+    fn fairness_index_degrades_under_resize_flood() {
+        let mut guard = InputFairnessGuard::new();
+        let now = Instant::now();
+
+        // One input event, then flood of resizes
+        guard.event_processed(EventType::Input, Duration::from_millis(5), now);
+        for _ in 0..15 {
+            guard.event_processed(EventType::Resize, Duration::from_millis(20), now);
+        }
+
+        let j = guard.jain_index();
+        // input_time = 5ms = 5000us, resize_time = 300ms = 300000us
+        // Highly unfair → index should be well below threshold
+        assert!(
+            j < 0.55,
+            "Jain index should be low under resize flood, got {j}"
+        );
+    }
+
+    #[test]
+    fn max_input_latency_tracked_across_checks() {
+        let mut guard = InputFairnessGuard::new();
+        let now = Instant::now();
+
+        guard.input_arrived(now);
+        guard.check_fairness(now + Duration::from_millis(30));
+
+        guard.input_arrived(now + Duration::from_millis(50));
+        guard.check_fairness(now + Duration::from_millis(100));
+
+        let stats = guard.stats();
+        // Second check had 50ms latency
+        assert!(stats.max_input_latency >= Duration::from_millis(30));
+    }
+
+    #[test]
+    fn sliding_window_evicts_oldest_entries() {
+        let mut guard = InputFairnessGuard::new();
+        let now = Instant::now();
+
+        // Window capacity is 16 (FAIRNESS_WINDOW_SIZE)
+        // Fill with resize events
+        for _ in 0..16 {
+            guard.event_processed(EventType::Resize, Duration::from_millis(10), now);
+        }
+
+        // Now add input events - they should evict oldest resize events
+        for _ in 0..16 {
+            guard.event_processed(EventType::Input, Duration::from_millis(10), now);
+        }
+
+        // After all resizes evicted and replaced with input, Jain should show
+        // only input time remaining (resize_time_us = 0 after full eviction)
+        let j = guard.jain_index();
+        // When only one type has time, index = (x+0)^2 / (2*(x^2+0)) = 0.5
+        assert!(
+            j < 0.6,
+            "After full eviction to input-only, Jain should be ~0.5, got {j}"
+        );
+    }
+
+    #[test]
+    fn custom_config_thresholds_work() {
+        let config = FairnessConfig {
+            input_priority_threshold: Duration::from_millis(200),
+            dominance_threshold: 10,
+            fairness_threshold: 0.3,
+            enabled: true,
+        };
+        let mut guard = InputFairnessGuard::with_config(config);
+        let now = Instant::now();
+
+        // With high thresholds, moderate conditions should not trigger
+        guard.input_arrived(now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(50), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(50), now);
+        guard.event_processed(EventType::Resize, Duration::from_millis(50), now);
+
+        let later = now + Duration::from_millis(100);
+        let d = guard.check_fairness(later);
+        assert_eq!(d.reason, InterventionReason::None);
+        assert!(!d.yield_to_input);
+    }
 }

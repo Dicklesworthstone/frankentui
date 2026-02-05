@@ -215,8 +215,11 @@ pub trait UndoableCmd: Send + Sync {
         None
     }
 
-    /// Accept merged text from another command.
-    fn accept_merge(&mut self, _text: &str) -> bool {
+    /// Accept a merge from another command.
+    ///
+    /// The full command reference is passed to allow implementations to
+    /// extract position or other context needed for correct merge behavior.
+    fn accept_merge(&mut self, _other: &dyn UndoableCmd) -> bool {
         false
     }
 
@@ -508,8 +511,11 @@ impl UndoableCmd for TextInsertCmd {
         Some(&self.text)
     }
 
-    fn accept_merge(&mut self, text: &str) -> bool {
-        self.text.push_str(text);
+    fn accept_merge(&mut self, other: &dyn UndoableCmd) -> bool {
+        let Some(other_insert) = other.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        self.text.push_str(&other_insert.text);
         true
     }
 
@@ -665,10 +671,30 @@ impl UndoableCmd for TextDeleteCmd {
         Some(&self.deleted_text)
     }
 
-    fn accept_merge(&mut self, text: &str) -> bool {
-        // For delete commands, we need to know if this is backspace or forward delete
-        // For now, prepend (backspace behavior)
-        self.deleted_text = format!("{}{}", text, self.deleted_text);
+    fn accept_merge(&mut self, other: &dyn UndoableCmd) -> bool {
+        let Some(other_delete) = other.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+
+        // Determine if this is a backspace or forward delete merge:
+        // - Backspace: other.position + other.deleted_text.len() == self.position
+        //   The new delete happened before our position, prepend its text
+        // - Forward delete: other.position == self.position
+        //   The new delete happened at the same position, append its text
+        let is_backspace = other_delete.position + other_delete.deleted_text.len() == self.position;
+        let is_forward = other_delete.position == self.position;
+        if !is_backspace && !is_forward {
+            return false;
+        }
+
+        if is_backspace {
+            // Backspace: prepend and move our position back
+            self.deleted_text = format!("{}{}", other_delete.deleted_text, self.deleted_text);
+            self.position = other_delete.position;
+        } else {
+            // Forward delete: append (text was after original deleted text)
+            self.deleted_text.push_str(&other_delete.deleted_text);
+        }
         true
     }
 
@@ -988,16 +1014,33 @@ mod tests {
     #[test]
     fn test_text_insert_accept_merge() {
         let mut cmd1 = TextInsertCmd::new(WidgetId::new(1), 0, "Hello");
-        assert!(cmd1.accept_merge(" World"));
+        let cmd2 = TextInsertCmd::new(WidgetId::new(1), 5, " World");
+        assert!(cmd1.accept_merge(&cmd2));
         assert_eq!(cmd1.text, "Hello World");
     }
 
     #[test]
-    fn test_text_delete_accept_merge() {
+    fn test_text_delete_accept_merge_backspace() {
+        // Simulate backspace: user deleted "b" at position 4, then "a" at position 3
+        // Backspace detection: other.position + other.len == self.position
+        // 3 + 1 == 4, so this is backspace, should prepend
         let mut cmd1 = TextDeleteCmd::new(WidgetId::new(1), 4, "b");
-        assert!(cmd1.accept_merge("a"));
-        // Should prepend for backspace behavior
+        let cmd2 = TextDeleteCmd::new(WidgetId::new(1), 3, "a");
+        assert!(cmd1.accept_merge(&cmd2));
         assert_eq!(cmd1.deleted_text, "ab");
+        assert_eq!(cmd1.position, 3); // Position moves back for backspace
+    }
+
+    #[test]
+    fn test_text_delete_accept_merge_forward_delete() {
+        // Simulate forward delete: user deleted "a" at position 3, then "b" at position 3
+        // Forward delete detection: other.position == self.position
+        // Both at position 3, so this is forward delete, should append
+        let mut cmd1 = TextDeleteCmd::new(WidgetId::new(1), 3, "a");
+        let cmd2 = TextDeleteCmd::new(WidgetId::new(1), 3, "b");
+        assert!(cmd1.accept_merge(&cmd2));
+        assert_eq!(cmd1.deleted_text, "ab");
+        assert_eq!(cmd1.position, 3); // Position stays the same for forward delete
     }
 
     #[test]

@@ -357,16 +357,16 @@ impl HistoryManager {
             return Err(cmd);
         }
 
-        // Get merge text from the new command
-        let Some(merge_text) = cmd.merge_text() else {
+        // Verify the command has merge text available
+        if cmd.merge_text().is_none() {
             return Err(cmd);
-        };
+        }
 
         // Adjust memory accounting (old size will change)
         let old_size = last.size_bytes();
 
-        // Perform the merge
-        if !last.accept_merge(merge_text) {
+        // Perform the merge (pass full command for position context)
+        if !last.accept_merge(cmd.as_ref()) {
             return Err(cmd);
         }
 

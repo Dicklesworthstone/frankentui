@@ -110,7 +110,13 @@ impl ValidatorStats {
     /// Posterior mean failure probability: α / (α + β).
     #[inline]
     pub fn failure_prob(&self) -> f64 {
-        self.alpha / (self.alpha + self.beta)
+        let sum = self.alpha + self.beta;
+        if sum > 0.0 {
+            self.alpha / sum
+        } else {
+            // Fall back to uniform prior Beta(1,1) when the posterior is undefined.
+            0.5
+        }
     }
 
     /// Score used for ordering: p / c (higher = should run earlier).
@@ -124,7 +130,12 @@ impl ValidatorStats {
     #[inline]
     pub fn variance(&self) -> f64 {
         let sum = self.alpha + self.beta;
-        (self.alpha * self.beta) / (sum * sum * (sum + 1.0))
+        if sum > 0.0 {
+            (self.alpha * self.beta) / (sum * sum * (sum + 1.0))
+        } else {
+            // Beta(1,1) variance.
+            1.0 / 12.0
+        }
     }
 
     /// 95% credible interval width (normal approximation for large α+β).
@@ -546,6 +557,27 @@ mod tests {
 
         // Optimal should prefer A first (lower expected cost).
         assert!(cost_ab < cost_ba);
+    }
+
+    #[test]
+    fn zero_prior_defaults_to_uniform() {
+        let config = PipelineConfig {
+            prior_alpha: 0.0,
+            prior_beta: 0.0,
+            ..PipelineConfig::default()
+        };
+        let mut pipeline = ValidationPipeline::with_config(config);
+        pipeline.register("A", Duration::from_millis(10));
+        pipeline.register("B", Duration::from_millis(20));
+
+        let (ordering, ledger) = pipeline.compute_ordering();
+        assert_eq!(ordering.len(), 2);
+        assert_eq!(ledger.len(), 2);
+        for entry in ledger {
+            assert!(entry.p.is_finite());
+            assert!(entry.score.is_finite());
+            assert!((entry.p - 0.5).abs() < 1e-9);
+        }
     }
 
     #[test]
