@@ -20,6 +20,8 @@ DEMO_BIN="$TARGET_DIR/release/ftui-demo-showcase"
 source "$LIB_DIR/common.sh"
 # shellcheck source=/dev/null
 source "$LIB_DIR/logging.sh"
+# shellcheck source=/dev/null
+source "$LIB_DIR/pty.sh"
 
 E2E_VFX_SEED="${E2E_VFX_SEED:-42}"
 E2E_VFX_FRAMES="${E2E_VFX_FRAMES:-6}"
@@ -359,6 +361,7 @@ run_vfx_case() {
     local case_id="${label}_${mode}_${cols}x${rows}"
     local raw_jsonl="$E2E_LOG_DIR/${case_id}_raw.jsonl"
     local out_jsonl="$E2E_LOG_DIR/${case_id}.jsonl"
+    local out_pty="$E2E_LOG_DIR/${case_id}.pty"
     local run_id="${E2E_RUN_ID}_${case_id}"
     local name="vfx_${case_id}"
     LOG_FILE="$E2E_LOG_DIR/${case_id}.log"
@@ -377,7 +380,14 @@ run_vfx_case() {
         ui_arg="--ui-height=${E2E_INLINE_UI_HEIGHT}"
     fi
 
-    if ! "$DEMO_BIN" \
+    local run_exit=0
+    if FTUI_DEMO_DETERMINISTIC=1 \
+        FTUI_DEMO_SEED="$E2E_SEED" \
+        PTY_COLS="$cols" \
+        PTY_ROWS="$rows" \
+        PTY_TIMEOUT=8 \
+        PTY_TEST_NAME="$name" \
+        pty_run "$out_pty" "$DEMO_BIN" \
         --screen-mode="$mode" \
         "$ui_arg" \
         --vfx-harness \
@@ -390,6 +400,14 @@ run_vfx_case() {
         --vfx-jsonl="$raw_jsonl" \
         --vfx-run-id="$run_id" \
         >"$LOG_FILE" 2>&1; then
+        run_exit=0
+    else
+        run_exit=$?
+    fi
+
+    pty_record_metadata "$out_pty" "$run_exit" "$cols" "$rows"
+
+    if [[ "$run_exit" -ne 0 ]]; then
         local duration_ms=$(( $(e2e_now_ms) - start_ms ))
         log_test_fail "$name" "harness failed"
         record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "harness failed"

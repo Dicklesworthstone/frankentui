@@ -1146,10 +1146,11 @@ mod tests {
         // Both should have identical sizes (no dynamic allocations)
         assert_eq!(size1, size2, "PlasmaFx size should not vary with palette");
 
-        // Size should be minimal (just the palette enum)
+        // Size should be reasonable (palette enum + scratch buffers for pre-computation)
+        // On 64-bit: palette (1-2 bytes) + PlasmaScratch (5 Vecs at 24 bytes each + u16)
         assert!(
-            size1 <= 8,
-            "PlasmaFx should be small (just palette enum), got {} bytes",
+            size1 <= 200,
+            "PlasmaFx should be reasonably sized, got {} bytes",
             size1
         );
     }
