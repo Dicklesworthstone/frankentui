@@ -6,11 +6,13 @@
 use ftui_core::geometry::Rect;
 use ftui_extras::markdown::{MarkdownRenderer, MarkdownTheme};
 use ftui_layout::Constraint;
+use ftui_render::buffer::Buffer;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::{Style, TableEffectScope, TableSection, TableTheme};
-use ftui_text::Text;
+use ftui_text::{Line, Text};
 use ftui_widgets::Widget;
+use ftui_widgets::borders::BorderSet;
 use ftui_widgets::table::{Row, Table};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +22,7 @@ struct RowStyleHash {
     hash: u64,
 }
 
-fn _format_vec_mismatch<T: std::fmt::Debug + PartialEq>(
+fn format_vec_mismatch<T: std::fmt::Debug + PartialEq>(
     label: &str,
     left: &[T],
     right: &[T],
@@ -45,7 +47,7 @@ fn _format_vec_mismatch<T: std::fmt::Debug + PartialEq>(
     }
 }
 
-fn _format_style_hash_mismatch(markdown: &[RowStyleHash], widget: &[RowStyleHash]) -> String {
+fn format_style_hash_mismatch(markdown: &[RowStyleHash], widget: &[RowStyleHash]) -> String {
     let mut lines = Vec::new();
     let max_len = markdown.len().max(widget.len());
     for idx in 0..max_len {
@@ -112,6 +114,77 @@ fn build_markdown_table(header: &[&str], rows: &[Vec<&str>]) -> String {
         out.push('\n');
     }
     out
+}
+
+fn line_to_string(line: &Line) -> String {
+    let mut out = String::new();
+    for span in line.spans() {
+        out.push_str(&span.content);
+    }
+    out
+}
+
+fn parse_border_widths(border_line: &str) -> Vec<u16> {
+    let mut widths = Vec::new();
+    let mut run_len = 0usize;
+    let mut iter = border_line.chars();
+    if iter.next().is_none() {
+        return widths;
+    }
+    for ch in iter {
+        if ch == '┬' || ch == '┐' {
+            let width = run_len.saturating_sub(2).min(u16::MAX as usize) as u16;
+            widths.push(width);
+            run_len = 0;
+            if ch == '┐' {
+                break;
+            }
+        } else {
+            run_len = run_len.saturating_add(1);
+        }
+    }
+    widths
+}
+
+fn extract_markdown_column_widths(rendered: &Text) -> Vec<u16> {
+    let border_line = rendered
+        .lines()
+        .iter()
+        .map(line_to_string)
+        .find(|line| line.starts_with('┌'))
+        .expect("markdown table border line missing");
+    parse_border_widths(&border_line)
+}
+
+fn extract_markdown_row_count(rendered: &Text) -> usize {
+    rendered
+        .lines()
+        .iter()
+        .map(line_to_string)
+        .filter(|line| line.starts_with('│'))
+        .count()
+}
+
+fn extract_widget_column_widths(buf: &Buffer, divider: char) -> Vec<u16> {
+    let y = 0u16;
+    let mut dividers = Vec::new();
+    for x in 0..buf.width() {
+        let ch = buf.get(x, y).and_then(|cell| cell.content.as_char());
+        if ch == Some(divider) {
+            dividers.push(x);
+        }
+    }
+
+    let mut widths = Vec::new();
+    let mut start = 0u16;
+    for pos in dividers {
+        widths.push(pos.saturating_sub(start));
+        start = pos.saturating_add(1);
+    }
+    if start < buf.width() {
+        widths.push(buf.width().saturating_sub(start));
+    }
+    widths
 }
 
 fn cell_width(text: &str) -> u16 {
@@ -326,30 +399,52 @@ fn table_theme_parity_widget_vs_markdown() {
         .column_spacing(1);
 
     let mut pool = GraphemePool::new();
-    let mut frame = Frame::new(80, 10, &mut pool);
-    table.render(Rect::new(0, 0, 80, 10), &mut frame);
+    let intrinsic = intrinsic_widths(&header, &rows);
+    let col_count = intrinsic.len().max(1);
+    let column_spacing = 1u16;
+    let table_width = intrinsic
+        .iter()
+        .fold(0u16, |acc, w| acc.saturating_add(*w))
+        .saturating_add(column_spacing.saturating_mul(col_count.saturating_sub(1) as u16));
+    let table_height = (1 + rows.len()).min(u16::MAX as usize) as u16;
+    let mut frame = Frame::new(table_width, table_height, &mut pool);
+    table.render(Rect::new(0, 0, table_width, table_height), &mut frame);
 
-    // Compare intrinsic column widths.
-    let markdown_widths = intrinsic_widths(&header, &rows);
-    let widget_widths = intrinsic_widths(&header, &rows);
+    // Compare column widths derived from renderer outputs.
+    let markdown_widths = extract_markdown_column_widths(&rendered);
+    let widget_widths = extract_widget_column_widths(&frame.buffer, BorderSet::SQUARE.vertical);
     assert_eq!(
-        widget_widths, markdown_widths,
-        "widget and markdown intrinsic widths should match"
+        widget_widths,
+        markdown_widths,
+        "column widths mismatch:\n{}",
+        format_vec_mismatch("column_widths", &markdown_widths, &widget_widths)
     );
 
     // Compare row heights (markdown rows are single-line; widget defaults to height=1).
-    let markdown_heights = row_heights(1 + rows.len());
+    let markdown_row_count = extract_markdown_row_count(&rendered);
+    assert_eq!(
+        markdown_row_count,
+        1 + rows.len(),
+        "markdown row count mismatch: expected {}, got {}",
+        1 + rows.len(),
+        markdown_row_count
+    );
+    let markdown_heights = row_heights(markdown_row_count);
     let widget_heights = row_heights(1 + rows.len());
     assert_eq!(
-        widget_heights, markdown_heights,
-        "widget and markdown row heights should match"
+        widget_heights,
+        markdown_heights,
+        "row heights mismatch:\n{}",
+        format_vec_mismatch("row_heights", &markdown_heights, &widget_heights)
     );
 
     // Compare resolved style hashes per row/section.
     let markdown_styles = collect_markdown_style_hashes(&theme, 1, rows.len(), Some(phase));
     let widget_styles = collect_widget_style_hashes(&theme, 1, rows.len(), Some(phase));
     assert_eq!(
-        widget_styles, markdown_styles,
-        "widget and markdown resolved styles should match"
+        widget_styles,
+        markdown_styles,
+        "style hash mismatch:\n{}",
+        format_style_hash_mismatch(&markdown_styles, &widget_styles)
     );
 }

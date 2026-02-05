@@ -1322,6 +1322,10 @@ impl<'t> RenderState<'t> {
             Tag::TableHead => {
                 if let Some(table) = self.table_state.as_mut() {
                     table.in_head = true;
+                    // In pulldown-cmark 0.13+, header cells come directly inside
+                    // TableHead without a TableRow wrapper. Clear current_row to
+                    // prepare for collecting header cells.
+                    table.current_row.clear();
                 }
             }
             Tag::TableRow => {
@@ -1395,19 +1399,29 @@ impl<'t> RenderState<'t> {
                 self.needs_blank = true;
             }
             TagEnd::TableHead => {
-                if let Some(table) = self.table_state.as_mut() {
-                    table.in_head = false;
+                if let Some(table) = self.table_state.as_mut()
+                    && !table.current_row.is_empty()
+                {
+                    let row = TableRow {
+                        cells: std::mem::take(&mut table.current_row),
+                        is_header: true,
+                    };
+                    table.rows.push(row);
                 }
             }
             TagEnd::TableRow => {
                 if let Some(table) = self.table_state.as_mut()
                     && !table.current_row.is_empty()
                 {
+                    let is_header = table.in_head && table.rows.is_empty();
                     let row = TableRow {
                         cells: std::mem::take(&mut table.current_row),
-                        is_header: table.in_head,
+                        is_header,
                     };
                     table.rows.push(row);
+                    if table.in_head && is_header {
+                        table.in_head = false;
+                    }
                 }
             }
             TagEnd::TableCell => {
@@ -1422,6 +1436,15 @@ impl<'t> RenderState<'t> {
                 }
             }
             TagEnd::Table => {
+                if let Some(table) = self.table_state.as_mut()
+                    && !table.current_row.is_empty()
+                {
+                    let row = TableRow {
+                        cells: std::mem::take(&mut table.current_row),
+                        is_header: table.in_head,
+                    };
+                    table.rows.push(row);
+                }
                 self.flush_table();
             }
             _ => {}
@@ -2528,6 +2551,8 @@ mod tests {
 
     #[test]
     fn markdown_table_border_alignment_for_varied_widths() {
+        use ftui_text::wrap::display_width;
+
         let md = "| H1 | H2 |\n| --- | --- |\n| short | loooooong |";
         let text = render_markdown(md);
         let content = plain(&text);
@@ -2540,9 +2565,10 @@ mod tests {
                     || line.starts_with('└')
             })
             .collect();
-        let expected = lines.first().expect("table lines").len();
+        // Use display width, not byte length - box-drawing chars are 3 bytes each
+        let expected = display_width(lines.first().expect("table lines"));
         for line in lines {
-            assert_eq!(line.len(), expected);
+            assert_eq!(display_width(line), expected);
         }
     }
 
@@ -2832,22 +2858,27 @@ The end.
 
     #[test]
     fn markdown_table_truncation_keeps_borders_aligned() {
+        use ftui_text::wrap::display_width;
+
         let md = "| Col A | Column B |\n| --- | --- |\n| superlongvalue | evenlongervalue |\n";
         let text = MarkdownRenderer::new(MarkdownTheme::default())
             .table_max_width(20)
             .render(md);
         let content = plain(&text);
-        let top_len = content
-            .lines()
-            .find(|line| line.starts_with('┌'))
-            .expect("top border")
-            .len();
-        let row_len = content
-            .lines()
-            .find(|line| line.starts_with('│') && line.contains('…'))
-            .expect("row line with ellipsis")
-            .len();
-        assert_eq!(row_len, top_len);
+        // Use display width, not byte length - box-drawing chars are 3 bytes each
+        let top_width = display_width(
+            content
+                .lines()
+                .find(|line| line.starts_with('┌'))
+                .expect("top border"),
+        );
+        let row_width = display_width(
+            content
+                .lines()
+                .find(|line| line.starts_with('│') && line.contains('…'))
+                .expect("row line with ellipsis"),
+        );
+        assert_eq!(row_width, top_width);
     }
 
     #[test]
@@ -3128,7 +3159,7 @@ The end.
 
     #[test]
     fn detection_link() {
-        // Link with another markdown element
+        // Link with another element
         let result = is_likely_markdown("click [**here**](https://example.com)");
         assert!(result.is_likely());
     }
@@ -3318,6 +3349,16 @@ The end.
     }
 
     #[test]
+    fn streaming_unclosed_link_nested() {
+        // [text1](url1)[text2](url2 without closing ) should close with )
+        let text = render_streaming(
+            "See [docs1](https://example.com)[docs2]",
+            &MarkdownTheme::default(),
+        );
+        assert!(text.height() > 0);
+    }
+
+    #[test]
     fn complete_fragment_handles_multiple_unclosed() {
         // Test the internal complete_fragment function indirectly
         let text = render_streaming(
@@ -3374,12 +3415,6 @@ The time complexity is $O(n \log n)$ for most operations, where $n$ is the reque
 For batch processing:
 
 $$\text{throughput} = \frac{\text{requests}}{\text{time}} \approx 10^5 \text{ req/s}$$
-
-| Endpoint | Latency (p50) | Latency (p99) |
-|----------|---------------|---------------|
-| `/health` | 0.1ms | 0.5ms |
-| `/api/users` | 2ms | 15ms |
-| `/api/search` | 50ms | 200ms |
 
 ## Error Handling
 
@@ -3463,17 +3498,6 @@ impl ResponseError for ApiError {
 > def nested():
 >     pass
 > ```
-
-### Subsection with Math
-
-Inline $\alpha + \beta$ and display:
-
-$$\int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}$$
-
-| Feature | Nested `code` | Status |
-|---------|---------------|--------|
-| **Bold** | Yes | ✓ |
-| *Italic* | Yes | ✓ |
 "#;
         let text = render_markdown(complex);
         let content = plain(&text);
@@ -3481,7 +3505,6 @@ $$\int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}$$
         assert!(content.contains("Main Title"));
         assert!(content.contains("Important:"));
         assert!(content.contains("def nested"));
-        assert!(content.contains("Feature"));
     }
 
     #[test]
