@@ -754,25 +754,28 @@ fn full_pipeline_pty_to_widget() {
 fn input_forwarding_roundtrip() {
     let config = PtyConfig::default().with_size(80, 24).logging(false);
 
-    let cmd = CommandBuilder::new("cat");
+    // Use a command that terminates after consuming a single line so we don't rely on tty
+    // line discipline or EOF semantics to end the process (important for CI/coverage stability).
+    let mut cmd = CommandBuilder::new("sh");
+    cmd.args(["-c", "IFS= read -r line; printf '%s' \"$line\""]);
 
     let mut session = spawn_command(config, cmd).expect("spawn should succeed");
 
-    // Send input using the input forwarding module
-    let event = KeyEvent::plain(Key::Char('X'));
-    let seq = key_to_sequence(event);
-    session.send_input(&seq).expect("send should succeed");
+    // Send input using the input forwarding module: 'X' + Enter.
+    session
+        .send_input(&key_to_sequence(KeyEvent::plain(Key::Char('X'))))
+        .expect("send should succeed");
+    session
+        .send_input(&key_to_sequence(KeyEvent::plain(Key::Enter)))
+        .expect("send should succeed");
 
-    // Wait for echo
+    // Wait for the echoed character.
     let output = session
         .read_until(b"X", Duration::from_secs(2))
         .expect("should receive echo");
 
-    // Send Ctrl+D to terminate
-    let ctrl_d = KeyEvent::new(Key::Char('d'), Modifiers::CTRL);
-    session.send_input(&key_to_sequence(ctrl_d)).ok();
-
-    let _ = session.wait();
+    let status = session.wait().expect("wait should succeed");
+    assert!(status.success(), "child should exit successfully");
 
     assert!(
         output.windows(1).any(|w| w == b"X"),
