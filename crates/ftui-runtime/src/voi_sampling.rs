@@ -983,4 +983,434 @@ mod tests {
         *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         *state
     }
+
+    // =========================================================================
+    // Additional coverage tests
+    // =========================================================================
+
+    #[test]
+    fn default_config_values() {
+        let cfg = VoiConfig::default();
+        assert!((cfg.alpha - 0.05).abs() < f64::EPSILON);
+        assert!((cfg.prior_alpha - 1.0).abs() < f64::EPSILON);
+        assert!((cfg.prior_beta - 1.0).abs() < f64::EPSILON);
+        assert!((cfg.mu_0 - 0.05).abs() < f64::EPSILON);
+        assert!((cfg.lambda - 0.5).abs() < f64::EPSILON);
+        assert_eq!(cfg.max_interval_ms, 250);
+        assert_eq!(cfg.max_interval_events, 20);
+        assert_eq!(cfg.min_interval_ms, 0);
+        assert_eq!(cfg.min_interval_events, 0);
+        assert!(!cfg.enable_logging);
+    }
+
+    #[test]
+    fn config_clamping_prior_alpha_beta() {
+        let config = VoiConfig {
+            prior_alpha: -1.0,
+            prior_beta: 0.0,
+            ..Default::default()
+        };
+        let sampler = VoiSampler::new(config);
+        let (a, b) = sampler.posterior_params();
+        assert!(a > 0.0, "alpha should be clamped above zero");
+        assert!(b > 0.0, "beta should be clamped above zero");
+    }
+
+    #[test]
+    fn config_clamping_mu_0() {
+        let config = VoiConfig {
+            mu_0: -0.5,
+            ..Default::default()
+        };
+        let sampler = VoiSampler::new(config);
+        let mean = sampler.posterior_mean();
+        assert!((0.0..=1.0).contains(&mean));
+    }
+
+    #[test]
+    fn config_clamping_sample_cost() {
+        let config = VoiConfig {
+            sample_cost: -1.0,
+            ..Default::default()
+        };
+        let mut sampler = VoiSampler::new(config);
+        let d = sampler.decide(Instant::now());
+        assert!(d.cost > 0.0, "cost should be clamped above zero");
+    }
+
+    #[test]
+    fn accessor_config() {
+        let config = VoiConfig {
+            alpha: 0.1,
+            ..Default::default()
+        };
+        let sampler = VoiSampler::new(config);
+        assert!((sampler.config().alpha - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accessor_posterior_params() {
+        let config = VoiConfig {
+            prior_alpha: 3.0,
+            prior_beta: 7.0,
+            ..Default::default()
+        };
+        let sampler = VoiSampler::new(config);
+        let (a, b) = sampler.posterior_params();
+        assert!((a - 3.0).abs() < f64::EPSILON);
+        assert!((b - 7.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accessor_posterior_mean() {
+        let config = VoiConfig {
+            prior_alpha: 2.0,
+            prior_beta: 8.0,
+            ..Default::default()
+        };
+        let sampler = VoiSampler::new(config);
+        // mean = 2/(2+8) = 0.2
+        assert!((sampler.posterior_mean() - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn accessor_posterior_variance() {
+        let sampler = VoiSampler::new(VoiConfig::default());
+        let var = sampler.posterior_variance();
+        assert!(var >= 0.0);
+        assert!(var <= 0.25); // max variance for Beta
+    }
+
+    #[test]
+    fn accessor_expected_variance_after() {
+        let sampler = VoiSampler::new(VoiConfig::default());
+        let before = sampler.posterior_variance();
+        let after = sampler.expected_variance_after();
+        assert!(
+            after <= before + 1e-12,
+            "expected variance after should not exceed current"
+        );
+    }
+
+    #[test]
+    fn last_decision_initially_none() {
+        let sampler = VoiSampler::new(VoiConfig::default());
+        assert!(sampler.last_decision().is_none());
+    }
+
+    #[test]
+    fn last_decision_after_decide() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        sampler.decide(Instant::now());
+        assert!(sampler.last_decision().is_some());
+    }
+
+    #[test]
+    fn last_observation_initially_none() {
+        let sampler = VoiSampler::new(VoiConfig::default());
+        assert!(sampler.last_observation().is_none());
+    }
+
+    #[test]
+    fn last_observation_after_observe() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        sampler.decide(Instant::now());
+        sampler.observe(false);
+        assert!(sampler.last_observation().is_some());
+        assert!(!sampler.last_observation().unwrap().violated);
+    }
+
+    #[test]
+    fn observe_violation_updates_alpha() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        let (a_before, _) = sampler.posterior_params();
+        sampler.decide(Instant::now());
+        sampler.observe(true);
+        let (a_after, _) = sampler.posterior_params();
+        assert!((a_after - a_before - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn observe_no_violation_updates_beta() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        let (_, b_before) = sampler.posterior_params();
+        sampler.decide(Instant::now());
+        sampler.observe(false);
+        let (_, b_after) = sampler.posterior_params();
+        assert!((b_after - b_before - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn e_value_positive_after_violations() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        let mut now = Instant::now();
+        for _ in 0..10 {
+            sampler.decide(now);
+            sampler.observe_at(true, now);
+            now += Duration::from_millis(1);
+        }
+        let summary = sampler.summary();
+        assert!(summary.e_value > 0.0);
+    }
+
+    #[test]
+    fn summary_initial_state() {
+        let sampler = VoiSampler::new(VoiConfig::default());
+        let summary = sampler.summary();
+        assert_eq!(summary.total_events, 0);
+        assert_eq!(summary.total_samples, 0);
+        assert_eq!(summary.forced_samples, 0);
+        assert_eq!(summary.skipped_events, 0);
+        assert!((summary.avg_events_between_samples).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn summary_after_observations() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        let now = Instant::now();
+        sampler.decide(now);
+        sampler.observe_at(false, now);
+        sampler.decide(now + Duration::from_millis(10));
+        let summary = sampler.summary();
+        assert_eq!(summary.total_events, 2);
+        assert_eq!(summary.total_samples, 1);
+        assert_eq!(summary.skipped_events, 1);
+    }
+
+    #[test]
+    fn mark_forced_sample_increments() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        assert_eq!(sampler.summary().forced_samples, 0);
+        sampler.mark_forced_sample();
+        sampler.mark_forced_sample();
+        assert_eq!(sampler.summary().forced_samples, 2);
+    }
+
+    #[test]
+    fn snapshot_captures_state() {
+        let mut sampler = VoiSampler::new(VoiConfig {
+            enable_logging: true,
+            ..Default::default()
+        });
+        let now = Instant::now();
+        sampler.decide(now);
+        sampler.observe_at(false, now);
+
+        let snap = sampler.snapshot(10, 42);
+        assert_eq!(snap.captured_ms, 42);
+        assert!(snap.alpha > 0.0);
+        assert!(snap.beta > 0.0);
+        assert!((0.0..=1.0).contains(&snap.posterior_mean));
+        assert!(snap.last_decision.is_some());
+        assert!(snap.last_observation.is_some());
+    }
+
+    #[test]
+    fn log_rotation_respects_max_entries() {
+        let config = VoiConfig {
+            enable_logging: true,
+            max_log_entries: 3,
+            ..Default::default()
+        };
+        let mut sampler = VoiSampler::new(config);
+        let mut now = Instant::now();
+
+        for _ in 0..10 {
+            let d = sampler.decide(now);
+            if d.should_sample {
+                sampler.observe_at(false, now);
+            }
+            now += Duration::from_millis(300);
+        }
+
+        assert!(sampler.logs().len() <= 3);
+    }
+
+    #[test]
+    fn logs_empty_when_logging_disabled() {
+        let config = VoiConfig {
+            enable_logging: false,
+            ..Default::default()
+        };
+        let mut sampler = VoiSampler::new(config);
+        sampler.decide(Instant::now());
+        assert!(sampler.logs().is_empty());
+    }
+
+    #[test]
+    fn decision_jsonl_format() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        let decision = sampler.decide(Instant::now());
+        let jsonl = decision.to_jsonl();
+        assert!(jsonl.starts_with('{'));
+        assert!(jsonl.ends_with('}'));
+        assert!(jsonl.contains("\"event\":\"voi_decision\""));
+        assert!(jsonl.contains("\"should_sample\":"));
+        assert!(jsonl.contains("\"reason\":"));
+    }
+
+    #[test]
+    fn observation_jsonl_format() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        sampler.decide(Instant::now());
+        let obs = sampler.observe(false);
+        let jsonl = obs.to_jsonl();
+        assert!(jsonl.starts_with('{'));
+        assert!(jsonl.ends_with('}'));
+        assert!(jsonl.contains("\"event\":\"voi_observe\""));
+        assert!(jsonl.contains("\"violated\":false"));
+    }
+
+    #[test]
+    fn log_entry_jsonl_decision_variant() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        let decision = sampler.decide(Instant::now());
+        let entry = VoiLogEntry::Decision(decision);
+        let jsonl = entry.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"voi_decision\""));
+    }
+
+    #[test]
+    fn log_entry_jsonl_observation_variant() {
+        let mut sampler = VoiSampler::new(VoiConfig::default());
+        sampler.decide(Instant::now());
+        let obs = sampler.observe(true);
+        let entry = VoiLogEntry::Observation(obs);
+        let jsonl = entry.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"voi_observe\""));
+        assert!(jsonl.contains("\"violated\":true"));
+    }
+
+    #[test]
+    fn time_based_max_interval_forces_sample() {
+        let config = VoiConfig {
+            max_interval_ms: 100,
+            max_interval_events: 0, // disable event forcing
+            sample_cost: 100.0,     // very high cost to prevent VOI sampling
+            ..Default::default()
+        };
+        let now = Instant::now();
+        let mut sampler = VoiSampler::new_at(config, now);
+
+        // First decision (no prior sample, but event interval might force)
+        let _d1 = sampler.decide(now + Duration::from_millis(1));
+        sampler.observe_at(false, now + Duration::from_millis(1));
+
+        // Second decision well within time window
+        let d2 = sampler.decide(now + Duration::from_millis(10));
+        assert!(!d2.forced_by_interval, "should not force within 100ms");
+
+        // Decision after 100+ ms
+        let d3 = sampler.decide(now + Duration::from_millis(110));
+        assert!(d3.forced_by_interval, "should force after 100ms");
+        assert!(d3.should_sample);
+    }
+
+    #[test]
+    fn time_based_min_interval_blocks() {
+        let config = VoiConfig {
+            min_interval_ms: 50,
+            min_interval_events: 0,
+            ..Default::default()
+        };
+        let now = Instant::now();
+        let mut sampler = VoiSampler::new_at(config, now);
+
+        // First sample
+        let d1 = sampler.decide(now);
+        assert!(d1.should_sample);
+        sampler.observe_at(false, now);
+
+        // Too soon
+        let d2 = sampler.decide(now + Duration::from_millis(10));
+        assert!(d2.blocked_by_min_interval);
+        assert!(!d2.should_sample);
+
+        // After min interval
+        let d3 = sampler.decide(now + Duration::from_millis(60));
+        assert!(!d3.blocked_by_min_interval);
+    }
+
+    #[test]
+    fn decision_reason_strings() {
+        // forced
+        let config = VoiConfig {
+            max_interval_events: 1,
+            ..Default::default()
+        };
+        let mut sampler = VoiSampler::new(config);
+        let d = sampler.decide(Instant::now());
+        assert_eq!(d.reason, "forced_interval");
+    }
+
+    #[test]
+    fn decision_reason_min_interval() {
+        let config = VoiConfig {
+            min_interval_events: 100,
+            sample_cost: 0.0,
+            ..Default::default()
+        };
+        let mut sampler = VoiSampler::new(config);
+        sampler.decide(Instant::now());
+        sampler.observe(false);
+        let d = sampler.decide(Instant::now());
+        assert_eq!(d.reason, "min_interval");
+    }
+
+    #[test]
+    fn beta_mean_basic() {
+        assert!((beta_mean(1.0, 1.0) - 0.5).abs() < 1e-9);
+        assert!((beta_mean(2.0, 8.0) - 0.2).abs() < 1e-9);
+        assert!((beta_mean(5.0, 5.0) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beta_variance_basic() {
+        // Var(Beta(1,1)) = 1*1 / (4*3) = 1/12
+        let var = beta_variance(1.0, 1.0);
+        assert!((var - 1.0 / 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beta_variance_degenerate() {
+        assert!((beta_variance(0.0, 0.0)).abs() < f64::EPSILON);
+        assert!((beta_variance(-1.0, -1.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn boundary_score_at_threshold() {
+        // When e_value equals threshold, gap = 0, score = 1.0
+        let score = boundary_score(20.0, 20.0);
+        assert!((score - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn boundary_score_far_from_threshold() {
+        // Large gap → small score
+        let score = boundary_score(1.0, 1e6);
+        assert!(score < 0.1);
+    }
+
+    #[test]
+    fn logs_to_jsonl_multiple_entries() {
+        let config = VoiConfig {
+            enable_logging: true,
+            ..Default::default()
+        };
+        let mut sampler = VoiSampler::new(config);
+        let mut now = Instant::now();
+        for _ in 0..5 {
+            let d = sampler.decide(now);
+            if d.should_sample {
+                sampler.observe_at(false, now);
+            }
+            now += Duration::from_millis(300);
+        }
+        let jsonl = sampler.logs_to_jsonl();
+        let line_count = jsonl.lines().count();
+        assert!(
+            line_count >= 2,
+            "should have at least 2 log lines, got {line_count}"
+        );
+    }
 }
