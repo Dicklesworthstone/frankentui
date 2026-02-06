@@ -2876,7 +2876,7 @@ impl MermaidCompatibilityMatrix {
             quadrant_chart: MermaidSupportLevel::Supported,
             sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
-            block_beta: MermaidSupportLevel::Unsupported,
+            block_beta: MermaidSupportLevel::Partial,
             packet_beta: MermaidSupportLevel::Supported,
             architecture_beta: MermaidSupportLevel::Unsupported,
             c4_context: MermaidSupportLevel::Partial,
@@ -2936,7 +2936,7 @@ impl Default for MermaidCompatibilityMatrix {
             quadrant_chart: MermaidSupportLevel::Supported,
             sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
-            block_beta: MermaidSupportLevel::Unsupported,
+            block_beta: MermaidSupportLevel::Partial,
             packet_beta: MermaidSupportLevel::Supported,
             architecture_beta: MermaidSupportLevel::Unsupported,
             c4_context: MermaidSupportLevel::Partial,
@@ -4391,6 +4391,26 @@ pub fn normalize_ast_to_ir(
                     insertion_idx: idx,
                 });
             }
+            Statement::BlockDef(block) => {
+                if block.label.is_some() || !block.id.starts_with("__space_") {
+                    let label = block.label.as_deref().unwrap_or(&block.id);
+                    let class = if block.span_cols > 1 {
+                        format!("block_wide_{}", block.span_cols)
+                    } else {
+                        "block_cell".to_string()
+                    };
+                    let nid = upsert_node(
+                        &block.id, Some(label), NodeShape::Rect, block.span, false, idx,
+                        &mut node_map, &mut node_drafts, &mut implicit_warned, &mut warnings,
+                    );
+                    node_drafts[nid].classes.push(class);
+                }
+            }
+            Statement::BlockColumns { .. }
+            | Statement::BlockGroupStart { .. }
+            | Statement::BlockGroupEnd { .. } => {
+                // Structural hints for layout
+            }
             Statement::RequirementDef(req) => {
                 let id = req.id.clone().unwrap_or_else(|| normalize_id(&req.name));
                 let label_text = format!("<<{}>>\n{}", req.kind, req.name);
@@ -5392,6 +5412,15 @@ pub struct SankeyLink {
     pub span: Span,
 }
 
+/// A block definition in a block-beta diagram.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockDef {
+    pub id: String,
+    pub label: Option<String>,
+    pub span_cols: usize,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct RequirementDef {
     pub kind: String,
@@ -5567,6 +5596,19 @@ pub enum Statement {
     },
     XyChartSeries(XyChartSeries),
     SankeyLink(SankeyLink),
+    BlockColumns {
+        count: usize,
+        span: Span,
+    },
+    BlockDef(BlockDef),
+    BlockGroupStart {
+        id: String,
+        span_cols: Option<usize>,
+        span: Span,
+    },
+    BlockGroupEnd {
+        span: Span,
+    },
     RequirementDef(RequirementDef),
     RequirementRelation(RequirementRelation),
     RequirementElement(RequirementElement),
@@ -7045,6 +7087,19 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     });
                 }
             }
+            DiagramType::BlockBeta => {
+                let multi = parse_block_line_multi(trimmed, span);
+                if !multi.is_empty() {
+                    statements.extend(multi);
+                } else if let Some(edge) = parse_edge(trimmed, span, false) {
+                    statements.push(Statement::Edge(edge));
+                } else {
+                    statements.push(Statement::Raw {
+                        text: normalize_ws(trimmed),
+                        span,
+                    });
+                }
+            }
             DiagramType::QuadrantChart => {
                 if let Some(stmt) = parse_quadrant_line(trimmed, span) {
                     statements.push(stmt);
@@ -7065,7 +7120,7 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     });
                 }
             }
-            DiagramType::Unknown | DiagramType::BlockBeta | DiagramType::ArchitectureBeta => {
+            DiagramType::Unknown | DiagramType::ArchitectureBeta => {
                 statements.push(Statement::Raw {
                     text: normalize_ws(trimmed),
                     span,
@@ -7547,6 +7602,10 @@ fn statement_span(statement: &Statement) -> Span {
         Statement::XyChartYAxis { span, .. } => *span,
         Statement::XyChartSeries(s) => s.span,
         Statement::SankeyLink(s) => s.span,
+        Statement::BlockColumns { span, .. } => *span,
+        Statement::BlockDef(b) => b.span,
+        Statement::BlockGroupStart { span, .. } => *span,
+        Statement::BlockGroupEnd { span, .. } => *span,
         Statement::RequirementDef(r) => r.span,
         Statement::RequirementRelation(r) => r.span,
         Statement::RequirementElement(e) => e.span,
@@ -7713,7 +7772,7 @@ fn parse_directive_statement(
     if let Some(statement) = parse_subgraph_line(line, span) {
         return Some(Ok(statement));
     }
-    if line.trim().eq_ignore_ascii_case("end") {
+    if line.trim().eq_ignore_ascii_case("end") && diagram_type != DiagramType::BlockBeta {
         return Some(Ok(Statement::SubgraphEnd { span }));
     }
     if let Some(result) = parse_direction_line(line, span) {
@@ -8965,6 +9024,124 @@ fn parse_sankey_line(trimmed: &str, span: Span) -> Option<Statement> {
         }
     }
     None
+}
+
+/// Parse a line inside a block-beta diagram body.
+fn parse_block_line(trimmed: &str, span: Span) -> Option<Statement> {
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("columns") {
+        let rest = rest.trim();
+        if let Ok(n) = rest.parse::<usize>() {
+            return Some(Statement::BlockColumns { count: n, span });
+        }
+    }
+    if lower == "end" {
+        return Some(Statement::BlockGroupEnd { span });
+    }
+    if lower.starts_with("block:") {
+        let parts: Vec<&str> = trimmed["block:".len()..].split(':').collect();
+        let id = parts.first().map_or("", |s| s.trim()).to_string();
+        let span_cols = parts.get(1).and_then(|s| s.trim().parse::<usize>().ok());
+        return Some(Statement::BlockGroupStart { id, span_cols, span });
+    }
+    if lower == "space" || lower.starts_with("space:") {
+        let n = lower.strip_prefix("space:")
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(1);
+        return Some(Statement::BlockDef(BlockDef {
+            id: format!("__space_{}", span.start.byte),
+            label: None,
+            span_cols: n,
+            span,
+        }));
+    }
+    if let Some(block) = try_parse_block_def(trimmed, span) {
+        return Some(Statement::BlockDef(block));
+    }
+    None
+}
+
+/// Parse all block definitions from a single line (block-beta allows multiple per line).
+fn parse_block_line_multi(trimmed: &str, span: Span) -> Vec<Statement> {
+    let mut results = Vec::new();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("columns")
+        || lower == "end"
+        || lower.starts_with("block:")
+        || lower == "space"
+        || lower.starts_with("space:")
+    {
+        if let Some(stmt) = parse_block_line(trimmed, span) {
+            results.push(stmt);
+        }
+        return results;
+    }
+    let blocks = split_block_defs(trimmed);
+    for token in &blocks {
+        if let Some(block) = try_parse_block_def(token.trim(), span) {
+            results.push(Statement::BlockDef(block));
+        }
+    }
+    results
+}
+
+/// Split a line into individual block definition tokens.
+fn split_block_defs(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_brackets = 0i32;
+    let mut in_quotes = false;
+    for ch in s.chars() {
+        match ch {
+            '[' if !in_quotes => { in_brackets += 1; current.push(ch); }
+            ']' if !in_quotes => { in_brackets -= 1; current.push(ch); }
+            '"' => { in_quotes = !in_quotes; current.push(ch); }
+            ' ' | '\t' if in_brackets <= 0 && !in_quotes => {
+                let t = current.trim().to_string();
+                if !t.is_empty() { tokens.push(t); }
+                current.clear();
+            }
+            _ => { current.push(ch); }
+        }
+    }
+    let t = current.trim().to_string();
+    if !t.is_empty() { tokens.push(t); }
+    tokens
+}
+
+/// Try to parse a single block definition: id["Label"]:N
+fn try_parse_block_def(s: &str, span: Span) -> Option<BlockDef> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    if s.contains("-->") || s.contains("---") || s.contains("-.->") || s.contains("==>") {
+        return None;
+    }
+    let mut id_end = s.len();
+    for (i, ch) in s.char_indices() {
+        if ch == '[' || ch == ':' || ch == ' ' { id_end = i; break; }
+    }
+    let id = s[..id_end].to_string();
+    if id.is_empty() || !id.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    let rest = &s[id_end..];
+    let mut label = None;
+    let mut after_label = rest;
+    if let Some(bracket_start) = rest.find('[')
+        && let Some(bracket_end) = rest[bracket_start..].find(']')
+    {
+        let raw_label = &rest[bracket_start + 1..bracket_start + bracket_end];
+        let raw_label = raw_label.trim_matches('"').trim_matches('\'');
+        label = Some(raw_label.to_string());
+        after_label = &rest[bracket_start + bracket_end + 1..];
+    }
+    let span_cols = if let Some(colon_rest) = after_label.strip_prefix(':') {
+        let num_str = colon_rest.split_whitespace().next().unwrap_or("").trim();
+        num_str.parse::<usize>().unwrap_or(1)
+    } else {
+        1
+    };
+    Some(BlockDef { id, label, span_cols, span })
 }
 
 /// Split a CSV line respecting quoted fields.
@@ -12474,6 +12651,70 @@ B --> C
             "expected at least 3 nodes (A, B, C)"
         );
         assert!(ir.ir.edges.len() >= 2, "expected at least 2 edges");
+    }
+
+    #[test]
+    fn parse_block_beta_basic() {
+        let input = concat!(
+            "block-beta\n",
+            "  columns 3\n",
+            "  a[\"Frontend\"] b[\"Backend\"] c[\"Database\"]\n",
+            "  space\n",
+            "  d[\"Load Balancer\"]:3\n",
+        );
+        let ast = parse(input).expect("parse");
+        assert_eq!(ast.diagram_type, DiagramType::BlockBeta);
+        let cols: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::BlockColumns { .. }))
+            .collect();
+        assert_eq!(cols.len(), 1);
+        if let Statement::BlockColumns { count, .. } = cols[0] {
+            assert_eq!(*count, 3);
+        }
+        let blocks: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::BlockDef(_)))
+            .collect();
+        assert!(blocks.len() >= 4, "expected at least 4 block defs, got {}", blocks.len());
+    }
+
+    #[test]
+    fn block_beta_ir_produces_nodes() {
+        let input = concat!(
+            "block-beta\n",
+            "  columns 2\n",
+            "  a[\"Service A\"] b[\"Service B\"]\n",
+        );
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(ir.ir.nodes.len() >= 2, "expected at least 2 nodes, got {}", ir.ir.nodes.len());
+    }
+
+    #[test]
+    fn parse_block_beta_nested_groups() {
+        let input = concat!(
+            "block-beta\n",
+            "  columns 4\n",
+            "  a[\"A\"]:2 b[\"B\"]:2\n",
+            "  block:inner1:2\n",
+            "    columns 2\n",
+            "    c[\"C\"] d[\"D\"]\n",
+            "  end\n",
+        );
+        let ast = parse(input).expect("parse");
+        assert_eq!(ast.diagram_type, DiagramType::BlockBeta);
+        let groups_start: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::BlockGroupStart { .. }))
+            .collect();
+        assert_eq!(groups_start.len(), 1);
+        let groups_end: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::BlockGroupEnd { .. }))
+            .collect();
+        assert_eq!(groups_end.len(), 1);
     }
 
     #[test]

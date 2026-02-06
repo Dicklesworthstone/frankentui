@@ -346,14 +346,14 @@ const FIXTURES: &[MermaidFixture] = &[
         tier: FixtureTier::Stress,
         expects_raw_fallback: true,
     },
-    // -- BlockBeta (raw fallback) --
+    // -- BlockBeta --
     MermaidFixture {
         id: "block_beta_basic",
         file: "block_beta_basic.mmd",
         source: include_str!("fixtures/mermaid/block_beta_basic.mmd"),
         family: "block-beta",
         tier: FixtureTier::Basic,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     MermaidFixture {
         id: "block_beta_stress",
@@ -361,7 +361,7 @@ const FIXTURES: &[MermaidFixture] = &[
         source: include_str!("fixtures/mermaid/block_beta_stress.mmd"),
         family: "block-beta",
         tier: FixtureTier::Stress,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     // -- PacketBeta (raw fallback) --
     MermaidFixture {
@@ -522,6 +522,7 @@ mod tests {
         sankey: usize,
         quadrant: usize,
         packet: usize,
+        block_beta: usize,
         raw: usize,
         c4: usize,
     }
@@ -576,6 +577,10 @@ mod tests {
                 | Statement::QuadrantLabel { .. }
                 | Statement::QuadrantPoint(_) => counts.quadrant += 1,
                 Statement::PacketField(_) => counts.packet += 1,
+                Statement::BlockColumns { .. }
+                | Statement::BlockDef(_)
+                | Statement::BlockGroupStart { .. }
+                | Statement::BlockGroupEnd { .. } => counts.block_beta += 1,
                 Statement::Raw { .. } => counts.raw += 1,
             }
         }
@@ -612,6 +617,7 @@ mod tests {
             + c.c4
             + c.quadrant
             + c.packet
+            + c.block_beta
             + c.raw
     }
 

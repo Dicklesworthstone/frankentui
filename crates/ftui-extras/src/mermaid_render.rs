@@ -877,6 +877,16 @@ fn sankey_flow_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
     None
 }
 
+/// Fill color for block-beta blocks (blue-grey 600).
+fn block_beta_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
+    for class in &ir_node.classes {
+        if class.starts_with("block_") {
+            return Some(PackedRgba::rgb(84, 110, 122)); // blue-grey 600
+        }
+    }
+    None
+}
+
 /// Detect edge line style from the Mermaid arrow string.
 fn detect_edge_style(arrow: &str) -> EdgeLineStyle {
     if arrow.contains("-.") || arrow.contains(".-") {
@@ -2094,6 +2104,7 @@ impl MermaidRenderer {
                 .or_else(|| timeline_era_fill(ir_node))
                 .or_else(|| xychart_series_fill(ir_node))
                 .or_else(|| sankey_flow_fill(ir_node))
+                .or_else(|| block_beta_fill(ir_node))
                 .unwrap_or(base_fill);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
