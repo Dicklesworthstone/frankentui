@@ -1660,11 +1660,11 @@ mod tests {
         // Find the [h] toggle position and verify hit region
         let mut found = false;
         for x in 0..200u16 {
-            if let Some((id, _region, _data)) = frame.hit_test(x, 0) {
-                if id.id() == STATUS_HELP_TOGGLE {
-                    found = true;
-                    break;
-                }
+            if let Some((id, _region, _data)) = frame.hit_test(x, 0)
+                && id.id() == STATUS_HELP_TOGGLE
+            {
+                found = true;
+                break;
             }
         }
         assert!(found, "Should register STATUS_HELP_TOGGLE hit region");
@@ -1675,11 +1675,11 @@ mod tests {
         let (_rendered, frame) = render_status_bar_test(200, |_| {});
         let mut found = false;
         for x in 0..200u16 {
-            if let Some((id, _region, _data)) = frame.hit_test(x, 0) {
-                if id.id() == STATUS_PALETTE_TOGGLE {
-                    found = true;
-                    break;
-                }
+            if let Some((id, _region, _data)) = frame.hit_test(x, 0)
+                && id.id() == STATUS_PALETTE_TOGGLE
+            {
+                found = true;
+                break;
             }
         }
         assert!(found, "Should register STATUS_PALETTE_TOGGLE hit region");
@@ -1690,11 +1690,11 @@ mod tests {
         let (_rendered, frame) = render_status_bar_test(200, |_| {});
         let mut found = false;
         for x in 0..200u16 {
-            if let Some((id, _region, _data)) = frame.hit_test(x, 0) {
-                if id.id() == STATUS_PERF_TOGGLE {
-                    found = true;
-                    break;
-                }
+            if let Some((id, _region, _data)) = frame.hit_test(x, 0)
+                && id.id() == STATUS_PERF_TOGGLE
+            {
+                found = true;
+                break;
             }
         }
         assert!(found, "Should register STATUS_PERF_TOGGLE hit region");
@@ -1705,11 +1705,11 @@ mod tests {
         let (_rendered, frame) = render_status_bar_test(200, |_| {});
         let mut found = false;
         for x in 0..200u16 {
-            if let Some((id, _region, _data)) = frame.hit_test(x, 0) {
-                if id.id() == STATUS_DEBUG_TOGGLE {
-                    found = true;
-                    break;
-                }
+            if let Some((id, _region, _data)) = frame.hit_test(x, 0)
+                && id.id() == STATUS_DEBUG_TOGGLE
+            {
+                found = true;
+                break;
             }
         }
         assert!(found, "Should register STATUS_DEBUG_TOGGLE hit region");
@@ -1720,11 +1720,11 @@ mod tests {
         let (_rendered, frame) = render_status_bar_test(200, |_| {});
         let mut found = false;
         for x in 0..200u16 {
-            if let Some((id, _region, _data)) = frame.hit_test(x, 0) {
-                if id.id() == STATUS_MOUSE_TOGGLE {
-                    found = true;
-                    break;
-                }
+            if let Some((id, _region, _data)) = frame.hit_test(x, 0)
+                && id.id() == STATUS_MOUSE_TOGGLE
+            {
+                found = true;
+                break;
             }
         }
         assert!(found, "Should register STATUS_MOUSE_TOGGLE hit region");

@@ -45,11 +45,11 @@ fn status_bar_registers_mouse_toggle_hit_region() {
     let target = HitId::new(STATUS_MOUSE_TOGGLE);
     let mut found = false;
     for x in 0..120u16 {
-        if let Some((id, _, _)) = frame.hit_test(x, 0) {
-            if id == target {
-                found = true;
-                break;
-            }
+        if let Some((id, _, _)) = frame.hit_test(x, 0)
+            && id == target
+        {
+            found = true;
+            break;
         }
     }
     assert!(found, "Status bar should register mouse toggle hit region");
@@ -108,11 +108,11 @@ fn a11y_panel_registers_dismiss_hit_region() {
     let mut found = false;
     for y in 0..40u16 {
         for x in 0..120u16 {
-            if let Some((id, _, _)) = frame.hit_test(x, y) {
-                if id == target {
-                    found = true;
-                    break;
-                }
+            if let Some((id, _, _)) = frame.hit_test(x, y)
+                && id == target
+            {
+                found = true;
+                break;
             }
         }
         if found {
