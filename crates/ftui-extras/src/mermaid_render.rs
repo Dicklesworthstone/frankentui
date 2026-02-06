@@ -828,25 +828,6 @@ enum EdgeLineStyle {
 }
 
 /// Detect edge line style from the Mermaid arrow string.
-
-fn journey_score_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
-    for class in &ir_node.classes {
-        if let Some(s) = class.strip_prefix("journey_score_") {
-            if let Ok(score) = s.parse::<u8>() {
-                return Some(match score {
-                    5 => PackedRgba::rgb(76, 175, 80),
-                    4 => PackedRgba::rgb(139, 195, 74),
-                    3 => PackedRgba::rgb(255, 193, 7),
-                    2 => PackedRgba::rgb(255, 152, 0),
-                    1 => PackedRgba::rgb(244, 67, 54),
-                    _ => PackedRgba::rgb(158, 158, 158),
-                });
-            }
-        }
-    }
-    None
-}
-
 fn detect_edge_style(arrow: &str) -> EdgeLineStyle {
     if arrow.contains("-.") || arrow.contains(".-") {
         EdgeLineStyle::Dashed
@@ -962,6 +943,10 @@ impl MermaidRenderer {
         if ir.diagram_type == DiagramType::GitGraph {
             self.render_gitgraph_lanes(layout, ir, &vp, buf);
         }
+        if ir.diagram_type == DiagramType::Requirement {
+            self.render_requirement_entities(layout, ir, &vp, buf);
+            return;
+        }
         self.render_edges(&layout.edges, ir, &vp, &resolved_styles.edge_styles, buf);
         self.render_nodes(&layout.nodes, ir, &vp, buf);
     }
@@ -994,6 +979,10 @@ impl MermaidRenderer {
         }
         if ir.diagram_type == DiagramType::GitGraph {
             self.render_gitgraph_lanes(layout, ir, &vp, buf);
+        }
+        if ir.diagram_type == DiagramType::Requirement {
+            self.render_requirement_entities(layout, ir, &vp, buf);
+            return;
         }
         self.render_edges_with_plan(
             &layout.edges,
@@ -1740,8 +1729,7 @@ impl MermaidRenderer {
                 continue;
             }
 
-            let base_fill = self.colors.node_fill_for(node.node_idx);
-            let fill_color = journey_score_fill(ir_node).unwrap_or(base_fill);
+            let fill_color = self.colors.node_fill_for(node.node_idx);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =
@@ -2179,6 +2167,99 @@ impl MermaidRenderer {
 
     // ── Cluster rendering ───────────────────────────────────────────
 
+    /// Render requirementDiagram entities as bordered boxes with kind headers.
+    fn render_requirement_entities(
+        &self,
+        layout: &DiagramLayout,
+        ir: &MermaidDiagramIr,
+        vp: &Viewport,
+        buf: &mut Buffer,
+    ) {
+        let resolved_styles = resolve_styles(ir);
+
+        for (i, node) in layout.nodes.iter().enumerate() {
+            let cell_rect = vp.to_cell_rect(&node.rect);
+            if cell_rect.width < 2 || cell_rect.height < 2 {
+                continue;
+            }
+
+            let border_color = self.colors.node_fills[i % self.colors.node_fills.len()];
+
+            // Top and bottom borders.
+            let horiz = self.glyphs.border.horizontal;
+            for x in cell_rect.x..cell_rect.x + cell_rect.width {
+                buf.set(x, cell_rect.y, Cell::from_char(horiz).with_fg(border_color));
+                buf.set(
+                    x,
+                    cell_rect.y + cell_rect.height.saturating_sub(1),
+                    Cell::from_char(horiz).with_fg(border_color),
+                );
+            }
+            // Left and right borders.
+            let vert = self.glyphs.border.vertical;
+            for y in cell_rect.y..cell_rect.y + cell_rect.height {
+                buf.set(cell_rect.x, y, Cell::from_char(vert).with_fg(border_color));
+                buf.set(
+                    cell_rect.x + cell_rect.width.saturating_sub(1),
+                    y,
+                    Cell::from_char(vert).with_fg(border_color),
+                );
+            }
+            // Corners.
+            buf.set(
+                cell_rect.x,
+                cell_rect.y,
+                Cell::from_char(self.glyphs.border.top_left).with_fg(border_color),
+            );
+            buf.set(
+                cell_rect.x + cell_rect.width.saturating_sub(1),
+                cell_rect.y,
+                Cell::from_char(self.glyphs.border.top_right).with_fg(border_color),
+            );
+            buf.set(
+                cell_rect.x,
+                cell_rect.y + cell_rect.height.saturating_sub(1),
+                Cell::from_char(self.glyphs.border.bottom_left).with_fg(border_color),
+            );
+            buf.set(
+                cell_rect.x + cell_rect.width.saturating_sub(1),
+                cell_rect.y + cell_rect.height.saturating_sub(1),
+                Cell::from_char(self.glyphs.border.bottom_right).with_fg(border_color),
+            );
+
+            // Render label inside the box (collapsed if let for clippy).
+            if let Some(label_id) = ir.nodes[i].label
+                && let Some(label) = ir.labels.get(label_id.0)
+            {
+                let inner_w = cell_rect.width.saturating_sub(2) as usize;
+                let inner_x = cell_rect.x + 1;
+                let inner_y = cell_rect.y + 1;
+                let text_color = self.colors.node_text;
+
+                for (line_idx, line) in label.text.split('\n').enumerate() {
+                    let y = inner_y + line_idx as u16;
+                    if y >= cell_rect.y + cell_rect.height.saturating_sub(1) {
+                        break;
+                    }
+                    let display = if line.len() > inner_w && inner_w > 3 {
+                        format!("{}...", &line[..inner_w.saturating_sub(3)])
+                    } else {
+                        line.to_string()
+                    };
+                    for (j, ch) in display.chars().enumerate() {
+                        let x = inner_x + j as u16;
+                        if x < cell_rect.x + cell_rect.width.saturating_sub(1) {
+                            buf.set(x, y, Cell::from_char(ch).with_fg(text_color));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Draw relation edges.
+        self.render_edges(&layout.edges, ir, vp, &resolved_styles.edge_styles, buf);
+    }
+
     fn render_clusters(
         &self,
         clusters: &[LayoutClusterBox],
@@ -2296,7 +2377,13 @@ impl MermaidRenderer {
     }
 
     /// Draw vertical branch lane lines for gitGraph diagrams.
-    fn render_gitgraph_lanes(&self, layout: &DiagramLayout, ir: &MermaidDiagramIr, vp: &Viewport, buf: &mut Buffer) {
+    fn render_gitgraph_lanes(
+        &self,
+        layout: &DiagramLayout,
+        _ir: &MermaidDiagramIr,
+        vp: &Viewport,
+        buf: &mut Buffer,
+    ) {
         // Draw a vertical lane line for each cluster (branch).
         // Lane 0 (main) is implicit and drawn through all commits.
         let end_y = layout.bounding_box.y + layout.bounding_box.height;
@@ -2324,8 +2411,6 @@ impl MermaidRenderer {
             }
         }
     }
-
-
 
     #[allow(dead_code)]
     fn merge_line_cell(&self, x: u16, y: u16, bits: u8, cell: Cell, buf: &mut Buffer) {
@@ -2648,8 +2733,7 @@ impl MermaidRenderer {
                 continue;
             }
 
-            let base_fill = self.colors.node_fill_for(node.node_idx);
-            let fill_color = journey_score_fill(ir_node).unwrap_or(base_fill);
+            let fill_color = self.colors.node_fill_for(node.node_idx);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =

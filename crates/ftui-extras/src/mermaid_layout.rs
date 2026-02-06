@@ -1492,7 +1492,6 @@ fn edge_port(
 
 // ── Public API ────────────────────────────────────────────────────────
 
-
 fn layout_gitgraph_diagram(
     ir: &MermaidDiagramIr,
     config: &MermaidConfig,
@@ -1593,10 +1592,7 @@ fn layout_gitgraph_diagram(
         let y1 = to_rect.y + to_rect.height / 2.0;
         edges.push(LayoutEdgePath {
             edge_idx: idx,
-            waypoints: vec![
-                LayoutPoint { x: x0, y: y0 },
-                LayoutPoint { x: x1, y: y1 },
-            ],
+            waypoints: vec![LayoutPoint { x: x0, y: y0 }, LayoutPoint { x: x1, y: y1 }],
             bundle_count: 1,
             bundle_members: Vec::new(),
         });
@@ -1673,6 +1669,218 @@ fn layout_gitgraph_diagram(
             ranks: n,
             max_rank_width: num_lanes,
             total_bends: 0,
+            position_variance: pos_var,
+        },
+        degradation: None,
+    }
+}
+
+// ── requirementDiagram layout ────────────────────────────────────────
+
+/// Layout a requirementDiagram with entity boxes.
+///
+/// Requirements and elements are arranged using the standard Sugiyama
+/// algorithm but with wider entity boxes to accommodate multi-line
+/// labels (<<kind>>\nname pattern).
+fn layout_requirement_diagram(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    spacing: &LayoutSpacing,
+) -> DiagramLayout {
+    let n = ir.nodes.len();
+    if n == 0 {
+        return DiagramLayout {
+            nodes: vec![],
+            clusters: vec![],
+            edges: vec![],
+            bounding_box: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            stats: LayoutStats {
+                iterations_used: 0,
+                max_iterations: config.layout_iteration_budget,
+                budget_exceeded: false,
+                crossings: 0,
+                ranks: 0,
+                max_rank_width: 0,
+                total_bends: 0,
+                position_variance: 0.0,
+            },
+            degradation: None,
+        };
+    }
+
+    // Wider entity boxes for requirement labels.
+    let entity_spacing = LayoutSpacing {
+        node_width: spacing.node_width.max(16.0),
+        node_height: spacing.node_height.max(4.0),
+        rank_gap: spacing.rank_gap.max(5.0),
+        node_gap: spacing.node_gap.max(4.0),
+        ..*spacing
+    };
+
+    // Standard Sugiyama layout with wider spacing.
+    let graph = LayoutGraph::from_ir(ir);
+    let mut ranks = assign_ranks(&graph);
+
+    // Apply constraints if present.
+    let node_id_map: Option<std::collections::HashMap<&str, usize>> = if ir.constraints.is_empty() {
+        None
+    } else {
+        Some(
+            ir.nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.id.as_str(), i))
+                .collect(),
+        )
+    };
+    if let Some(ref id_map) = node_id_map {
+        apply_same_rank_constraints(&mut ranks, &ir.constraints, id_map);
+        apply_min_length_constraints(&mut ranks, &ir.constraints, id_map);
+    }
+
+    let max_rank = ranks.iter().copied().max().unwrap_or(0);
+    let _node_sizes = compute_node_sizes(ir, &entity_spacing);
+
+    // Build rank buckets.
+    let mut rank_buckets: Vec<Vec<usize>> = vec![vec![]; max_rank + 1];
+    for (i, &r) in ranks.iter().enumerate() {
+        rank_buckets[r].push(i);
+    }
+    for bucket in &mut rank_buckets {
+        bucket.sort_unstable();
+    }
+
+    if let Some(ref id_map) = node_id_map {
+        apply_order_constraints(&mut rank_buckets, &ir.constraints, id_map, &ranks);
+    }
+
+    let _cluster_map = build_cluster_map(ir, n);
+    let mut node_rects: Vec<LayoutRect> = vec![
+        LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        n
+    ];
+    let mut cursor_y = 0.0;
+    let mut max_rank_width = 0;
+    for bucket in &rank_buckets {
+        if bucket.is_empty() {
+            continue;
+        }
+        max_rank_width = max_rank_width.max(bucket.len());
+        let mut cursor_x = 0.0;
+        let row_height = entity_spacing.node_height;
+        for &node_idx in bucket {
+            node_rects[node_idx] = LayoutRect {
+                x: cursor_x,
+                y: cursor_y,
+                width: entity_spacing.node_width,
+                height: entity_spacing.node_height,
+            };
+            cursor_x += entity_spacing.node_width + entity_spacing.node_gap;
+        }
+        cursor_y += row_height + entity_spacing.rank_gap;
+    }
+
+    if let Some(ref id_map) = node_id_map {
+        apply_pin_constraints(&mut node_rects, &ir.constraints, id_map);
+    }
+
+    let mut nodes: Vec<LayoutNodeBox> = Vec::with_capacity(n);
+    for (i, rect) in node_rects.iter().enumerate() {
+        let label_rect = ir.nodes[i].label.map(|_| LayoutRect {
+            x: rect.x + entity_spacing.label_padding,
+            y: rect.y + entity_spacing.label_padding,
+            width: rect.width - 2.0 * entity_spacing.label_padding,
+            height: rect.height - 2.0 * entity_spacing.label_padding,
+        });
+        nodes.push(LayoutNodeBox {
+            node_idx: i,
+            rect: *rect,
+            label_rect,
+            rank: ranks[i],
+            order: rank_buckets[ranks[i]]
+                .iter()
+                .position(|&idx| idx == i)
+                .unwrap_or(0),
+        });
+    }
+
+    let mut edges: Vec<LayoutEdgePath> = Vec::with_capacity(ir.edges.len());
+    for (idx, edge) in ir.edges.iter().enumerate() {
+        let Some(from_idx) = endpoint_node_idx(ir, &edge.from) else {
+            continue;
+        };
+        let Some(to_idx) = endpoint_node_idx(ir, &edge.to) else {
+            continue;
+        };
+        let from_r = &node_rects[from_idx];
+        let to_r = &node_rects[to_idx];
+        let from_cx = from_r.x + from_r.width / 2.0;
+        let from_by = from_r.y + from_r.height;
+        let to_cx = to_r.x + to_r.width / 2.0;
+        let to_ty = to_r.y;
+
+        let waypoints = if (from_cx - to_cx).abs() < 0.1 {
+            vec![
+                LayoutPoint {
+                    x: from_cx,
+                    y: from_by,
+                },
+                LayoutPoint { x: to_cx, y: to_ty },
+            ]
+        } else {
+            let mid_y = (from_by + to_ty) / 2.0;
+            vec![
+                LayoutPoint {
+                    x: from_cx,
+                    y: from_by,
+                },
+                LayoutPoint {
+                    x: from_cx,
+                    y: mid_y,
+                },
+                LayoutPoint { x: to_cx, y: mid_y },
+                LayoutPoint { x: to_cx, y: to_ty },
+            ]
+        };
+
+        edges.push(LayoutEdgePath {
+            edge_idx: idx,
+            waypoints,
+            bundle_count: 1,
+            bundle_members: Vec::new(),
+        });
+    }
+
+    let total_bends: usize = edges
+        .iter()
+        .map(|e| e.waypoints.len().saturating_sub(2))
+        .sum();
+    let bounding_box = compute_bounding_box(&nodes, &[], &edges);
+    let pos_var = compute_position_variance(&nodes);
+
+    DiagramLayout {
+        nodes,
+        clusters: vec![],
+        edges,
+        bounding_box,
+        stats: LayoutStats {
+            iterations_used: 0,
+            max_iterations: config.layout_iteration_budget,
+            budget_exceeded: false,
+            crossings: 0,
+            ranks: max_rank + 1,
+            max_rank_width,
+            total_bends,
             position_variance: pos_var,
         },
         degradation: None,
@@ -2431,64 +2639,6 @@ fn apply_pin_constraints(
     }
 }
 
-
-fn layout_journey_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacing: &LayoutSpacing) -> DiagramLayout {
-    let n = ir.nodes.len();
-    if n == 0 {
-        return DiagramLayout {
-            nodes: vec![], clusters: vec![], edges: vec![],
-            bounding_box: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
-            stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: 0, max_rank_width: 0, total_bends: 0, position_variance: 0.0 },
-            degradation: None,
-        };
-    }
-    let node_sizes = compute_node_sizes(ir, spacing);
-    let task_height = spacing.node_height.max(3.0);
-    let section_title_height = 2.0;
-    let pad = spacing.cluster_padding;
-    let max_nw = node_sizes.iter().map(|(w, _)| *w).fold(spacing.node_width, f64::max);
-    let sec_w = max_nw + 2.0 * pad;
-    let cmap = build_cluster_map(ir, n);
-    let mut cn: Vec<Vec<usize>> = vec![Vec::new(); ir.clusters.len()];
-    let mut uc: Vec<usize> = Vec::new();
-    for i in 0..n { if let Some(ci) = cmap[i] { cn[ci].push(i); } else { uc.push(i); } }
-    let mut nodes = vec![LayoutNodeBox { node_idx: 0, rect: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }, label_rect: None, rank: 0, order: 0 }; n];
-    let mut clusters = Vec::with_capacity(ir.clusters.len());
-    let mut cy = 0.0;
-    let mut ord = 0;
-    let mut rnk = 0;
-    for &ni in &uc {
-        let nw = node_sizes[ni].0.max(max_nw);
-        let r = LayoutRect { x: pad, y: cy, width: nw, height: task_height };
-        let lr = Some(LayoutRect { x: r.x + spacing.label_padding, y: r.y + spacing.label_padding, width: r.width - 2.0 * spacing.label_padding, height: r.height - 2.0 * spacing.label_padding });
-        nodes[ni] = LayoutNodeBox { node_idx: ni, rect: r, label_rect: lr, rank: rnk, order: ord };
-        cy += task_height + spacing.node_gap; ord += 1;
-    }
-    for (ci, members) in cn.iter().enumerate() {
-        if members.is_empty() {
-            let h = section_title_height + 2.0 * pad;
-            clusters.push(LayoutClusterBox { cluster_idx: ci, rect: LayoutRect { x: 0.0, y: cy, width: sec_w, height: h }, title_rect: Some(LayoutRect { x: pad, y: cy + pad * 0.5, width: sec_w - 2.0 * pad, height: section_title_height }) });
-            cy += h + spacing.rank_gap; rnk += 1; continue;
-        }
-        let sy = cy;
-        let ty = cy + section_title_height + pad;
-        let mut ty2 = ty;
-        for (lo, &ni) in members.iter().enumerate() {
-            let nw = node_sizes[ni].0.max(max_nw);
-            let r = LayoutRect { x: pad, y: ty2, width: nw, height: task_height };
-            let lr = Some(LayoutRect { x: r.x + spacing.label_padding, y: r.y + spacing.label_padding, width: r.width - 2.0 * spacing.label_padding, height: r.height - 2.0 * spacing.label_padding });
-            nodes[ni] = LayoutNodeBox { node_idx: ni, rect: r, label_rect: lr, rank: rnk, order: ord + lo };
-            ty2 += task_height + spacing.node_gap;
-        }
-        ord += members.len();
-        let sh = section_title_height + pad + (ty2 - ty - spacing.node_gap) + pad;
-        clusters.push(LayoutClusterBox { cluster_idx: ci, rect: LayoutRect { x: 0.0, y: sy, width: sec_w, height: sh }, title_rect: Some(LayoutRect { x: pad, y: sy + pad * 0.5, width: sec_w - 2.0 * pad, height: section_title_height }) });
-        cy = sy + sh + spacing.rank_gap; rnk += 1;
-    }
-    let th = if cy > spacing.rank_gap { cy - spacing.rank_gap } else { 0.0 };
-    DiagramLayout { nodes, clusters, edges: vec![], bounding_box: LayoutRect { x: 0.0, y: 0.0, width: sec_w.max(0.0), height: th.max(0.0) }, stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: rnk, max_rank_width: cn.iter().map(|m| m.len()).max().unwrap_or(0), total_bends: 0, position_variance: 0.0 }, degradation: None }
-}
-
 pub fn layout_diagram_with_spacing(
     ir: &MermaidDiagramIr,
     config: &MermaidConfig,
@@ -2497,14 +2647,14 @@ pub fn layout_diagram_with_spacing(
     if ir.diagram_type == DiagramType::GitGraph {
         return layout_gitgraph_diagram(ir, config, spacing);
     }
+    if ir.diagram_type == DiagramType::Requirement {
+        return layout_requirement_diagram(ir, config, spacing);
+    }
     if ir.diagram_type == DiagramType::Mindmap {
         return layout_mindmap_diagram(ir, config, spacing);
     }
     if ir.diagram_type == DiagramType::Sequence {
         return layout_sequence_diagram(ir, config, spacing);
-    }
-    if ir.diagram_type == DiagramType::Journey {
-        return layout_journey_diagram(ir, config, spacing);
     }
 
     let n = ir.nodes.len();
@@ -8400,6 +8550,63 @@ mod tests {
         let mut bundle_counts: Vec<usize> = bundled.iter().map(|e| e.bundle_count).collect();
         bundle_counts.sort();
         assert_eq!(bundle_counts, vec![3, 4]);
+    }
+
+    #[test]
+    fn requirement_layout_empty() {
+        let mut ir = make_simple_ir(&[], &[], GraphDirection::TB);
+        ir.diagram_type = DiagramType::Requirement;
+        let config = MermaidConfig::default();
+        let layout = layout_diagram(&ir, &config);
+        assert!(layout.nodes.is_empty());
+        assert!(layout.edges.is_empty());
+    }
+
+    #[test]
+    fn requirement_layout_single_entity() {
+        let mut ir = make_simple_ir(&["req1"], &[], GraphDirection::TB);
+        ir.diagram_type = DiagramType::Requirement;
+        let config = MermaidConfig::default();
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(layout.nodes.len(), 1);
+        assert!(
+            layout.nodes[0].rect.width >= 10.0,
+            "entity box should be wide"
+        );
+    }
+
+    #[test]
+    fn requirement_layout_with_relations() {
+        let mut ir = make_simple_ir(
+            &["req1", "elem1", "req2"],
+            &[(0, 1), (1, 2)],
+            GraphDirection::TB,
+        );
+        ir.diagram_type = DiagramType::Requirement;
+        let config = MermaidConfig::default();
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(layout.nodes.len(), 3);
+        assert_eq!(layout.edges.len(), 2);
+        let y0 = layout.nodes[0].rect.y;
+        let y1 = layout.nodes[1].rect.y;
+        assert!(y0 < y1 || y1 < y0, "nodes at different ranks");
+    }
+
+    #[test]
+    fn requirement_layout_deterministic() {
+        let mut ir = make_simple_ir(
+            &["r1", "r2", "e1", "e2"],
+            &[(0, 2), (1, 3), (2, 3)],
+            GraphDirection::TB,
+        );
+        ir.diagram_type = DiagramType::Requirement;
+        let config = MermaidConfig::default();
+        let layout1 = layout_diagram(&ir, &config);
+        let layout2 = layout_diagram(&ir, &config);
+        for (a, b) in layout1.nodes.iter().zip(layout2.nodes.iter()) {
+            assert_eq!(a.rect.x, b.rect.x);
+            assert_eq!(a.rect.y, b.rect.y);
+        }
     }
 }
 
