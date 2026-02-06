@@ -21,8 +21,8 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: 88x
 │  Pie Many [pie, M, many-slic││         ⡏⠉⠉⠉⠉⠉⠉⠹⠛⠉⠙                    ⠋⠉⠢⢄                ││                        │ 
 │  Gitgraph Basic [unsupported││         ⠇                                  ⠑⠢⡀   ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀│╰────────────────────────╯ 
 │  Journey Basic [unsupported,││                                              ⠈⠒⢄⢠⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿│╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││                                                ⠐⠛⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿││Parse: 0.06 ms          │ 
-│                             ││                                                  ⢸         ││Layout: 0.04 ms         │ 
+│  Requirement Basic [unsuppor││                                                ⠐⠛⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿││Parse: 0.00 ms          │ 
+│                             ││                                                  ⢸         ││Layout: 0.00 ms         │ 
 │                             ││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: 88x26         │ 
 │                             ││                                                            ││Zoom: 100%              │ 
@@ -37,4 +37,4 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: 88x
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 ╰─────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰────────────────────────╯ 
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.05818ms | layout 
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0ms | layout 0ms | 

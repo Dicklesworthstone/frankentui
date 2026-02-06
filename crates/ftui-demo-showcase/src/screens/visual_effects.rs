@@ -2109,33 +2109,43 @@ impl MandelbrotState {
         let w = width as f64;
         let h = height as f64;
         let scale = 3.5 / (self.zoom * w.min(h));
+        // Hoist constants outside the pixel loops.
+        let ln2 = 2.0_f64.ln();
+        let max_iter = self.max_iter;
+        let time_hue_offset = self.time * 0.1;
+        let half_w = w / 2.0;
+        let half_h = h / 2.0;
 
         for py in 0..height as i32 {
-            for px in 0..width as i32 {
-                // Map pixel to complex plane
-                let x0 = self.center_x + (px as f64 - w / 2.0) * scale;
-                let y0 = self.center_y + (py as f64 - h / 2.0) * scale;
+            // Hoist y0 out of the inner loop (constant per row).
+            let y0 = self.center_y + (py as f64 - half_h) * scale;
 
-                // Mandelbrot iteration with smooth coloring
-                let mut x = 0.0;
-                let mut y = 0.0;
+            for px in 0..width as i32 {
+                let x0 = self.center_x + (px as f64 - half_w) * scale;
+
+                // Cache x\xb2 and y\xb2 to avoid recomputing across loop condition
+                // and body. Saves 2 multiplications per iteration.
+                let mut x = 0.0_f64;
+                let mut y = 0.0_f64;
+                let mut x2 = 0.0_f64;
+                let mut y2 = 0.0_f64;
                 let mut iter = 0u32;
 
-                while x * x + y * y <= 256.0 && iter < self.max_iter {
-                    let xtemp = x * x - y * y + x0;
+                while x2 + y2 <= 256.0 && iter < max_iter {
                     y = 2.0 * x * y + y0;
-                    x = xtemp;
+                    x = x2 - y2 + x0;
+                    x2 = x * x;
+                    y2 = y * y;
                     iter += 1;
                 }
 
-                if iter < self.max_iter {
-                    // Smooth coloring using escape-time algorithm
-                    let log_zn = (x * x + y * y).ln() / 2.0;
-                    let nu = (log_zn / 2.0_f64.ln()).ln() / 2.0_f64.ln();
+                if iter < max_iter {
+                    // Smooth coloring: reuse cached x2 + y2 instead of recomputing.
+                    let log_zn = (x2 + y2).ln() / 2.0;
+                    let nu = (log_zn / ln2).ln() / ln2;
                     let smooth_iter = iter as f64 + 1.0 - nu;
 
-                    // Color based on iteration count with time-shifting hue
-                    let t = (smooth_iter / 50.0 + self.time * 0.1) % 1.0;
+                    let t = (smooth_iter / 50.0 + time_hue_offset) % 1.0;
                     let color = palette_sunset(t);
                     painter.point_colored(px, py, color);
                 }

@@ -5,7 +5,10 @@
 │            │  k / Up          Previous sample                   │            │
 └────────────│  Tab             Select next node                  │────────────┘
 ┌ Flow Basic │  S-Tab           Select previous node              │────────────┐
-│            │  /               Enter search mode                 │            │
+│            │  /               Sample filter/search              │            │
+│            │  Enter           Accept match (search)             │            │
+│            │  Up/Down         Cycle matches (search)            │            │
+│            │  Ctrl+U          Clear filter                      │            │
 │            │                                                    │            │
 │            │ Render Config                                      │            │
 │            │  t               Cycle tier (Auto/Compact/Normal/R │            │
@@ -16,9 +19,6 @@
 │            │  l               Cycle layout mode (Dense/Normal/S │            │
 │            │  r               Force relayout                    │            │
 │            │  p / P           Cycle palette forward / backward  │            │
-│            │                                                    │            │
-│            │ Viewport                                           │            │
-│            │  + / =           Zoom in                           │            │
-└────────────│  -               Zoom out                          │────────────┘
-NORMAL  j/k:s│  0               Reset zoom (+ clear pan)          │an []/{}:size
+└────────────│                                                    │────────────┘
+NORMAL  j/k:s│ Viewport                                           │an []/{}:size
              ╰────────────────────────────────────────────────────╯             

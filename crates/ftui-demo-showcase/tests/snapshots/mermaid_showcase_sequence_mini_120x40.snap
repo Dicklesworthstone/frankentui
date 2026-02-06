@@ -21,8 +21,8 @@ Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport:
 │  Pie Many [pie, M, many-slic││               │                             │              ││                        │ 
 │  Gitgraph Basic [unsupported││                                                            │╰────────────────────────╯ 
 │  Journey Basic [unsupported,││               │                             │              │╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││                                                            ││Parse: 0.02 ms          │ 
-│                             ││             ⠠⢶│⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤│⠤             ││Layout: 0.01 ms         │ 
+│  Requirement Basic [unsuppor││                                                            ││Parse: 0.00 ms          │ 
+│                             ││             ⠠⢶│⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤│⠤             ││Layout: 0.00 ms         │ 
 │                             ││               ⠈                                            ││Render: 0.00 ms         │ 
 │                             ││               │                             │              ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
@@ -37,4 +37,4 @@ Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport:
 │                             ││               │                             │              ││                        │ 
 │                             ││                                                            ││                        │ 
 ╰─────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰────────────────────────╯ 
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.018344998ms | lay
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0ms | layout 0ms | 

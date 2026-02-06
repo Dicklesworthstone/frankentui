@@ -121,6 +121,7 @@ fn mermaid_showcase_snapshot(
     height: u16,
     name: &str,
 ) {
+    screen.stabilize_metrics_for_snapshot();
     let mut pool = GraphemePool::new();
     let mut frame = Frame::new(width, height, &mut pool);
     let area = Rect::new(0, 0, width, height);

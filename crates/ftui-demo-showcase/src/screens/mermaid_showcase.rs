@@ -1775,6 +1775,16 @@ impl MermaidShowcaseScreen {
         self.state.samples.len()
     }
 
+    /// Zero out timing-dependent metrics so that snapshots are deterministic.
+    ///
+    /// Call this before `view()` in snapshot tests to avoid flaky timing diffs.
+    #[doc(hidden)]
+    pub fn stabilize_metrics_for_snapshot(&mut self) {
+        self.state.metrics.parse_ms = Some(0.0);
+        self.state.metrics.layout_ms = Some(0.0);
+        self.state.metrics.render_ms = Some(0.0);
+    }
+
     fn build_config(&self) -> MermaidConfig {
         let mut config = MermaidConfig {
             glyph_mode: self.state.glyph_mode,

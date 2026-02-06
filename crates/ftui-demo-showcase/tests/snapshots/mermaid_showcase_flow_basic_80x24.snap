@@ -14,8 +14,8 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  State Basic [state, ││                                                      │
 │  State Composite [sta│╰──────────────────────────────────────────────────────╯
 │  ER Basic [er, M, car│╭───────────────────────Metrics────────────────────────╮
-│  Gantt Basic [gantt, ││Parse: 0.07 ms                                        │
-│  Mindmap Seed [mindma││Layout: 0.09 ms                                       │
+│  Gantt Basic [gantt, ││Parse: 0.00 ms                                        │
+│  Mindmap Seed [mindma││Layout: 0.00 ms                                       │
 │  Mindmap Deep [mindma││Render: 0.00 ms                                       │
 │  Pie Basic [pie, S, t││Viewport: auto                                        │
 │  Pie Many [pie, M, ma││Zoom: 100%                                            │

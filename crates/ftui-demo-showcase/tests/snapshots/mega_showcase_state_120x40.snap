@@ -36,5 +36,5 @@
 │                               ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                               ││                          │
 │                                                                                          ││                          │
 └──────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────┘
-NORMAL  j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help                         
+NORMAL  j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size o:reset /:filter Ctrl+U:clear ?:help   
                                                                                                                         

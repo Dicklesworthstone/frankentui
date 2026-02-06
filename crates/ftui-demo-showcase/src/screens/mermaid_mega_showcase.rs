@@ -74,6 +74,47 @@ struct MegaSample {
 
 const GENERATED_SAMPLE_SOURCE: &str = "__generated__";
 
+fn mega_sample_category(sample: &MegaSample) -> &'static str {
+    if sample.source == GENERATED_SAMPLE_SOURCE {
+        return "generated";
+    }
+
+    let src = sample.source.trim_start();
+    if src.starts_with("graph") || src.starts_with("flowchart") {
+        "flow"
+    } else if src.starts_with("sequenceDiagram") {
+        "sequence"
+    } else if src.starts_with("classDiagram") {
+        "class"
+    } else if src.starts_with("stateDiagram") {
+        "state"
+    } else if src.starts_with("erDiagram") {
+        "er"
+    } else if src.starts_with("gantt") {
+        "gantt"
+    } else if src.starts_with("mindmap") {
+        "mindmap"
+    } else if src.starts_with("pie") {
+        "pie"
+    } else {
+        "unknown"
+    }
+}
+
+fn mega_sample_matches_tokens(sample: &MegaSample, tokens: &[&str]) -> bool {
+    if tokens.is_empty() {
+        return true;
+    }
+
+    let name = sample.name.to_ascii_lowercase();
+    let category = mega_sample_category(sample);
+    let source = sample.source.to_ascii_lowercase();
+
+    tokens
+        .iter()
+        .all(|t| name.contains(t) || category.contains(t) || source.contains(t))
+}
+
 const MEGA_SAMPLES: &[MegaSample] = &[
     MegaSample {
         name: "Flow Basic",
@@ -1048,6 +1089,10 @@ pub struct MermaidMegaState {
     selected_node: Option<usize>,
     /// Search query (when in search mode).
     search_query: Option<String>,
+    /// Matching sample indices for the current search query.
+    search_matches: Vec<usize>,
+    /// Cursor within search_matches.
+    search_match_idx: usize,
     /// Epoch counters for cache invalidation.
     analysis_epoch: u64,
     layout_epoch: u64,
@@ -1084,6 +1129,8 @@ impl Default for MermaidMegaState {
             generated_source,
             selected_node: None,
             search_query: None,
+            search_matches: Vec::new(),
+            search_match_idx: 0,
             analysis_epoch: 0,
             layout_epoch: 0,
             render_epoch: 0,
@@ -1221,6 +1268,55 @@ impl MermaidMegaState {
         self.analysis_epoch = self.analysis_epoch.wrapping_add(1);
         self.bump_layout();
     }
+
+    fn filter_active(&self) -> bool {
+        self.search_query
+            .as_ref()
+            .is_some_and(|q| !q.trim().is_empty())
+    }
+
+    fn rebuild_search_matches(&mut self) {
+        self.search_matches.clear();
+        self.search_match_idx = 0;
+
+        let Some(query) = self.search_query.as_deref() else {
+            return;
+        };
+        let query = query.trim();
+        if query.is_empty() {
+            return;
+        }
+
+        let lowered = query.to_ascii_lowercase();
+        let tokens: Vec<&str> = lowered
+            .split_whitespace()
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return;
+        }
+
+        self.search_matches = MEGA_SAMPLES
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| mega_sample_matches_tokens(s, &tokens))
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if self.search_matches.is_empty() {
+            self.search_match_idx = 0;
+            return;
+        }
+
+        // Keep match cursor stable when possible.
+        if let Some(pos) = self
+            .search_matches
+            .iter()
+            .position(|idx| *idx == self.selected_sample)
+        {
+            self.search_match_idx = pos;
+        }
+    }
 }
 
 // ── Actions ─────────────────────────────────────────────────────────
@@ -1271,6 +1367,12 @@ enum MegaAction {
     DeselectNode,
     EnterSearch,
     ExitSearch,
+    SearchAppendChar(char),
+    SearchBackspace,
+    SearchAccept,
+    ClearFilter,
+    NextSearchMatch,
+    PrevSearchMatch,
     ToggleDiagnostics,
     ToggleDebugNodeBounds,
     ToggleDebugEdgeRoutes,
@@ -1286,12 +1388,34 @@ impl MermaidMegaState {
     fn apply(&mut self, action: MegaAction) {
         match action {
             MegaAction::NextSample => {
-                self.selected_sample = self.selected_sample.wrapping_add(1);
+                if self.filter_active() && !self.search_matches.is_empty() {
+                    let pos = self
+                        .search_matches
+                        .iter()
+                        .position(|idx| *idx == self.selected_sample)
+                        .unwrap_or(0);
+                    let next = (pos + 1) % self.search_matches.len();
+                    self.search_match_idx = next;
+                    self.selected_sample = self.search_matches[next];
+                } else {
+                    self.selected_sample = self.selected_sample.wrapping_add(1);
+                }
                 self.selected_node = None;
                 self.bump_analysis();
             }
             MegaAction::PrevSample => {
-                self.selected_sample = self.selected_sample.wrapping_sub(1);
+                if self.filter_active() && !self.search_matches.is_empty() {
+                    let pos = self
+                        .search_matches
+                        .iter()
+                        .position(|idx| *idx == self.selected_sample)
+                        .unwrap_or(0);
+                    let prev = (pos + self.search_matches.len() - 1) % self.search_matches.len();
+                    self.search_match_idx = prev;
+                    self.selected_sample = self.search_matches[prev];
+                } else {
+                    self.selected_sample = self.selected_sample.wrapping_sub(1);
+                }
                 self.selected_node = None;
                 self.bump_analysis();
             }
@@ -1521,12 +1645,111 @@ impl MermaidMegaState {
             }
             MegaAction::EnterSearch => {
                 self.mode = ShowcaseMode::Search;
-                self.search_query = Some(String::new());
+                if self.search_query.is_none() {
+                    self.search_query = Some(String::new());
+                }
+                self.rebuild_search_matches();
             }
             MegaAction::ExitSearch => {
                 self.mode = ShowcaseMode::Normal;
-                self.search_query = None;
+                // If the query is empty, drop the filter entirely.
+                if self
+                    .search_query
+                    .as_ref()
+                    .is_some_and(|q| q.trim().is_empty())
+                {
+                    self.search_query = None;
+                }
                 self.bump_render();
+            }
+            MegaAction::SearchAppendChar(ch) => {
+                if self.mode != ShowcaseMode::Search {
+                    return;
+                }
+                let query = self.search_query.get_or_insert_with(String::new);
+                query.push(ch);
+                self.rebuild_search_matches();
+                if let Some(sel) = self.search_matches.first().copied() {
+                    self.selected_sample = sel;
+                    self.selected_node = None;
+                    self.bump_analysis();
+                } else {
+                    self.bump_render();
+                }
+            }
+            MegaAction::SearchBackspace => {
+                if self.mode != ShowcaseMode::Search {
+                    return;
+                }
+                if let Some(query) = self.search_query.as_mut() {
+                    let _ = query.pop();
+                }
+                self.rebuild_search_matches();
+                if let Some(sel) = self.search_matches.first().copied() {
+                    self.selected_sample = sel;
+                    self.selected_node = None;
+                    self.bump_analysis();
+                } else {
+                    self.bump_render();
+                }
+            }
+            MegaAction::SearchAccept => {
+                if self.mode != ShowcaseMode::Search {
+                    return;
+                }
+                self.mode = ShowcaseMode::Normal;
+                if let Some(sel) = self.search_matches.get(self.search_match_idx).copied() {
+                    self.selected_sample = sel;
+                    self.selected_node = None;
+                    self.bump_analysis();
+                } else {
+                    self.bump_render();
+                }
+                // Drop empty queries to avoid "active but empty" filter state.
+                if self
+                    .search_query
+                    .as_ref()
+                    .is_some_and(|q| q.trim().is_empty())
+                {
+                    self.search_query = None;
+                    self.search_matches.clear();
+                    self.search_match_idx = 0;
+                }
+            }
+            MegaAction::ClearFilter => {
+                if self.mode == ShowcaseMode::Search {
+                    self.search_query = Some(String::new());
+                } else {
+                    self.search_query = None;
+                }
+                self.search_matches.clear();
+                self.search_match_idx = 0;
+                self.bump_render();
+            }
+            MegaAction::NextSearchMatch => {
+                if self.mode != ShowcaseMode::Search {
+                    return;
+                }
+                if self.search_matches.is_empty() {
+                    return;
+                }
+                self.search_match_idx = (self.search_match_idx + 1) % self.search_matches.len();
+                self.selected_sample = self.search_matches[self.search_match_idx];
+                self.selected_node = None;
+                self.bump_analysis();
+            }
+            MegaAction::PrevSearchMatch => {
+                if self.mode != ShowcaseMode::Search {
+                    return;
+                }
+                if self.search_matches.is_empty() {
+                    return;
+                }
+                self.search_match_idx = (self.search_match_idx + self.search_matches.len() - 1)
+                    % self.search_matches.len();
+                self.selected_sample = self.search_matches[self.search_match_idx];
+                self.selected_node = None;
+                self.bump_analysis();
             }
             MegaAction::ToggleDiagnostics => {
                 self.panels.diagnostics = !self.panels.diagnostics;
@@ -1550,6 +1773,8 @@ impl MermaidMegaState {
                     self.bump_render();
                 } else if self.mode == ShowcaseMode::Search {
                     self.search_query = None;
+                    self.search_matches.clear();
+                    self.search_match_idx = 0;
                     self.mode = ShowcaseMode::Normal;
                     self.bump_render();
                 } else {
@@ -1609,7 +1834,36 @@ impl MermaidMegaShowcaseScreen {
 
     /// Map a key event to an action.
     fn handle_key(&self, event: &ftui_core::event::KeyEvent) -> Option<MegaAction> {
-        use ftui_core::event::KeyCode;
+        use ftui_core::event::{KeyCode, KeyEventKind, Modifiers};
+
+        if event.kind != KeyEventKind::Press {
+            return None;
+        }
+
+        // Ctrl+U clears the current filter.
+        if event.modifiers.contains(Modifiers::CTRL)
+            && let KeyCode::Char('u') | KeyCode::Char('U') = event.code
+        {
+            return Some(MegaAction::ClearFilter);
+        }
+
+        if self.state.mode == ShowcaseMode::Search {
+            return match event.code {
+                KeyCode::Escape => Some(MegaAction::CollapsePanels),
+                KeyCode::Enter => Some(MegaAction::SearchAccept),
+                KeyCode::Backspace => Some(MegaAction::SearchBackspace),
+                KeyCode::Up => Some(MegaAction::PrevSearchMatch),
+                KeyCode::Down => Some(MegaAction::NextSearchMatch),
+                KeyCode::Char(ch)
+                    if !event.modifiers.contains(Modifiers::CTRL)
+                        && !event.modifiers.contains(Modifiers::ALT) =>
+                {
+                    Some(MegaAction::SearchAppendChar(ch))
+                }
+                _ => None,
+            };
+        }
+
         match event.code {
             // Sample navigation
             KeyCode::Down | KeyCode::Char('j') => Some(MegaAction::NextSample),
@@ -2168,8 +2422,24 @@ impl MermaidMegaShowcaseScreen {
             s.generator.label_len,
             s.generator.seed
         );
+        let filter_info = if let Some(q) = s.search_query.as_deref() {
+            let q = q.trim();
+            if q.is_empty() {
+                " Filter:/".to_string()
+            } else if !s.search_matches.is_empty() {
+                format!(
+                    " Filter:/{q} ({}/{})",
+                    s.search_match_idx.saturating_add(1),
+                    s.search_matches.len()
+                )
+            } else {
+                format!(" Filter:/{q} (0)")
+            }
+        } else {
+            String::new()
+        };
         let status = format!(
-            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Palette:{} Zoom:{:.0}% {}{}{}{} ",
+            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Palette:{} Zoom:{:.0}% {}{}{}{}{} ",
             s.tier,
             s.glyph_mode,
             s.render_mode,
@@ -2180,6 +2450,7 @@ impl MermaidMegaShowcaseScreen {
             viewport_info,
             pan_info,
             err_indicator,
+            filter_info,
             gen_info,
         );
         let text_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(180, 200, 220));
@@ -2219,6 +2490,22 @@ impl MermaidMegaShowcaseScreen {
 
         lines.push(format!("Mode: {}", self.state.mode.as_str()));
         lines.push(format!("Sample: {}", self.state.selected_name()));
+        if let Some(q) = self.state.search_query.as_deref() {
+            let q = q.trim();
+            if q.is_empty() {
+                lines.push("Filter: /".to_string());
+            } else {
+                lines.push(format!("Filter: /{q}"));
+            }
+            lines.push(format!(
+                "Matches: {}/{}",
+                self.state
+                    .search_match_idx
+                    .saturating_add(1)
+                    .min(self.state.search_matches.len()),
+                self.state.search_matches.len()
+            ));
+        }
         if self.state.selected_is_generated() {
             lines.push(format!(
                 "Gen: n{} b{} d{}% l{} seed{}",
@@ -2321,7 +2608,7 @@ impl MermaidMegaShowcaseScreen {
         let end =
             frame.print_text_clipped(area.x, area.y, mode_str, mode_cell, area.x + area.width);
 
-        let hints = " j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size o:reset ?:help";
+        let hints = " j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:size o:reset /:filter Ctrl+U:clear ?:help";
         let hint_cell = Cell::from_char(' ').with_fg(PackedRgba::rgb(100, 100, 120));
         frame.print_text_clipped(end + 1, area.y, hints, hint_cell, area.x + area.width);
     }
@@ -2341,7 +2628,10 @@ impl MermaidMegaShowcaseScreen {
                     ("k / Up", "Previous sample"),
                     ("Tab", "Select next node"),
                     ("S-Tab", "Select previous node"),
-                    ("/", "Enter search mode"),
+                    ("/", "Sample filter/search"),
+                    ("Enter", "Accept match (search)"),
+                    ("Up/Down", "Cycle matches (search)"),
+                    ("Ctrl+U", "Clear filter"),
                 ],
             ),
             (
@@ -3065,6 +3355,76 @@ mod tests {
         state.apply(MegaAction::EnterSearch);
         state.apply(MegaAction::CollapsePanels);
         assert_eq!(state.mode, ShowcaseMode::Normal);
+        assert!(state.search_query.is_none());
+        assert!(state.search_matches.is_empty());
+    }
+
+    #[test]
+    fn state_search_append_char_builds_matches() {
+        let mut state = MermaidMegaState::default();
+        state.apply(MegaAction::EnterSearch);
+        for ch in ['f', 'l', 'o', 'w'] {
+            state.apply(MegaAction::SearchAppendChar(ch));
+        }
+        assert_eq!(state.search_query.as_deref(), Some("flow"));
+        assert!(
+            !state.search_matches.is_empty(),
+            "expected flow search to match at least one sample"
+        );
+        let first = state.search_matches[0];
+        assert!(
+            MEGA_SAMPLES[first]
+                .name
+                .to_ascii_lowercase()
+                .contains("flow"),
+            "expected first match name to include 'flow'"
+        );
+    }
+
+    #[test]
+    fn state_search_accept_keeps_filter_and_selects_match() {
+        let mut state = MermaidMegaState::default();
+        state.apply(MegaAction::EnterSearch);
+        for ch in ['g', 'a', 'n', 't', 't'] {
+            state.apply(MegaAction::SearchAppendChar(ch));
+        }
+        assert!(
+            !state.search_matches.is_empty(),
+            "expected gantt search to match samples"
+        );
+        state.apply(MegaAction::SearchAccept);
+        assert_eq!(state.mode, ShowcaseMode::Normal);
+        assert!(
+            state.search_query.is_some(),
+            "filter should remain active after accept"
+        );
+        assert!(
+            state.selected_name().to_ascii_lowercase().contains("gantt")
+                || mega_sample_category(
+                    MEGA_SAMPLES
+                        .get(state.selected_sample % MEGA_SAMPLES.len())
+                        .expect("sample")
+                )
+                .contains("gantt"),
+            "expected selected sample to be a gantt match"
+        );
+    }
+
+    #[test]
+    fn state_clear_filter_drops_query_and_matches() {
+        let mut state = MermaidMegaState::default();
+        state.apply(MegaAction::EnterSearch);
+        state.apply(MegaAction::SearchAppendChar('f'));
+        assert!(state.search_query.is_some());
+        assert!(!state.search_matches.is_empty());
+        state.apply(MegaAction::ClearFilter);
+        assert!(
+            state.search_query.is_some(),
+            "in search mode, clear keeps empty input"
+        );
+        assert!(state.search_matches.is_empty());
+        // Exit search: empty input should drop filter.
+        state.apply(MegaAction::ExitSearch);
         assert!(state.search_query.is_none());
     }
 

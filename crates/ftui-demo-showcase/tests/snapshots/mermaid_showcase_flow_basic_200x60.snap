@@ -32,8 +32,8 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │                                                  ││ ⣿                        ⣿⡇                                      ⠈⠒⢄                                 ││                                          │
 │                                                  ││                                                                     ⠉⠢⣀  ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╰──────────────────────────────────────────╯
 │                                                  ││                                                                        ⢑⣼⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╭─────────────────Metrics──────────────────╮
-│                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.13 ms                            │
-│                                                  ││                                                                          ⢸⣿                        ⣿ ││Layout: 0.10 ms                           │
+│                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.00 ms                            │
+│                                                  ││                                                                          ⢸⣿                        ⣿ ││Layout: 0.00 ms                           │
 │                                                  ││                                                                                                      ││Render: 0.00 ms                           │
 │                                                  ││                                                                                      Fix             ││Viewport: auto                            │
 │                                                  ││                                                                                                      ││Zoom: 100%                                │
@@ -57,4 +57,4 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │                                                  ││                                                                                                      ││                                          │
 │                                                  ││                                                                                                      ││                                          │
 ╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────╯
-j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0.129825ms | layout 0.102804ms | render 0ms                                                        
+j/k sample  l layout  r relayout  b render  +/- zoom  []/{} size  o reset  m metrics  t tier | parse 0ms | layout 0ms | render 0ms                                                                      
