@@ -279,7 +279,7 @@ const MEGA_SAMPLES: &[MegaSample] = &[
     // Intentionally invalid sample (bd-3oaig.15): exercise error overlay + diagnostics view.
     MegaSample {
         name: "Flow Invalid (Parse Error)",
-        source: "graph TD\n    A[Start] --> B[Ok]\n    B -->",
+        source: "graph TD\n    A[Start] --> B[Ok]\n    classDef",
     },
     MegaSample {
         name: "Generated",
