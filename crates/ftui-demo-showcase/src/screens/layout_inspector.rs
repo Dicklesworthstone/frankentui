@@ -2,7 +2,9 @@
 
 //! Layout Inspector screen — visualize constraints, computed rects, and solver steps.
 
-use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers};
+use std::cell::Cell;
+
+use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -81,6 +83,9 @@ pub struct LayoutInspector {
     step_idx: usize,
     show_overlay: bool,
     show_tree: bool,
+    layout_info: Cell<Rect>,
+    layout_viz: Cell<Rect>,
+    layout_tree: Cell<Rect>,
 }
 
 impl Default for LayoutInspector {
@@ -96,6 +101,9 @@ impl LayoutInspector {
             step_idx: 0,
             show_overlay: true,
             show_tree: true,
+            layout_info: Cell::new(Rect::default()),
+            layout_viz: Cell::new(Rect::default()),
+            layout_tree: Cell::new(Rect::default()),
         }
     }
 
@@ -468,6 +476,32 @@ impl Screen for LayoutInspector {
                 _ => {}
             }
         }
+        if let Event::Mouse(mouse) = event {
+            let (x, y) = (mouse.x, mouse.y);
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if self.layout_info.get().contains(x, y) {
+                        self.scenario_idx = (self.scenario_idx + 1) % SCENARIO_COUNT;
+                    } else if self.layout_viz.get().contains(x, y) {
+                        self.step_idx = (self.step_idx + 1) % STEP_COUNT;
+                    } else if self.layout_tree.get().contains(x, y) {
+                        self.show_tree = !self.show_tree;
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Right) => {
+                    if self.layout_viz.get().contains(x, y) {
+                        self.show_overlay = !self.show_overlay;
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    self.scenario_idx = (self.scenario_idx + 1) % SCENARIO_COUNT;
+                }
+                MouseEventKind::ScrollUp => {
+                    self.scenario_idx = (self.scenario_idx + SCENARIO_COUNT - 1) % SCENARIO_COUNT;
+                }
+                _ => {}
+            }
+        }
         Cmd::None
     }
 
@@ -491,6 +525,8 @@ impl Screen for LayoutInspector {
             .split(inner);
         let info_area = cols[0];
         let viz_area = cols[1];
+        self.layout_info.set(info_area);
+        self.layout_viz.set(viz_area);
 
         if viz_area.is_empty() {
             return;
@@ -555,6 +591,7 @@ impl Screen for LayoutInspector {
 
         if self.show_tree && viz_rows.len() > 1 {
             let tree_area = viz_rows[1];
+            self.layout_tree.set(tree_area);
             let tree_block = Block::new()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -566,6 +603,8 @@ impl Screen for LayoutInspector {
             if !tree_inner.is_empty() {
                 debugger.render_debug(tree_inner, &mut frame.buffer);
             }
+        } else {
+            self.layout_tree.set(Rect::default());
         }
     }
 
@@ -590,6 +629,22 @@ impl Screen for LayoutInspector {
             HelpEntry {
                 key: "r",
                 action: "Reset step",
+            },
+            HelpEntry {
+                key: "\u{2190}/\u{2192}",
+                action: "Previous/next step",
+            },
+            HelpEntry {
+                key: "Click info",
+                action: "Next scenario",
+            },
+            HelpEntry {
+                key: "Click viz",
+                action: "Next step",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Cycle scenarios",
             },
         ]
     }
@@ -619,7 +674,8 @@ struct ScenarioRender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_core::event::KeyEvent;
+    use ftui_core::event::{KeyEvent, MouseEvent};
+    use ftui_render::grapheme_pool::GraphemePool;
 
     #[test]
     fn layout_inspector_cycles_scenarios() {
@@ -670,5 +726,200 @@ mod tests {
         screen.scenario_idx = 2;
         let render = screen.build_scenario(area);
         assert_eq!(render.root.children.len(), 2);
+    }
+
+    fn render_screen(screen: &LayoutInspector) {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+    }
+
+    fn mouse_click(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn mouse_right_click(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn mouse_scroll_down(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn mouse_scroll_up(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn click_info_panel_cycles_scenario() {
+        let mut screen = LayoutInspector::new();
+        render_screen(&screen);
+        let info = screen.layout_info.get();
+        assert!(!info.is_empty(), "info layout rect should be populated");
+        let cx = info.x + info.width / 2;
+        let cy = info.y + info.height / 2;
+        screen.update(&mouse_click(cx, cy));
+        assert_eq!(screen.scenario_idx, 1);
+    }
+
+    #[test]
+    fn click_viz_panel_cycles_step() {
+        let mut screen = LayoutInspector::new();
+        render_screen(&screen);
+        let viz = screen.layout_viz.get();
+        assert!(!viz.is_empty(), "viz layout rect should be populated");
+        let cx = viz.x + viz.width / 2;
+        let cy = viz.y + viz.height / 2;
+        screen.update(&mouse_click(cx, cy));
+        assert_eq!(screen.step_idx, 1);
+    }
+
+    #[test]
+    fn right_click_viz_toggles_overlay() {
+        let mut screen = LayoutInspector::new();
+        render_screen(&screen);
+        assert!(screen.show_overlay);
+        let viz = screen.layout_viz.get();
+        let cx = viz.x + viz.width / 2;
+        let cy = viz.y + viz.height / 2;
+        screen.update(&mouse_right_click(cx, cy));
+        assert!(!screen.show_overlay);
+        screen.update(&mouse_right_click(cx, cy));
+        assert!(screen.show_overlay);
+    }
+
+    #[test]
+    fn scroll_cycles_scenarios() {
+        let mut screen = LayoutInspector::new();
+        screen.update(&mouse_scroll_down(40, 12));
+        assert_eq!(screen.scenario_idx, 1);
+        screen.update(&mouse_scroll_up(40, 12));
+        assert_eq!(screen.scenario_idx, 0);
+        screen.update(&mouse_scroll_up(40, 12));
+        assert_eq!(screen.scenario_idx, SCENARIO_COUNT - 1);
+    }
+
+    #[test]
+    fn click_tree_panel_toggles_tree() {
+        let mut screen = LayoutInspector::new();
+        render_screen(&screen);
+        assert!(screen.show_tree);
+        let tree = screen.layout_tree.get();
+        assert!(!tree.is_empty(), "tree layout rect should be populated");
+        let cx = tree.x + tree.width / 2;
+        let cy = tree.y + tree.height / 2;
+        screen.update(&mouse_click(cx, cy));
+        assert!(!screen.show_tree);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_hints() {
+        let screen = LayoutInspector::new();
+        let bindings = screen.keybindings();
+        assert!(bindings.len() >= 8, "should have at least 8 keybinding entries");
+        let keys: Vec<&str> = bindings.iter().map(|b| b.key).collect();
+        assert!(keys.contains(&"Click info"));
+        assert!(keys.contains(&"Click viz"));
+        assert!(keys.contains(&"Scroll"));
+    }
+
+    #[test]
+    fn render_no_panic_standard_area() {
+        let screen = LayoutInspector::new();
+        render_screen(&screen);
+    }
+
+    #[test]
+    fn render_no_panic_empty_area() {
+        let screen = LayoutInspector::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 0, 0));
+    }
+
+    #[test]
+    fn toggle_overlay_keyboard() {
+        let mut screen = LayoutInspector::new();
+        assert!(screen.show_overlay);
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('o'),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        screen.update(&event);
+        assert!(!screen.show_overlay);
+        screen.update(&event);
+        assert!(screen.show_overlay);
+    }
+
+    #[test]
+    fn toggle_tree_keyboard() {
+        let mut screen = LayoutInspector::new();
+        assert!(screen.show_tree);
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('t'),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        screen.update(&event);
+        assert!(!screen.show_tree);
+    }
+
+    #[test]
+    fn reset_step_keyboard() {
+        let mut screen = LayoutInspector::new();
+        let step_event = Event::Key(KeyEvent {
+            code: KeyCode::Char(']'),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        screen.update(&step_event);
+        assert_eq!(screen.step_idx, 1);
+        let reset_event = Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        screen.update(&reset_event);
+        assert_eq!(screen.step_idx, 0);
+    }
+
+    #[test]
+    fn click_outside_panels_no_change() {
+        let mut screen = LayoutInspector::new();
+        render_screen(&screen);
+        screen.update(&mouse_click(0, 0));
+        assert_eq!(screen.scenario_idx, 0);
+        assert_eq!(screen.step_idx, 0);
+    }
+
+    #[test]
+    fn tree_hidden_clears_layout_rect() {
+        let mut screen = LayoutInspector::new();
+        render_screen(&screen);
+        assert!(!screen.layout_tree.get().is_empty());
+        screen.show_tree = false;
+        render_screen(&screen);
+        assert!(screen.layout_tree.get().is_empty());
     }
 }
