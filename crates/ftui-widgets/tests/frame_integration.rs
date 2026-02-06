@@ -1119,3 +1119,41 @@ fn cross_widget_hit_regions_deterministic() {
         "cross-widget hit regions must be deterministic"
     );
 }
+
+// -----------------------------------------------------------------------
+// bd-iuvb.17.3: Horizontal scrollbar hit region encoding
+// -----------------------------------------------------------------------
+
+#[test]
+fn horizontal_scrollbar_registers_hit_regions() {
+    init_tracing();
+    info!("horizontal scrollbar registers hit regions with track position data");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(10, 1, &mut pool);
+    let area = Rect::new(0, 0, 10, 1);
+    let sb = Scrollbar::new(ScrollbarOrientation::HorizontalBottom).hit_id(HitId::new(55));
+    let mut state = ScrollbarState::new(100, 0, 10);
+
+    StatefulWidget::render(&sb, area, &mut frame, &mut state);
+
+    // All 10 cells in the row should have hits
+    for x in 0..10u16 {
+        let (id, region, _data) = frame
+            .hit_test(x, 0)
+            .unwrap_or_else(|| panic!("expected hit at x={x}"));
+        assert_eq!(id, HitId::new(55));
+        assert_eq!(region, HitRegion::Scrollbar);
+    }
+
+    // Verify thumb and track parts are distinct
+    let (_, _, data_thumb) = frame.hit_test(0, 0).unwrap();
+    let part_thumb = data_thumb >> 56;
+    assert_eq!(
+        part_thumb, 1,
+        "x=0 should be SCROLLBAR_PART_THUMB (position=0)"
+    );
+
+    let (_, _, data_track) = frame.hit_test(5, 0).unwrap();
+    let part_track = data_track >> 56;
+    assert_eq!(part_track, 0, "x=5 should be SCROLLBAR_PART_TRACK");
+}
