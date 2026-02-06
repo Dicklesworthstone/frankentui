@@ -473,4 +473,158 @@ mod tests {
         assert!(!overlay.style.show_borders);
         assert!(!overlay.style.show_labels);
     }
+
+    #[test]
+    fn default_style_values() {
+        let s = ConstraintOverlayStyle::default();
+        assert_eq!(s.normal_color, PackedRgba::rgb(100, 200, 100));
+        assert_eq!(s.overflow_color, PackedRgba::rgb(240, 80, 80));
+        assert_eq!(s.underflow_color, PackedRgba::rgb(240, 200, 80));
+        assert_eq!(s.requested_color, PackedRgba::rgb(80, 150, 240));
+        assert!(s.show_size_diff);
+        assert!(s.show_constraint_bounds);
+        assert!(s.show_borders);
+        assert!(s.show_labels);
+    }
+
+    #[test]
+    fn format_label_same_requested_and_received() {
+        let debugger = LayoutDebugger::new();
+        let overlay = ConstraintOverlay::new(&debugger);
+        let record = LayoutRecord::new(
+            "Box",
+            Rect::new(0, 0, 8, 4),
+            Rect::new(0, 0, 8, 4),
+            LayoutConstraints::unconstrained(),
+        );
+        let label = overlay.format_label(&record, false, false);
+        assert!(label.contains("8x4"));
+        // Should NOT contain arrow since sizes are equal.
+        assert!(!label.contains('\u{2192}'));
+    }
+
+    #[test]
+    fn format_label_different_sizes_shows_arrow() {
+        let debugger = LayoutDebugger::new();
+        let overlay = ConstraintOverlay::new(&debugger);
+        let record = LayoutRecord::new(
+            "Box",
+            Rect::new(0, 0, 10, 5),
+            Rect::new(0, 0, 8, 4),
+            LayoutConstraints::unconstrained(),
+        );
+        let label = overlay.format_label(&record, false, false);
+        // Should contain "10x5→8x4"
+        assert!(label.contains("10x5"));
+        assert!(label.contains('\u{2192}'));
+        assert!(label.contains("8x4"));
+    }
+
+    #[test]
+    fn format_label_constraint_bounds_infinity() {
+        let debugger = LayoutDebugger::new();
+        let overlay = ConstraintOverlay::new(&debugger);
+        // min_width=5, max_width=0 (infinity), min_height=0, max_height=10
+        let record = LayoutRecord::new(
+            "W",
+            Rect::new(0, 0, 8, 4),
+            Rect::new(0, 0, 8, 4),
+            LayoutConstraints::new(5, 0, 0, 10),
+        );
+        let label = overlay.format_label(&record, false, false);
+        // max_width=0 should render as ∞
+        assert!(label.contains('\u{221E}'));
+        assert!(label.contains("5.."));
+    }
+
+    #[test]
+    fn format_label_no_bounds_when_all_zero() {
+        let debugger = LayoutDebugger::new();
+        let overlay = ConstraintOverlay::new(&debugger);
+        let record = LayoutRecord::new(
+            "W",
+            Rect::new(0, 0, 8, 4),
+            Rect::new(0, 0, 8, 4),
+            LayoutConstraints::new(0, 0, 0, 0),
+        );
+        let label = overlay.format_label(&record, false, false);
+        // All-zero constraints → no bounds shown.
+        assert!(!label.contains('['));
+    }
+
+    #[test]
+    fn format_label_no_bounds_when_disabled() {
+        let debugger = LayoutDebugger::new();
+        let style = ConstraintOverlayStyle {
+            show_constraint_bounds: false,
+            ..Default::default()
+        };
+        let overlay = ConstraintOverlay::new(&debugger).style(style);
+        let record = LayoutRecord::new(
+            "W",
+            Rect::new(0, 0, 8, 4),
+            Rect::new(0, 0, 8, 4),
+            LayoutConstraints::new(5, 10, 3, 8),
+        );
+        let label = overlay.format_label(&record, false, false);
+        assert!(!label.contains('['));
+    }
+
+    #[test]
+    fn enabled_debugger_with_no_records_renders_nothing() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        // No records added.
+        let overlay = ConstraintOverlay::new(&debugger);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_fully_outside_render_area_is_skipped() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.record(LayoutRecord::new(
+            "Offscreen",
+            Rect::new(50, 50, 10, 10),
+            Rect::new(50, 50, 10, 10),
+            LayoutConstraints::unconstrained(),
+        ));
+
+        let overlay = ConstraintOverlay::new(&debugger);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+
+        // Nothing should be drawn since record is fully outside render area.
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn no_borders_when_show_borders_disabled() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.record(LayoutRecord::new(
+            "NoBorder",
+            Rect::new(0, 0, 6, 4),
+            Rect::new(0, 0, 6, 4),
+            LayoutConstraints::unconstrained(),
+        ));
+
+        let style = ConstraintOverlayStyle {
+            show_borders: false,
+            show_labels: false,
+            show_size_diff: false,
+            ..Default::default()
+        };
+        let overlay = ConstraintOverlay::new(&debugger).style(style);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+
+        // No border should be drawn.
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
+    }
 }

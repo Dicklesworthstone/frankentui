@@ -609,4 +609,164 @@ mod tests {
         ));
         assert_eq!(state.update_hover_from_event(&event), Some((7, 9)));
     }
+
+    #[test]
+    fn toggle_cycles_enabled_state() {
+        let state = DebugOverlayState::new();
+        assert!(!state.enabled());
+        let next = state.toggle();
+        assert!(next);
+        assert!(state.enabled());
+        let next2 = state.toggle();
+        assert!(!next2);
+        assert!(!state.enabled());
+    }
+
+    #[test]
+    fn clear_removes_all_entries() {
+        let state = DebugOverlayState::new();
+        state.set_enabled(true);
+        state.record(WidgetDebugInfo::new("a", Rect::new(0, 0, 2, 2)));
+        state.record(WidgetDebugInfo::new("b", Rect::new(0, 0, 2, 2)));
+        assert_eq!(state.snapshot().len(), 2);
+        state.clear();
+        assert!(state.snapshot().is_empty());
+    }
+
+    #[test]
+    fn widget_debug_info_defaults() {
+        let info = WidgetDebugInfo::new("test", Rect::new(3, 4, 5, 6));
+        assert_eq!(info.name, "test");
+        assert_eq!(info.area, Rect::new(3, 4, 5, 6));
+        assert!(info.render_time.is_none());
+        assert!(info.hit_areas.is_empty());
+    }
+
+    #[test]
+    fn format_label_with_render_time() {
+        let state = DebugOverlayState::new();
+        let overlay = DebugOverlay::new(state);
+        let mut info = WidgetDebugInfo::new("Button", Rect::new(0, 0, 5, 1));
+        info.render_time = Some(Duration::from_micros(42));
+        let label = overlay.format_label(&info);
+        assert_eq!(label, "Button 42us");
+    }
+
+    #[test]
+    fn format_label_without_render_time_option() {
+        let state = DebugOverlayState::new();
+        let options = DebugOverlayOptions {
+            show_render_times: false,
+            ..Default::default()
+        };
+        let overlay = DebugOverlay::new(state).options(options);
+        let mut info = WidgetDebugInfo::new("Button", Rect::new(0, 0, 5, 1));
+        info.render_time = Some(Duration::from_micros(42));
+        let label = overlay.format_label(&info);
+        assert_eq!(label, "Button");
+    }
+
+    #[test]
+    fn format_label_no_render_time_recorded() {
+        let state = DebugOverlayState::new();
+        let overlay = DebugOverlay::new(state);
+        let info = WidgetDebugInfo::new("Panel", Rect::new(0, 0, 5, 1));
+        let label = overlay.format_label(&info);
+        assert_eq!(label, "Panel");
+    }
+
+    #[test]
+    fn wrapper_inner_accessors() {
+        let state = DebugOverlayState::new();
+        let mut wrapper = DebugOverlayStateful::new(StubWidget, "S", state);
+        let _inner_ref: &StubWidget = wrapper.inner();
+        let _inner_mut: &mut StubWidget = wrapper.inner_mut();
+        let _inner_owned: StubWidget = wrapper.into_inner();
+    }
+
+    #[test]
+    fn stateful_state_wraps_inner() {
+        let state = DebugOverlayStatefulState::new(42u32);
+        assert_eq!(state.inner, 42);
+    }
+
+    #[test]
+    fn toggle_on_non_f12_returns_false() {
+        let state = DebugOverlayState::new();
+        let event = Event::Key(ftui_core::event::KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        assert!(!state.toggle_on_f12(&event));
+        assert!(!state.enabled());
+    }
+
+    #[test]
+    fn update_hover_non_mouse_returns_current() {
+        let state = DebugOverlayState::new();
+        state.set_hover(Some((3, 4)));
+        let event = Event::Key(ftui_core::event::KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        assert_eq!(state.update_hover_from_event(&event), Some((3, 4)));
+    }
+
+    #[test]
+    fn hover_position_default_is_none() {
+        let state = DebugOverlayState::new();
+        assert!(state.hover_position().is_none());
+    }
+
+    #[test]
+    fn options_default_values() {
+        let opts = DebugOverlayOptions::default();
+        assert!(opts.show_boundaries);
+        assert!(opts.show_names);
+        assert!(opts.show_render_times);
+        assert!(opts.show_hit_areas);
+        assert!(opts.clear_on_render);
+    }
+
+    #[test]
+    fn palette_default_has_six_border_colors() {
+        let palette = DebugOverlayPalette::default();
+        assert_eq!(palette.border_colors.len(), 6);
+    }
+
+    #[test]
+    fn wrapper_widget_impl_disabled_skips_recording() {
+        let state = DebugOverlayState::new();
+        // Disabled by default.
+        let wrapper = DebugOverlayStateful::new(StubWidget, "Skip", state.clone());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 2, &mut pool);
+        <DebugOverlayStateful<StubWidget> as StatefulWidget>::render(
+            &wrapper,
+            Rect::new(0, 0, 4, 2),
+            &mut frame,
+            &mut DebugOverlayStatefulState::new(()),
+        );
+        assert!(
+            state.snapshot().is_empty(),
+            "disabled wrapper should not record"
+        );
+    }
+
+    #[test]
+    fn wrapper_track_render_time_false() {
+        let state = DebugOverlayState::new();
+        state.set_enabled(true);
+        let wrapper =
+            DebugOverlayStateful::new(StubWidget, "NoTime", state.clone()).track_render_time(false);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 2, &mut pool);
+        let mut ws = DebugOverlayStatefulState::new(());
+        wrapper.render(Rect::new(0, 0, 4, 2), &mut frame, &mut ws);
+        let entries = state.snapshot();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].render_time.is_none());
+    }
 }
