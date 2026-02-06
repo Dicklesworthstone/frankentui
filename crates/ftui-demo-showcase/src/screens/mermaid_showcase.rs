@@ -7,7 +7,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::mermaid;
 use ftui_extras::mermaid::{
@@ -29,6 +29,7 @@ use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
+use std::cell::Cell as StdCell;
 
 use super::{HelpEntry, Screen};
 use crate::determinism;
@@ -1869,6 +1870,12 @@ enum MermaidShowcaseAction {
 pub struct MermaidShowcaseScreen {
     state: MermaidShowcaseState,
     cache: RefCell<MermaidRenderCache>,
+    /// Cached samples panel area for mouse hit-testing.
+    layout_samples: StdCell<Rect>,
+    /// Cached viewport area for mouse hit-testing.
+    layout_viewport: StdCell<Rect>,
+    /// Cached controls/right panel area for mouse hit-testing.
+    layout_right: StdCell<Rect>,
 }
 
 impl Default for MermaidShowcaseScreen {
@@ -1882,6 +1889,9 @@ impl MermaidShowcaseScreen {
         Self {
             state: MermaidShowcaseState::new(),
             cache: RefCell::new(MermaidRenderCache::empty()),
+            layout_samples: StdCell::new(Rect::new(0, 0, 0, 0)),
+            layout_viewport: StdCell::new(Rect::new(0, 0, 0, 0)),
+            layout_right: StdCell::new(Rect::new(0, 0, 0, 0)),
         }
     }
 
@@ -3306,12 +3316,70 @@ impl MermaidShowcaseScreen {
         let text = Text::from_lines(lines);
         Paragraph::new(text).render(inner, frame);
     }
+
+    /// Handle mouse events with hit-testing against cached layout areas.
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) -> Cmd<Event> {
+        let samples = self.layout_samples.get();
+        let viewport = self.layout_viewport.get();
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if samples.contains(x, y) {
+                    // Click on sample list — select sample by row offset
+                    let row = (y.saturating_sub(samples.y + 1)) as usize; // +1 for border
+                    let max = self.state.samples.len().saturating_sub(1);
+                    let new_idx = row.min(max);
+                    if new_idx != self.state.selected_index {
+                        self.state.selected_index = new_idx;
+                        self.state.bump_render();
+                    }
+                } else if viewport.contains(x, y) {
+                    // Click on viewport — toggle inspect mode
+                    if self.state.mode == ShowcaseMode::Inspect {
+                        self.state.mode = ShowcaseMode::Normal;
+                        self.state.selected_node_idx = None;
+                    } else {
+                        self.state.mode = ShowcaseMode::Inspect;
+                    }
+                    self.state.bump_render();
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if samples.contains(x, y) {
+                    if self.state.selected_index > 0 {
+                        self.state.selected_index -= 1;
+                        self.state.bump_render();
+                    }
+                } else if viewport.contains(x, y) {
+                    self.state.viewport_zoom = (self.state.viewport_zoom + ZOOM_STEP).min(ZOOM_MAX);
+                    self.state.bump_render();
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if samples.contains(x, y) {
+                    let max = self.state.samples.len().saturating_sub(1);
+                    if self.state.selected_index < max {
+                        self.state.selected_index += 1;
+                        self.state.bump_render();
+                    }
+                } else if viewport.contains(x, y) {
+                    self.state.viewport_zoom = (self.state.viewport_zoom - ZOOM_STEP).max(ZOOM_MIN);
+                    self.state.bump_render();
+                }
+            }
+            _ => {}
+        }
+        Cmd::None
+    }
 }
 
 impl Screen for MermaidShowcaseScreen {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            return self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+        }
         if let Event::Key(key) = event
             && let Some(action) = self.handle_key(key)
         {
@@ -3371,9 +3439,12 @@ impl Screen for MermaidShowcaseScreen {
                     Constraint::Percentage(22.0),
                 ])
                 .split(body);
+            self.layout_samples.set(columns[0]);
             self.render_samples(frame, columns[0]);
+            self.layout_viewport.set(columns[1]);
             self.render_viewport(frame, columns[1]);
             let right = columns[2];
+            self.layout_right.set(right);
             if right.is_empty() {
                 return;
             }
@@ -3601,6 +3672,14 @@ impl Screen for MermaidShowcaseScreen {
             HelpEntry {
                 key: "/",
                 action: "Search nodes",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Select sample / toggle inspect",
+            },
+            HelpEntry {
+                key: "Wheel",
+                action: "Scroll samples / zoom viewport",
             },
         ]
     }
@@ -5365,5 +5444,90 @@ mod tests {
         assert!(s.viewport_size_override.is_none());
         // No epoch bump when already None.
         assert_eq!(s.render_epoch, epoch);
+    }
+    // --- Mouse interaction tests (bd-iuvb.17.10.3) ---
+
+    #[test]
+    fn mouse_click_samples_selects() {
+        let mut screen = new_screen();
+        screen.layout_samples.set(Rect::new(0, 0, 30, 20));
+        assert_eq!(screen.state.selected_index, 0);
+        let click = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            4,
+        ));
+        screen.update(&click);
+        assert_eq!(screen.state.selected_index, 3);
+    }
+
+    #[test]
+    fn mouse_click_viewport_toggles_inspect() {
+        let mut screen = new_screen();
+        screen.layout_viewport.set(Rect::new(30, 0, 60, 20));
+        assert_eq!(screen.state.mode, ShowcaseMode::Normal);
+        let click = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            50,
+            10,
+        ));
+        screen.update(&click);
+        assert_eq!(screen.state.mode, ShowcaseMode::Inspect);
+        screen.update(&click);
+        assert_eq!(screen.state.mode, ShowcaseMode::Normal);
+    }
+
+    #[test]
+    fn mouse_scroll_samples_navigates() {
+        let mut screen = new_screen();
+        screen.layout_samples.set(Rect::new(0, 0, 30, 20));
+        assert_eq!(screen.state.selected_index, 0);
+        let scroll_down = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        ));
+        screen.update(&scroll_down);
+        assert_eq!(screen.state.selected_index, 1);
+        let scroll_up = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            10,
+            10,
+        ));
+        screen.update(&scroll_up);
+        assert_eq!(screen.state.selected_index, 0);
+        // Scroll up at 0 should stay at 0
+        screen.update(&scroll_up);
+        assert_eq!(screen.state.selected_index, 0);
+    }
+
+    #[test]
+    fn mouse_scroll_viewport_zooms() {
+        let mut screen = new_screen();
+        screen.layout_viewport.set(Rect::new(30, 0, 60, 20));
+        let initial_zoom = screen.state.viewport_zoom;
+        let scroll_up = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            50,
+            10,
+        ));
+        screen.update(&scroll_up);
+        assert!(screen.state.viewport_zoom > initial_zoom);
+        let scroll_down = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            50,
+            10,
+        ));
+        screen.update(&scroll_down);
+        assert!((screen.state.viewport_zoom - initial_zoom).abs() < 0.001);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_hints() {
+        let screen = new_screen();
+        let bindings = screen.keybindings();
+        let keys: Vec<&str> = bindings.iter().map(|b| b.key).collect();
+        assert!(keys.contains(&"Click"));
+        assert!(keys.contains(&"Wheel"));
     }
 }
