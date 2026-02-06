@@ -389,4 +389,59 @@ mod tests {
         assert_eq!(packed.b(), 200);
         assert_eq!(packed.a(), 255);
     }
+
+    #[test]
+    fn test_scroll_down_clamps_at_zero() {
+        let mut state = TerminalEmulatorState::new(10, 5);
+        state.scroll_down(10);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_convert_cell_maps_attrs() {
+        let widget = TerminalEmulator::new();
+        let term_cell = TerminalCell {
+            ch: 'X',
+            fg: Some(Color::rgb(255, 0, 0)),
+            bg: Some(Color::rgb(0, 0, 255)),
+            attrs: CellAttrs::BOLD.with(CellAttrs::ITALIC),
+        };
+        let buf_cell = widget.convert_cell(&term_cell);
+        assert_eq!(buf_cell.content.as_char(), Some('X'));
+        assert_eq!(buf_cell.fg.r(), 255);
+        assert_eq!(buf_cell.bg.b(), 255);
+        assert!(buf_cell.attrs.flags().contains(StyleFlags::BOLD));
+        assert!(buf_cell.attrs.flags().contains(StyleFlags::ITALIC));
+    }
+
+    #[test]
+    fn test_convert_cell_default_colors_transparent() {
+        let widget = TerminalEmulator::new();
+        let term_cell = TerminalCell::default();
+        let buf_cell = widget.convert_cell(&term_cell);
+        assert_eq!(buf_cell.fg, PackedRgba::TRANSPARENT);
+        assert_eq!(buf_cell.bg, PackedRgba::TRANSPARENT);
+    }
+
+    #[test]
+    fn test_resize_clamps_scroll_offset() {
+        let mut state = TerminalEmulatorState::with_scrollback(10, 5, 100);
+        for _ in 0..10 {
+            state.terminal.scroll_up(1);
+        }
+        state.scroll_up(8);
+        assert_eq!(state.scroll_offset, 8);
+        // Resize clears scrollback (terminal.resize resets grid)
+        state.resize(10, 5);
+        // scroll_offset should be clamped to new scrollback len
+        assert!(state.scroll_offset <= state.terminal.scrollback().len());
+    }
+
+    #[test]
+    fn test_terminal_accessors() {
+        let mut state = TerminalEmulatorState::new(10, 5);
+        assert_eq!(state.terminal().width(), 10);
+        state.terminal_mut().put_char('A');
+        assert_eq!(state.terminal().cell(0, 0).unwrap().ch, 'A');
+    }
 }
