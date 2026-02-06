@@ -8,6 +8,9 @@
 
 use std::sync::{LazyLock, RwLock};
 
+#[cfg(test)]
+use std::sync::Mutex;
+
 use ftui_render::budget::{BudgetDecision, DegradationLevel};
 use ftui_render::diff_strategy::{DiffStrategy, StrategyEvidence};
 
@@ -80,8 +83,16 @@ static RESIZE_SNAPSHOT: LazyLock<RwLock<Option<ResizeDecisionSnapshot>>> =
 static BUDGET_SNAPSHOT: LazyLock<RwLock<Option<BudgetDecisionSnapshot>>> =
     LazyLock::new(|| RwLock::new(None));
 
+// Global snapshot telemetry is shared state. In tests, we serialize snapshot
+// access to avoid flakiness under parallel test execution.
+#[cfg(test)]
+static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 /// Store the latest diff decision snapshot.
 pub fn set_diff_snapshot(snapshot: Option<DiffDecisionSnapshot>) {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     if let Ok(mut guard) = DIFF_SNAPSHOT.write() {
         *guard = snapshot;
     }
@@ -90,6 +101,9 @@ pub fn set_diff_snapshot(snapshot: Option<DiffDecisionSnapshot>) {
 /// Fetch the latest diff decision snapshot.
 #[must_use]
 pub fn diff_snapshot() -> Option<DiffDecisionSnapshot> {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     DIFF_SNAPSHOT.read().ok().and_then(|guard| guard.clone())
 }
 
@@ -100,6 +114,9 @@ pub fn clear_diff_snapshot() {
 
 /// Store the latest resize decision snapshot.
 pub fn set_resize_snapshot(snapshot: Option<ResizeDecisionSnapshot>) {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     if let Ok(mut guard) = RESIZE_SNAPSHOT.write() {
         *guard = snapshot;
     }
@@ -108,6 +125,9 @@ pub fn set_resize_snapshot(snapshot: Option<ResizeDecisionSnapshot>) {
 /// Fetch the latest resize decision snapshot.
 #[must_use]
 pub fn resize_snapshot() -> Option<ResizeDecisionSnapshot> {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     RESIZE_SNAPSHOT.read().ok().and_then(|guard| guard.clone())
 }
 
@@ -118,6 +138,9 @@ pub fn clear_resize_snapshot() {
 
 /// Store the latest budget decision snapshot.
 pub fn set_budget_snapshot(snapshot: Option<BudgetDecisionSnapshot>) {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     if let Ok(mut guard) = BUDGET_SNAPSHOT.write() {
         *guard = snapshot;
     }
@@ -126,6 +149,9 @@ pub fn set_budget_snapshot(snapshot: Option<BudgetDecisionSnapshot>) {
 /// Fetch the latest budget decision snapshot.
 #[must_use]
 pub fn budget_snapshot() -> Option<BudgetDecisionSnapshot> {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     BUDGET_SNAPSHOT.read().ok().and_then(|guard| guard.clone())
 }
 

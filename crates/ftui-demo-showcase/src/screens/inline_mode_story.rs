@@ -6,9 +6,10 @@
 //! logs stream underneath. Includes a compare toggle to contrast inline vs
 //! alt-screen behavior inside the demo.
 
+use std::cell::Cell as StdCell;
 use std::collections::VecDeque;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -63,6 +64,11 @@ pub struct InlineModeStory {
     compare: bool,
     mode: DisplayMode,
     paused: bool,
+    // View-updated layout rects for next-tick mouse hit testing.
+    layout_header: StdCell<Rect>,
+    layout_content: StdCell<Rect>,
+    layout_inline_bar: StdCell<Rect>,
+    layout_alt_header: StdCell<Rect>,
 }
 
 impl Default for InlineModeStory {
@@ -87,6 +93,10 @@ impl InlineModeStory {
             compare: false,
             mode: DisplayMode::Inline,
             paused: false,
+            layout_header: StdCell::new(Rect::default()),
+            layout_content: StdCell::new(Rect::default()),
+            layout_inline_bar: StdCell::new(Rect::default()),
+            layout_alt_header: StdCell::new(Rect::default()),
         }
     }
 
@@ -135,6 +145,11 @@ impl InlineModeStory {
 
     fn cycle_log_rate(&mut self) {
         self.log_rate_idx = (self.log_rate_idx + 1) % LOG_RATE_OPTIONS.len();
+    }
+
+    fn cycle_log_rate_down(&mut self) {
+        self.log_rate_idx =
+            (self.log_rate_idx + LOG_RATE_OPTIONS.len() - 1) % LOG_RATE_OPTIONS.len();
     }
 
     fn cycle_ui_height(&mut self) {
@@ -281,6 +296,8 @@ impl InlineModeStory {
             ),
         };
 
+        self.layout_inline_bar.set(bar_area);
+
         self.render_log_area(
             frame,
             log_area,
@@ -313,6 +330,8 @@ impl InlineModeStory {
             inner.height.saturating_sub(header_height),
         );
 
+        self.layout_alt_header.set(header);
+
         self.render_alt_header(frame, header);
         self.render_log_area(
             frame,
@@ -342,6 +361,46 @@ impl Screen for InlineModeStory {
     type Message = ();
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            let header = self.layout_header.get();
+            let content = self.layout_content.get();
+            let inline_bar = self.layout_inline_bar.get();
+            let alt_header = self.layout_alt_header.get();
+
+            match mouse.kind {
+                MouseEventKind::Up(MouseButton::Left) => {
+                    if inline_bar.contains(mouse.x, mouse.y) {
+                        self.toggle_anchor();
+                    } else if header.contains(mouse.x, mouse.y) {
+                        self.toggle_compare();
+                    } else if alt_header.contains(mouse.x, mouse.y) {
+                        // When comparing, clicking the alt header "drills in" to alt-screen mode.
+                        if self.compare {
+                            self.compare = false;
+                            self.mode = DisplayMode::AltScreen;
+                        } else {
+                            self.toggle_mode();
+                        }
+                    } else if content.contains(mouse.x, mouse.y) {
+                        self.paused = !self.paused;
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if content.contains(mouse.x, mouse.y) {
+                        self.cycle_log_rate();
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if content.contains(mouse.x, mouse.y) {
+                        self.cycle_log_rate_down();
+                    }
+                }
+                _ => {}
+            }
+
+            return Cmd::none();
+        }
+
         let Event::Key(KeyEvent {
             code,
             kind: KeyEventKind::Press,
@@ -375,6 +434,12 @@ impl Screen for InlineModeStory {
             return;
         }
 
+        // Update layout rects for mouse hit testing on the *next* event dispatch.
+        self.layout_header.set(Rect::default());
+        self.layout_content.set(Rect::default());
+        self.layout_inline_bar.set(Rect::default());
+        self.layout_alt_header.set(Rect::default());
+
         let outer = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -385,6 +450,8 @@ impl Screen for InlineModeStory {
         if inner.is_empty() {
             return;
         }
+
+        self.layout_content.set(inner);
 
         let header_height = match inner.height {
             0 | 1 => 0,
@@ -404,6 +471,7 @@ impl Screen for InlineModeStory {
         let chunks = Flex::vertical()
             .constraints([Constraint::Fixed(header_height), Constraint::Fill])
             .split(inner);
+        self.layout_header.set(chunks[0]);
         self.render_header(frame, chunks[0]);
 
         if self.compare {
@@ -442,6 +510,14 @@ impl Screen for InlineModeStory {
             HelpEntry {
                 key: "T",
                 action: "Scrollback stress burst",
+            },
+            HelpEntry {
+                key: "Mouse",
+                action: "Click header: compare • click bar: anchor • click log: pause",
+            },
+            HelpEntry {
+                key: "Wheel",
+                action: "Adjust log rate",
             },
         ]
     }
@@ -485,4 +561,75 @@ fn generate_log_line(seq: u64) -> String {
     let module = MODULES[((seq / 3) as usize) % MODULES.len()];
     let event = EVENTS[((seq / 7) as usize) % EVENTS.len()];
     format!("{seq:06} [{level:<5}] {module:<7} {event}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ftui_render::grapheme_pool::GraphemePool;
+
+    #[test]
+    fn mouse_click_on_inline_bar_toggles_anchor() {
+        let mut state = InlineModeStory::new();
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let bar = state.layout_inline_bar.get();
+        assert!(!bar.is_empty(), "inline bar should be laid out");
+
+        let click = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            bar.x + 1,
+            bar.y,
+        ));
+        state.update(&click);
+
+        assert_eq!(state.anchor, InlineAnchor::Top);
+    }
+
+    #[test]
+    fn mouse_click_on_header_toggles_compare() {
+        let mut state = InlineModeStory::new();
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let header = state.layout_header.get();
+        assert!(!header.is_empty(), "header should be present at this size");
+
+        let click = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            header.x + 1,
+            header.y,
+        ));
+        state.update(&click);
+
+        assert!(state.compare);
+    }
+
+    #[test]
+    fn mouse_wheel_adjusts_log_rate() {
+        let mut state = InlineModeStory::new();
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let before = state.log_rate();
+        let content = state.layout_content.get();
+        assert!(!content.is_empty(), "content should be laid out");
+
+        let scroll = Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            content.x + 1,
+            content.y + 1,
+        ));
+        state.update(&scroll);
+
+        assert_ne!(state.log_rate(), before);
+    }
 }

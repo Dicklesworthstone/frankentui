@@ -9,8 +9,19 @@ use crate::voi_sampling::VoiSamplerSnapshot;
 static INLINE_AUTO_VOI_SNAPSHOT: LazyLock<RwLock<Option<VoiSamplerSnapshot>>> =
     LazyLock::new(|| RwLock::new(None));
 
+#[cfg(test)]
+use std::sync::Mutex;
+
+// Global snapshot telemetry is shared state. In tests, we serialize snapshot
+// access to avoid flakiness under parallel test execution.
+#[cfg(test)]
+static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 /// Store the latest inline-auto VOI snapshot.
 pub fn set_inline_auto_voi_snapshot(snapshot: Option<VoiSamplerSnapshot>) {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     if let Ok(mut guard) = INLINE_AUTO_VOI_SNAPSHOT.write() {
         *guard = snapshot;
     }
@@ -19,6 +30,9 @@ pub fn set_inline_auto_voi_snapshot(snapshot: Option<VoiSamplerSnapshot>) {
 /// Fetch the latest inline-auto VOI snapshot.
 #[must_use]
 pub fn inline_auto_voi_snapshot() -> Option<VoiSamplerSnapshot> {
+    #[cfg(test)]
+    let _lock = TEST_LOCK.lock().expect("test lock poisoned");
+
     INLINE_AUTO_VOI_SNAPSHOT
         .read()
         .ok()

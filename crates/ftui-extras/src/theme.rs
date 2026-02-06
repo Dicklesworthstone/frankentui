@@ -1477,4 +1477,197 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn theme_id_index_round_trips() {
+        for theme in ThemeId::ALL {
+            assert_eq!(ThemeId::from_index(theme.index()), theme);
+        }
+    }
+
+    #[test]
+    fn theme_id_from_index_wraps() {
+        assert_eq!(ThemeId::from_index(5), ThemeId::CyberpunkAurora);
+        assert_eq!(ThemeId::from_index(7), ThemeId::LumenLight);
+    }
+
+    #[test]
+    fn theme_id_names_are_non_empty_and_distinct() {
+        let names: Vec<&str> = ThemeId::ALL.iter().map(|t| t.name()).collect();
+        for name in &names {
+            assert!(!name.is_empty());
+        }
+        for i in 0..names.len() {
+            for j in (i + 1)..names.len() {
+                assert_ne!(names[i], names[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn theme_id_next_visits_all_then_wraps() {
+        let mut t = ThemeId::CyberpunkAurora;
+        let mut visited = vec![t];
+        for _ in 0..ThemeId::ALL.len() {
+            t = t.next();
+            visited.push(t);
+        }
+        // After 5 steps, should wrap back to start
+        assert_eq!(*visited.last().unwrap(), ThemeId::CyberpunkAurora);
+        // Should have visited all 5 unique themes
+        let unique: std::collections::HashSet<_> = visited[..5].iter().collect();
+        assert_eq!(unique.len(), 5);
+    }
+
+    #[test]
+    fn theme_id_next_non_accessibility_skips_high_contrast() {
+        // High contrast should jump to CyberpunkAurora
+        assert_eq!(
+            ThemeId::HighContrast.next_non_accessibility(),
+            ThemeId::Darcula
+        );
+        // Standard themes cycle through STANDARD array
+        assert_eq!(
+            ThemeId::CyberpunkAurora.next_non_accessibility(),
+            ThemeId::Darcula
+        );
+        assert_eq!(
+            ThemeId::NordicFrost.next_non_accessibility(),
+            ThemeId::CyberpunkAurora
+        );
+    }
+
+    #[test]
+    fn theme_count_matches_all() {
+        assert_eq!(theme_count(), ThemeId::ALL.len());
+        assert_eq!(theme_count(), 5);
+    }
+
+    #[test]
+    fn accent_slot_wraps_index() {
+        let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let pal = current_palette();
+        // AccentSlot(12) should wrap to AccentSlot(0)
+        let slot0 = ColorToken::AccentSlot(0).resolve_in(pal);
+        let slot12 = ColorToken::AccentSlot(12).resolve_in(pal);
+        assert_eq!(slot0, slot12);
+        // AccentSlot(13) should wrap to AccentSlot(1)
+        let slot1 = ColorToken::AccentSlot(1).resolve_in(pal);
+        let slot13 = ColorToken::AccentSlot(13).resolve_in(pal);
+        assert_eq!(slot1, slot13);
+    }
+
+    #[test]
+    fn with_alpha_sets_alpha_channel() {
+        let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let color = with_alpha(accent::PRIMARY, 128);
+        assert_eq!(color.a(), 128);
+        let base = accent::PRIMARY.resolve();
+        assert_eq!(color.r(), base.r());
+    }
+
+    #[test]
+    fn with_opacity_zero_is_transparent() {
+        let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let color = with_opacity(accent::PRIMARY, 0.0);
+        assert_eq!(color.a(), 0);
+    }
+
+    #[test]
+    fn contrast_srgb_to_linear_boundaries() {
+        // 0.0 maps to 0.0
+        assert!((contrast::srgb_to_linear(0.0) - 0.0).abs() < 1e-10);
+        // 1.0 maps to 1.0
+        assert!((contrast::srgb_to_linear(1.0) - 1.0).abs() < 1e-6);
+        // Threshold boundary (~0.03928)
+        let below = contrast::srgb_to_linear(0.03);
+        let above = contrast::srgb_to_linear(0.04);
+        assert!(below < above);
+    }
+
+    #[test]
+    fn contrast_luminance_black_and_white() {
+        let black_lum = contrast::relative_luminance(PackedRgba::BLACK);
+        let white_lum = contrast::relative_luminance(PackedRgba::WHITE);
+        assert!(black_lum < 0.01, "black luminance should be near 0");
+        assert!(white_lum > 0.99, "white luminance should be near 1");
+    }
+
+    #[test]
+    fn contrast_ratio_black_on_white_is_21() {
+        let ratio = contrast::contrast_ratio(PackedRgba::BLACK, PackedRgba::WHITE);
+        assert!(
+            (ratio - 21.0).abs() < 0.1,
+            "black-on-white contrast should be ~21:1, got {ratio}"
+        );
+    }
+
+    #[test]
+    fn contrast_best_text_picks_highest_ratio() {
+        let bg = PackedRgba::rgb(128, 128, 128);
+        let candidates = [PackedRgba::BLACK, PackedRgba::WHITE];
+        let best = contrast::best_text_color(bg, &candidates);
+        // On medium gray, either black or white should win; white typically has higher contrast
+        let ratio_best = contrast::contrast_ratio(best, bg);
+        for &c in &candidates {
+            assert!(ratio_best >= contrast::contrast_ratio(c, bg) - 0.01);
+        }
+    }
+
+    #[test]
+    fn scoped_theme_lock_allows_reentrant_set_theme() {
+        let _guard = ScopedThemeLock::new(ThemeId::Darcula);
+        assert_eq!(current_theme(), ThemeId::Darcula);
+        // set_theme within the lock scope should succeed (reentrant)
+        set_theme(ThemeId::NordicFrost);
+        assert_eq!(current_theme(), ThemeId::NordicFrost);
+    }
+
+    #[test]
+    fn intent_bg_and_text_return_valid_colors() {
+        for theme in ThemeId::ALL {
+            let _guard = ScopedThemeLock::new(theme);
+            let base = bg::BASE.resolve();
+            // Each intent bg should have low alpha (tint)
+            assert!(intent::success_bg().a() < 128);
+            assert!(intent::warning_bg().a() < 128);
+            assert!(intent::info_bg().a() < 128);
+            assert!(intent::error_bg().a() < 128);
+            // Text colors should meet contrast over composed bg
+            let bg_success = intent::success_bg().over(base);
+            let text = intent::success_text();
+            assert!(
+                contrast::meets_wcag_aa(text, bg_success),
+                "intent success text contrast too low for {theme:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_type_bg_and_text_return_valid_colors() {
+        for theme in ThemeId::ALL {
+            let _guard = ScopedThemeLock::new(theme);
+            let base = bg::BASE.resolve();
+            // Each issue type bg should have low alpha (tint)
+            assert!(issue_type::bug_bg().a() < 128);
+            assert!(issue_type::feature_bg().a() < 128);
+            assert!(issue_type::task_bg().a() < 128);
+            assert!(issue_type::epic_bg().a() < 128);
+            // Text should meet contrast
+            let bg_bug = issue_type::bug_bg().over(base);
+            let text = issue_type::bug_text();
+            assert!(
+                contrast::meets_wcag_aa(text, bg_bug),
+                "issue bug text contrast too low for {theme:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_palettes_have_12_accent_slots() {
+        for theme in ThemeId::ALL {
+            let pal = palette(theme);
+            assert_eq!(pal.accent_slots.len(), 12);
+        }
+    }
 }

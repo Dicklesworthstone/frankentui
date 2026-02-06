@@ -5894,6 +5894,28 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_mouse_click_focuses_markdown_panel() {
+        let mut state = Dashboard::new();
+        state.tick(1);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let md = state.layout_markdown.get();
+        assert!(!md.is_empty(), "markdown panel should be laid out");
+
+        let click = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            md.x + 1,
+            md.y + 1,
+        ));
+        state.update(&click);
+
+        assert_eq!(state.focus, DashboardFocus::Markdown);
+    }
+
+    #[test]
     fn dashboard_shows_metrics() {
         let mut state = Dashboard::new();
         // Populate some history

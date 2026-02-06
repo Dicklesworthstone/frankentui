@@ -1012,4 +1012,133 @@ mod tests {
         let label_id = result.ir.nodes[0].label.unwrap();
         assert_eq!(result.ir.labels[label_id.0].text, "Alpha");
     }
+
+    #[test]
+    fn parse_html_label() {
+        let input = r#"digraph {
+            A [label=<Hello <b>World</b>>];
+        }"#;
+        let result = parse_dot(input).unwrap();
+        let label_id = result.ir.nodes[0].label.unwrap();
+        // HTML tags should be stripped
+        assert_eq!(result.ir.labels[label_id.0].text, "Hello World");
+    }
+
+    #[test]
+    fn parse_escape_sequences_in_labels() {
+        let input = "digraph { A [label=\"line1\\nline2\\ttab\\\\back\"]; }";
+        let result = parse_dot(input).unwrap();
+        let label_id = result.ir.nodes[0].label.unwrap();
+        assert_eq!(result.ir.labels[label_id.0].text, "line1\nline2\ttab\\back");
+    }
+
+    #[test]
+    fn parse_boolean_attrs_without_value() {
+        let input = r#"digraph {
+            A [filled; bold; label="X"];
+        }"#;
+        let result = parse_dot(input).unwrap();
+        // Should parse without error and pick up the label
+        let label_id = result.ir.nodes[0].label.unwrap();
+        assert_eq!(result.ir.labels[label_id.0].text, "X");
+    }
+
+    #[test]
+    fn parse_named_graph() {
+        let input = r#"digraph MyGraph {
+            A -> B;
+        }"#;
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes.len(), 2);
+        assert_eq!(result.ir.edges.len(), 1);
+    }
+
+    #[test]
+    fn dot_parse_error_display() {
+        let err = DotParseError {
+            message: "bad token".to_string(),
+            line: 3,
+            col: 7,
+        };
+        let s = format!("{err}");
+        assert!(s.contains("3:7"));
+        assert!(s.contains("bad token"));
+    }
+
+    #[test]
+    fn dot_shape_mapping_case_insensitive() {
+        assert_eq!(dot_shape_to_node_shape("BOX"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("Diamond"), NodeShape::Diamond);
+        assert_eq!(dot_shape_to_node_shape("ELLIPSE"), NodeShape::Rounded);
+    }
+
+    #[test]
+    fn dot_shape_parallelogram_and_plain() {
+        assert_eq!(
+            dot_shape_to_node_shape("parallelogram"),
+            NodeShape::Asymmetric
+        );
+        assert_eq!(dot_shape_to_node_shape("plaintext"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("plain"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("none"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("mrecord"), NodeShape::Subroutine);
+    }
+
+    #[test]
+    fn strip_html_tags_nested() {
+        assert_eq!(strip_html_tags("<a><b>text</b></a>"), "text");
+        assert_eq!(strip_html_tags("no tags"), "no tags");
+        assert_eq!(strip_html_tags("<br/>"), "");
+        assert_eq!(strip_html_tags("a<i>b</i>c"), "abc");
+    }
+
+    #[test]
+    fn skip_leading_comments_strips_all_comment_types() {
+        assert_eq!(skip_leading_comments("// line\ndigraph"), "digraph");
+        assert_eq!(skip_leading_comments("/* block */digraph"), "digraph");
+        assert_eq!(skip_leading_comments("# hash\ndigraph"), "digraph");
+        // Unclosed comments
+        assert_eq!(skip_leading_comments("// no newline"), "");
+        assert_eq!(skip_leading_comments("/* never closed"), "");
+    }
+
+    #[test]
+    fn parse_missing_closing_brace() {
+        // Missing } should still parse without panicking
+        let input = "digraph { A -> B;";
+        let result = parse_dot(input);
+        // Should succeed (parser is lenient about missing })
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_semicolon_separated_attrs() {
+        let input = r#"digraph {
+            A [label="one"; shape=circle];
+        }"#;
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes[0].shape, NodeShape::Circle);
+        let label_id = result.ir.nodes[0].label.unwrap();
+        assert_eq!(result.ir.labels[label_id.0].text, "one");
+    }
+
+    #[test]
+    fn looks_like_dot_block_comment_before_digraph() {
+        assert!(looks_like_dot("/* header */\ndigraph { }"));
+    }
+
+    #[test]
+    fn parse_subgraph_without_name() {
+        let input = r#"digraph {
+            subgraph {
+                X; Y;
+            }
+            X -> Y;
+        }"#;
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes.len(), 2);
+        // Cluster should exist but without a title
+        assert_eq!(result.ir.clusters.len(), 1);
+        assert!(result.ir.clusters[0].title.is_none());
+    }
 }
