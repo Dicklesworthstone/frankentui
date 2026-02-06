@@ -92,6 +92,7 @@
 //! - Enter: Select task
 //! - Up/Down/j/k: Navigate task list
 
+use std::cell::Cell as StdCell;
 use std::collections::VecDeque;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
@@ -913,6 +914,11 @@ pub struct AsyncTaskManager {
     diagnostic_log: DiagnosticLog,
     /// Hazard-based cancellation configuration (bd-13pq.8).
     hazard_config: HazardConfig,
+    // Cached layout rects for mouse hit testing.
+    layout_task_list: StdCell<Rect>,
+    layout_task_list_inner: StdCell<Rect>,
+    layout_details: StdCell<Rect>,
+    layout_activity: StdCell<Rect>,
 }
 
 impl Default for AsyncTaskManager {
@@ -943,6 +949,10 @@ impl AsyncTaskManager {
             diagnostic_config,
             diagnostic_log: DiagnosticLog::new(max_entries),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         // Seed with a few initial tasks
@@ -1758,6 +1768,9 @@ impl AsyncTaskManager {
             return;
         }
 
+        // Cache inner area for mouse row hit testing.
+        self.layout_task_list_inner.set(inner);
+
         // Calculate visible range
         let visible_count = inner.height as usize;
         let scroll_offset = if self.selected >= visible_count {
@@ -1988,6 +2001,40 @@ impl Screen for AsyncTaskManager {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        // Mouse: click task rows to select, wheel to scroll.
+        if let Event::Mouse(mouse) = event {
+            let list_inner = self.layout_task_list_inner.get();
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if list_inner.contains(mouse.x, mouse.y) {
+                        // Calculate which task row was clicked.
+                        let row_offset = (mouse.y - list_inner.y) as usize;
+                        let visible_count = list_inner.height as usize;
+                        let scroll_offset = if self.selected >= visible_count {
+                            self.selected - visible_count + 1
+                        } else {
+                            0
+                        };
+                        let task_idx = scroll_offset + row_offset;
+                        if task_idx < self.tasks.len() {
+                            self.selected = task_idx;
+                        }
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if list_inner.contains(mouse.x, mouse.y) {
+                        self.select_prev();
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if list_inner.contains(mouse.x, mouse.y) {
+                        self.select_next();
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let Event::Key(KeyEvent {
             code,
             kind: KeyEventKind::Press,
@@ -2073,12 +2120,18 @@ impl Screen for AsyncTaskManager {
             .constraints([Constraint::Percentage(60.0), Constraint::Percentage(40.0)])
             .split(main_layout[1]);
 
+        // Cache layout rects for mouse hit testing.
+        self.layout_task_list.set(content_cols[0]);
+
         self.render_task_list(frame, content_cols[0]);
 
         // Right column: details on top, activity on bottom
         let right_rows = Flex::vertical()
             .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
             .split(content_cols[1]);
+
+        self.layout_details.set(right_rows[0]);
+        self.layout_activity.set(right_rows[1]);
 
         self.render_task_details(frame, right_rows[0]);
         self.render_activity_log(frame, right_rows[1]);
@@ -2117,6 +2170,14 @@ impl Screen for AsyncTaskManager {
             HelpEntry {
                 key: "Home/End",
                 action: "Jump to first/last",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Select task row",
+            },
+            HelpEntry {
+                key: "Wheel",
+                action: "Scroll task list",
             },
         ]
     }
