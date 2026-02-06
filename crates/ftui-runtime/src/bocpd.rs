@@ -1483,4 +1483,287 @@ mod tests {
             );
         }
     }
+
+    // ── BocpdConfig presets ─────────────────────────────────────────
+
+    #[test]
+    fn responsive_config_values() {
+        let config = BocpdConfig::responsive();
+        assert!((config.mu_steady_ms - 150.0).abs() < f64::EPSILON);
+        assert!((config.mu_burst_ms - 15.0).abs() < f64::EPSILON);
+        assert!((config.hazard_lambda - 30.0).abs() < f64::EPSILON);
+        assert!((config.steady_threshold - 0.25).abs() < f64::EPSILON);
+        assert!((config.burst_threshold - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aggressive_coalesce_config_values() {
+        let config = BocpdConfig::aggressive_coalesce();
+        assert!((config.mu_steady_ms - 250.0).abs() < f64::EPSILON);
+        assert!((config.mu_burst_ms - 25.0).abs() < f64::EPSILON);
+        assert!((config.hazard_lambda - 80.0).abs() < f64::EPSILON);
+        assert!((config.steady_threshold - 0.4).abs() < f64::EPSILON);
+        assert!((config.burst_threshold - 0.8).abs() < f64::EPSILON);
+        assert!((config.burst_prior - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn with_logging_builder() {
+        let config = BocpdConfig::default().with_logging(true);
+        assert!(config.enable_logging);
+        let config2 = config.with_logging(false);
+        assert!(!config2.enable_logging);
+    }
+
+    // ── BocpdRegime ─────────────────────────────────────────────────
+
+    #[test]
+    fn regime_as_str() {
+        assert_eq!(BocpdRegime::Steady.as_str(), "steady");
+        assert_eq!(BocpdRegime::Burst.as_str(), "burst");
+        assert_eq!(BocpdRegime::Transitional.as_str(), "transitional");
+    }
+
+    #[test]
+    fn regime_display() {
+        assert_eq!(format!("{}", BocpdRegime::Steady), "steady");
+        assert_eq!(format!("{}", BocpdRegime::Burst), "burst");
+        assert_eq!(format!("{}", BocpdRegime::Transitional), "transitional");
+    }
+
+    #[test]
+    fn regime_default_is_steady() {
+        assert_eq!(BocpdRegime::default(), BocpdRegime::Steady);
+    }
+
+    #[test]
+    fn regime_clone_eq() {
+        let r = BocpdRegime::Burst;
+        assert_eq!(r, r.clone());
+        assert_ne!(BocpdRegime::Steady, BocpdRegime::Burst);
+    }
+
+    // ── BocpdDetector constructors ──────────────────────────────────
+
+    #[test]
+    fn detector_default_impl() {
+        let det = BocpdDetector::default();
+        assert_eq!(det.regime(), BocpdRegime::Steady);
+        assert_eq!(det.observation_count(), 0);
+    }
+
+    #[test]
+    fn detector_config_accessor() {
+        let config = BocpdConfig {
+            mu_steady_ms: 300.0,
+            ..Default::default()
+        };
+        let det = BocpdDetector::new(config);
+        assert!((det.config().mu_steady_ms - 300.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn detector_run_length_posterior_accessor() {
+        let det = BocpdDetector::with_defaults();
+        let posterior = det.run_length_posterior();
+        // Default max_run_length = 100, so K+1 = 101 elements
+        assert_eq!(posterior.len(), 101);
+        let sum: f64 = posterior.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn detector_expected_run_length_initial() {
+        let det = BocpdDetector::with_defaults();
+        let erl = det.expected_run_length();
+        // Uniform posterior over 0..=100 → mean = 50.0
+        assert!((erl - 50.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn detector_last_evidence_initially_none() {
+        let det = BocpdDetector::with_defaults();
+        assert!(det.last_evidence().is_none());
+    }
+
+    // ── set_decision_context ────────────────────────────────────────
+
+    #[test]
+    fn set_decision_context_updates_evidence() {
+        let mut det = BocpdDetector::with_defaults();
+        det.observe_event(Instant::now());
+        det.set_decision_context(16, 40, false);
+
+        let ev = det.last_evidence().unwrap();
+        assert_eq!(ev.recommended_delay_ms, Some(16)); // steady default
+        assert_eq!(ev.hard_deadline_forced, Some(false));
+    }
+
+    #[test]
+    fn set_decision_context_noop_without_evidence() {
+        let mut det = BocpdDetector::with_defaults();
+        // No observe_event called, so no evidence
+        det.set_decision_context(16, 40, true);
+        assert!(det.last_evidence().is_none());
+    }
+
+    // ── evidence_jsonl ──────────────────────────────────────────────
+
+    #[test]
+    fn evidence_jsonl_none_when_disabled() {
+        let mut det = BocpdDetector::with_defaults();
+        det.observe_event(Instant::now());
+        assert!(det.evidence_jsonl().is_none());
+    }
+
+    #[test]
+    fn decision_log_jsonl_none_when_disabled() {
+        let mut det = BocpdDetector::with_defaults();
+        det.observe_event(Instant::now());
+        assert!(det.decision_log_jsonl(16, 40, false).is_none());
+    }
+
+    #[test]
+    fn decision_log_jsonl_none_without_evidence() {
+        let mut det = BocpdDetector::new(BocpdConfig::default().with_logging(true));
+        // No observe_event called
+        assert!(det.decision_log_jsonl(16, 40, false).is_none());
+    }
+
+    // ── BocpdEvidence Display ───────────────────────────────────────
+
+    #[test]
+    fn evidence_display_format() {
+        let mut det = BocpdDetector::with_defaults();
+        det.observe_event(Instant::now());
+        let ev = det.last_evidence().unwrap();
+        let display = format!("{}", ev);
+        assert!(display.contains("BOCPD Evidence:"));
+        assert!(display.contains("Regime:"));
+        assert!(display.contains("P(burst)"));
+        assert!(display.contains("Log BF:"));
+        assert!(display.contains("Observation:"));
+        assert!(display.contains("Likelihoods:"));
+        assert!(display.contains("E[run-length]:"));
+        assert!(display.contains("Observations:"));
+    }
+
+    // ── BocpdEvidence to_jsonl with optional fields ─────────────────
+
+    #[test]
+    fn evidence_jsonl_with_decision_context() {
+        let mut det = BocpdDetector::new(BocpdConfig::default().with_logging(true));
+        det.observe_event(Instant::now());
+        det.set_decision_context(16, 40, true);
+
+        let jsonl = det.evidence_jsonl().unwrap();
+        assert!(jsonl.contains("\"delay_ms\":16"));
+        assert!(jsonl.contains("\"forced_deadline\":true"));
+    }
+
+    #[test]
+    fn evidence_jsonl_null_optional_fields() {
+        let mut det = BocpdDetector::new(BocpdConfig::default().with_logging(true));
+        det.observe_event(Instant::now());
+
+        let jsonl = det.evidence_jsonl().unwrap();
+        assert!(jsonl.contains("\"delay_ms\":null"));
+        assert!(jsonl.contains("\"forced_deadline\":null"));
+    }
+
+    // ── recommended_delay edge cases ────────────────────────────────
+
+    #[test]
+    fn recommended_delay_at_exact_thresholds() {
+        let mut det = BocpdDetector::with_defaults();
+        // At exactly steady_threshold (0.3) → transitional
+        det.p_burst = 0.3;
+        let delay = det.recommended_delay(16, 40);
+        assert_eq!(delay, 16); // t = (0.3 - 0.3) / (0.7 - 0.3) = 0
+
+        // At exactly burst_threshold (0.7) → transitional
+        det.p_burst = 0.7;
+        let delay = det.recommended_delay(16, 40);
+        assert_eq!(delay, 40); // t = (0.7 - 0.3) / (0.7 - 0.3) = 1
+    }
+
+    #[test]
+    fn recommended_delay_midpoint() {
+        let mut det = BocpdDetector::with_defaults();
+        det.p_burst = 0.5; // midpoint of [0.3, 0.7]
+        let delay = det.recommended_delay(16, 40);
+        assert_eq!(delay, 28); // 16 * 0.5 + 40 * 0.5 = 28
+    }
+
+    // ── reset clears last_event_time ────────────────────────────────
+
+    #[test]
+    fn reset_clears_last_event_time() {
+        let mut det = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        det.observe_event(start);
+        det.observe_event(start + Duration::from_millis(10));
+        assert_eq!(det.observation_count(), 2);
+
+        det.reset();
+        assert_eq!(det.observation_count(), 0);
+        assert!(det.last_evidence().is_none());
+        // After reset, first event should use default mu_steady_ms
+        let regime = det.observe_event(start + Duration::from_millis(100));
+        assert_eq!(det.observation_count(), 1);
+    }
+
+    // ── First event uses default inter-arrival ──────────────────────
+
+    #[test]
+    fn first_event_uses_steady_default() {
+        let mut det = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        det.observe_event(t);
+        let ev = det.last_evidence().unwrap();
+        // First event should use mu_steady_ms as default observation
+        assert!((ev.observation_ms - 200.0).abs() < f64::EPSILON);
+    }
+
+    // ── Observation clamping ────────────────────────────────────────
+
+    #[test]
+    fn observation_clamped_to_bounds() {
+        let mut det = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        // First event (uses default, not clamped)
+        det.observe_event(start);
+        // Second event 0ms later → should be clamped to min_observation_ms
+        det.observe_event(start);
+        let ev = det.last_evidence().unwrap();
+        assert!(ev.observation_ms >= det.config().min_observation_ms);
+    }
+
+    // ── BocpdConfig clone/debug ─────────────────────────────────────
+
+    #[test]
+    fn config_clone_debug() {
+        let config = BocpdConfig::default();
+        let cloned = config.clone();
+        assert!((cloned.mu_steady_ms - 200.0).abs() < f64::EPSILON);
+        let dbg = format!("{:?}", config);
+        assert!(dbg.contains("BocpdConfig"));
+    }
+
+    #[test]
+    fn detector_clone_debug() {
+        let det = BocpdDetector::with_defaults();
+        let cloned = det.clone();
+        assert!((cloned.p_burst() - det.p_burst()).abs() < f64::EPSILON);
+        let dbg = format!("{:?}", det);
+        assert!(dbg.contains("BocpdDetector"));
+    }
+
+    #[test]
+    fn evidence_clone() {
+        let mut det = BocpdDetector::with_defaults();
+        det.observe_event(Instant::now());
+        let ev = det.last_evidence().unwrap().clone();
+        assert_eq!(ev.observation_count, 1);
+    }
 }
