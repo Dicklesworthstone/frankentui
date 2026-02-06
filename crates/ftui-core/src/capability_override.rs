@@ -703,4 +703,132 @@ mod tests {
         let over = CapabilityOverride::default();
         assert!(over.is_empty());
     }
+
+    #[test]
+    fn is_empty_false_for_single_override() {
+        let over = CapabilityOverride::new().true_color(Some(true));
+        assert!(!over.is_empty());
+    }
+
+    #[test]
+    fn dumb_disables_all_fields() {
+        let over = CapabilityOverride::dumb();
+        assert_eq!(over.unicode_box_drawing, Some(false));
+        assert_eq!(over.unicode_emoji, Some(false));
+        assert_eq!(over.double_width, Some(false));
+        assert_eq!(over.osc8_hyperlinks, Some(false));
+        assert_eq!(over.scroll_region, Some(false));
+        assert_eq!(over.kitty_keyboard, Some(false));
+        assert_eq!(over.focus_events, Some(false));
+        assert_eq!(over.bracketed_paste, Some(false));
+        assert_eq!(over.osc52_clipboard, Some(false));
+        assert_eq!(over.in_tmux, Some(false));
+        assert_eq!(over.in_screen, Some(false));
+        assert_eq!(over.in_zellij, Some(false));
+    }
+
+    #[test]
+    fn modern_enables_features_disables_mux() {
+        let over = CapabilityOverride::modern();
+        assert_eq!(over.unicode_box_drawing, Some(true));
+        assert_eq!(over.unicode_emoji, Some(true));
+        assert_eq!(over.double_width, Some(true));
+        assert_eq!(over.osc8_hyperlinks, Some(true));
+        assert_eq!(over.scroll_region, Some(true));
+        assert_eq!(over.focus_events, Some(true));
+        assert_eq!(over.bracketed_paste, Some(true));
+        assert_eq!(over.osc52_clipboard, Some(true));
+        assert_eq!(over.in_screen, Some(false));
+        assert_eq!(over.in_zellij, Some(false));
+    }
+
+    #[test]
+    fn tmux_sets_bracketed_paste_and_colors() {
+        let over = CapabilityOverride::tmux();
+        assert_eq!(over.colors_256, Some(true));
+        assert_eq!(over.bracketed_paste, Some(true));
+        assert_eq!(over.mouse_sgr, Some(true));
+        assert_eq!(over.scroll_region, Some(true));
+        assert_eq!(over.kitty_keyboard, Some(false));
+    }
+
+    #[test]
+    fn builder_all_optional_features() {
+        let over = CapabilityOverride::new()
+            .unicode_emoji(Some(true))
+            .double_width(Some(false))
+            .in_screen(Some(true))
+            .in_zellij(Some(true))
+            .osc8_hyperlinks(Some(true))
+            .osc52_clipboard(Some(false))
+            .scroll_region(Some(true))
+            .focus_events(Some(true))
+            .bracketed_paste(Some(false))
+            .kitty_keyboard(Some(true));
+
+        assert_eq!(over.unicode_emoji, Some(true));
+        assert_eq!(over.double_width, Some(false));
+        assert_eq!(over.in_screen, Some(true));
+        assert_eq!(over.in_zellij, Some(true));
+        assert_eq!(over.osc8_hyperlinks, Some(true));
+        assert_eq!(over.osc52_clipboard, Some(false));
+        assert_eq!(over.scroll_region, Some(true));
+        assert_eq!(over.focus_events, Some(true));
+        assert_eq!(over.bracketed_paste, Some(false));
+        assert_eq!(over.kitty_keyboard, Some(true));
+    }
+
+    #[test]
+    fn apply_to_covers_all_mux_flags() {
+        let base = TerminalCapabilities::dumb();
+        let over = CapabilityOverride::new()
+            .in_tmux(Some(true))
+            .in_screen(Some(true))
+            .in_zellij(Some(true));
+        let result = over.apply_to(base);
+        assert!(result.in_tmux);
+        assert!(result.in_screen);
+        assert!(result.in_zellij);
+    }
+
+    #[test]
+    fn apply_to_covers_input_features() {
+        let base = TerminalCapabilities::dumb();
+        let over = CapabilityOverride::new()
+            .kitty_keyboard(Some(true))
+            .focus_events(Some(true))
+            .bracketed_paste(Some(true))
+            .osc52_clipboard(Some(true));
+        let result = over.apply_to(base);
+        assert!(result.kitty_keyboard);
+        assert!(result.focus_events);
+        assert!(result.bracketed_paste);
+        assert!(result.osc52_clipboard);
+    }
+
+    #[test]
+    fn current_capabilities_with_base_composes_stack() {
+        clear_all_overrides();
+        let base = TerminalCapabilities::dumb();
+
+        let _g1 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _g2 = push_override(CapabilityOverride::new().mouse_sgr(Some(true)));
+
+        let caps = current_capabilities_with_base(base);
+        assert!(caps.true_color);
+        assert!(caps.mouse_sgr);
+        assert!(!caps.colors_256); // Not overridden, remains dumb
+
+        clear_all_overrides();
+    }
+
+    #[test]
+    fn override_clone() {
+        let over = CapabilityOverride::new()
+            .true_color(Some(true))
+            .in_tmux(Some(false));
+        let cloned = over.clone();
+        assert_eq!(over.true_color, cloned.true_color);
+        assert_eq!(over.in_tmux, cloned.in_tmux);
+    }
 }

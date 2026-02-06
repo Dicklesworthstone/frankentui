@@ -1390,4 +1390,108 @@ mod tests {
         assert!(matches!(PlasmaFx::fire().palette(), PlasmaPalette::Fire));
         assert!(matches!(PlasmaFx::neon().palette(), PlasmaPalette::Neon));
     }
+
+    #[test]
+    fn factory_methods_remaining_palettes() {
+        assert!(matches!(
+            PlasmaFx::cyberpunk().palette(),
+            PlasmaPalette::Cyberpunk
+        ));
+        assert!(matches!(
+            PlasmaFx::aurora().palette(),
+            PlasmaPalette::Aurora
+        ));
+        assert!(matches!(PlasmaFx::ember().palette(), PlasmaPalette::Ember));
+        assert!(matches!(
+            PlasmaFx::subtle().palette(),
+            PlasmaPalette::Subtle
+        ));
+        assert!(matches!(
+            PlasmaFx::monochrome().palette(),
+            PlasmaPalette::Monochrome
+        ));
+    }
+
+    #[test]
+    fn fx_name_returns_plasma() {
+        let fx = PlasmaFx::default();
+        assert_eq!(fx.name(), "plasma");
+    }
+
+    #[test]
+    fn fx_default_is_theme_accents() {
+        let fx = PlasmaFx::default();
+        assert_eq!(fx.palette(), PlasmaPalette::ThemeAccents);
+    }
+
+    #[test]
+    fn palette_default_is_theme_accents() {
+        let palette = PlasmaPalette::default();
+        assert_eq!(palette, PlasmaPalette::ThemeAccents);
+    }
+
+    #[test]
+    fn galaxy_palette_renders_valid_colors() {
+        let theme = ThemeInputs::default_dark();
+        for i in 0..=10 {
+            let t = i as f64 / 10.0;
+            let color = PlasmaPalette::Galaxy.color_at(t, &theme);
+            // Just verify we get valid RGB values (no panics)
+            let _ = (color.r(), color.g(), color.b());
+        }
+    }
+
+    #[test]
+    fn cyberpunk_palette_renders_valid_colors() {
+        let theme = ThemeInputs::default_dark();
+        let start = PlasmaPalette::Cyberpunk.color_at(0.0, &theme);
+        let end = PlasmaPalette::Cyberpunk.color_at(1.0, &theme);
+        // Cyberpunk starts with hot pink (high R)
+        assert!(start.r() > 200);
+        // Cyberpunk ends with cyan (high B and G)
+        assert!(end.b() > 200);
+    }
+
+    #[test]
+    fn plasma_wave_low_deterministic() {
+        let a = plasma_wave_low(0.5, 0.5, 1.0);
+        let b = plasma_wave_low(0.5, 0.5, 1.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn monochrome_palette_endpoints() {
+        let theme = ThemeInputs::default_dark();
+        let at_zero = PlasmaPalette::Monochrome.color_at(0.0, &theme);
+        let at_one = PlasmaPalette::Monochrome.color_at(1.0, &theme);
+        // At t=0, should match bg_base
+        assert_eq!(at_zero.r(), theme.bg_base.r());
+        assert_eq!(at_zero.g(), theme.bg_base.g());
+        // At t=1, should match fg_primary
+        assert_eq!(at_one.r(), theme.fg_primary.r());
+        assert_eq!(at_one.g(), theme.fg_primary.g());
+    }
+
+    #[test]
+    fn hsv_to_rgb_green_and_blue() {
+        let green = PlasmaPalette::hsv_to_rgb(120.0, 1.0, 1.0);
+        assert!(green.g() > 200);
+        assert!(green.r() < 10);
+        assert!(green.b() < 10);
+
+        let blue = PlasmaPalette::hsv_to_rgb(240.0, 1.0, 1.0);
+        assert!(blue.b() > 200);
+        assert!(blue.r() < 10);
+        assert!(blue.g() < 10);
+    }
+
+    #[test]
+    fn palette_is_theme_derived_correct() {
+        assert!(!PlasmaPalette::Sunset.is_theme_derived());
+        assert!(!PlasmaPalette::Ocean.is_theme_derived());
+        assert!(!PlasmaPalette::Fire.is_theme_derived());
+        assert!(!PlasmaPalette::Neon.is_theme_derived());
+        assert!(!PlasmaPalette::Cyberpunk.is_theme_derived());
+        assert!(!PlasmaPalette::Galaxy.is_theme_derived());
+    }
 }

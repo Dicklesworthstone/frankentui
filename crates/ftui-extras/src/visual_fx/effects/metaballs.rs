@@ -1130,4 +1130,207 @@ mod tests {
         // Reset for other tests.
         gpu::reset_for_tests();
     }
+
+    #[test]
+    fn lerp_color_at_zero_returns_first() {
+        let a = PackedRgba::rgb(10, 20, 30);
+        let b = PackedRgba::rgb(200, 180, 160);
+        let result = lerp_color(a, b, 0.0);
+        assert_eq!(result.r(), 10);
+        assert_eq!(result.g(), 20);
+        assert_eq!(result.b(), 30);
+    }
+
+    #[test]
+    fn lerp_color_at_one_returns_second() {
+        let a = PackedRgba::rgb(10, 20, 30);
+        let b = PackedRgba::rgb(200, 180, 160);
+        let result = lerp_color(a, b, 1.0);
+        assert_eq!(result.r(), 200);
+        assert_eq!(result.g(), 180);
+        assert_eq!(result.b(), 160);
+    }
+
+    #[test]
+    fn lerp_color_midpoint() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(200, 100, 50);
+        let result = lerp_color(a, b, 0.5);
+        // Fixed-point 8.8 may have ±1 rounding
+        assert!((result.r() as i16 - 100).abs() <= 1);
+        assert!((result.g() as i16 - 50).abs() <= 1);
+        assert!((result.b() as i16 - 25).abs() <= 1);
+    }
+
+    #[test]
+    fn lerp_color_clamps_negative_t() {
+        let a = PackedRgba::rgb(10, 20, 30);
+        let b = PackedRgba::rgb(200, 180, 160);
+        let result = lerp_color(a, b, -5.0);
+        assert_eq!(result.r(), 10);
+        assert_eq!(result.g(), 20);
+        assert_eq!(result.b(), 30);
+    }
+
+    #[test]
+    fn gradient_color_at_zero_matches_first_stop() {
+        let stops = [
+            PackedRgba::rgb(255, 0, 0),
+            PackedRgba::rgb(0, 255, 0),
+            PackedRgba::rgb(0, 0, 255),
+            PackedRgba::rgb(255, 255, 255),
+        ];
+        let result = gradient_color(&stops, 0.0);
+        assert_eq!(result.r(), 255);
+        assert_eq!(result.g(), 0);
+        assert_eq!(result.b(), 0);
+    }
+
+    #[test]
+    fn gradient_color_at_one_matches_last_stop() {
+        let stops = [
+            PackedRgba::rgb(255, 0, 0),
+            PackedRgba::rgb(0, 255, 0),
+            PackedRgba::rgb(0, 0, 255),
+            PackedRgba::rgb(255, 255, 255),
+        ];
+        let result = gradient_color(&stops, 1.0);
+        assert_eq!(result.r(), 255);
+        assert_eq!(result.g(), 255);
+        assert_eq!(result.b(), 255);
+    }
+
+    #[test]
+    fn gradient_color_clamps_above_one() {
+        let stops = [
+            PackedRgba::rgb(255, 0, 0),
+            PackedRgba::rgb(0, 255, 0),
+            PackedRgba::rgb(0, 0, 255),
+            PackedRgba::rgb(100, 100, 100),
+        ];
+        let at_one = gradient_color(&stops, 1.0);
+        let above = gradient_color(&stops, 5.0);
+        assert_eq!(at_one, above);
+    }
+
+    #[test]
+    fn fx_name_returns_metaballs() {
+        let fx = MetaballsFx::default();
+        assert_eq!(fx.name(), "metaballs");
+    }
+
+    #[test]
+    fn fx_set_params_changes_palette() {
+        let mut fx = MetaballsFx::new(MetaballsParams::default());
+        assert_eq!(fx.params.palette, MetaballsPalette::ThemeAccents);
+        fx.set_params(MetaballsParams::aurora());
+        assert_eq!(fx.params.palette, MetaballsPalette::Aurora);
+    }
+
+    #[test]
+    fn resize_zero_clears_coords() {
+        let mut fx = MetaballsFx::default();
+        fx.resize(10, 10);
+        assert!(!fx.x_coords.is_empty());
+        fx.resize(0, 5);
+        assert!(fx.x_coords.is_empty());
+        assert!(fx.y_coords.is_empty());
+    }
+
+    #[test]
+    fn ball_count_for_quality_empty_balls() {
+        let params = MetaballsParams {
+            balls: vec![],
+            ..Default::default()
+        };
+        assert_eq!(params.ball_count_for_quality(FxQuality::Full), 0);
+        assert_eq!(params.ball_count_for_quality(FxQuality::Reduced), 0);
+        assert_eq!(params.ball_count_for_quality(FxQuality::Minimal), 0);
+        assert_eq!(params.ball_count_for_quality(FxQuality::Off), 0);
+    }
+
+    #[test]
+    fn ball_count_for_quality_single_ball() {
+        let params = MetaballsParams {
+            balls: vec![Metaball {
+                x: 0.5,
+                y: 0.5,
+                vx: 0.0,
+                vy: 0.0,
+                radius: 0.2,
+                hue: 0.0,
+                phase: 0.0,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(params.ball_count_for_quality(FxQuality::Full), 1);
+        assert_eq!(params.ball_count_for_quality(FxQuality::Off), 0);
+    }
+
+    #[test]
+    fn ping_pong_equal_min_max() {
+        // Degenerate range: min == max
+        let v = ping_pong(0.5, 0.5, 0.5);
+        // Should not panic and return something close to min
+        assert!((v - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn metaball_partial_eq() {
+        let a = Metaball {
+            x: 0.5,
+            y: 0.5,
+            vx: 0.01,
+            vy: 0.02,
+            radius: 0.2,
+            hue: 0.3,
+            phase: 1.0,
+        };
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn palette_stops_differ_by_variant() {
+        let theme = ThemeInputs::default_dark();
+        let accents = MetaballsPalette::ThemeAccents.stops(&theme);
+        let aurora = MetaballsPalette::Aurora.stops(&theme);
+        let lava = MetaballsPalette::Lava.stops(&theme);
+        let ocean = MetaballsPalette::Ocean.stops(&theme);
+        // At least some palettes should produce different stop arrays
+        assert!(
+            accents != aurora || accents != lava || accents != ocean,
+            "All palettes returned identical stops"
+        );
+    }
+
+    #[test]
+    fn thresholds_zero_glow_still_valid() {
+        let params = MetaballsParams {
+            glow_threshold: 0.0,
+            threshold: 0.0,
+            ..Default::default()
+        };
+        let (glow, threshold) = params.thresholds();
+        assert!(threshold > glow, "threshold must exceed glow");
+    }
+
+    #[test]
+    fn aurora_preset_palette() {
+        let p = MetaballsParams::aurora();
+        assert_eq!(p.palette, MetaballsPalette::Aurora);
+        assert!(!p.balls.is_empty());
+    }
+
+    #[test]
+    fn lava_preset_palette() {
+        let p = MetaballsParams::lava();
+        assert_eq!(p.palette, MetaballsPalette::Lava);
+    }
+
+    #[test]
+    fn ocean_preset_palette() {
+        let p = MetaballsParams::ocean();
+        assert_eq!(p.palette, MetaballsPalette::Ocean);
+    }
 }

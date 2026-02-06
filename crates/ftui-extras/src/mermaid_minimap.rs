@@ -610,4 +610,102 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn minimap_corner_default_is_bottom_right() {
+        let corner = MinimapCorner::default();
+        assert_eq!(corner, MinimapCorner::BottomRight);
+    }
+
+    #[test]
+    fn config_default_fields() {
+        let config = MinimapConfig::default();
+        assert_eq!(config.max_width, 30);
+        assert_eq!(config.max_height, 15);
+        assert_eq!(config.margin, 1);
+        assert_eq!(config.corner, MinimapCorner::BottomRight);
+    }
+
+    #[test]
+    fn total_size_includes_border() {
+        let layout = simple_layout();
+        let minimap = Minimap::new(&layout, MinimapConfig::default());
+        let (w, h) = minimap.total_size();
+        let (cw, ch) = minimap.content_cells;
+        assert_eq!(w, cw + 2);
+        assert_eq!(h, ch + 2);
+    }
+
+    #[test]
+    fn placement_bottom_left() {
+        let layout = simple_layout();
+        let config = MinimapConfig {
+            corner: MinimapCorner::BottomLeft,
+            margin: 1,
+            ..MinimapConfig::default()
+        };
+        let minimap = Minimap::new(&layout, config);
+        let area = Rect::new(0, 0, 120, 40);
+        let rect = minimap.placement(area);
+        // Should be in bottom-left with margin
+        assert_eq!(rect.x, area.x + 1);
+        assert!(rect.y > area.y + area.height / 2);
+    }
+
+    #[test]
+    fn placement_top_right() {
+        let layout = simple_layout();
+        let config = MinimapConfig {
+            corner: MinimapCorner::TopRight,
+            margin: 1,
+            ..MinimapConfig::default()
+        };
+        let minimap = Minimap::new(&layout, config);
+        let area = Rect::new(0, 0, 120, 40);
+        let rect = minimap.placement(area);
+        assert!(rect.x > area.x + area.width / 2);
+        assert_eq!(rect.y, area.y + 1);
+    }
+
+    #[test]
+    fn layout_to_px_zero_bounding_box() {
+        let bb = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        let (x, y) = layout_to_px(LayoutPoint { x: 5.0, y: 5.0 }, &bb, 60, 40);
+        assert_eq!((x, y), (0, 0));
+    }
+
+    #[test]
+    fn is_trivial_for_tiny_config() {
+        let layout = simple_layout();
+        let config = MinimapConfig {
+            max_width: 4,
+            max_height: 3,
+            ..MinimapConfig::default()
+        };
+        let minimap = Minimap::new(&layout, config);
+        // With max 4x3 minus 2 for border = 2x1 content, should be trivial
+        assert!(minimap.is_trivial());
+    }
+
+    #[test]
+    fn render_with_viewport_and_selected_node() {
+        let layout = simple_layout();
+        let minimap = Minimap::new(&layout, MinimapConfig::default());
+        let mut buf = Buffer::new(120, 40);
+        let area = Rect::new(0, 0, 120, 40);
+        let viewport = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 25.0,
+        };
+        // Should not panic with both viewport and selected node
+        minimap.render(area, &mut buf, Some(&viewport), Some(0));
+        minimap.render(area, &mut buf, Some(&viewport), Some(1));
+    }
 }
