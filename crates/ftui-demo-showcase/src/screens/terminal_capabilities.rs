@@ -14,6 +14,7 @@
 //!
 //! For deterministic timestamps in tests, set `FTUI_TERMCAPS_DETERMINISTIC=true`.
 
+use std::cell::Cell;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,7 +23,9 @@ use std::time::{Duration, Instant};
 use ftui_core::capability_override::{has_active_overrides, override_depth};
 #[cfg(feature = "caps-probe")]
 use ftui_core::caps_probe::{CapabilityProber, EvidenceSource, ProbeableCapability};
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
 use ftui_layout::{Constraint, Flex};
@@ -537,6 +540,8 @@ pub struct TerminalCapabilitiesScreen {
     diagnostic_log: DiagnosticLog,
     last_report: Option<ReportStatus>,
     tick_count: u64,
+    /// Cached render area of the matrix panel for mouse hit-testing.
+    last_matrix_area: Cell<Rect>,
 }
 
 impl Default for TerminalCapabilitiesScreen {
@@ -563,6 +568,7 @@ impl TerminalCapabilitiesScreen {
             diagnostic_log,
             last_report: None,
             tick_count: 0,
+            last_matrix_area: Cell::new(Rect::default()),
         }
     }
 
@@ -850,6 +856,73 @@ impl TerminalCapabilitiesScreen {
         self.profile_override = None;
     }
 
+    /// Jump directly to a profile by 1-based index into the profile order.
+    /// Index 0 is "Detected" (no override), 1..N map to the non-detected
+    /// entries of [`profile_order`].
+    fn set_profile_by_index(&mut self, index: usize) {
+        let profiles = Self::profile_order();
+        if let Some(&profile) = profiles.get(index) {
+            self.profile_override = if profile == TerminalProfile::Detected {
+                None
+            } else {
+                Some(profile)
+            };
+        }
+    }
+
+    /// Handle mouse events over the matrix panel area.
+    fn handle_mouse(&mut self, mouse: &MouseEvent) {
+        let matrix_area = self.last_matrix_area.get();
+        if matrix_area.is_empty() {
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if matrix_area.contains(mouse.x, mouse.y) => {
+                // +2 accounts for the border (1 row) and header (1 row).
+                let header_offset = 2u16;
+                if mouse.y >= matrix_area.y + header_offset {
+                    let row_idx = (mouse.y - matrix_area.y - header_offset) as usize;
+                    let detected = self.detected_capabilities();
+                    let active = self.active_capabilities(&detected);
+                    let rows = self.build_rows(&active);
+                    if row_idx < rows.len() {
+                        let old_selected = self.selected;
+                        self.selected = row_idx;
+                        if self.selected != old_selected {
+                            let entry = DiagnosticEntry::new(DiagnosticEventKind::SelectionChanged)
+                                .with_selection(self.selected)
+                                .with_detail("from", &old_selected.to_string())
+                                .with_detail("via", "mouse");
+                            self.diagnostic_log.record(entry);
+                            if let Some(row) = rows.get(self.selected) {
+                                let entry =
+                                    DiagnosticEntry::new(DiagnosticEventKind::CapabilityInspected)
+                                        .with_capability(row.name)
+                                        .with_detail("detected", &row.detected.to_string())
+                                        .with_detail("effective", &row.effective.to_string());
+                                self.diagnostic_log.record(entry);
+                            }
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp if matrix_area.contains(mouse.x, mouse.y) => {
+                let detected = self.detected_capabilities();
+                let active = self.active_capabilities(&detected);
+                let rows = self.build_rows(&active);
+                self.move_selection(-1, rows.len());
+            }
+            MouseEventKind::ScrollDown if matrix_area.contains(mouse.x, mouse.y) => {
+                let detected = self.detected_capabilities();
+                let active = self.active_capabilities(&detected);
+                let rows = self.build_rows(&active);
+                self.move_selection(1, rows.len());
+            }
+            _ => {}
+        }
+    }
+
     fn profile_order() -> &'static [TerminalProfile] {
         &[
             TerminalProfile::Detected,
@@ -957,6 +1030,7 @@ impl TerminalCapabilitiesScreen {
     }
 
     fn render_matrix_panel(&self, frame: &mut Frame, area: Rect, rows: &[CapabilityRow]) {
+        self.last_matrix_area.set(area);
         if area.is_empty() {
             return;
         }
@@ -1019,6 +1093,7 @@ impl TerminalCapabilitiesScreen {
     }
 
     fn render_comparison_panel(&self, frame: &mut Frame, area: Rect, rows: &[ComparisonRow]) {
+        self.last_matrix_area.set(area);
         if area.is_empty() {
             return;
         }
@@ -1648,9 +1723,44 @@ impl Screen for TerminalCapabilitiesScreen {
                         );
                     self.diagnostic_log.record(entry);
                 }
+                // Quick profile selection: 1-5 pick common profiles
+                // 1=Modern, 2=Xterm256, 3=Vt100, 4=Dumb, 5=Tmux
+                KeyCode::Char(ch @ '1'..='5') => {
+                    let idx = ((*ch) as usize) - ('0' as usize);
+                    let old_profile_label =
+                        old_profile.map(Self::profile_label).unwrap_or("detected");
+                    self.set_profile_by_index(idx);
+                    let new_profile_label = self
+                        .profile_override
+                        .map(Self::profile_label)
+                        .unwrap_or("detected");
+                    let entry = DiagnosticEntry::new(DiagnosticEventKind::ProfileCycled)
+                        .with_profile(new_profile_label)
+                        .with_detail("from", old_profile_label)
+                        .with_detail("via", &format!("key_{ch}"));
+                    self.diagnostic_log.record(entry);
+                }
+                // 0 resets to detected profile
+                KeyCode::Char('0') => {
+                    if old_profile.is_some() {
+                        let old_profile_label =
+                            old_profile.map(Self::profile_label).unwrap_or("detected");
+                        self.reset_profile();
+                        let entry = DiagnosticEntry::new(DiagnosticEventKind::ProfileReset)
+                            .with_detail("from", old_profile_label)
+                            .with_detail("via", "key_0");
+                        self.diagnostic_log.record(entry);
+                    }
+                }
                 _ => {}
             }
         }
+
+        // Mouse events
+        if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse);
+        }
+
         Cmd::None
     }
 
@@ -1732,12 +1842,16 @@ impl Screen for TerminalCapabilitiesScreen {
                 action: "Cycle view (matrix/evidence/simulation)",
             },
             HelpEntry {
-                key: "↑/↓",
+                key: "↑/↓/j/k",
                 action: "Select capability",
             },
             HelpEntry {
                 key: "P",
                 action: "Cycle simulated profile",
+            },
+            HelpEntry {
+                key: "0-5",
+                action: "Quick profile (0=detected, 1=modern..5=tmux)",
             },
             HelpEntry {
                 key: "R",
@@ -1746,6 +1860,14 @@ impl Screen for TerminalCapabilitiesScreen {
             HelpEntry {
                 key: "E",
                 action: "Export JSONL capability report",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Select capability row",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Navigate capabilities",
             },
         ]
     }
@@ -2264,5 +2386,91 @@ mod tests {
         assert_eq!(policy_reason(true, true, false), "enabled");
         assert_eq!(policy_reason(true, false, true), "disabled in mux");
         assert_eq!(policy_reason(true, false, false), "policy disabled");
+    }
+
+    // -----------------------------------------------------------------------
+    // Mouse + keyboard shortcut tests (bd-iuvb.17.13.1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn number_keys_select_profiles() {
+        let mut screen = TerminalCapabilitiesScreen::new();
+        assert!(screen.profile_override.is_none());
+
+        // Key '1' → Modern
+        let key1 = Event::Key(KeyEvent {
+            code: KeyCode::Char('1'),
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        screen.update(&key1);
+        assert_eq!(screen.profile_override, Some(TerminalProfile::Modern));
+
+        // Key '0' → reset to detected
+        let key0 = Event::Key(KeyEvent {
+            code: KeyCode::Char('0'),
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        screen.update(&key0);
+        assert!(screen.profile_override.is_none());
+    }
+
+    #[test]
+    fn number_key_5_selects_tmux() {
+        let mut screen = TerminalCapabilitiesScreen::new();
+        let key5 = Event::Key(KeyEvent {
+            code: KeyCode::Char('5'),
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        screen.update(&key5);
+        // Profile order index 5 = Dumb (0=Detected,1=Modern,2=Xterm256,3=Xterm,4=Vt100,5=Dumb)
+        assert_eq!(screen.profile_override, Some(TerminalProfile::Dumb));
+    }
+
+    #[test]
+    fn mouse_click_selects_row() {
+        let mut screen = TerminalCapabilitiesScreen::new();
+        assert_eq!(screen.selected, 0);
+
+        // Simulate having rendered the matrix panel at a known area.
+        screen.last_matrix_area.set(Rect::new(0, 0, 80, 20));
+
+        // Click on row 3 (y = 0 border + 1 header + 3 = row index 3).
+        let click = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            5, // border(1) + header(1) + row_idx(3) = y=5
+        ));
+        screen.update(&click);
+        assert_eq!(screen.selected, 3, "Click should select row 3");
+    }
+
+    #[test]
+    fn mouse_scroll_navigates() {
+        let mut screen = TerminalCapabilitiesScreen::new();
+        assert_eq!(screen.selected, 0);
+
+        screen.last_matrix_area.set(Rect::new(0, 0, 80, 20));
+
+        let scroll_down = Event::Mouse(MouseEvent::new(MouseEventKind::ScrollDown, 10, 5));
+        screen.update(&scroll_down);
+        assert_eq!(screen.selected, 1, "Scroll down should move selection down");
+
+        let scroll_up = Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 10, 5));
+        screen.update(&scroll_up);
+        assert_eq!(screen.selected, 0, "Scroll up should move selection back");
+    }
+
+    #[test]
+    fn keybindings_has_at_least_three() {
+        let screen = TerminalCapabilitiesScreen::new();
+        let bindings = screen.keybindings();
+        assert!(
+            bindings.len() >= 3,
+            "Expected at least 3 keybindings, got {}",
+            bindings.len()
+        );
     }
 }
