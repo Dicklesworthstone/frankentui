@@ -370,7 +370,7 @@ const FIXTURES: &[MermaidFixture] = &[
         source: include_str!("fixtures/mermaid/packet_beta_basic.mmd"),
         family: "packet-beta",
         tier: FixtureTier::Basic,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     MermaidFixture {
         id: "packet_beta_stress",
@@ -378,7 +378,7 @@ const FIXTURES: &[MermaidFixture] = &[
         source: include_str!("fixtures/mermaid/packet_beta_stress.mmd"),
         family: "packet-beta",
         tier: FixtureTier::Stress,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     // -- ArchitectureBeta (raw fallback) --
     MermaidFixture {
@@ -521,6 +521,7 @@ mod tests {
         xy_chart: usize,
         sankey: usize,
         quadrant: usize,
+        packet: usize,
         raw: usize,
         c4: usize,
     }
@@ -574,6 +575,7 @@ mod tests {
                 | Statement::QuadrantAxis { .. }
                 | Statement::QuadrantLabel { .. }
                 | Statement::QuadrantPoint(_) => counts.quadrant += 1,
+                Statement::PacketField(_) => counts.packet += 1,
                 Statement::Raw { .. } => counts.raw += 1,
             }
         }
@@ -609,6 +611,7 @@ mod tests {
             + c.sankey
             + c.c4
             + c.quadrant
+            + c.packet
             + c.raw
     }
 
@@ -818,6 +821,15 @@ mod tests {
                         counts.requirement >= 5,
                         "requirement_edge_case requirement stmts < 5"
                     );
+                }
+                // -- PacketBeta family --
+                "packet_beta_basic" => {
+                    assert_eq!(parsed.ast.diagram_type, DiagramType::PacketBeta);
+                    assert!(counts.packet >= 6, "packet_beta_basic packet stmts < 6");
+                }
+                "packet_beta_stress" => {
+                    assert_eq!(parsed.ast.diagram_type, DiagramType::PacketBeta);
+                    assert!(counts.packet >= 12, "packet_beta_stress packet stmts < 12");
                 }
                 // -- QuadrantChart family --
                 "quadrant_chart_basic" => {

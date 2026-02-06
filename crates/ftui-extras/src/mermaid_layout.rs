@@ -1887,6 +1887,99 @@ fn layout_requirement_diagram(
     }
 }
 
+/// Packet-beta layout: fixed grid of bit fields arranged in rows.
+///
+/// Each row represents `bits_per_row` bits. Fields are placed at their
+/// exact bit positions, with widths proportional to bit count.
+fn layout_packet_diagram(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    _spacing: &LayoutSpacing,
+) -> DiagramLayout {
+    let bits_per_row = ir.packet_bits_per_row.max(1);
+    let col_width = 2.0; // layout units per bit
+    let row_height = 3.0; // layout units per row (border + label + border)
+    let title_height = if ir.packet_title.is_some() { 2.0 } else { 0.0 };
+    let bit_ruler_height = 1.0; // bit position numbers
+
+    // Find max bit to determine number of rows.
+    let max_bit = ir
+        .packet_fields
+        .iter()
+        .map(|f| f.bit_end)
+        .max()
+        .unwrap_or(0);
+    let num_rows = (max_bit / bits_per_row) + 1;
+
+    let mut nodes = Vec::new();
+    for (i, field) in ir.packet_fields.iter().enumerate() {
+        let start_row = field.bit_start / bits_per_row;
+        let end_row = field.bit_end / bits_per_row;
+
+        // For simplicity, use the first row the field appears in.
+        // Multi-row fields get a single node spanning the first row segment.
+        let row = start_row;
+        let start_col = field.bit_start % bits_per_row;
+        let end_col = if start_row == end_row {
+            field.bit_end % bits_per_row
+        } else {
+            bits_per_row - 1
+        };
+        let bit_width = end_col - start_col + 1;
+
+        let x = (start_col as f64) * col_width;
+        let y = title_height + bit_ruler_height + (row as f64) * row_height;
+        let w = (bit_width as f64) * col_width;
+        let h = row_height;
+
+        let label_rect = Some(LayoutRect {
+            x: x + 0.5,
+            y: y + 1.0,
+            width: w - 1.0,
+            height: 1.0,
+        });
+
+        nodes.push(LayoutNodeBox {
+            node_idx: i,
+            rect: LayoutRect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            label_rect,
+            rank: row as usize,
+            order: i,
+        });
+    }
+
+    let total_w = (bits_per_row as f64) * col_width;
+    let total_h = title_height + bit_ruler_height + (num_rows as f64) * row_height;
+
+    DiagramLayout {
+        nodes,
+        clusters: vec![],
+        edges: vec![],
+        bounding_box: LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: total_w,
+            height: total_h,
+        },
+        stats: LayoutStats {
+            iterations_used: 0,
+            max_iterations: config.layout_iteration_budget,
+            budget_exceeded: false,
+            crossings: 0,
+            ranks: num_rows as usize,
+            max_rank_width: bits_per_row as usize,
+            total_bends: 0,
+            position_variance: 0.0,
+        },
+        degradation: None,
+    }
+}
+
 /// Quadrant chart layout: 2D scatter plot with axes and quadrant boundaries.
 ///
 /// Points are placed at their (x, y) coordinates within a fixed viewport.
@@ -3428,6 +3521,9 @@ pub fn layout_diagram_with_spacing(
     }
     if ir.diagram_type == DiagramType::Sequence {
         return layout_sequence_diagram(ir, config, spacing);
+    }
+    if ir.diagram_type == DiagramType::PacketBeta {
+        return layout_packet_diagram(ir, config, spacing);
     }
     if ir.diagram_type == DiagramType::QuadrantChart {
         return layout_quadrant_diagram(ir, config, spacing);
@@ -6369,6 +6465,9 @@ mod tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
     fn count_crossings_bruteforce(
@@ -7625,6 +7724,9 @@ mod tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
     #[test]
@@ -8694,6 +8796,9 @@ mod tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
     #[test]
@@ -8803,6 +8908,9 @@ mod tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
     #[test]
@@ -9525,6 +9633,9 @@ mod label_tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
 

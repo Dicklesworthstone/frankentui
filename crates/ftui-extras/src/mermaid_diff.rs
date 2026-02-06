@@ -397,6 +397,9 @@ mod tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
 

@@ -982,6 +982,10 @@ impl MermaidRenderer {
             self.render_quadrant(layout, ir, area, buf);
             return;
         }
+        if ir.diagram_type == DiagramType::PacketBeta {
+            self.render_packet(layout, ir, area, buf);
+            return;
+        }
         if layout.nodes.is_empty() || area.is_empty() {
             return;
         }
@@ -1029,6 +1033,10 @@ impl MermaidRenderer {
             self.render_quadrant(layout, ir, plan.diagram_area, buf);
             return;
         }
+        if ir.diagram_type == DiagramType::PacketBeta {
+            self.render_packet(layout, ir, plan.diagram_area, buf);
+            return;
+        }
         if layout.nodes.is_empty() || plan.diagram_area.is_empty() {
             return;
         }
@@ -1062,6 +1070,139 @@ impl MermaidRenderer {
         if let Some(legend_area) = plan.legend_area {
             let footnotes = crate::mermaid_layout::build_link_footnotes(&ir.links, &ir.nodes);
             self.render_legend_footnotes(legend_area, &footnotes, buf);
+        }
+    }
+
+    /// Render a packet-beta diagram as a box-drawing grid of bit fields.
+    fn render_packet(
+        &self,
+        layout: &DiagramLayout,
+        ir: &MermaidDiagramIr,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        if area.is_empty() || ir.packet_fields.is_empty() {
+            return;
+        }
+
+        let vp = Viewport::fit(&layout.bounding_box, area);
+        let bits_per_row = ir.packet_bits_per_row.max(1);
+        let col_w = 2.0_f64; // layout units per bit
+        let row_h = 3.0_f64;
+        let title_h = if ir.packet_title.is_some() { 2.0 } else { 0.0 };
+        let ruler_h = 1.0;
+
+        let use_unicode = matches!(self.glyph_mode, MermaidGlyphMode::Unicode);
+        let h_char = if use_unicode { '\u{2500}' } else { '-' };
+        let v_char = if use_unicode { '\u{2502}' } else { '|' };
+        let tl_corner = if use_unicode { '\u{250c}' } else { '+' };
+        let tr_corner = if use_unicode { '\u{2510}' } else { '+' };
+        let bl_corner = if use_unicode { '\u{2514}' } else { '+' };
+        let br_corner = if use_unicode { '\u{2518}' } else { '+' };
+
+        let border_fg = self.colors.edge_color;
+        let label_fg = self.colors.node_text;
+        let title_fg = self.colors.cluster_title;
+
+        // Render title
+        if let Some(title_id) = ir.packet_title
+            && let Some(label) = ir.labels.get(title_id.0)
+        {
+            let (tx, ty) = vp.to_cell(0.0, 0.0);
+            let (tx_end, _) = vp.to_cell(layout.bounding_box.width, 0.0);
+            let cell = Cell::from_char(' ').with_fg(title_fg);
+            buf.print_text_clipped(tx, ty, &label.text, cell, tx_end);
+        }
+
+        // Find max bit and number of rows
+        let max_bit = ir
+            .packet_fields
+            .iter()
+            .map(|f| f.bit_end)
+            .max()
+            .unwrap_or(0);
+        let num_rows = (max_bit / bits_per_row) + 1;
+
+        // Render bit ruler (top of each row shows bit numbers)
+        for row in 0..num_rows {
+            let base_bit = row * bits_per_row;
+            let ry = title_h + (row as f64) * row_h;
+            for bit in 0..bits_per_row {
+                let abs_bit = base_bit + bit;
+                let x = (bit as f64) * col_w + col_w / 2.0;
+                let (bx, by) = vp.to_cell(x, ry);
+                let digit = (abs_bit % 10).to_string();
+                let cell = Cell::from_char(' ').with_fg(border_fg);
+                buf.print_text_clipped(bx, by, &digit, cell, bx.saturating_add(2));
+            }
+        }
+
+        // Render each field
+        for field in &ir.packet_fields {
+            let start_row = field.bit_start / bits_per_row;
+            let end_row = field.bit_end / bits_per_row;
+            let row = start_row;
+            let start_col = field.bit_start % bits_per_row;
+            let end_col = if start_row == end_row {
+                field.bit_end % bits_per_row
+            } else {
+                bits_per_row - 1
+            };
+
+            let x0 = (start_col as f64) * col_w;
+            let x1 = ((end_col + 1) as f64) * col_w;
+            let y0 = title_h + ruler_h + (row as f64) * row_h;
+            let y1 = y0 + row_h;
+
+            let (bx0, by0) = vp.to_cell(x0, y0);
+            let (bx1, by1) = vp.to_cell(x1, y1);
+
+            // Draw top border
+            for x in bx0..bx1 {
+                buf.set(x, by0, Cell::from_char(h_char).with_fg(border_fg));
+            }
+            // Draw bottom border
+            for x in bx0..bx1 {
+                buf.set(
+                    x,
+                    by1.saturating_sub(1),
+                    Cell::from_char(h_char).with_fg(border_fg),
+                );
+            }
+            // Draw left border
+            for y in by0..by1 {
+                buf.set(bx0, y, Cell::from_char(v_char).with_fg(border_fg));
+            }
+            // Draw right border
+            for y in by0..by1 {
+                let rx = if bx1 > 0 { bx1 - 1 } else { bx1 };
+                buf.set(rx, y, Cell::from_char(v_char).with_fg(border_fg));
+            }
+
+            // Draw corners
+            buf.set(bx0, by0, Cell::from_char(tl_corner).with_fg(border_fg));
+            if bx1 > 0 {
+                buf.set(bx1 - 1, by0, Cell::from_char(tr_corner).with_fg(border_fg));
+            }
+            if by1 > 0 {
+                buf.set(bx0, by1 - 1, Cell::from_char(bl_corner).with_fg(border_fg));
+                if bx1 > 0 {
+                    buf.set(
+                        bx1 - 1,
+                        by1 - 1,
+                        Cell::from_char(br_corner).with_fg(border_fg),
+                    );
+                }
+            }
+
+            // Draw field label (centered in the box)
+            if let Some(label) = ir.labels.get(field.label.0) {
+                let label_y = by0.saturating_add(1);
+                let label_x = bx0.saturating_add(1);
+                let max_x = if bx1 > 1 { bx1 - 1 } else { bx1 };
+                let cell = Cell::from_char(' ').with_fg(label_fg);
+                buf.print_text_clipped(label_x, label_y, &label.text, cell, max_x);
+            }
         }
     }
 
@@ -5037,6 +5178,9 @@ mod tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
 

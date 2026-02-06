@@ -2877,7 +2877,7 @@ impl MermaidCompatibilityMatrix {
             sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
             block_beta: MermaidSupportLevel::Unsupported,
-            packet_beta: MermaidSupportLevel::Unsupported,
+            packet_beta: MermaidSupportLevel::Supported,
             architecture_beta: MermaidSupportLevel::Unsupported,
             c4_context: MermaidSupportLevel::Partial,
             c4_container: MermaidSupportLevel::Partial,
@@ -2937,7 +2937,7 @@ impl Default for MermaidCompatibilityMatrix {
             sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
             block_beta: MermaidSupportLevel::Unsupported,
-            packet_beta: MermaidSupportLevel::Unsupported,
+            packet_beta: MermaidSupportLevel::Supported,
             architecture_beta: MermaidSupportLevel::Unsupported,
             c4_context: MermaidSupportLevel::Partial,
             c4_container: MermaidSupportLevel::Partial,
@@ -3823,6 +3823,8 @@ pub fn normalize_ast_to_ir(
 
     let mut constraints: Vec<LayoutConstraint> = Vec::new();
     let mut quadrant_points_out: Vec<IrQuadrantPoint> = Vec::new();
+    let mut packet_fields_out: Vec<IrPacketField> = Vec::new();
+    let mut packet_title_text: Option<(String, Span)> = None;
     let mut quadrant_title_text: Option<(String, Span)> = None;
     let mut quadrant_x_axis_text: Option<(String, String, Span)> = None;
     let mut quadrant_y_axis_text: Option<(String, String, Span)> = None;
@@ -4568,6 +4570,13 @@ pub fn normalize_ast_to_ir(
                     quadrant_label_texts[(*quadrant as usize) - 1] = Some((label.clone(), *span));
                 }
             }
+            Statement::PacketField(pf) => {
+                packet_fields_out.push(IrPacketField {
+                    label: IrLabelId(0), // placeholder, interned below
+                    bit_start: pf.bit_start,
+                    bit_end: pf.bit_end,
+                });
+            }
             Statement::QuadrantPoint(pt) => {
                 // Collect raw; will intern labels after the loop.
                 quadrant_points_out.push(IrQuadrantPoint {
@@ -4577,6 +4586,13 @@ pub fn normalize_ast_to_ir(
                 });
             }
             Statement::Raw { text, span } => {
+                if ast.diagram_type == DiagramType::PacketBeta
+                    && let Some(title) = text.strip_prefix("title").map(|t| t.trim().to_string())
+                    && !title.is_empty()
+                    && packet_title_text.is_none()
+                {
+                    packet_title_text = Some((title, *span));
+                }
                 if ast.diagram_type == DiagramType::Pie {
                     if is_pie_show_data_line(text) {
                         pie_show_data = true;
@@ -4914,6 +4930,21 @@ pub fn normalize_ast_to_ir(
     let pie_title: Option<IrLabelId> =
         pie_title_text.map(|(text, span)| labels.intern(&text, span));
 
+    // Intern packet field labels.
+    let packet_title: Option<IrLabelId> =
+        packet_title_text.map(|(text, span)| labels.intern(&text, span));
+    {
+        let mut pi = 0;
+        for statement in &ast.statements {
+            if let Statement::PacketField(pf) = statement
+                && pi < packet_fields_out.len()
+            {
+                packet_fields_out[pi].label = labels.intern(&pf.label, pf.span);
+                pi += 1;
+            }
+        }
+    }
+
     // Intern quadrant labels into the same LabelInterner before extracting.
     let quadrant_title: Option<IrLabelId> =
         quadrant_title_text.map(|(text, span)| labels.intern(&text, span));
@@ -5011,6 +5042,9 @@ pub fn normalize_ast_to_ir(
         quadrant_x_axis: q_x_axis,
         quadrant_y_axis: q_y_axis,
         quadrant_labels: q_labels,
+        packet_fields: packet_fields_out,
+        packet_title,
+        packet_bits_per_row: 32,
     };
 
     let degradation = ir.meta.guard.degradation.clone();
@@ -5271,6 +5305,15 @@ pub struct QuadrantPoint {
     pub span: Span,
 }
 
+/// A field in a packet-beta diagram with bit range and label.
+#[derive(Debug, Clone)]
+pub struct PacketField {
+    pub label: String,
+    pub bit_start: u32,
+    pub bit_end: u32,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct MindmapNode {
     pub depth: usize,
@@ -5495,6 +5538,7 @@ pub enum Statement {
         span: Span,
     },
     QuadrantPoint(QuadrantPoint),
+    PacketField(PacketField),
     MindmapNode(MindmapNode),
     GitGraphCommit(GitGraphCommit),
     GitGraphBranch(GitGraphBranch),
@@ -5601,6 +5645,14 @@ pub struct IrQuadrantPoint {
 pub struct IrQuadrantAxis {
     pub label_start: IrLabelId,
     pub label_end: IrLabelId,
+}
+
+/// A field in a packet-beta diagram in the IR.
+#[derive(Debug, Clone)]
+pub struct IrPacketField {
+    pub label: IrLabelId,
+    pub bit_start: u32,
+    pub bit_end: u32,
 }
 
 /// Node shape as determined by the bracket syntax in Mermaid source.
@@ -6210,6 +6262,9 @@ pub struct MermaidDiagramIr {
     pub quadrant_x_axis: Option<IrQuadrantAxis>,
     pub quadrant_y_axis: Option<IrQuadrantAxis>,
     pub quadrant_labels: [Option<IrLabelId>; 4],
+    pub packet_fields: Vec<IrPacketField>,
+    pub packet_title: Option<IrLabelId>,
+    pub packet_bits_per_row: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -7000,10 +7055,17 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     });
                 }
             }
-            DiagramType::Unknown
-            | DiagramType::BlockBeta
-            | DiagramType::PacketBeta
-            | DiagramType::ArchitectureBeta => {
+            DiagramType::PacketBeta => {
+                if let Some(stmt) = parse_packet_line(trimmed, span) {
+                    statements.push(stmt);
+                } else {
+                    statements.push(Statement::Raw {
+                        text: normalize_ws(trimmed),
+                        span,
+                    });
+                }
+            }
+            DiagramType::Unknown | DiagramType::BlockBeta | DiagramType::ArchitectureBeta => {
                 statements.push(Statement::Raw {
                     text: normalize_ws(trimmed),
                     span,
@@ -7497,6 +7559,7 @@ fn statement_span(statement: &Statement) -> Span {
         Statement::QuadrantAxis { span, .. } => *span,
         Statement::QuadrantLabel { span, .. } => *span,
         Statement::QuadrantPoint(p) => p.span,
+        Statement::PacketField(f) => f.span,
         Statement::Raw { span, .. } => *span,
     }
 }
@@ -8443,6 +8506,57 @@ fn parse_pie(line: &str, span: Span) -> Option<PieEntry> {
         value: normalize_ws(value),
         span,
     })
+}
+
+/// Parse a packet-beta body line into a `PacketField` statement.
+///
+/// Accepted formats:
+///   `<start>-<end>: "<label>"`  (range)
+///   `<start>: "<label>"`         (single bit, start == end)
+fn parse_packet_line(line: &str, span: Span) -> Option<Statement> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with("%%") {
+        return None;
+    }
+
+    // title <text>  (optional packet title)
+    if let Some(rest) = trimmed.strip_prefix("title") {
+        let title = rest.trim();
+        if !title.is_empty() {
+            // We encode title as a Raw statement; the normalizer handles it.
+            return None; // Title handled separately below
+        }
+    }
+
+    // <start>-<end>: "<label>"  or  <start>: "<label>"
+    if let Some((range_part, label_part)) = trimmed.split_once(':') {
+        let label = strip_quotes(label_part.trim());
+        if label.is_empty() {
+            return None;
+        }
+        let range_part = range_part.trim();
+        if let Some((start_s, end_s)) = range_part.split_once('-') {
+            if let (Ok(start), Ok(end)) =
+                (start_s.trim().parse::<u32>(), end_s.trim().parse::<u32>())
+            {
+                return Some(Statement::PacketField(PacketField {
+                    label,
+                    bit_start: start,
+                    bit_end: end,
+                    span,
+                }));
+            }
+        } else if let Ok(bit) = range_part.parse::<u32>() {
+            return Some(Statement::PacketField(PacketField {
+                label,
+                bit_start: bit,
+                bit_end: bit,
+                span,
+            }));
+        }
+    }
+
+    None
 }
 
 /// Parse a quadrantChart line into its corresponding statement.
@@ -11498,6 +11612,9 @@ mod tests {
             quadrant_x_axis: None,
             quadrant_y_axis: None,
             quadrant_labels: [None, None, None, None],
+            packet_fields: Vec::new(),
+            packet_title: None,
+            packet_bits_per_row: 32,
         }
     }
 
