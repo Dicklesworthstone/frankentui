@@ -1,18 +1,18 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Dashboard───────────────────────────────────╮
 │FRANKENTUI DASHBOARD  ╭─────────────────────Guided Tour──────────────────────╮│
-│╭──────Plasma──────╮╭─│1/10 · Tour · LIVEe────────╮╭───Code · Rust (1/28)────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g│Speed 1.00x · Next 5.2sni b││// runtime.rs            ││
+│╭──────Plasma──────╮╭─│1/9 · Tour · LIVEse────────╮╭───Code · Rust (1/28)────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g│Speed 1.00x · Next 11.0si b││// runtime.rs            ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││C│Dashboard▁▄▃▄▂▅▅▅▆▂▄▅▃▆ 46%││use std::{collections::Ha││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││M│Cinematic overview of key features and live tiles.    ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││N│Start here   ▇▁▁    ▁ █▁ 14││use ftui_core::event::Eve││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││O│Controls: Space pause · ←/→ step · Esc exitxplorer::Ce││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││E│Steps:░ DSK ███░░ IO  ░░░░░│╰─────────────────────────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │▶ Tour · Dashboard         │╭──────────Info───────────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │• Text · Shakespeare       ││Status:NOMINAL FPS:0     ││
-││Click → Visual Eff││C│• Text · Code Explorer     ││Click → Performance      ││
-│╰──────────────────╯╰─│• Core · Layout Lab────────╯╰─────────────────────────││
-│╭Text FX · 2-Up (1/28)│Legend: Tour Core Visuals Interact Text Systemsaming…╮││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││M│The cinematic index. This is the home screen for      ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││N│exploring the demo. ▁ █▁ 14││use ftui_core::event::Eve││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││O│Shortcut: Ctrl+K opens the command palette anywhere.Ce││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││E│Controls: Space pause · ←/→ step · Esc exit───────────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │Steps:                     │╭──────────Info───────────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │▶ Tour · Dashboard         ││Status:NOMINAL FPS:0     ││
+││Click → Visual Eff││C│• Tour · Inline Mode       ││Click → Performance      ││
+│╰──────────────────╯╰─│• Systems · Determinism Lab╯╰─────────────────────────││
+│╭Text FX · 2-Up (1/28)│• Visuals · Time-Travel Studio╮╭Markdown · Streaming…╮││
 ││Sample 1 of 3 · 2-Up ╰──────────────────────────────────────────────────────╯│
 ││1 · None · S1        ││ INFO  00:02   CPU spike dete││                     │ │
 ││2 · FadeIn · S2      ││                             ││                     │ │

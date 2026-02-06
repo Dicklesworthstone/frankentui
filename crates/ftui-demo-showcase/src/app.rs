@@ -3717,12 +3717,6 @@ impl Model for AppModel {
             crate::chrome::render_a11y_panel(&a11y_state, frame, inner);
         }
 
-        if self.tour.is_active()
-            && let Some(state) = self.tour.overlay_state(inner, 6)
-        {
-            crate::chrome::render_guided_tour_overlay(&state, frame, inner);
-        }
-
         // Help overlay (chrome module)
         if self.help_visible {
             let bindings = self.current_screen_keybindings();
@@ -3730,12 +3724,26 @@ impl Model for AppModel {
         }
 
         // Debug overlay
-        if self.debug_visible {
+        let tour_show_debug_overlay = if self.tour.is_active() {
+            self.tour
+                .current_step()
+                .is_some_and(|step| step.show_debug_overlay)
+        } else {
+            false
+        };
+        if self.debug_visible || tour_show_debug_overlay {
             self.render_debug_overlay(frame, area);
         }
 
         // Performance HUD overlay
-        if self.perf_hud_visible {
+        let tour_show_perf_hud_overlay = if self.tour.is_active() {
+            self.tour
+                .current_step()
+                .is_some_and(|step| step.show_perf_hud_overlay)
+        } else {
+            false
+        };
+        if self.perf_hud_visible || tour_show_perf_hud_overlay {
             self.render_perf_hud(frame, area);
         }
 
@@ -3747,6 +3755,16 @@ impl Model for AppModel {
         // Command palette overlay (topmost layer)
         if self.command_palette.is_visible() {
             self.command_palette.render(area, frame);
+        }
+
+        // Guided tour overlay (callouts + step list + highlight).
+        //
+        // Render this last so the tour narration remains visible even when other
+        // overlays are active.
+        if self.tour.is_active()
+            && let Some(state) = self.tour.overlay_state(inner, 6)
+        {
+            crate::chrome::render_guided_tour_overlay(&state, frame, inner);
         }
 
         // Status bar (chrome module)

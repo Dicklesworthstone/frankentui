@@ -10,11 +10,15 @@ use std::time::Duration;
 use ftui_core::geometry::Rect;
 
 use crate::app::ScreenId;
-use crate::screens::{self, ScreenCategory, ScreenMeta};
+use crate::screens::{self, ScreenCategory};
 
 const SPEED_MIN: f64 = 0.25;
 const SPEED_MAX: f64 = 4.0;
-const DEFAULT_STEP_DURATION_MS: u64 = 5200;
+
+// Guided Tour v2 goal: ~2-3 minutes total at speed=1.0, cinematic pacing.
+const STEP_MS_SHORT: u64 = 11_000;
+const STEP_MS_MED: u64 = 14_000;
+const STEP_MS_LONG: u64 = 18_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TourAdvanceReason {
@@ -45,6 +49,10 @@ pub struct TourStep {
     pub hint: Option<&'static str>,
     pub duration: Duration,
     pub highlight: Option<TourHighlight>,
+    // Demo-only overlays we force on for this step to explicitly demonstrate
+    // global shortcuts without requiring user input during auto-play.
+    pub show_debug_overlay: bool,
+    pub show_perf_hud_overlay: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -325,35 +333,107 @@ impl GuidedTourState {
 }
 
 fn build_steps() -> Vec<TourStep> {
-    screens::screen_registry()
-        .iter()
-        .filter(|meta| meta.tour_step_hint.is_some() && meta.id != ScreenId::GuidedTour)
-        .map(|meta| TourStep {
-            id: format!("step:{}", slugify(meta.title)),
-            screen: meta.id,
-            title: meta.title,
-            blurb: meta.blurb,
-            hint: meta.tour_step_hint,
-            duration: step_duration(meta),
-            highlight: None,
-        })
-        .collect()
+    // Curated storyboard (v2). We keep the copy here so the tour can evolve
+    // independently of per-screen metadata and stay high-signal.
+    vec![
+        tour_step(
+            ScreenId::Dashboard,
+            "The cinematic index. This is the home screen for exploring the demo.",
+            Some("Shortcut: Ctrl+K opens the command palette anywhere."),
+            STEP_MS_SHORT,
+            false,
+            false,
+        ),
+        tour_step(
+            ScreenId::InlineModeStory,
+            "Inline mode keeps scrollback intact while chrome stays stable. Logs scroll above; UI stays put.",
+            Some("Notice how the UI does not steal your terminal history."),
+            STEP_MS_MED,
+            false,
+            false,
+        ),
+        tour_step(
+            ScreenId::DeterminismLab,
+            "Deterministic rendering: fixed seed, fixed inputs, stable checksums. No hidden I/O.",
+            Some("Press F12 in normal mode to pop open the debug overlay."),
+            STEP_MS_MED,
+            true,
+            false,
+        ),
+        tour_step(
+            ScreenId::SnapshotPlayer,
+            "Time travel through captured frames. Scrub, diff, and inspect without tearing down the terminal.",
+            Some("This is how we prove rendering regressions deterministically."),
+            STEP_MS_MED,
+            false,
+            false,
+        ),
+        tour_step(
+            ScreenId::HyperlinkPlayground,
+            "Hit testing + OSC-8 hyperlinks: click what you see, with explicit policy and evidence.",
+            Some("Shortcut: Ctrl+I toggles the evidence ledger overlay."),
+            STEP_MS_SHORT,
+            false,
+            false,
+        ),
+        tour_step(
+            ScreenId::MermaidMegaShowcase,
+            "Deterministic diagram rendering in the terminal: layout, routing, and rendering evidence.",
+            Some("Mermaid is rendered via Buffer → Diff → Presenter (deterministic)."),
+            STEP_MS_MED,
+            false,
+            false,
+        ),
+        tour_step(
+            ScreenId::MarkdownLiveEditor,
+            "Live Markdown editing with split preview, search, and diff cues. Text is a first-class system here.",
+            Some("Try: type, search, and watch the preview update deterministically."),
+            STEP_MS_SHORT,
+            false,
+            false,
+        ),
+        tour_step(
+            ScreenId::PerformanceHud,
+            "Degradation tiers + stress harness: the system stays responsive under load by design.",
+            Some("Budgets, tiers, and explicit tradeoffs. No silent failure modes."),
+            STEP_MS_MED,
+            false,
+            false,
+        ),
+        tour_step(
+            ScreenId::VisualEffects,
+            "Big visuals, still deterministic. Effects run at 60fps tick in the showcase, but remain reproducible.",
+            Some("Shortcut: Ctrl+P toggles the performance HUD overlay."),
+            STEP_MS_LONG,
+            false,
+            true,
+        ),
+    ]
 }
 
 fn slugify(input: &str) -> String {
     input.to_lowercase().replace(' ', "_")
 }
 
-fn step_duration(meta: &ScreenMeta) -> Duration {
-    let base = match meta.category {
-        ScreenCategory::Visuals => DEFAULT_STEP_DURATION_MS + 1800,
-        ScreenCategory::Systems => DEFAULT_STEP_DURATION_MS + 1200,
-        ScreenCategory::Tour => DEFAULT_STEP_DURATION_MS,
-        ScreenCategory::Core => DEFAULT_STEP_DURATION_MS + 800,
-        ScreenCategory::Interaction => DEFAULT_STEP_DURATION_MS + 800,
-        ScreenCategory::Text => DEFAULT_STEP_DURATION_MS + 800,
-    };
-    Duration::from_millis(base)
+fn tour_step(
+    screen: ScreenId,
+    blurb: &'static str,
+    hint: Option<&'static str>,
+    duration_ms: u64,
+    show_debug_overlay: bool,
+    show_perf_hud_overlay: bool,
+) -> TourStep {
+    TourStep {
+        id: format!("step:{}", slugify(screen.title())),
+        screen,
+        title: screen.title(),
+        blurb,
+        hint,
+        duration: Duration::from_millis(duration_ms),
+        highlight: None,
+        show_debug_overlay,
+        show_perf_hud_overlay,
+    }
 }
 
 fn normalize_speed(speed: f64) -> f64 {
@@ -388,6 +468,8 @@ mod tests {
             hint: None,
             duration: Duration::from_millis(duration_ms),
             highlight,
+            show_debug_overlay: false,
+            show_perf_hud_overlay: false,
         }
     }
 
@@ -401,7 +483,8 @@ mod tests {
 
         // Force-advance until completion.
         for _ in 0..steps {
-            let _ = tour.advance(Duration::from_secs(10));
+            // Must exceed any per-step duration so auto-advance is guaranteed.
+            let _ = tour.advance(Duration::from_secs(60));
         }
         assert!(!tour.is_active());
     }
@@ -468,17 +551,17 @@ mod tests {
         }
         let from = tour.active_screen();
         let event = tour.jump_to(1).expect("jump to next step");
-        match event {
-            TourEvent::StepChanged {
-                from: seen_from,
-                reason,
-                ..
-            } => {
-                assert_eq!(seen_from, from);
-                assert_eq!(reason, TourAdvanceReason::Jump);
-            }
-            _ => panic!("expected step change"),
-        }
+        let TourEvent::StepChanged {
+            from: seen_from,
+            reason,
+            ..
+        } = event
+        else {
+            assert!(false, "expected step change");
+            return;
+        };
+        assert_eq!(seen_from, from);
+        assert_eq!(reason, TourAdvanceReason::Jump);
     }
 
     #[test]
@@ -492,13 +575,12 @@ mod tests {
         tour.step_index = 0;
 
         let event = tour.jump_to(99).expect("jump to last step");
-        match event {
-            TourEvent::StepChanged { to, reason, .. } => {
-                assert_eq!(to, ScreenId::MarkdownRichText);
-                assert_eq!(reason, TourAdvanceReason::Jump);
-            }
-            _ => panic!("expected step change"),
-        }
+        let TourEvent::StepChanged { to, reason, .. } = event else {
+            assert!(false, "expected step change");
+            return;
+        };
+        assert_eq!(to, ScreenId::MarkdownRichText);
+        assert_eq!(reason, TourAdvanceReason::Jump);
         assert_eq!(tour.step_index(), 1);
     }
 
