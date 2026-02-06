@@ -6,7 +6,9 @@
 
 use std::collections::VecDeque;
 
-use ftui_core::event::Event;
+use std::cell::Cell;
+
+use ftui_core::event::{Event, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
@@ -39,6 +41,8 @@ pub struct AccessibilityPanel {
     a11y: theme::A11ySettings,
     base_theme: theme::ThemeId,
     events: VecDeque<A11yEventEntry>,
+    layout_toggles: Cell<Rect>,
+    layout_wcag: Cell<Rect>,
 }
 
 impl Default for AccessibilityPanel {
@@ -54,6 +58,8 @@ impl AccessibilityPanel {
             a11y: theme::A11ySettings::default(),
             base_theme: theme::ThemeId::CyberpunkAurora,
             events: VecDeque::with_capacity(MAX_EVENTS),
+            layout_toggles: Cell::new(Rect::default()),
+            layout_wcag: Cell::new(Rect::default()),
         }
     }
 
@@ -396,10 +402,42 @@ impl AccessibilityPanel {
     }
 }
 
+/// Toggle action that the app dispatches (accessibility events are app-level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum A11yToggleAction {
+    HighContrast,
+    ReducedMotion,
+    LargeText,
+}
+
+impl AccessibilityPanel {
+    /// Handle a mouse event. Returns an optional toggle action for the app to dispatch.
+    pub fn handle_mouse(&self, kind: MouseEventKind, x: u16, y: u16) -> Option<A11yToggleAction> {
+        let toggles = self.layout_toggles.get();
+        if toggles.contains(x, y)
+            && let MouseEventKind::Down(MouseButton::Left) = kind
+        {
+            // Map row offset to toggle action
+            let row = y.saturating_sub(toggles.y);
+            match row {
+                0 => return Some(A11yToggleAction::HighContrast),
+                1 => return Some(A11yToggleAction::ReducedMotion),
+                2 => return Some(A11yToggleAction::LargeText),
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
 impl Screen for AccessibilityPanel {
     type Message = Event;
 
-    fn update(&mut self, _event: &Event) -> Cmd<Self::Message> {
+    fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(me) = event {
+            // Mouse events are checked via handle_mouse() at the app level
+            let _ = self.handle_mouse(me.kind, me.x, me.y);
+        }
         Cmd::None
     }
 
@@ -429,12 +467,14 @@ impl Screen for AccessibilityPanel {
         let left_rows = Flex::vertical()
             .constraints([Constraint::Fixed(8), Constraint::Min(1)])
             .split(left_area);
+        self.layout_toggles.set(left_rows[0]);
         self.render_toggles(frame, left_rows[0]);
         self.render_preview(frame, left_rows[1]);
 
         let right_rows = Flex::vertical()
             .constraints([Constraint::Fixed(10), Constraint::Min(1)])
             .split(right_area);
+        self.layout_wcag.set(right_rows[0]);
         self.render_wcag(frame, right_rows[0]);
         self.render_telemetry(frame, right_rows[1]);
     }
@@ -461,6 +501,10 @@ impl Screen for AccessibilityPanel {
                 key: "Ctrl+T",
                 action: "Cycle base theme",
             },
+            HelpEntry {
+                key: "Click",
+                action: "Toggle setting",
+            },
         ]
     }
 
@@ -470,5 +514,58 @@ impl Screen for AccessibilityPanel {
 
     fn tab_label(&self) -> &'static str {
         "A11y"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ftui_core::event::{MouseButton, MouseEventKind};
+
+    #[test]
+    fn click_toggles_high_contrast() {
+        let panel = AccessibilityPanel::new();
+        panel.layout_toggles.set(Rect::new(0, 0, 40, 5));
+        let action = panel.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 0);
+        assert_eq!(action, Some(A11yToggleAction::HighContrast));
+    }
+
+    #[test]
+    fn click_toggles_reduced_motion() {
+        let panel = AccessibilityPanel::new();
+        panel.layout_toggles.set(Rect::new(0, 0, 40, 5));
+        let action = panel.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 1);
+        assert_eq!(action, Some(A11yToggleAction::ReducedMotion));
+    }
+
+    #[test]
+    fn click_toggles_large_text() {
+        let panel = AccessibilityPanel::new();
+        panel.layout_toggles.set(Rect::new(0, 0, 40, 5));
+        let action = panel.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 2);
+        assert_eq!(action, Some(A11yToggleAction::LargeText));
+    }
+
+    #[test]
+    fn click_outside_toggles_returns_none() {
+        let panel = AccessibilityPanel::new();
+        panel.layout_toggles.set(Rect::new(0, 0, 40, 5));
+        let action = panel.handle_mouse(MouseEventKind::Down(MouseButton::Left), 50, 0);
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn mouse_move_ignored() {
+        let panel = AccessibilityPanel::new();
+        panel.layout_toggles.set(Rect::new(0, 0, 40, 5));
+        let action = panel.handle_mouse(MouseEventKind::Moved, 10, 0);
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn keybindings_include_click() {
+        let panel = AccessibilityPanel::new();
+        let bindings = panel.keybindings();
+        assert!(bindings.iter().any(|b| b.key == "Click"));
     }
 }

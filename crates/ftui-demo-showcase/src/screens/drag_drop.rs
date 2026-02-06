@@ -8,9 +8,9 @@
 //! - Cross-container drag between lists
 //! - Various payload types
 
-use ftui_core::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
-};
+use std::cell::Cell;
+
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -25,7 +25,6 @@ use ftui_widgets::keyboard_drag::{
 };
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::rule::Rule;
-use std::cell::Cell;
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -107,8 +106,12 @@ pub struct DragDropDemo {
     tick_count: u64,
     /// Announcements for screen readers.
     announcements: Vec<String>,
-    last_left_area: Cell<Rect>,
-    last_right_area: Cell<Rect>,
+    /// Cached area for mode tabs.
+    layout_tabs: Cell<Rect>,
+    /// Cached area for the left list.
+    layout_left: Cell<Rect>,
+    /// Cached area for the right list.
+    layout_right: Cell<Rect>,
 }
 
 impl Default for DragDropDemo {
@@ -160,8 +163,9 @@ impl DragDropDemo {
             keyboard_drag: KeyboardDragManager::new(KeyboardDragConfig::default()),
             tick_count: 0,
             announcements: Vec::new(),
-            last_left_area: Cell::new(Rect::default()),
-            last_right_area: Cell::new(Rect::default()),
+            layout_tabs: Cell::new(Rect::default()),
+            layout_left: Cell::new(Rect::default()),
+            layout_right: Cell::new(Rect::default()),
         }
     }
 
@@ -434,50 +438,14 @@ impl DragDropDemo {
 
         targets
     }
-
-    /// Handle mouse events: click to select/focus, scroll to navigate.
-    fn handle_mouse(&mut self, event: &Event) {
-        if let Event::Mouse(mouse) = event {
-            let left = self.last_left_area.get();
-            let right = self.last_right_area.get();
-            match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if left.contains(mouse.x, mouse.y) {
-                        self.focused_list = 0;
-                        let relative_y = mouse.y.saturating_sub(left.y) as usize;
-                        if relative_y < self.left_list.len() {
-                            self.selected_index = relative_y;
-                        }
-                    } else if right.contains(mouse.x, mouse.y) {
-                        self.focused_list = 1;
-                        let relative_y = mouse.y.saturating_sub(right.y) as usize;
-                        if relative_y < self.right_list.len() {
-                            self.selected_index = relative_y;
-                        }
-                    }
-                }
-                MouseEventKind::ScrollUp => {
-                    if left.contains(mouse.x, mouse.y) || right.contains(mouse.x, mouse.y) {
-                        self.select_up();
-                    }
-                }
-                MouseEventKind::ScrollDown => {
-                    if left.contains(mouse.x, mouse.y) || right.contains(mouse.x, mouse.y) {
-                        self.select_down();
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 impl Screen for DragDropDemo {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
-        if matches!(event, Event::Mouse(_)) {
-            self.handle_mouse(event);
+        if let Event::Mouse(me) = event {
+            self.handle_mouse(me.kind, me.x, me.y);
             return Cmd::None;
         }
 
@@ -565,6 +533,7 @@ impl Screen for DragDropDemo {
             ])
             .split(area);
 
+        self.layout_tabs.set(rows[0]);
         self.render_mode_tabs(frame, rows[0]);
 
         match self.mode {
@@ -587,6 +556,15 @@ impl Screen for DragDropDemo {
                 action: "Navigate list",
             },
         ];
+
+        bindings.push(HelpEntry {
+            key: "Click",
+            action: "Select item",
+        });
+        bindings.push(HelpEntry {
+            key: "Scroll",
+            action: "Navigate list",
+        });
 
         match self.mode {
             DemoMode::SortableList => {
@@ -617,14 +595,6 @@ impl Screen for DragDropDemo {
             }
         }
 
-        bindings.push(HelpEntry {
-            key: "Click",
-            action: "Select item",
-        });
-        bindings.push(HelpEntry {
-            key: "Scroll",
-            action: "Navigate list",
-        });
         bindings
     }
 
@@ -673,11 +643,12 @@ impl DragDropDemo {
         let inner = block.inner(area);
         block.render(area, frame);
 
+        self.layout_left.set(inner);
+
         if inner.is_empty() {
             return;
         }
 
-        self.last_left_area.set(inner);
         // Only show the left list in sortable mode
         self.render_list(&self.left_list, inner, frame, true);
     }
@@ -713,8 +684,8 @@ impl DragDropDemo {
         let right_inner = right_block.inner(cols[1]);
         right_block.render(cols[1], frame);
 
-        self.last_left_area.set(left_inner);
-        self.last_right_area.set(right_inner);
+        self.layout_left.set(left_inner);
+        self.layout_right.set(right_inner);
         self.render_list(&self.left_list, left_inner, frame, self.focused_list == 0);
         self.render_list(&self.right_list, right_inner, frame, self.focused_list == 1);
     }
@@ -760,8 +731,8 @@ impl DragDropDemo {
         let right_inner = right_block.inner(cols[1]);
         right_block.render(cols[1], frame);
 
-        self.last_left_area.set(left_inner);
-        self.last_right_area.set(right_inner);
+        self.layout_left.set(left_inner);
+        self.layout_right.set(right_inner);
         self.render_list(&self.left_list, left_inner, frame, self.focused_list == 0);
         self.render_list(&self.right_list, right_inner, frame, self.focused_list == 1);
 
@@ -879,6 +850,75 @@ impl DragDropDemo {
         Paragraph::new(instructions)
             .style(Style::new().fg(theme::fg::SECONDARY))
             .render(text_area, frame);
+    }
+}
+
+impl DragDropDemo {
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        let tabs = self.layout_tabs.get();
+        let left = self.layout_left.get();
+        let right = self.layout_right.get();
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if tabs.contains(x, y) {
+                    // Click on mode tabs — determine which mode was clicked
+                    let rel_x = x.saturating_sub(tabs.x);
+                    let label_0 = DemoMode::SortableList.label().len() as u16 + 4; // " [..] "
+                    let label_1 = label_0 + 3 + DemoMode::CrossContainer.label().len() as u16 + 2;
+                    if rel_x < label_0 {
+                        self.mode = DemoMode::SortableList;
+                    } else if rel_x < label_1 {
+                        self.mode = DemoMode::CrossContainer;
+                    } else {
+                        self.mode = DemoMode::KeyboardDrag;
+                    }
+                } else if left.contains(x, y) {
+                    // Click in left list — select item
+                    if self.mode == DemoMode::CrossContainer || self.mode == DemoMode::KeyboardDrag {
+                        self.focused_list = 0;
+                    }
+                    let row = y.saturating_sub(left.y) as usize;
+                    let len = self.left_list.len();
+                    if row < len {
+                        self.selected_index = row;
+                    }
+                } else if right.contains(x, y) {
+                    // Click in right list — select item (cross-container and keyboard modes)
+                    if self.mode == DemoMode::CrossContainer || self.mode == DemoMode::KeyboardDrag {
+                        self.focused_list = 1;
+                    }
+                    let row = y.saturating_sub(right.y) as usize;
+                    let len = self.right_list.len();
+                    if row < len {
+                        self.selected_index = row;
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if left.contains(x, y) || right.contains(x, y) {
+                    self.select_up();
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if left.contains(x, y) || right.contains(x, y) {
+                    self.select_down();
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                // Right-click in sortable mode: move selected item up
+                if self.mode == DemoMode::SortableList && left.contains(x, y) {
+                    self.move_item_up();
+                }
+                // Right-click in cross-container mode: transfer
+                if self.mode == DemoMode::CrossContainer
+                    && (left.contains(x, y) || right.contains(x, y))
+                {
+                    self.transfer_item();
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1003,5 +1043,55 @@ mod tests {
         let demo = DragDropDemo::new();
         let targets = demo.build_drop_targets();
         assert_eq!(targets.len(), LIST_SIZE * 2);
+    }
+
+    #[test]
+    fn click_left_list_selects_item() {
+        let mut demo = DragDropDemo::new();
+        demo.layout_left.set(Rect::new(0, 2, 30, 10));
+        demo.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 5);
+        assert_eq!(demo.selected_index, 3);
+    }
+
+    #[test]
+    fn click_right_list_in_cross_container_switches_focus() {
+        let mut demo = DragDropDemo::new();
+        demo.mode = DemoMode::CrossContainer;
+        demo.layout_right.set(Rect::new(40, 2, 30, 10));
+        assert_eq!(demo.focused_list, 0);
+        demo.handle_mouse(MouseEventKind::Down(MouseButton::Left), 50, 4);
+        assert_eq!(demo.focused_list, 1);
+        assert_eq!(demo.selected_index, 2);
+    }
+
+    #[test]
+    fn scroll_navigates_list() {
+        let mut demo = DragDropDemo::new();
+        demo.layout_left.set(Rect::new(0, 0, 30, 10));
+        assert_eq!(demo.selected_index, 0);
+        demo.handle_mouse(MouseEventKind::ScrollDown, 10, 5);
+        assert_eq!(demo.selected_index, 1);
+        demo.handle_mouse(MouseEventKind::ScrollUp, 10, 5);
+        assert_eq!(demo.selected_index, 0);
+    }
+
+    #[test]
+    fn right_click_sortable_moves_up() {
+        let mut demo = DragDropDemo::new();
+        demo.mode = DemoMode::SortableList;
+        demo.layout_left.set(Rect::new(0, 0, 30, 10));
+        demo.selected_index = 2;
+        let original_id = demo.left_list[2].id;
+        demo.handle_mouse(MouseEventKind::Down(MouseButton::Right), 10, 5);
+        assert_eq!(demo.left_list[1].id, original_id);
+        assert_eq!(demo.selected_index, 1);
+    }
+
+    #[test]
+    fn mouse_move_ignored() {
+        let mut demo = DragDropDemo::new();
+        demo.layout_left.set(Rect::new(0, 0, 30, 10));
+        demo.handle_mouse(MouseEventKind::Moved, 10, 5);
+        assert_eq!(demo.selected_index, 0);
     }
 }
