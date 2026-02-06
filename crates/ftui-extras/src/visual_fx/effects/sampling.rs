@@ -863,4 +863,370 @@ mod tests {
             );
         }
     }
+
+    // --- fill_normalized_coords edge cases ---
+
+    #[test]
+    fn test_fill_normalized_coords_zero_total() {
+        let mut coords = vec![42.0; 3];
+        fill_normalized_coords(0, &mut coords);
+        // Should be a no-op; original values preserved
+        assert!((coords[0] - 42.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_fill_normalized_coords_single() {
+        let mut coords = vec![0.0; 1];
+        fill_normalized_coords(1, &mut coords);
+        assert!((coords[0] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_fill_normalized_coords_oversized_slice() {
+        // Output slice larger than total - should only fill first `total` entries
+        let mut coords = vec![99.0; 10];
+        fill_normalized_coords(3, &mut coords);
+        assert!((coords[0] - 1.0 / 6.0).abs() < 1e-10);
+        assert!((coords[1] - 3.0 / 6.0).abs() < 1e-10);
+        assert!((coords[2] - 5.0 / 6.0).abs() < 1e-10);
+        // Remaining entries should be untouched
+        assert!((coords[3] - 99.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_fill_normalized_coords_values_monotonic() {
+        let mut coords = vec![0.0; 20];
+        fill_normalized_coords(20, &mut coords);
+        for w in coords.windows(2) {
+            assert!(w[1] > w[0], "coordinates should be strictly increasing");
+        }
+    }
+
+    #[test]
+    fn test_fill_normalized_coords_all_within_unit() {
+        let mut coords = vec![0.0; 100];
+        fill_normalized_coords(100, &mut coords);
+        for (i, &c) in coords.iter().enumerate() {
+            assert!(
+                (0.0..=1.0).contains(&c),
+                "coord[{i}] = {c} is out of [0, 1]"
+            );
+        }
+    }
+
+    // --- CoordCache ---
+
+    #[test]
+    fn test_coord_cache_ensure_size_noop() {
+        let mut cache = CoordCache::new(10, 10);
+        let x5_before = cache.x(5);
+        cache.ensure_size(5, 5); // smaller, should be no-op
+        let x5_after = cache.x(5);
+        assert!((x5_before - x5_after).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_coord_cache_ensure_size_one_dimension() {
+        let mut cache = CoordCache::new(5, 5);
+        // Grow only x
+        cache.ensure_size(10, 3);
+        assert!(cache.x_coords().len() >= 10);
+        // y should remain at 5 (not shrunk)
+        assert!(cache.y_coords().len() >= 5);
+        assert!((cache.x(9) - 0.95).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_coord_cache_zero_dimensions() {
+        let cache = CoordCache::new(0, 0);
+        // Out of range should return 0.5
+        assert!((cache.x(0) - 0.5).abs() < 1e-10);
+        assert!((cache.y(0) - 0.5).abs() < 1e-10);
+    }
+
+    // --- PlasmaSampler static methods ---
+
+    #[test]
+    fn test_plasma_sample_full_bounded() {
+        for x in [0.0, 0.1, 0.5, 0.9, 1.0] {
+            for y in [0.0, 0.1, 0.5, 0.9, 1.0] {
+                let v = PlasmaSampler::sample_full(x, y, 0.0);
+                assert!((0.0..=1.0).contains(&v), "sample_full({x}, {y}, 0.0) = {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_plasma_sample_reduced_bounded() {
+        for x in [0.0, 0.5, 1.0] {
+            for y in [0.0, 0.5, 1.0] {
+                for t in [0.0, 3.0, 10.0] {
+                    let v = PlasmaSampler::sample_reduced(x, y, t);
+                    assert!(
+                        (0.0..=1.0).contains(&v),
+                        "sample_reduced({x}, {y}, {t}) = {v}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_plasma_sample_minimal_bounded() {
+        for x in [0.0, 0.5, 1.0] {
+            for y in [0.0, 0.5, 1.0] {
+                for t in [0.0, 3.0, 10.0] {
+                    let v = PlasmaSampler::sample_minimal(x, y, t);
+                    assert!(
+                        (0.0..=1.0).contains(&v),
+                        "sample_minimal({x}, {y}, {t}) = {v}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_plasma_quality_tiers_differ() {
+        // At most points, different quality tiers should produce different values
+        // because they use different numbers of wave components
+        let x = 0.3;
+        let y = 0.7;
+        let t = 2.0;
+        let full = PlasmaSampler::sample_full(x, y, t);
+        let reduced = PlasmaSampler::sample_reduced(x, y, t);
+        let minimal = PlasmaSampler::sample_minimal(x, y, t);
+
+        // At least two should differ (exact equality across all tiers is unlikely)
+        let all_same = (full - reduced).abs() < 1e-12 && (reduced - minimal).abs() < 1e-12;
+        assert!(
+            !all_same,
+            "quality tiers should generally produce different values"
+        );
+    }
+
+    #[test]
+    fn test_plasma_sampler_name() {
+        let sampler = PlasmaSampler;
+        assert_eq!(sampler.name(), "plasma");
+    }
+
+    #[test]
+    fn test_plasma_sampler_no_aspect_correction() {
+        let sampler = PlasmaSampler;
+        assert!(!sampler.applies_aspect_correction());
+    }
+
+    // --- MetaballFieldSampler ---
+
+    #[test]
+    fn test_metaball_empty_balls() {
+        let sampler = MetaballFieldSampler::new(Vec::new());
+        let (field, hue) = sampler.sample_field(0.5, 0.5, FxQuality::Full);
+        assert!((field - 0.0).abs() < 1e-10);
+        assert!((hue - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_metaball_sampler_name() {
+        let sampler = MetaballFieldSampler::new(Vec::new());
+        assert_eq!(sampler.name(), "metaballs");
+    }
+
+    #[test]
+    fn test_metaball_sampler_no_aspect_correction() {
+        let sampler = MetaballFieldSampler::new(Vec::new());
+        assert!(!sampler.applies_aspect_correction());
+    }
+
+    #[test]
+    fn test_metaball_field_decreases_with_distance() {
+        let balls = vec![BallState {
+            x: 0.5,
+            y: 0.5,
+            r2: 0.1,
+            hue: 0.0,
+        }];
+
+        let (f_near, _) =
+            MetaballFieldSampler::sample_field_from_slice(&balls, 0.51, 0.5, FxQuality::Full);
+        let (f_mid, _) =
+            MetaballFieldSampler::sample_field_from_slice(&balls, 0.6, 0.5, FxQuality::Full);
+        let (f_far, _) =
+            MetaballFieldSampler::sample_field_from_slice(&balls, 0.9, 0.5, FxQuality::Full);
+
+        assert!(f_near > f_mid, "field should decrease with distance");
+        assert!(f_mid > f_far, "field should decrease with distance");
+    }
+
+    #[test]
+    fn test_metaball_field_additive() {
+        // Two balls should produce a stronger field than one at an equidistant point
+        let one_ball = vec![BallState {
+            x: 0.3,
+            y: 0.5,
+            r2: 0.05,
+            hue: 0.0,
+        }];
+        let two_balls = vec![
+            BallState {
+                x: 0.3,
+                y: 0.5,
+                r2: 0.05,
+                hue: 0.0,
+            },
+            BallState {
+                x: 0.7,
+                y: 0.5,
+                r2: 0.05,
+                hue: 0.5,
+            },
+        ];
+
+        let (f1, _) =
+            MetaballFieldSampler::sample_field_from_slice(&one_ball, 0.5, 0.5, FxQuality::Full);
+        let (f2, _) =
+            MetaballFieldSampler::sample_field_from_slice(&two_balls, 0.5, 0.5, FxQuality::Full);
+
+        assert!(f2 > f1, "two balls should produce stronger field");
+    }
+
+    #[test]
+    fn test_metaball_weighted_hue() {
+        let balls = vec![
+            BallState {
+                x: 0.5,
+                y: 0.5,
+                r2: 0.01,
+                hue: 0.0,
+            },
+            BallState {
+                x: 0.6,
+                y: 0.5,
+                r2: 0.01,
+                hue: 1.0,
+            },
+        ];
+
+        // Sample at the midpoint between the two balls
+        let (_, hue) =
+            MetaballFieldSampler::sample_field_from_slice(&balls, 0.55, 0.5, FxQuality::Full);
+        // Hue should be between 0 and 1, weighted by distance
+        assert!(
+            (0.0..=1.0).contains(&hue),
+            "weighted hue should be in [0, 1]"
+        );
+    }
+
+    #[test]
+    fn test_metaball_minimal_quality_step() {
+        // Need >2 balls for minimal to skip any
+        let balls: Vec<BallState> = (0..6)
+            .map(|i| BallState {
+                x: (i as f64 + 0.5) / 6.0,
+                y: 0.5,
+                r2: 0.01,
+                hue: i as f64 / 5.0,
+            })
+            .collect();
+
+        let (f_full, _) =
+            MetaballFieldSampler::sample_field_from_slice(&balls, 0.5, 0.5, FxQuality::Full);
+        let (f_minimal, _) =
+            MetaballFieldSampler::sample_field_from_slice(&balls, 0.5, 0.5, FxQuality::Minimal);
+
+        assert!(
+            f_minimal < f_full,
+            "minimal quality should use fewer balls (full={f_full}, min={f_minimal})"
+        );
+    }
+
+    #[test]
+    fn test_metaball_sampler_trait_returns_field() {
+        let sampler = MetaballFieldSampler::new(vec![BallState {
+            x: 0.5,
+            y: 0.5,
+            r2: 0.01,
+            hue: 0.5,
+        }]);
+
+        // Sampler trait returns field strength only (not hue)
+        let field_via_trait = sampler.sample(0.5, 0.5, 0.0, FxQuality::Full);
+        let (field_direct, _) = sampler.sample_field(0.5, 0.5, FxQuality::Full);
+
+        assert!(
+            (field_via_trait - field_direct).abs() < 1e-15,
+            "Sampler trait should return field strength"
+        );
+    }
+
+    // --- FnSampler ---
+
+    #[test]
+    fn test_fn_sampler_no_aspect_correction_by_default() {
+        let sampler = FnSampler::new(|_, _, _, _| 0.0, "test");
+        assert!(!sampler.applies_aspect_correction());
+    }
+
+    #[test]
+    fn test_fn_sampler_quality_passed_through() {
+        let sampler = FnSampler::new(
+            |_, _, _, q| match q {
+                FxQuality::Full => 1.0,
+                FxQuality::Reduced => 0.75,
+                FxQuality::Minimal => 0.5,
+                FxQuality::Off => 0.0,
+            },
+            "quality_test",
+        );
+
+        assert!((sampler.sample(0.0, 0.0, 0.0, FxQuality::Full) - 1.0).abs() < 1e-10);
+        assert!((sampler.sample(0.0, 0.0, 0.0, FxQuality::Reduced) - 0.75).abs() < 1e-10);
+        assert!((sampler.sample(0.0, 0.0, 0.0, FxQuality::Minimal) - 0.5).abs() < 1e-10);
+        assert!((sampler.sample(0.0, 0.0, 0.0, FxQuality::Off) - 0.0).abs() < 1e-10);
+    }
+
+    // --- cell_to_normalized properties ---
+
+    #[test]
+    fn test_cell_to_normalized_monotonic() {
+        for total in [2, 5, 10, 50, 100] {
+            for cell in 1..total {
+                let prev = cell_to_normalized(cell - 1, total);
+                let curr = cell_to_normalized(cell, total);
+                assert!(
+                    curr > prev,
+                    "cell_to_normalized should be strictly increasing: cell={cell}, total={total}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cell_to_normalized_within_unit() {
+        for total in [1, 2, 5, 10, 100, 1000] {
+            for cell in 0..total {
+                let v = cell_to_normalized(cell, total);
+                assert!(
+                    (0.0..=1.0).contains(&v),
+                    "cell_to_normalized({cell}, {total}) = {v}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cell_to_normalized_symmetric() {
+        // For even grid, cell centers should be symmetric around 0.5
+        let total = 10;
+        for cell in 0..total / 2 {
+            let left = cell_to_normalized(cell, total);
+            let right = cell_to_normalized(total - 1 - cell, total);
+            assert!(
+                (left + right - 1.0).abs() < 1e-10,
+                "cells {cell} and {} should sum to 1.0",
+                total - 1 - cell
+            );
+        }
+    }
 }
