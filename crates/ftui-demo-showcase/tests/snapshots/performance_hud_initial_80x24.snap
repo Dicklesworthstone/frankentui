@@ -21,4 +21,4 @@ PERFORMANCE CHALLENGE MODE — DEGRADATION TIERS
 │  Stress Harness              ││                  ││  ◆ Full     ≥50fps       │
 │  Mode: Off  | Load   0% (+0.0││                  ││  ◇ Reduced  20–49fps     │
 ╰──────────────────────────────╯╰──────────────────╯╰──────────────────────────╯
-s:stress(Off) | c:cool | r:reset | p:pause | m:mode(intervals) | tier:Full | sam
+s:stress(Off) | c:cool | r:reset | p:pause | m:mode(intervals) | 1-4:tier(Full) 

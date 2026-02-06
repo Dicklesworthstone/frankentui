@@ -19,6 +19,6 @@
 ││  Ticks:             0        ││                  ││  Degradation Tier      ││
 ││  Samples:           0        ││                  ││  ████ Full Fidelity    ││
 │╰──────────────────────────────╯╰──────────────────╯╰────────────────────────╯│
-│s:stress(Off) | c:cool | r:reset | p:pause | m:mode(intervals) | tier:Full | s│
+│s:stress(Off) | c:cool | r:reset | p:pause | m:mode(intervals) | 1-4:tier(Full│
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Performance Challenge [32/42]        Tab/Shift+Tab: next/prev        0x0 00:00 
