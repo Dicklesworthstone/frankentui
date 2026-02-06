@@ -4205,7 +4205,12 @@ pub fn normalize_ast_to_ir(
             }
             Statement::JourneyTask(task) => {
                 let id = format!("journey_L{}_C{}", task.span.start.line, task.span.start.col);
-                let label_text = format!("{} ({})", task.title, task.score);
+                let score_bar = journey_score_bar(task.score);
+                let label_text = if task.actors.is_empty() {
+                    format!("{}\n{}", task.title, score_bar)
+                } else {
+                    format!("{}\n{} {}", task.title, score_bar, task.actors.join(", "))
+                };
                 let _ = upsert_node(
                     &id,
                     Some(&label_text),
@@ -4218,6 +4223,9 @@ pub fn normalize_ast_to_ir(
                     &mut implicit_warned,
                     &mut warnings,
                 );
+                if let Some(draft) = node_drafts.last_mut() {
+                    draft.classes.push(format!("journey_score_{}", task.score.min(5)));
+                }
                 if let Some(cluster_idx) = cluster_stack.last().copied() {
                     cluster_drafts[cluster_idx].members.push(id);
                 }
@@ -8158,6 +8166,15 @@ fn extract_quoted_or_word(input: &str) -> Option<(&str, &str)> {
     }
 }
 
+fn journey_score_bar(score: u8) -> String {
+    let filled = score.min(5) as usize;
+    let empty = 5 - filled;
+    let mut bar = String::with_capacity(5);
+    for _ in 0..filled { bar.push('\u{25cf}'); }
+    for _ in 0..empty { bar.push('\u{25cb}'); }
+    bar
+}
+
 fn parse_journey_line(trimmed: &str, line: &str, span: Span) -> Option<Statement> {
     let lower = trimmed.to_ascii_lowercase();
     // Section header: "section <name>"
@@ -11474,6 +11491,59 @@ B --> C
             !ir.ir.clusters.is_empty(),
             "journey sections should produce clusters"
         );
+    }
+
+
+    #[test]
+    fn journey_score_bar_visualization() {
+        let bar5 = journey_score_bar(5);
+        assert_eq!(bar5.chars().count(), 5);
+        assert_eq!(bar5.chars().filter(|&c| c == '\u{25cf}').count(), 5);
+        let bar1 = journey_score_bar(1);
+        assert_eq!(bar1.chars().filter(|&c| c == '\u{25cf}').count(), 1);
+        assert_eq!(bar1.chars().filter(|&c| c == '\u{25cb}').count(), 4);
+        let bar0 = journey_score_bar(0);
+        assert_eq!(bar0.chars().filter(|&c| c == '\u{25cb}').count(), 5);
+    }
+
+    #[test]
+    fn journey_ir_includes_score_class() {
+        let input = concat!(
+            "journey\n",
+            "    section Go to work\n",
+            "    Make tea: 5: Me\n",
+            "    Do work: 1: Me, Cat\n",
+        );
+        let ast = parse(input).expect("parse journey");
+        let ir = normalize_ast_to_ir(
+            &ast, &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        let has_5 = ir.ir.nodes.iter().any(|n| n.classes.iter().any(|c| c == "journey_score_5"));
+        let has_1 = ir.ir.nodes.iter().any(|n| n.classes.iter().any(|c| c == "journey_score_1"));
+        assert!(has_5, "should have journey_score_5 class");
+        assert!(has_1, "should have journey_score_1 class");
+    }
+
+    #[test]
+    fn journey_label_includes_actors() {
+        let input = concat!(
+            "journey\n",
+            "    section Work\n",
+            "    Code: 4: Alice, Bob\n",
+        );
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast, &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(!ir.ir.nodes.is_empty());
+        let node = &ir.ir.nodes[0];
+        let label = ir.ir.labels.get(node.label.unwrap().0).unwrap();
+        assert!(label.text.contains("Alice"), "should contain Alice: {}", label.text);
+        assert!(label.text.contains("Bob"), "should contain Bob: {}", label.text);
     }
 
     #[test]

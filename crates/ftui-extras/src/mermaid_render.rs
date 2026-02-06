@@ -828,6 +828,25 @@ enum EdgeLineStyle {
 }
 
 /// Detect edge line style from the Mermaid arrow string.
+
+fn journey_score_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
+    for class in &ir_node.classes {
+        if let Some(s) = class.strip_prefix("journey_score_") {
+            if let Ok(score) = s.parse::<u8>() {
+                return Some(match score {
+                    5 => PackedRgba::rgb(76, 175, 80),
+                    4 => PackedRgba::rgb(139, 195, 74),
+                    3 => PackedRgba::rgb(255, 193, 7),
+                    2 => PackedRgba::rgb(255, 152, 0),
+                    1 => PackedRgba::rgb(244, 67, 54),
+                    _ => PackedRgba::rgb(158, 158, 158),
+                });
+            }
+        }
+    }
+    None
+}
+
 fn detect_edge_style(arrow: &str) -> EdgeLineStyle {
     if arrow.contains("-.") || arrow.contains(".-") {
         EdgeLineStyle::Dashed
@@ -1721,7 +1740,8 @@ impl MermaidRenderer {
                 continue;
             }
 
-            let fill_color = self.colors.node_fill_for(node.node_idx);
+            let base_fill = self.colors.node_fill_for(node.node_idx);
+            let fill_color = journey_score_fill(ir_node).unwrap_or(base_fill);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =
@@ -2628,7 +2648,8 @@ impl MermaidRenderer {
                 continue;
             }
 
-            let fill_color = self.colors.node_fill_for(node.node_idx);
+            let base_fill = self.colors.node_fill_for(node.node_idx);
+            let fill_color = journey_score_fill(ir_node).unwrap_or(base_fill);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =
