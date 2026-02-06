@@ -352,11 +352,12 @@ impl WidgetBuilder {
                     if self.active_preset > 0 {
                         self.load_preset(self.active_preset - 1);
                     }
-                } else if tree.contains(x, y) {
-                    if !self.widgets.is_empty() && self.selected_widget > 0 {
-                        self.selected_widget -= 1;
-                        self.clamp_selection();
-                    }
+                } else if tree.contains(x, y)
+                    && !self.widgets.is_empty()
+                    && self.selected_widget > 0
+                {
+                    self.selected_widget -= 1;
+                    self.clamp_selection();
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -364,13 +365,12 @@ impl WidgetBuilder {
                     if self.active_preset < self.presets.len() - 1 {
                         self.load_preset(self.active_preset + 1);
                     }
-                } else if tree.contains(x, y) {
-                    if !self.widgets.is_empty()
-                        && self.selected_widget < self.widgets.len() - 1
-                    {
-                        self.selected_widget += 1;
-                        self.clamp_selection();
-                    }
+                } else if tree.contains(x, y)
+                    && !self.widgets.is_empty()
+                    && self.selected_widget < self.widgets.len() - 1
+                {
+                    self.selected_widget += 1;
+                    self.clamp_selection();
                 }
             }
             _ => {}

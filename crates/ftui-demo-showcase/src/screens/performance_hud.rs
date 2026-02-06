@@ -17,7 +17,7 @@ use std::env;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -204,6 +204,16 @@ pub struct PerformanceHud {
     deterministic_tick_us: Option<u64>,
     /// Optional override for views-per-tick in deterministic fixtures.
     forced_views_per_tick: Option<f64>,
+    /// Manually forced degradation tier (overrides FPS-based detection).
+    forced_tier: Option<DegradationTier>,
+    /// Cached area of the degradation tier list (for mouse clicks).
+    last_tier_area: Cell<Rect>,
+    /// Cached area of the stress harness section (for mouse clicks).
+    last_stress_area: Cell<Rect>,
+    /// Cached area of the sparkline panel (for mouse scroll).
+    last_sparkline_area: Cell<Rect>,
+    /// Cached area of the budget panel (for mouse wheel budget adjust).
+    last_budget_area: Cell<Rect>,
 }
 
 impl Default for PerformanceHud {
@@ -239,6 +249,11 @@ impl PerformanceHud {
             last_decision: None,
             deterministic_tick_us: None,
             forced_views_per_tick,
+            forced_tier: None,
+            last_tier_area: Cell::new(Rect::default()),
+            last_stress_area: Cell::new(Rect::default()),
+            last_sparkline_area: Cell::new(Rect::default()),
+            last_budget_area: Cell::new(Rect::default()),
         }
     }
 
@@ -293,7 +308,19 @@ impl PerformanceHud {
     }
 
     fn current_tier(&self) -> DegradationTier {
+        if let Some(tier) = self.forced_tier {
+            return tier;
+        }
         DegradationTier::from_fps(self.simulated_fps())
+    }
+
+    fn force_tier(&mut self, tier: DegradationTier) {
+        if self.forced_tier == Some(tier) {
+            // Toggle off if same tier clicked again
+            self.forced_tier = None;
+        } else {
+            self.forced_tier = Some(tier);
+        }
     }
 
     fn stress_jitter(&mut self) -> f64 {
@@ -395,6 +422,7 @@ impl PerformanceHud {
         self.last_tier = None;
         self.last_tier_change_tick = None;
         self.last_decision = None;
+        self.forced_tier = None;
     }
 
     fn record_tick(&mut self) {
@@ -600,6 +628,7 @@ impl PerformanceHud {
     }
 
     fn render_sparkline_panel(&self, frame: &mut Frame, area: Rect) {
+        self.last_sparkline_area.set(area);
         let mode_label = match self.sparkline_mode {
             SparklineMode::Intervals => "Tick Intervals (\u{00b5}s)",
             SparklineMode::Fps => "FPS Estimate",
@@ -717,6 +746,7 @@ impl PerformanceHud {
     }
 
     fn render_budget_panel(&self, frame: &mut Frame, area: Rect) {
+        self.last_budget_area.set(area);
         let block = Block::new()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -843,6 +873,9 @@ impl PerformanceHud {
         }
         cursor = bar_row + 2;
 
+        // Store stress harness clickable area.
+        let stress_section_start = cursor;
+
         let stress_style = if self.stress_mode == StressMode::Off {
             Style::new().fg(theme::fg::MUTED)
         } else {
@@ -885,6 +918,17 @@ impl PerformanceHud {
             cursor += 1;
         }
 
+        // Store stress harness area for click detection.
+        let stress_rows = cursor.saturating_sub(stress_section_start);
+        if stress_rows > 0 {
+            self.last_stress_area.set(Rect::new(
+                inner.x,
+                inner.y + stress_section_start as u16,
+                inner.width,
+                stress_rows as u16,
+            ));
+        }
+
         // Degradation tier info
         let tier_start = cursor + 1;
         let tier_lines: Vec<(String, Style)> = vec![
@@ -894,7 +938,11 @@ impl PerformanceHud {
                 Style::new().fg(theme::fg::SECONDARY),
             ),
             (
-                format!("  {} {}", tier.bar(), tier.label()),
+                if self.forced_tier.is_some() {
+                    format!("  {} {} [FORCED]", tier.bar(), tier.label())
+                } else {
+                    format!("  {} {}", tier.bar(), tier.label())
+                },
                 Style::new().fg(tier_color),
             ),
             (String::new(), Style::new()),
@@ -972,6 +1020,18 @@ impl PerformanceHud {
                 .render(row, frame);
         }
 
+        // Store clickable areas for mouse interaction.
+        // Tier rows start at tier_start+5 (after header, current tier, blank, "Thresholds" label).
+        let tier_rows_start = tier_start + 5;
+        if tier_rows_start + 4 <= inner.height as usize {
+            self.last_tier_area.set(Rect::new(
+                inner.x,
+                inner.y + tier_rows_start as u16,
+                inner.width,
+                4,
+            ));
+        }
+
         // P95/P99 warnings at bottom
         let warn_start = tier_start + tier_lines.len();
         if effective_p95_ms > self.budget_ms && warn_start < inner.height as usize {
@@ -989,12 +1049,69 @@ impl PerformanceHud {
                 .render(row, frame);
         }
     }
+
+    /// Handle mouse events: click tiers, toggle stress, scroll sparkline/budget.
+    fn handle_mouse(&mut self, event: &Event) {
+        let Event::Mouse(mouse) = event else {
+            return;
+        };
+        let tier_area = self.last_tier_area.get();
+        let stress_area = self.last_stress_area.get();
+        let sparkline_area = self.last_sparkline_area.get();
+        let budget_area = self.last_budget_area.get();
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Click on degradation tier rows to force-select a tier
+                if tier_area.contains(mouse.x, mouse.y) {
+                    let row = mouse.y.saturating_sub(tier_area.y);
+                    match row {
+                        0 => self.force_tier(DegradationTier::Full),
+                        1 => self.force_tier(DegradationTier::Reduced),
+                        2 => self.force_tier(DegradationTier::Minimal),
+                        3 => self.force_tier(DegradationTier::Safety),
+                        _ => {}
+                    }
+                }
+                // Click on stress harness section to toggle stress
+                if stress_area.contains(mouse.x, mouse.y) {
+                    self.toggle_stress();
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if sparkline_area.contains(mouse.x, mouse.y) {
+                    // Scroll up in sparkline: toggle to FPS mode
+                    self.sparkline_mode = SparklineMode::Fps;
+                }
+                if budget_area.contains(mouse.x, mouse.y) {
+                    // Scroll up on budget panel: increase budget (more headroom)
+                    self.budget_ms = (self.budget_ms + 1.0).min(100.0);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if sparkline_area.contains(mouse.x, mouse.y) {
+                    // Scroll down in sparkline: toggle to intervals mode
+                    self.sparkline_mode = SparklineMode::Intervals;
+                }
+                if budget_area.contains(mouse.x, mouse.y) {
+                    // Scroll down on budget panel: decrease budget (stricter)
+                    self.budget_ms = (self.budget_ms - 1.0).max(1.0);
+                }
+            }
+            _ => {}
+        }
+    }
 }
+
 
 impl Screen for PerformanceHud {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if matches!(event, Event::Mouse(_)) {
+            self.handle_mouse(event);
+            return Cmd::None;
+        }
         if let Event::Key(KeyEvent {
             code,
             kind: KeyEventKind::Press,
@@ -1013,6 +1130,19 @@ impl Screen for PerformanceHud {
                 }
                 (KeyCode::Char('s'), Modifiers::NONE) => self.toggle_stress(),
                 (KeyCode::Char('c'), Modifiers::NONE) => self.cool_down(),
+                // Number keys 1-4: select degradation tier
+                (KeyCode::Char('1'), Modifiers::NONE) => {
+                    self.force_tier(DegradationTier::Full);
+                }
+                (KeyCode::Char('2'), Modifiers::NONE) => {
+                    self.force_tier(DegradationTier::Reduced);
+                }
+                (KeyCode::Char('3'), Modifiers::NONE) => {
+                    self.force_tier(DegradationTier::Minimal);
+                }
+                (KeyCode::Char('4'), Modifiers::NONE) => {
+                    self.force_tier(DegradationTier::Safety);
+                }
                 _ => {}
             }
         }
@@ -1077,8 +1207,14 @@ impl Screen for PerformanceHud {
         let pause_label = if self.paused { "resume" } else { "pause" };
         let stress_label = self.stress_mode.label();
         let tier_label = self.current_tier().as_str();
+        let forced_tag = if self.forced_tier.is_some() {
+            " [forced]"
+        } else {
+            ""
+        };
         let status = format!(
-            "s:stress({stress_label}) | c:cool | r:reset | p:{pause_label} | m:mode({mode_label}) | tier:{tier_label} | samples:{}/{}",
+            "s:stress({stress_label}) | c:cool | r:reset | p:{pause_label} | m:mode({mode_label}) | 1-4:tier({tier_label}{forced_tag}) | budget:{:.0}ms | samples:{}/{}",
+            self.budget_ms,
             self.tick_times_us.len(),
             MAX_SAMPLES,
         );
@@ -1108,6 +1244,10 @@ impl Screen for PerformanceHud {
             HelpEntry {
                 key: "m",
                 action: "Toggle sparkline mode (intervals/FPS)",
+            },
+            HelpEntry {
+                key: "1-4",
+                action: "Force tier (1=Full 2=Reduced 3=Minimal 4=Safety)",
             },
         ]
     }
@@ -1345,5 +1485,125 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1));
         hud.tick(1);
         assert!(hud.tick_times_us.is_empty());
+    }
+
+    #[test]
+    fn number_keys_force_tier() {
+        let mut hud = PerformanceHud::new();
+        assert!(hud.forced_tier.is_none());
+
+        hud.update(&press(KeyCode::Char('1')));
+        assert_eq!(hud.forced_tier, Some(DegradationTier::Full));
+        assert_eq!(hud.current_tier(), DegradationTier::Full);
+
+        hud.update(&press(KeyCode::Char('2')));
+        assert_eq!(hud.forced_tier, Some(DegradationTier::Reduced));
+
+        hud.update(&press(KeyCode::Char('3')));
+        assert_eq!(hud.forced_tier, Some(DegradationTier::Minimal));
+
+        hud.update(&press(KeyCode::Char('4')));
+        assert_eq!(hud.forced_tier, Some(DegradationTier::Safety));
+
+        // Pressing same tier again toggles off
+        hud.update(&press(KeyCode::Char('4')));
+        assert!(hud.forced_tier.is_none());
+    }
+
+    #[test]
+    fn reset_clears_forced_tier() {
+        let mut hud = PerformanceHud::new();
+        hud.update(&press(KeyCode::Char('2')));
+        assert!(hud.forced_tier.is_some());
+        hud.update(&press(KeyCode::Char('r')));
+        assert!(hud.forced_tier.is_none());
+    }
+
+    #[test]
+    fn mouse_click_tier_area() {
+        let mut hud = PerformanceHud::new();
+        // Simulate a tier area at (10, 20) with height 4
+        hud.last_tier_area.set(Rect::new(10, 20, 30, 4));
+        let click = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 15,
+            y: 20,
+            modifiers: Modifiers::empty(),
+        });
+        hud.handle_mouse(&click);
+        assert_eq!(hud.forced_tier, Some(DegradationTier::Full));
+
+        // Click row 1 -> Reduced
+        let click = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 15,
+            y: 21,
+            modifiers: Modifiers::empty(),
+        });
+        hud.handle_mouse(&click);
+        assert_eq!(hud.forced_tier, Some(DegradationTier::Reduced));
+    }
+
+    #[test]
+    fn mouse_click_stress_toggle() {
+        let mut hud = PerformanceHud::new();
+        hud.last_stress_area.set(Rect::new(10, 30, 30, 4));
+        assert_eq!(hud.stress_mode, StressMode::Off);
+        let click = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 15,
+            y: 32,
+            modifiers: Modifiers::empty(),
+        });
+        hud.handle_mouse(&click);
+        assert_eq!(hud.stress_mode, StressMode::RampUp);
+    }
+
+    #[test]
+    fn mouse_scroll_budget() {
+        let mut hud = PerformanceHud::new();
+        hud.last_budget_area.set(Rect::new(0, 0, 40, 30));
+        let initial = hud.budget_ms;
+        let scroll_up = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            x: 10,
+            y: 10,
+            modifiers: Modifiers::empty(),
+        });
+        hud.handle_mouse(&scroll_up);
+        assert!((hud.budget_ms - (initial + 1.0)).abs() < 0.01);
+
+        let scroll_down = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x: 10,
+            y: 10,
+            modifiers: Modifiers::empty(),
+        });
+        hud.handle_mouse(&scroll_down);
+        assert!((hud.budget_ms - initial).abs() < 0.01);
+    }
+
+    #[test]
+    fn mouse_scroll_sparkline_mode() {
+        let mut hud = PerformanceHud::new();
+        hud.last_sparkline_area.set(Rect::new(0, 0, 40, 20));
+        assert_eq!(hud.sparkline_mode, SparklineMode::Intervals);
+        let scroll_up = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            x: 10,
+            y: 5,
+            modifiers: Modifiers::empty(),
+        });
+        hud.handle_mouse(&scroll_up);
+        assert_eq!(hud.sparkline_mode, SparklineMode::Fps);
+
+        let scroll_down = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x: 10,
+            y: 5,
+            modifiers: Modifiers::empty(),
+        });
+        hud.handle_mouse(&scroll_down);
+        assert_eq!(hud.sparkline_mode, SparklineMode::Intervals);
     }
 }
