@@ -2471,10 +2471,18 @@ impl MermaidRenderer {
         if edge_path.waypoints.len() < 2 || text.is_empty() {
             return;
         }
-        // Place label near the midpoint of the path.
+        // Place label near the geometric midpoint of the path.
         let mid_idx = edge_path.waypoints.len() / 2;
-        let mid = &edge_path.waypoints[mid_idx];
-        let (cx, cy) = vp.to_cell(mid.x, mid.y);
+        let (mx, my) = if edge_path.waypoints.len() % 2 == 0 && mid_idx > 0 {
+            // Even waypoint count: interpolate between the two middle segments.
+            let a = &edge_path.waypoints[mid_idx - 1];
+            let b = &edge_path.waypoints[mid_idx];
+            ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)
+        } else {
+            let mid = &edge_path.waypoints[mid_idx];
+            (mid.x, mid.y)
+        };
+        let (cx, cy) = vp.to_cell(mx, my);
         let label = if max_label_width == 0 {
             text.to_string()
         } else {
@@ -7143,6 +7151,119 @@ mod tests {
         assert!(
             bg_colors.contains(&fill0) || bg_colors.contains(&fill1) || bg_colors.contains(&fill2),
             "At least one node fill color should appear as text background"
+        );
+    }
+
+    #[test]
+    fn bundle_count_label_none_for_single_edge() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+        assert_eq!(renderer.bundle_count_label(1), None);
+        assert_eq!(renderer.bundle_count_label(0), None);
+    }
+
+    #[test]
+    fn bundle_count_label_unicode_format() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+        assert_eq!(
+            renderer.bundle_count_label(2),
+            Some("\u{00d7}2".to_string())
+        );
+        assert_eq!(
+            renderer.bundle_count_label(5),
+            Some("\u{00d7}5".to_string())
+        );
+        assert_eq!(
+            renderer.bundle_count_label(10),
+            Some("\u{00d7}10".to_string())
+        );
+    }
+
+    #[test]
+    fn bundle_count_label_ascii_format() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Ascii);
+        assert_eq!(renderer.bundle_count_label(3), Some("x3".to_string()));
+        assert_eq!(renderer.bundle_count_label(7), Some("x7".to_string()));
+    }
+
+    #[test]
+    fn bundled_edge_forces_thick_line_style() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+        let ir = make_ir(2, vec![(0, 1), (0, 1), (0, 1)]);
+
+        let mut layout = make_layout(2, vec![(0, 1)]);
+        // Add a middle waypoint so the label anchor lands on an interior point.
+        let from = layout.edges[0].waypoints[0];
+        let to = layout.edges[0].waypoints[1];
+        layout.edges[0].waypoints.insert(
+            1,
+            LayoutPoint {
+                x: (from.x + to.x) / 2.0,
+                y: (from.y + to.y) / 2.0,
+            },
+        );
+        layout.edges[0].bundle_count = 3;
+        layout.edges[0].bundle_members = vec![0, 1, 2];
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let config = MermaidConfig {
+            tier_override: MermaidTier::Compact,
+            ..Default::default()
+        };
+        let plan = select_render_plan(&config, &layout, &ir, area);
+
+        let mut buf = Buffer::new(80, 24);
+        renderer.render_with_plan(&layout, &ir, &plan, &mut buf);
+
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("\u{00d7}3") || text.contains("x3"),
+            "bundled edge should show count label; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn bundled_edge_label_appended_to_existing() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+
+        let mut ir = make_ir(2, vec![(0, 1), (0, 1), (0, 1)]);
+        let label_idx = ir.labels.len();
+        ir.labels.push(make_label("link"));
+        ir.edges[0].label = Some(IrLabelId(label_idx));
+
+        let mut layout = make_layout(2, vec![(0, 1)]);
+        let from = layout.edges[0].waypoints[0];
+        let to = layout.edges[0].waypoints[1];
+        layout.edges[0].waypoints.insert(
+            1,
+            LayoutPoint {
+                x: (from.x + to.x) / 2.0,
+                y: (from.y + to.y) / 2.0,
+            },
+        );
+        layout.edges[0].bundle_count = 3;
+        layout.edges[0].bundle_members = vec![0, 1, 2];
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let config = MermaidConfig::default();
+        let plan = select_render_plan(&config, &layout, &ir, area);
+
+        let mut buf = Buffer::new(80, 24);
+        renderer.render_with_plan(&layout, &ir, &plan, &mut buf);
+
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("\u{00d7}3") || text.contains("x3"),
+            "bundle count should appear in output; rendered:\n{text}"
         );
     }
 }

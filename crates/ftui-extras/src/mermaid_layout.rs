@@ -5117,7 +5117,7 @@ mod tests {
         }
     }
 
-    fn make_simple_ir(
+    pub(super) fn make_simple_ir(
         nodes: &[&str],
         edges: &[(usize, usize)],
         direction: GraphDirection,
@@ -7861,6 +7861,294 @@ mod tests {
             .unwrap()
             .rank;
         assert_eq!(rank_b, rank_d, "B and D should be on same rank");
+    }
+
+    #[test]
+    fn edge_bundling_disabled_leaves_edges_unchanged() {
+        let ir = make_simple_ir(
+            &["A", "B"],
+            &[(0, 1), (0, 1), (0, 1), (0, 1), (0, 1)],
+            GraphDirection::TB,
+        );
+        let config = MermaidConfig {
+            edge_bundling: false,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(
+            layout.edges.len(),
+            5,
+            "with bundling disabled, all edges should remain"
+        );
+        for edge in &layout.edges {
+            assert_eq!(edge.bundle_count, 1);
+            assert!(edge.bundle_members.is_empty());
+        }
+    }
+
+    #[test]
+    fn edge_bundling_single_edge_no_change() {
+        let ir = make_simple_ir(&["A", "B"], &[(0, 1)], GraphDirection::TB);
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 2,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(layout.edges.len(), 1);
+        assert_eq!(layout.edges[0].bundle_count, 1);
+        assert!(layout.edges[0].bundle_members.is_empty());
+    }
+
+    #[test]
+    fn edge_bundling_exact_min_threshold_bundles() {
+        let ir = make_simple_ir(&["A", "B"], &[(0, 1), (0, 1), (0, 1)], GraphDirection::TB);
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(
+            layout.edges.len(),
+            1,
+            "3 edges at min_count=3 should bundle"
+        );
+        assert_eq!(layout.edges[0].bundle_count, 3);
+        assert_eq!(layout.edges[0].bundle_members.len(), 3);
+    }
+
+    #[test]
+    fn edge_bundling_opposite_direction_not_bundled() {
+        let ir = make_simple_ir(
+            &["A", "B"],
+            &[(0, 1), (0, 1), (0, 1), (1, 0), (1, 0), (1, 0)],
+            GraphDirection::TB,
+        );
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(
+            layout.edges.len(),
+            2,
+            "opposite-direction edges should form separate bundles"
+        );
+        for edge in &layout.edges {
+            assert_eq!(edge.bundle_count, 3);
+        }
+    }
+
+    #[test]
+    fn edge_bundling_different_arrows_not_bundled() {
+        let mut ir = make_simple_ir(
+            &["A", "B"],
+            &[(0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1)],
+            GraphDirection::TB,
+        );
+        for edge in ir.edges.iter_mut().skip(3) {
+            edge.arrow = "-.->".to_string();
+        }
+
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(
+            layout.edges.len(),
+            2,
+            "different arrow styles should not be bundled together"
+        );
+    }
+
+    #[test]
+    fn edge_bundling_preserves_non_parallel_edges() {
+        let ir = make_simple_ir(
+            &["A", "B", "C"],
+            &[(0, 1), (0, 1), (0, 1), (0, 2), (1, 2)],
+            GraphDirection::TB,
+        );
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(
+            layout.edges.len(),
+            3,
+            "should have 1 bundled + 2 non-bundled edges"
+        );
+
+        let bundled: Vec<_> = layout.edges.iter().filter(|e| e.bundle_count > 1).collect();
+        assert_eq!(bundled.len(), 1);
+        assert_eq!(bundled[0].bundle_count, 3);
+
+        let unbundled: Vec<_> = layout
+            .edges
+            .iter()
+            .filter(|e| e.bundle_count == 1)
+            .collect();
+        assert_eq!(unbundled.len(), 2);
+    }
+
+    #[test]
+    fn edge_bundling_canonical_uses_lowest_edge_idx() {
+        let ir = make_simple_ir(
+            &["A", "B"],
+            &[(0, 1), (0, 1), (0, 1), (0, 1)],
+            GraphDirection::TB,
+        );
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 2,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(layout.edges.len(), 1);
+        assert_eq!(
+            layout.edges[0].edge_idx, 0,
+            "canonical edge should always be the lowest index"
+        );
+    }
+
+    #[test]
+    fn edge_bundling_lr_direction_offsets_y() {
+        let ir = make_simple_ir(&["A", "B"], &[(0, 1), (0, 1)], GraphDirection::LR);
+        let spacing = LayoutSpacing::default();
+
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+
+        let layout = layout_diagram_with_spacing(&ir, &config, &spacing);
+        if layout.edges.len() == 2 {
+            let dy = (layout.edges[1].waypoints[0].y - layout.edges[0].waypoints[0].y).abs();
+            let dx = (layout.edges[1].waypoints[0].x - layout.edges[0].waypoints[0].x).abs();
+            assert!(
+                dy > dx || dy > 0.5,
+                "LR direction should offset in Y, got dx={dx} dy={dy}"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_bundling_min_count_clamped_to_two() {
+        let ir = make_simple_ir(&["A", "B"], &[(0, 1), (0, 1)], GraphDirection::TB);
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 1,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(
+            layout.edges.len(),
+            1,
+            "min_count=1 clamped to 2 should bundle 2 parallel edges"
+        );
+        assert_eq!(layout.edges[0].bundle_count, 2);
+    }
+
+    #[test]
+    fn edge_bundling_bundle_members_sorted() {
+        let ir = make_simple_ir(
+            &["A", "B"],
+            &[(0, 1), (0, 1), (0, 1), (0, 1)],
+            GraphDirection::TB,
+        );
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 2,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(layout.edges.len(), 1);
+        let members = &layout.edges[0].bundle_members;
+        assert!(!members.is_empty());
+        let mut sorted = members.clone();
+        sorted.sort();
+        assert_eq!(members, &sorted, "bundle_members should be sorted");
+    }
+
+    #[test]
+    fn edge_bundling_self_loop_edges_no_crash() {
+        let ir = make_simple_ir(
+            &["A", "B"],
+            &[(0, 0), (0, 0), (0, 0), (0, 1)],
+            GraphDirection::TB,
+        );
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        assert!(!layout.edges.is_empty(), "should have at least one edge");
+    }
+
+    #[test]
+    fn edge_bundling_non_graph_diagram_skipped() {
+        let mut ir = make_simple_ir(&["A", "B"], &[(0, 1), (0, 1), (0, 1)], GraphDirection::TB);
+        ir.diagram_type = DiagramType::Sequence;
+        ir.meta.diagram_type = DiagramType::Sequence;
+
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+        for edge in &layout.edges {
+            assert_eq!(
+                edge.bundle_count, 1,
+                "non-graph diagrams should not have bundled edges"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_bundling_multi_group_correct_counts() {
+        let ir = make_simple_ir(
+            &["A", "B", "C", "D"],
+            &[
+                (0, 1),
+                (0, 1),
+                (0, 1),
+                (0, 1),
+                (2, 3),
+                (2, 3),
+                (2, 3),
+                (0, 3),
+                (0, 3),
+            ],
+            GraphDirection::TB,
+        );
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+        let layout = layout_diagram(&ir, &config);
+
+        let bundled: Vec<_> = layout.edges.iter().filter(|e| e.bundle_count > 1).collect();
+        let unbundled: Vec<_> = layout
+            .edges
+            .iter()
+            .filter(|e| e.bundle_count == 1)
+            .collect();
+
+        assert_eq!(bundled.len(), 2, "should have 2 bundle groups");
+        assert_eq!(unbundled.len(), 2, "should have 2 unbundled offset edges");
+
+        let mut bundle_counts: Vec<usize> = bundled.iter().map(|e| e.bundle_count).collect();
+        bundle_counts.sort();
+        assert_eq!(bundle_counts, vec![3, 4]);
     }
 }
 
