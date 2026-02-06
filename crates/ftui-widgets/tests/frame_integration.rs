@@ -12,7 +12,7 @@ use ftui_core::geometry::Rect;
 use ftui_layout::Constraint;
 use ftui_render::budget::DegradationLevel;
 use ftui_render::cell::{Cell, PackedRgba};
-use ftui_render::frame::{Frame, HitId};
+use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::{
     TableEffect, TableEffectRule, TableEffectTarget, TableTheme, TableThemeDiagnostics,
@@ -27,6 +27,7 @@ use ftui_widgets::list::List;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::progress::ProgressBar;
 use ftui_widgets::rule::Rule;
+use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ftui_widgets::table::{Row, Table, TableState};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -571,4 +572,209 @@ fn table_theme_perf_baseline_vs_effect_jsonl() {
             assert_ne!(checksum, 0, "table render should populate buffer");
         }
     }
+}
+
+// -----------------------------------------------------------------------
+// bd-iuvb.17.3: Widget hit region tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn scrollbar_registers_hit_regions_with_track_pos() {
+    init_tracing();
+    info!("scrollbar registers hit regions with track position data");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(1, 5, &mut pool);
+    let area = Rect::new(0, 0, 1, 5);
+    let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight).hit_id(HitId::new(5));
+    let mut state = ScrollbarState::new(100, 0, 10);
+
+    StatefulWidget::render(&sb, area, &mut frame, &mut state);
+
+    // Encoding is (part << 56) | track_position (2-field format, no track_len).
+    for y in 0..5u16 {
+        let (id, region, data) = frame.hit_test(0, y).expect("expected hit");
+        assert_eq!(id, HitId::new(5));
+        assert_eq!(region, HitRegion::Scrollbar);
+        let track_pos = (data & 0x00FF_FFFF_FFFF_FFFF) as u16;
+        assert_eq!(track_pos, y, "track_pos at y={y} should equal y");
+    }
+}
+
+#[test]
+fn table_registers_hit_regions_in_frame() {
+    init_tracing();
+    info!("table registers hit regions in frame");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(20, 3, &mut pool);
+    let rows = [
+        Row::new(["a"]).height(1).bottom_margin(0),
+        Row::new(["b"]).height(1).bottom_margin(0),
+        Row::new(["c"]).height(1).bottom_margin(0),
+    ];
+    let table = Table::new(rows, [Constraint::Fixed(10)]).hit_id(HitId::new(99));
+
+    Widget::render(&table, Rect::new(0, 0, 20, 3), &mut frame);
+
+    let hit0 = frame.hit_test(0, 0);
+    let hit1 = frame.hit_test(0, 1);
+    let hit2 = frame.hit_test(0, 2);
+    assert_eq!(hit0, Some((HitId::new(99), HitRegion::Content, 0)));
+    assert_eq!(hit1, Some((HitId::new(99), HitRegion::Content, 1)));
+    assert_eq!(hit2, Some((HitId::new(99), HitRegion::Content, 2)));
+}
+
+#[test]
+fn list_hit_data_encodes_item_index() {
+    init_tracing();
+    info!("list hit data encodes item index");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(10, 5, &mut pool);
+    let list = List::new(["zero", "one", "two", "three", "four"]).hit_id(HitId::new(42));
+
+    Widget::render(&list, Rect::new(0, 0, 10, 5), &mut frame);
+
+    for y in 0..5u16 {
+        let (id, region, data) = frame.hit_test(0, y).expect("expected hit");
+        assert_eq!(id, HitId::new(42));
+        assert_eq!(region, HitRegion::Content);
+        assert_eq!(data, y as u64, "item index at row {y}");
+    }
+}
+
+#[test]
+fn table_hit_data_encodes_row_index() {
+    init_tracing();
+    info!("table hit data encodes row index");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(20, 4, &mut pool);
+    let rows = [
+        Row::new(["r0"]).height(1).bottom_margin(0),
+        Row::new(["r1"]).height(1).bottom_margin(0),
+        Row::new(["r2"]).height(1).bottom_margin(0),
+        Row::new(["r3"]).height(1).bottom_margin(0),
+    ];
+    let table = Table::new(rows, [Constraint::Fixed(10)]).hit_id(HitId::new(77));
+
+    Widget::render(&table, Rect::new(0, 0, 20, 4), &mut frame);
+
+    for y in 0..4u16 {
+        let (id, _region, data) = frame.hit_test(0, y).expect("expected hit");
+        assert_eq!(id, HitId::new(77));
+        assert_eq!(data, y as u64, "row index at row {y}");
+    }
+}
+
+#[test]
+fn scrollbar_encodes_track_and_thumb_parts() {
+    init_tracing();
+    info!("scrollbar encodes distinct part values for thumb vs track");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(1, 10, &mut pool);
+    let area = Rect::new(0, 0, 1, 10);
+    let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight).hit_id(HitId::new(20));
+    let mut state = ScrollbarState::new(100, 0, 10);
+
+    StatefulWidget::render(&sb, area, &mut frame, &mut state);
+
+    let (_, _, data0) = frame.hit_test(0, 0).expect("hit at y=0");
+    let part0 = data0 >> 56;
+    assert_eq!(part0, 1, "y=0 should be SCROLLBAR_PART_THUMB");
+
+    let (_, _, data1) = frame.hit_test(0, 1).expect("hit at y=1");
+    let part1 = data1 >> 56;
+    assert_eq!(part1, 0, "y=1 should be SCROLLBAR_PART_TRACK");
+}
+
+#[test]
+fn multiple_widgets_coexist_with_different_hit_ids() {
+    init_tracing();
+    info!("multiple widgets coexist with different hit ids");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(20, 4, &mut pool);
+
+    let list = List::new(["a", "b"]).hit_id(HitId::new(10));
+    Widget::render(&list, Rect::new(0, 0, 10, 2), &mut frame);
+
+    let rows = [
+        Row::new(["x"]).height(1).bottom_margin(0),
+        Row::new(["y"]).height(1).bottom_margin(0),
+    ];
+    let table = Table::new(rows, [Constraint::Fixed(10)]).hit_id(HitId::new(20));
+    Widget::render(&table, Rect::new(0, 2, 10, 2), &mut frame);
+
+    let (id_list, _, _) = frame.hit_test(0, 0).expect("list hit");
+    let (id_table, _, _) = frame.hit_test(0, 2).expect("table hit");
+    assert_eq!(id_list, HitId::new(10));
+    assert_eq!(id_table, HitId::new(20));
+}
+
+#[test]
+fn no_hit_id_means_no_hit_regions() {
+    init_tracing();
+    info!("list without hit_id produces no hit regions");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(10, 2, &mut pool);
+    let list = List::new(["a", "b"]);
+
+    Widget::render(&list, Rect::new(0, 0, 10, 2), &mut frame);
+
+    assert!(frame.hit_test(0, 0).is_none(), "no hit at (0,0)");
+    assert!(frame.hit_test(0, 1).is_none(), "no hit at (0,1)");
+}
+
+#[test]
+fn table_without_hit_id_has_no_hit_regions() {
+    init_tracing();
+    info!("table without hit_id produces no hit regions");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(20, 2, &mut pool);
+    let rows = [
+        Row::new(["a"]).height(1).bottom_margin(0),
+        Row::new(["b"]).height(1).bottom_margin(0),
+    ];
+    let table = Table::new(rows, [Constraint::Fixed(10)]);
+
+    Widget::render(&table, Rect::new(0, 0, 20, 2), &mut frame);
+
+    assert!(frame.hit_test(0, 0).is_none(), "no hit at (0,0)");
+    assert!(frame.hit_test(0, 1).is_none(), "no hit at (0,1)");
+}
+
+#[test]
+fn scrollbar_without_hit_id_has_no_hit_regions() {
+    init_tracing();
+    info!("scrollbar without hit_id produces no hit regions");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(1, 5, &mut pool);
+    let area = Rect::new(0, 0, 1, 5);
+    let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+    let mut state = ScrollbarState::new(100, 0, 10);
+
+    StatefulWidget::render(&sb, area, &mut frame, &mut state);
+
+    for y in 0..5u16 {
+        assert!(frame.hit_test(0, y).is_none(), "no hit at y={y}");
+    }
+}
+
+#[test]
+fn hit_regions_are_deterministic_across_renders() {
+    init_tracing();
+    info!("hit regions are deterministic across renders");
+
+    let make_frame = || {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(10, 3, &mut pool);
+        let list = List::new(["a", "b", "c"]).hit_id(HitId::new(50));
+        Widget::render(&list, Rect::new(0, 0, 10, 3), &mut frame);
+        let mut hits = Vec::new();
+        for y in 0..3u16 {
+            hits.push(frame.hit_test(0, y));
+        }
+        hits
+    };
+
+    let hits1 = make_frame();
+    let hits2 = make_frame();
+    assert_eq!(hits1, hits2, "two renders produce identical hit results");
 }
