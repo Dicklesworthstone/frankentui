@@ -2053,15 +2053,15 @@ mod tests {
     }
 
     fn expect_fg(preset: TablePresetId, label: &str, style: Style) -> PackedRgba {
-        style
-            .fg
-            .unwrap_or_else(|| panic!("{preset:?} missing fg for {label}"))
+        let fg = style.fg;
+        assert!(fg.is_some(), "{preset:?} missing fg for {label}");
+        fg.unwrap()
     }
 
     fn expect_bg(preset: TablePresetId, label: &str, style: Style) -> PackedRgba {
-        style
-            .bg
-            .unwrap_or_else(|| panic!("{preset:?} missing bg for {label}"))
+        let bg = style.bg;
+        assert!(bg.is_some(), "{preset:?} missing bg for {label}");
+        bg.unwrap()
     }
 
     fn assert_contrast(
@@ -2592,9 +2592,9 @@ mod tests {
         ];
         let mut last = 0usize;
         for key in keys {
-            let pos = json
-                .find(key)
-                .unwrap_or_else(|| panic!("missing key {key}"));
+            let pos = json.find(key);
+            assert!(pos.is_some(), "missing key {key}");
+            let pos = pos.unwrap();
             assert!(
                 pos >= last,
                 "key {key} is out of order (pos {pos} < {last})"
@@ -2794,10 +2794,12 @@ mod tests {
 
     #[test]
     fn diagnostics_captures_theme_state() {
-        let theme = TableTheme::aurora().with_padding(4).with_effect(TableEffectRule::new(
-            TableEffectTarget::AllRows,
-            pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
-        ));
+        let theme = TableTheme::aurora()
+            .with_padding(4)
+            .with_effect(TableEffectRule::new(
+                TableEffectTarget::AllRows,
+                pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
+            ));
         let diag = theme.diagnostics();
         assert_eq!(diag.preset_id, Some(TablePresetId::Aurora));
         assert_eq!(diag.padding, 4);
@@ -2864,13 +2866,19 @@ mod tests {
     fn skew_phase_positive_slows_start() {
         // With positive asymmetry, early phases should be compressed
         let skewed = skew_phase(0.5, 0.5);
-        assert!(skewed < 0.5, "positive skew should compress early phase: {skewed}");
+        assert!(
+            skewed < 0.5,
+            "positive skew should compress early phase: {skewed}"
+        );
     }
 
     #[test]
     fn skew_phase_negative_accelerates_start() {
         let skewed = skew_phase(0.5, -0.5);
-        assert!(skewed > 0.5, "negative skew should expand early phase: {skewed}");
+        assert!(
+            skewed > 0.5,
+            "negative skew should expand early phase: {skewed}"
+        );
     }
 
     // =========================================================================
@@ -2900,7 +2908,10 @@ mod tests {
         let resolved = resolver.resolve(base, TableEffectScope::row(TableSection::Body, 0), 0.25);
         // Additive should increase brightness
         let resolved_fg = resolved.fg.unwrap();
-        assert!(resolved_fg.r() >= base_fg.r(), "additive should brighten red");
+        assert!(
+            resolved_fg.r() >= base_fg.r(),
+            "additive should brighten red"
+        );
     }
 
     #[test]
