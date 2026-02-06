@@ -900,11 +900,7 @@ mod tests {
         );
 
         let opaque = PackedRgba::rgba(0, 255, 0, 255);
-        set_style_area(
-            &mut buf,
-            Rect::new(0, 0, 1, 1),
-            Style::new().bg(opaque),
-        );
+        set_style_area(&mut buf, Rect::new(0, 0, 1, 1), Style::new().bg(opaque));
         assert_eq!(buf.get(0, 0).unwrap().bg, opaque);
     }
 
@@ -917,17 +913,8 @@ mod tests {
             draw_text_span_scrolled(&mut frame, 0, 0, "ABCDE", Style::default(), 10, 2, None);
 
         assert_eq!(end_x, 3);
-        assert_eq!(
-            frame.buffer.get(0, 0).unwrap().content.as_char(),
-            Some('C')
-        );
-        assert_eq!(
-            frame.buffer.get(1, 0).unwrap().content.as_char(),
-            Some('D')
-        );
-        assert_eq!(
-            frame.buffer.get(2, 0).unwrap().content.as_char(),
-            Some('E')
-        );
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('C'));
+        assert_eq!(frame.buffer.get(1, 0).unwrap().content.as_char(), Some('D'));
+        assert_eq!(frame.buffer.get(2, 0).unwrap().content.as_char(), Some('E'));
     }
 }

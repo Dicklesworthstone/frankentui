@@ -20,7 +20,7 @@ use ftui_core::terminal_capabilities::TerminalProfile;
 use ftui_demo_showcase::app::{AppModel, AppMsg, ScreenId};
 use ftui_demo_showcase::screens::Screen;
 use ftui_demo_showcase::theme::{ScopedThemeLock, ThemeId};
-use ftui_harness::{assert_snapshot, buffer_to_text};
+use ftui_harness::{assert_snapshot, assert_snapshot_ansi, buffer_to_text};
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
@@ -211,6 +211,7 @@ fn dashboard_hover_dataviz_120x40() {
     let area = Rect::new(0, 0, 120, 40);
     screen.view(&mut frame, area);
     assert_snapshot!("dashboard_hover_dataviz_120x40", &frame.buffer);
+    assert_snapshot_ansi!("dashboard_hover_dataviz_120x40", &frame.buffer);
 }
 
 #[test]

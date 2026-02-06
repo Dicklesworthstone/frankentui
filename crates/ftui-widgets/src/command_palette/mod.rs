@@ -2158,6 +2158,9 @@ mod widget_tests {
             .with(capture)
             .with(Targets::new().with_target(TELEMETRY_TARGET, tracing::Level::INFO));
         let _guard = tracing::subscriber::set_default(subscriber);
+        // Force callsite interest re-evaluation so our thread-local subscriber
+        // is picked up even if a global subscriber was installed by another test.
+        tracing::callsite::rebuild_interest_cache();
 
         let mut palette = CommandPalette::new();
         palette.register("Alpha", None, &[]);
