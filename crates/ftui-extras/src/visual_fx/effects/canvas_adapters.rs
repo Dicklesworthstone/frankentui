@@ -272,48 +272,89 @@ impl PlasmaCanvasAdapter {
             *wave = self.y_wave_sin_base[y] * cos_t2 + self.y_wave_cos_base[y] * sin_t2;
         }
 
-        let full = quality == FxQuality::Full;
-        let reduced = quality == FxQuality::Reduced;
+        // Hoist quality branching outside the hot pixel loop.
+        match quality {
+            FxQuality::Full => {
+                for y in 0..h {
+                    let v2 = self.y_wave[y];
+                    let y_sin = self.y_diag_sin[y];
+                    let y_cos = self.y_diag_cos[y];
+                    let row_offset = y * w;
 
-        for y in 0..h {
-            let v2 = self.y_wave[y];
-            let y_sin = self.y_diag_sin[y];
-            let y_cos = self.y_diag_cos[y];
-            let row_offset = y * w;
+                    for x in 0..w {
+                        let v1 = self.x_wave[x];
+                        let x_sin = self.x_diag_sin[x];
+                        let x_cos = self.x_diag_cos[x];
 
-            for x in 0..w {
-                let v1 = self.x_wave[x];
-                let x_sin = self.x_diag_sin[x];
-                let x_cos = self.x_diag_cos[x];
+                        // sin(x+y+t3) via trig identities (no per-pixel trig).
+                        let sin_xy = x_sin * y_cos + x_cos * y_sin;
+                        let cos_xy = x_cos * y_cos - x_sin * y_sin;
+                        let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
 
-                // sin(x+y+t3) via trig identities (no per-pixel trig).
-                let sin_xy = x_sin * y_cos + x_cos * y_sin;
-                let cos_xy = x_cos * y_cos - x_sin * y_sin;
-                let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
+                        let idx = row_offset + x;
+                        let v4 = self.radial_center_sin_base[idx] * cos_t4
+                            - self.radial_center_cos_base[idx] * sin_t4;
+                        let v5 = self.radial_offset_cos_base[idx] * cos_time
+                            - self.radial_offset_sin_base[idx] * sin_time;
+                        let v6 = self.interference_sin_base[idx] * cos_t6
+                            + self.interference_cos_base[idx] * sin_t6;
+                        let wave = (v1 + v2 + v3 + v4 + v5 + v6) / 6.0;
 
-                let wave = if full {
-                    let idx = row_offset + x;
-                    let v4 = self.radial_center_sin_base[idx] * cos_t4
-                        - self.radial_center_cos_base[idx] * sin_t4;
-                    let v5 = self.radial_offset_cos_base[idx] * cos_time
-                        - self.radial_offset_sin_base[idx] * sin_time;
-                    let v6 = self.interference_sin_base[idx] * cos_t6
-                        + self.interference_cos_base[idx] * sin_t6;
-                    (v1 + v2 + v3 + v4 + v5 + v6) / 6.0
-                } else if reduced {
-                    let idx = row_offset + x;
-                    let v4 = self.radial_center_sin_base[idx] * cos_t4
-                        - self.radial_center_cos_base[idx] * sin_t4;
-                    (v1 + v2 + v3 + v4) / 4.0
-                } else if quality == FxQuality::Minimal {
-                    (v1 + v2 + v3) / 3.0
-                } else {
-                    0.0
-                };
-
-                let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
-                painter.point_colored(x as i32, y as i32, color);
+                        let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
+                        painter.point_colored(x as i32, y as i32, color);
+                    }
+                }
             }
+            FxQuality::Reduced => {
+                for y in 0..h {
+                    let v2 = self.y_wave[y];
+                    let y_sin = self.y_diag_sin[y];
+                    let y_cos = self.y_diag_cos[y];
+                    let row_offset = y * w;
+
+                    for x in 0..w {
+                        let v1 = self.x_wave[x];
+                        let x_sin = self.x_diag_sin[x];
+                        let x_cos = self.x_diag_cos[x];
+
+                        // sin(x+y+t3) via trig identities (no per-pixel trig).
+                        let sin_xy = x_sin * y_cos + x_cos * y_sin;
+                        let cos_xy = x_cos * y_cos - x_sin * y_sin;
+                        let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
+
+                        let idx = row_offset + x;
+                        let v4 = self.radial_center_sin_base[idx] * cos_t4
+                            - self.radial_center_cos_base[idx] * sin_t4;
+                        let wave = (v1 + v2 + v3 + v4) / 4.0;
+
+                        let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
+                        painter.point_colored(x as i32, y as i32, color);
+                    }
+                }
+            }
+            FxQuality::Minimal => {
+                for y in 0..h {
+                    let v2 = self.y_wave[y];
+                    let y_sin = self.y_diag_sin[y];
+                    let y_cos = self.y_diag_cos[y];
+
+                    for x in 0..w {
+                        let v1 = self.x_wave[x];
+                        let x_sin = self.x_diag_sin[x];
+                        let x_cos = self.x_diag_cos[x];
+
+                        // sin(x+y+t3) via trig identities (no per-pixel trig).
+                        let sin_xy = x_sin * y_cos + x_cos * y_sin;
+                        let cos_xy = x_cos * y_cos - x_sin * y_sin;
+                        let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
+
+                        let wave = (v1 + v2 + v3) / 3.0;
+                        let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
+                        painter.point_colored(x as i32, y as i32, color);
+                    }
+                }
+            }
+            FxQuality::Off => {}
         }
     }
 }
@@ -514,11 +555,6 @@ impl MetaballsCanvasAdapter {
         }
 
         self.dy2_cache.resize(balls_len, 0.0);
-        let active_indices: &[usize] = if step > 1 {
-            self.active_indices.as_slice()
-        } else {
-            &[]
-        };
         let balls = &self.ball_cache;
         let dy2_cache = &mut self.dy2_cache;
         let x_coords = &self.x_coords;
@@ -527,26 +563,20 @@ impl MetaballsCanvasAdapter {
         let h = height as usize;
         const EPS: f64 = 1e-8;
 
-        for (y, &ny) in y_coords.iter().enumerate().take(h) {
-            if step == 1 {
+        // Hoist `step == 1` branching out of the hot pixel loop.
+        if step == 1 {
+            for (y, &ny) in y_coords.iter().enumerate().take(h) {
                 for (i, ball) in balls.iter().enumerate() {
                     let dy = ny - ball.y;
                     dy2_cache[i] = dy * dy;
                 }
-            } else {
-                for &i in active_indices {
-                    let dy = ny - balls[i].y;
-                    dy2_cache[i] = dy * dy;
-                }
-            }
-            let dy2_cache_ref = &dy2_cache[..];
+                let dy2_cache_ref = &dy2_cache[..];
 
-            for (x, &nx) in x_coords.iter().enumerate().take(w) {
-                let mut sum = 0.0;
-                let mut weighted_hue = 0.0;
-                let mut total_weight = 0.0;
+                for (x, &nx) in x_coords.iter().enumerate().take(w) {
+                    let mut sum = 0.0;
+                    let mut weighted_hue = 0.0;
+                    let mut total_weight = 0.0;
 
-                if step == 1 {
                     for (i, ball) in balls.iter().enumerate() {
                         let dx = nx - ball.x;
                         let dist_sq = dx * dx + dy2_cache_ref[i];
@@ -562,7 +592,37 @@ impl MetaballsCanvasAdapter {
                             total_weight += 100.0;
                         }
                     }
-                } else {
+
+                    if sum > glow {
+                        let avg_hue = if total_weight > EPS {
+                            weighted_hue / total_weight
+                        } else {
+                            0.0
+                        };
+                        let intensity = if sum > threshold {
+                            1.0
+                        } else {
+                            (sum - glow) / (threshold - glow)
+                        };
+                        let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
+                        painter.point_colored(x as i32, y as i32, color);
+                    }
+                }
+            }
+        } else {
+            let active_indices = self.active_indices.as_slice();
+            for (y, &ny) in y_coords.iter().enumerate().take(h) {
+                for &i in active_indices {
+                    let dy = ny - balls[i].y;
+                    dy2_cache[i] = dy * dy;
+                }
+                let dy2_cache_ref = &dy2_cache[..];
+
+                for (x, &nx) in x_coords.iter().enumerate().take(w) {
+                    let mut sum = 0.0;
+                    let mut weighted_hue = 0.0;
+                    let mut total_weight = 0.0;
+
                     for &i in active_indices {
                         let ball = &balls[i];
                         let dx = nx - ball.x;
@@ -579,21 +639,21 @@ impl MetaballsCanvasAdapter {
                             total_weight += 100.0;
                         }
                     }
-                }
 
-                if sum > glow {
-                    let avg_hue = if total_weight > EPS {
-                        weighted_hue / total_weight
-                    } else {
-                        0.0
-                    };
-                    let intensity = if sum > threshold {
-                        1.0
-                    } else {
-                        (sum - glow) / (threshold - glow)
-                    };
-                    let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
-                    painter.point_colored(x as i32, y as i32, color);
+                    if sum > glow {
+                        let avg_hue = if total_weight > EPS {
+                            weighted_hue / total_weight
+                        } else {
+                            0.0
+                        };
+                        let intensity = if sum > threshold {
+                            1.0
+                        } else {
+                            (sum - glow) / (threshold - glow)
+                        };
+                        let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
+                        painter.point_colored(x as i32, y as i32, color);
+                    }
                 }
             }
         }

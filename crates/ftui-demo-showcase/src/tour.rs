@@ -557,8 +557,7 @@ mod tests {
             ..
         } = event
         else {
-            assert!(false, "expected step change");
-            return;
+            unreachable!("expected step change");
         };
         assert_eq!(seen_from, from);
         assert_eq!(reason, TourAdvanceReason::Jump);
@@ -576,8 +575,7 @@ mod tests {
 
         let event = tour.jump_to(99).expect("jump to last step");
         let TourEvent::StepChanged { to, reason, .. } = event else {
-            assert!(false, "expected step change");
-            return;
+            unreachable!("expected step change");
         };
         assert_eq!(to, ScreenId::MarkdownRichText);
         assert_eq!(reason, TourAdvanceReason::Jump);
