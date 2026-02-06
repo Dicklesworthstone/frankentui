@@ -597,6 +597,47 @@ mod tests {
     }
 
     #[test]
+    fn is_dirty_initially_true() {
+        let source = Observable::new(1);
+        let computed = Computed::from_observable(&source, |v| *v);
+        assert!(computed.is_dirty());
+    }
+
+    #[test]
+    fn with_increments_version_on_dirty() {
+        let source = Observable::new(10);
+        let computed = Computed::from_observable(&source, |v| *v);
+
+        // First access via with()
+        let val = computed.with(|v| *v);
+        assert_eq!(val, 10);
+        assert_eq!(computed.version(), 1);
+
+        // Change source and access via with()
+        source.set(20);
+        let val = computed.with(|v| *v);
+        assert_eq!(val, 20);
+        assert_eq!(computed.version(), 2);
+    }
+
+    #[test]
+    fn invalidate_without_source_change() {
+        let source = Observable::new(5);
+        let computed = Computed::from_observable(&source, |v| *v);
+
+        let _ = computed.get();
+        assert_eq!(computed.version(), 1);
+        assert!(!computed.is_dirty());
+
+        computed.invalidate();
+        assert!(computed.is_dirty());
+
+        // get() triggers recomputation even though source didn't change
+        let _ = computed.get();
+        assert_eq!(computed.version(), 2);
+    }
+
+    #[test]
     fn many_updates_version_monotonic() {
         let source = Observable::new(0);
         let computed = Computed::from_observable(&source, |v| *v);

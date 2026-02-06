@@ -607,4 +607,38 @@ mod tests {
         let dbg = format!("{:?}", stab);
         assert!(dbg.contains("HoverStabilizer"));
     }
+
+    #[test]
+    fn switch_count_preserved_after_reset() {
+        let mut stab = stabilizer();
+        let t = now();
+
+        stab.update(Some(42), (10, 10), t);
+        assert_eq!(stab.switch_count(), 1);
+
+        stab.reset();
+        // switch count is NOT cleared by reset (it's a diagnostic counter)
+        assert_eq!(stab.switch_count(), 1);
+        assert!(stab.current_target().is_none());
+    }
+
+    #[test]
+    fn none_hit_when_no_current_target() {
+        let mut stab = stabilizer();
+        let t = now();
+
+        // Update with None when no target established
+        let target = stab.update(None, (10, 10), t);
+        assert_eq!(target, None);
+        assert_eq!(stab.switch_count(), 0);
+    }
+
+    #[test]
+    fn config_clone() {
+        let config = HoverStabilizerConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.drift_allowance, config.drift_allowance);
+        assert_eq!(cloned.detection_threshold, config.detection_threshold);
+        assert_eq!(cloned.hysteresis_cells, config.hysteresis_cells);
+    }
 }
