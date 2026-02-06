@@ -95,7 +95,7 @@
 use std::cell::Cell as StdCell;
 use std::collections::VecDeque;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
