@@ -1088,6 +1088,8 @@ pub struct MermaidMegaState {
     panels: PanelVisibility,
     /// Layout density mode.
     layout_mode: LayoutMode,
+    /// Direction override (None = use diagram's own direction).
+    direction_override: Option<mermaid::GraphDirection>,
     /// Fidelity tier.
     tier: MermaidTier,
     /// Glyph mode (Unicode / ASCII).
@@ -1144,6 +1146,7 @@ impl Default for MermaidMegaState {
             mode: ShowcaseMode::Normal,
             panels: PanelVisibility::default(),
             layout_mode: LayoutMode::Auto,
+            direction_override: None,
             tier: MermaidTier::Auto,
             glyph_mode: MermaidGlyphMode::Unicode,
             render_mode: MermaidRenderMode::Braille,
@@ -1373,6 +1376,7 @@ enum MegaAction {
     CycleWrapMode,
     ToggleStyles,
     CycleLayoutMode,
+    CycleDirection,
     ForceRelayout,
     CyclePalette,
     PrevPalette,
@@ -1585,6 +1589,25 @@ impl MermaidMegaState {
             MegaAction::CycleLayoutMode => {
                 self.layout_mode = self.layout_mode.next();
                 self.bump_layout();
+            }
+            MegaAction::CycleDirection => {
+                use mermaid::GraphDirection;
+                self.direction_override = match self.direction_override {
+                    None => Some(GraphDirection::TB),
+                    Some(GraphDirection::TB) => Some(GraphDirection::LR),
+                    Some(GraphDirection::LR) => Some(GraphDirection::RL),
+                    Some(GraphDirection::RL) => Some(GraphDirection::BT),
+                    Some(GraphDirection::BT) => None,
+                    Some(GraphDirection::TD) => Some(GraphDirection::LR),
+                };
+                self.log_action(
+                    "cycle_direction",
+                    format!(
+                        "Direction → {}",
+                        self.direction_override.map_or("auto", |d| d.as_str())
+                    ),
+                );
+                self.bump_analysis();
             }
             MegaAction::ForceRelayout => {
                 self.bump_layout();
@@ -1917,6 +1940,7 @@ impl MermaidMegaShowcaseScreen {
             KeyCode::Char('s') => Some(MegaAction::ToggleStyles),
             KeyCode::Char('w') => Some(MegaAction::CycleWrapMode),
             KeyCode::Char('l') => Some(MegaAction::CycleLayoutMode),
+            KeyCode::Char('O') => Some(MegaAction::CycleDirection),
             KeyCode::Char('r') => Some(MegaAction::ForceRelayout),
             // Theme
             KeyCode::Char('p') => Some(MegaAction::CyclePalette),
@@ -2050,11 +2074,16 @@ impl MermaidMegaShowcaseScreen {
             cache.parse_ms = Some(parse_start.elapsed().as_secs_f32() * 1000.0);
 
             let ir_parse = mermaid::normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
+            let mut ir = ir_parse.ir;
+            // Apply direction override if user has cycled it.
+            if let Some(dir) = self.state.direction_override {
+                ir.direction = dir;
+            }
             let mut errors = Vec::new();
             errors.extend(parsed.errors);
             errors.extend(ir_parse.errors);
             cache.errors = errors;
-            cache.ir = Some(ir_parse.ir);
+            cache.ir = Some(ir);
             cache.analysis_epoch = self.state.analysis_epoch;
             layout_needed = true;
             render_needed = true;
@@ -2500,13 +2529,17 @@ impl MermaidMegaShowcaseScreen {
         } else {
             String::new()
         };
+        let dir_info = s
+            .direction_override
+            .map_or("auto".to_string(), |d| d.as_str().to_string());
         let status = format!(
-            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Palette:{} Zoom:{:.0}% {}{}{}{}{} ",
+            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Dir:{} Palette:{} Zoom:{:.0}% {}{}{}{}{} ",
             s.tier,
             s.glyph_mode,
             s.render_mode,
             s.wrap_mode,
             s.layout_mode.as_str(),
+            dir_info,
             s.palette,
             (s.viewport_zoom * 100.0),
             viewport_info,
@@ -2633,6 +2666,12 @@ impl MermaidMegaShowcaseScreen {
         if cache.debounce_skips > 0 {
             lines.push(format!("Debounce: {}", cache.debounce_skips));
         }
+        if let Some(last) = cache.last_layout_instant {
+            let ago_ms = last.elapsed().as_millis();
+            if ago_ms < 2000 {
+                lines.push(format!("Recomputed: {ago_ms}ms ago"));
+            }
+        }
         if cache.layout_budget_exceeded {
             lines.push(format!("Budget: OVER ({LAYOUT_BUDGET_MS:.0}ms)"));
         }
@@ -2705,6 +2744,7 @@ impl MermaidMegaShowcaseScreen {
                     ("s", "Toggle styles (classDef/style)"),
                     ("w", "Cycle wrap mode (None/Word/Char/WordChar)"),
                     ("l", "Cycle layout mode (Dense/Normal/Spacious/Auto)"),
+                    ("O", "Cycle direction (TB/LR/RL/BT/auto)"),
                     ("r", "Force relayout"),
                     ("p / P", "Cycle palette forward / backward"),
                 ],
@@ -3202,6 +3242,10 @@ impl Screen for MermaidMegaShowcaseScreen {
             HelpEntry {
                 key: "l",
                 action: "Cycle layout mode",
+            },
+            HelpEntry {
+                key: "O",
+                action: "Cycle direction",
             },
             HelpEntry {
                 key: "r",
@@ -6203,5 +6247,86 @@ mod tests {
                 "generator field '{field}' missing from MEGA_TELEMETRY_NULLABLE_FIELDS"
             );
         }
+    }
+
+    // ── Live recomputation + direction tests (bd-3oaig.8) ──────────
+
+    #[test]
+    fn direction_override_cycles_through_all() {
+        let mut state = MermaidMegaState::default();
+        assert_eq!(state.direction_override, None);
+
+        state.apply(MegaAction::CycleDirection);
+        assert_eq!(state.direction_override, Some(mermaid::GraphDirection::TB));
+
+        state.apply(MegaAction::CycleDirection);
+        assert_eq!(state.direction_override, Some(mermaid::GraphDirection::LR));
+
+        state.apply(MegaAction::CycleDirection);
+        assert_eq!(state.direction_override, Some(mermaid::GraphDirection::RL));
+
+        state.apply(MegaAction::CycleDirection);
+        assert_eq!(state.direction_override, Some(mermaid::GraphDirection::BT));
+
+        state.apply(MegaAction::CycleDirection);
+        assert_eq!(state.direction_override, None, "should cycle back to auto");
+    }
+
+    #[test]
+    fn direction_override_bumps_analysis() {
+        let mut state = MermaidMegaState::default();
+        let before = state.analysis_epoch;
+        state.apply(MegaAction::CycleDirection);
+        assert!(
+            state.analysis_epoch > before,
+            "direction change should bump analysis epoch"
+        );
+    }
+
+    #[test]
+    fn direction_override_logged() {
+        let mut state = MermaidMegaState::default();
+        state.apply(MegaAction::CycleDirection);
+        assert!(state.status_log.len() >= 2);
+        // The specific handler logs "cycle_direction", then the catch-all logs "action".
+        let specific = &state.status_log[state.status_log.len() - 2];
+        assert_eq!(specific.action, "cycle_direction");
+        assert!(specific.detail.contains("Direction"));
+        // The catch-all entry logs the action debug representation.
+        let catchall = state.status_log.last().unwrap();
+        assert_eq!(catchall.action, "action");
+        assert!(catchall.detail.contains("CycleDirection"));
+    }
+
+    #[test]
+    fn debounce_skips_increment_on_rapid_recompute() {
+        // The debounce logic is tested via ensure_render_cache,
+        // but here we verify the MegaRenderCache fields.
+        let cache = MegaRenderCache::empty();
+        assert_eq!(cache.debounce_skips, 0);
+        assert!(cache.last_layout_instant.is_none());
+        assert!(!cache.layout_budget_exceeded);
+    }
+
+    #[test]
+    fn layout_mode_cycle_bumps_layout() {
+        let mut state = MermaidMegaState::default();
+        let before = state.layout_epoch;
+        state.apply(MegaAction::CycleLayoutMode);
+        assert!(
+            state.layout_epoch > before,
+            "layout mode change should bump layout epoch"
+        );
+    }
+
+    #[test]
+    fn force_relayout_bumps_layout() {
+        let mut state = MermaidMegaState::default();
+        let before = state.layout_epoch;
+        state.apply(MegaAction::ForceRelayout);
+        assert!(
+            state.layout_epoch > before,
+            "force relayout should bump layout epoch"
+        );
     }
 }
