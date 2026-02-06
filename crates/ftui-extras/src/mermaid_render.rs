@@ -827,6 +827,31 @@ enum EdgeLineStyle {
     Thick,
 }
 
+fn journey_score_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
+    for class in &ir_node.classes {
+        if let Some(s) = class.strip_prefix("journey_score_")
+            && let Ok(score) = s.parse::<u8>()
+        {
+            return Some(match score {
+                5 => PackedRgba::rgb(76, 175, 80),
+                4 => PackedRgba::rgb(139, 195, 74),
+                3 => PackedRgba::rgb(255, 193, 7),
+                2 => PackedRgba::rgb(255, 152, 0),
+                1 => PackedRgba::rgb(244, 67, 54),
+                _ => PackedRgba::rgb(158, 158, 158),
+            });
+        }
+    }
+    None
+}
+
+fn timeline_era_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
+    if ir_node.classes.contains(&"timeline_period".to_string()) {
+        return Some(PackedRgba::rgb(66, 133, 183));
+    }
+    None
+}
+
 /// Detect edge line style from the Mermaid arrow string.
 fn detect_edge_style(arrow: &str) -> EdgeLineStyle {
     if arrow.contains("-.") || arrow.contains(".-") {
@@ -928,10 +953,6 @@ impl MermaidRenderer {
             self.render_pie(ir, area, max_label_width, buf);
             return;
         }
-        if ir.diagram_type == DiagramType::Journey {
-            self.render_journey(layout, ir, area, buf);
-            return;
-        }
         if layout.nodes.is_empty() || area.is_empty() {
             return;
         }
@@ -967,10 +988,6 @@ impl MermaidRenderer {
             self.render_pie(ir, plan.diagram_area, plan.max_label_width, buf);
             return;
         }
-        if ir.diagram_type == DiagramType::Journey {
-            self.render_journey(layout, ir, plan.diagram_area, buf);
-            return;
-        }
         if layout.nodes.is_empty() || plan.diagram_area.is_empty() {
             return;
         }
@@ -1004,141 +1021,6 @@ impl MermaidRenderer {
         if let Some(legend_area) = plan.legend_area {
             let footnotes = crate::mermaid_layout::build_link_footnotes(&ir.links, &ir.nodes);
             self.render_legend_footnotes(legend_area, &footnotes, buf);
-        }
-    }
-
-    /// Render a journey diagram as a section-grouped task list with score bars.
-    fn render_journey(
-        &self,
-        layout: &DiagramLayout,
-        ir: &MermaidDiagramIr,
-        area: Rect,
-        buf: &mut Buffer,
-    ) {
-        if area.is_empty() || layout.nodes.is_empty() {
-            return;
-        }
-
-        let vp = Viewport::fit(&layout.bounding_box, area);
-
-        // Build lookup from node_idx to IrJourneyTask for score/actor data.
-        let journey_map: std::collections::HashMap<usize, &crate::mermaid::IrJourneyTask> = ir
-            .journey_tasks
-            .iter()
-            .map(|jt| (jt.node_id.0, jt))
-            .collect();
-
-        // Draw section cluster borders and titles.
-        let border_cell = Cell::from_char(' ').with_fg(self.colors.cluster_border);
-        for cluster in &layout.clusters {
-            let cell_rect = vp.to_cell_rect(&cluster.rect);
-            if cell_rect.width < 2 || cell_rect.height < 2 {
-                continue;
-            }
-            buf.draw_border(cell_rect, self.glyphs.border, border_cell);
-
-            // Section title.
-            if let Some(title_rect) = &cluster.title_rect
-                && let Some(ir_cluster) = ir.clusters.get(cluster.cluster_idx)
-                && let Some(label_id) = ir_cluster.title
-                && let Some(label) = ir.labels.get(label_id.0)
-            {
-                let tr = vp.to_cell_rect(title_rect);
-                let title_cell = Cell::from_char(' ').with_fg(self.colors.cluster_title);
-                let max_w = tr.x.saturating_add(tr.width).saturating_sub(1);
-                buf.print_text_clipped(
-                    tr.x.saturating_add(1),
-                    tr.y,
-                    &label.text,
-                    title_cell,
-                    max_w,
-                );
-            }
-        }
-
-        let (bar_full, bar_empty) = if matches!(self.glyph_mode, MermaidGlyphMode::Unicode) {
-            ('\u{2588}', '\u{2591}') // full block, light shade
-        } else {
-            ('#', '.')
-        };
-
-        // Score colors: 5=green, 4=light green, 3=yellow, 2=orange, 1=red.
-        let score_color = |score: u8| -> PackedRgba {
-            match score {
-                5 => PackedRgba::rgb(0x00, 0xC8, 0x53),
-                4 => PackedRgba::rgb(0x64, 0xDD, 0x17),
-                3 => PackedRgba::rgb(0xFF, 0xD6, 0x00),
-                2 => PackedRgba::rgb(0xFF, 0x6D, 0x00),
-                1 => PackedRgba::rgb(0xFF, 0x17, 0x44),
-                _ => PackedRgba::rgb(0x90, 0x90, 0x90),
-            }
-        };
-
-        let dim_fg = PackedRgba::rgb(0x60, 0x60, 0x60);
-
-        // Render task rows with score bars and actor names.
-        for node_layout in &layout.nodes {
-            let ni = node_layout.node_idx;
-            if ni >= ir.nodes.len() {
-                continue;
-            }
-
-            let cell_rect = vp.to_cell_rect(&node_layout.rect);
-            if cell_rect.height == 0 || cell_rect.width < 4 {
-                continue;
-            }
-
-            let by = cell_rect.y;
-            let bx = cell_rect.x;
-            let avail_w = cell_rect.width as usize;
-
-            let jt = journey_map.get(&ni);
-
-            // Task title.
-            let title = jt.map(|t| t.title.as_str()).unwrap_or_else(|| {
-                ir.nodes[ni]
-                    .label
-                    .and_then(|lid| ir.labels.get(lid.0))
-                    .map(|l| l.text.as_str())
-                    .unwrap_or("")
-            });
-
-            let title_max = avail_w.min(20);
-            let title_cell = Cell::from_char(' ').with_fg(self.colors.node_text);
-            let title_end_x = bx.saturating_add(title_max as u16);
-            buf.print_text_clipped(bx, by, title, title_cell, title_end_x);
-
-            // Score bar (after title column).
-            if let Some(jt) = jt {
-                let bar_x = bx.saturating_add(title_max as u16 + 1);
-                let bar_width = 10usize.min(avail_w.saturating_sub(title_max + 1));
-                let filled = ((jt.score as usize * bar_width) / 5).min(bar_width);
-                let color = score_color(jt.score);
-
-                for i in 0..bar_width {
-                    let ch = if i < filled { bar_full } else { bar_empty };
-                    let fg = if i < filled { color } else { dim_fg };
-                    buf.set(
-                        bar_x.saturating_add(i as u16),
-                        by,
-                        Cell::from_char(ch).with_fg(fg),
-                    );
-                }
-
-                // Score number.
-                let score_x = bar_x.saturating_add(bar_width as u16 + 1);
-                let score_ch = char::from(b'0' + jt.score);
-                buf.set(score_x, by, Cell::from_char(score_ch).with_fg(color));
-
-                // Actor names.
-                if !jt.actors.is_empty() {
-                    let actor_x = score_x.saturating_add(2);
-                    let actors_str = jt.actors.join(", ");
-                    let actor_cell = Cell::from_char(' ').with_fg(self.colors.edge_label_color);
-                    let actor_max_x = bx.saturating_add(avail_w as u16);
-                    buf.print_text_clipped(actor_x, by, &actors_str, actor_cell, actor_max_x);
-                }
-            }
         }
     }
 
@@ -1872,7 +1754,8 @@ impl MermaidRenderer {
                 continue;
             }
 
-            let fill_color = self.colors.node_fill_for(node.node_idx);
+            let base_fill = self.colors.node_fill_for(node.node_idx);
+            let fill_color = journey_score_fill(ir_node).or_else(|| timeline_era_fill(ir_node)).unwrap_or(base_fill);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =
@@ -2876,7 +2759,8 @@ impl MermaidRenderer {
                 continue;
             }
 
-            let fill_color = self.colors.node_fill_for(node.node_idx);
+            let base_fill = self.colors.node_fill_for(node.node_idx);
+            let fill_color = journey_score_fill(ir_node).or_else(|| timeline_era_fill(ir_node)).unwrap_or(base_fill);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =
@@ -4850,7 +4734,6 @@ mod tests {
                 guard: MermaidGuardReport::default(),
             },
             constraints: vec![],
-            journey_tasks: vec![],
         }
     }
 

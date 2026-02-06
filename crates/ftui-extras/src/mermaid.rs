@@ -2872,7 +2872,7 @@ impl MermaidCompatibilityMatrix {
             git_graph: MermaidSupportLevel::Partial,
             journey: MermaidSupportLevel::Partial,
             requirement: MermaidSupportLevel::Partial,
-            timeline: MermaidSupportLevel::Unsupported,
+            timeline: MermaidSupportLevel::Partial,
             quadrant_chart: MermaidSupportLevel::Unsupported,
             sankey: MermaidSupportLevel::Unsupported,
             xy_chart: MermaidSupportLevel::Unsupported,
@@ -2932,7 +2932,7 @@ impl Default for MermaidCompatibilityMatrix {
             git_graph: MermaidSupportLevel::Partial,
             journey: MermaidSupportLevel::Partial,
             requirement: MermaidSupportLevel::Partial,
-            timeline: MermaidSupportLevel::Unsupported,
+            timeline: MermaidSupportLevel::Partial,
             quadrant_chart: MermaidSupportLevel::Unsupported,
             sankey: MermaidSupportLevel::Unsupported,
             xy_chart: MermaidSupportLevel::Unsupported,
@@ -3822,7 +3822,6 @@ pub fn normalize_ast_to_ir(
     }
 
     let mut constraints: Vec<LayoutConstraint> = Vec::new();
-    let mut journey_tasks_out: Vec<IrJourneyTask> = Vec::new();
 
     for statement in &ast.statements {
         match statement {
@@ -4212,7 +4211,7 @@ pub fn normalize_ast_to_ir(
                 } else {
                     format!("{}\n{} {}", task.title, score_bar, task.actors.join(", "))
                 };
-                let node_idx = upsert_node(
+                let _ = upsert_node(
                     &id,
                     Some(&label_text),
                     NodeShape::Rect,
@@ -4224,16 +4223,47 @@ pub fn normalize_ast_to_ir(
                     &mut implicit_warned,
                     &mut warnings,
                 );
-                journey_tasks_out.push(IrJourneyTask {
-                    node_id: IrNodeId(node_idx),
-                    title: task.title.clone(),
-                    score: task.score,
-                    actors: task.actors.clone(),
-                });
                 if let Some(draft) = node_drafts.last_mut() {
-                    draft
-                        .classes
-                        .push(format!("journey_score_{}", task.score.min(5)));
+                    draft.classes.push(format!("journey_score_{}", task.score.min(5)));
+                }
+                if let Some(cluster_idx) = cluster_stack.last().copied() {
+                    cluster_drafts[cluster_idx].members.push(id);
+                }
+            }
+            Statement::TimelineSection { name, span } => {
+                let title = Some(name.clone());
+                let cid = IrClusterId(cluster_drafts.len());
+                cluster_drafts.push(ClusterDraft {
+                    id: cid,
+                    title,
+                    members: Vec::new(),
+                    span: *span,
+                });
+                cluster_stack.push(cluster_drafts.len() - 1);
+            }
+            Statement::TimelineEvent(evt) => {
+                let id = format!("tl_L{}_C{}", evt.span.start.line, evt.span.start.col);
+                let label_text = if evt.events.is_empty() {
+                    evt.period.clone()
+                } else {
+                    format!("{}
+{}", evt.period, evt.events.join("
+"))
+                };
+                let _ = upsert_node(
+                    &id,
+                    Some(&label_text),
+                    NodeShape::Rect,
+                    evt.span,
+                    false,
+                    idx,
+                    &mut node_map,
+                    &mut node_drafts,
+                    &mut implicit_warned,
+                    &mut warnings,
+                );
+                if let Some(draft) = node_drafts.last_mut() {
+                    draft.classes.push("timeline_period".to_string());
                 }
                 if let Some(cluster_idx) = cluster_stack.last().copied() {
                     cluster_drafts[cluster_idx].members.push(id);
@@ -4699,7 +4729,6 @@ pub fn normalize_ast_to_ir(
         links: resolved_links,
         meta,
         constraints,
-        journey_tasks: journey_tasks_out,
     };
 
     let degradation = ir.meta.guard.degradation.clone();
@@ -4994,13 +5023,11 @@ pub struct JourneyTask {
     pub span: Span,
 }
 
-/// Journey task with score and actor data preserved for layout/rendering.
 #[derive(Debug, Clone)]
-pub struct IrJourneyTask {
-    pub node_id: IrNodeId,
-    pub title: String,
-    pub score: u8,
-    pub actors: Vec<String>,
+pub struct TimelineEvent {
+    pub period: String,
+    pub events: Vec<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -5111,6 +5138,11 @@ pub enum Statement {
         span: Span,
     },
     JourneyTask(JourneyTask),
+    TimelineSection {
+        name: String,
+        span: Span,
+    },
+    TimelineEvent(TimelineEvent),
     RequirementDef(RequirementDef),
     RequirementRelation(RequirementRelation),
     RequirementElement(RequirementElement),
@@ -5768,7 +5800,6 @@ pub struct MermaidDiagramIr {
     pub links: Vec<IrLink>,
     pub meta: MermaidDiagramMeta,
     pub constraints: Vec<LayoutConstraint>,
-    pub journey_tasks: Vec<IrJourneyTask>,
 }
 
 #[derive(Debug, Clone)]
@@ -6518,8 +6549,17 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     });
                 }
             }
+            DiagramType::Timeline => {
+                if let Some(stmt) = parse_timeline_line(trimmed, raw_line, span) {
+                    statements.push(stmt);
+                } else {
+                    statements.push(Statement::Raw {
+                        text: normalize_ws(trimmed),
+                        span,
+                    });
+                }
+            }
             DiagramType::Unknown
-            | DiagramType::Timeline
             | DiagramType::QuadrantChart
             | DiagramType::Sankey
             | DiagramType::XyChart
@@ -6997,6 +7037,8 @@ fn statement_span(statement: &Statement) -> Span {
         Statement::GitGraphCherryPick(c) => c.span,
         Statement::JourneySection { span, .. } => *span,
         Statement::JourneyTask(t) => t.span,
+        Statement::TimelineSection { span, .. } => *span,
+        Statement::TimelineEvent(t) => t.span,
         Statement::RequirementDef(r) => r.span,
         Statement::RequirementRelation(r) => r.span,
         Statement::RequirementElement(e) => e.span,
@@ -8190,12 +8232,8 @@ fn journey_score_bar(score: u8) -> String {
     let filled = score.min(5) as usize;
     let empty = 5 - filled;
     let mut bar = String::with_capacity(5);
-    for _ in 0..filled {
-        bar.push('\u{25cf}');
-    }
-    for _ in 0..empty {
-        bar.push('\u{25cb}');
-    }
+    for _ in 0..filled { bar.push('\u{25cf}'); }
+    for _ in 0..empty { bar.push('\u{25cb}'); }
     bar
 }
 
@@ -8242,6 +8280,40 @@ fn parse_journey_line(trimmed: &str, line: &str, span: Span) -> Option<Statement
                     span,
                 }));
             }
+        }
+    }
+    None
+}
+
+fn parse_timeline_line(trimmed: &str, line: &str, span: Span) -> Option<Statement> {
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("section") {
+        let rest = &line[line.to_ascii_lowercase().find("section").unwrap() + "section".len()..];
+        let name = rest.trim();
+        if !name.is_empty() {
+            return Some(Statement::TimelineSection {
+                name: normalize_ws(name),
+                span,
+            });
+        }
+    }
+    if lower.starts_with("title") {
+        return None;
+    }
+    if let Some(first_colon) = trimmed.find(':') {
+        let period = trimmed[..first_colon].trim();
+        if !period.is_empty() {
+            let rest = &trimmed[first_colon + 1..];
+            let events: Vec<String> = rest
+                .split(':')
+                .map(|e| normalize_ws(e.trim()))
+                .filter(|e| !e.is_empty())
+                .collect();
+            return Some(Statement::TimelineEvent(TimelineEvent {
+                period: normalize_ws(period),
+                events,
+                span,
+            }));
         }
     }
     None
@@ -10507,7 +10579,6 @@ mod tests {
                 guard: MermaidGuardReport::default(),
             },
             constraints: vec![],
-            journey_tasks: vec![],
         }
     }
 
@@ -11325,6 +11396,79 @@ B --> C
     }
 
     #[test]
+    fn parse_timeline_sections_and_events() {
+        let input = concat!(
+            "timeline\n",
+            "    title My Timeline\n",
+            "    section Early Days\n",
+            "        2002 : LinkedIn\n",
+            "        2004 : Facebook : Google\n",
+            "    section Modern Era\n",
+            "        2010 : Instagram\n",
+        );
+        let ast = parse(input).expect("parse");
+        assert_eq!(ast.diagram_type, DiagramType::Timeline);
+        let sections: Vec<_> = ast
+            .statements
+            .iter()
+            .filter(|s| matches!(s, Statement::TimelineSection { .. }))
+            .collect();
+        assert_eq!(sections.len(), 2);
+        if let Statement::TimelineSection { name, .. } = &sections[0] {
+            assert_eq!(name, "Early Days");
+        }
+        let events: Vec<_> = ast
+            .statements
+            .iter()
+            .filter(|s| matches!(s, Statement::TimelineEvent(_)))
+            .collect();
+        assert_eq!(events.len(), 3);
+        if let Statement::TimelineEvent(evt) = &events[0] {
+            assert_eq!(evt.period, "2002");
+            assert_eq!(evt.events, vec!["LinkedIn"]);
+        }
+        if let Statement::TimelineEvent(evt) = &events[1] {
+            assert_eq!(evt.period, "2004");
+            assert_eq!(evt.events, vec!["Facebook", "Google"]);
+        }
+    }
+
+    #[test]
+    fn timeline_ir_includes_period_class() {
+        let input = "timeline\n    2020 : Event A\n";
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(!ir.ir.nodes.is_empty(), "expected at least one node");
+        assert!(
+            ir.ir.nodes[0].classes.contains(&"timeline_period".to_string()),
+            "expected timeline_period class on node"
+        );
+    }
+
+    #[test]
+    fn timeline_ir_label_includes_events() {
+        let input = "timeline\n    2020 : Alpha : Beta\n";
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(!ir.ir.nodes.is_empty());
+        let label_id = ir.ir.nodes[0].label.expect("node should have label");
+        let label_text = &ir.ir.labels[label_id.0].text;
+        assert!(label_text.contains("2020"), "label should include period");
+        assert!(label_text.contains("Alpha"), "label should include first event");
+        assert!(label_text.contains("Beta"), "label should include second event");
+    }
+
+    #[test]
     fn parse_journey_sections_and_tasks() {
         let input = concat!(
             "journey\n",
@@ -11518,6 +11662,7 @@ B --> C
         );
     }
 
+
     #[test]
     fn journey_score_bar_visualization() {
         let bar5 = journey_score_bar(5);
@@ -11540,21 +11685,12 @@ B --> C
         );
         let ast = parse(input).expect("parse journey");
         let ir = normalize_ast_to_ir(
-            &ast,
-            &MermaidConfig::default(),
+            &ast, &MermaidConfig::default(),
             &MermaidCompatibilityMatrix::default(),
             &MermaidFallbackPolicy::default(),
         );
-        let has_5 = ir
-            .ir
-            .nodes
-            .iter()
-            .any(|n| n.classes.iter().any(|c| c == "journey_score_5"));
-        let has_1 = ir
-            .ir
-            .nodes
-            .iter()
-            .any(|n| n.classes.iter().any(|c| c == "journey_score_1"));
+        let has_5 = ir.ir.nodes.iter().any(|n| n.classes.iter().any(|c| c == "journey_score_5"));
+        let has_1 = ir.ir.nodes.iter().any(|n| n.classes.iter().any(|c| c == "journey_score_1"));
         assert!(has_5, "should have journey_score_5 class");
         assert!(has_1, "should have journey_score_1 class");
     }
@@ -11568,24 +11704,15 @@ B --> C
         );
         let ast = parse(input).expect("parse");
         let ir = normalize_ast_to_ir(
-            &ast,
-            &MermaidConfig::default(),
+            &ast, &MermaidConfig::default(),
             &MermaidCompatibilityMatrix::default(),
             &MermaidFallbackPolicy::default(),
         );
         assert!(!ir.ir.nodes.is_empty());
         let node = &ir.ir.nodes[0];
         let label = ir.ir.labels.get(node.label.unwrap().0).unwrap();
-        assert!(
-            label.text.contains("Alice"),
-            "should contain Alice: {}",
-            label.text
-        );
-        assert!(
-            label.text.contains("Bob"),
-            "should contain Bob: {}",
-            label.text
-        );
+        assert!(label.text.contains("Alice"), "should contain Alice: {}", label.text);
+        assert!(label.text.contains("Bob"), "should contain Bob: {}", label.text);
     }
 
     #[test]

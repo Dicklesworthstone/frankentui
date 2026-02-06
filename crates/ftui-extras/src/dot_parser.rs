@@ -523,7 +523,6 @@ impl<'a> DotParser<'a> {
             links: Vec::new(),
             meta,
             constraints: Vec::new(),
-            journey_tasks: Vec::new(),
         };
 
         Ok(MermaidIrParse {

@@ -270,6 +270,14 @@ const FIXTURES: &[MermaidFixture] = &[
         tier: FixtureTier::Stress,
         expects_raw_fallback: false,
     },
+    MermaidFixture {
+        id: "requirement_edge_case",
+        file: "requirement_edge_case.mmd",
+        source: include_str!("fixtures/mermaid/requirement_edge_case.mmd"),
+        family: "requirementDiagram",
+        tier: FixtureTier::EdgeCase,
+        expects_raw_fallback: false,
+    },
     // -- Timeline (raw fallback) --
     MermaidFixture {
         id: "timeline_basic",
@@ -509,6 +517,7 @@ mod tests {
         gitgraph: usize,
         journey: usize,
         requirement: usize,
+        timeline: usize,
         raw: usize,
     }
 
@@ -545,6 +554,7 @@ mod tests {
                 Statement::RequirementDef(_)
                 | Statement::RequirementRelation(_)
                 | Statement::RequirementElement(_) => counts.requirement += 1,
+                Statement::TimelineSection { .. } | Statement::TimelineEvent(_) => counts.timeline += 1,
                 Statement::Raw { .. } => counts.raw += 1,
             }
         }
@@ -575,6 +585,7 @@ mod tests {
             + c.gitgraph
             + c.journey
             + c.requirement
+            + c.timeline
             + c.raw
     }
 
@@ -776,6 +787,13 @@ mod tests {
                     assert!(
                         counts.requirement >= 5,
                         "requirement_stress requirement stmts < 5"
+                    );
+                }
+                "requirement_edge_case" => {
+                    assert_eq!(parsed.ast.diagram_type, DiagramType::Requirement);
+                    assert!(
+                        counts.requirement >= 5,
+                        "requirement_edge_case requirement stmts < 5"
                     );
                 }
                 // -- All raw-fallback families --
