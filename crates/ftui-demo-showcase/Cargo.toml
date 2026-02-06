@@ -25,6 +25,7 @@ ftui-extras = { path = "../ftui-extras", version = "0.1.1", features = [
     "clipboard",
     "console",
     "doom",
+    "quake",
     "export",
     "filesize",
     "filepicker",

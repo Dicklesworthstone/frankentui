@@ -1,0 +1,478 @@
+//! 3D face-based renderer for Quake.
+//!
+//! Projects map faces into screen space, performs backface culling,
+//! and rasterizes triangles with z-buffer depth testing. Applies
+//! Quake-style distance-based fog and directional lighting.
+//!
+//! Ported from Quake 1 r_edge.c / r_main.c (id Software GPL).
+
+use ftui_render::cell::PackedRgba;
+
+use super::constants::*;
+use super::framebuffer::QuakeFramebuffer;
+use super::map::{Face, QuakeMap, TexType};
+use super::player::Player;
+
+/// Rendering statistics for performance overlay.
+#[derive(Debug, Clone, Default)]
+pub struct RenderStats {
+    pub faces_tested: u32,
+    pub faces_culled: u32,
+    pub faces_drawn: u32,
+    pub triangles_rasterized: u32,
+    pub pixels_written: u32,
+}
+
+/// The main Quake 3D renderer.
+#[derive(Debug)]
+pub struct QuakeRenderer {
+    /// Screen width in pixels.
+    width: u32,
+    /// Screen height in pixels.
+    height: u32,
+    /// Half-width for projection.
+    half_width: f32,
+    /// Half-height for projection.
+    half_height: f32,
+    /// Projection scale (distance to projection plane).
+    projection: f32,
+    /// Rendering stats.
+    pub stats: RenderStats,
+}
+
+impl QuakeRenderer {
+    /// Create a new renderer for the given screen dimensions.
+    pub fn new(width: u32, height: u32) -> Self {
+        let half_width = width as f32 / 2.0;
+        let half_height = height as f32 / 2.0;
+        let fov_radians = FOV_DEGREES * std::f32::consts::PI / 180.0;
+        let projection = half_width / (fov_radians / 2.0).tan();
+
+        Self {
+            width,
+            height,
+            half_width,
+            half_height,
+            projection,
+            stats: RenderStats::default(),
+        }
+    }
+
+    /// Resize the renderer for new dimensions.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        self.half_width = width as f32 / 2.0;
+        self.half_height = height as f32 / 2.0;
+        let fov_radians = FOV_DEGREES * std::f32::consts::PI / 180.0;
+        self.projection = self.half_width / (fov_radians / 2.0).tan();
+    }
+
+    /// Render a frame into the framebuffer.
+    pub fn render(&mut self, fb: &mut QuakeFramebuffer, map: &QuakeMap, player: &Player) {
+        self.stats = RenderStats::default();
+        fb.clear();
+
+        // Draw sky/floor background
+        self.draw_background(fb);
+
+        // Build view matrix from player
+        let eye = player.eye_pos();
+        let cos_yaw = player.yaw.cos();
+        let sin_yaw = player.yaw.sin();
+        let cos_pitch = player.pitch.cos();
+        let sin_pitch = player.pitch.sin();
+
+        // View space transform: world -> camera
+        // Forward = (cos_yaw * cos_pitch, sin_yaw * cos_pitch, -sin_pitch)
+        // Right   = (cos(yaw - pi/2), sin(yaw - pi/2), 0)
+        // Up      = cross(right, forward)
+
+        let fwd = player.forward();
+        let right = player.right();
+        let up = player.up();
+
+        // Sort faces by distance (painter's algorithm fallback for non-BSP)
+        let mut face_order: Vec<(usize, f32)> = Vec::with_capacity(map.faces.len());
+        for (i, face) in map.faces.iter().enumerate() {
+            // Approximate face center distance
+            if face.vertex_indices.is_empty() {
+                continue;
+            }
+            let mut cx = 0.0f32;
+            let mut cy = 0.0f32;
+            let mut cz = 0.0f32;
+            let n = face.vertex_indices.len() as f32;
+            for &vi in &face.vertex_indices {
+                if vi < map.vertices.len() {
+                    cx += map.vertices[vi][0];
+                    cy += map.vertices[vi][1];
+                    cz += map.vertices[vi][2];
+                }
+            }
+            cx /= n;
+            cy /= n;
+            cz /= n;
+
+            let dx = cx - eye[0];
+            let dy = cy - eye[1];
+            let dz = cz - eye[2];
+            let dist_sq = dx * dx + dy * dy + dz * dz;
+
+            face_order.push((i, dist_sq));
+        }
+
+        // Sort back-to-front (we use z-buffer so order is advisory for early-z)
+        face_order
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        for &(face_idx, _dist_sq) in &face_order {
+            let face = &map.faces[face_idx];
+            self.stats.faces_tested += 1;
+
+            // Transform face vertices to view space
+            let mut view_verts: Vec<[f32; 3]> = Vec::with_capacity(face.vertex_indices.len());
+            let mut all_behind = true;
+
+            for &vi in &face.vertex_indices {
+                if vi >= map.vertices.len() {
+                    continue;
+                }
+                let v = map.vertices[vi];
+                // Translate to eye-relative
+                let dx = v[0] - eye[0];
+                let dy = v[1] - eye[1];
+                let dz = v[2] - eye[2];
+
+                // Transform to view space (right-handed, Z forward)
+                let vx = dx * right[0] + dy * right[1] + dz * right[2];
+                let vy = dx * up[0] + dy * up[1] + dz * up[2];
+                let vz = dx * fwd[0] + dy * fwd[1] + dz * fwd[2];
+
+                if vz > NEAR_CLIP {
+                    all_behind = false;
+                }
+                view_verts.push([vx, vy, vz]);
+            }
+
+            if all_behind || view_verts.len() < 3 {
+                self.stats.faces_culled += 1;
+                continue;
+            }
+
+            // Backface culling in view space
+            let v0 = view_verts[0];
+            let v1 = view_verts[1];
+            let v2 = view_verts[2];
+            let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+            let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+            let nz = e1[0] * e2[1] - e1[1] * e2[0]; // Z component of cross product
+            // In our view space, positive Z is forward. Faces pointing toward the camera
+            // have a negative Z cross product component when wound correctly.
+            // We want to draw faces whose normal points toward the camera (nz < 0 for CCW,
+            // or nz > 0 for CW). Since our geometry is mixed, skip true backface test
+            // for floors/ceilings and use a dot-product check instead.
+            let face_center_z =
+                view_verts.iter().map(|v| v[2]).sum::<f32>() / view_verts.len() as f32;
+            let face_normal_view = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                nz,
+            ];
+            // Dot with view direction to face center
+            let dot = face_normal_view[0] * view_verts[0][0]
+                + face_normal_view[1] * view_verts[0][1]
+                + face_normal_view[2] * face_center_z;
+            if dot > 0.0 && !matches!(face.tex_type, TexType::Floor | TexType::Ceiling) {
+                self.stats.faces_culled += 1;
+                continue;
+            }
+
+            self.stats.faces_drawn += 1;
+
+            // Compute face color with lighting
+            let base_color = face_base_color(face);
+            let light = face.light_level;
+
+            // Triangulate the face (fan from vertex 0)
+            for tri_i in 1..view_verts.len() - 1 {
+                let tri = [view_verts[0], view_verts[tri_i], view_verts[tri_i + 1]];
+                self.rasterize_triangle(
+                    fb, &tri, base_color, light, cos_yaw, sin_yaw, cos_pitch, sin_pitch,
+                );
+            }
+        }
+    }
+
+    /// Rasterize a single triangle with z-buffer and lighting.
+    #[allow(clippy::too_many_arguments)]
+    fn rasterize_triangle(
+        &mut self,
+        fb: &mut QuakeFramebuffer,
+        verts: &[[f32; 3]; 3],
+        base_color: [u8; 3],
+        light: f32,
+        _cos_yaw: f32,
+        _sin_yaw: f32,
+        _cos_pitch: f32,
+        _sin_pitch: f32,
+    ) {
+        // Clip and project vertices
+        let mut screen: [[f32; 3]; 3] = [[0.0; 3]; 3]; // [sx, sy, 1/z]
+        let mut any_visible = false;
+
+        for (i, v) in verts.iter().enumerate() {
+            let z = v[2];
+            if z < NEAR_CLIP {
+                // Behind near plane - we'll handle partial clipping simply
+                screen[i] = [0.0, 0.0, 0.0];
+                continue;
+            }
+            any_visible = true;
+            let inv_z = 1.0 / z;
+            let sx = self.half_width + v[0] * self.projection * inv_z;
+            let sy = self.half_height - v[1] * self.projection * inv_z;
+            screen[i] = [sx, sy, inv_z];
+        }
+
+        if !any_visible {
+            return;
+        }
+
+        // Handle partial clipping: clip vertices behind near plane to nearest visible
+        for i in 0..3 {
+            if verts[i][2] < NEAR_CLIP {
+                // Find a visible vertex to interpolate toward
+                let next = (i + 1) % 3;
+                let prev = (i + 2) % 3;
+                if verts[next][2] >= NEAR_CLIP {
+                    let t = (NEAR_CLIP - verts[i][2]) / (verts[next][2] - verts[i][2]);
+                    let z = NEAR_CLIP;
+                    let x = verts[i][0] + t * (verts[next][0] - verts[i][0]);
+                    let y = verts[i][1] + t * (verts[next][1] - verts[i][1]);
+                    let inv_z = 1.0 / z;
+                    screen[i] = [
+                        self.half_width + x * self.projection * inv_z,
+                        self.half_height - y * self.projection * inv_z,
+                        inv_z,
+                    ];
+                } else if verts[prev][2] >= NEAR_CLIP {
+                    let t = (NEAR_CLIP - verts[i][2]) / (verts[prev][2] - verts[i][2]);
+                    let z = NEAR_CLIP;
+                    let x = verts[i][0] + t * (verts[prev][0] - verts[i][0]);
+                    let y = verts[i][1] + t * (verts[prev][1] - verts[i][1]);
+                    let inv_z = 1.0 / z;
+                    screen[i] = [
+                        self.half_width + x * self.projection * inv_z,
+                        self.half_height - y * self.projection * inv_z,
+                        inv_z,
+                    ];
+                } else {
+                    return; // All behind
+                }
+            }
+        }
+
+        self.stats.triangles_rasterized += 1;
+
+        // Compute screen-space bounding box
+        let min_x = screen[0][0].min(screen[1][0]).min(screen[2][0]).max(0.0) as u32;
+        let max_x = screen[0][0]
+            .max(screen[1][0])
+            .max(screen[2][0])
+            .min(self.width as f32 - 1.0) as u32;
+        let min_y = screen[0][1].min(screen[1][1]).min(screen[2][1]).max(0.0) as u32;
+        let max_y = screen[0][1]
+            .max(screen[1][1])
+            .max(screen[2][1])
+            .min(self.height as f32 - 1.0) as u32;
+
+        if min_x > max_x || min_y > max_y {
+            return;
+        }
+
+        // Precompute edge functions for barycentric coordinates
+        let (s0, s1, s2) = (screen[0], screen[1], screen[2]);
+        let area = edge_function(s0, s1, s2);
+        if area.abs() < 0.001 {
+            return; // Degenerate triangle
+        }
+        let inv_area = 1.0 / area;
+
+        // Scanline rasterization with barycentric interpolation
+        for py in min_y..=max_y {
+            let fy = py as f32 + 0.5;
+            for px in min_x..=max_x {
+                let fx = px as f32 + 0.5;
+                let p = [fx, fy, 0.0];
+
+                let w0 = edge_function(s1, s2, p) * inv_area;
+                let w1 = edge_function(s2, s0, p) * inv_area;
+                let w2 = 1.0 - w0 - w1;
+
+                // Inside triangle test
+                if area > 0.0 {
+                    if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                        continue;
+                    }
+                } else if w0 > 0.0 || w1 > 0.0 || w2 > 0.0 {
+                    continue;
+                }
+
+                // Interpolate depth (1/z)
+                let inv_z = w0 * s0[2] + w1 * s1[2] + w2 * s2[2];
+                if inv_z <= 0.0 {
+                    continue;
+                }
+                let z = 1.0 / inv_z;
+
+                // Distance-based fog (Quake brown atmosphere)
+                let fog_t = ((z - FOG_START) / (FOG_END - FOG_START)).clamp(0.0, 1.0);
+
+                // Distance-based light falloff
+                let dist_light = (1.0 / (1.0 + z * 0.003)).clamp(0.0, 1.0);
+                let total_light = light * dist_light;
+
+                let r = (base_color[0] as f32 * total_light) as u8;
+                let g = (base_color[1] as f32 * total_light) as u8;
+                let b = (base_color[2] as f32 * total_light) as u8;
+
+                // Apply fog
+                let fr = lerp_u8(r, FOG_COLOR[0], fog_t);
+                let fg = lerp_u8(g, FOG_COLOR[1], fog_t);
+                let fbl = lerp_u8(b, FOG_COLOR[2], fog_t);
+
+                let color = PackedRgba::rgb(fr, fg, fbl);
+                fb.set_pixel_depth(px, py, z, color);
+                self.stats.pixels_written += 1;
+            }
+        }
+    }
+
+    /// Draw the sky and floor background (Quake brown/dark atmosphere).
+    fn draw_background(&self, fb: &mut QuakeFramebuffer) {
+        let horizon = self.height / 2;
+
+        for y in 0..self.height {
+            let color = if y < horizon {
+                // Sky gradient (Quake dark brown sky)
+                let t = y as f32 / horizon as f32;
+                let r = lerp_u8(SKY_TOP[0], SKY_BOTTOM[0], t);
+                let g = lerp_u8(SKY_TOP[1], SKY_BOTTOM[1], t);
+                let b = lerp_u8(SKY_TOP[2], SKY_BOTTOM[2], t);
+                PackedRgba::rgb(r, g, b)
+            } else {
+                // Floor gradient
+                let t = ((y - horizon) as f32 / (self.height - horizon).max(1) as f32).min(1.0);
+                let r = lerp_u8(FLOOR_FAR[0], FLOOR_NEAR[0], t);
+                let g = lerp_u8(FLOOR_FAR[1], FLOOR_NEAR[1], t);
+                let b = lerp_u8(FLOOR_FAR[2], FLOOR_NEAR[2], t);
+                PackedRgba::rgb(r, g, b)
+            };
+
+            for x in 0..self.width {
+                fb.set_pixel(x, y, color);
+            }
+        }
+    }
+}
+
+/// Get the base color for a face from the wall color palette.
+fn face_base_color(face: &Face) -> [u8; 3] {
+    match face.tex_type {
+        TexType::Floor => FLOOR_NEAR,
+        TexType::Ceiling => CEILING_COLOR,
+        TexType::Sky => SKY_TOP,
+        TexType::Lava => [200, 80, 20],
+        TexType::Metal => [140, 140, 160],
+        TexType::Wall => WALL_COLORS[face.color_index as usize % WALL_COLORS.len()],
+    }
+}
+
+/// Edge function for barycentric coordinate computation.
+#[inline]
+fn edge_function(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
+}
+
+/// Linearly interpolate between two u8 values.
+#[inline]
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).clamp(0.0, 255.0) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renderer_creation() {
+        let r = QuakeRenderer::new(320, 200);
+        assert_eq!(r.width, 320);
+        assert_eq!(r.height, 200);
+        assert!(r.projection > 0.0);
+    }
+
+    #[test]
+    fn renderer_resize() {
+        let mut r = QuakeRenderer::new(320, 200);
+        r.resize(640, 400);
+        assert_eq!(r.width, 640);
+        assert_eq!(r.height, 400);
+    }
+
+    #[test]
+    fn edge_function_basic() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [10.0, 0.0, 0.0];
+        let c = [5.0, 5.0, 0.0];
+        let area = edge_function(a, b, c);
+        assert!(area.abs() > 0.01);
+    }
+
+    #[test]
+    fn lerp_u8_basic() {
+        assert_eq!(lerp_u8(0, 100, 0.5), 50);
+        assert_eq!(lerp_u8(0, 200, 0.0), 0);
+        assert_eq!(lerp_u8(0, 200, 1.0), 200);
+    }
+
+    #[test]
+    fn face_color_lookup() {
+        let face = Face {
+            vertex_indices: vec![],
+            normal: [0.0, 0.0, 1.0],
+            dist: 0.0,
+            color_index: 0,
+            is_sky: false,
+            light_level: 1.0,
+            tex_type: TexType::Wall,
+        };
+        let c = face_base_color(&face);
+        assert_eq!(c, WALL_COLORS[0]);
+    }
+
+    #[test]
+    fn render_empty_map() {
+        let mut renderer = QuakeRenderer::new(64, 40);
+        let mut fb = QuakeFramebuffer::new(64, 40);
+        let map = QuakeMap::new();
+        let player = Player::default();
+        renderer.render(&mut fb, &map, &player);
+        // Should not panic, background should be drawn
+        assert_eq!(renderer.stats.faces_tested, 0);
+    }
+
+    #[test]
+    fn render_with_map() {
+        let mut renderer = QuakeRenderer::new(64, 40);
+        let mut fb = QuakeFramebuffer::new(64, 40);
+        let map = super::super::map::generate_e1m1();
+        let mut player = Player::default();
+        let (px, py, pz, pyaw) = map.player_start();
+        player.spawn(px, py, pz, pyaw);
+        renderer.render(&mut fb, &map, &player);
+        assert!(renderer.stats.faces_tested > 0);
+        assert!(renderer.stats.faces_drawn > 0);
+    }
+}

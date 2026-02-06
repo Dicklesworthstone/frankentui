@@ -143,3 +143,6 @@ pub mod help;
 
 #[cfg(feature = "doom")]
 pub mod doom;
+
+#[cfg(feature = "quake")]
+pub mod quake;
