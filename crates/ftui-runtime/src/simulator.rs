@@ -45,6 +45,8 @@ pub enum CmdRecord {
     Tick(Duration),
     /// Log message emitted.
     Log(String),
+    /// Mouse capture toggle (no-op in simulator).
+    MouseCapture(bool),
     /// Background task executed synchronously.
     Task,
 }
@@ -256,6 +258,9 @@ impl<M: Model> ProgramSimulator<M> {
             Cmd::Log(text) => {
                 self.command_log.push(CmdRecord::Log(text.clone()));
                 self.logs.push(text);
+            }
+            Cmd::SetMouseCapture(enabled) => {
+                self.command_log.push(CmdRecord::MouseCapture(enabled));
             }
             Cmd::Task(_, f) => {
                 self.command_log.push(CmdRecord::Task);

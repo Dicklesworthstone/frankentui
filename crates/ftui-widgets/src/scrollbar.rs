@@ -139,32 +139,29 @@ impl ScrollbarState {
     ) -> MouseResult {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some((id, HitRegion::Scrollbar, data)) = hit {
-                    if id == expected_id {
-                        let part = data >> 56;
-                        match part {
-                            SCROLLBAR_PART_BEGIN => {
-                                self.scroll_up(1);
-                                return MouseResult::Scrolled;
-                            }
-                            SCROLLBAR_PART_END => {
-                                self.scroll_down(1);
-                                return MouseResult::Scrolled;
-                            }
-                            SCROLLBAR_PART_TRACK | SCROLLBAR_PART_THUMB => {
-                                // Proportional jump: position in track → position in content
-                                let track_pos = (data & 0x00FFFFFFFFFFFFFF) as usize;
-                                // The track length is at most content_length worth of cells,
-                                // but we don't know the exact rendered track length here.
-                                // We use the track position as a direct scroll target,
-                                // clamped to the valid range.
-                                let max_pos =
-                                    self.content_length.saturating_sub(self.viewport_length);
-                                self.position = track_pos.min(max_pos);
-                                return MouseResult::Scrolled;
-                            }
-                            _ => {}
+                if let Some((id, HitRegion::Scrollbar, data)) = hit && id == expected_id {
+                    let part = data >> 56;
+                    match part {
+                        SCROLLBAR_PART_BEGIN => {
+                            self.scroll_up(1);
+                            return MouseResult::Scrolled;
                         }
+                        SCROLLBAR_PART_END => {
+                            self.scroll_down(1);
+                            return MouseResult::Scrolled;
+                        }
+                        SCROLLBAR_PART_TRACK | SCROLLBAR_PART_THUMB => {
+                            // Proportional jump: position in track → position in content
+                            let track_pos = (data & 0x00FF_FFFF_FFFF_FFFF) as usize;
+                            // The track length is at most content_length worth of cells,
+                            // but we don't know the exact rendered track length here.
+                            // We use the track position as a direct scroll target,
+                            // clamped to the valid range.
+                            let max_pos = self.content_length.saturating_sub(self.viewport_length);
+                            self.position = track_pos.min(max_pos);
+                            return MouseResult::Scrolled;
+                        }
+                        _ => {}
                     }
                 }
                 MouseResult::Ignored
@@ -685,7 +682,7 @@ mod tests {
     #[test]
     fn scrollbar_state_begin_button() {
         let mut state = ScrollbarState::new(100, 10, 20);
-        let data = (SCROLLBAR_PART_BEGIN << 56) | 0u64;
+        let data = SCROLLBAR_PART_BEGIN << 56;
         let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 0, 0);
         let hit = Some((HitId::new(1), HitRegion::Scrollbar, data));
         let result = state.handle_mouse(&event, hit, HitId::new(1));
@@ -696,7 +693,7 @@ mod tests {
     #[test]
     fn scrollbar_state_end_button() {
         let mut state = ScrollbarState::new(100, 10, 20);
-        let data = (SCROLLBAR_PART_END << 56) | 0u64;
+        let data = SCROLLBAR_PART_END << 56;
         let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 0, 0);
         let hit = Some((HitId::new(1), HitRegion::Scrollbar, data));
         let result = state.handle_mouse(&event, hit, HitId::new(1));
@@ -763,7 +760,7 @@ mod tests {
     #[test]
     fn scrollbar_state_wrong_id_ignored() {
         let mut state = ScrollbarState::new(100, 10, 20);
-        let data = (SCROLLBAR_PART_BEGIN << 56) | 0u64;
+        let data = SCROLLBAR_PART_BEGIN << 56;
         let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 0, 0);
         let hit = Some((HitId::new(99), HitRegion::Scrollbar, data));
         let result = state.handle_mouse(&event, hit, HitId::new(1));

@@ -567,16 +567,14 @@ impl Tree {
     ) -> MouseResult {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some((id, HitRegion::Content, data)) = hit {
-                    if id == expected_id {
-                        let index = data as usize;
-                        if let Some(node) = self.node_at_visible_index_mut(index) {
-                            if node.children.is_empty() {
-                                return MouseResult::Selected(index);
-                            }
-                            node.toggle_expanded();
-                            return MouseResult::Activated(index);
+                if let Some((id, HitRegion::Content, data)) = hit && id == expected_id {
+                    let index = data as usize;
+                    if let Some(node) = self.node_at_visible_index_mut(index) {
+                        if node.children.is_empty() {
+                            return MouseResult::Selected(index);
                         }
+                        node.toggle_expanded();
+                        return MouseResult::Activated(index);
                     }
                 }
                 MouseResult::Ignored

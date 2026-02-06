@@ -795,23 +795,17 @@ fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) ->
         .with_desc_style(desc_style)
         .with_category_style(category_style)
         // Navigation
-        .global_entry_categorized(
-            "1-9, 0",
-            "Switch to screen by number",
-            HelpCategory::Navigation,
-        )
-        .global_entry_categorized("Tab", "Next screen", HelpCategory::Navigation)
-        .global_entry_categorized("Shift+Tab", "Previous screen", HelpCategory::Navigation)
+        .global_entry_categorized("Ctrl+K", "Open command palette", HelpCategory::Navigation)
         // View
         .global_entry_categorized("?", "Toggle this help overlay", HelpCategory::View)
         .global_entry_categorized("Esc", "Dismiss top overlay", HelpCategory::View)
-        .global_entry_categorized("A", "Toggle A11y panel", HelpCategory::View)
+        .global_entry_categorized("Ctrl+P", "Toggle performance HUD", HelpCategory::View)
+        .global_entry_categorized("Shift+A", "Toggle A11y panel", HelpCategory::View)
         .global_entry_categorized("F12", "Toggle debug overlay", HelpCategory::View)
         // Editing
         .global_entry_categorized("Ctrl+Z", "Undo", HelpCategory::Editing)
         .global_entry_categorized("Ctrl+Y / Ctrl+Shift+Z", "Redo", HelpCategory::Editing)
         // Global
-        .global_entry_categorized("Ctrl+K", "Open command palette", HelpCategory::Global)
         .global_entry_categorized("Ctrl+T", "Cycle color theme", HelpCategory::Global)
         .global_entry_categorized(
             "H/M/L",
@@ -834,7 +828,7 @@ fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) ->
             "Palette: favorites only",
             HelpCategory::Global,
         )
-        .global_entry_categorized("q / Ctrl+C", "Quit application", HelpCategory::Global);
+        .global_entry_categorized("Ctrl+C", "Quit application", HelpCategory::Global);
 
     // Add screen-specific bindings as contextual entries under a custom category.
     let screen_category = HelpCategory::Custom(format!("{} Controls", current.title()));
