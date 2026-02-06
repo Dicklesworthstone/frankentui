@@ -2228,6 +2228,18 @@ fn determinism_lab_fault_120x40() {
     assert_snapshot!("determinism_lab_fault_120x40", &frame.buffer);
 }
 
+#[test]
+fn determinism_lab_runs_120x40() {
+    let _theme_guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::determinism_lab::DeterminismLab::new();
+    screen.update(&press(KeyCode::Char('a')));
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::new(120, 40, &mut pool);
+    let area = Rect::new(0, 0, 120, 40);
+    screen.view(&mut frame, area);
+    assert_snapshot!("determinism_lab_runs_120x40", &frame.buffer);
+}
+
 // ============================================================================
 // Hyperlink Playground (bd-iuvb.14)
 // ============================================================================

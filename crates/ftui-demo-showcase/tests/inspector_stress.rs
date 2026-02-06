@@ -52,7 +52,10 @@ fn is_coverage_run() -> bool {
 
 fn coverage_budget_ns(default_ns: u64) -> u64 {
     if is_coverage_run() {
-        default_ns.saturating_mul(3)
+        // LLVM coverage instrumentation can add meaningful overhead (and variability)
+        // to these stress benchmarks. We relax budgets under coverage so the suite
+        // remains CI-stable, while still logging timings for regression analysis.
+        default_ns.saturating_mul(5)
     } else {
         default_ns
     }
@@ -272,7 +275,7 @@ fn stress_overlay_render_hit_regions_120x40() {
     }));
 
     let budget_ns = coverage_budget_ns(5_000_000);
-    // Budget: hit-region overlay on 120×40 should be < 5ms (3× under coverage)
+    // Budget: hit-region overlay on 120×40 should be < 5ms (5× under coverage)
     assert!(
         avg_ns < budget_ns,
         "Hit region render exceeded budget ({budget_ns}ns): avg={}ns",
@@ -317,12 +320,8 @@ fn stress_overlay_render_widget_bounds_many_widgets() {
         "p99_ns": p99,
     }));
 
-    let budget_ns = if is_coverage_run() {
-        20_000_000
-    } else {
-        5_000_000
-    };
-    // Budget: widget bounds with 500 widgets should be < 5ms (4× under coverage)
+    let budget_ns = coverage_budget_ns(5_000_000);
+    // Budget: widget bounds with 500 widgets should be < 5ms (relaxed under coverage)
     assert!(
         avg_ns < budget_ns,
         "Widget bounds render exceeded budget ({budget_ns}ns): avg={}ns",
@@ -373,7 +372,7 @@ fn stress_overlay_render_full_mode_200x50() {
     }));
 
     let budget_ns = coverage_budget_ns(10_000_000);
-    // Budget: full-mode overlay on 200×50 with 300 widgets should be < 10ms (3× under coverage)
+    // Budget: full-mode overlay on 200×50 with 300 widgets should be < 10ms (5× under coverage)
     assert!(
         avg_ns < budget_ns,
         "Full-mode render exceeded budget ({budget_ns}ns): avg={}ns",
@@ -422,7 +421,7 @@ fn stress_deep_widget_tree_render() {
     }));
 
     let budget_ns = coverage_budget_ns(3_000_000);
-    // Budget: rendering 50-deep tree should be < 3ms (3× under coverage)
+    // Budget: rendering 50-deep tree should be < 3ms (5× under coverage)
     assert!(
         avg_ns < budget_ns,
         "Deep tree render exceeded budget ({budget_ns}ns): avg={}ns",
@@ -705,7 +704,7 @@ fn stress_hit_region_scan_large_grid() {
     }));
 
     let budget_ns = coverage_budget_ns(10_000_000);
-    // Budget: scanning 200×50 = 10,000 cells should be < 10ms (3× under coverage)
+    // Budget: scanning 200×50 = 10,000 cells should be < 10ms (5× under coverage)
     assert!(
         avg_ns < budget_ns,
         "Hit region scan exceeded budget ({budget_ns}ns): avg={}ns",
@@ -765,7 +764,7 @@ fn stress_combined_worst_case() {
     }));
 
     let budget_ns = coverage_budget_ns(15_000_000);
-    // Budget: worst-case should still be < 15ms (3× under coverage)
+    // Budget: worst-case should still be < 15ms (5× under coverage)
     assert!(
         avg_ns < budget_ns,
         "Combined worst-case render exceeded budget ({budget_ns}ns): avg={}ns",

@@ -57,6 +57,24 @@ fn is_coverage_run() -> bool {
     std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
 }
 
+fn coverage_budget_ns(default_ns: u128) -> u128 {
+    if is_coverage_run() {
+        // Coverage instrumentation adds overhead and variability; relax perf budgets so
+        // `cargo llvm-cov` runs remain stable while still logging timings.
+        default_ns.saturating_mul(5)
+    } else {
+        default_ns
+    }
+}
+
+fn coverage_budget_us(default_us: u128) -> u128 {
+    if is_coverage_run() {
+        default_us.saturating_mul(5)
+    } else {
+        default_us
+    }
+}
+
 fn key_press(code: KeyCode) -> Event {
     Event::Key(KeyEvent {
         code,
@@ -1023,10 +1041,11 @@ fn perf_catalog_lookup_latency() {
         &format!("iterations={iterations} avg_ns={avg_ns}"),
     );
 
-    // Budget: each lookup < 1μs on average
+    let budget_ns = coverage_budget_ns(1000);
+    // Budget: each lookup < 1μs on average (relaxed under coverage)
     assert!(
-        avg_ns < 1000,
-        "avg lookup latency {avg_ns}ns exceeds 1μs budget"
+        avg_ns < budget_ns,
+        "avg lookup latency {avg_ns}ns exceeds {budget_ns}ns budget"
     );
 }
 
@@ -1063,10 +1082,11 @@ fn perf_plural_categorization() {
         &format!("total_ops={total_ops} avg_ns={avg_ns}"),
     );
 
-    // Budget: < 100ns per categorization
+    let budget_ns = coverage_budget_ns(100);
+    // Budget: < 100ns per categorization (relaxed under coverage)
     assert!(
-        avg_ns < 100,
-        "avg categorization latency {avg_ns}ns exceeds 100ns budget"
+        avg_ns < budget_ns,
+        "avg categorization latency {avg_ns}ns exceeds {budget_ns}ns budget"
     );
 }
 
@@ -1090,10 +1110,11 @@ fn perf_coverage_report() {
         &format!("iterations={iterations} avg_us={avg_us}"),
     );
 
-    // Budget: < 100μs per report
+    let budget_us = coverage_budget_us(100);
+    // Budget: < 100μs per report (relaxed under coverage)
     assert!(
-        avg_us < 100,
-        "avg coverage_report latency {avg_us}μs exceeds 100μs budget"
+        avg_us < budget_us,
+        "avg coverage_report latency {avg_us}μs exceeds {budget_us}μs budget"
     );
 }
 
