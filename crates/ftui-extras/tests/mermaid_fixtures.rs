@@ -312,14 +312,14 @@ const FIXTURES: &[MermaidFixture] = &[
         tier: FixtureTier::Stress,
         expects_raw_fallback: true,
     },
-    // -- Sankey (raw fallback) --
+    // -- Sankey --
     MermaidFixture {
         id: "sankey_basic",
         file: "sankey_basic.mmd",
         source: include_str!("fixtures/mermaid/sankey_basic.mmd"),
         family: "sankey-beta",
         tier: FixtureTier::Basic,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     MermaidFixture {
         id: "sankey_stress",
@@ -327,7 +327,7 @@ const FIXTURES: &[MermaidFixture] = &[
         source: include_str!("fixtures/mermaid/sankey_stress.mmd"),
         family: "sankey-beta",
         tier: FixtureTier::Stress,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     // -- XyChart (raw fallback) --
     MermaidFixture {
@@ -519,6 +519,7 @@ mod tests {
         requirement: usize,
         timeline: usize,
         xy_chart: usize,
+        sankey: usize,
         raw: usize,
     }
 
@@ -557,6 +558,7 @@ mod tests {
                 | Statement::RequirementElement(_) => counts.requirement += 1,
                 Statement::TimelineSection { .. } | Statement::TimelineEvent(_) => counts.timeline += 1,
                 Statement::XyChartXAxis { .. } | Statement::XyChartYAxis { .. } | Statement::XyChartSeries(_) => counts.xy_chart += 1,
+                Statement::SankeyLink(_) => counts.sankey += 1,
                 Statement::Raw { .. } => counts.raw += 1,
             }
         }
@@ -589,6 +591,7 @@ mod tests {
             + c.requirement
             + c.timeline
             + c.xy_chart
+            + c.sankey
             + c.raw
     }
 

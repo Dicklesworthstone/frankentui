@@ -2874,7 +2874,7 @@ impl MermaidCompatibilityMatrix {
             requirement: MermaidSupportLevel::Partial,
             timeline: MermaidSupportLevel::Partial,
             quadrant_chart: MermaidSupportLevel::Unsupported,
-            sankey: MermaidSupportLevel::Unsupported,
+            sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
             block_beta: MermaidSupportLevel::Unsupported,
             packet_beta: MermaidSupportLevel::Unsupported,
@@ -2934,7 +2934,7 @@ impl Default for MermaidCompatibilityMatrix {
             requirement: MermaidSupportLevel::Partial,
             timeline: MermaidSupportLevel::Partial,
             quadrant_chart: MermaidSupportLevel::Unsupported,
-            sankey: MermaidSupportLevel::Unsupported,
+            sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
             block_beta: MermaidSupportLevel::Unsupported,
             packet_beta: MermaidSupportLevel::Unsupported,
@@ -4307,6 +4307,30 @@ pub fn normalize_ast_to_ir(
                     draft.classes.push(format!("xychart_{kind_str}"));
                 }
             }
+            Statement::SankeyLink(link) => {
+                // Source and target become nodes; the link becomes an edge
+                let src_id = normalize_id(&link.source);
+                let tgt_id = normalize_id(&link.target);
+                let _ = upsert_node(
+                    &src_id, Some(&link.source), NodeShape::Rect, link.span, false, idx,
+                    &mut node_map, &mut node_drafts, &mut implicit_warned, &mut warnings,
+                );
+                let _ = upsert_node(
+                    &tgt_id, Some(&link.target), NodeShape::Rect, link.span, false, idx,
+                    &mut node_map, &mut node_drafts, &mut implicit_warned, &mut warnings,
+                );
+                // Add an edge with the flow value as the label
+                edge_drafts.push(EdgeDraft {
+                    from: src_id.clone(),
+                    from_port: None,
+                    to: tgt_id.clone(),
+                    to_port: None,
+                    label: Some(format!("{}", link.value)),
+                    arrow: "-->".to_string(),
+                    span: link.span,
+                    insertion_idx: idx,
+                });
+            }
             Statement::RequirementDef(req) => {
                 let id = req.id.clone().unwrap_or_else(|| normalize_id(&req.name));
                 let label_text = format!("<<{}>>\n{}", req.kind, req.name);
@@ -5082,6 +5106,14 @@ pub struct XyChartSeries {
 }
 
 #[derive(Debug, Clone)]
+pub struct SankeyLink {
+    pub source: String,
+    pub target: String,
+    pub value: f64,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct RequirementDef {
     pub kind: String,
     pub name: String,
@@ -5205,6 +5237,7 @@ pub enum Statement {
         span: Span,
     },
     XyChartSeries(XyChartSeries),
+    SankeyLink(SankeyLink),
     RequirementDef(RequirementDef),
     RequirementRelation(RequirementRelation),
     RequirementElement(RequirementElement),
@@ -6631,9 +6664,18 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     });
                 }
             }
+            DiagramType::Sankey => {
+                if let Some(stmt) = parse_sankey_line(trimmed, span) {
+                    statements.push(stmt);
+                } else {
+                    statements.push(Statement::Raw {
+                        text: normalize_ws(trimmed),
+                        span,
+                    });
+                }
+            }
             DiagramType::Unknown
             | DiagramType::QuadrantChart
-            | DiagramType::Sankey
             | DiagramType::BlockBeta
             | DiagramType::PacketBeta
             | DiagramType::ArchitectureBeta
@@ -7113,6 +7155,7 @@ fn statement_span(statement: &Statement) -> Span {
         Statement::XyChartXAxis { span, .. } => *span,
         Statement::XyChartYAxis { span, .. } => *span,
         Statement::XyChartSeries(s) => s.span,
+        Statement::SankeyLink(s) => s.span,
         Statement::RequirementDef(r) => r.span,
         Statement::RequirementRelation(r) => r.span,
         Statement::RequirementElement(e) => e.span,
@@ -8357,6 +8400,46 @@ fn parse_journey_line(trimmed: &str, line: &str, span: Span) -> Option<Statement
         }
     }
     None
+}
+
+fn parse_sankey_line(trimmed: &str, span: Span) -> Option<Statement> {
+    // Sankey uses CSV format: Source,Target,Value
+    // Lines may be quoted: "Source Name","Target Name",123.456
+    let parts = split_sankey_csv(trimmed);
+    if parts.len() == 3 {
+        let source = parts[0].trim().trim_matches('"').to_string();
+        let target = parts[1].trim().trim_matches('"').to_string();
+        if let Ok(value) = parts[2].trim().parse::<f64>()
+            && !source.is_empty() && !target.is_empty()
+        {
+            return Some(Statement::SankeyLink(SankeyLink {
+                source,
+                target,
+                value,
+                span,
+            }));
+        }
+    }
+    None
+}
+
+/// Split a CSV line respecting quoted fields.
+fn split_sankey_csv(s: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in s.chars() {
+        match ch {
+            '"' if !in_quotes => { in_quotes = true; }
+            '"' if in_quotes => { in_quotes = false; }
+            ',' if !in_quotes => {
+                fields.push(std::mem::take(&mut current));
+            }
+            _ => { current.push(ch); }
+        }
+    }
+    fields.push(current);
+    fields
 }
 
 fn parse_xychart_line(trimmed: &str, _line: &str, span: Span) -> Option<Statement> {
@@ -11552,6 +11635,50 @@ B --> C
         if let Statement::GitGraphCherryPick(c) = &cherry_picks[0] {
             assert_eq!(c.commit_id, "abc");
         }
+    }
+
+    #[test]
+    fn parse_sankey_links() {
+        let input = concat!(
+            "sankey-beta\n",
+            "\n",
+            "Agriculture,Bio-energy,124.729\n",
+            "\"Bio-energy\",Electricity,35.793\n",
+        );
+        let ast = parse(input).expect("parse");
+        assert_eq!(ast.diagram_type, DiagramType::Sankey);
+        let links: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SankeyLink(_)))
+            .collect();
+        assert_eq!(links.len(), 2);
+        if let Statement::SankeyLink(link) = &links[0] {
+            assert_eq!(link.source, "Agriculture");
+            assert_eq!(link.target, "Bio-energy");
+            assert!((link.value - 124.729).abs() < 0.001);
+        }
+        if let Statement::SankeyLink(link) = &links[1] {
+            assert_eq!(link.source, "Bio-energy");
+            assert_eq!(link.target, "Electricity");
+            assert!((link.value - 35.793).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn sankey_ir_produces_nodes_and_edges() {
+        let input = concat!(
+            "sankey-beta\n",
+            "A,B,10\n",
+            "B,C,5\n",
+        );
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(ir.ir.nodes.len() >= 3, "expected at least 3 nodes (A, B, C)");
+        assert!(ir.ir.edges.len() >= 2, "expected at least 2 edges");
     }
 
     #[test]
