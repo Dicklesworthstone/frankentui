@@ -1825,15 +1825,15 @@ pub const FEATURE_MATRIX: &[FeatureMatrixEntry] = &[
         family: DiagramType::Journey,
         feature: "sections + tasks + scores",
         level: MermaidSupportLevel::Supported,
-        fixture: None,
-        note: "parser+IR done; uses graph layout/render",
+        fixture: Some("journey_basic.mmd"),
+        note: "score class/fill via journey_score_*; actors included in label",
     },
     FeatureMatrixEntry {
         family: DiagramType::Journey,
         feature: "journey-specific layout (score bars/actor lanes)",
-        level: MermaidSupportLevel::Unsupported,
-        fixture: None,
-        note: "uses generic graph layout; no score visualization",
+        level: MermaidSupportLevel::Partial,
+        fixture: Some("journey_basic.mmd"),
+        note: "section/task layout + score fill; actor lanes not yet implemented",
     },
     // ── requirementDiagram ──────────────────────────────────────────
     FeatureMatrixEntry {
@@ -2870,7 +2870,7 @@ impl MermaidCompatibilityMatrix {
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
             git_graph: MermaidSupportLevel::Partial,
-            journey: MermaidSupportLevel::Partial,
+            journey: MermaidSupportLevel::Supported,
             requirement: MermaidSupportLevel::Partial,
             timeline: MermaidSupportLevel::Partial,
             quadrant_chart: MermaidSupportLevel::Supported,
@@ -2930,7 +2930,7 @@ impl Default for MermaidCompatibilityMatrix {
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
             git_graph: MermaidSupportLevel::Partial,
-            journey: MermaidSupportLevel::Partial,
+            journey: MermaidSupportLevel::Supported,
             requirement: MermaidSupportLevel::Partial,
             timeline: MermaidSupportLevel::Partial,
             quadrant_chart: MermaidSupportLevel::Supported,
@@ -12431,12 +12431,15 @@ B --> C
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
-            LayoutConstraint::SameRank { node_ids, .. } => {
-                assert_eq!(node_ids, &["A", "B", "C"]);
-            }
-            other => assert!(false, "expected SameRank, got {other:?}"),
-        }
+        let constraint = &ir_parse.ir.constraints[0];
+        assert!(
+            matches!(constraint, LayoutConstraint::SameRank { .. }),
+            "expected SameRank, got {constraint:?}"
+        );
+        let LayoutConstraint::SameRank { node_ids, .. } = constraint else {
+            return;
+        };
+        assert_eq!(node_ids, &["A", "B", "C"]);
     }
 
     #[test]
@@ -12454,19 +12457,23 @@ A --> B
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
-            LayoutConstraint::MinLength {
-                from_id,
-                to_id,
-                min_len,
-                ..
-            } => {
-                assert_eq!(from_id, "A");
-                assert_eq!(to_id, "B");
-                assert_eq!(*min_len, 3);
-            }
-            other => assert!(false, "expected MinLength, got {other:?}"),
-        }
+        let constraint = &ir_parse.ir.constraints[0];
+        assert!(
+            matches!(constraint, LayoutConstraint::MinLength { .. }),
+            "expected MinLength, got {constraint:?}"
+        );
+        let LayoutConstraint::MinLength {
+            from_id,
+            to_id,
+            min_len,
+            ..
+        } = constraint
+        else {
+            return;
+        };
+        assert_eq!(from_id, "A");
+        assert_eq!(to_id, "B");
+        assert_eq!(*min_len, 3);
     }
 
     #[test]
@@ -12484,14 +12491,17 @@ A --> B
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
-            LayoutConstraint::Pin { node_id, x, y, .. } => {
-                assert_eq!(node_id, "A");
-                assert!((x - 100.0).abs() < 1e-9);
-                assert!((y - 50.0).abs() < 1e-9);
-            }
-            other => assert!(false, "expected Pin, got {other:?}"),
-        }
+        let constraint = &ir_parse.ir.constraints[0];
+        assert!(
+            matches!(constraint, LayoutConstraint::Pin { .. }),
+            "expected Pin, got {constraint:?}"
+        );
+        let LayoutConstraint::Pin { node_id, x, y, .. } = constraint else {
+            return;
+        };
+        assert_eq!(node_id, "A");
+        assert!((x - 100.0).abs() < 1e-9);
+        assert!((y - 50.0).abs() < 1e-9);
     }
 
     #[test]
@@ -12510,12 +12520,15 @@ B --> C
             &MermaidFallbackPolicy::default(),
         );
         assert_eq!(ir_parse.ir.constraints.len(), 1);
-        match &ir_parse.ir.constraints[0] {
-            LayoutConstraint::OrderInRank { node_ids, .. } => {
-                assert_eq!(node_ids, &["A", "B", "C"]);
-            }
-            other => assert!(false, "expected OrderInRank, got {other:?}"),
-        }
+        let constraint = &ir_parse.ir.constraints[0];
+        assert!(
+            matches!(constraint, LayoutConstraint::OrderInRank { .. }),
+            "expected OrderInRank, got {constraint:?}"
+        );
+        let LayoutConstraint::OrderInRank { node_ids, .. } = constraint else {
+            return;
+        };
+        assert_eq!(node_ids, &["A", "B", "C"]);
     }
 
     #[test]
@@ -12583,18 +12596,26 @@ B --> C
             .collect();
         assert_eq!(commits.len(), 3);
         // Check second commit has id
-        if let Statement::GitGraphCommit(c) = &commits[1] {
-            assert_eq!(c.id.as_deref(), Some("abc"));
-        } else {
-            assert!(false, "expected GitGraphCommit");
-        }
+        let second = commits[1];
+        assert!(
+            matches!(second, Statement::GitGraphCommit(_)),
+            "expected GitGraphCommit"
+        );
+        let Statement::GitGraphCommit(c) = second else {
+            return;
+        };
+        assert_eq!(c.id.as_deref(), Some("abc"));
         // Check third commit has tag
-        if let Statement::GitGraphCommit(c) = &commits[2] {
-            assert_eq!(c.id.as_deref(), Some("def"));
-            assert_eq!(c.tag.as_deref(), Some("v1"));
-        } else {
-            assert!(false, "expected GitGraphCommit");
-        }
+        let third = commits[2];
+        assert!(
+            matches!(third, Statement::GitGraphCommit(_)),
+            "expected GitGraphCommit"
+        );
+        let Statement::GitGraphCommit(c) = third else {
+            return;
+        };
+        assert_eq!(c.id.as_deref(), Some("def"));
+        assert_eq!(c.tag.as_deref(), Some("v1"));
     }
 
     #[test]
