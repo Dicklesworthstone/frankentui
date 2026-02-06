@@ -1352,7 +1352,7 @@ fn validate_positive(field: &'static str, value: usize, errors: &mut Vec<Mermaid
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagramType {
     Graph,
     Sequence,
@@ -1365,6 +1365,18 @@ pub enum DiagramType {
     GitGraph,
     Journey,
     Requirement,
+    Timeline,
+    QuadrantChart,
+    Sankey,
+    XyChart,
+    BlockBeta,
+    PacketBeta,
+    ArchitectureBeta,
+    C4Context,
+    C4Container,
+    C4Component,
+    C4Dynamic,
+    C4Deployment,
     Unknown,
 }
 
@@ -1380,11 +1392,79 @@ impl DiagramType {
             Self::Er => "er",
             Self::Mindmap => "mindmap",
             Self::Pie => "pie",
-            Self::GitGraph => "gitgraph",
+            Self::GitGraph => "gitGraph",
             Self::Journey => "journey",
-            Self::Requirement => "requirement",
+            Self::Requirement => "requirementDiagram",
+            Self::Timeline => "timeline",
+            Self::QuadrantChart => "quadrantChart",
+            Self::Sankey => "sankey",
+            Self::XyChart => "xyChart",
+            Self::BlockBeta => "block-beta",
+            Self::PacketBeta => "packet-beta",
+            Self::ArchitectureBeta => "architecture-beta",
+            Self::C4Context => "C4Context",
+            Self::C4Container => "C4Container",
+            Self::C4Component => "C4Component",
+            Self::C4Dynamic => "C4Dynamic",
+            Self::C4Deployment => "C4Deployment",
             Self::Unknown => "unknown",
         }
+    }
+
+    /// All canonical diagram families (excludes Unknown).
+    #[must_use]
+    pub const fn all_families() -> &'static [DiagramType] {
+        &[
+            Self::Graph,
+            Self::Sequence,
+            Self::State,
+            Self::Gantt,
+            Self::Class,
+            Self::Er,
+            Self::Mindmap,
+            Self::Pie,
+            Self::GitGraph,
+            Self::Journey,
+            Self::Requirement,
+            Self::Timeline,
+            Self::QuadrantChart,
+            Self::Sankey,
+            Self::XyChart,
+            Self::BlockBeta,
+            Self::PacketBeta,
+            Self::ArchitectureBeta,
+            Self::C4Context,
+            Self::C4Container,
+            Self::C4Component,
+            Self::C4Dynamic,
+            Self::C4Deployment,
+        ]
+    }
+
+    /// Whether this family is a beta/experimental Mermaid feature.
+    #[must_use]
+    pub const fn is_beta(self) -> bool {
+        matches!(
+            self,
+            Self::BlockBeta
+                | Self::PacketBeta
+                | Self::ArchitectureBeta
+                | Self::Sankey
+                | Self::XyChart
+        )
+    }
+
+    /// Whether this is a C4 diagram variant.
+    #[must_use]
+    pub const fn is_c4(self) -> bool {
+        matches!(
+            self,
+            Self::C4Context
+                | Self::C4Container
+                | Self::C4Component
+                | Self::C4Dynamic
+                | Self::C4Deployment
+        )
     }
 }
 
@@ -1718,38 +1798,6 @@ pub const FEATURE_MATRIX: &[FeatureMatrixEntry] = &[
         fixture: None,
         note: "RenderPlan selection",
     },
-    // ── gitGraph ─────────────────────────────────────────────────────
-    FeatureMatrixEntry {
-        family: DiagramType::GitGraph,
-        feature: "commit / branch / checkout / merge",
-        level: MermaidSupportLevel::Partial,
-        fixture: None,
-        note: "parser complete; layout WIP",
-    },
-    FeatureMatrixEntry {
-        family: DiagramType::GitGraph,
-        feature: "cherry-pick",
-        level: MermaidSupportLevel::Partial,
-        fixture: None,
-        note: "parsed; render TBD",
-    },
-    // ── Journey ─────────────────────────────────────────────────────
-    FeatureMatrixEntry {
-        family: DiagramType::Journey,
-        feature: "sections + tasks + scores",
-        level: MermaidSupportLevel::Partial,
-        fixture: None,
-        note: "parser complete; layout WIP",
-    },
-    // ── requirementDiagram ──────────────────────────────────────────
-    FeatureMatrixEntry {
-        family: DiagramType::Requirement,
-        feature: "requirements + elements + relations",
-        level: MermaidSupportLevel::Partial,
-        fixture: None,
-        note: "parser complete; layout WIP",
-    },
-    // ── Cross-cutting ───────────────────────────────────────────────
     FeatureMatrixEntry {
         family: DiagramType::Unknown,
         feature: "interactive selection + highlights",
@@ -1796,6 +1844,528 @@ pub fn uncovered_features() -> Vec<&'static FeatureMatrixEntry> {
     FEATURE_MATRIX
         .iter()
         .filter(|e| e.fixture.is_none())
+        .collect()
+}
+
+// ── Canonical Diagram Family Registry ────────────────────────────────
+//
+// Version-pinned, machine-readable registry of all Mermaid diagram families.
+// Single source of truth for coverage gating, demo picker assertions, and
+// CI regression detection.
+//
+// Baseline: Mermaid v11.4 (core families) + selected beta families.
+
+/// Version of the Mermaid specification this registry targets.
+pub const MERMAID_BASELINE_VERSION: &str = "11.4.0";
+
+/// Pipeline stage for a diagram family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineStage {
+    Parser,
+    Ir,
+    Layout,
+    Render,
+    Fixtures,
+    Snapshots,
+    PtyE2e,
+    DemoPicker,
+}
+
+impl PipelineStage {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Parser => "parser",
+            Self::Ir => "ir",
+            Self::Layout => "layout",
+            Self::Render => "render",
+            Self::Fixtures => "fixtures",
+            Self::Snapshots => "snapshots",
+            Self::PtyE2e => "pty_e2e",
+            Self::DemoPicker => "demo_picker",
+        }
+    }
+
+    /// All pipeline stages in order.
+    pub const ALL: &[PipelineStage] = &[
+        Self::Parser,
+        Self::Ir,
+        Self::Layout,
+        Self::Render,
+        Self::Fixtures,
+        Self::Snapshots,
+        Self::PtyE2e,
+        Self::DemoPicker,
+    ];
+}
+
+/// Status of a pipeline stage for a specific diagram family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageStatus {
+    /// Fully implemented and tested.
+    Done,
+    /// Partially implemented.
+    Partial,
+    /// Not started.
+    NotStarted,
+    /// Intentionally not applicable.
+    NotApplicable,
+}
+
+impl StageStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Partial => "partial",
+            Self::NotStarted => "not_started",
+            Self::NotApplicable => "n/a",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        matches!(self, Self::Done | Self::NotApplicable)
+    }
+}
+
+/// One entry in the canonical diagram family registry.
+#[derive(Debug, Clone, Copy)]
+pub struct DiagramFamilyEntry {
+    /// The diagram type enum variant.
+    pub family: DiagramType,
+    /// Official Mermaid keyword used in fenced blocks.
+    pub canonical_keyword: &'static str,
+    /// Mermaid spec version that introduced this family.
+    pub introduced_version: &'static str,
+    /// Overall support level in ftui.
+    pub support_level: MermaidSupportLevel,
+    /// Whether this is a beta/experimental Mermaid feature.
+    pub is_beta: bool,
+    /// Pipeline stage statuses: [parser, ir, layout, render, fixtures, snapshots, pty_e2e, demo_picker].
+    pub pipeline: [StageStatus; 8],
+    /// Minimum feature slice required for "supported" status.
+    pub min_feature_slice: &'static str,
+    /// Known terminal-specific degradations allowed.
+    pub terminal_degradations: &'static str,
+    /// Additional notes.
+    pub notes: &'static str,
+}
+
+impl DiagramFamilyEntry {
+    /// Check if the full pipeline is complete.
+    #[must_use]
+    pub const fn is_pipeline_complete(&self) -> bool {
+        let mut i = 0;
+        while i < 8 {
+            if !self.pipeline[i].is_complete() {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// Count completed pipeline stages.
+    #[must_use]
+    pub fn pipeline_done_count(&self) -> usize {
+        self.pipeline.iter().filter(|s| s.is_complete()).count()
+    }
+
+    /// Get status for a specific pipeline stage.
+    #[must_use]
+    pub const fn stage_status(&self, stage: PipelineStage) -> StageStatus {
+        self.pipeline[stage as usize]
+    }
+}
+
+/// The canonical Mermaid diagram family registry.
+///
+/// Single source of truth for all diagram families supported or planned.
+/// Version-pinned to Mermaid v11.4.0 baseline.
+///
+/// Tests and CI use this to assert every family appears exactly once and
+/// detect regressions when a supported family loses coverage.
+pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
+    // ── Core stable families ────────────────────────────────────────
+    DiagramFamilyEntry {
+        family: DiagramType::Graph,
+        canonical_keyword: "graph/flowchart",
+        introduced_version: "8.0",
+        support_level: MermaidSupportLevel::Supported,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+        ],
+        min_feature_slice: "nodes, edges, subgraphs, all 5 directions, classDef, linkStyle, init directives",
+        terminal_degradations: "none",
+        notes: "fully supported; primary demo diagram family",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Sequence,
+        canonical_keyword: "sequenceDiagram",
+        introduced_version: "8.0",
+        support_level: MermaidSupportLevel::Partial,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+        ],
+        min_feature_slice: "participants, messages, activation bars, notes, alt/opt/loop/par blocks",
+        terminal_degradations: "activation bars may simplify to single-char markers in compact mode",
+        notes: "basic parse + layout in progress (bd-2kn9a)",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::State,
+        canonical_keyword: "stateDiagram-v2",
+        introduced_version: "8.0",
+        support_level: MermaidSupportLevel::Partial,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Partial,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+        ],
+        min_feature_slice: "states, transitions, composite states, start/end markers, notes",
+        terminal_degradations: "notes may omit borders in compact mode",
+        notes: "parser+layout+render done; needs fixture expansion",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Gantt,
+        canonical_keyword: "gantt",
+        introduced_version: "8.0",
+        support_level: MermaidSupportLevel::Partial,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Done,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+        ],
+        min_feature_slice: "title, sections, tasks, date-based timelines, milestones",
+        terminal_degradations: "date formatting simplified; milestones as text markers",
+        notes: "parser done; layout/render in progress (bd-30t8a)",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Class,
+        canonical_keyword: "classDiagram",
+        introduced_version: "8.0",
+        support_level: MermaidSupportLevel::Partial,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+        ],
+        min_feature_slice: "classes, members, inheritance/association edges, annotations",
+        terminal_degradations: "annotations shown as text prefix",
+        notes: "parser+IR done; layout/render in progress (bd-2d9fm)",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Er,
+        canonical_keyword: "erDiagram",
+        introduced_version: "8.0",
+        support_level: MermaidSupportLevel::Supported,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Done,
+        ],
+        min_feature_slice: "entities, relationships, cardinality labels, entity attributes",
+        terminal_degradations: "none",
+        notes: "fully supported",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Mindmap,
+        canonical_keyword: "mindmap",
+        introduced_version: "9.3",
+        support_level: MermaidSupportLevel::Partial,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Done,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+        ],
+        min_feature_slice: "root, branches, indent-based hierarchy, node shapes, annotations",
+        terminal_degradations: "collapse deeper levels on small screens; linear fallback at 80-col",
+        notes: "parser done; layout/render in progress (bd-9ta1z)",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Pie,
+        canonical_keyword: "pie",
+        introduced_version: "8.0",
+        support_level: MermaidSupportLevel::Partial,
+        is_beta: false,
+        pipeline: [
+            StageStatus::Done,
+            StageStatus::Done,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::Partial,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+            StageStatus::NotStarted,
+        ],
+        min_feature_slice: "title, entries with values, showData toggle",
+        terminal_degradations: "half-block or ASCII bar fallback instead of arc rendering",
+        notes: "parser+IR done; render partial",
+    },
+    // ── Core stable families (Mermaid v9-v10) ───────────────────────
+    DiagramFamilyEntry {
+        family: DiagramType::GitGraph,
+        canonical_keyword: "gitGraph",
+        introduced_version: "9.4",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "commit, branch, checkout, merge, cherry-pick, commit labels",
+        terminal_degradations: "ASCII lane characters; merge dots simplified",
+        notes: "planned: bd-hudcn.1.7",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Journey,
+        canonical_keyword: "journey",
+        introduced_version: "9.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "sections, tasks with scores, actor participation, section boundaries",
+        terminal_degradations: "score bars as ASCII; actors as column headers",
+        notes: "planned: bd-hudcn.1.8",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Requirement,
+        canonical_keyword: "requirementDiagram",
+        introduced_version: "9.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "requirement entities, typed relations, categories, risk/verify/derive links",
+        terminal_degradations: "entity boxes simplified; relation arrows as ASCII",
+        notes: "planned: bd-hudcn.1.9",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::Timeline,
+        canonical_keyword: "timeline",
+        introduced_version: "10.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "title, sections, time periods, events",
+        terminal_degradations: "compact layout on narrow terminals",
+        notes: "planned: bd-hudcn.1.10",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::QuadrantChart,
+        canonical_keyword: "quadrantChart",
+        introduced_version: "10.2",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "quadrant labels, data points with coordinates",
+        terminal_degradations: "half-block scatter rendering; ASCII axis labels",
+        notes: "planned: bd-hudcn.1.11",
+    },
+    // ── Beta families ───────────────────────────────────────────────
+    DiagramFamilyEntry {
+        family: DiagramType::Sankey,
+        canonical_keyword: "sankey-beta",
+        introduced_version: "10.3",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: true,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "nodes, flows with values, multi-level paths",
+        terminal_degradations: "flow widths approximated with block chars",
+        notes: "planned: bd-hudcn.1.13",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::XyChart,
+        canonical_keyword: "xychart-beta",
+        introduced_version: "10.5",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: true,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "title, x-axis, y-axis, bar/line data series",
+        terminal_degradations: "ASCII axes; braille or half-block data points",
+        notes: "planned: bd-hudcn.1.12",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::BlockBeta,
+        canonical_keyword: "block-beta",
+        introduced_version: "10.9",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: true,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "columns, blocks, block labels, nested blocks, spacing",
+        terminal_degradations: "grid layout with box-drawing chars",
+        notes: "planned: bd-hudcn.1.15",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::PacketBeta,
+        canonical_keyword: "packet-beta",
+        introduced_version: "10.9",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: true,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "field definitions, bit ranges, labels, row breaks",
+        terminal_degradations: "box-drawing grid; bit widths rounded to cell boundaries",
+        notes: "planned: bd-hudcn.1.16",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::ArchitectureBeta,
+        canonical_keyword: "architecture-beta",
+        introduced_version: "11.1",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: true,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "services, groups, edges, icons, junction points",
+        terminal_degradations: "icons as text labels; groups as bordered regions",
+        notes: "planned: bd-hudcn.1.17",
+    },
+    // ── C4 family ───────────────────────────────────────────────────
+    DiagramFamilyEntry {
+        family: DiagramType::C4Context,
+        canonical_keyword: "C4Context",
+        introduced_version: "9.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "Person, System, SystemDb, SystemQueue, Boundary, Rel",
+        terminal_degradations: "C4 shapes as labeled boxes; boundary as bordered region",
+        notes: "planned: bd-hudcn.1.14; all C4 variants share parser infrastructure",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::C4Container,
+        canonical_keyword: "C4Container",
+        introduced_version: "9.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "Container, ContainerDb, ContainerQueue, System_Ext, Rel",
+        terminal_degradations: "container shapes as labeled boxes with type annotation",
+        notes: "shares infrastructure with C4Context",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::C4Component,
+        canonical_keyword: "C4Component",
+        introduced_version: "9.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "Component, ComponentDb, ComponentQueue, Rel",
+        terminal_degradations: "component shapes as labeled boxes",
+        notes: "shares infrastructure with C4Context",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::C4Dynamic,
+        canonical_keyword: "C4Dynamic",
+        introduced_version: "9.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "numbered Rel interactions, Person, System",
+        terminal_degradations: "numbered arrows as text labels",
+        notes: "shares infrastructure with C4Context",
+    },
+    DiagramFamilyEntry {
+        family: DiagramType::C4Deployment,
+        canonical_keyword: "C4Deployment",
+        introduced_version: "9.0",
+        support_level: MermaidSupportLevel::Unsupported,
+        is_beta: false,
+        pipeline: [StageStatus::NotStarted; 8],
+        min_feature_slice: "Deployment_Node, Container, System, Rel",
+        terminal_degradations: "deployment nodes as nested bordered regions",
+        notes: "shares infrastructure with C4Context",
+    },
+];
+
+/// Look up a family entry by diagram type.
+#[must_use]
+pub fn registry_entry_for(dt: DiagramType) -> Option<&'static DiagramFamilyEntry> {
+    DIAGRAM_FAMILY_REGISTRY.iter().find(|e| e.family == dt)
+}
+
+/// All families at a given support level.
+#[must_use]
+pub fn registry_families_at_level(level: MermaidSupportLevel) -> Vec<&'static DiagramFamilyEntry> {
+    DIAGRAM_FAMILY_REGISTRY
+        .iter()
+        .filter(|e| e.support_level == level)
+        .collect()
+}
+
+/// Coverage summary: (supported, partial, unsupported) counts.
+#[must_use]
+pub fn registry_coverage_summary() -> (usize, usize, usize) {
+    let supported = DIAGRAM_FAMILY_REGISTRY
+        .iter()
+        .filter(|e| e.support_level == MermaidSupportLevel::Supported)
+        .count();
+    let partial = DIAGRAM_FAMILY_REGISTRY
+        .iter()
+        .filter(|e| e.support_level == MermaidSupportLevel::Partial)
+        .count();
+    let unsupported = DIAGRAM_FAMILY_REGISTRY
+        .iter()
+        .filter(|e| e.support_level == MermaidSupportLevel::Unsupported)
+        .count();
+    (supported, partial, unsupported)
+}
+
+/// Families where the pipeline is fully complete.
+#[must_use]
+pub fn registry_complete_families() -> Vec<&'static DiagramFamilyEntry> {
+    DIAGRAM_FAMILY_REGISTRY
+        .iter()
+        .filter(|e| e.is_pipeline_complete())
+        .collect()
+}
+
+/// Families not yet fully supported.
+#[must_use]
+pub fn registry_incomplete_families() -> Vec<&'static DiagramFamilyEntry> {
+    DIAGRAM_FAMILY_REGISTRY
+        .iter()
+        .filter(|e| !e.is_pipeline_complete())
         .collect()
 }
 
@@ -2189,9 +2759,21 @@ pub struct MermaidCompatibilityMatrix {
     pub er: MermaidSupportLevel,
     pub mindmap: MermaidSupportLevel,
     pub pie: MermaidSupportLevel,
-    pub gitgraph: MermaidSupportLevel,
+    pub git_graph: MermaidSupportLevel,
     pub journey: MermaidSupportLevel,
     pub requirement: MermaidSupportLevel,
+    pub timeline: MermaidSupportLevel,
+    pub quadrant_chart: MermaidSupportLevel,
+    pub sankey: MermaidSupportLevel,
+    pub xy_chart: MermaidSupportLevel,
+    pub block_beta: MermaidSupportLevel,
+    pub packet_beta: MermaidSupportLevel,
+    pub architecture_beta: MermaidSupportLevel,
+    pub c4_context: MermaidSupportLevel,
+    pub c4_container: MermaidSupportLevel,
+    pub c4_component: MermaidSupportLevel,
+    pub c4_dynamic: MermaidSupportLevel,
+    pub c4_deployment: MermaidSupportLevel,
 }
 
 impl MermaidCompatibilityMatrix {
@@ -2207,9 +2789,21 @@ impl MermaidCompatibilityMatrix {
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
-            gitgraph: MermaidSupportLevel::Partial,
-            journey: MermaidSupportLevel::Partial,
-            requirement: MermaidSupportLevel::Partial,
+            git_graph: MermaidSupportLevel::Unsupported,
+            journey: MermaidSupportLevel::Unsupported,
+            requirement: MermaidSupportLevel::Unsupported,
+            timeline: MermaidSupportLevel::Unsupported,
+            quadrant_chart: MermaidSupportLevel::Unsupported,
+            sankey: MermaidSupportLevel::Unsupported,
+            xy_chart: MermaidSupportLevel::Unsupported,
+            block_beta: MermaidSupportLevel::Unsupported,
+            packet_beta: MermaidSupportLevel::Unsupported,
+            architecture_beta: MermaidSupportLevel::Unsupported,
+            c4_context: MermaidSupportLevel::Unsupported,
+            c4_container: MermaidSupportLevel::Unsupported,
+            c4_component: MermaidSupportLevel::Unsupported,
+            c4_dynamic: MermaidSupportLevel::Unsupported,
+            c4_deployment: MermaidSupportLevel::Unsupported,
         }
     }
 
@@ -2224,9 +2818,21 @@ impl MermaidCompatibilityMatrix {
             DiagramType::Er => self.er,
             DiagramType::Mindmap => self.mindmap,
             DiagramType::Pie => self.pie,
-            DiagramType::GitGraph => self.gitgraph,
+            DiagramType::GitGraph => self.git_graph,
             DiagramType::Journey => self.journey,
             DiagramType::Requirement => self.requirement,
+            DiagramType::Timeline => self.timeline,
+            DiagramType::QuadrantChart => self.quadrant_chart,
+            DiagramType::Sankey => self.sankey,
+            DiagramType::XyChart => self.xy_chart,
+            DiagramType::BlockBeta => self.block_beta,
+            DiagramType::PacketBeta => self.packet_beta,
+            DiagramType::ArchitectureBeta => self.architecture_beta,
+            DiagramType::C4Context => self.c4_context,
+            DiagramType::C4Container => self.c4_container,
+            DiagramType::C4Component => self.c4_component,
+            DiagramType::C4Dynamic => self.c4_dynamic,
+            DiagramType::C4Deployment => self.c4_deployment,
             DiagramType::Unknown => MermaidSupportLevel::Unsupported,
         }
     }
@@ -2243,9 +2849,21 @@ impl Default for MermaidCompatibilityMatrix {
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
-            gitgraph: MermaidSupportLevel::Partial,
-            journey: MermaidSupportLevel::Partial,
-            requirement: MermaidSupportLevel::Partial,
+            git_graph: MermaidSupportLevel::Unsupported,
+            journey: MermaidSupportLevel::Unsupported,
+            requirement: MermaidSupportLevel::Unsupported,
+            timeline: MermaidSupportLevel::Unsupported,
+            quadrant_chart: MermaidSupportLevel::Unsupported,
+            sankey: MermaidSupportLevel::Unsupported,
+            xy_chart: MermaidSupportLevel::Unsupported,
+            block_beta: MermaidSupportLevel::Unsupported,
+            packet_beta: MermaidSupportLevel::Unsupported,
+            architecture_beta: MermaidSupportLevel::Unsupported,
+            c4_context: MermaidSupportLevel::Unsupported,
+            c4_container: MermaidSupportLevel::Unsupported,
+            c4_component: MermaidSupportLevel::Unsupported,
+            c4_dynamic: MermaidSupportLevel::Unsupported,
+            c4_deployment: MermaidSupportLevel::Unsupported,
         }
     }
 }
@@ -3418,183 +4036,6 @@ pub fn normalize_ast_to_ir(
                     )),
                 }
             }
-            Statement::GitGraphCommit(commit) => {
-                // Create a node for each commit
-                let auto_id = format!(
-                    "commit_L{}_C{}",
-                    commit.span.start.line, commit.span.start.col
-                );
-                let id = commit.id.clone().unwrap_or(auto_id);
-                let label = commit
-                    .message
-                    .as_deref()
-                    .or(commit.tag.as_deref())
-                    .or(commit.id.as_deref());
-                let _ = upsert_node(
-                    &id,
-                    label,
-                    NodeShape::Circle,
-                    commit.span,
-                    false,
-                    idx,
-                    &mut node_map,
-                    &mut node_drafts,
-                    &mut implicit_warned,
-                    &mut warnings,
-                );
-                if let Some(cluster_idx) = cluster_stack.last().copied() {
-                    cluster_drafts[cluster_idx].members.push(id);
-                }
-            }
-            Statement::GitGraphBranch(branch) => {
-                // Branches create implicit subgraph containers
-                let title = Some(branch.name.clone());
-                let cid = IrClusterId(cluster_drafts.len());
-                cluster_drafts.push(ClusterDraft {
-                    id: cid,
-                    title,
-                    members: Vec::new(),
-                    span: branch.span,
-                });
-            }
-            Statement::GitGraphCheckout(_) | Statement::GitGraphCherryPick(_) => {
-                // These affect state tracking but don't produce IR directly
-            }
-            Statement::GitGraphMerge(merge) => {
-                // Merge creates an edge from merge branch to current position
-                let from = normalize_id(&merge.branch);
-                if !from.is_empty() {
-                    // Create a merge node if id is specified
-                    let merge_node = merge.id.clone().unwrap_or_else(|| {
-                        format!("merge_L{}_C{}", merge.span.start.line, merge.span.start.col)
-                    });
-                    let label = merge.tag.as_deref();
-                    let _ = upsert_node(
-                        &merge_node,
-                        label,
-                        NodeShape::Circle,
-                        merge.span,
-                        false,
-                        idx,
-                        &mut node_map,
-                        &mut node_drafts,
-                        &mut implicit_warned,
-                        &mut warnings,
-                    );
-                    edge_drafts.push(EdgeDraft {
-                        from,
-                        from_port: None,
-                        to: merge_node,
-                        to_port: None,
-                        arrow: "-->".to_string(),
-                        label: merge.tag.clone(),
-                        span: merge.span,
-                        insertion_idx: idx,
-                    });
-                }
-            }
-            Statement::JourneySection { name, span } => {
-                // Journey sections become subgraph containers
-                let title = Some(name.clone());
-                let cid = IrClusterId(cluster_drafts.len());
-                cluster_drafts.push(ClusterDraft {
-                    id: cid,
-                    title,
-                    members: Vec::new(),
-                    span: *span,
-                });
-                cluster_stack.push(cluster_drafts.len() - 1);
-            }
-            Statement::JourneyTask(task) => {
-                let id = format!("journey_L{}_C{}", task.span.start.line, task.span.start.col);
-                let label_text = format!("{} ({})", task.title, task.score);
-                let _ = upsert_node(
-                    &id,
-                    Some(&label_text),
-                    NodeShape::Rect,
-                    task.span,
-                    false,
-                    idx,
-                    &mut node_map,
-                    &mut node_drafts,
-                    &mut implicit_warned,
-                    &mut warnings,
-                );
-                if let Some(cluster_idx) = cluster_stack.last().copied() {
-                    cluster_drafts[cluster_idx].members.push(id);
-                }
-            }
-            Statement::RequirementDef(req) => {
-                let id = req.id.clone().unwrap_or_else(|| normalize_id(&req.name));
-                let label_text = format!("<<{}>>\n{}", req.kind, req.name);
-                let _ = upsert_node(
-                    &id,
-                    Some(&label_text),
-                    NodeShape::Rect,
-                    req.span,
-                    false,
-                    idx,
-                    &mut node_map,
-                    &mut node_drafts,
-                    &mut implicit_warned,
-                    &mut warnings,
-                );
-            }
-            Statement::RequirementElement(elem) => {
-                let id = normalize_id(&elem.name);
-                let _ = upsert_node(
-                    &id,
-                    Some(&elem.name),
-                    NodeShape::Rect,
-                    elem.span,
-                    false,
-                    idx,
-                    &mut node_map,
-                    &mut node_drafts,
-                    &mut implicit_warned,
-                    &mut warnings,
-                );
-            }
-            Statement::RequirementRelation(rel) => {
-                let from = normalize_id(&rel.source);
-                let to = normalize_id(&rel.target);
-                if !from.is_empty() && !to.is_empty() {
-                    upsert_node(
-                        &from,
-                        None,
-                        NodeShape::Rect,
-                        rel.span,
-                        true,
-                        idx,
-                        &mut node_map,
-                        &mut node_drafts,
-                        &mut implicit_warned,
-                        &mut warnings,
-                    );
-                    upsert_node(
-                        &to,
-                        None,
-                        NodeShape::Rect,
-                        rel.span,
-                        true,
-                        idx,
-                        &mut node_map,
-                        &mut node_drafts,
-                        &mut implicit_warned,
-                        &mut warnings,
-                    );
-                    edge_drafts.push(EdgeDraft {
-                        from,
-                        from_port: None,
-                        to,
-                        to_port: None,
-                        arrow: "-->".to_string(),
-                        label: Some(rel.relation_type.clone()),
-                        span: rel.span,
-                        insertion_idx: idx,
-                    });
-                }
-            }
             Statement::Raw { text, span } => {
                 if ast.diagram_type == DiagramType::Pie {
                     if is_pie_show_data_line(text) {
@@ -4235,76 +4676,6 @@ pub struct MindmapNode {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
-pub struct GitGraphCommit {
-    pub id: Option<String>,
-    pub message: Option<String>,
-    pub tag: Option<String>,
-    pub commit_type: Option<String>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct GitGraphBranch {
-    pub name: String,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct GitGraphCheckout {
-    pub name: String,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct GitGraphMerge {
-    pub branch: String,
-    pub id: Option<String>,
-    pub tag: Option<String>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct GitGraphCherryPick {
-    pub commit_id: String,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct JourneyTask {
-    pub title: String,
-    pub score: u8,
-    pub actors: Vec<String>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct RequirementDef {
-    pub kind: String,
-    pub name: String,
-    pub id: Option<String>,
-    pub text: Option<String>,
-    pub risk: Option<String>,
-    pub verify_method: Option<String>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct RequirementRelation {
-    pub source: String,
-    pub target: String,
-    pub relation_type: String,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct RequirementElement {
-    pub name: String,
-    pub element_type: Option<String>,
-    pub docref: Option<String>,
-    pub span: Span,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkKind {
     Click,
@@ -4376,19 +4747,6 @@ pub enum Statement {
     GanttTask(GanttTask),
     PieEntry(PieEntry),
     MindmapNode(MindmapNode),
-    GitGraphCommit(GitGraphCommit),
-    GitGraphBranch(GitGraphBranch),
-    GitGraphCheckout(GitGraphCheckout),
-    GitGraphMerge(GitGraphMerge),
-    GitGraphCherryPick(GitGraphCherryPick),
-    JourneySection {
-        name: String,
-        span: Span,
-    },
-    JourneyTask(JourneyTask),
-    RequirementDef(RequirementDef),
-    RequirementRelation(RequirementRelation),
-    RequirementElement(RequirementElement),
     Raw {
         text: String,
         span: Span,
@@ -5446,8 +5804,6 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
     let mut pending_note: Option<StateNotePending> = None;
     // Track ER entity attribute block: `ENTITY { type name constraint ... }`
     let mut er_entity_block: Option<String> = None;
-    let mut req_block: Option<RequirementDef> = None;
-    let mut elem_block: Option<RequirementElement> = None;
 
     for (idx, raw_line) in input.lines().enumerate() {
         let line_no = idx + 1;
@@ -5504,9 +5860,6 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     "erDiagram",
                     "mindmap",
                     "pie",
-                    "gitGraph",
-                    "journey",
-                    "requirementDiagram",
                 ]),
             );
             diagram_type = DiagramType::Unknown;
@@ -5760,53 +6113,28 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     });
                 }
             }
-            DiagramType::GitGraph => {
-                if let Some(stmt) = parse_gitgraph_line(trimmed, span) {
-                    statements.push(stmt);
-                } else {
-                    statements.push(Statement::Raw {
-                        text: normalize_ws(trimmed),
-                        span,
-                    });
-                }
-            }
-            DiagramType::Journey => {
-                if let Some(stmt) = parse_journey_line(trimmed, raw_line, span) {
-                    statements.push(stmt);
-                } else {
-                    statements.push(Statement::Raw {
-                        text: normalize_ws(trimmed),
-                        span,
-                    });
-                }
-            }
-            DiagramType::Requirement => {
-                if let Some(stmt) =
-                    parse_requirement_line(trimmed, span, &mut req_block, &mut elem_block)
-                {
-                    statements.push(stmt);
-                } else {
-                    statements.push(Statement::Raw {
-                        text: normalize_ws(trimmed),
-                        span,
-                    });
-                }
-            }
-            DiagramType::Unknown => {
+            DiagramType::Unknown
+            | DiagramType::GitGraph
+            | DiagramType::Journey
+            | DiagramType::Requirement
+            | DiagramType::Timeline
+            | DiagramType::QuadrantChart
+            | DiagramType::Sankey
+            | DiagramType::XyChart
+            | DiagramType::BlockBeta
+            | DiagramType::PacketBeta
+            | DiagramType::ArchitectureBeta
+            | DiagramType::C4Context
+            | DiagramType::C4Container
+            | DiagramType::C4Component
+            | DiagramType::C4Dynamic
+            | DiagramType::C4Deployment => {
                 statements.push(Statement::Raw {
                     text: normalize_ws(trimmed),
                     span,
                 });
             }
         }
-    }
-
-    // Close any pending requirement/element block at EOF
-    if let Some(req) = req_block.take() {
-        statements.push(Statement::RequirementDef(req));
-    }
-    if let Some(elem) = elem_block.take() {
-        statements.push(Statement::RequirementElement(elem));
     }
 
     MermaidParse {
@@ -6252,16 +6580,6 @@ fn statement_span(statement: &Statement) -> Span {
         Statement::GanttTask(task) => task.span,
         Statement::PieEntry(entry) => entry.span,
         Statement::MindmapNode(node) => node.span,
-        Statement::GitGraphCommit(c) => c.span,
-        Statement::GitGraphBranch(b) => b.span,
-        Statement::GitGraphCheckout(c) => c.span,
-        Statement::GitGraphMerge(m) => m.span,
-        Statement::GitGraphCherryPick(c) => c.span,
-        Statement::JourneySection { span, .. } => *span,
-        Statement::JourneyTask(t) => t.span,
-        Statement::RequirementDef(r) => r.span,
-        Statement::RequirementRelation(r) => r.span,
-        Statement::RequirementElement(e) => e.span,
         Statement::Raw { span, .. } => *span,
     }
 }
@@ -6912,6 +7230,42 @@ fn parse_header(line: &str) -> Option<(DiagramType, Option<GraphDirection>)> {
     if lower.starts_with("requirementdiagram") {
         return Some((DiagramType::Requirement, None));
     }
+    if lower.starts_with("timeline") {
+        return Some((DiagramType::Timeline, None));
+    }
+    if lower.starts_with("quadrantchart") {
+        return Some((DiagramType::QuadrantChart, None));
+    }
+    if lower.starts_with("sankey") {
+        return Some((DiagramType::Sankey, None));
+    }
+    if lower.starts_with("xychart") {
+        return Some((DiagramType::XyChart, None));
+    }
+    if lower.starts_with("block-beta") || lower.starts_with("block") {
+        return Some((DiagramType::BlockBeta, None));
+    }
+    if lower.starts_with("packet-beta") || lower.starts_with("packet") {
+        return Some((DiagramType::PacketBeta, None));
+    }
+    if lower.starts_with("architecture") {
+        return Some((DiagramType::ArchitectureBeta, None));
+    }
+    if lower.starts_with("c4context") {
+        return Some((DiagramType::C4Context, None));
+    }
+    if lower.starts_with("c4container") {
+        return Some((DiagramType::C4Container, None));
+    }
+    if lower.starts_with("c4component") {
+        return Some((DiagramType::C4Component, None));
+    }
+    if lower.starts_with("c4dynamic") {
+        return Some((DiagramType::C4Dynamic, None));
+    }
+    if lower.starts_with("c4deployment") {
+        return Some((DiagramType::C4Deployment, None));
+    }
     None
 }
 
@@ -7242,369 +7596,6 @@ fn split_er_label(text: &str) -> (Option<&str>, &str) {
     }
     // Fallback: try standard |label| syntax.
     split_label(trimmed)
-}
-
-fn parse_gitgraph_line(trimmed: &str, span: Span) -> Option<Statement> {
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("commit") {
-        let mut id = None;
-        let mut message = None;
-        let mut tag = None;
-        let mut commit_type = None;
-        let rest = trimmed["commit".len()..].trim();
-        // Parse key:value pairs like id: "abc" tag: "v1" type: HIGHLIGHT
-        let mut remaining = rest;
-        while !remaining.is_empty() {
-            remaining = remaining.trim_start();
-            if remaining.starts_with("id:") {
-                remaining = remaining["id:".len()..].trim_start();
-                if let Some(val) = extract_quoted_or_word(remaining) {
-                    id = Some(val.0.to_string());
-                    remaining = val.1;
-                }
-            } else if remaining.starts_with("msg:") || remaining.starts_with("message:") {
-                let skip = if remaining.starts_with("msg:") {
-                    "msg:".len()
-                } else {
-                    "message:".len()
-                };
-                remaining = remaining[skip..].trim_start();
-                if let Some(val) = extract_quoted_or_word(remaining) {
-                    message = Some(val.0.to_string());
-                    remaining = val.1;
-                }
-            } else if remaining.starts_with("tag:") {
-                remaining = remaining["tag:".len()..].trim_start();
-                if let Some(val) = extract_quoted_or_word(remaining) {
-                    tag = Some(val.0.to_string());
-                    remaining = val.1;
-                }
-            } else if remaining.starts_with("type:") {
-                remaining = remaining["type:".len()..].trim_start();
-                if let Some(val) = extract_quoted_or_word(remaining) {
-                    commit_type = Some(val.0.to_string());
-                    remaining = val.1;
-                }
-            } else {
-                // Skip unknown token
-                if let Some(pos) = remaining.find(char::is_whitespace) {
-                    remaining = &remaining[pos..];
-                } else {
-                    break;
-                }
-            }
-        }
-        return Some(Statement::GitGraphCommit(GitGraphCommit {
-            id,
-            message,
-            tag,
-            commit_type,
-            span,
-        }));
-    }
-    if lower.starts_with("branch") {
-        let name = trimmed["branch".len()..].trim();
-        if !name.is_empty() {
-            return Some(Statement::GitGraphBranch(GitGraphBranch {
-                name: normalize_ws(name),
-                span,
-            }));
-        }
-    }
-    if lower.starts_with("checkout") || lower.starts_with("switch") {
-        let skip = if lower.starts_with("checkout") {
-            "checkout".len()
-        } else {
-            "switch".len()
-        };
-        let name = trimmed[skip..].trim();
-        if !name.is_empty() {
-            return Some(Statement::GitGraphCheckout(GitGraphCheckout {
-                name: normalize_ws(name),
-                span,
-            }));
-        }
-    }
-    if lower.starts_with("merge") {
-        let rest = trimmed["merge".len()..].trim();
-        // Parse: merge <branch> [id: "x"] [tag: "y"]
-        let mut parts = rest.splitn(2, char::is_whitespace);
-        let branch = parts.next().unwrap_or("").trim();
-        if !branch.is_empty() {
-            let mut id = None;
-            let mut tag = None;
-            if let Some(extra) = parts.next() {
-                let mut remaining = extra.trim();
-                while !remaining.is_empty() {
-                    remaining = remaining.trim_start();
-                    if remaining.starts_with("id:") {
-                        remaining = remaining["id:".len()..].trim_start();
-                        if let Some(val) = extract_quoted_or_word(remaining) {
-                            id = Some(val.0.to_string());
-                            remaining = val.1;
-                        }
-                    } else if remaining.starts_with("tag:") {
-                        remaining = remaining["tag:".len()..].trim_start();
-                        if let Some(val) = extract_quoted_or_word(remaining) {
-                            tag = Some(val.0.to_string());
-                            remaining = val.1;
-                        }
-                    } else {
-                        if let Some(pos) = remaining.find(char::is_whitespace) {
-                            remaining = &remaining[pos..];
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-            return Some(Statement::GitGraphMerge(GitGraphMerge {
-                branch: normalize_ws(branch),
-                id,
-                tag,
-                span,
-            }));
-        }
-    }
-    if lower.starts_with("cherry-pick") {
-        let rest = trimmed["cherry-pick".len()..].trim();
-        let mut remaining = rest;
-        let mut commit_id = String::new();
-        while !remaining.is_empty() {
-            remaining = remaining.trim_start();
-            if remaining.starts_with("id:") {
-                remaining = remaining["id:".len()..].trim_start();
-                if let Some(val) = extract_quoted_or_word(remaining) {
-                    commit_id = val.0.to_string();
-                    remaining = val.1;
-                }
-            } else {
-                if let Some(pos) = remaining.find(char::is_whitespace) {
-                    remaining = &remaining[pos..];
-                } else {
-                    break;
-                }
-            }
-        }
-        if !commit_id.is_empty() {
-            return Some(Statement::GitGraphCherryPick(GitGraphCherryPick {
-                commit_id,
-                span,
-            }));
-        }
-    }
-    None
-}
-
-/// Extract a quoted string or bare word from the start of `input`.
-/// Returns (value, remaining) or None.
-fn extract_quoted_or_word(input: &str) -> Option<(&str, &str)> {
-    let input = input.trim_start();
-    if let Some(stripped) = input.strip_prefix('"') {
-        let end = stripped.find('"')?;
-        Some((&stripped[..end], &stripped[end + 1..]))
-    } else {
-        let end = input.find(char::is_whitespace).unwrap_or(input.len());
-        if end == 0 {
-            return None;
-        }
-        Some((&input[..end], &input[end..]))
-    }
-}
-
-fn parse_journey_line(trimmed: &str, line: &str, span: Span) -> Option<Statement> {
-    let lower = trimmed.to_ascii_lowercase();
-    // Section header: "section <name>"
-    if lower.starts_with("section") {
-        let rest = &line[line.to_ascii_lowercase().find("section").unwrap() + "section".len()..];
-        let name = rest.trim();
-        if !name.is_empty() {
-            return Some(Statement::JourneySection {
-                name: normalize_ws(name),
-                span,
-            });
-        }
-    }
-    // Title line (handled as Raw — the IR normalization stage can pick it up)
-    if lower.starts_with("title") {
-        return None; // Let Raw handle it
-    }
-    // Task line: "<title>: <score>: <actor1>[, <actor2>, ...]"
-    if let Some(first_colon) = trimmed.find(':') {
-        let title = trimmed[..first_colon].trim();
-        let rest = trimmed[first_colon + 1..].trim();
-        // Parse score and actors
-        let mut parts = rest.splitn(2, ':');
-        let score_str = parts.next().unwrap_or("").trim();
-        let actors_str = parts.next().unwrap_or("").trim();
-        if let Ok(score) = score_str.parse::<u8>() {
-            let actors: Vec<String> = if actors_str.is_empty() {
-                Vec::new()
-            } else {
-                actors_str
-                    .split(',')
-                    .map(|a| normalize_ws(a.trim()))
-                    .filter(|a| !a.is_empty())
-                    .collect()
-            };
-            if !title.is_empty() {
-                return Some(Statement::JourneyTask(JourneyTask {
-                    title: normalize_ws(title),
-                    score,
-                    actors,
-                    span,
-                }));
-            }
-        }
-    }
-    None
-}
-
-fn parse_requirement_line(
-    trimmed: &str,
-    span: Span,
-    req_block: &mut Option<RequirementDef>,
-    elem_block: &mut Option<RequirementElement>,
-) -> Option<Statement> {
-    let lower = trimmed.to_ascii_lowercase();
-
-    // Close a requirement/element block
-    if trimmed == "}" {
-        if let Some(req) = req_block.take() {
-            return Some(Statement::RequirementDef(req));
-        }
-        if let Some(elem) = elem_block.take() {
-            return Some(Statement::RequirementElement(elem));
-        }
-        return None;
-    }
-
-    // Inside a requirement block: parse attributes
-    if let Some(req) = req_block {
-        if lower.starts_with("id:") {
-            req.id = Some(normalize_ws(trimmed["id:".len()..].trim()));
-        } else if lower.starts_with("text:") {
-            req.text = Some(normalize_ws(trimmed["text:".len()..].trim()));
-        } else if lower.starts_with("risk:") {
-            req.risk = Some(normalize_ws(trimmed["risk:".len()..].trim()));
-        } else if lower.starts_with("verifymethod:") || lower.starts_with("verifymethod :") {
-            let skip = if lower.starts_with("verifymethod:") {
-                "verifymethod:".len()
-            } else {
-                "verifymethod :".len()
-            };
-            req.verify_method = Some(normalize_ws(trimmed[skip..].trim()));
-        }
-        return None;
-    }
-
-    // Inside an element block: parse attributes
-    if let Some(elem) = elem_block {
-        if lower.starts_with("type:") {
-            elem.element_type = Some(normalize_ws(trimmed["type:".len()..].trim()));
-        } else if lower.starts_with("docref:") {
-            elem.docref = Some(normalize_ws(trimmed["docref:".len()..].trim()));
-        }
-        return None;
-    }
-
-    // Requirement definition start
-    let req_kinds = [
-        "requirement",
-        "functionalrequirement",
-        "interfacerequirement",
-        "performancerequirement",
-        "physicalrequirement",
-        "designconstraint",
-    ];
-    for kind in &req_kinds {
-        if lower.starts_with(kind) {
-            let rest = trimmed[kind.len()..].trim();
-            // Parse: <kind> <name> { or <kind> "<name>" {
-            let name_part = rest.trim_end_matches('{').trim();
-            let name = name_part.trim_matches('"');
-            if !name.is_empty() {
-                let has_brace = rest.ends_with('{');
-                let def = RequirementDef {
-                    kind: kind.to_string(),
-                    name: normalize_ws(name),
-                    id: None,
-                    text: None,
-                    risk: None,
-                    verify_method: None,
-                    span,
-                };
-                if has_brace {
-                    *req_block = Some(def);
-                    return None;
-                }
-                return Some(Statement::RequirementDef(def));
-            }
-        }
-    }
-
-    // Element definition start
-    if lower.starts_with("element") {
-        let rest = trimmed["element".len()..].trim();
-        let name_part = rest.trim_end_matches('{').trim();
-        let name = name_part.trim_matches('"');
-        if !name.is_empty() {
-            let has_brace = rest.ends_with('{');
-            let elem = RequirementElement {
-                name: normalize_ws(name),
-                element_type: None,
-                docref: None,
-                span,
-            };
-            if has_brace {
-                *elem_block = Some(elem);
-                return None;
-            }
-            return Some(Statement::RequirementElement(elem));
-        }
-    }
-
-    // Relationship: <source> - <type> -> <target>
-    let relation_types = [
-        "traces",
-        "copies",
-        "derives",
-        "satisfies",
-        "verifies",
-        "refines",
-        "contains",
-    ];
-    for rel in &relation_types {
-        let pattern = format!("- {} ->", rel);
-        if let Some(pos) = lower.find(&pattern) {
-            let source = trimmed[..pos].trim();
-            let target = trimmed[pos + pattern.len()..].trim();
-            if !source.is_empty() && !target.is_empty() {
-                return Some(Statement::RequirementRelation(RequirementRelation {
-                    source: normalize_ws(source),
-                    target: normalize_ws(target),
-                    relation_type: rel.to_string(),
-                    span,
-                }));
-            }
-        }
-        // Also support reversed: <target> <- <type> - <source>
-        let rev_pattern = format!("<- {} -", rel);
-        if let Some(pos) = lower.find(&rev_pattern) {
-            let target = trimmed[..pos].trim();
-            let source = trimmed[pos + rev_pattern.len()..].trim();
-            if !source.is_empty() && !target.is_empty() {
-                return Some(Statement::RequirementRelation(RequirementRelation {
-                    source: normalize_ws(source),
-                    target: normalize_ws(target),
-                    relation_type: rel.to_string(),
-                    span,
-                }));
-            }
-        }
-    }
-
-    None
 }
 
 fn parse_node_id(text: &str) -> Option<String> {
@@ -9944,8 +9935,8 @@ mod tests {
     }
 
     #[test]
-    fn feature_matrix_all_types_covered() {
-        let types = [
+    fn feature_matrix_core_types_covered() {
+        let core_types = [
             DiagramType::Graph,
             DiagramType::Sequence,
             DiagramType::State,
@@ -9955,7 +9946,7 @@ mod tests {
             DiagramType::Mindmap,
             DiagramType::Pie,
         ];
-        for dt in &types {
+        for dt in &core_types {
             let features = features_for_type(*dt);
             assert!(
                 !features.is_empty(),
@@ -9963,6 +9954,178 @@ mod tests {
                 dt
             );
         }
+    }
+
+    #[test]
+    fn registry_has_all_families() {
+        for dt in DiagramType::all_families() {
+            assert!(
+                registry_entry_for(*dt).is_some(),
+                "Missing registry entry for {:?}",
+                dt
+            );
+        }
+    }
+
+    #[test]
+    fn registry_no_duplicate_families() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in DIAGRAM_FAMILY_REGISTRY {
+            assert!(
+                seen.insert(entry.family),
+                "Duplicate registry entry for {:?}",
+                entry.family
+            );
+        }
+    }
+
+    #[test]
+    fn registry_version_pin_exists() {
+        assert!(!MERMAID_BASELINE_VERSION.is_empty());
+        let parts: Vec<&str> = MERMAID_BASELINE_VERSION.split('.').collect();
+        assert!(parts.len() >= 2, "Version must have at least major.minor");
+    }
+
+    #[test]
+    fn registry_coverage_adds_up() {
+        let (supported, partial, unsupported) = registry_coverage_summary();
+        assert_eq!(
+            supported + partial + unsupported,
+            DIAGRAM_FAMILY_REGISTRY.len(),
+            "registry coverage counts must sum to total"
+        );
+    }
+
+    #[test]
+    fn registry_pipeline_stages_valid() {
+        for entry in DIAGRAM_FAMILY_REGISTRY {
+            assert_eq!(entry.pipeline.len(), 8);
+            if entry.support_level == MermaidSupportLevel::Supported {
+                assert!(
+                    entry.pipeline[0].is_complete(),
+                    "Supported {:?} needs parser done",
+                    entry.family
+                );
+                assert!(
+                    entry.pipeline[1].is_complete(),
+                    "Supported {:?} needs IR done",
+                    entry.family
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn registry_complete_families_are_supported() {
+        for entry in &registry_complete_families() {
+            assert_eq!(
+                entry.support_level,
+                MermaidSupportLevel::Supported,
+                "Complete pipeline for {:?} should be Supported",
+                entry.family
+            );
+        }
+    }
+
+    #[test]
+    fn parse_header_detects_new_families() {
+        assert_eq!(
+            parse_header("gitGraph").map(|h| h.0),
+            Some(DiagramType::GitGraph)
+        );
+        assert_eq!(
+            parse_header("journey").map(|h| h.0),
+            Some(DiagramType::Journey)
+        );
+        assert_eq!(
+            parse_header("requirementDiagram").map(|h| h.0),
+            Some(DiagramType::Requirement)
+        );
+        assert_eq!(
+            parse_header("timeline").map(|h| h.0),
+            Some(DiagramType::Timeline)
+        );
+        assert_eq!(
+            parse_header("quadrantChart").map(|h| h.0),
+            Some(DiagramType::QuadrantChart)
+        );
+        assert_eq!(
+            parse_header("sankey-beta").map(|h| h.0),
+            Some(DiagramType::Sankey)
+        );
+        assert_eq!(
+            parse_header("xychart-beta").map(|h| h.0),
+            Some(DiagramType::XyChart)
+        );
+        assert_eq!(
+            parse_header("block-beta").map(|h| h.0),
+            Some(DiagramType::BlockBeta)
+        );
+        assert_eq!(
+            parse_header("packet-beta").map(|h| h.0),
+            Some(DiagramType::PacketBeta)
+        );
+        assert_eq!(
+            parse_header("architecture-beta").map(|h| h.0),
+            Some(DiagramType::ArchitectureBeta)
+        );
+        assert_eq!(
+            parse_header("C4Context").map(|h| h.0),
+            Some(DiagramType::C4Context)
+        );
+        assert_eq!(
+            parse_header("C4Container").map(|h| h.0),
+            Some(DiagramType::C4Container)
+        );
+        assert_eq!(
+            parse_header("C4Component").map(|h| h.0),
+            Some(DiagramType::C4Component)
+        );
+        assert_eq!(
+            parse_header("C4Dynamic").map(|h| h.0),
+            Some(DiagramType::C4Dynamic)
+        );
+        assert_eq!(
+            parse_header("C4Deployment").map(|h| h.0),
+            Some(DiagramType::C4Deployment)
+        );
+    }
+
+    #[test]
+    fn diagram_type_all_families_excludes_unknown() {
+        for dt in DiagramType::all_families() {
+            assert_ne!(
+                *dt,
+                DiagramType::Unknown,
+                "all_families should not include Unknown"
+            );
+        }
+        assert_eq!(
+            DiagramType::all_families().len(),
+            23,
+            "Expected 23 canonical families"
+        );
+    }
+
+    #[test]
+    fn diagram_type_beta_classification() {
+        assert!(DiagramType::BlockBeta.is_beta());
+        assert!(DiagramType::PacketBeta.is_beta());
+        assert!(DiagramType::ArchitectureBeta.is_beta());
+        assert!(DiagramType::Sankey.is_beta());
+        assert!(DiagramType::XyChart.is_beta());
+        assert!(!DiagramType::Graph.is_beta());
+        assert!(!DiagramType::GitGraph.is_beta());
+    }
+
+    #[test]
+    fn diagram_type_c4_classification() {
+        assert!(DiagramType::C4Context.is_c4());
+        assert!(DiagramType::C4Container.is_c4());
+        assert!(DiagramType::C4Component.is_c4());
+        assert!(DiagramType::C4Dynamic.is_c4());
+        assert!(DiagramType::C4Deployment.is_c4());
+        assert!(!DiagramType::Graph.is_c4());
     }
 
     #[test]
@@ -10280,310 +10443,5 @@ B --> C
             &ir_parse.ir.constraints[1],
             LayoutConstraint::MinLength { .. }
         ));
-    }
-
-    #[test]
-    fn parse_gitgraph_commits() {
-        let input =
-            "gitGraph\n    commit\n    commit id: \"abc\"\n    commit id: \"def\" tag: \"v1\"\n";
-        let ast = parse(input).expect("parse");
-        assert_eq!(ast.diagram_type, DiagramType::GitGraph);
-        let commits: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::GitGraphCommit(_)))
-            .collect();
-        assert_eq!(commits.len(), 3);
-        // Check second commit has id
-        if let Statement::GitGraphCommit(c) = &commits[1] {
-            assert_eq!(c.id.as_deref(), Some("abc"));
-        } else {
-            panic!("expected GitGraphCommit");
-        }
-        // Check third commit has tag
-        if let Statement::GitGraphCommit(c) = &commits[2] {
-            assert_eq!(c.id.as_deref(), Some("def"));
-            assert_eq!(c.tag.as_deref(), Some("v1"));
-        } else {
-            panic!("expected GitGraphCommit");
-        }
-    }
-
-    #[test]
-    fn parse_gitgraph_branch_checkout_merge() {
-        let input = concat!(
-            "gitGraph\n",
-            "    commit\n",
-            "    branch develop\n",
-            "    checkout develop\n",
-            "    commit\n",
-            "    checkout main\n",
-            "    merge develop\n",
-        );
-        let ast = parse(input).expect("parse");
-        assert_eq!(ast.diagram_type, DiagramType::GitGraph);
-        let branches: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::GitGraphBranch(_)))
-            .collect();
-        assert_eq!(branches.len(), 1);
-        if let Statement::GitGraphBranch(b) = &branches[0] {
-            assert_eq!(b.name, "develop");
-        }
-        let checkouts: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::GitGraphCheckout(_)))
-            .collect();
-        assert_eq!(checkouts.len(), 2);
-        let merges: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::GitGraphMerge(_)))
-            .collect();
-        assert_eq!(merges.len(), 1);
-        if let Statement::GitGraphMerge(m) = &merges[0] {
-            assert_eq!(m.branch, "develop");
-        }
-    }
-
-    #[test]
-    fn parse_gitgraph_cherry_pick() {
-        let input =
-            "gitGraph\n    commit id: \"abc\"\n    branch feat\n    cherry-pick id: \"abc\"\n";
-        let ast = parse(input).expect("parse");
-        let cherry_picks: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::GitGraphCherryPick(_)))
-            .collect();
-        assert_eq!(cherry_picks.len(), 1);
-        if let Statement::GitGraphCherryPick(c) = &cherry_picks[0] {
-            assert_eq!(c.commit_id, "abc");
-        }
-    }
-
-    #[test]
-    fn parse_journey_sections_and_tasks() {
-        let input = concat!(
-            "journey\n",
-            "    title My Working Day\n",
-            "    section Go to work\n",
-            "    Make tea: 5: Me\n",
-            "    Go upstairs: 3: Me, Cat\n",
-            "    section Go home\n",
-            "    Go downstairs: 5: Me\n",
-        );
-        let ast = parse(input).expect("parse");
-        assert_eq!(ast.diagram_type, DiagramType::Journey);
-        let sections: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::JourneySection { .. }))
-            .collect();
-        assert_eq!(sections.len(), 2);
-        if let Statement::JourneySection { name, .. } = &sections[0] {
-            assert_eq!(name, "Go to work");
-        }
-        let tasks: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::JourneyTask(_)))
-            .collect();
-        assert_eq!(tasks.len(), 3);
-        if let Statement::JourneyTask(t) = &tasks[0] {
-            assert_eq!(t.title, "Make tea");
-            assert_eq!(t.score, 5);
-            assert_eq!(t.actors, vec!["Me".to_string()]);
-        }
-        if let Statement::JourneyTask(t) = &tasks[1] {
-            assert_eq!(t.title, "Go upstairs");
-            assert_eq!(t.score, 3);
-            assert_eq!(t.actors, vec!["Me".to_string(), "Cat".to_string()]);
-        }
-    }
-
-    #[test]
-    fn parse_journey_task_no_actors() {
-        let input = "journey\n    Do thing: 4:\n";
-        let ast = parse(input).expect("parse");
-        let tasks: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::JourneyTask(_)))
-            .collect();
-        assert_eq!(tasks.len(), 1);
-        if let Statement::JourneyTask(t) = &tasks[0] {
-            assert_eq!(t.title, "Do thing");
-            assert_eq!(t.score, 4);
-            assert!(t.actors.is_empty());
-        }
-    }
-
-    #[test]
-    fn parse_requirement_diagram_basic() {
-        let input = concat!(
-            "requirementDiagram\n",
-            "    requirement test_req {\n",
-            "    id: 1\n",
-            "    text: the test text.\n",
-            "    risk: high\n",
-            "    verifymethod: test\n",
-            "    }\n",
-        );
-        let ast = parse(input).expect("parse");
-        assert_eq!(ast.diagram_type, DiagramType::Requirement);
-        let reqs: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::RequirementDef(_)))
-            .collect();
-        assert_eq!(reqs.len(), 1);
-        if let Statement::RequirementDef(r) = &reqs[0] {
-            assert_eq!(r.kind, "requirement");
-            assert_eq!(r.name, "test_req");
-            assert_eq!(r.id.as_deref(), Some("1"));
-            assert_eq!(r.text.as_deref(), Some("the test text."));
-            assert_eq!(r.risk.as_deref(), Some("high"));
-            assert_eq!(r.verify_method.as_deref(), Some("test"));
-        }
-    }
-
-    #[test]
-    fn parse_requirement_element_and_relation() {
-        let input = concat!(
-            "requirementDiagram\n",
-            "    requirement test_req {\n",
-            "    id: 1\n",
-            "    }\n",
-            "    element test_entity {\n",
-            "    type: simulation\n",
-            "    }\n",
-            "    test_entity - satisfies -> test_req\n",
-        );
-        let ast = parse(input).expect("parse");
-        let elems: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::RequirementElement(_)))
-            .collect();
-        assert_eq!(elems.len(), 1);
-        if let Statement::RequirementElement(e) = &elems[0] {
-            assert_eq!(e.name, "test_entity");
-            assert_eq!(e.element_type.as_deref(), Some("simulation"));
-        }
-        let rels: Vec<_> = ast
-            .statements
-            .iter()
-            .filter(|s| matches!(s, Statement::RequirementRelation(_)))
-            .collect();
-        assert_eq!(rels.len(), 1);
-        if let Statement::RequirementRelation(r) = &rels[0] {
-            assert_eq!(r.source, "test_entity");
-            assert_eq!(r.target, "test_req");
-            assert_eq!(r.relation_type, "satisfies");
-        }
-    }
-
-    #[test]
-    fn parse_requirement_multiple_kinds() {
-        let input = concat!(
-            "requirementDiagram\n",
-            "    functionalRequirement func_req {\n",
-            "    id: FR-1\n",
-            "    text: Must handle input\n",
-            "    }\n",
-            "    performanceRequirement perf_req {\n",
-            "    id: PR-1\n",
-            "    text: Under 100ms\n",
-            "    risk: low\n",
-            "    }\n",
-        );
-        let ast = parse(input).expect("parse");
-        let reqs: Vec<_> = ast
-            .statements
-            .iter()
-            .filter_map(|s| match s {
-                Statement::RequirementDef(r) => Some(r),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].kind, "functionalrequirement");
-        assert_eq!(reqs[0].name, "func_req");
-        assert_eq!(reqs[1].kind, "performancerequirement");
-        assert_eq!(reqs[1].name, "perf_req");
-    }
-
-    #[test]
-    fn gitgraph_ir_produces_nodes_and_edges() {
-        let input = concat!(
-            "gitGraph\n",
-            "    commit id: \"a\"\n",
-            "    branch dev\n",
-            "    commit id: \"b\"\n",
-            "    merge dev\n",
-        );
-        let ast = parse(input).expect("parse");
-        let ir = normalize_ast_to_ir(
-            &ast,
-            &MermaidConfig::default(),
-            &MermaidCompatibilityMatrix::default(),
-            &MermaidFallbackPolicy::default(),
-        );
-        // Should have commit nodes
-        assert!(!ir.ir.nodes.is_empty(), "gitGraph should produce IR nodes");
-    }
-
-    #[test]
-    fn journey_ir_produces_nodes_and_clusters() {
-        let input = concat!(
-            "journey\n",
-            "    section Work\n",
-            "    Code: 5: Dev\n",
-            "    Review: 3: Dev, Lead\n",
-        );
-        let ast = parse(input).expect("parse");
-        let ir = normalize_ast_to_ir(
-            &ast,
-            &MermaidConfig::default(),
-            &MermaidCompatibilityMatrix::default(),
-            &MermaidFallbackPolicy::default(),
-        );
-        assert!(!ir.ir.nodes.is_empty(), "journey should produce IR nodes");
-        assert!(
-            !ir.ir.clusters.is_empty(),
-            "journey sections should produce clusters"
-        );
-    }
-
-    #[test]
-    fn requirement_ir_produces_nodes_and_edges() {
-        let input = concat!(
-            "requirementDiagram\n",
-            "    requirement req1 {\n",
-            "    id: R1\n",
-            "    }\n",
-            "    element elem1 {\n",
-            "    type: module\n",
-            "    }\n",
-            "    elem1 - satisfies -> req1\n",
-        );
-        let ast = parse(input).expect("parse");
-        let ir = normalize_ast_to_ir(
-            &ast,
-            &MermaidConfig::default(),
-            &MermaidCompatibilityMatrix::default(),
-            &MermaidFallbackPolicy::default(),
-        );
-        assert!(
-            ir.ir.nodes.len() >= 2,
-            "requirement diagram should produce at least 2 nodes"
-        );
-        assert!(
-            !ir.ir.edges.is_empty(),
-            "requirement relations should produce edges"
-        );
     }
 }
