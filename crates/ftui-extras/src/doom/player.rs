@@ -304,4 +304,148 @@ mod tests {
         p.look(0.0, -20.0);
         assert!(p.pitch >= -1.2);
     }
+
+    #[test]
+    fn player_look_wraps_yaw() {
+        let mut p = Player::default();
+        p.look(std::f32::consts::TAU + 0.5, 0.0);
+        assert!(p.angle >= 0.0 && p.angle < std::f32::consts::TAU);
+        assert!((p.angle - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn player_look_negative_yaw_wraps() {
+        let mut p = Player::default();
+        p.angle = 0.1;
+        p.look(-0.5, 0.0);
+        assert!(p.angle >= 0.0 && p.angle < std::f32::consts::TAU);
+        assert!((p.angle - (std::f32::consts::TAU - 0.4)).abs() < 0.001);
+    }
+
+    #[test]
+    fn thrust_adds_momentum() {
+        let mut p = Player::default();
+        p.thrust(0.0, 5.0);
+        assert!(p.mom_x > 0.0);
+        assert!(p.mom_y.abs() < 0.001);
+    }
+
+    #[test]
+    fn thrust_running_doubles_speed() {
+        let mut p1 = Player::default();
+        p1.thrust(0.0, 5.0);
+        let walk_mom = p1.mom_x;
+
+        let mut p2 = Player::default();
+        p2.running = true;
+        p2.thrust(0.0, 5.0);
+        let run_mom = p2.mom_x;
+
+        assert!((run_mom - walk_mom * PLAYER_RUN_MULT).abs() < 0.001);
+    }
+
+    #[test]
+    fn move_forward_applies_thrust_along_angle() {
+        let mut p = Player::default();
+        p.angle = std::f32::consts::FRAC_PI_2;
+        p.move_forward(1.0);
+        assert!(p.mom_x.abs() < 0.001);
+        assert!(p.mom_y > 0.0);
+    }
+
+    #[test]
+    fn move_forward_negative_is_backward() {
+        let mut p = Player::default();
+        p.angle = 0.0;
+        p.move_forward(-1.0);
+        assert!(p.mom_x < 0.0);
+    }
+
+    #[test]
+    fn strafe_perpendicular_to_facing() {
+        let mut p = Player::default();
+        p.angle = 0.0;
+        p.strafe(1.0);
+        assert!(p.mom_x.abs() < 0.001);
+        assert!(p.mom_y < 0.0);
+    }
+
+    #[test]
+    fn bob_offset_zero_when_no_bob() {
+        let p = Player::default();
+        assert!((p.bob_offset()).abs() < 0.001);
+    }
+
+    #[test]
+    fn bob_offset_varies_with_phase() {
+        let mut p = Player::default();
+        p.bob_amount = 1.0;
+        p.bob_phase = 0.0;
+        let offset_0 = p.bob_offset();
+
+        p.bob_phase = std::f32::consts::FRAC_PI_4;
+        let offset_quarter = p.bob_offset();
+
+        assert!(offset_0.abs() < 0.001);
+        assert!(offset_quarter.abs() > 0.1);
+    }
+
+    #[test]
+    fn spawn_resets_momentum() {
+        let mut p = Player::default();
+        p.mom_x = 10.0;
+        p.mom_y = 20.0;
+        p.mom_z = 5.0;
+        p.bob_phase = 3.0;
+        p.bob_amount = 1.0;
+
+        p.spawn(50.0, 60.0, 1.0);
+
+        assert!((p.mom_x).abs() < 0.001);
+        assert!((p.mom_y).abs() < 0.001);
+        assert!((p.mom_z).abs() < 0.001);
+        assert!((p.bob_phase).abs() < 0.001);
+        assert!((p.bob_amount).abs() < 0.001);
+        assert!(p.on_ground);
+    }
+
+    #[test]
+    fn default_player_field_values() {
+        let p = Player::default();
+        assert_eq!(p.armor, 0);
+        assert!(!p.running);
+        assert!(!p.noclip);
+        assert!(!p.god_mode);
+        assert_eq!(p.sector, 0);
+        assert!((p.angle).abs() < 0.001);
+        assert!((p.pitch).abs() < 0.001);
+        assert!((p.floor_z).abs() < 0.001);
+    }
+
+    #[test]
+    fn thrust_at_45_degrees() {
+        let mut p = Player::default();
+        let angle = std::f32::consts::FRAC_PI_4;
+        p.thrust(angle, 10.0);
+        assert!((p.mom_x - p.mom_y).abs() < 0.001);
+        assert!(p.mom_x > 0.0);
+    }
+
+    #[test]
+    fn thrust_accumulates() {
+        let mut p = Player::default();
+        p.thrust(0.0, 5.0);
+        let first = p.mom_x;
+        p.thrust(0.0, 5.0);
+        assert!((p.mom_x - 2.0 * first).abs() < 0.001);
+    }
+
+    #[test]
+    fn look_pitch_clamped_exactly() {
+        let mut p = Player::default();
+        p.look(0.0, 1.2);
+        assert!((p.pitch - 1.2).abs() < 0.001);
+        p.look(0.0, 0.1);
+        assert!((p.pitch - 1.2).abs() < 0.001);
+    }
 }
