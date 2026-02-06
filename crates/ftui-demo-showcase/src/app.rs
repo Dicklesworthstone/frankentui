@@ -4711,6 +4711,9 @@ impl AppModel {
                 .style(*style)
                 .render(row_area, frame);
         }
+
+        // Register hit region so clicking dismisses the overlay (bd-iuvb.17.4).
+        frame.register_hit_region(overlay_area, HitId::new(crate::chrome::OVERLAY_PERF_HUD));
     }
 
     /// Generate a braille-style sparkline from recent frame times.
@@ -4837,6 +4840,9 @@ impl AppModel {
         Paragraph::new(debug_text)
             .style(Style::new().fg(theme::fg::PRIMARY))
             .render(debug_inner, frame);
+
+        // Register hit region so clicking dismisses the overlay (bd-iuvb.17.4).
+        frame.register_hit_region(overlay_area, HitId::new(crate::chrome::OVERLAY_DEBUG));
     }
 
     /// Render the Explainability Cockpit overlay.
@@ -4853,6 +4859,18 @@ impl AppModel {
         self.screens
             .explainability_cockpit
             .render_overlay(frame, area);
+
+        // Register hit region for evidence overlay (same geometry as render_overlay).
+        let ew = 74u16.min(area.width.saturating_sub(4));
+        let eh = 18u16.min(area.height.saturating_sub(4));
+        if ew >= 40 && eh >= 10 {
+            let ex = area.x + area.width.saturating_sub(ew).saturating_sub(1);
+            let ey = area.y + area.height.saturating_sub(eh).saturating_sub(1);
+            frame.register_hit_region(
+                Rect::new(ex, ey, ew, eh),
+                HitId::new(crate::chrome::OVERLAY_EVIDENCE),
+            );
+        }
     }
 }
 

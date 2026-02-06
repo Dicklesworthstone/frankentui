@@ -1551,4 +1551,290 @@ mod tests {
             );
         }
     }
+
+    /// Helper to build a default StatusBarState for testing.
+    fn test_status_bar_state(
+        overrides: impl FnOnce(&mut StatusBarState<'_>),
+    ) -> StatusBarState<'static> {
+        let mut state = StatusBarState {
+            current_screen: ScreenId::Dashboard,
+            screen_title: "Dashboard",
+            screen_index: 0,
+            screen_count: 11,
+            tick_count: 100,
+            frame_count: 50,
+            terminal_width: 120,
+            terminal_height: 40,
+            theme_name: "default",
+            inline_mode: false,
+            mouse_capture_enabled: true,
+            help_visible: false,
+            palette_visible: false,
+            perf_hud_visible: false,
+            debug_visible: false,
+            a11y_high_contrast: false,
+            a11y_reduced_motion: false,
+            a11y_large_text: false,
+            can_undo: false,
+            can_redo: false,
+            undo_description: None,
+        };
+        overrides(&mut state);
+        state
+    }
+
+    /// Helper to render status bar and return (rendered_text, frame).
+    fn render_status_bar_test(
+        width: u16,
+        overrides: impl FnOnce(&mut StatusBarState<'_>),
+    ) -> (String, Frame<'static>) {
+        // Leak the pool to get 'static lifetime for test convenience
+        let pool = Box::leak(Box::new(GraphemePool::new()));
+        let mut frame = Frame::new(width, 1, pool);
+        let area = Rect::new(0, 0, width, 1);
+        let state = test_status_bar_state(overrides);
+        render_status_bar(&state, &mut frame, area);
+        let mut rendered = String::new();
+        for x in 0..width {
+            if let Some(cell) = frame.buffer.get(x, 0) {
+                if let Some(ch) = cell.content.as_char() {
+                    rendered.push(ch);
+                } else {
+                    rendered.push(' ');
+                }
+            }
+        }
+        (rendered, frame)
+    }
+
+    #[test]
+    fn status_bar_shows_toggle_indicators_inactive() {
+        let (rendered, _frame) = render_status_bar_test(200, |_| {});
+        assert!(
+            rendered.contains("[h]"),
+            "Should show inactive help toggle: {rendered}"
+        );
+        assert!(
+            rendered.contains("[cmd]"),
+            "Should show inactive palette toggle: {rendered}"
+        );
+        assert!(
+            rendered.contains("[p]"),
+            "Should show inactive perf toggle: {rendered}"
+        );
+        assert!(
+            rendered.contains("[d]"),
+            "Should show inactive debug toggle: {rendered}"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_toggle_indicators_active() {
+        let (rendered, _frame) = render_status_bar_test(200, |s| {
+            s.help_visible = true;
+            s.palette_visible = true;
+            s.perf_hud_visible = true;
+            s.debug_visible = true;
+        });
+        assert!(
+            rendered.contains("[H]"),
+            "Should show active help toggle: {rendered}"
+        );
+        assert!(
+            rendered.contains("[Cmd]"),
+            "Should show active palette toggle: {rendered}"
+        );
+        assert!(
+            rendered.contains("[P]"),
+            "Should show active perf toggle: {rendered}"
+        );
+        assert!(
+            rendered.contains("[D]"),
+            "Should show active debug toggle: {rendered}"
+        );
+    }
+
+    #[test]
+    fn status_bar_registers_help_toggle_hit_region() {
+        let (_rendered, frame) = render_status_bar_test(200, |_| {});
+        let grid = frame.hit_grid();
+        // Find the [h] toggle position and verify hit region
+        let mut found = false;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = grid.hit_test(x, 0) {
+                if id.raw() == STATUS_HELP_TOGGLE {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "Should register STATUS_HELP_TOGGLE hit region");
+    }
+
+    #[test]
+    fn status_bar_registers_palette_toggle_hit_region() {
+        let (_rendered, frame) = render_status_bar_test(200, |_| {});
+        let grid = frame.hit_grid();
+        let mut found = false;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = grid.hit_test(x, 0) {
+                if id.raw() == STATUS_PALETTE_TOGGLE {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "Should register STATUS_PALETTE_TOGGLE hit region");
+    }
+
+    #[test]
+    fn status_bar_registers_perf_toggle_hit_region() {
+        let (_rendered, frame) = render_status_bar_test(200, |_| {});
+        let grid = frame.hit_grid();
+        let mut found = false;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = grid.hit_test(x, 0) {
+                if id.raw() == STATUS_PERF_TOGGLE {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "Should register STATUS_PERF_TOGGLE hit region");
+    }
+
+    #[test]
+    fn status_bar_registers_debug_toggle_hit_region() {
+        let (_rendered, frame) = render_status_bar_test(200, |_| {});
+        let grid = frame.hit_grid();
+        let mut found = false;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = grid.hit_test(x, 0) {
+                if id.raw() == STATUS_DEBUG_TOGGLE {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "Should register STATUS_DEBUG_TOGGLE hit region");
+    }
+
+    #[test]
+    fn status_bar_registers_mouse_toggle_hit_region() {
+        let (_rendered, frame) = render_status_bar_test(200, |_| {});
+        let grid = frame.hit_grid();
+        let mut found = false;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = grid.hit_test(x, 0) {
+                if id.raw() == STATUS_MOUSE_TOGGLE {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "Should register STATUS_MOUSE_TOGGLE hit region");
+    }
+
+    #[test]
+    fn status_bar_hit_regions_are_non_overlapping() {
+        let (_rendered, frame) = render_status_bar_test(200, |_| {});
+        let grid = frame.hit_grid();
+        // Walk each column and collect which hit IDs we see
+        let mut hit_ids: Vec<(u16, u32)> = Vec::new();
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = grid.hit_test(x, 0) {
+                let raw = id.raw();
+                if raw >= STATUS_HIT_BASE {
+                    hit_ids.push((x, raw));
+                }
+            }
+        }
+        // Verify we see all 6 status toggles in order
+        let unique_ids: Vec<u32> = {
+            let mut ids = Vec::new();
+            for &(_, id) in &hit_ids {
+                if ids.last() != Some(&id) {
+                    ids.push(id);
+                }
+            }
+            ids
+        };
+        assert!(
+            unique_ids.contains(&STATUS_HELP_TOGGLE),
+            "Missing help toggle in hit regions"
+        );
+        assert!(
+            unique_ids.contains(&STATUS_PALETTE_TOGGLE),
+            "Missing palette toggle in hit regions"
+        );
+        assert!(
+            unique_ids.contains(&STATUS_PERF_TOGGLE),
+            "Missing perf toggle in hit regions"
+        );
+        assert!(
+            unique_ids.contains(&STATUS_DEBUG_TOGGLE),
+            "Missing debug toggle in hit regions"
+        );
+        assert!(
+            unique_ids.contains(&STATUS_MOUSE_TOGGLE),
+            "Missing mouse toggle in hit regions"
+        );
+        // Verify ordering: help < palette < perf < debug < mouse
+        let positions: Vec<usize> = [
+            STATUS_HELP_TOGGLE,
+            STATUS_PALETTE_TOGGLE,
+            STATUS_PERF_TOGGLE,
+            STATUS_DEBUG_TOGGLE,
+            STATUS_MOUSE_TOGGLE,
+        ]
+        .iter()
+        .map(|target| unique_ids.iter().position(|id| id == target).unwrap())
+        .collect();
+        for i in 1..positions.len() {
+            assert!(
+                positions[i] > positions[i - 1],
+                "Status toggle hit regions should be in order"
+            );
+        }
+    }
+
+    #[test]
+    fn status_bar_toggles_truncated_on_narrow_terminal() {
+        // On a very narrow terminal, toggle strip should be truncated
+        let (rendered, frame) = render_status_bar_test(40, |_| {});
+        // On 40 cols, the toggle strip may be truncated
+        let grid = frame.hit_grid();
+        // Just verify no panic and that the status bar renders something
+        assert!(
+            rendered.contains("Dashboard"),
+            "Should still show screen title: {rendered}"
+        );
+        // Hit regions might not be registered if strip was truncated — that's OK
+        let _ = grid;
+    }
+
+    #[test]
+    fn status_bar_classify_toggle_hit_ids() {
+        // Verify all toggle hit IDs classify as StatusToggle layer
+        assert_eq!(
+            classify_hit(HitId::new(STATUS_HELP_TOGGLE)),
+            HitLayer::StatusToggle
+        );
+        assert_eq!(
+            classify_hit(HitId::new(STATUS_PALETTE_TOGGLE)),
+            HitLayer::StatusToggle
+        );
+        assert_eq!(
+            classify_hit(HitId::new(STATUS_PERF_TOGGLE)),
+            HitLayer::StatusToggle
+        );
+        assert_eq!(
+            classify_hit(HitId::new(STATUS_DEBUG_TOGGLE)),
+            HitLayer::StatusToggle
+        );
+        assert_eq!(
+            classify_hit(HitId::new(STATUS_MOUSE_TOGGLE)),
+            HitLayer::StatusToggle
+        );
+    }
 }

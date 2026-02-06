@@ -1487,7 +1487,7 @@ mod tests {
     // ── BocpdConfig presets ─────────────────────────────────────────
 
     #[test]
-    fn responsive_config_values() {
+    fn responsive_config_values_dup() {
         let config = BocpdConfig::responsive();
         assert!((config.mu_steady_ms - 150.0).abs() < f64::EPSILON);
         assert!((config.mu_burst_ms - 15.0).abs() < f64::EPSILON);
@@ -1497,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn aggressive_coalesce_config_values() {
+    fn aggressive_coalesce_config_values_dup() {
         let config = BocpdConfig::aggressive_coalesce();
         assert!((config.mu_steady_ms - 250.0).abs() < f64::EPSILON);
         assert!((config.mu_burst_ms - 25.0).abs() < f64::EPSILON);
@@ -1508,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn with_logging_builder() {
+    fn with_logging_builder_dup() {
         let config = BocpdConfig::default().with_logging(true);
         assert!(config.enable_logging);
         let config2 = config.with_logging(false);
@@ -1532,7 +1532,7 @@ mod tests {
     }
 
     #[test]
-    fn regime_default_is_steady() {
+    fn regime_default_is_steady_dup() {
         assert_eq!(BocpdRegime::default(), BocpdRegime::Steady);
     }
 
@@ -1625,7 +1625,7 @@ mod tests {
 
     #[test]
     fn decision_log_jsonl_none_without_evidence() {
-        let mut det = BocpdDetector::new(BocpdConfig::default().with_logging(true));
+        let det = BocpdDetector::new(BocpdConfig::default().with_logging(true));
         // No observe_event called
         assert!(det.decision_log_jsonl(16, 40, false).is_none());
     }
@@ -1709,14 +1709,14 @@ mod tests {
         assert_eq!(det.observation_count(), 0);
         assert!(det.last_evidence().is_none());
         // After reset, first event should use default mu_steady_ms
-        let regime = det.observe_event(start + Duration::from_millis(100));
+        let _ = det.observe_event(start + Duration::from_millis(100));
         assert_eq!(det.observation_count(), 1);
     }
 
     // ── First event uses default inter-arrival ──────────────────────
 
     #[test]
-    fn first_event_uses_steady_default() {
+    fn first_event_uses_steady_default_dup() {
         let mut det = BocpdDetector::with_defaults();
         let t = Instant::now();
         det.observe_event(t);
