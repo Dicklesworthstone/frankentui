@@ -2724,6 +2724,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         // Add tasks in order with different durations/priorities
@@ -2759,6 +2763,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         mgr.spawn_task_with_name("Long", 100, 1);
@@ -2797,6 +2805,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         // Create tasks with different remaining times
@@ -2868,6 +2880,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         // Low priority task created at tick 0
@@ -2918,6 +2934,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         mgr.spawn_task_with_name("LowPri", 50, 1);
@@ -2952,6 +2972,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         mgr.spawn_task_with_name("A", 50, 1);
@@ -3004,6 +3028,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         // Fill up to MAX_TASKS with completed tasks
@@ -3119,6 +3147,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         mgr.spawn_task_with_name("WillFail", 5, 1);
@@ -3150,6 +3182,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         mgr.spawn_task_with_name("WillSucceed", 5, 1);
@@ -3205,6 +3241,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         // Add many tasks
@@ -3234,6 +3274,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         mgr.spawn_task_with_name("Fast", 2, 1);
@@ -3424,6 +3468,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         let mut mgr2 = AsyncTaskManager {
@@ -3440,6 +3488,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         let name1 = mgr1.generate_name();
@@ -3464,6 +3516,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         let mut names = std::collections::HashSet::new();
@@ -3495,6 +3551,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         // Spawn
@@ -3530,6 +3590,10 @@ mod tests {
             diagnostic_config: DiagnosticConfig::default(),
             diagnostic_log: DiagnosticLog::default(),
             hazard_config: HazardConfig::default(),
+            layout_task_list: StdCell::new(Rect::default()),
+            layout_task_list_inner: StdCell::new(Rect::default()),
+            layout_details: StdCell::new(Rect::default()),
+            layout_activity: StdCell::new(Rect::default()),
         };
 
         mgr.spawn_task_with_name("Running", 100, 1);
@@ -3766,6 +3830,124 @@ mod tests {
         let json = mgr.export_diagnostics();
         assert!(json.contains("\"type\":\"metrics_snapshot\""));
     }
+
+    // =========================================================================
+    // Mouse interaction tests (bd-iuvb.17.13.5)
+    // =========================================================================
+
+    fn mouse_click(x: u16, y: u16) -> Event {
+        use ftui_core::event::MouseEvent;
+        Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        ))
+    }
+
+    fn mouse_scroll_up(x: u16, y: u16) -> Event {
+        use ftui_core::event::MouseEvent;
+        Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, x, y))
+    }
+
+    fn mouse_scroll_down(x: u16, y: u16) -> Event {
+        use ftui_core::event::MouseEvent;
+        Event::Mouse(MouseEvent::new(MouseEventKind::ScrollDown, x, y))
+    }
+
+    #[test]
+    fn mouse_click_selects_task_row() {
+        let mut mgr = AsyncTaskManager::new();
+        // Simulate cached inner rect as if view() was called.
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        mgr.selected = 0;
+
+        // Click on row 2 (y=4 means offset 2 from inner.y=2).
+        mgr.update(&mouse_click(10, 4));
+        assert_eq!(mgr.selected, 2);
+    }
+
+    #[test]
+    fn mouse_click_selects_first_row() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        mgr.selected = 2;
+
+        mgr.update(&mouse_click(10, 2));
+        assert_eq!(mgr.selected, 0);
+    }
+
+    #[test]
+    fn mouse_click_outside_list_no_change() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        mgr.selected = 1;
+
+        // Click outside the list area.
+        mgr.update(&mouse_click(50, 5));
+        assert_eq!(mgr.selected, 1);
+    }
+
+    #[test]
+    fn mouse_click_beyond_tasks_no_crash() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        let task_count = mgr.tasks.len();
+        mgr.selected = 0;
+
+        // Click row far below all tasks.
+        mgr.update(&mouse_click(10, 11));
+        // Should not change selection since that task index doesn't exist.
+        assert!(mgr.selected < task_count);
+    }
+
+    #[test]
+    fn mouse_scroll_up_selects_prev() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        mgr.selected = 2;
+
+        mgr.update(&mouse_scroll_up(10, 5));
+        assert_eq!(mgr.selected, 1);
+    }
+
+    #[test]
+    fn mouse_scroll_down_selects_next() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        mgr.selected = 0;
+
+        mgr.update(&mouse_scroll_down(10, 5));
+        assert_eq!(mgr.selected, 1);
+    }
+
+    #[test]
+    fn mouse_scroll_outside_list_no_change() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        mgr.selected = 1;
+
+        mgr.update(&mouse_scroll_up(50, 5));
+        assert_eq!(mgr.selected, 1);
+    }
+
+    #[test]
+    fn mouse_scroll_up_clamps_at_zero() {
+        let mut mgr = AsyncTaskManager::new();
+        mgr.layout_task_list_inner.set(Rect::new(1, 2, 40, 10));
+        mgr.selected = 0;
+
+        mgr.update(&mouse_scroll_up(10, 5));
+        assert_eq!(mgr.selected, 0);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_entries() {
+        let mgr = AsyncTaskManager::new();
+        let bindings = mgr.keybindings();
+        let keys: Vec<&str> = bindings.iter().map(|e| e.key).collect();
+        assert!(keys.contains(&"Click"));
+        assert!(keys.contains(&"Wheel"));
+    }
 }
 
 // =============================================================================
@@ -3821,6 +4003,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             let mut last_id = 0u32;
@@ -3855,6 +4041,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             mgr.spawn_task_with_name("Test", estimated_ticks, 1);
@@ -3898,6 +4088,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             // Spawn many tasks
@@ -3943,6 +4137,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             // Create tasks in various terminal states
@@ -4022,6 +4220,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             // Spawn queued tasks
@@ -4071,6 +4273,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             mgr.spawn_task_with_name("Test", estimated, 1);
@@ -4117,6 +4323,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             for i in 0..task_count {
@@ -4163,6 +4373,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             for _ in 0..SchedulerPolicy::count() {
@@ -4206,6 +4420,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             let mut last_counter = 0u32;
@@ -4243,6 +4461,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             for i in 0..event_count {
@@ -4277,6 +4499,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             // Fill to MAX_TASKS with completed tasks
@@ -4335,6 +4561,10 @@ mod proptests {
                 diagnostic_config: DiagnosticConfig::default(),
                 diagnostic_log: DiagnosticLog::default(),
                 hazard_config: HazardConfig::default(),
+                layout_task_list: StdCell::new(Rect::default()),
+                layout_task_list_inner: StdCell::new(Rect::default()),
+                layout_details: StdCell::new(Rect::default()),
+                layout_activity: StdCell::new(Rect::default()),
             };
 
             for i in 0..task_count {
