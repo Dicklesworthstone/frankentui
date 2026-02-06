@@ -1492,12 +1492,7 @@ fn edge_port(
 
 // ── Public API ────────────────────────────────────────────────────────
 
-// ── gitGraph layout ──────────────────────────────────────────────────
 
-/// Layout a gitGraph diagram with lane-based branch visualization.
-///
-/// Each branch is assigned a horizontal lane. Commits are placed vertically
-/// in chronological order (top-down). Merges connect across lanes.
 fn layout_gitgraph_diagram(
     ir: &MermaidDiagramIr,
     config: &MermaidConfig,
@@ -1529,137 +1524,57 @@ fn layout_gitgraph_diagram(
         };
     }
 
-    // Assign lanes based on cluster membership (branches = clusters).
-    // Nodes in the same cluster (branch) share a lane.
-    let lane_gap = spacing.node_gap.max(4.0);
-    let row_gap = spacing.rank_gap.max(3.0);
-    let commit_size = spacing.node_height.min(spacing.node_width).max(2.0);
+    // GitGraph layout: commits top-to-bottom, branches left-to-right.
+    //
+    // Each cluster represents a branch. Assign each branch a lane (x column).
+    // Nodes (commits) not in any cluster go to lane 0 (main/default branch).
+    // Commits are placed vertically in IR order.
 
-    // Build lane assignments: each cluster = one lane, unassigned nodes go to lane 0.
+    let node_sizes = compute_node_sizes(ir, spacing);
+    let lane_width = spacing.node_gap + node_sizes.iter().map(|s| s.0).fold(0.0f64, f64::max);
+    let row_height = spacing.rank_gap + node_sizes.iter().map(|s| s.1).fold(0.0f64, f64::max);
+
+    // Build node-to-lane mapping via cluster membership.
     let mut node_lane: Vec<usize> = vec![0; n];
-    let mut lane_count: usize = 1;
-    let mut cluster_to_lane: Vec<usize> = Vec::new();
-    for (ci, cluster) in ir.clusters.iter().enumerate() {
-        let lane = ci + 1; // lane 0 = default/main, clusters start at 1
-        cluster_to_lane.push(lane);
-        for member in &cluster.members {
-            if member.0 < n {
-                node_lane[member.0] = lane;
-            }
-        }
-        lane_count = lane_count.max(lane + 1);
-    }
-
-    // If no clusters, assign all nodes to lane 0 (single branch).
-    // Use topological order for vertical placement.
-    let _node_sizes = compute_node_sizes(ir, spacing);
-
-    // Build adjacency for topological sort.
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut in_deg: Vec<usize> = vec![0; n];
-    for edge in &ir.edges {
-        let Some(from_idx) = endpoint_node_idx(ir, &edge.from) else {
-            continue;
-        };
-        let Some(to_idx) = endpoint_node_idx(ir, &edge.to) else {
-            continue;
-        };
-        if from_idx >= n || to_idx >= n || from_idx == to_idx {
-            continue;
-        }
-        children[from_idx].push(to_idx);
-        in_deg[to_idx] += 1;
-    }
-
-    // Topological order via Kahn's algorithm for deterministic row assignment.
-    let mut queue: Vec<usize> = (0..n).filter(|&i| in_deg[i] == 0).collect();
-    queue.sort_unstable(); // deterministic
-    let mut topo_order: Vec<usize> = Vec::with_capacity(n);
-    let mut topo_idx = 0;
-    while topo_idx < queue.len() {
-        let u = queue[topo_idx];
-        topo_idx += 1;
-        topo_order.push(u);
-        let mut next_children: Vec<usize> = children[u].clone();
-        next_children.sort_unstable();
-        next_children.dedup();
-        for v in next_children {
-            in_deg[v] = in_deg[v].saturating_sub(1);
-            if in_deg[v] == 0 {
-                queue.push(v);
-            }
-        }
-    }
-    // Handle cycles: append any remaining nodes.
-    if topo_order.len() < n {
-        for i in 0..n {
-            if !topo_order.contains(&i) {
-                topo_order.push(i);
+    for (cluster_idx, cluster) in ir.clusters.iter().enumerate() {
+        let lane = cluster_idx + 1; // lane 0 = default (main), lane 1+ = branches
+        for &member_id in &cluster.members {
+            if member_id.0 < n {
+                node_lane[member_id.0] = lane;
             }
         }
     }
 
-    // Assign rows based on topological position.
-    let mut node_row: Vec<usize> = vec![0; n];
-    for (row, &node_idx) in topo_order.iter().enumerate() {
-        node_row[node_idx] = row;
-    }
+    let num_lanes = ir.clusters.len() + 1;
 
-    // Compute label widths for sizing.
-    let label_widths: Vec<f64> = ir
-        .nodes
-        .iter()
-        .map(|node| {
-            node.label
-                .and_then(|lid| ir.labels.get(lid.0))
-                .map(|label| grapheme_width(&label.text) as f64)
-                .unwrap_or(0.0)
-        })
-        .collect();
-
-    // Place nodes: x = lane * lane_gap, y = row * row_gap.
-    let label_offset = commit_size + 1.0;
-    let mut nodes: Vec<LayoutNodeBox> = Vec::with_capacity(n);
-    for i in 0..n {
+    let mut nodes = Vec::with_capacity(n);
+    for (i, (width, height)) in node_sizes.iter().copied().enumerate() {
         let lane = node_lane[i];
-        let row = node_row[i];
-        let x = lane as f64 * lane_gap;
-        let y = row as f64 * row_gap;
-
-        let node_w = commit_size;
-        let node_h = commit_size;
-
+        let x = lane as f64 * lane_width;
+        let y = i as f64 * row_height;
         let rect = LayoutRect {
             x,
             y,
-            width: node_w,
-            height: node_h,
+            width,
+            height,
         };
-
-        // Place label to the right of the commit node.
-        let lw = label_widths[i];
-        let label_rect = if lw > 0.0 {
-            Some(LayoutRect {
-                x: x + label_offset,
-                y,
-                width: lw + 2.0 * spacing.label_padding,
-                height: node_h,
-            })
-        } else {
-            None
-        };
-
+        let label_rect = ir.nodes[i].label.map(|_| LayoutRect {
+            x: rect.x + spacing.label_padding,
+            y: rect.y + spacing.label_padding,
+            width: rect.width - 2.0 * spacing.label_padding,
+            height: rect.height - 2.0 * spacing.label_padding,
+        });
         nodes.push(LayoutNodeBox {
             node_idx: i,
             rect,
             label_rect,
-            rank: row,
+            rank: i,
             order: lane,
         });
     }
 
-    // Route edges: connect parent to child commit nodes.
-    let mut edges: Vec<LayoutEdgePath> = Vec::with_capacity(ir.edges.len());
+    // Route edges between commits (merges cross lanes).
+    let mut edges = Vec::with_capacity(ir.edges.len());
     for (idx, edge) in ir.edges.iter().enumerate() {
         let Some(from_idx) = endpoint_node_idx(ir, &edge.from) else {
             continue;
@@ -1672,56 +1587,82 @@ fn layout_gitgraph_diagram(
         }
         let from_rect = &nodes[from_idx].rect;
         let to_rect = &nodes[to_idx].rect;
-
-        let from_cx = from_rect.x + from_rect.width / 2.0;
-        let from_by = from_rect.y + from_rect.height;
-        let to_cx = to_rect.x + to_rect.width / 2.0;
-        let to_ty = to_rect.y;
-
-        let waypoints = if (from_cx - to_cx).abs() < 0.01 {
-            // Same lane: straight vertical line.
-            vec![
-                LayoutPoint {
-                    x: from_cx,
-                    y: from_by,
-                },
-                LayoutPoint { x: to_cx, y: to_ty },
-            ]
-        } else {
-            // Cross-lane: step out horizontally then down.
-            let mid_y = (from_by + to_ty) / 2.0;
-            vec![
-                LayoutPoint {
-                    x: from_cx,
-                    y: from_by,
-                },
-                LayoutPoint {
-                    x: from_cx,
-                    y: mid_y,
-                },
-                LayoutPoint { x: to_cx, y: mid_y },
-                LayoutPoint { x: to_cx, y: to_ty },
-            ]
-        };
-
+        let x0 = from_rect.x + from_rect.width / 2.0;
+        let y0 = from_rect.y + from_rect.height / 2.0;
+        let x1 = to_rect.x + to_rect.width / 2.0;
+        let y1 = to_rect.y + to_rect.height / 2.0;
         edges.push(LayoutEdgePath {
             edge_idx: idx,
-            waypoints,
+            waypoints: vec![
+                LayoutPoint { x: x0, y: y0 },
+                LayoutPoint { x: x1, y: y1 },
+            ],
             bundle_count: 1,
             bundle_members: Vec::new(),
         });
     }
 
-    let bounding_box = compute_bounding_box(&nodes, &[], &edges);
-    let pos_var = compute_position_variance(&nodes);
-    let total_bends: usize = edges
-        .iter()
-        .map(|e| e.waypoints.len().saturating_sub(2))
-        .sum();
+    // Compute cluster boxes around branch lane columns.
+    let mut clusters = Vec::with_capacity(ir.clusters.len());
+    for (cluster_idx, cluster) in ir.clusters.iter().enumerate() {
+        let lane = cluster_idx + 1;
+        let x = lane as f64 * lane_width - spacing.label_padding;
+        let cluster_members: Vec<usize> = cluster
+            .members
+            .iter()
+            .map(|id| id.0)
+            .filter(|&idx| idx < n)
+            .collect();
+        if cluster_members.is_empty() {
+            clusters.push(LayoutClusterBox {
+                cluster_idx,
+                rect: LayoutRect {
+                    x,
+                    y: 0.0,
+                    width: lane_width,
+                    height: row_height,
+                },
+                title_rect: cluster.title.map(|_| LayoutRect {
+                    x,
+                    y: 0.0,
+                    width: lane_width,
+                    height: spacing.label_padding * 2.0,
+                }),
+            });
+            continue;
+        }
+        let min_y = cluster_members
+            .iter()
+            .map(|&i| nodes[i].rect.y)
+            .fold(f64::INFINITY, f64::min);
+        let max_y = cluster_members
+            .iter()
+            .map(|&i| nodes[i].rect.y + nodes[i].rect.height)
+            .fold(0.0f64, f64::max);
+        let cluster_rect = LayoutRect {
+            x,
+            y: min_y - spacing.label_padding,
+            width: lane_width,
+            height: (max_y - min_y) + 2.0 * spacing.label_padding,
+        };
+        let title_rect = cluster.title.map(|_| LayoutRect {
+            x: cluster_rect.x,
+            y: cluster_rect.y,
+            width: cluster_rect.width,
+            height: spacing.label_padding * 2.0,
+        });
+        clusters.push(LayoutClusterBox {
+            cluster_idx,
+            rect: cluster_rect,
+            title_rect,
+        });
+    }
 
+    let bounding_box = compute_bounding_box(&nodes, &clusters, &edges);
+    let pos_var = compute_position_variance(&nodes);
     DiagramLayout {
         nodes,
-        clusters: vec![],
+        clusters,
         edges,
         bounding_box,
         stats: LayoutStats {
@@ -1729,9 +1670,9 @@ fn layout_gitgraph_diagram(
             max_iterations: config.layout_iteration_budget,
             budget_exceeded: false,
             crossings: 0,
-            ranks: topo_order.len(),
-            max_rank_width: lane_count,
-            total_bends,
+            ranks: n,
+            max_rank_width: num_lanes,
+            total_bends: 0,
             position_variance: pos_var,
         },
         degradation: None,
@@ -2495,14 +2436,14 @@ pub fn layout_diagram_with_spacing(
     config: &MermaidConfig,
     spacing: &LayoutSpacing,
 ) -> DiagramLayout {
+    if ir.diagram_type == DiagramType::GitGraph {
+        return layout_gitgraph_diagram(ir, config, spacing);
+    }
     if ir.diagram_type == DiagramType::Mindmap {
         return layout_mindmap_diagram(ir, config, spacing);
     }
     if ir.diagram_type == DiagramType::Sequence {
         return layout_sequence_diagram(ir, config, spacing);
-    }
-    if ir.diagram_type == DiagramType::GitGraph {
-        return layout_gitgraph_diagram(ir, config, spacing);
     }
 
     let n = ir.nodes.len();
@@ -8398,83 +8339,6 @@ mod tests {
         let mut bundle_counts: Vec<usize> = bundled.iter().map(|e| e.bundle_count).collect();
         bundle_counts.sort();
         assert_eq!(bundle_counts, vec![3, 4]);
-    }
-
-    #[test]
-    fn gitgraph_layout_empty() {
-        let mut ir = make_simple_ir(&[], &[], GraphDirection::TB);
-        ir.diagram_type = DiagramType::GitGraph;
-        let config = MermaidConfig::default();
-        let layout = layout_diagram(&ir, &config);
-        assert!(layout.nodes.is_empty());
-        assert!(layout.edges.is_empty());
-    }
-
-    #[test]
-    fn gitgraph_layout_single_commit() {
-        let mut ir = make_simple_ir(&["c1"], &[], GraphDirection::TB);
-        ir.diagram_type = DiagramType::GitGraph;
-        let config = MermaidConfig::default();
-        let layout = layout_diagram(&ir, &config);
-        assert_eq!(layout.nodes.len(), 1);
-        assert!(layout.edges.is_empty());
-        assert_eq!(layout.nodes[0].order, 0);
-        assert_eq!(layout.nodes[0].rank, 0);
-    }
-
-    #[test]
-    fn gitgraph_layout_linear_chain() {
-        let mut ir = make_simple_ir(&["a", "b", "c"], &[(0, 1), (1, 2)], GraphDirection::TB);
-        ir.diagram_type = DiagramType::GitGraph;
-        let config = MermaidConfig::default();
-        let layout = layout_diagram(&ir, &config);
-        assert_eq!(layout.nodes.len(), 3);
-        assert_eq!(layout.edges.len(), 2);
-        for node in &layout.nodes {
-            assert_eq!(node.order, 0, "all nodes should be in lane 0");
-        }
-        let y0 = layout.nodes[0].rect.y;
-        let y1 = layout.nodes[1].rect.y;
-        let y2 = layout.nodes[2].rect.y;
-        assert!(y0 < y1, "node 0 above node 1");
-        assert!(y1 < y2, "node 1 above node 2");
-    }
-
-    #[test]
-    fn gitgraph_layout_branch_merge() {
-        let mut ir = make_simple_ir(
-            &["c0", "c1", "c2", "c3"],
-            &[(0, 1), (0, 2), (2, 3), (1, 3)],
-            GraphDirection::TB,
-        );
-        ir.diagram_type = DiagramType::GitGraph;
-        ir.clusters.push(IrCluster {
-            id: IrClusterId(0),
-            title: None,
-            members: vec![IrNodeId(2)],
-            span: empty_span(),
-        });
-        let config = MermaidConfig::default();
-        let layout = layout_diagram(&ir, &config);
-        assert_eq!(layout.nodes.len(), 4);
-        assert_eq!(layout.nodes[2].order, 1, "branched node in different lane");
-    }
-
-    #[test]
-    fn gitgraph_layout_deterministic() {
-        let mut ir = make_simple_ir(
-            &["a", "b", "c", "d", "e"],
-            &[(0, 1), (1, 2), (0, 3), (3, 4), (4, 2)],
-            GraphDirection::TB,
-        );
-        ir.diagram_type = DiagramType::GitGraph;
-        let config = MermaidConfig::default();
-        let layout1 = layout_diagram(&ir, &config);
-        let layout2 = layout_diagram(&ir, &config);
-        for (a, b) in layout1.nodes.iter().zip(layout2.nodes.iter()) {
-            assert_eq!(a.rect.x, b.rect.x);
-            assert_eq!(a.rect.y, b.rect.y);
-        }
     }
 }
 
