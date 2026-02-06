@@ -12552,10 +12552,7 @@ mod tests {
         assert!(service_count >= 3, "expected >= 3 services");
         assert_eq!(group_count, 0, "basic fixture should not declare groups");
         assert!(edge_count >= 2, "expected >= 2 edges");
-        assert_eq!(
-            raw_count, 0,
-            "architecture-beta should not fall back to Raw"
-        );
+        assert_eq!(raw_count, 0, "architecture-beta should not fall back to Raw");
 
         let config = MermaidConfig::default();
         let ir_parse = normalize_ast_to_ir(
