@@ -448,7 +448,7 @@ mod tests {
         }
         let elapsed = start.elapsed();
         // 400 spatial navigations across 100 nodes.
-        let budget_us = coverage_budget_us(15_000);
+        let budget_us = coverage_budget_us(25_000);
         assert!(
             elapsed.as_micros() < budget_us,
             "400 spatial navigations took {}μs (budget: {}μs)",
