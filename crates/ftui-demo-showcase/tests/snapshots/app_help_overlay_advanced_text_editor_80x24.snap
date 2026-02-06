@@ -11,11 +11,11 @@
 ││ 8  - Selectio║ [Esc]                       Dismiss top over ║              ││
 ││ 9  - Undo (Ct║l[m / F6]                    Toggle mouse cap ║              ││
 ││10  - Search (║t[Ctrl+P]                    Toggle performan ║              ││
-││11  - Replace ║C[Shift+A]                   Toggle A11y pane ║              ││
-││12            ║ [F12]                       Toggle debug ove ║              ││
-││13  Try editin║ this text or loading your own content.       ║              ││
-││14            ║ Editing                                      ║              ││
-││15  Unicode su║p[Ctrl+Z]                    Undo             ║              ││
+││11  - Replace ║C[Ctrl+I]                    Toggle evidence  ║              ││
+││12            ║ [Shift+A]                   Toggle A11y pane ║              ││
+││13  Try editin║ [F12]                       Toggle debug ove ║              ││
+││14            ║                                              ║              ││
+││15  Unicode su║pEditing                                      ║              ││
 ││16  - Emoji:  ║ ?? ??                                        ║              ││
 ││17  - CJK: ?? ╚═══════════Press ? or Esc to close════════════╝              ││
 │╰────────────────────────────────────────────────────────────────────────────╯│

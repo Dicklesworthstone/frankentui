@@ -13,22 +13,22 @@
 ││                      ║ [Esc]                    Dismiss top overlay                    ││Pal║tte: default          ││
 ││                      ║ [m / F6]                 Toggle mouse capture                   ││Nod║: -                   ││
 ││                      ║ [Ctrl+P]                 Toggle performance HUD                 ││Epo║h: a0/l0/r0           ││
-││                      ║ [Shift+A]                Toggle A11y panel                      ││VP:║auto                  ││
-││                      ║ [F12]                    Toggle debug overlay                   ││   ║                      ││
-││                      ║            ⢀⣀⣤⣴⣶⣿⣿⣿⣿⣿⣿⣿⣿⣶⣦⣤⣀⣀                                   ││Par║e: -                  ││
-││                      ║ Editing⣤⣶⣶⣿⣿⣿⣿  Decision  ⣿⣿⣿⣿⣷⣶⣤⣄⡀                             ││Lay║ut: -                 ││
-││                      ║ [Ctrl+Z]                 Undo⠿⠛⠋⠉⠁                              ││Ren║er: -                 ││
+││                      ║ [Ctrl+I]                 Toggle evidence inspector              ││VP:║auto                  ││
+││                      ║ [Shift+A]                Toggle A11y panel                      ││   ║                      ││
+││                      ║ [F12]                    Toggle debug overlay                   ││Par║e: -                  ││
+││                      ║      ⢀⣠⣤⣶⣶⣿⣿⣿⣿  Decision  ⣿⣿⣿⣿⣷⣶⣤⣄⡀                             ││Lay║ut: -                 ││
+││                      ║ Editing⠉⠙⠛⠻⠿⣿⣿            ⣿⣿⠿⠿⠛⠋⠉⠁                              ││Ren║er: -                 ││
+││                      ║ [Ctrl+Z]                 Undo                                   ││   ║                      ││
 ││                      ║ [Ctrl+Y / Ctrl+Shift+Z]  Redo                                   ││   ║                      ││
-││                      ║              ⣀⣀⠤⠤⠒⠒⠉⠉⠑⠒⠢⠤⢄⣀⡀                                    ││   ║                      ││
-││                      ║ Global⣀⠤⠤⠒⠒⠉⠉    Yes     No⠈⠉⠑⠒⠢⠤⢄⣀⣦⡀                           ││Cac║e: 0/0                ││
-││            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿[Ctrl+T]                 Cycle color theme⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ││Las║: MISS                ││
+││                      ║     ⣠⣆⣀⠤⠤⠒⠒⠉⠉    Yes     No⠈⠉⠑⠒⠢⠤⢄⣀⣦⡀                           ││Cac║e: 0/0                ││
+││            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿Global⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿    ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ││Las║: MISS                ││
+││            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿[Ctrl+T]                 Cycle color theme⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ││   ║                      ││
 ││            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿[H/M/L]                  A11y: high contrast, reduced motion, large  ║                      ││
 ││            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿[Ctrl+1..6]              Palette: filter by category            ││   ║                      ││
-││            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿[Ctrl+0]                 Palette: clear category filter         ││   ║                      ││
-││            ⠘⠛⠛⠛⠛⠛⠛⠛⠛⠛║⠛[Ctrl+F]                 Palette: toggle favorite⠛⠛⠃            ││   ║                      ││
+││            ⠘⠛⠛⠛⠛⠛⠛⠛⠛⠛║⠛[Ctrl+0]                 Palette: clear category filter         ││   ║                      ││
+││                      ║ [Ctrl+F]                 Palette: toggle favorite               ││   ║                      ││
 ││                      ║ [Ctrl+Shift+F]           Palette: favorites only                ││   ║                      ││
 ││                      ║ [Ctrl+C]                 Quit application                       ││   ║                      ││
-││                      ║      ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││   ║                      ││
 ││                      ║ Categories: Tour Core Visuals Interact Text Systems             ││   ║                      ││
 ││                      ║      ⢸⣿⣿⣿⣿⣿⣿⣿⣿            ⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││   ║                      ││
 ││                      ╚═══════════════════════Press ? or Esc to close════════════════════════╝                      ││

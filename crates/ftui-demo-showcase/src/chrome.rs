@@ -1475,6 +1475,18 @@ mod tests {
                 .any(|e| e.key == "[m / F6]" && e.desc.contains("mouse")),
             "expected [m / F6] mouse capture entry, got: {entries:?}"
         );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.key == "[Ctrl+I]" && e.desc.contains("evidence")),
+            "expected [Ctrl+I] global evidence inspector entry, got: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.key == "[Ctrl+P]" && e.desc.contains("performance")),
+            "expected [Ctrl+P] global performance HUD entry, got: {entries:?}"
+        );
     }
 
     #[test]

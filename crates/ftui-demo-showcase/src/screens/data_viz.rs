@@ -994,4 +994,45 @@ mod tests {
         assert_ne!(c1, PackedRgba::TRANSPARENT);
         assert_ne!(c2, PackedRgba::TRANSPARENT);
     }
+
+    #[test]
+    fn space_pauses_animation() {
+        let mut screen = DataViz::new();
+        assert!(!screen.paused);
+        screen.update(&press(KeyCode::Char(' ')));
+        assert!(screen.paused);
+        // Tick should be no-op when paused
+        let tick_before = screen.tick_count;
+        screen.tick(999);
+        assert_eq!(screen.tick_count, tick_before);
+        // Unpause
+        screen.update(&press(KeyCode::Char(' ')));
+        assert!(!screen.paused);
+        screen.tick(999);
+        assert_eq!(screen.tick_count, 999);
+    }
+
+    #[test]
+    fn r_resets_chart_data() {
+        let mut screen = DataViz::new();
+        screen.tick(100);
+        let tick_before_reset = screen.tick_count;
+        assert!(tick_before_reset > 30);
+        screen.update(&press(KeyCode::Char('r')));
+        assert_eq!(
+            screen.tick_count, 30,
+            "Reset should restore initial tick count"
+        );
+    }
+
+    #[test]
+    fn keybindings_has_at_least_three() {
+        let screen = DataViz::new();
+        let bindings = screen.keybindings();
+        assert!(
+            bindings.len() >= 3,
+            "DataViz should have at least 3 keybindings, got {}",
+            bindings.len()
+        );
+    }
 }

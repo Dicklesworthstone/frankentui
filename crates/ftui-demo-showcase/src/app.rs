@@ -1262,6 +1262,18 @@ impl ScreenStates {
         }
     }
 
+    /// Whether the given screen is currently consuming text input.
+    fn consumes_text_input(&self, id: ScreenId) -> bool {
+        use screens::Screen;
+        match id {
+            ScreenId::FormsInput => self.forms_input.consumes_text_input(),
+            ScreenId::AdvancedTextEditor => self.advanced_text_editor.consumes_text_input(),
+            ScreenId::VirtualizedSearch => self.virtualized_search.consumes_text_input(),
+            ScreenId::LogSearch => self.log_search.consumes_text_input(),
+            _ => false,
+        }
+    }
+
     /// Forward a tick to the active screen and always tick performance_hud.
     ///
     /// Only the active screen receives tick updates for animations/data.
@@ -3397,15 +3409,38 @@ impl AppModel {
                     ..
                 }) = &event
                 {
-                    // Esc dismisses the help overlay when visible.
-                    if self.help_visible && matches!(code, KeyCode::Escape) {
-                        self.help_visible = false;
-                        return Cmd::None;
+                    // Esc closes the topmost visible overlay (reverse render
+                    // order so the last-painted layer is dismissed first).
+                    if matches!(code, KeyCode::Escape) {
+                        // Evidence ledger (above perf HUD)
+                        if self.evidence_ledger_visible {
+                            self.evidence_ledger_visible = false;
+                            return Cmd::None;
+                        }
+                        // Performance HUD
+                        if self.perf_hud_visible {
+                            self.perf_hud_visible = false;
+                            return Cmd::None;
+                        }
+                        // Debug overlay
+                        if self.debug_visible {
+                            self.debug_visible = false;
+                            return Cmd::None;
+                        }
+                        // Help overlay
+                        if self.help_visible {
+                            self.help_visible = false;
+                            return Cmd::None;
+                        }
+                        // A11y panel
+                        if self.a11y_panel_visible {
+                            return self.handle_msg(AppMsg::ToggleA11yPanel, source);
+                        }
                     }
 
                     if self.a11y_panel_visible {
                         match (*code, *modifiers) {
-                            (KeyCode::Char('A'), Modifiers::SHIFT) | (KeyCode::Escape, _) => {
+                            (KeyCode::Char('A'), Modifiers::SHIFT) => {
                                 return self.handle_msg(AppMsg::ToggleA11yPanel, source);
                             }
                             (KeyCode::Char('H'), Modifiers::SHIFT) => {
@@ -3436,9 +3471,13 @@ impl AppModel {
                         }
                     }
 
+                    let text_input_active = self.screens.consumes_text_input(self.display_screen());
+
                     match (*code, *modifiers) {
-                        // Quit
-                        (KeyCode::Char('q'), Modifiers::NONE) => return Cmd::Quit,
+                        // Quit (suppressed when a text field has focus)
+                        (KeyCode::Char('q'), Modifiers::NONE) if !text_input_active => {
+                            return Cmd::Quit;
+                        }
                         (KeyCode::Char('c'), Modifiers::CTRL) => return Cmd::Quit,
                         // Command palette (Ctrl+K)
                         (KeyCode::Char('k'), Modifiers::CTRL) => {
@@ -3454,8 +3493,8 @@ impl AppModel {
                             );
                             return Cmd::None;
                         }
-                        // Help
-                        (KeyCode::Char('?'), _) => {
+                        // Help (suppressed when a text field has focus)
+                        (KeyCode::Char('?'), _) if !text_input_active => {
                             self.help_visible = !self.help_visible;
                             return Cmd::None;
                         }
@@ -3472,6 +3511,10 @@ impl AppModel {
                         (KeyCode::Char('p'), Modifiers::CTRL) => {
                             self.perf_hud_visible = !self.perf_hud_visible;
                             return Cmd::None;
+                        }
+                        // Inspector / evidence ledger (Ctrl+I)
+                        (KeyCode::Char('i'), Modifiers::CTRL) => {
+                            return self.handle_msg(AppMsg::ToggleEvidenceLedger, source);
                         }
                         // Undo (Ctrl+Z)
                         (KeyCode::Char('z'), Modifiers::CTRL) => {
@@ -3511,8 +3554,8 @@ impl AppModel {
                         (KeyCode::Char('t'), Modifiers::CTRL) => {
                             return self.handle_msg(AppMsg::CycleTheme, source);
                         }
-                        // Mouse capture toggle
-                        (KeyCode::Char('m'), Modifiers::NONE) => {
+                        // Mouse capture toggle (suppressed when a text field has focus)
+                        (KeyCode::Char('m'), Modifiers::NONE) if !text_input_active => {
                             return self.handle_msg(AppMsg::ToggleMouseCapture, source);
                         }
                         // Tab cycling (Tab/BackTab, or Shift+H/Shift+L for Vim users)
@@ -3548,8 +3591,8 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        // Number keys for direct screen access
-                        (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE) => {
+                        // Number keys for direct screen access (suppressed when text field has focus)
+                        (KeyCode::Char(ch @ '0'..='9'), Modifiers::NONE) if !text_input_active => {
                             if let Some(id) = ScreenId::from_number_key(ch) {
                                 if self.tour.is_active() {
                                     self.stop_tour(false, "number_key");
@@ -3745,7 +3788,7 @@ enum UndoAction {
 
 impl AppModel {
     /// Gather keybindings from the current screen for the help overlay.
-    fn current_screen_keybindings(&self) -> Vec<crate::chrome::HelpEntry> {
+    pub fn current_screen_keybindings(&self) -> Vec<crate::chrome::HelpEntry> {
         use screens::Screen;
         let mut entries = match self.display_screen() {
             ScreenId::GuidedTour => vec![
@@ -6808,5 +6851,125 @@ mod tests {
                 "Clicking overlay close should dismiss help"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Esc overlay priority tests (bd-iuvb.17.5)
+    // -----------------------------------------------------------------------
+
+    fn esc_event() -> Event {
+        Event::Key(KeyEvent {
+            code: KeyCode::Escape,
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        })
+    }
+
+    #[test]
+    fn esc_closes_evidence_ledger_first() {
+        let mut app = AppModel::new();
+        app.evidence_ledger_visible = true;
+        app.perf_hud_visible = true;
+
+        app.update(AppMsg::from(esc_event()));
+
+        assert!(
+            !app.evidence_ledger_visible,
+            "Esc should close evidence ledger (topmost)"
+        );
+        assert!(
+            app.perf_hud_visible,
+            "Perf HUD should remain open (lower layer)"
+        );
+    }
+
+    #[test]
+    fn esc_closes_perf_hud_when_topmost() {
+        let mut app = AppModel::new();
+        app.perf_hud_visible = true;
+        app.help_visible = true;
+
+        app.update(AppMsg::from(esc_event()));
+
+        assert!(
+            !app.perf_hud_visible,
+            "Esc should close perf HUD (topmost after evidence)"
+        );
+        assert!(app.help_visible, "Help should remain open (lower layer)");
+    }
+
+    #[test]
+    fn esc_closes_debug_overlay_when_topmost() {
+        let mut app = AppModel::new();
+        app.debug_visible = true;
+
+        app.update(AppMsg::from(esc_event()));
+
+        assert!(!app.debug_visible, "Esc should close debug overlay");
+    }
+
+    #[test]
+    fn esc_closes_help_when_topmost() {
+        let mut app = AppModel::new();
+        app.help_visible = true;
+
+        app.update(AppMsg::from(esc_event()));
+
+        assert!(!app.help_visible, "Esc should close help overlay");
+    }
+
+    #[test]
+    fn esc_cascades_through_all_overlays() {
+        let mut app = AppModel::new();
+        app.evidence_ledger_visible = true;
+        app.perf_hud_visible = true;
+        app.debug_visible = true;
+        app.help_visible = true;
+
+        // First Esc: evidence ledger
+        app.update(AppMsg::from(esc_event()));
+        assert!(!app.evidence_ledger_visible);
+        assert!(app.perf_hud_visible);
+
+        // Second Esc: perf HUD
+        app.update(AppMsg::from(esc_event()));
+        assert!(!app.perf_hud_visible);
+        assert!(app.debug_visible);
+
+        // Third Esc: debug
+        app.update(AppMsg::from(esc_event()));
+        assert!(!app.debug_visible);
+        assert!(app.help_visible);
+
+        // Fourth Esc: help
+        app.update(AppMsg::from(esc_event()));
+        assert!(!app.help_visible);
+    }
+
+    // -----------------------------------------------------------------------
+    // Ctrl+I evidence inspector shortcut test (bd-iuvb.17.5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ctrl_i_toggles_evidence_ledger() {
+        let mut app = AppModel::new();
+        assert!(!app.evidence_ledger_visible);
+
+        let ctrl_i = Event::Key(KeyEvent {
+            code: KeyCode::Char('i'),
+            modifiers: Modifiers::CTRL,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(ctrl_i.clone()));
+        assert!(
+            app.evidence_ledger_visible,
+            "Ctrl+I should open evidence ledger"
+        );
+
+        app.update(AppMsg::from(ctrl_i));
+        assert!(
+            !app.evidence_ledger_visible,
+            "Ctrl+I should close evidence ledger"
+        );
     }
 }

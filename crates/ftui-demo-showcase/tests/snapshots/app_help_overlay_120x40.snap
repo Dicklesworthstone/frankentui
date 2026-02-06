@@ -13,22 +13,22 @@
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[Esc]                    Dismiss top overlayDebug, Clone)]          │║                      ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[m / F6]                 Toggle mouse capture                       │║                      ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[Ctrl+P]                 Toggle performance HUD),                   │║                      ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[Shift+A]                Toggle A11y panelize { w: u16, h: u16 },   │║                      ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[F12]                    Toggle debug overlayring),                 │║CPU ██████░░░░░░░  46%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│                                 ││    Quit,                        │║MEM █████░░░░░░░░  41%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│Editing                          ││}                                │║NET █░░░░░░░░░░░░   8%││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[Ctrl+Z]                 Undo    ││                                 │║FRM                n/a││
-││Click → Visual Effects║│[Ctrl+Y / Ctrl+Shift+Z]  Redo    ││Click → Code ExplorerSync + 'stat│║Click → Performance163││
-│╰──────────────────────║╰─────────────────────────────────╯╰─────────────────────────────────╯║──────────────────────╯│
-│╭───Text FX · 3-Up (1/2║)Global──────────────────Activity───────────────────╮╭───────Markdown ║ Streaming… 0%────────╮│
-││Sample 1 of 3 · 3-Up s║a[Ctrl+T]                 Cycle color theme         ││▌               ║                      ││
-││1 · None · S1         ║ [H/M/L]                  A11y: high contrast, reduced motion, large  ║                      ││
-││# FX Lab · Determinist║c[Ctrl+1..6]              Palette: filter by category│                ║                      ││
-││> *"Render truth, not ║i[Ctrl+0]                 Palette: clear category filter              ║                      ││
-││2 · FadeIn · S2       ║ [Ctrl+F]                 Palette: toggle favorite  ││                ║                      ││
-││## GFM Stress · Ledger║ [Ctrl+Shift+F]           Palette: favorites only   ││                ║                      ││
-││1. **Bold** + _italic_║+[Ctrl+C]                 Quit application          ││                ║                      ││
-││3 · FadeOut · S3      ║     ││                                             ││                ║                      ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[Ctrl+I]                 Toggle evidence inspector u16, h: u16 },   │║                      ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[Shift+A]                Toggle A11y panel(String),                 │║CPU ██████░░░░░░░  46%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│[F12]                    Toggle debug overlay                       │║MEM █████░░░░░░░░  41%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│                                 ││}                                │║NET █░░░░░░░░░░░░   8%││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║│Editing                          ││                                 │║FRM                n/a││
+││Click → Visual Effects║│[Ctrl+Z]                 Undo    ││Click → Code ExplorerSync + 'stat│║Click → Performance163││
+│╰──────────────────────║╰[Ctrl+Y / Ctrl+Shift+Z]  Redo────╯╰─────────────────────────────────╯║──────────────────────╯│
+│╭───Text FX · 3-Up (1/2║)────╮╭──────────────────Activity───────────────────╮╭───────Markdown ║ Streaming… 0%────────╮│
+││Sample 1 of 3 · 3-Up s║aGlobalSEV TIME  COMP  MESSAGE                      ││▌               ║                      ││
+││1 · None · S1         ║ [Ctrl+T]                 Cycle color theme core 3  ││                ║                      ││
+││# FX Lab · Determinist║c[H/M/L]                  A11y: high contrast, reduced motion, large  ║                      ││
+││> *"Render truth, not ║i[Ctrl+1..6]              Palette: filter by category│                ║                      ││
+││2 · FadeIn · S2       ║ [Ctrl+0]                 Palette: clear category filter              ║                      ││
+││## GFM Stress · Ledger║ [Ctrl+F]                 Palette: toggle favorite  ││                ║                      ││
+││1. **Bold** + _italic_║+[Ctrl+Shift+F]           Palette: favorites only   ││                ║                      ││
+││3 · FadeOut · S3      ║ [Ctrl+C]                 Quit application          ││                ║                      ││
 ││### Runtime Ledger · M║xCategories: Tour Core Visuals Interact Text Systems││                ║                      ││
 ││- [x] Tasks           ║     ││                                             ││                ║                      ││
 ││- [ ] Benchmarks      ╚═══════════════════════Press ? or Esc to close════════════════════════╝                      ││

@@ -11,11 +11,11 @@
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿[Esc]                    Dismiss top overlay─║nfo───────────╮│
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿║⣿[m / F6]                 Toggle mouse capturM║NAL FPS:0     ││
 ││Click → Visual║E[Ctrl+P]                 Toggle performance e║formance      ││
-│╰──────────────║─[Shift+A]                Toggle A11y panel───║──────────────╯│
-│╭Text FX · 2-Up║([F12]                    Toggle debug overlaw║ · Streaming…╮ │
-││Sample 1 of 3 ║ 2-Up ││SEV TIME  COMP  MESSAGE      ││▌      ║             │ │
-││1 · None · S1 ║ Editing INFO  00:02   CPU spike dete││       ║             │ │
-││2 · FadeIn · S║ [Ctrl+Z]                 Undo       ││       ║             │ │
+│╰──────────────║─[Ctrl+I]                 Toggle evidence ins─║──────────────╯│
+│╭Text FX · 2-Up║([Shift+A]                Toggle A11y paneldow║ · Streaming…╮ │
+││Sample 1 of 3 ║ [F12]                    Toggle debug overla ║             │ │
+││1 · None · S1 ║      ││ INFO  00:02   CPU spike dete││       ║             │ │
+││2 · FadeIn · S║ Editing                             ││       ║             │ │
 ││## GFM Stress ║ Ledge││                             ││       ║             │ │
 ││e: next set · ╚═══════════Press ? or Esc to close════════════╝Markdown     │ │
 │╰─────────────────────╯╰─────────────────────────────╯╰─────────────────────╯ │

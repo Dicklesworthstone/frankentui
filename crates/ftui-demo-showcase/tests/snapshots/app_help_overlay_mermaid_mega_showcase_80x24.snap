@@ -11,11 +11,11 @@
 ││              ║ [Esc]                    Dismiss top overlay ║              ││
 ││              ║ [m / F6]                 Toggle mouse captur ║              ││
 ││              ║ [Ctrl+P]                 Toggle performance  ║              ││
+││              ║ [Ctrl+I]                 Toggle evidence ins ║              ││
 ││              ║ [Shift+A]                Toggle A11y panel   ║              ││
 ││              ║ [F12]                    Toggle debug overla ║              ││
-││              ║            ⠸⠿⠿⠿⠿⢿⡿⠿⠿⢿⠇⠸⢿⠿⠿⠿⣿⠿⠿⠿⠿⠇            ║              ││
-││              ║ Editing          ⣬⣭⣵⣾⣷⣴⣿⣶⣭⣭                  ║              ││
-││              ║ [Ctrl+Z]                 Undo                ║              ││
+││              ║                  ⣬⣭⣵⣾⣷⣴⣿⣶⣭⣭                  ║              ││
+││              ║ Editing          ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                  ║              ││
 ││              ║                                              ║              ││
 │└──────────────╚═══════════Press ? or Esc to close════════════╝──────────────┘│
 │NORMAL  j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:si│

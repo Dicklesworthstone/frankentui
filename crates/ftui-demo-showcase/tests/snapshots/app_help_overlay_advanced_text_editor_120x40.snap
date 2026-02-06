@@ -13,22 +13,22 @@
 ││10  - Search (Ctrl+F) ║i[Esc]                       Dismiss top overlay                      ║                      ││
 ││11  - Replace (Ctrl+H)║s[m / F6]                    Toggle mouse capture                     ║                      ││
 ││12                    ║ [Ctrl+P]                    Toggle performance HUD                   ║                      ││
-││13  Try editing this t║x[Shift+A]                   Toggle A11y panel                        ║                      ││
-││14                    ║ [F12]                       Toggle debug overlay                     ║                      ││
-││15  Unicode support:  ║                                                                      ║                      ││
-││16  - Emoji: ?? ?? ?? ║ Editing                                                              ║                      ││
-││17  - CJK: ????????   ║ [Ctrl+Z]                    Undo                                     ║                      ││
-││18  - Accented: café r║s[Ctrl+Y / Ctrl+Shift+Z]     Redo                                     ║                      ││
-││19                    ║                                                                      ║                      ││
-││20  The editor uses a ║oGlobala structure internally for efficient                           ║                      ││
-││21  operations on larg║ [Ctrl+T]                    Cycle color theme                        ║                      ││
-││22  and proper Unicode║h[H/M/L]                     A11y: high contrast, reduced motion, lar ║                      ││
-││23                    ║ [Ctrl+1..6]                 Palette: filter by category              ║                      ││
+││13  Try editing this t║x[Ctrl+I]                    Toggle evidence inspector                ║                      ││
+││14                    ║ [Shift+A]                   Toggle A11y panel                        ║                      ││
+││15  Unicode support:  ║ [F12]                       Toggle debug overlay                     ║                      ││
+││16  - Emoji: ?? ?? ?? ║                                                                      ║                      ││
+││17  - CJK: ????????   ║ Editing                                                              ║                      ││
+││18  - Accented: café r║s[Ctrl+Z]                    Undo                                     ║                      ││
+││19                    ║ [Ctrl+Y / Ctrl+Shift+Z]     Redo                                     ║                      ││
+││20  The editor uses a ║ope data structure internally for efficient                           ║                      ││
+││21  operations on larg║ Globals, with grapheme-aware cursor movement                         ║                      ││
+││22  and proper Unicode║h[Ctrl+T]                    Cycle color theme                        ║                      ││
+││23                    ║ [H/M/L]                     A11y: high contrast, reduced motion, lar ║                      ││
+││                      ║ [Ctrl+1..6]                 Palette: filter by category              ║                      ││
 ││                      ║ [Ctrl+0]                    Palette: clear category filter           ║                      ││
 ││                      ║ [Ctrl+F]                    Palette: toggle favorite                 ║                      ││
 ││                      ║ [Ctrl+Shift+F]              Palette: favorites only                  ║                      ││
 ││                      ║ [Ctrl+C]                    Quit application                         ║                      ││
-││                      ║                                                                      ║                      ││
 ││                      ║ Categories: Tour Core Visuals Interact Text Systems                  ║                      ││
 ││                      ║                                                                      ║                      ││
 ││                      ╚═══════════════════════Press ? or Esc to close════════════════════════╝                      ││
