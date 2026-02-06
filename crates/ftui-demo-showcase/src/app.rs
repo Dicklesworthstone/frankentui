@@ -6345,4 +6345,336 @@ mod tests {
         app.update(AppMsg::ToggleEvidenceLedger);
         assert!(!app.evidence_ledger_visible);
     }
+
+    // -----------------------------------------------------------------------
+    // Mouse dispatch regression tests (bd-iuvb.17.7 scope)
+    // -----------------------------------------------------------------------
+
+    /// Integration test: mouse click on status bar help toggle changes help_visible.
+    #[test]
+    fn mouse_status_bar_help_toggle_integration() {
+        let mut app = AppModel::new();
+        app.terminal_width = 200;
+        app.terminal_height = 40;
+        assert!(!app.help_visible, "Help should be off initially");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool);
+        app.view(&mut frame);
+
+        let status_y = 39u16;
+        let mut help_x = None;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = frame.hit_test(x, status_y) {
+                if id.id() == crate::chrome::STATUS_HELP_TOGGLE {
+                    help_x = Some(x);
+                    break;
+                }
+            }
+        }
+
+        if let Some(x) = help_x {
+            let down = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let up = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let _ = app.update(AppMsg::from(down));
+            let _ = app.update(AppMsg::from(up));
+            assert!(app.help_visible, "Help should be toggled on after click");
+        }
+    }
+
+    /// Integration test: mouse click on status bar debug toggle changes debug_visible.
+    #[test]
+    fn mouse_status_bar_debug_toggle_integration() {
+        let mut app = AppModel::new();
+        app.terminal_width = 200;
+        app.terminal_height = 40;
+        assert!(!app.debug_visible);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool);
+        app.view(&mut frame);
+
+        let status_y = 39u16;
+        let mut debug_x = None;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = frame.hit_test(x, status_y) {
+                if id.id() == crate::chrome::STATUS_DEBUG_TOGGLE {
+                    debug_x = Some(x);
+                    break;
+                }
+            }
+        }
+
+        if let Some(x) = debug_x {
+            let down = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let up = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let _ = app.update(AppMsg::from(down));
+            let _ = app.update(AppMsg::from(up));
+            assert!(app.debug_visible, "Debug should be toggled on after click");
+        }
+    }
+
+    /// Integration test: mouse click on status bar perf toggle changes perf_hud_visible.
+    #[test]
+    fn mouse_status_bar_perf_toggle_integration() {
+        let mut app = AppModel::new();
+        app.terminal_width = 200;
+        app.terminal_height = 40;
+        assert!(!app.perf_hud_visible);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool);
+        app.view(&mut frame);
+
+        let status_y = 39u16;
+        let mut perf_x = None;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = frame.hit_test(x, status_y) {
+                if id.id() == crate::chrome::STATUS_PERF_TOGGLE {
+                    perf_x = Some(x);
+                    break;
+                }
+            }
+        }
+
+        if let Some(x) = perf_x {
+            let down = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let up = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let _ = app.update(AppMsg::from(down));
+            let _ = app.update(AppMsg::from(up));
+            assert!(
+                app.perf_hud_visible,
+                "Perf HUD should be toggled on after click"
+            );
+        }
+    }
+
+    /// Integration test: scroll wheel on tab bar cycles screens.
+    #[test]
+    fn mouse_scroll_wheel_cycles_tabs() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+
+        let initial_screen = app.current_screen;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let scroll = Event::Mouse(ftui_core::event::MouseEvent::new(
+            ftui_core::event::MouseEventKind::ScrollDown,
+            60,
+            0,
+        ));
+        let _ = app.update(AppMsg::from(scroll));
+
+        assert_ne!(
+            app.current_screen, initial_screen,
+            "Scroll should cycle to next screen"
+        );
+    }
+
+    /// Integration test: scroll wheel up on tab bar cycles back.
+    #[test]
+    fn mouse_scroll_wheel_up_cycles_tabs_back() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+
+        app.update(AppMsg::NextScreen);
+        let second_screen = app.current_screen;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let scroll = Event::Mouse(ftui_core::event::MouseEvent::new(
+            ftui_core::event::MouseEventKind::ScrollUp,
+            60,
+            0,
+        ));
+        let _ = app.update(AppMsg::from(scroll));
+
+        assert_ne!(
+            app.current_screen, second_screen,
+            "Scroll up should cycle to previous screen"
+        );
+    }
+
+    /// Integration test: mouse double-toggle returns to original state.
+    #[test]
+    fn mouse_status_toggle_double_click_returns_to_original() {
+        let mut app = AppModel::new();
+        app.terminal_width = 200;
+        app.terminal_height = 40;
+        assert!(!app.help_visible);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool);
+        app.view(&mut frame);
+
+        let status_y = 39u16;
+        let mut help_x = None;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = frame.hit_test(x, status_y) {
+                if id.id() == crate::chrome::STATUS_HELP_TOGGLE {
+                    help_x = Some(x);
+                    break;
+                }
+            }
+        }
+
+        if let Some(x) = help_x {
+            // First click
+            let down = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let up = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let _ = app.update(AppMsg::from(down));
+            let _ = app.update(AppMsg::from(up));
+            assert!(app.help_visible);
+
+            // Re-render with help overlay shown
+            let mut pool2 = GraphemePool::new();
+            let mut frame2 = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool2);
+            app.view(&mut frame2);
+
+            // Second click
+            let down2 = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let up2 = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let _ = app.update(AppMsg::from(down2));
+            let _ = app.update(AppMsg::from(up2));
+            assert!(!app.help_visible, "Double-click should return to OFF");
+        }
+    }
+
+    /// Integration test: mouse capture toggle via status bar.
+    #[test]
+    fn mouse_capture_toggle_via_status_bar() {
+        let mut app = AppModel::new();
+        app.terminal_width = 200;
+        app.terminal_height = 40;
+        let initial_capture = app.mouse_capture_enabled;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool);
+        app.view(&mut frame);
+
+        let status_y = 39u16;
+        let mut mouse_x = None;
+        for x in 0..200u16 {
+            if let Some((id, _region, _data)) = frame.hit_test(x, status_y) {
+                if id.id() == crate::chrome::STATUS_MOUSE_TOGGLE {
+                    mouse_x = Some(x);
+                    break;
+                }
+            }
+        }
+
+        if let Some(x) = mouse_x {
+            let down = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let up = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+                x,
+                status_y,
+            ));
+            let _ = app.update(AppMsg::from(down));
+            let _ = app.update(AppMsg::from(up));
+            assert_ne!(
+                app.mouse_capture_enabled, initial_capture,
+                "Mouse capture should toggle"
+            );
+        }
+    }
+
+    /// Regression test: dispatch priority — overlay click when help visible
+    /// should dismiss help, not toggle status bar behind it.
+    #[test]
+    fn dispatch_priority_overlay_over_status_bar() {
+        let mut app = AppModel::new();
+        app.terminal_width = 200;
+        app.terminal_height = 40;
+        app.help_visible = true;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool);
+        app.view(&mut frame);
+
+        let mut close_pos = None;
+        for y in 0..40u16 {
+            for x in 0..200u16 {
+                if let Some((id, _region, _data)) = frame.hit_test(x, y) {
+                    if id.id() == crate::chrome::OVERLAY_HELP_CLOSE {
+                        close_pos = Some((x, y));
+                        break;
+                    }
+                }
+            }
+            if close_pos.is_some() {
+                break;
+            }
+        }
+
+        if let Some((x, y)) = close_pos {
+            let down = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Down(ftui_core::event::MouseButton::Left),
+                x,
+                y,
+            ));
+            let up = Event::Mouse(ftui_core::event::MouseEvent::new(
+                ftui_core::event::MouseEventKind::Up(ftui_core::event::MouseButton::Left),
+                x,
+                y,
+            ));
+            let _ = app.update(AppMsg::from(down));
+            let _ = app.update(AppMsg::from(up));
+            assert!(
+                !app.help_visible,
+                "Clicking overlay close should dismiss help"
+            );
+        }
+    }
 }
