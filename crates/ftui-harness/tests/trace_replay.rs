@@ -262,3 +262,298 @@ fn replay_trace_success_and_mismatch() {
         "unexpected error: {err}"
     );
 }
+
+fn write_full_buffer(
+    path: &Path,
+    width: u16,
+    height: u16,
+    cells: &[CellData],
+) -> std::io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(&width.to_le_bytes())?;
+    file.write_all(&height.to_le_bytes())?;
+    for cell in cells {
+        file.write_all(&[cell.kind])?;
+        match cell.kind {
+            0 | 3 => {}
+            1 => file.write_all(&cell.char_code.to_le_bytes())?,
+            2 => {
+                let len = u16::try_from(cell.grapheme.len()).unwrap_or(u16::MAX);
+                file.write_all(&len.to_le_bytes())?;
+                file.write_all(&cell.grapheme)?;
+            }
+            _ => {}
+        }
+        file.write_all(&cell.fg.to_le_bytes())?;
+        file.write_all(&cell.bg.to_le_bytes())?;
+        file.write_all(&cell.attrs.to_le_bytes())?;
+    }
+    Ok(())
+}
+
+#[test]
+fn replay_full_buffer_payload() {
+    let base_dir = unique_temp_dir();
+    let frames_dir = base_dir.join("frames");
+    fs::create_dir_all(&frames_dir).expect("create temp dirs");
+
+    let width = 2u16;
+    let height = 1u16;
+
+    let cells = vec![
+        CellData {
+            kind: 1,
+            char_code: 'H' as u32,
+            ..Default::default()
+        },
+        CellData {
+            kind: 1,
+            char_code: 'i' as u32,
+            ..Default::default()
+        },
+    ];
+    let checksum = checksum_grid(&cells);
+
+    let payload_path = frames_dir.join("frame_0000.bin");
+    write_full_buffer(&payload_path, width, height, &cells).expect("write payload");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"trace_header","schema_version":"render-trace-v1","run_id":"test","seed":0}}"#
+    )
+    .unwrap();
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":1,"payload_kind":"full_buffer_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
+        checksum
+    )
+    .unwrap();
+
+    let summary = replay_trace(&trace_path).expect("replay should succeed");
+    assert_eq!(summary.frames, 1);
+    assert_eq!(summary.last_checksum, Some(checksum));
+}
+
+#[test]
+fn replay_no_frames_fails() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"trace_header","schema_version":"render-trace-v1","run_id":"test","seed":0}}"#
+    )
+    .unwrap();
+
+    let err = replay_trace(&trace_path).expect_err("no frames");
+    assert!(
+        err.to_string().contains("no frame records found"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn replay_missing_event_field_fails() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(trace, r#"{{"no_event": true}}"#).unwrap();
+
+    let err = replay_trace(&trace_path).expect_err("missing event");
+    assert!(
+        err.to_string().contains("missing event"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn replay_invalid_json_fails() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(trace, "this is not json").unwrap();
+
+    let err = replay_trace(&trace_path).expect_err("invalid json");
+    assert!(
+        err.to_string().contains("invalid JSONL"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn replay_unsupported_payload_kind_fails() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":2,"payload_kind":"unknown_v9","payload_path":"nope.bin","checksum":"0000000000000000"}}"#
+    )
+    .unwrap();
+
+    let err = replay_trace(&trace_path).expect_err("unsupported payload");
+    assert!(
+        err.to_string().contains("unsupported payload_kind"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn replay_none_payload_kind() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    // A "none" payload means no disk payload — just validate the checksum of current grid.
+    // For a fresh 1x1 grid, the checksum is deterministic.
+    let grid = vec![CellData::default()];
+    let checksum = checksum_grid(&grid);
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":0,"cols":1,"rows":1,"payload_kind":"none","checksum":"{:016x}"}}"#,
+        checksum
+    )
+    .unwrap();
+
+    let summary = replay_trace(&trace_path).expect("replay should succeed with none payload");
+    assert_eq!(summary.frames, 1);
+    assert_eq!(summary.last_checksum, Some(checksum));
+}
+
+#[test]
+fn replay_skips_blank_lines() {
+    let base_dir = unique_temp_dir();
+    fs::create_dir_all(&base_dir).expect("create temp dir");
+
+    let grid = vec![CellData::default()];
+    let checksum = checksum_grid(&grid);
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(trace).unwrap(); // blank line
+    writeln!(
+        trace,
+        r#"{{"event":"trace_header","schema_version":"render-trace-v1"}}"#
+    )
+    .unwrap();
+    writeln!(trace, "   ").unwrap(); // whitespace-only line
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":0,"cols":1,"rows":1,"payload_kind":"none","checksum":"{:016x}"}}"#,
+        checksum
+    )
+    .unwrap();
+
+    let summary = replay_trace(&trace_path).expect("should skip blank lines");
+    assert_eq!(summary.frames, 1);
+}
+
+#[test]
+fn replay_grapheme_cell_in_full_buffer() {
+    let base_dir = unique_temp_dir();
+    let frames_dir = base_dir.join("frames");
+    fs::create_dir_all(&frames_dir).expect("create temp dirs");
+
+    let emoji_bytes = "🦀".as_bytes().to_vec();
+    let cells = vec![
+        CellData {
+            kind: 2,
+            char_code: 0,
+            grapheme: emoji_bytes,
+            ..Default::default()
+        },
+        CellData {
+            kind: 3, // Continuation
+            ..Default::default()
+        },
+    ];
+    let checksum = checksum_grid(&cells);
+
+    let payload_path = frames_dir.join("frame_0000.bin");
+    write_full_buffer(&payload_path, 2, 1, &cells).expect("write payload");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":0,"cols":2,"rows":1,"payload_kind":"full_buffer_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
+        checksum
+    )
+    .unwrap();
+
+    let summary = replay_trace(&trace_path).expect("grapheme replay should succeed");
+    assert_eq!(summary.frames, 1);
+    assert_eq!(summary.last_checksum, Some(checksum));
+}
+
+#[test]
+fn replay_resize_between_frames() {
+    let base_dir = unique_temp_dir();
+    let frames_dir = base_dir.join("frames");
+    fs::create_dir_all(&frames_dir).expect("create temp dirs");
+
+    // Frame 0: 1x1 grid with 'A'
+    let cells_1x1 = vec![CellData {
+        kind: 1,
+        char_code: 'A' as u32,
+        ..Default::default()
+    }];
+    let checksum0 = checksum_grid(&cells_1x1);
+    let payload0 = frames_dir.join("frame_0000.bin");
+    write_full_buffer(&payload0, 1, 1, &cells_1x1).expect("write");
+
+    // Frame 1: resize to 2x1 with 'X','Y'
+    let cells_2x1 = vec![
+        CellData {
+            kind: 1,
+            char_code: 'X' as u32,
+            ..Default::default()
+        },
+        CellData {
+            kind: 1,
+            char_code: 'Y' as u32,
+            ..Default::default()
+        },
+    ];
+    let checksum1 = checksum_grid(&cells_2x1);
+    let payload1 = frames_dir.join("frame_0001.bin");
+    write_full_buffer(&payload1, 2, 1, &cells_2x1).expect("write");
+
+    let trace_path = base_dir.join("trace.jsonl");
+    let mut trace = fs::File::create(&trace_path).expect("create trace");
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":0,"cols":1,"rows":1,"payload_kind":"full_buffer_v1","payload_path":"frames/frame_0000.bin","checksum":"{:016x}"}}"#,
+        checksum0
+    )
+    .unwrap();
+    writeln!(
+        trace,
+        r#"{{"event":"frame","frame_idx":1,"cols":2,"rows":1,"payload_kind":"full_buffer_v1","payload_path":"frames/frame_0001.bin","checksum":"{:016x}"}}"#,
+        checksum1
+    )
+    .unwrap();
+
+    let summary = replay_trace(&trace_path).expect("resize replay should succeed");
+    assert_eq!(summary.frames, 2);
+    assert_eq!(summary.last_checksum, Some(checksum1));
+}
+
+#[test]
+fn replay_nonexistent_file_fails() {
+    let err = replay_trace("/tmp/nonexistent_trace_file_12345.jsonl")
+        .expect_err("should fail for nonexistent file");
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}

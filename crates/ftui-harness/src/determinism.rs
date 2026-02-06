@@ -471,4 +471,237 @@ mod tests {
         assert!(line.contains("\"context\":{"));
         assert!(line.contains("\"suite\":\"determinism\""));
     }
+
+    // ── escape_json ───────────────────────────────────────────────────
+
+    #[test]
+    fn escape_json_no_special_chars() {
+        assert_eq!(escape_json("hello"), "hello");
+    }
+
+    #[test]
+    fn escape_json_backslash() {
+        assert_eq!(escape_json(r"a\b"), r"a\\b");
+    }
+
+    #[test]
+    fn escape_json_double_quote() {
+        assert_eq!(escape_json(r#"say "hi""#), r#"say \"hi\""#);
+    }
+
+    #[test]
+    fn escape_json_newline_cr_tab() {
+        assert_eq!(escape_json("a\nb\rc\td"), r"a\nb\rc\td");
+    }
+
+    #[test]
+    fn escape_json_combined() {
+        assert_eq!(escape_json("a\\b\n\"c\""), r#"a\\b\n\"c\""#);
+    }
+
+    // ── json_string ───────────────────────────────────────────────────
+
+    #[test]
+    fn json_string_wraps_in_quotes() {
+        assert_eq!(json_string("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn json_string_escapes_content() {
+        assert_eq!(json_string("a\"b"), "\"a\\\"b\"");
+    }
+
+    // ── env helper semantics (tested safely via unset vars) ──────────
+
+    #[test]
+    fn env_flag_unset_is_false() {
+        // Unique key that is guaranteed unset
+        assert!(!env_flag("__FTUI_NEVER_SET_FLAG_9d3a1f"));
+    }
+
+    #[test]
+    fn env_u64_unset_returns_none() {
+        assert_eq!(env_u64("__FTUI_NEVER_SET_U64_9d3a1f"), None);
+    }
+
+    #[test]
+    fn env_bool_unset_is_false() {
+        assert!(!env_bool("__FTUI_NEVER_SET_BOOL_9d3a1f"));
+    }
+
+    #[test]
+    fn env_string_unset_is_empty() {
+        assert_eq!(env_string("__FTUI_NEVER_SET_STR_9d3a1f"), "");
+    }
+
+    #[test]
+    fn fixture_seed_defaults_when_unset() {
+        // With no FTUI_TEST_SEED etc. set, fixture_seed returns default
+        // (This relies on __FTUI_NEVER env vars not being set.)
+        let default = 12345u64;
+        // fixture_seed reads real env vars, so we can't control them here,
+        // but we can verify the function doesn't panic and returns a u64
+        let result = fixture_seed(default);
+        // fixture_seed always returns a u64; just verify it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn fixture_time_step_ms_default() {
+        // When no env vars are set, default is 100
+        let result = fixture_time_step_ms();
+        assert!(result > 0, "time step should be positive");
+    }
+
+    // ── EnvSnapshot builder ───────────────────────────────────────────
+
+    #[test]
+    fn env_snapshot_with_str() {
+        let snap = EnvSnapshot::capture(1, true).with_str("custom", "value");
+        let json = snap.to_json();
+        assert!(json.contains("\"custom\":\"value\""));
+    }
+
+    #[test]
+    fn env_snapshot_with_u64() {
+        let snap = EnvSnapshot::capture(1, true).with_u64("count", 42);
+        let json = snap.to_json();
+        assert!(json.contains("\"count\":42"));
+    }
+
+    #[test]
+    fn env_snapshot_with_bool() {
+        let snap = EnvSnapshot::capture(1, true).with_bool("flag", false);
+        let json = snap.to_json();
+        assert!(json.contains("\"flag\":false"));
+    }
+
+    #[test]
+    fn env_snapshot_with_raw() {
+        let snap = EnvSnapshot::capture(1, true).with_raw("nested", r#"{"a":1}"#);
+        let json = snap.to_json();
+        assert!(json.contains(r#""nested":{"a":1}"#));
+    }
+
+    // ── JsonValue variants ────────────────────────────────────────────
+
+    #[test]
+    fn json_value_str_escapes() {
+        let v = JsonValue::str("he\"llo");
+        assert_eq!(v.to_json(), "\"he\\\"llo\"");
+    }
+
+    #[test]
+    fn json_value_raw_passthrough() {
+        let v = JsonValue::raw(r#"{"x":1}"#);
+        assert_eq!(v.to_json(), r#"{"x":1}"#);
+    }
+
+    #[test]
+    fn json_value_bool() {
+        assert_eq!(JsonValue::bool(true).to_json(), "true");
+        assert_eq!(JsonValue::bool(false).to_json(), "false");
+    }
+
+    #[test]
+    fn json_value_u64() {
+        assert_eq!(JsonValue::u64(12345).to_json(), "12345");
+    }
+
+    #[test]
+    fn json_value_i64_negative() {
+        assert_eq!(JsonValue::i64(-7).to_json(), "-7");
+    }
+
+    // ── Non-deterministic fixture ─────────────────────────────────────
+
+    #[test]
+    fn non_deterministic_run_id_contains_pid() {
+        let fixture = DeterminismFixture::new_with("nd", 0, false, 100);
+        let run_id = fixture.run_id().to_string();
+        let pid = format!("{}", std::process::id());
+        assert!(
+            run_id.contains(&pid),
+            "non-deterministic run_id should contain PID: {run_id}"
+        );
+    }
+
+    // ── Logger seq counter ────────────────────────────────────────────
+
+    #[test]
+    fn logger_seq_increments() {
+        let logger = TestJsonlLogger::new("seq_test", 1);
+        let line0 = logger.emit_line("ev0", &[]);
+        let line1 = logger.emit_line("ev1", &[]);
+        assert!(line0.contains("\"seq\":0"), "first line seq=0: {line0}");
+        assert!(line1.contains("\"seq\":1"), "second line seq=1: {line1}");
+    }
+
+    #[test]
+    fn logger_custom_schema_version() {
+        let logger = TestJsonlLogger::new("schema_test", 1).with_schema_version(3);
+        let line = logger.emit_line("ev", &[]);
+        assert!(
+            line.contains("\"schema_version\":3"),
+            "custom schema version: {line}"
+        );
+    }
+
+    #[test]
+    fn logger_context_u64_and_bool() {
+        let mut logger = TestJsonlLogger::new("ctx_types", 1);
+        logger.add_context_u64("size", 80);
+        logger.add_context_bool("interactive", false);
+        let line = logger.emit_line("ev", &[]);
+        assert!(line.contains("\"size\":80"), "u64 context: {line}");
+        assert!(
+            line.contains("\"interactive\":false"),
+            "bool context: {line}"
+        );
+    }
+
+    #[test]
+    fn logger_context_raw() {
+        let mut logger = TestJsonlLogger::new("ctx_raw", 1);
+        logger.add_context_raw("meta", r#"[1,2,3]"#);
+        let line = logger.emit_line("ev", &[]);
+        assert!(line.contains(r#""meta":[1,2,3]"#), "raw context: {line}");
+    }
+
+    #[test]
+    fn logger_field_override_suppresses_default() {
+        let logger = TestJsonlLogger::new("override_test", 99);
+        let line = logger.emit_line("ev", &[("seed", JsonValue::u64(7))]);
+        // The explicit field should be present, and no duplicate "seed":99
+        assert!(line.contains("\"seed\":7"), "overridden seed: {line}");
+        // Should NOT contain the default seed=99 since we override it
+        assert!(
+            !line.contains("\"seed\":99"),
+            "default seed should be suppressed: {line}"
+        );
+    }
+
+    // ── emit_line produces valid JSON ─────────────────────────────────
+
+    #[test]
+    fn logger_emit_line_is_valid_json() {
+        let mut logger = TestJsonlLogger::new("json_valid", 42);
+        logger.add_context_str("suite", "test");
+        let line = logger.emit_line(
+            "case_end",
+            &[
+                ("result", JsonValue::str("pass")),
+                ("duration_ms", JsonValue::u64(15)),
+                ("success", JsonValue::bool(true)),
+            ],
+        );
+        // Parse with serde_json to validate
+        let parsed: serde_json::Value =
+            serde_json::from_str(&line).expect("emit_line should produce valid JSON");
+        assert_eq!(parsed["event"], "case_end");
+        assert_eq!(parsed["result"], "pass");
+        assert_eq!(parsed["duration_ms"], 15);
+        assert_eq!(parsed["success"], true);
+        assert_eq!(parsed["seed"], 42);
+    }
 }

@@ -441,3 +441,624 @@ fn read_cell<R: Read>(reader: &mut R) -> io::Result<TraceCell> {
         attrs,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // ── FNV-1a hash ───────────────────────────────────────────────────
+
+    #[test]
+    fn fnv1a_empty_is_offset_basis() {
+        let mut hash = FNV_OFFSET_BASIS;
+        fnv1a_update(&mut hash, &[]);
+        assert_eq!(hash, FNV_OFFSET_BASIS, "empty input should not change hash");
+    }
+
+    #[test]
+    fn fnv1a_single_byte() {
+        let mut hash = FNV_OFFSET_BASIS;
+        fnv1a_update(&mut hash, &[0x61]); // 'a'
+        // FNV-1a('a') = (offset_basis ^ 0x61) * prime
+        let expected = (FNV_OFFSET_BASIS ^ 0x61).wrapping_mul(FNV_PRIME);
+        assert_eq!(hash, expected);
+    }
+
+    #[test]
+    fn fnv1a_deterministic() {
+        let mut h1 = FNV_OFFSET_BASIS;
+        let mut h2 = FNV_OFFSET_BASIS;
+        let data = b"hello world";
+        fnv1a_update(&mut h1, data);
+        fnv1a_update(&mut h2, data);
+        assert_eq!(h1, h2, "same input must yield same hash");
+    }
+
+    #[test]
+    fn fnv1a_different_inputs_differ() {
+        let mut h1 = FNV_OFFSET_BASIS;
+        let mut h2 = FNV_OFFSET_BASIS;
+        fnv1a_update(&mut h1, b"abc");
+        fnv1a_update(&mut h2, b"abd");
+        assert_ne!(h1, h2, "different inputs should yield different hashes");
+    }
+
+    // ── TraceContent::kind ────────────────────────────────────────────
+
+    #[test]
+    fn trace_content_kind_values() {
+        assert_eq!(TraceContent::Empty.kind(), 0);
+        assert_eq!(TraceContent::Char(65).kind(), 1);
+        assert_eq!(TraceContent::Grapheme(vec![0xE2, 0x9A, 0x99]).kind(), 2);
+        assert_eq!(TraceContent::Continuation.kind(), 3);
+    }
+
+    // ── TraceGrid ─────────────────────────────────────────────────────
+
+    #[test]
+    fn grid_new_correct_size() {
+        let g = TraceGrid::new(3, 2);
+        assert_eq!(g.width, 3);
+        assert_eq!(g.height, 2);
+        assert_eq!(g.cells.len(), 6);
+    }
+
+    #[test]
+    fn grid_new_zero_dimensions() {
+        let g = TraceGrid::new(0, 0);
+        assert_eq!(g.cells.len(), 0);
+    }
+
+    #[test]
+    fn grid_index_valid() {
+        let g = TraceGrid::new(4, 3);
+        assert_eq!(g.index(0, 0), Some(0));
+        assert_eq!(g.index(3, 0), Some(3));
+        assert_eq!(g.index(0, 1), Some(4));
+        assert_eq!(g.index(3, 2), Some(11));
+    }
+
+    #[test]
+    fn grid_index_out_of_bounds() {
+        let g = TraceGrid::new(4, 3);
+        assert_eq!(g.index(4, 0), None); // x == width
+        assert_eq!(g.index(0, 3), None); // y == height
+        assert_eq!(g.index(10, 10), None);
+    }
+
+    #[test]
+    fn grid_set_cell_valid() {
+        let mut g = TraceGrid::new(2, 2);
+        let cell = TraceCell {
+            content: TraceContent::Char('X' as u32),
+            ..TraceCell::default()
+        };
+        g.set_cell(1, 0, cell).expect("valid set_cell");
+        assert!(matches!(g.cells[1].content, TraceContent::Char(88)));
+    }
+
+    #[test]
+    fn grid_set_cell_out_of_bounds() {
+        let mut g = TraceGrid::new(2, 2);
+        let err = g
+            .set_cell(2, 0, TraceCell::default())
+            .expect_err("should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn grid_resize_replaces_contents() {
+        let mut g = TraceGrid::new(2, 2);
+        g.set_cell(
+            0,
+            0,
+            TraceCell {
+                content: TraceContent::Char('A' as u32),
+                ..TraceCell::default()
+            },
+        )
+        .unwrap();
+        g.resize(3, 3);
+        assert_eq!(g.width, 3);
+        assert_eq!(g.height, 3);
+        assert_eq!(g.cells.len(), 9);
+        // All cells should be default after resize
+        assert!(matches!(g.cells[0].content, TraceContent::Empty));
+    }
+
+    // ── Checksum ──────────────────────────────────────────────────────
+
+    #[test]
+    fn checksum_empty_grid_deterministic() {
+        let g1 = TraceGrid::new(2, 2);
+        let g2 = TraceGrid::new(2, 2);
+        assert_eq!(g1.checksum(), g2.checksum());
+    }
+
+    #[test]
+    fn checksum_differs_with_content() {
+        let g1 = TraceGrid::new(1, 1);
+        let mut g2 = TraceGrid::new(1, 1);
+        g2.set_cell(
+            0,
+            0,
+            TraceCell {
+                content: TraceContent::Char('A' as u32),
+                ..TraceCell::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(g1.checksum(), g2.checksum());
+    }
+
+    #[test]
+    fn checksum_differs_by_fg_color() {
+        let mut g1 = TraceGrid::new(1, 1);
+        let mut g2 = TraceGrid::new(1, 1);
+        g1.set_cell(
+            0,
+            0,
+            TraceCell {
+                fg: 0xFF0000FF,
+                ..TraceCell::default()
+            },
+        )
+        .unwrap();
+        g2.set_cell(
+            0,
+            0,
+            TraceCell {
+                fg: 0x00FF00FF,
+                ..TraceCell::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(g1.checksum(), g2.checksum());
+    }
+
+    #[test]
+    fn checksum_grapheme_content() {
+        let mut g = TraceGrid::new(1, 1);
+        g.set_cell(
+            0,
+            0,
+            TraceCell {
+                content: TraceContent::Grapheme("⚙\u{fe0f}".as_bytes().to_vec()),
+                ..TraceCell::default()
+            },
+        )
+        .unwrap();
+        let cs = g.checksum();
+        // Verify determinism
+        let mut g2 = TraceGrid::new(1, 1);
+        g2.set_cell(
+            0,
+            0,
+            TraceCell {
+                content: TraceContent::Grapheme("⚙\u{fe0f}".as_bytes().to_vec()),
+                ..TraceCell::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cs, g2.checksum());
+    }
+
+    #[test]
+    fn checksum_continuation_differs_from_empty() {
+        let g_empty = TraceGrid::new(1, 1);
+        let mut g_cont = TraceGrid::new(1, 1);
+        g_cont
+            .set_cell(
+                0,
+                0,
+                TraceCell {
+                    content: TraceContent::Continuation,
+                    ..TraceCell::default()
+                },
+            )
+            .unwrap();
+        assert_ne!(
+            g_empty.checksum(),
+            g_cont.checksum(),
+            "continuation and empty should hash differently (different kind byte)"
+        );
+    }
+
+    // ── read_* binary helpers ─────────────────────────────────────────
+
+    #[test]
+    fn read_u8_success() {
+        let mut cursor = Cursor::new(vec![0x42]);
+        assert_eq!(read_u8(&mut cursor).unwrap(), 0x42);
+    }
+
+    #[test]
+    fn read_u8_empty_fails() {
+        let mut cursor = Cursor::new(vec![]);
+        assert!(read_u8(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn read_u16_le() {
+        let mut cursor = Cursor::new(vec![0x34, 0x12]);
+        assert_eq!(read_u16(&mut cursor).unwrap(), 0x1234);
+    }
+
+    #[test]
+    fn read_u32_le() {
+        let mut cursor = Cursor::new(vec![0x78, 0x56, 0x34, 0x12]);
+        assert_eq!(read_u32(&mut cursor).unwrap(), 0x12345678);
+    }
+
+    #[test]
+    fn read_u16_truncated_fails() {
+        let mut cursor = Cursor::new(vec![0x34]);
+        assert!(read_u16(&mut cursor).is_err());
+    }
+
+    // ── read_cell ─────────────────────────────────────────────────────
+
+    #[test]
+    fn read_cell_empty() {
+        // kind=0, fg(4), bg(4), attrs(4) = 13 bytes
+        let mut data = vec![0u8]; // kind = Empty
+        data.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // fg
+        data.extend_from_slice(&0x00000000u32.to_le_bytes()); // bg
+        data.extend_from_slice(&0u32.to_le_bytes()); // attrs
+        let mut cursor = Cursor::new(data);
+        let cell = read_cell(&mut cursor).unwrap();
+        assert!(matches!(cell.content, TraceContent::Empty));
+        assert_eq!(cell.fg, 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn read_cell_char() {
+        let mut data = vec![1u8]; // kind = Char
+        data.extend_from_slice(&('Z' as u32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // fg
+        data.extend_from_slice(&0u32.to_le_bytes()); // bg
+        data.extend_from_slice(&0u32.to_le_bytes()); // attrs
+        let mut cursor = Cursor::new(data);
+        let cell = read_cell(&mut cursor).unwrap();
+        assert!(matches!(cell.content, TraceContent::Char(90)));
+    }
+
+    #[test]
+    fn read_cell_grapheme() {
+        let grapheme = "🦀".as_bytes();
+        let mut data = vec![2u8]; // kind = Grapheme
+        data.extend_from_slice(&(grapheme.len() as u16).to_le_bytes());
+        data.extend_from_slice(grapheme);
+        data.extend_from_slice(&0u32.to_le_bytes()); // fg
+        data.extend_from_slice(&0u32.to_le_bytes()); // bg
+        data.extend_from_slice(&0u32.to_le_bytes()); // attrs
+        let mut cursor = Cursor::new(data);
+        let cell = read_cell(&mut cursor).unwrap();
+        match &cell.content {
+            TraceContent::Grapheme(bytes) => assert_eq!(bytes, grapheme),
+            other => panic!("expected Grapheme, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_cell_continuation() {
+        let mut data = vec![3u8]; // kind = Continuation
+        data.extend_from_slice(&0u32.to_le_bytes()); // fg
+        data.extend_from_slice(&0u32.to_le_bytes()); // bg
+        data.extend_from_slice(&0u32.to_le_bytes()); // attrs
+        let mut cursor = Cursor::new(data);
+        let cell = read_cell(&mut cursor).unwrap();
+        assert!(matches!(cell.content, TraceContent::Continuation));
+    }
+
+    #[test]
+    fn read_cell_invalid_kind() {
+        let mut data = vec![5u8]; // invalid kind
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        let mut cursor = Cursor::new(data);
+        let err = read_cell(&mut cursor).expect_err("invalid kind");
+        assert!(err.to_string().contains("invalid content_kind"));
+    }
+
+    #[test]
+    fn read_cell_invalid_codepoint() {
+        let mut data = vec![1u8]; // kind = Char
+        data.extend_from_slice(&0xD800u32.to_le_bytes()); // surrogate, invalid
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        let mut cursor = Cursor::new(data);
+        let err = read_cell(&mut cursor).expect_err("invalid codepoint");
+        assert!(err.to_string().contains("invalid char codepoint"));
+    }
+
+    #[test]
+    fn read_cell_grapheme_too_long() {
+        let mut data = vec![2u8]; // kind = Grapheme
+        data.extend_from_slice(&4097u16.to_le_bytes()); // exceeds 4096
+        let mut cursor = Cursor::new(data);
+        let err = read_cell(&mut cursor).expect_err("grapheme too long");
+        assert!(err.to_string().contains("grapheme length exceeds 4096"));
+    }
+
+    // ── parse_* JSON helpers ──────────────────────────────────────────
+
+    #[test]
+    fn parse_u64_present() {
+        let v: Value = serde_json::from_str(r#"{"x": 42}"#).unwrap();
+        assert_eq!(parse_u64(&v, "x").unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_u64_missing() {
+        let v: Value = serde_json::from_str(r#"{"y": 1}"#).unwrap();
+        let err = parse_u64(&v, "x").expect_err("missing field");
+        assert!(err.to_string().contains("missing x"));
+    }
+
+    #[test]
+    fn parse_u64_string_type_fails() {
+        let v: Value = serde_json::from_str(r#"{"x": "42"}"#).unwrap();
+        let err = parse_u64(&v, "x").expect_err("wrong type");
+        assert!(err.to_string().contains("missing x"));
+    }
+
+    #[test]
+    fn parse_u16_in_range() {
+        let v: Value = serde_json::from_str(r#"{"cols": 120}"#).unwrap();
+        assert_eq!(parse_u16(&v, "cols").unwrap(), 120);
+    }
+
+    #[test]
+    fn parse_u16_out_of_range() {
+        let v: Value = serde_json::from_str(r#"{"cols": 70000}"#).unwrap();
+        let err = parse_u16(&v, "cols").expect_err("out of range");
+        assert!(err.to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn parse_str_present() {
+        let v: Value = serde_json::from_str(r#"{"kind": "diff_runs_v1"}"#).unwrap();
+        assert_eq!(parse_str(&v, "kind").unwrap(), "diff_runs_v1");
+    }
+
+    #[test]
+    fn parse_str_missing() {
+        let v: Value = serde_json::from_str(r#"{"other": 1}"#).unwrap();
+        assert!(parse_str(&v, "kind").is_err());
+    }
+
+    #[test]
+    fn parse_optional_str_present() {
+        let v: Value = serde_json::from_str(r#"{"path": "frames/f0.bin"}"#).unwrap();
+        assert_eq!(
+            parse_optional_str(&v, "path"),
+            Some("frames/f0.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_optional_str_missing() {
+        let v: Value = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(parse_optional_str(&v, "path"), None);
+    }
+
+    #[test]
+    fn parse_hex_u64_valid() {
+        assert_eq!(
+            parse_hex_u64("0xcbf29ce484222325").unwrap(),
+            0xcbf29ce484222325
+        );
+    }
+
+    #[test]
+    fn parse_hex_u64_no_prefix() {
+        assert_eq!(
+            parse_hex_u64("cbf29ce484222325").unwrap(),
+            0xcbf29ce484222325
+        );
+    }
+
+    #[test]
+    fn parse_hex_u64_wrong_length() {
+        let err = parse_hex_u64("0xabc").expect_err("wrong length");
+        assert!(err.to_string().contains("16 hex chars"));
+    }
+
+    #[test]
+    fn parse_hex_u64_invalid_chars() {
+        let err = parse_hex_u64("zzzzzzzzzzzzzzzz").expect_err("invalid hex");
+        assert!(err.to_string().contains("invalid checksum"));
+    }
+
+    // ── resolve_payload_path ──────────────────────────────────────────
+
+    #[test]
+    fn resolve_payload_path_relative() {
+        let base = Path::new("/trace/output");
+        let result = resolve_payload_path(base, "frames/f0.bin");
+        assert_eq!(result, PathBuf::from("/trace/output/frames/f0.bin"));
+    }
+
+    #[test]
+    fn resolve_payload_path_absolute() {
+        let base = Path::new("/trace/output");
+        let result = resolve_payload_path(base, "/other/path/f0.bin");
+        assert_eq!(result, PathBuf::from("/other/path/f0.bin"));
+    }
+
+    // ── apply_diff_runs ───────────────────────────────────────────────
+
+    fn build_diff_runs_payload(
+        width: u16,
+        height: u16,
+        runs: &[(u16, u16, u16, Vec<u8>)],
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&width.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        buf.extend_from_slice(&(runs.len() as u32).to_le_bytes());
+        for (y, x0, x1, cell_data) in runs {
+            buf.extend_from_slice(&y.to_le_bytes());
+            buf.extend_from_slice(&x0.to_le_bytes());
+            buf.extend_from_slice(&x1.to_le_bytes());
+            buf.extend_from_slice(cell_data);
+        }
+        buf
+    }
+
+    fn empty_cell_bytes() -> Vec<u8> {
+        let mut data = vec![0u8]; // kind=Empty
+        data.extend_from_slice(&ftui_render::cell::PackedRgba::WHITE.0.to_le_bytes());
+        data.extend_from_slice(&ftui_render::cell::PackedRgba::TRANSPARENT.0.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data
+    }
+
+    fn char_cell_bytes(ch: char) -> Vec<u8> {
+        let mut data = vec![1u8]; // kind=Char
+        data.extend_from_slice(&(ch as u32).to_le_bytes());
+        data.extend_from_slice(&ftui_render::cell::PackedRgba::WHITE.0.to_le_bytes());
+        data.extend_from_slice(&ftui_render::cell::PackedRgba::TRANSPARENT.0.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn apply_diff_runs_single_cell() {
+        let mut grid = TraceGrid::new(2, 2);
+        let cell_data = char_cell_bytes('A');
+        let payload = build_diff_runs_payload(2, 2, &[(0, 0, 0, cell_data)]);
+        let stats = grid.apply_diff_runs(&payload).unwrap();
+        assert_eq!(stats.runs, 1);
+        assert_eq!(stats.cells, 1);
+        assert!(matches!(grid.cells[0].content, TraceContent::Char(65)));
+    }
+
+    #[test]
+    fn apply_diff_runs_dimension_mismatch() {
+        let mut grid = TraceGrid::new(2, 2);
+        let payload = build_diff_runs_payload(3, 2, &[]);
+        let err = grid.apply_diff_runs(&payload).expect_err("mismatch");
+        assert!(err.to_string().contains("dimensions do not match"));
+    }
+
+    #[test]
+    fn apply_diff_runs_invalid_range() {
+        let mut grid = TraceGrid::new(4, 4);
+        // x1 < x0 is invalid
+        let cell_data = char_cell_bytes('A');
+        let payload = build_diff_runs_payload(4, 4, &[(0, 3, 1, cell_data)]);
+        let err = grid.apply_diff_runs(&payload).expect_err("invalid range");
+        assert!(err.to_string().contains("invalid run range"));
+    }
+
+    #[test]
+    fn apply_diff_runs_out_of_bounds() {
+        let mut grid = TraceGrid::new(2, 2);
+        let cell_data = char_cell_bytes('A');
+        // y=2 is out of bounds for height=2
+        let payload = build_diff_runs_payload(2, 2, &[(2, 0, 0, cell_data)]);
+        let err = grid.apply_diff_runs(&payload).expect_err("out of bounds");
+        assert!(err.to_string().contains("run out of bounds"));
+    }
+
+    #[test]
+    fn apply_diff_runs_trailing_bytes() {
+        let mut grid = TraceGrid::new(2, 2);
+        let cell_data = char_cell_bytes('A');
+        let mut payload = build_diff_runs_payload(2, 2, &[(0, 0, 0, cell_data)]);
+        payload.push(0xFF); // trailing byte
+        let err = grid.apply_diff_runs(&payload).expect_err("trailing bytes");
+        assert!(err.to_string().contains("trailing bytes"));
+    }
+
+    // ── apply_full_buffer ─────────────────────────────────────────────
+
+    fn build_full_buffer_payload(width: u16, height: u16, cells: &[Vec<u8>]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&width.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        for cell_data in cells {
+            buf.extend_from_slice(cell_data);
+        }
+        buf
+    }
+
+    #[test]
+    fn apply_full_buffer_1x1() {
+        let mut grid = TraceGrid::new(1, 1);
+        let payload = build_full_buffer_payload(1, 1, &[char_cell_bytes('X')]);
+        let stats = grid.apply_full_buffer(&payload).unwrap();
+        assert_eq!(stats.cells, 1);
+        assert_eq!(stats.runs, 1); // runs == height for full buffer
+        assert!(matches!(grid.cells[0].content, TraceContent::Char(88)));
+    }
+
+    #[test]
+    fn apply_full_buffer_2x2() {
+        let mut grid = TraceGrid::new(2, 2);
+        let cells = vec![
+            char_cell_bytes('A'),
+            char_cell_bytes('B'),
+            char_cell_bytes('C'),
+            char_cell_bytes('D'),
+        ];
+        let payload = build_full_buffer_payload(2, 2, &cells);
+        let stats = grid.apply_full_buffer(&payload).unwrap();
+        assert_eq!(stats.cells, 4);
+        assert!(matches!(grid.cells[0].content, TraceContent::Char(65)));
+        assert!(matches!(grid.cells[3].content, TraceContent::Char(68)));
+    }
+
+    #[test]
+    fn apply_full_buffer_dimension_mismatch() {
+        let mut grid = TraceGrid::new(2, 2);
+        let cells: Vec<Vec<u8>> = (0..6).map(|_| empty_cell_bytes()).collect();
+        let payload = build_full_buffer_payload(3, 2, &cells);
+        let err = grid.apply_full_buffer(&payload).expect_err("mismatch");
+        assert!(err.to_string().contains("dimensions do not match"));
+    }
+
+    #[test]
+    fn apply_full_buffer_trailing_bytes() {
+        let mut grid = TraceGrid::new(1, 1);
+        let mut payload = build_full_buffer_payload(1, 1, &[char_cell_bytes('A')]);
+        payload.push(0xFF);
+        let err = grid
+            .apply_full_buffer(&payload)
+            .expect_err("trailing bytes");
+        assert!(err.to_string().contains("trailing bytes"));
+    }
+
+    // ── Checksum consistency between diff_runs and full_buffer ────────
+
+    #[test]
+    fn checksum_matches_between_apply_methods() {
+        // Build a 2x2 grid with 'A' at (0,0) via diff_runs
+        let mut g1 = TraceGrid::new(2, 2);
+        let cell_data = char_cell_bytes('A');
+        let diff_payload = build_diff_runs_payload(2, 2, &[(0, 0, 0, cell_data)]);
+        g1.apply_diff_runs(&diff_payload).unwrap();
+
+        // Build same grid via full_buffer (A at 0, empty at 1,2,3)
+        let mut g2 = TraceGrid::new(2, 2);
+        let cells = vec![
+            char_cell_bytes('A'),
+            empty_cell_bytes(),
+            empty_cell_bytes(),
+            empty_cell_bytes(),
+        ];
+        let full_payload = build_full_buffer_payload(2, 2, &cells);
+        g2.apply_full_buffer(&full_payload).unwrap();
+
+        assert_eq!(
+            g1.checksum(),
+            g2.checksum(),
+            "same grid content should produce same checksum regardless of apply method"
+        );
+    }
+}

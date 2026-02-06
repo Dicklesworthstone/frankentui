@@ -138,4 +138,121 @@ mod tests {
         inspector.step_back();
         assert_eq!(inspector.index(), 0);
     }
+
+    #[test]
+    fn render_empty_time_travel_returns_none() {
+        let tt = TimeTravel::new(4);
+        let inspector = TimeTravelInspector::new();
+        assert!(inspector.render(&tt).is_none());
+    }
+
+    #[test]
+    fn seek_on_empty_time_travel_stays_at_zero() {
+        let tt = TimeTravel::new(4);
+        let mut inspector = TimeTravelInspector::new();
+        inspector.seek(5, &tt);
+        assert_eq!(inspector.index(), 0);
+    }
+
+    #[test]
+    fn header_text_without_model_hash() {
+        let mut tt = TimeTravel::new(4);
+        let buf = Buffer::new(1, 1);
+        // No .with_model_hash() → hash is None
+        tt.record(&buf, FrameMetadata::new(0, Duration::from_millis(1)));
+
+        let inspector = TimeTravelInspector::new();
+        let header = inspector.header_text(&tt);
+        assert!(header.starts_with("Frame 1/1"));
+        assert!(!header.contains("hash="), "no hash when None: {header}");
+    }
+
+    #[test]
+    fn header_text_with_model_hash() {
+        let mut tt = TimeTravel::new(4);
+        let buf = Buffer::new(1, 1);
+        tt.record(
+            &buf,
+            FrameMetadata::new(0, Duration::from_millis(1)).with_model_hash(42),
+        );
+
+        let inspector = TimeTravelInspector::new();
+        let header = inspector.header_text(&tt);
+        assert!(header.contains("hash=42"), "should show hash: {header}");
+    }
+
+    #[test]
+    fn header_text_shows_events_and_render_time() {
+        let mut tt = TimeTravel::new(4);
+        let buf = Buffer::new(1, 1);
+        tt.record(
+            &buf,
+            FrameMetadata::new(0, Duration::from_micros(1234)).with_events(17),
+        );
+
+        let inspector = TimeTravelInspector::new();
+        let header = inspector.header_text(&tt);
+        assert!(header.contains("1234us"), "render time in us: {header}");
+        assert!(header.contains("events=17"), "event count: {header}");
+    }
+
+    #[test]
+    fn header_text_empty_time_travel() {
+        let tt = TimeTravel::new(4);
+        let inspector = TimeTravelInspector::new();
+        let header = inspector.header_text(&tt);
+        // count=0, index_display=0, no metadata
+        assert!(header.starts_with("Frame 0/0"), "empty: {header}");
+        assert!(header.contains("0us"), "zero render time: {header}");
+        assert!(header.contains("events=0"), "zero events: {header}");
+    }
+
+    #[test]
+    fn render_multiple_frames_navigates_correctly() {
+        let mut tt = TimeTravel::new(4);
+        let mut buf = Buffer::new(1, 1);
+
+        buf.set(0, 0, Cell::from_char('X'));
+        tt.record(&buf, FrameMetadata::new(0, Duration::from_millis(1)));
+
+        buf.set(0, 0, Cell::from_char('Y'));
+        tt.record(&buf, FrameMetadata::new(1, Duration::from_millis(1)));
+
+        buf.set(0, 0, Cell::from_char('Z'));
+        tt.record(&buf, FrameMetadata::new(2, Duration::from_millis(1)));
+
+        let mut inspector = TimeTravelInspector::new();
+
+        // Frame 0 shows 'X'
+        let out = inspector.render(&tt).unwrap();
+        assert_eq!(out.get(0, 1).unwrap().content.as_char(), Some('X'));
+
+        // Navigate to last frame (Z)
+        inspector.seek(2, &tt);
+        let out = inspector.render(&tt).unwrap();
+        assert_eq!(out.get(0, 1).unwrap().content.as_char(), Some('Z'));
+
+        // Step back to Y
+        inspector.step_back();
+        let out = inspector.render(&tt).unwrap();
+        assert_eq!(out.get(0, 1).unwrap().content.as_char(), Some('Y'));
+    }
+
+    #[test]
+    fn default_inspector_starts_at_zero() {
+        let inspector = TimeTravelInspector::default();
+        assert_eq!(inspector.index(), 0);
+    }
+
+    #[test]
+    fn render_preserves_frame_dimensions() {
+        let mut tt = TimeTravel::new(4);
+        let buf = Buffer::new(10, 5);
+        tt.record(&buf, FrameMetadata::new(0, Duration::from_millis(1)));
+
+        let inspector = TimeTravelInspector::new();
+        let out = inspector.render(&tt).unwrap();
+        assert_eq!(out.width(), 10);
+        assert_eq!(out.height(), 6); // 5 + 1 header row
+    }
 }
