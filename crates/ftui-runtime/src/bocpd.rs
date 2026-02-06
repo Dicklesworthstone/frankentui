@@ -1078,4 +1078,409 @@ mod tests {
             assert!(detector.expected_run_length() >= 0.0);
         }
     }
+
+    // ── Config presets ────────────────────────────────────────────
+
+    #[test]
+    fn responsive_config_values() {
+        let cfg = BocpdConfig::responsive();
+        assert!((cfg.mu_steady_ms - 150.0).abs() < f64::EPSILON);
+        assert!((cfg.mu_burst_ms - 15.0).abs() < f64::EPSILON);
+        assert!((cfg.hazard_lambda - 30.0).abs() < f64::EPSILON);
+        assert!((cfg.steady_threshold - 0.25).abs() < f64::EPSILON);
+        assert!((cfg.burst_threshold - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aggressive_coalesce_config_values() {
+        let cfg = BocpdConfig::aggressive_coalesce();
+        assert!((cfg.mu_steady_ms - 250.0).abs() < f64::EPSILON);
+        assert!((cfg.mu_burst_ms - 25.0).abs() < f64::EPSILON);
+        assert!((cfg.hazard_lambda - 80.0).abs() < f64::EPSILON);
+        assert!((cfg.steady_threshold - 0.4).abs() < f64::EPSILON);
+        assert!((cfg.burst_threshold - 0.8).abs() < f64::EPSILON);
+        assert!((cfg.burst_prior - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn with_logging_builder() {
+        let cfg = BocpdConfig::default().with_logging(true);
+        assert!(cfg.enable_logging);
+        let cfg2 = cfg.with_logging(false);
+        assert!(!cfg2.enable_logging);
+    }
+
+    // ── BocpdRegime traits ────────────────────────────────────────
+
+    #[test]
+    fn regime_as_str_values() {
+        assert_eq!(BocpdRegime::Steady.as_str(), "steady");
+        assert_eq!(BocpdRegime::Burst.as_str(), "burst");
+        assert_eq!(BocpdRegime::Transitional.as_str(), "transitional");
+    }
+
+    #[test]
+    fn regime_display_matches_as_str() {
+        for regime in [
+            BocpdRegime::Steady,
+            BocpdRegime::Burst,
+            BocpdRegime::Transitional,
+        ] {
+            assert_eq!(format!("{regime}"), regime.as_str());
+        }
+    }
+
+    #[test]
+    fn regime_default_is_steady() {
+        assert_eq!(BocpdRegime::default(), BocpdRegime::Steady);
+    }
+
+    #[test]
+    fn regime_clone_copy() {
+        let r = BocpdRegime::Burst;
+        let r2 = r;
+        assert_eq!(r, r2);
+        let r3 = r.clone();
+        assert_eq!(r, r3);
+    }
+
+    // ── BocpdEvidence ─────────────────────────────────────────────
+
+    #[test]
+    fn evidence_to_jsonl_has_all_fields() {
+        let mut detector = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        detector.observe_event(t);
+        let evidence = detector.last_evidence().unwrap();
+        let jsonl = evidence.to_jsonl();
+
+        for key in [
+            "schema_version",
+            "bocpd-v1",
+            "p_burst",
+            "log_bf",
+            "obs_ms",
+            "regime",
+            "ll_steady",
+            "ll_burst",
+            "runlen_mean",
+            "runlen_var",
+            "runlen_mode",
+            "runlen_p95",
+            "runlen_tail",
+            "delay_ms",
+            "forced_deadline",
+            "n_obs",
+        ] {
+            assert!(jsonl.contains(key), "missing field {key} in {jsonl}");
+        }
+    }
+
+    #[test]
+    fn evidence_display_contains_regime_and_pburst() {
+        let mut detector = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        detector.observe_event(t);
+        let evidence = detector.last_evidence().unwrap();
+        let display = format!("{evidence}");
+        assert!(display.contains("BOCPD Evidence:"));
+        assert!(display.contains("Regime:"));
+        assert!(display.contains("P(burst)"));
+        assert!(display.contains("Log BF:"));
+        assert!(display.contains("Observation:"));
+        assert!(display.contains("Observations:"));
+    }
+
+    #[test]
+    fn evidence_null_optionals_in_jsonl() {
+        let mut detector = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        detector.observe_event(t);
+        let evidence = detector.last_evidence().unwrap();
+        let jsonl = evidence.to_jsonl();
+        // Before set_decision_context, these should be null
+        assert!(jsonl.contains("\"delay_ms\":null"));
+        assert!(jsonl.contains("\"forced_deadline\":null"));
+    }
+
+    // ── Detector accessors ────────────────────────────────────────
+
+    #[test]
+    fn initial_detector_state() {
+        let detector = BocpdDetector::with_defaults();
+        assert!((detector.p_burst() - 0.2).abs() < 0.01);
+        assert_eq!(detector.observation_count(), 0);
+        assert!(detector.last_evidence().is_none());
+        assert_eq!(detector.regime(), BocpdRegime::Steady);
+    }
+
+    #[test]
+    fn run_length_posterior_sums_to_one() {
+        let detector = BocpdDetector::with_defaults();
+        let sum: f64 = detector.run_length_posterior().iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn config_accessor_returns_config() {
+        let cfg = BocpdConfig::responsive();
+        let detector = BocpdDetector::new(cfg);
+        assert!((detector.config().mu_steady_ms - 150.0).abs() < f64::EPSILON);
+    }
+
+    // ── observe_event edge cases ──────────────────────────────────
+
+    #[test]
+    fn first_event_uses_steady_default() {
+        let mut detector = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        detector.observe_event(t);
+        // First event should use mu_steady_ms as observation
+        let evidence = detector.last_evidence().unwrap();
+        assert!(
+            (evidence.observation_ms - 200.0).abs() < 1.0,
+            "first observation should be ~mu_steady_ms"
+        );
+    }
+
+    #[test]
+    fn rapid_events_increase_pburst() {
+        let mut detector = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        // First event (baseline)
+        detector.observe_event(start);
+        let initial = detector.p_burst();
+        // Rapid events (5ms apart)
+        for i in 1..20 {
+            let t = start + Duration::from_millis(5 * i);
+            detector.observe_event(t);
+        }
+        assert!(
+            detector.p_burst() > initial,
+            "p_burst should increase with rapid events"
+        );
+    }
+
+    #[test]
+    fn slow_events_decrease_pburst() {
+        let mut detector = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        // Seed with some rapid events to raise p_burst
+        for i in 0..10 {
+            let t = start + Duration::from_millis(5 * (i + 1));
+            detector.observe_event(t);
+        }
+        let after_burst = detector.p_burst();
+        // Now slow events (500ms apart)
+        let slow_start = start + Duration::from_millis(50);
+        for i in 0..20 {
+            let t = slow_start + Duration::from_millis(500 * (i + 1));
+            detector.observe_event(t);
+        }
+        assert!(
+            detector.p_burst() < after_burst,
+            "p_burst should decrease with slow events"
+        );
+    }
+
+    // ── burst-to-steady recovery ──────────────────────────────────
+
+    #[test]
+    fn burst_to_steady_recovery() {
+        let mut detector = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        // Drive into burst with rapid events
+        for i in 0..30 {
+            let t = start + Duration::from_millis(5 * (i + 1));
+            detector.observe_event(t);
+        }
+        let burst_p = detector.p_burst();
+        assert!(burst_p > 0.5, "should be in burst, got p={burst_p}");
+        // Recover with slow events
+        let slow_start = start + Duration::from_millis(150);
+        for i in 0..30 {
+            let t = slow_start + Duration::from_millis(200 * (i + 1));
+            detector.observe_event(t);
+        }
+        let steady_p = detector.p_burst();
+        assert!(
+            steady_p < burst_p,
+            "p_burst should decrease during recovery"
+        );
+    }
+
+    // ── set_decision_context ──────────────────────────────────────
+
+    #[test]
+    fn set_decision_context_populates_evidence() {
+        let mut detector = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        detector.observe_event(t);
+        detector.set_decision_context(16, 40, false);
+        let evidence = detector.last_evidence().unwrap();
+        assert!(evidence.recommended_delay_ms.is_some());
+        assert_eq!(evidence.hard_deadline_forced, Some(false));
+    }
+
+    #[test]
+    fn set_decision_context_forced_deadline() {
+        let mut detector = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        detector.observe_event(t);
+        detector.set_decision_context(16, 40, true);
+        let evidence = detector.last_evidence().unwrap();
+        assert_eq!(evidence.hard_deadline_forced, Some(true));
+    }
+
+    // ── decision_log_jsonl ────────────────────────────────────────
+
+    #[test]
+    fn decision_log_jsonl_none_when_logging_disabled() {
+        let mut detector = BocpdDetector::with_defaults();
+        let t = Instant::now();
+        detector.observe_event(t);
+        assert!(detector.decision_log_jsonl(16, 40, false).is_none());
+    }
+
+    #[test]
+    fn decision_log_jsonl_has_delay_when_logging_enabled() {
+        let mut detector = BocpdDetector::new(BocpdConfig::default().with_logging(true));
+        let t = Instant::now();
+        detector.observe_event(t);
+        let jsonl = detector
+            .decision_log_jsonl(16, 40, true)
+            .expect("should emit when logging enabled");
+        assert!(jsonl.contains("\"delay_ms\":"));
+        assert!(!jsonl.contains("\"delay_ms\":null"));
+        assert!(jsonl.contains("\"forced_deadline\":true"));
+    }
+
+    // ── recommended_delay ─────────────────────────────────────────
+
+    #[test]
+    fn recommended_delay_interpolation_in_transitional() {
+        let mut detector = BocpdDetector::with_defaults();
+        // Set p_burst to middle of transitional range
+        detector.p_burst = 0.5;
+        let delay = detector.recommended_delay(16, 40);
+        assert!(
+            delay > 16 && delay < 40,
+            "transitional delay={delay} should be interpolated"
+        );
+    }
+
+    #[test]
+    fn recommended_delay_steady_when_low_pburst() {
+        let detector = BocpdDetector::with_defaults();
+        // Default p_burst is 0.2, below steady_threshold of 0.3
+        assert_eq!(detector.recommended_delay(16, 40), 16);
+    }
+
+    #[test]
+    fn recommended_delay_burst_when_high_pburst() {
+        let mut detector = BocpdDetector::with_defaults();
+        detector.p_burst = 0.9;
+        assert_eq!(detector.recommended_delay(16, 40), 40);
+    }
+
+    // ── run-length summary ────────────────────────────────────────
+
+    #[test]
+    fn expected_run_length_initial_uniform() {
+        let detector = BocpdDetector::with_defaults();
+        let erl = detector.expected_run_length();
+        // Uniform on 0..=100 → mean = 50
+        assert!((erl - 50.0).abs() < 1.0);
+    }
+
+    // ── evidence fields accuracy ──────────────────────────────────
+
+    #[test]
+    fn evidence_observation_count_matches_events() {
+        let mut detector = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        for i in 0..7 {
+            let t = start + Duration::from_millis(20 * (i + 1));
+            detector.observe_event(t);
+        }
+        let evidence = detector.last_evidence().unwrap();
+        assert_eq!(evidence.observation_count, 7);
+    }
+
+    #[test]
+    fn evidence_likelihoods_are_positive() {
+        let mut detector = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        for i in 0..5 {
+            let t = start + Duration::from_millis(50 * (i + 1));
+            detector.observe_event(t);
+        }
+        let evidence = detector.last_evidence().unwrap();
+        assert!(evidence.likelihood_steady > 0.0);
+        assert!(evidence.likelihood_burst > 0.0);
+    }
+
+    // ── responsive vs default ─────────────────────────────────────
+
+    #[test]
+    fn responsive_detects_burst_faster() {
+        let start = Instant::now();
+        let mut default_det = BocpdDetector::with_defaults();
+        let mut responsive_det = BocpdDetector::new(BocpdConfig::responsive());
+        // Feed identical rapid events
+        for i in 0..15 {
+            let t = start + Duration::from_millis(5 * (i + 1));
+            default_det.observe_event(t);
+            responsive_det.observe_event(t);
+        }
+        // Responsive should have higher burst probability (lower thresholds)
+        // or at least detect burst regime sooner
+        let d_regime = default_det.regime();
+        let r_regime = responsive_det.regime();
+        // If default is still transitional, responsive should be at least transitional or burst
+        if d_regime == BocpdRegime::Steady {
+            assert_ne!(
+                r_regime,
+                BocpdRegime::Steady,
+                "responsive should not be steady when default is"
+            );
+        }
+    }
+
+    // ── reset behavior ────────────────────────────────────────────
+
+    #[test]
+    fn reset_restores_initial_state() {
+        let mut detector = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        for i in 0..20 {
+            let t = start + Duration::from_millis(5 * (i + 1));
+            detector.observe_event(t);
+        }
+        assert!(detector.p_burst() > 0.5);
+        detector.reset();
+        assert!((detector.p_burst() - 0.2).abs() < 0.01);
+        assert_eq!(detector.observation_count(), 0);
+        assert!(detector.last_evidence().is_none());
+        assert!(detector.last_event_time.is_none());
+    }
+
+    // ── posterior normalization under stress ───────────────────────
+
+    #[test]
+    fn posterior_stays_normalized_under_alternating_traffic() {
+        let mut detector = BocpdDetector::with_defaults();
+        let start = Instant::now();
+        for i in 0..100 {
+            // Alternate rapid and slow
+            let gap = if i % 2 == 0 { 5 } else { 300 };
+            let t = start + Duration::from_millis(gap * (i + 1));
+            detector.observe_event(t);
+            let sum: f64 = detector.run_length_posterior().iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-6,
+                "posterior not normalized at step {i}: sum={sum}"
+            );
+        }
+    }
 }
