@@ -6497,6 +6497,7 @@ mod tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
+            annotation: None,
             })
             .collect();
 
@@ -6545,6 +6546,11 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
+        sequence_participants: Vec::new(),
+        sequence_controls: Vec::new(),
+        sequence_notes: Vec::new(),
+        sequence_activations: Vec::new(),
+        sequence_autonumber: false,
         }
     }
     fn count_crossings_bruteforce(
@@ -7797,6 +7803,7 @@ mod tests {
                     span_all: vec![],
                     implicit: false,
                     members: vec![],
+                annotation: None,
                 }
             })
             .collect();
@@ -7853,6 +7860,11 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
+        sequence_participants: Vec::new(),
+        sequence_controls: Vec::new(),
+        sequence_notes: Vec::new(),
+        sequence_activations: Vec::new(),
+        sequence_autonumber: false,
         }
     }
     #[test]
@@ -8877,6 +8889,7 @@ mod tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
+            annotation: None,
             })
             .collect();
 
@@ -8925,6 +8938,11 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
+        sequence_participants: Vec::new(),
+        sequence_controls: Vec::new(),
+        sequence_notes: Vec::new(),
+        sequence_activations: Vec::new(),
+        sequence_autonumber: false,
         }
     }
     #[test]
@@ -8978,6 +8996,7 @@ mod tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
+            annotation: None,
             })
             .collect();
 
@@ -9037,6 +9056,11 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
+        sequence_participants: Vec::new(),
+        sequence_controls: Vec::new(),
+        sequence_notes: Vec::new(),
+        sequence_activations: Vec::new(),
+        sequence_autonumber: false,
         }
     }
     #[test]
@@ -9706,6 +9730,7 @@ mod label_tests {
                     span_all: vec![],
                     implicit: false,
                     members: vec![],
+                annotation: None,
                 }
             })
             .collect();
@@ -9762,6 +9787,11 @@ mod label_tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
+        sequence_participants: Vec::new(),
+        sequence_controls: Vec::new(),
+        sequence_notes: Vec::new(),
+        sequence_activations: Vec::new(),
+        sequence_autonumber: false,
         }
     }
 
@@ -10435,6 +10465,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
+            annotation: None,
             },
             IrNode {
                 id: "B".to_string(),
@@ -10446,6 +10477,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
+            annotation: None,
             },
         ];
 
@@ -10486,6 +10518,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
+            annotation: None,
             },
             IrNode {
                 id: "B".to_string(),
@@ -10497,6 +10530,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
+            annotation: None,
             },
         ];
 
