@@ -205,3 +205,118 @@ fn help_visible_after_question_mark_survives_toggle_cycle() {
     app.update(AppMsg::from(press(KeyCode::Char('?'))));
     assert!(app.help_visible, "third toggle should show help again");
 }
+
+#[test]
+fn esc_does_not_close_help() {
+    // Help is toggled only by '?', not by Esc
+    let mut app = AppModel::new();
+    app.help_visible = true;
+
+    app.update(AppMsg::from(press(KeyCode::Escape)));
+    assert!(
+        app.help_visible,
+        "Esc should NOT close help — only ? toggles it"
+    );
+}
+
+#[test]
+fn esc_does_not_close_debug() {
+    // Debug is toggled only by F12, not by Esc
+    let mut app = AppModel::new();
+    app.debug_visible = true;
+
+    app.update(AppMsg::from(press(KeyCode::Escape)));
+    assert!(
+        app.debug_visible,
+        "Esc should NOT close debug — only F12 toggles it"
+    );
+}
+
+#[test]
+fn esc_does_not_close_perf_hud() {
+    // Perf HUD is toggled only by Ctrl+P, not by Esc
+    let mut app = AppModel::new();
+    app.perf_hud_visible = true;
+
+    app.update(AppMsg::from(press(KeyCode::Escape)));
+    assert!(
+        app.perf_hud_visible,
+        "Esc should NOT close perf HUD — only Ctrl+P toggles it"
+    );
+}
+
+#[test]
+fn esc_priority_palette_before_a11y() {
+    // When both palette and a11y panel are open, Esc should close
+    // only the palette (it consumes the event before a11y handler).
+    let mut app = AppModel::new();
+    app.a11y_panel_visible = true;
+    app.command_palette.open();
+    assert!(app.command_palette.is_visible());
+
+    app.update(AppMsg::from(press(KeyCode::Escape)));
+    assert!(
+        !app.command_palette.is_visible(),
+        "first Esc should close the command palette"
+    );
+    assert!(
+        app.a11y_panel_visible,
+        "a11y panel should remain open after first Esc"
+    );
+
+    // Second Esc closes the a11y panel
+    app.update(AppMsg::from(press(KeyCode::Escape)));
+    assert!(
+        !app.a11y_panel_visible,
+        "second Esc should close the a11y panel"
+    );
+}
+
+#[test]
+fn esc_with_help_and_a11y_closes_only_a11y() {
+    // When help and a11y are both visible, Esc should only close a11y.
+    // Help requires '?' to dismiss.
+    let mut app = AppModel::new();
+    app.help_visible = true;
+    app.a11y_panel_visible = true;
+
+    app.update(AppMsg::from(press(KeyCode::Escape)));
+    assert!(!app.a11y_panel_visible, "Esc should close a11y panel");
+    assert!(app.help_visible, "help should remain visible after Esc");
+}
+
+#[test]
+fn shortcuts_ignored_while_palette_is_open() {
+    // When the command palette is open, global shortcuts like ? and F12
+    // should be consumed by the palette (not toggle overlays).
+    let mut app = AppModel::new();
+    app.command_palette.open();
+    assert!(!app.help_visible);
+    assert!(!app.debug_visible);
+
+    app.update(AppMsg::from(press(KeyCode::Char('?'))));
+    assert!(
+        !app.help_visible,
+        "? should not toggle help while palette is open"
+    );
+
+    app.update(AppMsg::from(press(KeyCode::F(12))));
+    assert!(
+        !app.debug_visible,
+        "F12 should not toggle debug while palette is open"
+    );
+}
+
+#[test]
+fn number_keys_navigate_to_screens() {
+    let mut app = AppModel::new();
+    assert_eq!(app.current_screen, ScreenId::Dashboard);
+
+    // Press '1' to go to screen 1 (Shakespeare is typically screen 1)
+    app.update(AppMsg::from(press(KeyCode::Char('1'))));
+    assert_ne!(
+        app.current_screen,
+        ScreenId::Dashboard,
+        "number key should change screen"
+    );
+}
