@@ -148,4 +148,148 @@ mod tests {
     fn distance_basic() {
         assert!((dist(0.0, 0.0, 3.0, 4.0) - 5.0).abs() < 1e-5);
     }
+
+    #[test]
+    fn distance_same_point() {
+        assert!((dist(5.0, 3.0, 5.0, 3.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn distance_negative_coords() {
+        assert!((dist(-3.0, -4.0, 0.0, 0.0) - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn point_on_line_side_basic() {
+        // Segment from (0,0) to (10,0): point above is front, below is back
+        assert!(point_on_line_side(5.0, 1.0, 0.0, 0.0, 10.0, 0.0));
+        assert!(!point_on_line_side(5.0, -1.0, 0.0, 0.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn point_on_line_side_on_line() {
+        // Point exactly on the line: cross product = 0, which is <= 0 → true
+        assert!(point_on_line_side(5.0, 0.0, 0.0, 0.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn point_to_segment_dist_perpendicular() {
+        // Point at (5,3) perpendicular to segment (0,0)-(10,0)
+        let d = point_to_segment_dist(5.0, 3.0, 0.0, 0.0, 10.0, 0.0);
+        assert!((d - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn point_to_segment_dist_endpoint() {
+        // Point at (15,0) closest to endpoint (10,0) of segment (0,0)-(10,0)
+        let d = point_to_segment_dist(15.0, 0.0, 0.0, 0.0, 10.0, 0.0);
+        assert!((d - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn point_to_segment_dist_degenerate() {
+        // Degenerate segment (zero length) should return distance to point
+        let d = point_to_segment_dist(3.0, 4.0, 0.0, 0.0, 0.0, 0.0);
+        assert!((d - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn point_to_segment_dist_start_endpoint() {
+        // Point closest to start endpoint
+        let d = point_to_segment_dist(-3.0, 0.0, 0.0, 0.0, 10.0, 0.0);
+        assert!((d - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn line_intersection_at_endpoints() {
+        // Lines meeting at (1,0): (0,0)-(1,0) and (1,0)-(1,1)
+        let t = line_intersection(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+        assert!(t.is_some());
+        assert!((t.unwrap() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn line_intersection_no_overlap() {
+        // Two segments that would intersect if extended but don't overlap
+        let t = line_intersection(0.0, 0.0, 1.0, 0.0, 2.0, -1.0, 2.0, 1.0);
+        assert!(t.is_none());
+    }
+
+    #[test]
+    fn normalize_angle_positive() {
+        let a = normalize_angle(0.5);
+        assert!((a - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn normalize_angle_negative() {
+        let a = normalize_angle(-0.5);
+        let expected = std::f32::consts::TAU - 0.5;
+        assert!((a - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn normalize_angle_over_tau() {
+        let a = normalize_angle(std::f32::consts::TAU + 1.0);
+        assert!((a - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn angle_diff_same_angle() {
+        assert!(angle_diff(1.0, 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn angle_diff_opposite() {
+        let d = angle_diff(0.0, std::f32::consts::PI);
+        assert!((d - std::f32::consts::PI).abs() < 1e-5);
+    }
+
+    #[test]
+    fn angle_diff_wrap_around() {
+        // From near 2π to near 0 should be a small positive diff
+        let d = angle_diff(std::f32::consts::TAU - 0.1, 0.1);
+        assert!((d - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn angle_diff_negative_wrap() {
+        // From near 0 to near 2π should be a small negative diff
+        let d = angle_diff(0.1, std::f32::consts::TAU - 0.1);
+        assert!((d + 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn point_to_angle_up() {
+        let a = point_to_angle(0.0, 0.0, 0.0, 1.0);
+        assert!((a - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn point_to_angle_left() {
+        let a = point_to_angle(0.0, 0.0, -1.0, 0.0);
+        assert!((a - std::f32::consts::PI).abs() < 1e-5);
+    }
+
+    #[test]
+    fn circle_intersects_segment_hit() {
+        assert!(circle_intersects_segment(5.0, 2.0, 3.0, 0.0, 0.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn circle_intersects_segment_miss() {
+        assert!(!circle_intersects_segment(5.0, 5.0, 3.0, 0.0, 0.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn circle_intersects_segment_tangent() {
+        // Circle radius exactly equals distance — not intersecting (strict <)
+        assert!(!circle_intersects_segment(5.0, 3.0, 3.0, 0.0, 0.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn circle_intersects_segment_at_endpoint() {
+        // Circle near endpoint of segment
+        assert!(circle_intersects_segment(11.0, 0.0, 2.0, 0.0, 0.0, 10.0, 0.0));
+    }
 }
