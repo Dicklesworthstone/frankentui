@@ -362,4 +362,150 @@ mod tests {
         assert_eq!(wad.lump_data(0), &[0xDE, 0xAD, 0xBE, 0xEF]);
         assert!(wad.find_lump("TESTLUMP").is_some());
     }
+
+    #[test]
+    fn pwad_header_accepted() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"PWAD");
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend_from_slice(&12i32.to_le_bytes());
+        let wad = WadFile::parse(data).unwrap();
+        assert_eq!(wad.directory.len(), 0);
+    }
+
+    #[test]
+    fn find_lump_case_insensitive() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&1i32.to_le_bytes());
+        data.extend_from_slice(&16i32.to_le_bytes());
+        data.extend_from_slice(&[0; 4]); // lump data placeholder
+        data.extend_from_slice(&12i32.to_le_bytes());
+        data.extend_from_slice(&4i32.to_le_bytes());
+        data.extend_from_slice(b"THINGS\0\0");
+
+        let wad = WadFile::parse(data).unwrap();
+        // Search with lowercase should find uppercase lump
+        assert!(wad.find_lump("things").is_some());
+        assert!(wad.find_lump("THINGS").is_some());
+    }
+
+    #[test]
+    fn find_lump_not_found() {
+        let data = make_minimal_wad();
+        let wad = WadFile::parse(data).unwrap();
+        assert!(wad.find_lump("MISSING").is_none());
+    }
+
+    #[test]
+    fn lump_by_name_error() {
+        let data = make_minimal_wad();
+        let wad = WadFile::parse(data).unwrap();
+        let err = wad.lump_by_name("MISSING");
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(msg.contains("MISSING"));
+    }
+
+    fn make_two_lump_wad() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&2i32.to_le_bytes()); // 2 lumps
+        data.extend_from_slice(&20i32.to_le_bytes()); // dir at byte 20
+
+        // Lump 0 data at offset 12 (4 bytes)
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        // Lump 1 data at offset 16 (4 bytes)
+        data.extend_from_slice(&[0x05, 0x06, 0x07, 0x08]);
+
+        // Directory entry 0 at offset 20
+        data.extend_from_slice(&12i32.to_le_bytes()); // filepos
+        data.extend_from_slice(&4i32.to_le_bytes()); // size
+        data.extend_from_slice(b"MAP01\0\0\0"); // name
+
+        // Directory entry 1 at offset 36
+        data.extend_from_slice(&16i32.to_le_bytes()); // filepos
+        data.extend_from_slice(&4i32.to_le_bytes()); // size
+        data.extend_from_slice(b"THINGS\0\0"); // name
+
+        data
+    }
+
+    #[test]
+    fn find_lump_after_skips_earlier() {
+        let data = make_two_lump_wad();
+        let wad = WadFile::parse(data).unwrap();
+        // find_lump_after(name, start_index) searches after start_index
+        let idx = wad.find_lump_after("THINGS", 0);
+        assert_eq!(idx, Some(1));
+        // Searching after index 1 should find nothing
+        let idx = wad.find_lump_after("THINGS", 1);
+        assert_eq!(idx, None);
+    }
+
+    #[test]
+    fn lump_data_out_of_range_returns_empty() {
+        // Create a WAD with a lump that has filepos beyond data
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&1i32.to_le_bytes());
+        data.extend_from_slice(&12i32.to_le_bytes()); // dir at byte 12
+
+        // Directory entry at offset 12
+        data.extend_from_slice(&9999i32.to_le_bytes()); // filepos way beyond data
+        data.extend_from_slice(&4i32.to_le_bytes());
+        data.extend_from_slice(b"BADLUMP\0");
+
+        let wad = WadFile::parse(data).unwrap();
+        assert!(wad.lump_data(0).is_empty());
+    }
+
+    #[test]
+    fn parse_vertices_from_lump() {
+        // Build a WAD with VERTEXES lump containing 2 vertices
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&1i32.to_le_bytes());
+        data.extend_from_slice(&20i32.to_le_bytes()); // dir at byte 20
+
+        // Vertex data at offset 12 (2 verts × 4 bytes = 8 bytes)
+        data.extend_from_slice(&100i16.to_le_bytes()); // v0.x
+        data.extend_from_slice(&200i16.to_le_bytes()); // v0.y
+        data.extend_from_slice(&(-50i16).to_le_bytes()); // v1.x
+        data.extend_from_slice(&300i16.to_le_bytes()); // v1.y
+
+        // Directory entry at offset 20
+        data.extend_from_slice(&12i32.to_le_bytes()); // filepos
+        data.extend_from_slice(&8i32.to_le_bytes()); // size
+        data.extend_from_slice(b"VERTEXES"); // name
+
+        let wad = WadFile::parse(data).unwrap();
+        let verts = wad.parse_vertices(0);
+        assert_eq!(verts.len(), 2);
+        assert_eq!(verts[0].x, 100);
+        assert_eq!(verts[0].y, 200);
+        assert_eq!(verts[1].x, -50);
+        assert_eq!(verts[1].y, 300);
+    }
+
+    #[test]
+    fn bad_directory_offset() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&1i32.to_le_bytes());
+        data.extend_from_slice(&9999i32.to_le_bytes()); // dir offset way beyond data
+        assert!(WadFile::parse(data).is_err());
+    }
+
+    #[test]
+    fn wad_error_display() {
+        assert_eq!(format!("{}", WadError::TooSmall), "WAD data too small");
+        assert_eq!(format!("{}", WadError::BadHeader), "Invalid WAD header");
+        assert_eq!(
+            format!("{}", WadError::BadDirectory),
+            "Invalid WAD directory"
+        );
+        assert!(format!("{}", WadError::LumpNotFound("X".into())).contains("X"));
+        assert!(format!("{}", WadError::BadLumpSize("Y".into())).contains("Y"));
+    }
 }
