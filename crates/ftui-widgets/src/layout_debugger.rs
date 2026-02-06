@@ -333,4 +333,292 @@ mod tests {
         ));
         assert!(dbg.records().is_empty());
     }
+
+    // --- LayoutConstraints ---
+
+    #[test]
+    fn constraints_new_and_fields() {
+        let c = LayoutConstraints::new(5, 80, 3, 24);
+        assert_eq!(c.min_width, 5);
+        assert_eq!(c.max_width, 80);
+        assert_eq!(c.min_height, 3);
+        assert_eq!(c.max_height, 24);
+    }
+
+    #[test]
+    fn constraints_unconstrained_all_zero() {
+        let c = LayoutConstraints::unconstrained();
+        assert_eq!(c.min_width, 0);
+        assert_eq!(c.max_width, 0);
+        assert_eq!(c.min_height, 0);
+        assert_eq!(c.max_height, 0);
+    }
+
+    #[test]
+    fn constraints_width_overflow() {
+        let c = LayoutConstraints::new(0, 10, 0, 0);
+        assert!(!c.width_overflow(10));   // at max = ok
+        assert!(c.width_overflow(11));    // over max = overflow
+        assert!(!c.width_overflow(5));    // under max = ok
+    }
+
+    #[test]
+    fn constraints_width_overflow_unconstrained() {
+        let c = LayoutConstraints::new(0, 0, 0, 0); // max_width=0 = unconstrained
+        assert!(!c.width_overflow(9999)); // never overflows
+    }
+
+    #[test]
+    fn constraints_height_overflow() {
+        let c = LayoutConstraints::new(0, 0, 0, 10);
+        assert!(!c.height_overflow(10));
+        assert!(c.height_overflow(11));
+    }
+
+    #[test]
+    fn constraints_width_underflow() {
+        let c = LayoutConstraints::new(5, 0, 0, 0);
+        assert!(!c.width_underflow(5));  // at min = ok
+        assert!(c.width_underflow(4));   // below min = underflow
+        assert!(!c.width_underflow(10)); // above min = ok
+    }
+
+    #[test]
+    fn constraints_height_underflow() {
+        let c = LayoutConstraints::new(0, 0, 3, 0);
+        assert!(!c.height_underflow(3));
+        assert!(c.height_underflow(2));
+    }
+
+    // --- LayoutRecord ---
+
+    #[test]
+    fn record_new_and_fields() {
+        let r = LayoutRecord::new(
+            "MyWidget",
+            Rect::new(0, 0, 20, 10),
+            Rect::new(0, 0, 15, 8),
+            LayoutConstraints::new(5, 25, 3, 12),
+        );
+        assert_eq!(r.widget_name, "MyWidget");
+        assert_eq!(r.area_requested.width, 20);
+        assert_eq!(r.area_received.width, 15);
+        assert!(r.children.is_empty());
+    }
+
+    #[test]
+    fn record_with_child_appends() {
+        let parent = LayoutRecord::new(
+            "Parent",
+            Rect::new(0, 0, 20, 10),
+            Rect::new(0, 0, 20, 10),
+            LayoutConstraints::unconstrained(),
+        )
+        .with_child(LayoutRecord::new(
+            "Child1",
+            Rect::new(0, 0, 10, 5),
+            Rect::new(0, 0, 10, 5),
+            LayoutConstraints::unconstrained(),
+        ))
+        .with_child(LayoutRecord::new(
+            "Child2",
+            Rect::new(10, 0, 10, 5),
+            Rect::new(10, 0, 10, 5),
+            LayoutConstraints::unconstrained(),
+        ));
+        assert_eq!(parent.children.len(), 2);
+        assert_eq!(parent.children[0].widget_name, "Child1");
+        assert_eq!(parent.children[1].widget_name, "Child2");
+    }
+
+    #[test]
+    fn record_overflow_detected() {
+        // width overflow
+        let r = LayoutRecord::new(
+            "Widget",
+            Rect::new(0, 0, 20, 10),
+            Rect::new(0, 0, 20, 10),
+            LayoutConstraints::new(0, 15, 0, 0), // max_width=15, received=20
+        );
+        assert!(r.overflow());
+    }
+
+    #[test]
+    fn record_underflow_detected() {
+        let r = LayoutRecord::new(
+            "Widget",
+            Rect::new(0, 0, 20, 10),
+            Rect::new(0, 0, 3, 10),
+            LayoutConstraints::new(5, 0, 0, 0), // min_width=5, received=3
+        );
+        assert!(r.underflow());
+    }
+
+    #[test]
+    fn record_no_violation() {
+        let r = LayoutRecord::new(
+            "Widget",
+            Rect::new(0, 0, 10, 5),
+            Rect::new(0, 0, 10, 5),
+            LayoutConstraints::new(5, 15, 3, 8),
+        );
+        assert!(!r.overflow());
+        assert!(!r.underflow());
+    }
+
+    // --- LayoutDebugger ---
+
+    #[test]
+    fn debugger_default_disabled() {
+        let dbg = LayoutDebugger::new();
+        assert!(!dbg.enabled());
+        assert!(dbg.records().is_empty());
+    }
+
+    #[test]
+    fn debugger_enable_disable() {
+        let mut dbg = LayoutDebugger::new();
+        dbg.set_enabled(true);
+        assert!(dbg.enabled());
+        dbg.set_enabled(false);
+        assert!(!dbg.enabled());
+    }
+
+    #[test]
+    fn debugger_clear() {
+        let mut dbg = LayoutDebugger::new();
+        dbg.set_enabled(true);
+        dbg.record(LayoutRecord::new(
+            "Widget",
+            Rect::new(0, 0, 10, 5),
+            Rect::new(0, 0, 10, 5),
+            LayoutConstraints::unconstrained(),
+        ));
+        assert_eq!(dbg.records().len(), 1);
+        dbg.clear();
+        assert!(dbg.records().is_empty());
+    }
+
+    #[test]
+    fn debugger_records_multiple() {
+        let mut dbg = LayoutDebugger::new();
+        dbg.set_enabled(true);
+        for i in 0..5 {
+            dbg.record(LayoutRecord::new(
+                format!("W{i}"),
+                Rect::new(0, 0, 10, 5),
+                Rect::new(0, 0, 10, 5),
+                LayoutConstraints::unconstrained(),
+            ));
+        }
+        assert_eq!(dbg.records().len(), 5);
+    }
+
+    // --- export_dot edge cases ---
+
+    #[test]
+    fn export_dot_empty() {
+        let dbg = LayoutDebugger::new();
+        let dot = dbg.export_dot();
+        assert!(dot.starts_with("digraph Layout"));
+        assert!(dot.ends_with("}
+"));
+        assert!(!dot.contains("n0"));
+    }
+
+    #[test]
+    fn export_dot_escapes_quotes() {
+        let mut dbg = LayoutDebugger::new();
+        dbg.set_enabled(true);
+        // Name containing a double-quote character
+        let name = String::from("Wid") + &String::from('"') + "get";
+        dbg.record(LayoutRecord::new(
+            &name,
+            Rect::new(0, 0, 10, 5),
+            Rect::new(0, 0, 10, 5),
+            LayoutConstraints::unconstrained(),
+        ));
+        let dot = dbg.export_dot();
+        // Double quotes should be replaced with single quotes
+        assert!(dot.contains("Wid'get"));
+    }
+
+    #[test]
+    fn export_dot_nested_children() {
+        let mut dbg = LayoutDebugger::new();
+        dbg.set_enabled(true);
+        let root = LayoutRecord::new(
+            "Root",
+            Rect::new(0, 0, 40, 20),
+            Rect::new(0, 0, 40, 20),
+            LayoutConstraints::unconstrained(),
+        )
+        .with_child(
+            LayoutRecord::new(
+                "Mid",
+                Rect::new(0, 0, 20, 10),
+                Rect::new(0, 0, 20, 10),
+                LayoutConstraints::unconstrained(),
+            )
+            .with_child(LayoutRecord::new(
+                "Leaf",
+                Rect::new(0, 0, 10, 5),
+                Rect::new(0, 0, 10, 5),
+                LayoutConstraints::unconstrained(),
+            )),
+        );
+        dbg.record(root);
+        let dot = dbg.export_dot();
+        assert!(dot.contains("Root"));
+        assert!(dot.contains("Mid"));
+        assert!(dot.contains("Leaf"));
+        // Should have edges: n0->n1, n1->n2
+        assert!(dot.contains("n0 -> n1"));
+        assert!(dot.contains("n1 -> n2"));
+    }
+
+    // --- render_debug edge cases ---
+
+    #[test]
+    fn render_debug_disabled_noop() {
+        let dbg = LayoutDebugger::new(); // disabled
+        let mut buf = Buffer::new(30, 4);
+        let blank_cell = *buf.get(0, 0).unwrap();
+        dbg.render_debug(Rect::new(0, 0, 30, 4), &mut buf);
+        assert_eq!(*buf.get(0, 0).unwrap(), blank_cell);
+    }
+
+    #[test]
+    fn render_debug_overflow_uses_red_color() {
+        let mut dbg = LayoutDebugger::new();
+        dbg.set_enabled(true);
+        dbg.record(LayoutRecord::new(
+            "Over",
+            Rect::new(0, 0, 20, 10),
+            Rect::new(0, 0, 20, 10),
+            LayoutConstraints::new(0, 10, 0, 0), // width overflows
+        ));
+        let mut buf = Buffer::new(60, 4);
+        dbg.render_debug(Rect::new(0, 0, 60, 4), &mut buf);
+        let cell = buf.get(0, 0).unwrap();
+        // Should be red-ish (240, 80, 80)
+        assert_eq!(cell.fg, PackedRgba::rgb(240, 80, 80));
+    }
+
+    #[test]
+    fn render_debug_underflow_uses_yellow_color() {
+        let mut dbg = LayoutDebugger::new();
+        dbg.set_enabled(true);
+        dbg.record(LayoutRecord::new(
+            "Under",
+            Rect::new(0, 0, 20, 10),
+            Rect::new(0, 0, 3, 10),
+            LayoutConstraints::new(5, 0, 0, 0), // width underflows
+        ));
+        let mut buf = Buffer::new(60, 4);
+        dbg.render_debug(Rect::new(0, 0, 60, 4), &mut buf);
+        let cell = buf.get(0, 0).unwrap();
+        // Should be yellow-ish (240, 200, 80)
+        assert_eq!(cell.fg, PackedRgba::rgb(240, 200, 80));
+    }
 }
