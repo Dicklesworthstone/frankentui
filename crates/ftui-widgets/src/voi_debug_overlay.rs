@@ -430,4 +430,198 @@ mod tests {
             "small-area render should be no-op: before={before:?} after={after:?}"
         );
     }
+
+    // --- Style defaults ---
+
+    #[test]
+    fn overlay_style_default() {
+        let style = VoiOverlayStyle::default();
+        assert!(style.background.is_none());
+        assert!(matches!(style.border_type, BorderType::Rounded));
+    }
+
+    // --- Header formatting ---
+
+    #[test]
+    fn build_lines_header_with_tick_and_source() {
+        let data = VoiOverlayData {
+            title: "Test".to_string(),
+            tick: Some(100),
+            source: Some("resize".to_string()),
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(40);
+        assert!(lines[0].contains("Test (tick 100) [resize]"));
+    }
+
+    #[test]
+    fn build_lines_header_no_tick_no_source() {
+        let data = VoiOverlayData {
+            title: "Plain".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(20);
+        assert_eq!(lines[0], "Plain");
+    }
+
+    // --- Decision verdict ---
+
+    #[test]
+    fn build_lines_skip_verdict() {
+        let data = VoiOverlayData {
+            title: "Test".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: Some(VoiDecisionSummary {
+                event_idx: 1,
+                should_sample: false,
+                reason: "cost_too_high".to_string(),
+                score: 0.01,
+                cost: 0.1,
+                log_bayes_factor: -1.0,
+                e_value: 0.5,
+                e_threshold: 0.95,
+                boundary_score: 0.2,
+            }),
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(40);
+        assert!(
+            lines.iter().any(|l| l.contains("Decision: SKIP")),
+            "expected SKIP verdict: {lines:?}"
+        );
+    }
+
+    // --- Observation only (no decision) ---
+
+    #[test]
+    fn build_lines_observation_only() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: Some(VoiObservationSummary {
+                sample_idx: 10,
+                violated: true,
+                posterior_mean: 0.456,
+                alpha: 5.0,
+                beta: 10.0,
+            }),
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(40);
+        assert!(
+            lines.iter().any(|l| l.contains("violated: true")),
+            "missing violated observation: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("mu=0.456")),
+            "missing posterior mean: {lines:?}"
+        );
+    }
+
+    // --- Ledger formatting ---
+
+    #[test]
+    fn build_lines_ledger_skip_entry() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: vec![VoiLedgerEntry::Decision {
+                event_idx: 99,
+                should_sample: false,
+                voi_gain: 0.001,
+                log_bayes_factor: -0.5,
+            }],
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(40);
+        assert!(
+            lines.iter().any(|l| l.contains("D# 99 -")),
+            "expected skip marker: {lines:?}"
+        );
+    }
+
+    // --- Posterior formatting ---
+
+    #[test]
+    fn build_lines_posterior_values() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: VoiPosteriorSummary {
+                alpha: 1.0,
+                beta: 1.0,
+                mean: 0.5,
+                variance: 0.0833,
+                expected_variance_after: 0.0500,
+                voi_gain: 0.0333,
+            },
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(40);
+        assert!(
+            lines.iter().any(|l| l.contains("a=1.00") && l.contains("b=1.00")),
+            "missing alpha/beta: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("mu=0.5000")),
+            "missing mean: {lines:?}"
+        );
+    }
+
+    // --- with_style builder ---
+
+    #[test]
+    fn with_style_replaces_style() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let custom = VoiOverlayStyle {
+            background: Some(PackedRgba::rgb(255, 0, 0)),
+            border_type: BorderType::Square,
+            ..VoiOverlayStyle::default()
+        };
+        let styled = overlay.with_style(custom);
+        assert_eq!(styled.style.background, Some(PackedRgba::rgb(255, 0, 0)));
+    }
+
+    // --- Struct Debug impls ---
+
+    #[test]
+    fn structs_implement_debug() {
+        let posterior = sample_posterior();
+        let _ = format!("{posterior:?}");
+
+        let data = sample_data();
+        let _ = format!("{data:?}");
+
+        let overlay = VoiDebugOverlay::new(data);
+        let _ = format!("{overlay:?}");
+
+        let style = VoiOverlayStyle::default();
+        let _ = format!("{style:?}");
+    }
 }
