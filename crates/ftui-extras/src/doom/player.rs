@@ -304,4 +304,103 @@ mod tests {
         p.look(0.0, -20.0);
         assert!(p.pitch >= -1.2);
     }
+
+    #[test]
+    fn player_thrust_adds_momentum() {
+        let mut p = Player::default();
+        p.thrust(0.0, 5.0); // thrust right
+        assert!(p.mom_x > 0.0, "x momentum should increase");
+        assert!(p.mom_y.abs() < 0.01, "y momentum should be near zero");
+    }
+
+    #[test]
+    fn player_thrust_running_multiplier() {
+        let mut p1 = Player::default();
+        let mut p2 = Player::default();
+        p2.running = true;
+        p1.thrust(0.0, 5.0);
+        p2.thrust(0.0, 5.0);
+        assert!(
+            p2.mom_x > p1.mom_x,
+            "running player should have more momentum"
+        );
+        assert!(
+            (p2.mom_x / p1.mom_x - PLAYER_RUN_MULT).abs() < 0.01,
+            "running should apply run multiplier"
+        );
+    }
+
+    #[test]
+    fn move_forward_uses_angle() {
+        let mut p = Player::default();
+        p.angle = std::f32::consts::FRAC_PI_2; // facing up (y+)
+        p.move_forward(1.0);
+        assert!(
+            p.mom_y.abs() > p.mom_x.abs(),
+            "forward at pi/2 should mostly add y momentum"
+        );
+    }
+
+    #[test]
+    fn strafe_perpendicular_to_facing() {
+        let mut p = Player::default();
+        p.angle = 0.0; // facing right
+        p.strafe(1.0); // strafe right should be downward (angle - pi/2)
+        assert!(
+            p.mom_y.abs() > p.mom_x.abs(),
+            "strafing should mostly add perpendicular momentum"
+        );
+    }
+
+    #[test]
+    fn look_wraps_yaw() {
+        let mut p = Player::default();
+        p.look(std::f32::consts::TAU + 0.5, 0.0);
+        assert!(p.angle >= 0.0 && p.angle < std::f32::consts::TAU);
+    }
+
+    #[test]
+    fn spawn_resets_momentum() {
+        let mut p = Player::default();
+        p.mom_x = 10.0;
+        p.mom_y = 20.0;
+        p.mom_z = 5.0;
+        p.bob_phase = 3.0;
+        p.spawn(50.0, 60.0, 1.0);
+        assert_eq!(p.mom_x, 0.0);
+        assert_eq!(p.mom_y, 0.0);
+        assert_eq!(p.mom_z, 0.0);
+        assert_eq!(p.bob_phase, 0.0);
+        assert!(p.on_ground);
+    }
+
+    #[test]
+    fn bob_offset_zero_when_still() {
+        let p = Player::default();
+        // bob_amount is 0 by default
+        assert_eq!(p.bob_offset(), 0.0);
+    }
+
+    #[test]
+    fn bob_offset_nonzero_with_bob_amount() {
+        let mut p = Player::default();
+        p.bob_amount = 1.0;
+        p.bob_phase = std::f32::consts::FRAC_PI_4; // sin(pi/2) = 1.0
+        let offset = p.bob_offset();
+        assert!(
+            offset.abs() > 0.0,
+            "bob_offset should be nonzero when bob_amount and phase are set"
+        );
+    }
+
+    #[test]
+    fn default_player_values() {
+        let p = Player::default();
+        assert_eq!(p.armor, 0);
+        assert!(!p.running);
+        assert!(!p.noclip);
+        assert!(!p.god_mode);
+        assert_eq!(p.sector, 0);
+        assert_eq!(p.floor_z, 0.0);
+    }
 }

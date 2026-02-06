@@ -934,4 +934,193 @@ mod tests {
         // Single pixel should be set
         assert!(painter.get(0, 0), "Single pixel should be set");
     }
+
+    // =========================================================================
+    // Helper function tests
+    // =========================================================================
+
+    #[test]
+    fn ping_pong_within_range() {
+        let v = ping_pong(0.5, 0.0, 1.0);
+        assert!((v - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ping_pong_bounces_back() {
+        // value=1.5 in range [0,1]: period=2, 1.5 % 2 = 1.5 > 1.0, so 2.0-1.5 = 0.5
+        let v = ping_pong(1.5, 0.0, 1.0);
+        assert!((v - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ping_pong_negative_value() {
+        // rem_euclid handles negative correctly
+        let v = ping_pong(-0.5, 0.0, 1.0);
+        // -0.5 rem_euclid 2.0 = 1.5, which > 1.0, so 2.0-1.5 = 0.5
+        assert!((v - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ordered_pair_already_ordered() {
+        let (a, b) = ordered_pair(1.0, 3.0);
+        assert!((a - 1.0).abs() < 1e-6);
+        assert!((b - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ordered_pair_swaps() {
+        let (a, b) = ordered_pair(5.0, 2.0);
+        assert!((a - 2.0).abs() < 1e-6);
+        assert!((b - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lerp_color_at_zero() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(255, 255, 255);
+        let c = lerp_color(a, b, 0.0);
+        assert_eq!(c.r(), 0);
+        assert_eq!(c.g(), 0);
+        assert_eq!(c.b(), 0);
+    }
+
+    #[test]
+    fn lerp_color_at_one() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(100, 150, 200);
+        let c = lerp_color(a, b, 1.0);
+        assert_eq!(c.r(), 100);
+        assert_eq!(c.g(), 150);
+        assert_eq!(c.b(), 200);
+    }
+
+    #[test]
+    fn lerp_color_midpoint() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(200, 100, 50);
+        let c = lerp_color(a, b, 0.5);
+        assert_eq!(c.r(), 100);
+        assert_eq!(c.g(), 50);
+        assert_eq!(c.b(), 25);
+    }
+
+    #[test]
+    fn lerp_color_clamps_t() {
+        let a = PackedRgba::rgb(10, 20, 30);
+        let b = PackedRgba::rgb(100, 200, 250);
+        let under = lerp_color(a, b, -1.0);
+        assert_eq!(under.r(), 10);
+        let over = lerp_color(a, b, 2.0);
+        assert_eq!(over.r(), 100);
+    }
+
+    #[test]
+    fn gradient_color_at_boundaries() {
+        let stops = [
+            PackedRgba::rgb(255, 0, 0),
+            PackedRgba::rgb(0, 255, 0),
+            PackedRgba::rgb(0, 0, 255),
+            PackedRgba::rgb(255, 255, 255),
+        ];
+        // t=0 should be stop 0
+        let c0 = gradient_color(&stops, 0.0);
+        assert_eq!(c0.r(), 255);
+        assert_eq!(c0.g(), 0);
+        // t=1 should be stop 3
+        let c1 = gradient_color(&stops, 1.0);
+        assert_eq!(c1.r(), 255);
+        assert_eq!(c1.g(), 255);
+    }
+
+    #[test]
+    fn ball_count_full_quality() {
+        let params = MetaballsParams::default();
+        let total = params.balls.len();
+        assert_eq!(ball_count_for_quality(&params, FxQuality::Full), total);
+    }
+
+    #[test]
+    fn ball_count_off_is_zero() {
+        let params = MetaballsParams::default();
+        assert_eq!(ball_count_for_quality(&params, FxQuality::Off), 0);
+    }
+
+    #[test]
+    fn ball_count_reduced_leq_full() {
+        let params = MetaballsParams::default();
+        let full = ball_count_for_quality(&params, FxQuality::Full);
+        let reduced = ball_count_for_quality(&params, FxQuality::Reduced);
+        assert!(reduced <= full);
+    }
+
+    #[test]
+    fn ball_count_minimal_leq_reduced() {
+        let params = MetaballsParams::default();
+        let reduced = ball_count_for_quality(&params, FxQuality::Reduced);
+        let minimal = ball_count_for_quality(&params, FxQuality::Minimal);
+        assert!(minimal <= reduced);
+    }
+
+    #[test]
+    fn thresholds_glow_less_than_threshold() {
+        let params = MetaballsParams::default();
+        let (glow, thresh) = thresholds(&params);
+        assert!(glow < thresh);
+    }
+
+    #[test]
+    fn plasma_adapter_set_palette() {
+        let mut adapter = PlasmaCanvasAdapter::new(PlasmaPalette::Neon);
+        adapter.set_palette(PlasmaPalette::Ocean);
+        // Should not panic; internal palette should be updated
+    }
+
+    #[test]
+    fn plasma_adapter_default_is_theme() {
+        let adapter = PlasmaCanvasAdapter::default();
+        // Default adapter should work without panicking on fill
+        let theme = default_theme();
+        let mut p = Painter::new(4, 4, Mode::Braille);
+        let mut adapter = adapter;
+        adapter.fill(&mut p, 0.0, FxQuality::Minimal, &theme);
+    }
+
+    #[test]
+    fn metaballs_with_params() {
+        let params = MetaballsParams::default();
+        let adapter = MetaballsCanvasAdapter::with_params(params.clone());
+        assert_eq!(adapter.params().balls.len(), params.balls.len());
+    }
+
+    #[test]
+    fn metaballs_set_params() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        let original_count = adapter.params().balls.len();
+        let mut params = MetaballsParams::default();
+        params.balls.clear();
+        adapter.set_params(params);
+        assert_eq!(adapter.params().balls.len(), 0);
+        assert_ne!(original_count, 0);
+    }
+
+    #[test]
+    fn plasma_all_quality_levels() {
+        let theme = default_theme();
+        let mut adapter = PlasmaCanvasAdapter::theme();
+        for quality in [FxQuality::Full, FxQuality::Reduced, FxQuality::Minimal] {
+            let mut p = Painter::new(8, 8, Mode::Braille);
+            adapter.fill(&mut p, 1.0, quality, &theme);
+            // Should not panic and should set some pixels
+            let mut count = 0;
+            let (w, h) = p.size();
+            for y in 0..h {
+                for x in 0..w {
+                    if p.get(x as i32, y as i32) {
+                        count += 1;
+                    }
+                }
+            }
+            assert!(count > 0, "Quality {quality:?} should set some pixels");
+        }
+    }
 }

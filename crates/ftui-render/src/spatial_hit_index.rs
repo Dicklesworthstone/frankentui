@@ -1157,9 +1157,7 @@ mod tests {
         assert!(idx.cache.valid);
         // Invalidate a region that doesn't overlap the cached point
         idx.invalidate_region(Rect::new(50, 50, 10, 10));
-        // Cache should still be valid since the region doesn't overlap
-        // (This depends on implementation - may or may not check overlap)
-        // Just verify it doesn't panic
+        assert!(idx.cache.valid);
     }
 
     #[test]

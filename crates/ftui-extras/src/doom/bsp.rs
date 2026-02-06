@@ -119,4 +119,198 @@ mod tests {
             &[10.0, 0.0, 0.0, 10.0]
         ));
     }
+
+    #[test]
+    fn bbox_visible_corner_in_fov() {
+        // Viewer at origin looking right (angle=0), bbox corner at (5,0) is in FOV
+        assert!(bbox_visible(
+            0.0,
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+            &[1.0, -1.0, 4.0, 6.0]
+        ));
+    }
+
+    #[test]
+    fn bsp_traverse_empty_map() {
+        let map = DoomMap {
+            name: "EMPTY".into(),
+            vertices: vec![],
+            linedefs: vec![],
+            sidedefs: vec![],
+            sectors: vec![],
+            segs: vec![],
+            subsectors: vec![],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut visited = vec![];
+        bsp_traverse(&map, 0.0, 0.0, &mut |_ss| {
+            visited.push(0);
+            true
+        });
+        assert!(visited.is_empty(), "Empty map should visit nothing");
+    }
+
+    #[test]
+    fn bsp_traverse_single_subsector() {
+        use crate::doom::map::SubSector;
+        let map = DoomMap {
+            name: "SINGLE".into(),
+            vertices: vec![],
+            linedefs: vec![],
+            sidedefs: vec![],
+            sectors: vec![],
+            segs: vec![],
+            subsectors: vec![SubSector {
+                num_segs: 0,
+                first_seg: 0,
+            }],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut visited = vec![];
+        bsp_traverse(&map, 0.0, 0.0, &mut |ss| {
+            visited.push(ss);
+            true
+        });
+        assert_eq!(visited, vec![0], "Should visit the single subsector");
+    }
+
+    #[test]
+    fn bsp_traverse_two_subsectors() {
+        use crate::doom::map::{Node, SubSector};
+        // One node splitting left/right at x=0 (partition goes along y-axis)
+        let map = DoomMap {
+            name: "TWO".into(),
+            vertices: vec![],
+            linedefs: vec![],
+            sidedefs: vec![],
+            sectors: vec![],
+            segs: vec![],
+            subsectors: vec![
+                SubSector {
+                    num_segs: 0,
+                    first_seg: 0,
+                },
+                SubSector {
+                    num_segs: 0,
+                    first_seg: 0,
+                },
+            ],
+            nodes: vec![Node {
+                x: 0.0,
+                y: 0.0,
+                dx: 0.0,
+                dy: 1.0,
+                bbox_right: [0.0; 4],
+                bbox_left: [0.0; 4],
+                right_child: NodeChild::SubSector(0),
+                left_child: NodeChild::SubSector(1),
+            }],
+            things: vec![],
+        };
+        let mut visited = vec![];
+        bsp_traverse(&map, 5.0, 0.0, &mut |ss| {
+            visited.push(ss);
+            true
+        });
+        assert_eq!(visited.len(), 2, "Should visit both subsectors");
+        // Viewer at x=5 with partition along y-axis: cross product > 0 → back side
+        // So left_child (SubSector 1) is near, right_child (SubSector 0) is far
+        assert_eq!(visited[0], 1);
+        assert_eq!(visited[1], 0);
+    }
+
+    #[test]
+    fn bsp_traverse_early_exit() {
+        use crate::doom::map::{Node, SubSector};
+        let map = DoomMap {
+            name: "EARLY".into(),
+            vertices: vec![],
+            linedefs: vec![],
+            sidedefs: vec![],
+            sectors: vec![],
+            segs: vec![],
+            subsectors: vec![
+                SubSector {
+                    num_segs: 0,
+                    first_seg: 0,
+                },
+                SubSector {
+                    num_segs: 0,
+                    first_seg: 0,
+                },
+            ],
+            nodes: vec![Node {
+                x: 0.0,
+                y: 0.0,
+                dx: 0.0,
+                dy: 1.0,
+                bbox_right: [0.0; 4],
+                bbox_left: [0.0; 4],
+                right_child: NodeChild::SubSector(0),
+                left_child: NodeChild::SubSector(1),
+            }],
+            things: vec![],
+        };
+        let mut visited = vec![];
+        bsp_traverse(&map, 5.0, 0.0, &mut |ss| {
+            visited.push(ss);
+            false // Stop after first
+        });
+        assert_eq!(
+            visited.len(),
+            1,
+            "Early exit should stop after first subsector"
+        );
+    }
+
+    #[test]
+    fn bsp_traverse_viewer_on_left_side() {
+        use crate::doom::map::{Node, SubSector};
+        let map = DoomMap {
+            name: "LEFT".into(),
+            vertices: vec![],
+            linedefs: vec![],
+            sidedefs: vec![],
+            sectors: vec![],
+            segs: vec![],
+            subsectors: vec![
+                SubSector {
+                    num_segs: 0,
+                    first_seg: 0,
+                },
+                SubSector {
+                    num_segs: 0,
+                    first_seg: 0,
+                },
+            ],
+            nodes: vec![Node {
+                x: 0.0,
+                y: 0.0,
+                dx: 0.0,
+                dy: 1.0,
+                bbox_right: [0.0; 4],
+                bbox_left: [0.0; 4],
+                right_child: NodeChild::SubSector(0),
+                left_child: NodeChild::SubSector(1),
+            }],
+            things: vec![],
+        };
+        let mut visited = vec![];
+        // Viewer at x=-5: cross = (-5)*1 - (0)*0 = -5, which is <= 0 → front side
+        // So right_child (SubSector 0) is near, left_child (SubSector 1) is far
+        bsp_traverse(&map, -5.0, 0.0, &mut |ss| {
+            visited.push(ss);
+            true
+        });
+        assert_eq!(visited.len(), 2);
+        assert_eq!(
+            visited[0], 0,
+            "Right subsector should be visited first for front-side viewer"
+        );
+        assert_eq!(visited[1], 1);
+    }
 }
