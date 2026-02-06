@@ -8,9 +8,12 @@
 //! - Deterministic micro-bench (queries/sec)
 //! - HintRanker evidence ledger for keybinding hints
 
+use std::cell::Cell;
 use std::time::Instant;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -121,6 +124,8 @@ pub struct CommandPaletteEvidenceLab {
     hint_ranker: HintRanker,
     hint_ledger: Vec<RankingEvidence>,
     tick_count: u64,
+    /// Cached palette area for mouse hit-testing.
+    layout_palette: Cell<Rect>,
 }
 
 impl Default for CommandPaletteEvidenceLab {
@@ -147,10 +152,51 @@ impl CommandPaletteEvidenceLab {
             hint_ranker,
             hint_ledger,
             tick_count: 0,
+            layout_palette: Cell::new(Rect::default()),
         };
 
         lab.apply_filter();
         lab
+    }
+
+    /// Handle mouse interactions on the palette area.
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        let area = self.layout_palette.get();
+        if !area.contains(x, y) {
+            return;
+        }
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Clicking navigates results via keyboard events
+                let event = Event::Key(KeyEvent {
+                    code: KeyCode::Enter,
+                    modifiers: Modifiers::NONE,
+                    kind: KeyEventKind::Press,
+                });
+                let _ = self.palette.handle_event(&event);
+            }
+            MouseEventKind::ScrollUp => {
+                let event = Event::Key(KeyEvent {
+                    code: KeyCode::Up,
+                    modifiers: Modifiers::NONE,
+                    kind: KeyEventKind::Press,
+                });
+                for _ in 0..3 {
+                    let _ = self.palette.handle_event(&event);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                let event = Event::Key(KeyEvent {
+                    code: KeyCode::Down,
+                    modifiers: Modifiers::NONE,
+                    kind: KeyEventKind::Press,
+                });
+                for _ in 0..3 {
+                    let _ = self.palette.handle_event(&event);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn apply_filter(&mut self) {
@@ -438,6 +484,10 @@ impl Screen for CommandPaletteEvidenceLab {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+            return Cmd::None;
+        }
         if let Event::Key(KeyEvent {
             code,
             modifiers,
@@ -513,6 +563,7 @@ impl Screen for CommandPaletteEvidenceLab {
             .constraints([Constraint::Percentage(55.0), Constraint::Fill])
             .split(rows[1]);
 
+        self.layout_palette.set(cols[0]);
         self.palette.render(cols[0], frame);
 
         let evidence_block = Block::new()
@@ -562,6 +613,14 @@ impl Screen for CommandPaletteEvidenceLab {
             HelpEntry {
                 key: "Enter",
                 action: "Execute (demo)",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Execute selected",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Navigate results",
             },
         ]
     }
@@ -861,4 +920,95 @@ mod tests {
         let area = Rect::new(0, 0, 0, 0);
         lab.view(&mut frame, area);
     }
+
+    #[test]
+    fn scroll_down_on_palette_navigates() {
+        use super::Screen;
+        use ftui_core::event::MouseEvent;
+        let mut lab = CommandPaletteEvidenceLab::new();
+        // Clear query to get all results (default "log" query has only 1 match)
+        lab.palette.set_query("");
+        lab.layout_palette.set(Rect::new(0, 0, 40, 20));
+        let initial = lab.palette.selected_index();
+        lab.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        )));
+        assert!(
+            lab.palette.selected_index() > initial,
+            "selected {} should be > initial {}",
+            lab.palette.selected_index(),
+            initial
+        );
+    }
+
+    #[test]
+    fn scroll_up_on_palette_navigates() {
+        use super::Screen;
+        use ftui_core::event::MouseEvent;
+        let mut lab = CommandPaletteEvidenceLab::new();
+        // Clear query to get all results
+        lab.palette.set_query("");
+        lab.layout_palette.set(Rect::new(0, 0, 40, 20));
+        // Scroll down first to get past index 0
+        lab.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        )));
+        let after_down = lab.palette.selected_index();
+        assert!(after_down > 0, "should have scrolled down");
+        lab.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            10,
+            10,
+        )));
+        assert!(lab.palette.selected_index() < after_down);
+    }
+
+    #[test]
+    fn mouse_outside_palette_ignored() {
+        use super::Screen;
+        use ftui_core::event::MouseEvent;
+        let mut lab = CommandPaletteEvidenceLab::new();
+        lab.layout_palette.set(Rect::new(0, 0, 40, 20));
+        let initial = lab.palette.selected_index();
+        lab.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            50, // outside palette
+            10,
+        )));
+        assert_eq!(lab.palette.selected_index(), initial);
+    }
+
+    #[test]
+    fn click_on_palette_executes() {
+        use super::Screen;
+        use ftui_core::event::MouseEvent;
+        let mut lab = CommandPaletteEvidenceLab::new();
+        lab.layout_palette.set(Rect::new(0, 0, 40, 20));
+        // Click should not panic
+        lab.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            10,
+        )));
+    }
+
+    #[test]
+    fn mouse_move_ignored() {
+        use super::Screen;
+        use ftui_core::event::MouseEvent;
+        let mut lab = CommandPaletteEvidenceLab::new();
+        lab.layout_palette.set(Rect::new(0, 0, 40, 20));
+        let initial = lab.palette.selected_index();
+        lab.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::Moved,
+            10,
+            10,
+        )));
+        assert_eq!(lab.palette.selected_index(), initial);
+    }
+
 }

@@ -8,7 +8,9 @@
 //! - [`Responsive<T>`] for per-breakpoint value adaptation
 //! - Live breakpoint indicator showing the current tier
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use std::cell::Cell;
+
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{
     Breakpoint, Breakpoints, Constraint, Flex, Responsive, ResponsiveLayout, Visibility,
@@ -38,6 +40,8 @@ pub struct ResponsiveDemo {
     use_custom_breakpoints: bool,
     /// Tick counter for subtle animations.
     tick_count: u64,
+    /// Cached indicator area for mouse hit-testing.
+    layout_indicator: Cell<Rect>,
 }
 
 impl Default for ResponsiveDemo {
@@ -54,6 +58,33 @@ impl ResponsiveDemo {
             height: 24,
             use_custom_breakpoints: false,
             tick_count: 0,
+            layout_indicator: Cell::new(Rect::default()),
+        }
+    }
+
+    /// Handle mouse interactions.
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        let indicator = self.layout_indicator.get();
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if indicator.contains(x, y) {
+                    self.use_custom_breakpoints = !self.use_custom_breakpoints;
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if indicator.contains(x, y) {
+                    // Reset to defaults
+                    self.use_custom_breakpoints = false;
+                    self.width = 80;
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                self.width = self.width.saturating_add(10).min(300);
+            }
+            MouseEventKind::ScrollDown => {
+                self.width = self.width.saturating_sub(10).max(20);
+            }
+            _ => {}
         }
     }
 
@@ -304,6 +335,10 @@ impl Screen for ResponsiveDemo {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+            return Cmd::None;
+        }
         match event {
             Event::Key(KeyEvent {
                 code,
@@ -346,6 +381,7 @@ impl Screen for ResponsiveDemo {
             .split(area);
 
         // Render breakpoint indicator at top
+        self.layout_indicator.set(chunks[0]);
         self.render_breakpoint_indicator(frame, chunks[0]);
 
         // Render main content with responsive layout
@@ -397,6 +433,14 @@ impl Screen for ResponsiveDemo {
             HelpEntry {
                 key: "+ / -",
                 action: "Adjust simulated width",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Toggle breakpoints",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Adjust width",
             },
         ]
     }
@@ -605,5 +649,88 @@ mod tests {
     fn default_impl() {
         let screen = ResponsiveDemo::default();
         assert_eq!(screen.width, 80);
+    }
+
+    #[test]
+    fn click_indicator_toggles_breakpoints() {
+        use ftui_core::event::MouseEvent;
+        let mut screen = ResponsiveDemo::new();
+        screen.layout_indicator.set(Rect::new(0, 0, 80, 1));
+        assert!(!screen.use_custom_breakpoints);
+        screen.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            0,
+        )));
+        assert!(screen.use_custom_breakpoints);
+    }
+
+    #[test]
+    fn right_click_indicator_resets() {
+        use ftui_core::event::MouseEvent;
+        let mut screen = ResponsiveDemo::new();
+        screen.layout_indicator.set(Rect::new(0, 0, 80, 1));
+        screen.use_custom_breakpoints = true;
+        screen.width = 150;
+        screen.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Right),
+            10,
+            0,
+        )));
+        assert!(!screen.use_custom_breakpoints);
+        assert_eq!(screen.width, 80);
+    }
+
+    #[test]
+    fn scroll_adjusts_width() {
+        use ftui_core::event::MouseEvent;
+        let mut screen = ResponsiveDemo::new();
+        assert_eq!(screen.width, 80);
+        screen.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            10,
+            10,
+        )));
+        assert_eq!(screen.width, 90);
+        screen.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        )));
+        assert_eq!(screen.width, 80);
+    }
+
+    #[test]
+    fn scroll_width_bounded() {
+        use ftui_core::event::MouseEvent;
+        let mut screen = ResponsiveDemo::new();
+        screen.width = 300;
+        screen.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            10,
+            10,
+        )));
+        assert_eq!(screen.width, 300); // capped
+
+        screen.width = 20;
+        screen.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        )));
+        assert_eq!(screen.width, 20); // floor
+    }
+
+    #[test]
+    fn mouse_move_ignored() {
+        use ftui_core::event::MouseEvent;
+        let mut screen = ResponsiveDemo::new();
+        let initial_width = screen.width;
+        screen.update(&Event::Mouse(MouseEvent::new(
+            MouseEventKind::Moved,
+            10,
+            10,
+        )));
+        assert_eq!(screen.width, initial_width);
     }
 }

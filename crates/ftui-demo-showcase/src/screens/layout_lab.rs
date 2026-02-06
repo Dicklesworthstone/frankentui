@@ -2,7 +2,9 @@
 
 //! Layout Laboratory screen — interactive constraint solver and layout widget demos.
 
-use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers};
+use std::cell::Cell;
+
+use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::{Rect, Sides};
 use ftui_layout::{Alignment as FlexAlignment, Constraint, Flex};
 use ftui_render::cell::PackedRgba;
@@ -81,6 +83,10 @@ pub struct LayoutLab {
     debugger: LayoutDebugger,
     /// Show debug overlay.
     show_debug: bool,
+    /// Cached preview area for mouse hit-testing.
+    layout_preview: Cell<Rect>,
+    /// Cached controls area for mouse hit-testing.
+    layout_controls: Cell<Rect>,
 }
 
 /// The 5 alignment modes.
@@ -127,6 +133,8 @@ impl LayoutLab {
             align_pos: 4, // Center/Middle
             debugger,
             show_debug: false,
+            layout_preview: Cell::new(Rect::default()),
+            layout_controls: Cell::new(Rect::default()),
         }
     }
 
@@ -180,10 +188,56 @@ impl LayoutLab {
     }
 }
 
+impl LayoutLab {
+    /// Handle mouse interactions.
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        let preview = self.layout_preview.get();
+        let controls = self.layout_controls.get();
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if controls.contains(x, y) {
+                    self.direction = self.direction.toggle();
+                } else if preview.contains(x, y) {
+                    self.show_debug = !self.show_debug;
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if preview.contains(x, y) {
+                    self.current_preset = (self.current_preset + 1) % PRESET_COUNT;
+                    self.selected_constraint = 0;
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if preview.contains(x, y) {
+                    self.gap = self.gap.saturating_sub(1);
+                } else if controls.contains(x, y) {
+                    self.alignment_idx = if self.alignment_idx == 0 {
+                        ALIGNMENTS.len() - 1
+                    } else {
+                        self.alignment_idx - 1
+                    };
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if preview.contains(x, y) {
+                    self.gap = self.gap.saturating_add(1).min(5);
+                } else if controls.contains(x, y) {
+                    self.alignment_idx = (self.alignment_idx + 1) % ALIGNMENTS.len();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Screen for LayoutLab {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+            return Cmd::None;
+        }
         if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 return Cmd::None;
@@ -289,6 +343,7 @@ impl Screen for LayoutLab {
             ])
             .split(area);
 
+        self.layout_preview.set(main_chunks[0]);
         self.render_preview(frame, main_chunks[0]);
         Rule::new()
             .style(Style::new().fg(theme::fg::MUTED))
@@ -337,6 +392,18 @@ impl Screen for LayoutLab {
             HelpEntry {
                 key: "D",
                 action: "Toggle debug",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Toggle debug/direction",
+            },
+            HelpEntry {
+                key: "Right-click",
+                action: "Cycle preset",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Adjust gap/alignment",
             },
         ]
     }
@@ -587,6 +654,7 @@ impl LayoutLab {
             .constraints([Constraint::Percentage(40.0), Constraint::Percentage(60.0)])
             .split(area);
 
+        self.layout_controls.set(cols[0]);
         self.render_controls(frame, cols[0]);
         self.render_widget_demos(frame, cols[1]);
     }
@@ -1746,6 +1814,57 @@ mod tests {
             "Vertical and horizontal should produce distinct renders"
         );
     }
+}
+
+#[test]
+fn click_preview_toggles_debug() {
+    let mut lab = LayoutLab::new();
+    lab.layout_preview.set(Rect::new(0, 0, 80, 20));
+    assert!(!lab.show_debug);
+    lab.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 10);
+    assert!(lab.show_debug);
+    lab.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 10);
+    assert!(!lab.show_debug);
+}
+
+#[test]
+fn click_controls_toggles_direction() {
+    let mut lab = LayoutLab::new();
+    lab.layout_controls.set(Rect::new(0, 20, 40, 10));
+    assert_eq!(lab.direction, Direction::Vertical);
+    lab.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 25);
+    assert_eq!(lab.direction, Direction::Horizontal);
+}
+
+#[test]
+fn right_click_preview_cycles_preset() {
+    let mut lab = LayoutLab::new();
+    lab.layout_preview.set(Rect::new(0, 0, 80, 20));
+    assert_eq!(lab.current_preset, 0);
+    lab.handle_mouse(MouseEventKind::Down(MouseButton::Right), 10, 10);
+    assert_eq!(lab.current_preset, 1);
+}
+
+#[test]
+fn scroll_preview_adjusts_gap() {
+    let mut lab = LayoutLab::new();
+    lab.layout_preview.set(Rect::new(0, 0, 80, 20));
+    assert_eq!(lab.gap, 0);
+    lab.handle_mouse(MouseEventKind::ScrollDown, 10, 10);
+    assert_eq!(lab.gap, 1);
+    lab.handle_mouse(MouseEventKind::ScrollUp, 10, 10);
+    assert_eq!(lab.gap, 0);
+}
+
+#[test]
+fn scroll_controls_adjusts_alignment() {
+    let mut lab = LayoutLab::new();
+    lab.layout_controls.set(Rect::new(0, 20, 40, 10));
+    assert_eq!(lab.alignment_idx, 0);
+    lab.handle_mouse(MouseEventKind::ScrollDown, 10, 25);
+    assert_eq!(lab.alignment_idx, 1);
+    lab.handle_mouse(MouseEventKind::ScrollUp, 10, 25);
+    assert_eq!(lab.alignment_idx, 0);
 }
 
 // ==========================================================================
