@@ -2085,7 +2085,7 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::State,
         canonical_keyword: "stateDiagram-v2",
         introduced_version: "8.0",
-        support_level: MermaidSupportLevel::Partial,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
         pipeline: [
             StageStatus::Done,
@@ -2185,7 +2185,7 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::Pie,
         canonical_keyword: "pie",
         introduced_version: "8.0",
-        support_level: MermaidSupportLevel::Partial,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
         pipeline: [
             StageStatus::Done,
@@ -2206,7 +2206,7 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::GitGraph,
         canonical_keyword: "gitGraph",
         introduced_version: "9.4",
-        support_level: MermaidSupportLevel::Partial,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
         pipeline: [
             StageStatus::Done,
@@ -2226,7 +2226,7 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::Journey,
         canonical_keyword: "journey",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Partial,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
         pipeline: [
             StageStatus::Done,
@@ -2246,7 +2246,7 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::Requirement,
         canonical_keyword: "requirementDiagram",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Partial,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
         pipeline: [
             StageStatus::Done,
@@ -2266,46 +2266,82 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::Timeline,
         canonical_keyword: "timeline",
         introduced_version: "10.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "title, sections, time periods, events",
         terminal_degradations: "compact layout on narrow terminals",
-        notes: "planned: bd-hudcn.1.10",
+        notes: "Timeline parser + IR + render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::QuadrantChart,
         canonical_keyword: "quadrantChart",
         introduced_version: "10.2",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "quadrant labels, data points with coordinates",
         terminal_degradations: "half-block scatter rendering; ASCII axis labels",
-        notes: "planned: bd-hudcn.1.11",
+        notes: "Quadrant-chart parser + IR + render.",
     },
     // ── Beta families ───────────────────────────────────────────────
     DiagramFamilyEntry {
         family: DiagramType::Sankey,
         canonical_keyword: "sankey-beta",
         introduced_version: "10.3",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: true,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "nodes, flows with values, multi-level paths",
         terminal_degradations: "flow widths approximated with block chars",
-        notes: "planned: bd-hudcn.1.13",
+        notes: "Sankey parser + IR + render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::XyChart,
         canonical_keyword: "xychart-beta",
         introduced_version: "10.5",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: true,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "title, x-axis, y-axis, bar/line data series",
         terminal_degradations: "ASCII axes; braille or half-block data points",
-        notes: "planned: bd-hudcn.1.12",
+        notes: "XY-chart parser + IR + render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::BlockBeta,
@@ -2331,12 +2367,21 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::PacketBeta,
         canonical_keyword: "packet-beta",
         introduced_version: "10.9",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: true,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "field definitions, bit ranges, labels, row breaks",
         terminal_degradations: "box-drawing grid; bit widths rounded to cell boundaries",
-        notes: "planned: bd-hudcn.1.16",
+        notes: "Packet-beta parser + IR + render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::ArchitectureBeta,
@@ -2363,56 +2408,101 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::C4Context,
         canonical_keyword: "C4Context",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Person, System, SystemDb, SystemQueue, Boundary, Rel",
         terminal_degradations: "C4 shapes as labeled boxes; boundary as bordered region",
-        notes: "planned: bd-hudcn.1.14; all C4 variants share parser infrastructure",
+        notes: "C4Context parser + IR + entity render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::C4Container,
         canonical_keyword: "C4Container",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Container, ContainerDb, ContainerQueue, System_Ext, Rel",
         terminal_degradations: "container shapes as labeled boxes with type annotation",
-        notes: "shares infrastructure with C4Context",
+        notes: "C4Container parser + IR + entity render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::C4Component,
         canonical_keyword: "C4Component",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Component, ComponentDb, ComponentQueue, Rel",
         terminal_degradations: "component shapes as labeled boxes",
-        notes: "shares infrastructure with C4Context",
+        notes: "C4Component parser + IR + entity render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::C4Dynamic,
         canonical_keyword: "C4Dynamic",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "numbered Rel interactions, Person, System",
         terminal_degradations: "numbered arrows as text labels",
-        notes: "shares infrastructure with C4Context",
+        notes: "C4Dynamic parser + IR + entity render.",
     },
     DiagramFamilyEntry {
         family: DiagramType::C4Deployment,
         canonical_keyword: "C4Deployment",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Supported,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Partial,    // fixtures
+            StageStatus::NotStarted, // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Deployment_Node, Container, System, Rel",
         terminal_degradations: "deployment nodes as nested bordered regions",
-        notes: "shares infrastructure with C4Context",
+        notes: "C4Deployment parser + IR + entity render.",
     },
 ];
 
@@ -2881,27 +2971,27 @@ impl MermaidCompatibilityMatrix {
         Self {
             graph: MermaidSupportLevel::Partial,
             sequence: MermaidSupportLevel::Partial,
-            state: MermaidSupportLevel::Partial,
+            state: MermaidSupportLevel::Supported,
             gantt: MermaidSupportLevel::Partial,
             class: MermaidSupportLevel::Partial,
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
-            pie: MermaidSupportLevel::Partial,
-            git_graph: MermaidSupportLevel::Partial,
+            pie: MermaidSupportLevel::Supported,
+            git_graph: MermaidSupportLevel::Supported,
             journey: MermaidSupportLevel::Supported,
-            requirement: MermaidSupportLevel::Partial,
-            timeline: MermaidSupportLevel::Partial,
+            requirement: MermaidSupportLevel::Supported,
+            timeline: MermaidSupportLevel::Supported,
             quadrant_chart: MermaidSupportLevel::Supported,
-            sankey: MermaidSupportLevel::Partial,
-            xy_chart: MermaidSupportLevel::Partial,
+            sankey: MermaidSupportLevel::Supported,
+            xy_chart: MermaidSupportLevel::Supported,
             block_beta: MermaidSupportLevel::Supported,
             packet_beta: MermaidSupportLevel::Supported,
-            architecture_beta: MermaidSupportLevel::Partial,
-            c4_context: MermaidSupportLevel::Partial,
-            c4_container: MermaidSupportLevel::Partial,
-            c4_component: MermaidSupportLevel::Partial,
-            c4_dynamic: MermaidSupportLevel::Partial,
-            c4_deployment: MermaidSupportLevel::Partial,
+            architecture_beta: MermaidSupportLevel::Supported,
+            c4_context: MermaidSupportLevel::Supported,
+            c4_container: MermaidSupportLevel::Supported,
+            c4_component: MermaidSupportLevel::Supported,
+            c4_dynamic: MermaidSupportLevel::Supported,
+            c4_deployment: MermaidSupportLevel::Supported,
         }
     }
 
@@ -2941,27 +3031,27 @@ impl Default for MermaidCompatibilityMatrix {
         Self {
             graph: MermaidSupportLevel::Supported,
             sequence: MermaidSupportLevel::Partial,
-            state: MermaidSupportLevel::Partial,
+            state: MermaidSupportLevel::Supported,
             gantt: MermaidSupportLevel::Partial,
             class: MermaidSupportLevel::Partial,
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
-            pie: MermaidSupportLevel::Partial,
-            git_graph: MermaidSupportLevel::Partial,
+            pie: MermaidSupportLevel::Supported,
+            git_graph: MermaidSupportLevel::Supported,
             journey: MermaidSupportLevel::Supported,
-            requirement: MermaidSupportLevel::Partial,
-            timeline: MermaidSupportLevel::Partial,
+            requirement: MermaidSupportLevel::Supported,
+            timeline: MermaidSupportLevel::Supported,
             quadrant_chart: MermaidSupportLevel::Supported,
-            sankey: MermaidSupportLevel::Partial,
-            xy_chart: MermaidSupportLevel::Partial,
+            sankey: MermaidSupportLevel::Supported,
+            xy_chart: MermaidSupportLevel::Supported,
             block_beta: MermaidSupportLevel::Supported,
             packet_beta: MermaidSupportLevel::Supported,
             architecture_beta: MermaidSupportLevel::Supported,
-            c4_context: MermaidSupportLevel::Partial,
-            c4_container: MermaidSupportLevel::Partial,
-            c4_component: MermaidSupportLevel::Partial,
-            c4_dynamic: MermaidSupportLevel::Partial,
-            c4_deployment: MermaidSupportLevel::Partial,
+            c4_context: MermaidSupportLevel::Supported,
+            c4_container: MermaidSupportLevel::Supported,
+            c4_component: MermaidSupportLevel::Supported,
+            c4_dynamic: MermaidSupportLevel::Supported,
+            c4_deployment: MermaidSupportLevel::Supported,
         }
     }
 }
