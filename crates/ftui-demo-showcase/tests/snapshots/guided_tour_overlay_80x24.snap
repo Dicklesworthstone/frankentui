@@ -1,18 +1,18 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
 ╭──────────────────────────────────Dashboard───────────────────────────────────╮
 │FRANKENTUI DASHBOARD  ╭─────────────────────Guided Tour──────────────────────╮│
-│╭──────Plasma──────╮╭─│1/11 · Tour · LIVEe────────╮╭───Code · Rust (1/28)────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g│Speed 1.00x · Next 10.0si b││// runtime.rs            ││
+│╭──────Plasma──────╮╭─│1/10 · Tour · LIVEe────────╮╭───Code · Rust (1/28)────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││g│Speed 1.00x · Next 5.2sni b││// runtime.rs            ││
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││C│Dashboard▁▄▃▄▂▅▅▅▆▂▄▅▃▆ 46%││use std::{collections::Ha││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││M│Start on the cinematic dashboard and click tiles to   ││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││N│jump straight into each capability.ui_core::event::Eve││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││O│Mouse: click tiles • Enter activates focused tile •:Ce││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││E│1-9 jumps screens IO  ░░░░░│╰─────────────────────────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │Controls: Space pause · ←/→ step · Esc exit───────────││
-││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │Steps:                     ││Status:NOMINAL FPS:0     ││
-││Click → Visual Eff││C│▶ Tour · Dashboard         ││Click → Performance      ││
-│╰──────────────────╯╰─│• Tour · Inline Mode───────╯╰─────────────────────────││
-│╭Text FX · 2-Up (1/28)│• Interaction · Hyperlink Playgrounddown · Streaming…╮││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││M│Cinematic overview of key features and live tiles.    ││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││N│Start here   ▇▁▁    ▁ █▁ 14││use ftui_core::event::Eve││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││O│Controls: Space pause · ←/→ step · Esc exitxplorer::Ce││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││E│Steps:░ DSK ███░░ IO  ░░░░░│╰─────────────────────────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │▶ Tour · Dashboard         │╭──────────Info───────────││
+││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ │• Text · Shakespeare       ││Status:NOMINAL FPS:0     ││
+││Click → Visual Eff││C│• Text · Code Explorer     ││Click → Performance      ││
+│╰──────────────────╯╰─│• Core · Layout Lab────────╯╰─────────────────────────││
+│╭Text FX · 2-Up (1/28)│Legend: Tour Core Visuals Interact Text Systemsaming…╮││
 ││Sample 1 of 3 · 2-Up ╰──────────────────────────────────────────────────────╯│
 ││1 · None · S1        ││ INFO  00:02   CPU spike dete││                     │ │
 ││2 · FadeIn · S2      ││                             ││                     │ │

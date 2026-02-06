@@ -1,40 +1,40 @@
  1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
-╭─────────────────────────────────────────────────────Inline Mode──────────────────────────────────────────────────────╮
-│╭Inline Mode Story────────────────────────────────────────────╭─────────────────────Guided Tour──────────────────────╮│
-││Mode: Inline  |  Compare: OFF  |  Anchor: Bottom  |  UI heigh│2/11 · Tour · LIVEck                                  ││
-││Status: Live  |  Lines: 60  |  Scrollback preserved in inline│Speed 1.00x · Next 14.0s                              ││
-││╭Inline Mode Story───────────────────────────────────────────│Inline Mode──────────────────────────────────────────╮││
-│││000032 [INFO ] io      cursor sync                          │Inline mode keeps scrollback intact while chrome     │││
-│││000033 [WARN ] layout  cursor sync                          │remains stable and interactive.                      │││
-│││000034 [ERROR] layout  cursor sync                          │Click bar to move anchor • wheel changes log rate •  │││
-│││000035 [DEBUG] layout  scrollback ok                        │Space pauses stream                                  │││
-│││000036 [INFO ] core    scrollback ok                        │Controls: Space pause · ←/→ step · Esc exit          │││
-│││000037 [WARN ] core    scrollback ok                        │Steps:                                               │││
-│││000038 [ERROR] core    scrollback ok                        │• Tour · Dashboard                                   │││
-│││000039 [DEBUG] render  scrollback ok                        │▶ Tour · Inline Mode                                 │││
-│││000040 [INFO ] render  scrollback ok                        │• Interaction · Hyperlink Playground                 │││
-│││000041 [WARN ] render  scrollback ok                        ╰──────────────────────────────────────────────────────╯│
-│││000042 [ERROR] runtime inline anchor                                                                              │││
-│││000043 [DEBUG] runtime inline anchor                                                                              │││
-│││000044 [INFO ] runtime inline anchor                                                                              │││
-│││000045 [WARN ] widgets inline anchor                                                                              │││
-│││000046 [ERROR] widgets inline anchor                                                                              │││
-│││000047 [DEBUG] widgets inline anchor                                                                              │││
-│││000048 [INFO ] io      inline anchor                                                                              │││
-│││000049 [WARN ] io      budget check                                                                               │││
-│││000050 [ERROR] io      budget check                                                                               │││
-│││000051 [DEBUG] layout  budget check                                                                               │││
-│││000052 [INFO ] layout  budget check                                                                               │││
-│││000053 [WARN ] layout  budget check                                                                               │││
-│││000054 [ERROR] core    budget check                                                                               │││
-│││000055 [DEBUG] core    budget check                                                                               │││
-│││000056 [INFO ] core    diff pass                                                                                  │││
-│││000057 [WARN ] render  diff pass                                                                                  │││
-│││000058 [ERROR] render  diff pass                                                                                  │││
-│││000059 [DEBUG] render  diff pass                                                                                  │││
-│││ INLINE MODE - SCROLLBACK PRESERVED                                                                               │││
-│││ Anchor: BOTTOM  |  UI height: 2  |  Log rate: 2/tick                                                             │││
-││╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯││
-│╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│
+╭─────────────────────────────────────────────────────Shakespeare──────────────────────────────────────────────────────╮
+│┏━━━━━━━━━━━━━━━━━━━Complete Works of William Shakespeare━━━━━╭─────────────────────Guided Tour──────────────────────╮│
+│┃      1 The Project Gutenberg eBook of The Complete Works of │2/10 · Text · LIVE matches yet                        ││
+│┃      2                                                      │Speed 1.00x · Next 6.0s                               ││
+│┃      3 This ebook is for the use of anyone anywhere in the U│Shakespeare a│┃│                                      ││
+│┃      4 most other parts of the world at no cost and with alm│Live search over Shakespeare with animated highlights.││
+│┃      5 whatsoever. You may copy it, give it away or re-use i│Live search + highlights                              ││
+│┃      6 of the Project Gutenberg License included with this e│Controls: Space pause · ←/→ step · Esc exit           ││
+│┃      7 at www.gutenberg.org. If you are not located in the U│Steps:tates, │┃│                                      ││
+│┃      8 you will have to check the laws of the country where │• Tour · Dashboard                                    ││
+│┃      9 before using this eBook.                             │▶ Text · Shakespeare                                  ││
+│┃     10                                                      │• Text · Code Explorer                                ││
+│┃     11 Title: The Complete Works of William Shakespeare     │• Core · Layout Lab                                   ││
+│┃     12                                                      │Legend: Tour Core Visuals Interact Text Systems       ││
+│┃     13 Author: William Shakespeare                          ╰──────────────────────────────────────────────────────╯│
+│┃     14                                                                    │┃╭──────────────Navigator───────────────╮│
+│┃     15 Release date: January 1, 1994 [eBook #100]                         │┃│▶ THE SONNETS                         ││
+│┃     16                 Most recently updated: August 24, 2025             │┃│  THE SONNETS                         ││
+│┃     17                                                                    │┃│  ALL’S WELL THAT ENDS WELL           ││
+│┃     18 Language: English                                                  │┃│  KING OF FRANCE.                     ││
+│┃     19                                                                    │┃│  COUNTESS.                           ││
+│┃     20                                                                    │┃│  COUNTESS.                           ││
+│┃     21                                                                    │┃│  COUNTESS.                           ││
+│┃     22 *** START OF THE PROJECT GUTENBERG EBOOK THE COMPLETE WORKS OF WILL│┃│  COUNTESS.                           ││
+│┃     23                                                                    │┃│  COUNTESS.                           ││
+│┃     24                                                                    │┃│  COUNTESS.                           ││
+│┃     25                                                                    │┃╰──────────────────────────────────────╯│
+│┃     26                                                                    │┃╭───────────Search Insights────────────╮│
+│┃     27 The Complete Works of William Shakespeare                          │┃│Section: Preamble                     ││
+│┃     28                                                                    │┃│Matches: 0 · View: 33 lines           ││
+│┃     29 by William Shakespeare                                             │┃│                                      ││
+│┃     30                                                                    │┃│                                      ││
+│┃     31                                                                    │┃│                                      ││
+│┃     32                                                                    │┃│                                      ││
+│┃     33                                                                    │┃│██████████████████████████████████████││
+│┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛╰──────────────────────────────────────╯│
+│ Mode: Library · Line 1/196395 (0%) · Matches: 0 | Preamble                                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Inline Mode [1/42]  Cyberpunk Aurora [h] [cmd] [p] [d]  Mouse: ON        Tab/Shift+Tab: next/prev         120x40 00:00 
+ Shakespeare [1/42]  Cyberpunk Aurora [h] [cmd] [p] [d]  Mouse: ON        Tab/Shift+Tab: next/prev         120x40 00:00 
