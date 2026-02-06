@@ -103,6 +103,8 @@ fn mega_sample_category(sample: &MegaSample) -> &'static str {
         "flow"
     } else if src.starts_with("block-beta") {
         "block-beta"
+    } else if src.starts_with("architecture-beta") {
+        "architecture-beta"
     } else if src.starts_with("sequenceDiagram") {
         "sequence"
     } else if src.starts_with("classDiagram") {
@@ -313,6 +315,14 @@ const MEGA_SAMPLES: &[MegaSample] = &[
     MegaSample {
         name: "Block Beta Stress",
         source: "block-beta\n  columns 4\n  a[\"Service A\"]:2 b[\"Service B\"]:2\n  block:inner1:2\n    columns 2\n    c[\"Cache\"] d[\"Queue\"]\n  end\n  block:inner2:2\n    columns 2\n    e[\"Worker 1\"] f[\"Worker 2\"]\n  end\n  g[\"Load Balancer\"]:4\n  space:2\n  h[\"Database\"]:2",
+    },
+    MegaSample {
+        name: "Architecture Beta Basic",
+        source: "architecture-beta\n  group edge(cloud)[Edge]\n  group core(server)[Core]\n  service api(server)[API] in edge\n  service auth(lock)[Auth] in core\n  service db(database)[DB] in core\n  api:R --> L:auth\n  auth:R --> L:db",
+    },
+    MegaSample {
+        name: "Architecture Beta Stress",
+        source: "architecture-beta\n  group edge(cloud)[Edge]\n  group core(server)[Core]\n  group data(database)[Data]\n  service gateway(server)[Gateway] in edge\n  service api(server)[API] in core\n  service auth(lock)[Auth] in core\n  service cache(database)[Cache] in data\n  service db(database)[DB] in data\n  gateway{group}:R --> L:api{group}\n  api:R --> L:auth\n  auth:R --> L:cache\n  cache:R --> L:db",
     },
 ];
 
@@ -4246,6 +4256,52 @@ mod tests {
                 .contains("gantt"),
             "expected selected sample to be a gantt match"
         );
+    }
+
+    #[test]
+    fn architecture_beta_samples_parse_and_normalize_without_errors() {
+        let config = MermaidConfig::default();
+        let matrix = MermaidCompatibilityMatrix::default();
+        let policy = MermaidFallbackPolicy::default();
+
+        let samples: Vec<&MegaSample> = MEGA_SAMPLES
+            .iter()
+            .filter(|s| mega_sample_category(s) == "architecture-beta")
+            .collect();
+        assert_eq!(
+            samples.len(),
+            2,
+            "expected 2 architecture-beta samples, got {}",
+            samples.len()
+        );
+
+        for sample in samples {
+            let parsed = mermaid::parse_with_diagnostics(sample.source);
+            assert!(
+                parsed.errors.is_empty(),
+                "unexpected parser errors for {}: {:?}",
+                sample.name,
+                parsed.errors
+            );
+
+            let ir_parse = mermaid::normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
+            assert!(
+                ir_parse.errors.is_empty(),
+                "unexpected IR errors for {}: {:?}",
+                sample.name,
+                ir_parse.errors
+            );
+            assert!(
+                !ir_parse.ir.nodes.is_empty(),
+                "expected nodes for {}",
+                sample.name
+            );
+            assert!(
+                !ir_parse.ir.edges.is_empty(),
+                "expected edges for {}",
+                sample.name
+            );
+        }
     }
 
     #[test]
