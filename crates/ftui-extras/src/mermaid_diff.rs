@@ -392,6 +392,11 @@ mod tests {
                 guard: MermaidGuardReport::default(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
 

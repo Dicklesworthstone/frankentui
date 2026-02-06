@@ -859,7 +859,9 @@ fn xychart_series_fill(ir_node: &crate::mermaid::IrNode) -> Option<PackedRgba> {
     if ir_node.classes.contains(&"xychart_line".to_string()) {
         return Some(PackedRgba::rgb(255, 87, 34)); // material deep orange
     }
-    if ir_node.classes.contains(&"xychart_xaxis".to_string()) || ir_node.classes.contains(&"xychart_yaxis".to_string()) {
+    if ir_node.classes.contains(&"xychart_xaxis".to_string())
+        || ir_node.classes.contains(&"xychart_yaxis".to_string())
+    {
         return Some(PackedRgba::rgb(117, 117, 117)); // grey
     }
     None
@@ -976,6 +978,10 @@ impl MermaidRenderer {
             self.render_pie(ir, area, max_label_width, buf);
             return;
         }
+        if ir.diagram_type == DiagramType::QuadrantChart {
+            self.render_quadrant(layout, ir, area, buf);
+            return;
+        }
         if layout.nodes.is_empty() || area.is_empty() {
             return;
         }
@@ -1011,6 +1017,10 @@ impl MermaidRenderer {
             self.render_pie(ir, plan.diagram_area, plan.max_label_width, buf);
             return;
         }
+        if ir.diagram_type == DiagramType::QuadrantChart {
+            self.render_quadrant(layout, ir, plan.diagram_area, buf);
+            return;
+        }
         if layout.nodes.is_empty() || plan.diagram_area.is_empty() {
             return;
         }
@@ -1044,6 +1054,159 @@ impl MermaidRenderer {
         if let Some(legend_area) = plan.legend_area {
             let footnotes = crate::mermaid_layout::build_link_footnotes(&ir.links, &ir.nodes);
             self.render_legend_footnotes(legend_area, &footnotes, buf);
+        }
+    }
+
+    /// Render a quadrant chart with axes, quadrant labels, and scatter points.
+    fn render_quadrant(
+        &self,
+        layout: &DiagramLayout,
+        ir: &MermaidDiagramIr,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+
+        let vp = Viewport::fit(&layout.bounding_box, area);
+
+        // Chart area boundaries in layout coords.
+        let axis_label_h = 2.0;
+        let axis_label_w = 12.0;
+        let chart_x = axis_label_w;
+        let chart_y = axis_label_h;
+        let chart_w = layout.bounding_box.width - 2.0 * axis_label_w;
+        let chart_h = layout.bounding_box.height - 2.0 * axis_label_h;
+
+        if chart_w <= 0.0 || chart_h <= 0.0 {
+            return;
+        }
+
+        let use_unicode = matches!(self.glyph_mode, MermaidGlyphMode::Unicode);
+        let (h_line, v_line) = if use_unicode {
+            ('\u{2500}', '\u{2502}')
+        } else {
+            ('-', '|')
+        };
+        let cross = if use_unicode { '\u{253c}' } else { '+' };
+
+        let axis_fg = self.colors.edge_color;
+        let label_fg = self.colors.node_text;
+        let quad_label_fg = self.colors.cluster_title;
+
+        // Draw horizontal axis (center of chart area).
+        let mid_y = chart_y + chart_h / 2.0;
+        let (_, buf_mid_y) = vp.to_cell(chart_x, mid_y);
+        let (buf_x0, _) = vp.to_cell(chart_x, chart_y);
+        let (buf_x1, _) = vp.to_cell(chart_x + chart_w, chart_y);
+        for x in buf_x0..buf_x1 {
+            buf.set(x, buf_mid_y, Cell::from_char(h_line).with_fg(axis_fg));
+        }
+
+        // Draw vertical axis (center of chart area).
+        let mid_x = chart_x + chart_w / 2.0;
+        let (buf_mid_x, _) = vp.to_cell(mid_x, chart_y);
+        let (_, buf_y0) = vp.to_cell(chart_x, chart_y);
+        let (_, buf_y1) = vp.to_cell(chart_x, chart_y + chart_h);
+        for y in buf_y0..buf_y1 {
+            buf.set(buf_mid_x, y, Cell::from_char(v_line).with_fg(axis_fg));
+        }
+
+        // Draw center cross.
+        buf.set(
+            buf_mid_x,
+            buf_mid_y,
+            Cell::from_char(cross).with_fg(axis_fg),
+        );
+
+        // Render title (if present).
+        if let Some(title_id) = ir.quadrant_title
+            && let Some(label) = ir.labels.get(title_id.0)
+        {
+            let title_cell = Cell::from_char(' ').with_fg(label_fg);
+            buf.print_text_clipped(
+                buf_x0,
+                buf_y0.saturating_sub(1),
+                &label.text,
+                title_cell,
+                buf_x1,
+            );
+        }
+
+        // Render x-axis labels.
+        if let Some(ref x_axis) = ir.quadrant_x_axis {
+            if let Some(label) = ir.labels.get(x_axis.label_start.0) {
+                let cell = Cell::from_char(' ').with_fg(axis_fg);
+                buf.print_text_clipped(buf_x0, buf_y1, &label.text, cell, buf_mid_x);
+            }
+            if let Some(label) = ir.labels.get(x_axis.label_end.0) {
+                let cell = Cell::from_char(' ').with_fg(axis_fg);
+                buf.print_text_clipped(
+                    buf_mid_x.saturating_add(1),
+                    buf_y1,
+                    &label.text,
+                    cell,
+                    buf_x1,
+                );
+            }
+        }
+
+        // Render y-axis labels.
+        if let Some(ref y_axis) = ir.quadrant_y_axis {
+            if let Some(label) = ir.labels.get(y_axis.label_start.0) {
+                let cell = Cell::from_char(' ').with_fg(axis_fg);
+                let text = &label.text;
+                let tw = text.len().min(buf_x0 as usize);
+                buf.print_text_clipped(0, buf_mid_y.saturating_add(1), &text[..tw], cell, buf_x0);
+            }
+            if let Some(label) = ir.labels.get(y_axis.label_end.0) {
+                let cell = Cell::from_char(' ').with_fg(axis_fg);
+                let text = &label.text;
+                let tw = text.len().min(buf_x0 as usize);
+                buf.print_text_clipped(0, buf_mid_y.saturating_sub(1), &text[..tw], cell, buf_x0);
+            }
+        }
+
+        // Render quadrant labels (in corners of each quadrant).
+        let q_positions = [
+            // Q1: top-right
+            (buf_mid_x.saturating_add(2), buf_y0.saturating_add(1)),
+            // Q2: top-left
+            (buf_x0.saturating_add(1), buf_y0.saturating_add(1)),
+            // Q3: bottom-left
+            (buf_x0.saturating_add(1), buf_mid_y.saturating_add(1)),
+            // Q4: bottom-right
+            (buf_mid_x.saturating_add(2), buf_mid_y.saturating_add(1)),
+        ];
+        for (i, &(qx, qy)) in q_positions.iter().enumerate() {
+            if let Some(label_id) = ir.quadrant_labels[i]
+                && let Some(label) = ir.labels.get(label_id.0)
+            {
+                let cell = Cell::from_char(' ').with_fg(quad_label_fg);
+                let max_x = if i == 0 || i == 3 { buf_x1 } else { buf_mid_x };
+                buf.print_text_clipped(qx, qy, &label.text, cell, max_x);
+            }
+        }
+
+        // Render data points as dots with labels.
+        let point_char = if use_unicode { '\u{25cf}' } else { '*' };
+        for (pi, node) in layout.nodes.iter().enumerate() {
+            let (cx, cy) = vp.to_cell(
+                node.rect.x + node.rect.width / 2.0,
+                node.rect.y + node.rect.height / 2.0,
+            );
+            let color = self.colors.node_fills[pi % self.colors.node_fills.len()];
+            buf.set(cx, cy, Cell::from_char(point_char).with_fg(color));
+
+            // Point label.
+            if let Some(pt) = ir.quadrant_points.get(pi)
+                && let Some(label) = ir.labels.get(pt.label.0)
+            {
+                let label_cell = Cell::from_char(' ').with_fg(label_fg);
+                let lx = cx.saturating_add(1);
+                buf.print_text_clipped(lx, cy, &label.text, label_cell, area.right());
+            }
         }
     }
 
@@ -1778,7 +1941,11 @@ impl MermaidRenderer {
             }
 
             let base_fill = self.colors.node_fill_for(node.node_idx);
-            let fill_color = journey_score_fill(ir_node).or_else(|| timeline_era_fill(ir_node)).or_else(|| xychart_series_fill(ir_node)).or_else(|| sankey_flow_fill(ir_node)).unwrap_or(base_fill);
+            let fill_color = journey_score_fill(ir_node)
+                .or_else(|| timeline_era_fill(ir_node))
+                .or_else(|| xychart_series_fill(ir_node))
+                .or_else(|| sankey_flow_fill(ir_node))
+                .unwrap_or(base_fill);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =
@@ -2783,7 +2950,11 @@ impl MermaidRenderer {
             }
 
             let base_fill = self.colors.node_fill_for(node.node_idx);
-            let fill_color = journey_score_fill(ir_node).or_else(|| timeline_era_fill(ir_node)).or_else(|| xychart_series_fill(ir_node)).or_else(|| sankey_flow_fill(ir_node)).unwrap_or(base_fill);
+            let fill_color = journey_score_fill(ir_node)
+                .or_else(|| timeline_era_fill(ir_node))
+                .or_else(|| xychart_series_fill(ir_node))
+                .or_else(|| sankey_flow_fill(ir_node))
+                .unwrap_or(base_fill);
             let fill_cell = Cell::from_char(' ').with_bg(fill_color);
 
             let inset =
@@ -4757,6 +4928,11 @@ mod tests {
                 guard: MermaidGuardReport::default(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
 

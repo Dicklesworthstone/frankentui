@@ -94,6 +94,11 @@ fn make_ir(
             guard: MermaidGuardReport::default(),
         },
         constraints: Vec::new(),
+        quadrant_points: Vec::new(),
+        quadrant_title: None,
+        quadrant_x_axis: None,
+        quadrant_y_axis: None,
+        quadrant_labels: [None, None, None, None],
     }
 }
 

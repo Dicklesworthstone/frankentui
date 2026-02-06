@@ -2873,7 +2873,7 @@ impl MermaidCompatibilityMatrix {
             journey: MermaidSupportLevel::Partial,
             requirement: MermaidSupportLevel::Partial,
             timeline: MermaidSupportLevel::Partial,
-            quadrant_chart: MermaidSupportLevel::Unsupported,
+            quadrant_chart: MermaidSupportLevel::Supported,
             sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
             block_beta: MermaidSupportLevel::Unsupported,
@@ -2933,7 +2933,7 @@ impl Default for MermaidCompatibilityMatrix {
             journey: MermaidSupportLevel::Partial,
             requirement: MermaidSupportLevel::Partial,
             timeline: MermaidSupportLevel::Partial,
-            quadrant_chart: MermaidSupportLevel::Unsupported,
+            quadrant_chart: MermaidSupportLevel::Supported,
             sankey: MermaidSupportLevel::Partial,
             xy_chart: MermaidSupportLevel::Partial,
             block_beta: MermaidSupportLevel::Unsupported,
@@ -3822,6 +3822,11 @@ pub fn normalize_ast_to_ir(
     }
 
     let mut constraints: Vec<LayoutConstraint> = Vec::new();
+    let mut quadrant_points_out: Vec<IrQuadrantPoint> = Vec::new();
+    let mut quadrant_title_text: Option<(String, Span)> = None;
+    let mut quadrant_x_axis_text: Option<(String, String, Span)> = None;
+    let mut quadrant_y_axis_text: Option<(String, String, Span)> = None;
+    let mut quadrant_label_texts: [Option<(String, Span)>; 4] = [None, None, None, None];
 
     for statement in &ast.statements {
         match statement {
@@ -4538,6 +4543,39 @@ pub fn normalize_ast_to_ir(
                 cluster_stack.pop();
             }
             Statement::C4Title { .. } => {}
+            Statement::QuadrantTitle { title, span } => {
+                quadrant_title_text = Some((title.clone(), *span));
+            }
+            Statement::QuadrantAxis {
+                axis,
+                label_start,
+                label_end,
+                span,
+            } => match axis {
+                QuadrantAxisKind::X => {
+                    quadrant_x_axis_text = Some((label_start.clone(), label_end.clone(), *span));
+                }
+                QuadrantAxisKind::Y => {
+                    quadrant_y_axis_text = Some((label_start.clone(), label_end.clone(), *span));
+                }
+            },
+            Statement::QuadrantLabel {
+                quadrant,
+                label,
+                span,
+            } => {
+                if (1..=4).contains(quadrant) {
+                    quadrant_label_texts[(*quadrant as usize) - 1] = Some((label.clone(), *span));
+                }
+            }
+            Statement::QuadrantPoint(pt) => {
+                // Collect raw; will intern labels after the loop.
+                quadrant_points_out.push(IrQuadrantPoint {
+                    label: IrLabelId(0), // placeholder
+                    x: pt.x,
+                    y: pt.y,
+                });
+            }
             Statement::Raw { text, span } => {
                 if ast.diagram_type == DiagramType::Pie {
                     if is_pie_show_data_line(text) {
@@ -4876,6 +4914,47 @@ pub fn normalize_ast_to_ir(
     let pie_title: Option<IrLabelId> =
         pie_title_text.map(|(text, span)| labels.intern(&text, span));
 
+    // Intern quadrant labels into the same LabelInterner before extracting.
+    let quadrant_title: Option<IrLabelId> =
+        quadrant_title_text.map(|(text, span)| labels.intern(&text, span));
+    let q_x_axis: Option<IrQuadrantAxis> =
+        quadrant_x_axis_text.map(|(s, e, span)| IrQuadrantAxis {
+            label_start: labels.intern(&s, span),
+            label_end: labels.intern(&e, span),
+        });
+    let q_y_axis: Option<IrQuadrantAxis> =
+        quadrant_y_axis_text.map(|(s, e, span)| IrQuadrantAxis {
+            label_start: labels.intern(&s, span),
+            label_end: labels.intern(&e, span),
+        });
+    let q_labels: [Option<IrLabelId>; 4] = [
+        quadrant_label_texts[0]
+            .take()
+            .map(|(t, span)| labels.intern(&t, span)),
+        quadrant_label_texts[1]
+            .take()
+            .map(|(t, span)| labels.intern(&t, span)),
+        quadrant_label_texts[2]
+            .take()
+            .map(|(t, span)| labels.intern(&t, span)),
+        quadrant_label_texts[3]
+            .take()
+            .map(|(t, span)| labels.intern(&t, span)),
+    ];
+    // Fix up quadrant point labels (they were collected with placeholder IDs).
+    // Re-read the AST for point names and intern them now.
+    {
+        let mut pi = 0;
+        for statement in &ast.statements {
+            if let Statement::QuadrantPoint(pt) = statement
+                && pi < quadrant_points_out.len()
+            {
+                quadrant_points_out[pi].label = labels.intern(&pt.name, pt.span);
+                pi += 1;
+            }
+        }
+    }
+
     let mut labels = labels.labels;
     let label_stats = enforce_label_limits(&mut labels, config);
 
@@ -4927,6 +5006,11 @@ pub fn normalize_ast_to_ir(
         links: resolved_links,
         meta,
         constraints,
+        quadrant_points: quadrant_points_out,
+        quadrant_title,
+        quadrant_x_axis: q_x_axis,
+        quadrant_y_axis: q_y_axis,
+        quadrant_labels: q_labels,
     };
 
     let degradation = ir.meta.guard.degradation.clone();
@@ -5171,6 +5255,22 @@ pub struct PieEntry {
     pub span: Span,
 }
 
+/// Axis direction for quadrant charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuadrantAxisKind {
+    X,
+    Y,
+}
+
+/// A data point on a quadrant chart with normalized [0,1] coordinates.
+#[derive(Debug, Clone)]
+pub struct QuadrantPoint {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct MindmapNode {
     pub depth: usize,
@@ -5379,6 +5479,22 @@ pub enum Statement {
     },
     GanttTask(GanttTask),
     PieEntry(PieEntry),
+    QuadrantTitle {
+        title: String,
+        span: Span,
+    },
+    QuadrantAxis {
+        axis: QuadrantAxisKind,
+        label_start: String,
+        label_end: String,
+        span: Span,
+    },
+    QuadrantLabel {
+        quadrant: u8,
+        label: String,
+        span: Span,
+    },
+    QuadrantPoint(QuadrantPoint),
     MindmapNode(MindmapNode),
     GitGraphCommit(GitGraphCommit),
     GitGraphBranch(GitGraphBranch),
@@ -5470,6 +5586,21 @@ pub struct IrPieEntry {
     pub value: f64,
     pub value_text: String,
     pub span: Span,
+}
+
+/// A data point on a quadrant chart in the IR.
+#[derive(Debug, Clone)]
+pub struct IrQuadrantPoint {
+    pub label: IrLabelId,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Axis labels for quadrant charts.
+#[derive(Debug, Clone)]
+pub struct IrQuadrantAxis {
+    pub label_start: IrLabelId,
+    pub label_end: IrLabelId,
 }
 
 /// Node shape as determined by the bracket syntax in Mermaid source.
@@ -6074,6 +6205,11 @@ pub struct MermaidDiagramIr {
     pub links: Vec<IrLink>,
     pub meta: MermaidDiagramMeta,
     pub constraints: Vec<LayoutConstraint>,
+    pub quadrant_points: Vec<IrQuadrantPoint>,
+    pub quadrant_title: Option<IrLabelId>,
+    pub quadrant_x_axis: Option<IrQuadrantAxis>,
+    pub quadrant_y_axis: Option<IrQuadrantAxis>,
+    pub quadrant_labels: [Option<IrLabelId>; 4],
 }
 
 #[derive(Debug, Clone)]
@@ -6854,8 +6990,17 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
                     });
                 }
             }
+            DiagramType::QuadrantChart => {
+                if let Some(stmt) = parse_quadrant_line(trimmed, span) {
+                    statements.push(stmt);
+                } else {
+                    statements.push(Statement::Raw {
+                        text: normalize_ws(trimmed),
+                        span,
+                    });
+                }
+            }
             DiagramType::Unknown
-            | DiagramType::QuadrantChart
             | DiagramType::BlockBeta
             | DiagramType::PacketBeta
             | DiagramType::ArchitectureBeta => {
@@ -7348,6 +7493,10 @@ fn statement_span(statement: &Statement) -> Span {
         Statement::C4BoundaryStart(b) => b.span,
         Statement::C4BoundaryEnd { span } => *span,
         Statement::C4Title { span, .. } => *span,
+        Statement::QuadrantTitle { span, .. } => *span,
+        Statement::QuadrantAxis { span, .. } => *span,
+        Statement::QuadrantLabel { span, .. } => *span,
+        Statement::QuadrantPoint(p) => p.span,
         Statement::Raw { span, .. } => *span,
     }
 }
@@ -8295,6 +8444,93 @@ fn parse_pie(line: &str, span: Span) -> Option<PieEntry> {
         span,
     })
 }
+
+/// Parse a quadrantChart line into its corresponding statement.
+fn parse_quadrant_line(line: &str, span: Span) -> Option<Statement> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with("%%") {
+        return None;
+    }
+
+    // title <text>
+    if let Some(rest) = trimmed.strip_prefix("title") {
+        let title = rest.trim().to_string();
+        if !title.is_empty() {
+            return Some(Statement::QuadrantTitle { title, span });
+        }
+    }
+
+    // x-axis <start> --> <end>
+    if let Some(rest) = trimmed.strip_prefix("x-axis") {
+        let rest = rest.trim();
+        if let Some((start, end)) = rest.split_once("-->") {
+            return Some(Statement::QuadrantAxis {
+                axis: QuadrantAxisKind::X,
+                label_start: strip_quotes(start.trim()),
+                label_end: strip_quotes(end.trim()),
+                span,
+            });
+        }
+    }
+
+    // y-axis <start> --> <end>
+    if let Some(rest) = trimmed.strip_prefix("y-axis") {
+        let rest = rest.trim();
+        if let Some((start, end)) = rest.split_once("-->") {
+            return Some(Statement::QuadrantAxis {
+                axis: QuadrantAxisKind::Y,
+                label_start: strip_quotes(start.trim()),
+                label_end: strip_quotes(end.trim()),
+                span,
+            });
+        }
+    }
+
+    // quadrant-N <label>
+    if let Some(rest) = trimmed.strip_prefix("quadrant-")
+        && let Some(ch) = rest.chars().next()
+        && let Some(n) = ch.to_digit(10)
+        && (1..=4).contains(&n)
+    {
+        let label = rest[1..].trim().to_string();
+        return Some(Statement::QuadrantLabel {
+            quadrant: n as u8,
+            label,
+            span,
+        });
+    }
+
+    // <Name>: [<x>, <y>]
+    if let Some((name, coords)) = trimmed.split_once(':') {
+        let coords = coords.trim();
+        if coords.starts_with('[')
+            && coords.ends_with(']')
+            && let Some((xs, ys)) = coords[1..coords.len() - 1].split_once(',')
+            && let (Ok(x), Ok(y)) = (xs.trim().parse::<f64>(), ys.trim().parse::<f64>())
+        {
+            return Some(Statement::QuadrantPoint(QuadrantPoint {
+                name: name.trim().to_string(),
+                x: x.clamp(0.0, 1.0),
+                y: y.clamp(0.0, 1.0),
+                span,
+            }));
+        }
+    }
+
+    None
+}
+
+/// Strip surrounding quotes (single or double) from a string.
+fn strip_quotes(s: &str) -> String {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with(SQUOTE) && s.ends_with(SQUOTE)) {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+const SQUOTE: char = '\'';
 
 fn is_pie_show_data_line(text: &str) -> bool {
     text.trim().eq_ignore_ascii_case("showdata")
@@ -11257,6 +11493,11 @@ mod tests {
                 guard: MermaidGuardReport::default(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
 

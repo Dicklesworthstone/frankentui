@@ -1887,13 +1887,107 @@ fn layout_requirement_diagram(
     }
 }
 
-fn layout_journey_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacing: &LayoutSpacing) -> DiagramLayout {
+/// Quadrant chart layout: 2D scatter plot with axes and quadrant boundaries.
+///
+/// Points are placed at their (x, y) coordinates within a fixed viewport.
+/// The chart area is bounded by axes, with quadrant labels in each corner.
+fn layout_quadrant_diagram(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    spacing: &LayoutSpacing,
+) -> DiagramLayout {
+    // Chart area dimensions (layout coordinates).
+    let axis_label_height = 2.0;
+    let axis_label_width = 12.0;
+    let chart_x = axis_label_width;
+    let chart_y = axis_label_height;
+    let chart_w = spacing.node_width.max(40.0);
+    let chart_h = spacing.node_height.max(20.0);
+    let total_w = chart_x + chart_w + axis_label_width;
+    let total_h = chart_y + chart_h + axis_label_height;
+
+    // Place quadrant points as nodes.
+    let n = ir.quadrant_points.len();
+    let mut nodes = Vec::with_capacity(n);
+    for (i, pt) in ir.quadrant_points.iter().enumerate() {
+        let px = chart_x + pt.x * chart_w;
+        let py = chart_y + (1.0 - pt.y) * chart_h; // Flip Y: high values at top.
+        let node_w = 2.0;
+        let node_h = 1.0;
+        let rect = LayoutRect {
+            x: px - node_w / 2.0,
+            y: py - node_h / 2.0,
+            width: node_w,
+            height: node_h,
+        };
+        let label_rect = Some(LayoutRect {
+            x: px + node_w / 2.0 + 0.5,
+            y: py - 0.5,
+            width: 15.0,
+            height: 1.0,
+        });
+        nodes.push(LayoutNodeBox {
+            node_idx: i,
+            rect,
+            label_rect,
+            rank: 0,
+            order: i,
+        });
+    }
+
+    let bounding_box = LayoutRect {
+        x: 0.0,
+        y: 0.0,
+        width: total_w,
+        height: total_h,
+    };
+
+    DiagramLayout {
+        nodes,
+        clusters: vec![],
+        edges: vec![],
+        bounding_box,
+        stats: LayoutStats {
+            iterations_used: 0,
+            max_iterations: config.layout_iteration_budget,
+            budget_exceeded: false,
+            crossings: 0,
+            ranks: 1,
+            max_rank_width: n,
+            total_bends: 0,
+            position_variance: 0.0,
+        },
+        degradation: None,
+    }
+}
+
+fn layout_journey_diagram(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    spacing: &LayoutSpacing,
+) -> DiagramLayout {
     let n = ir.nodes.len();
     if n == 0 {
         return DiagramLayout {
-            nodes: vec![], clusters: vec![], edges: vec![],
-            bounding_box: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
-            stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: 0, max_rank_width: 0, total_bends: 0, position_variance: 0.0 },
+            nodes: vec![],
+            clusters: vec![],
+            edges: vec![],
+            bounding_box: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            stats: LayoutStats {
+                iterations_used: 0,
+                max_iterations: config.layout_iteration_budget,
+                budget_exceeded: false,
+                crossings: 0,
+                ranks: 0,
+                max_rank_width: 0,
+                total_bends: 0,
+                position_variance: 0.0,
+            },
             degradation: None,
         };
     }
@@ -1901,86 +1995,296 @@ fn layout_journey_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacing
     let task_height = spacing.node_height.max(3.0);
     let section_title_height = 2.0;
     let pad = spacing.cluster_padding;
-    let max_nw = node_sizes.iter().map(|(w, _)| *w).fold(spacing.node_width, f64::max);
+    let max_nw = node_sizes
+        .iter()
+        .map(|(w, _)| *w)
+        .fold(spacing.node_width, f64::max);
     let sec_w = max_nw + 2.0 * pad;
     let cmap = build_cluster_map(ir, n);
     let mut cn: Vec<Vec<usize>> = vec![Vec::new(); ir.clusters.len()];
     let mut uc: Vec<usize> = Vec::new();
-    for (i, cm) in cmap.iter().enumerate().take(n) { if let Some(ci) = *cm { cn[ci].push(i); } else { uc.push(i); } }
-    let mut nodes = vec![LayoutNodeBox { node_idx: 0, rect: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }, label_rect: None, rank: 0, order: 0 }; n];
+    for (i, cm) in cmap.iter().enumerate().take(n) {
+        if let Some(ci) = *cm {
+            cn[ci].push(i);
+        } else {
+            uc.push(i);
+        }
+    }
+    let mut nodes = vec![
+        LayoutNodeBox {
+            node_idx: 0,
+            rect: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0
+            },
+            label_rect: None,
+            rank: 0,
+            order: 0
+        };
+        n
+    ];
     let mut clusters = Vec::with_capacity(ir.clusters.len());
     let mut cy = 0.0;
     let mut ord = 0;
     let mut rnk = 0;
     for &ni in &uc {
         let nw = node_sizes[ni].0.max(max_nw);
-        let r = LayoutRect { x: pad, y: cy, width: nw, height: task_height };
-        let lr = Some(LayoutRect { x: r.x + spacing.label_padding, y: r.y + spacing.label_padding, width: r.width - 2.0 * spacing.label_padding, height: r.height - 2.0 * spacing.label_padding });
-        nodes[ni] = LayoutNodeBox { node_idx: ni, rect: r, label_rect: lr, rank: rnk, order: ord };
-        cy += task_height + spacing.node_gap; ord += 1;
+        let r = LayoutRect {
+            x: pad,
+            y: cy,
+            width: nw,
+            height: task_height,
+        };
+        let lr = Some(LayoutRect {
+            x: r.x + spacing.label_padding,
+            y: r.y + spacing.label_padding,
+            width: r.width - 2.0 * spacing.label_padding,
+            height: r.height - 2.0 * spacing.label_padding,
+        });
+        nodes[ni] = LayoutNodeBox {
+            node_idx: ni,
+            rect: r,
+            label_rect: lr,
+            rank: rnk,
+            order: ord,
+        };
+        cy += task_height + spacing.node_gap;
+        ord += 1;
     }
     for (ci, members) in cn.iter().enumerate() {
         if members.is_empty() {
             let h = section_title_height + 2.0 * pad;
-            clusters.push(LayoutClusterBox { cluster_idx: ci, rect: LayoutRect { x: 0.0, y: cy, width: sec_w, height: h }, title_rect: Some(LayoutRect { x: pad, y: cy + pad * 0.5, width: sec_w - 2.0 * pad, height: section_title_height }) });
-            cy += h + spacing.rank_gap; rnk += 1; continue;
+            clusters.push(LayoutClusterBox {
+                cluster_idx: ci,
+                rect: LayoutRect {
+                    x: 0.0,
+                    y: cy,
+                    width: sec_w,
+                    height: h,
+                },
+                title_rect: Some(LayoutRect {
+                    x: pad,
+                    y: cy + pad * 0.5,
+                    width: sec_w - 2.0 * pad,
+                    height: section_title_height,
+                }),
+            });
+            cy += h + spacing.rank_gap;
+            rnk += 1;
+            continue;
         }
         let sy = cy;
         let ty = cy + section_title_height + pad;
         let mut ty2 = ty;
         for (lo, &ni) in members.iter().enumerate() {
             let nw = node_sizes[ni].0.max(max_nw);
-            let r = LayoutRect { x: pad, y: ty2, width: nw, height: task_height };
-            let lr = Some(LayoutRect { x: r.x + spacing.label_padding, y: r.y + spacing.label_padding, width: r.width - 2.0 * spacing.label_padding, height: r.height - 2.0 * spacing.label_padding });
-            nodes[ni] = LayoutNodeBox { node_idx: ni, rect: r, label_rect: lr, rank: rnk, order: ord + lo };
+            let r = LayoutRect {
+                x: pad,
+                y: ty2,
+                width: nw,
+                height: task_height,
+            };
+            let lr = Some(LayoutRect {
+                x: r.x + spacing.label_padding,
+                y: r.y + spacing.label_padding,
+                width: r.width - 2.0 * spacing.label_padding,
+                height: r.height - 2.0 * spacing.label_padding,
+            });
+            nodes[ni] = LayoutNodeBox {
+                node_idx: ni,
+                rect: r,
+                label_rect: lr,
+                rank: rnk,
+                order: ord + lo,
+            };
             ty2 += task_height + spacing.node_gap;
         }
         ord += members.len();
         let sh = section_title_height + pad + (ty2 - ty - spacing.node_gap) + pad;
-        clusters.push(LayoutClusterBox { cluster_idx: ci, rect: LayoutRect { x: 0.0, y: sy, width: sec_w, height: sh }, title_rect: Some(LayoutRect { x: pad, y: sy + pad * 0.5, width: sec_w - 2.0 * pad, height: section_title_height }) });
-        cy = sy + sh + spacing.rank_gap; rnk += 1;
+        clusters.push(LayoutClusterBox {
+            cluster_idx: ci,
+            rect: LayoutRect {
+                x: 0.0,
+                y: sy,
+                width: sec_w,
+                height: sh,
+            },
+            title_rect: Some(LayoutRect {
+                x: pad,
+                y: sy + pad * 0.5,
+                width: sec_w - 2.0 * pad,
+                height: section_title_height,
+            }),
+        });
+        cy = sy + sh + spacing.rank_gap;
+        rnk += 1;
     }
-    let th = if cy > spacing.rank_gap { cy - spacing.rank_gap } else { 0.0 };
-    DiagramLayout { nodes, clusters, edges: vec![], bounding_box: LayoutRect { x: 0.0, y: 0.0, width: sec_w.max(0.0), height: th.max(0.0) }, stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: rnk, max_rank_width: cn.iter().map(|m| m.len()).max().unwrap_or(0), total_bends: 0, position_variance: 0.0 }, degradation: None }
+    let th = if cy > spacing.rank_gap {
+        cy - spacing.rank_gap
+    } else {
+        0.0
+    };
+    DiagramLayout {
+        nodes,
+        clusters,
+        edges: vec![],
+        bounding_box: LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: sec_w.max(0.0),
+            height: th.max(0.0),
+        },
+        stats: LayoutStats {
+            iterations_used: 0,
+            max_iterations: config.layout_iteration_budget,
+            budget_exceeded: false,
+            crossings: 0,
+            ranks: rnk,
+            max_rank_width: cn.iter().map(|m| m.len()).max().unwrap_or(0),
+            total_bends: 0,
+            position_variance: 0.0,
+        },
+        degradation: None,
+    }
 }
 
-fn layout_xychart_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacing: &LayoutSpacing) -> DiagramLayout {
+fn layout_xychart_diagram(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    spacing: &LayoutSpacing,
+) -> DiagramLayout {
     let n = ir.nodes.len();
     if n == 0 {
         return DiagramLayout {
-            nodes: vec![], clusters: vec![], edges: vec![],
-            bounding_box: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
-            stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: 0, max_rank_width: 0, total_bends: 0, position_variance: 0.0 },
+            nodes: vec![],
+            clusters: vec![],
+            edges: vec![],
+            bounding_box: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            stats: LayoutStats {
+                iterations_used: 0,
+                max_iterations: config.layout_iteration_budget,
+                budget_exceeded: false,
+                crossings: 0,
+                ranks: 0,
+                max_rank_width: 0,
+                total_bends: 0,
+                position_variance: 0.0,
+            },
             degradation: None,
         };
     }
     let node_sizes = compute_node_sizes(ir, spacing);
     let row_height = spacing.node_height.max(3.0);
     let pad = spacing.cluster_padding;
-    let max_nw = node_sizes.iter().map(|(w, _)| *w).fold(spacing.node_width, f64::max);
+    let max_nw = node_sizes
+        .iter()
+        .map(|(w, _)| *w)
+        .fold(spacing.node_width, f64::max);
     let chart_w = max_nw + 2.0 * pad;
-    let mut nodes = vec![LayoutNodeBox { node_idx: 0, rect: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }, label_rect: None, rank: 0, order: 0 }; n];
+    let mut nodes = vec![
+        LayoutNodeBox {
+            node_idx: 0,
+            rect: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0
+            },
+            label_rect: None,
+            rank: 0,
+            order: 0
+        };
+        n
+    ];
     let mut cy = 0.0;
     for (i, ni) in (0..n).enumerate() {
         let (nw, nh) = node_sizes[ni];
         let h = nh.max(row_height);
         let w = nw.max(max_nw);
-        let r = LayoutRect { x: pad, y: cy, width: w, height: h };
-        let lr = Some(LayoutRect { x: r.x + spacing.label_padding, y: r.y + spacing.label_padding, width: r.width - 2.0 * spacing.label_padding, height: r.height - 2.0 * spacing.label_padding });
-        nodes[ni] = LayoutNodeBox { node_idx: ni, rect: r, label_rect: lr, rank: 0, order: i };
+        let r = LayoutRect {
+            x: pad,
+            y: cy,
+            width: w,
+            height: h,
+        };
+        let lr = Some(LayoutRect {
+            x: r.x + spacing.label_padding,
+            y: r.y + spacing.label_padding,
+            width: r.width - 2.0 * spacing.label_padding,
+            height: r.height - 2.0 * spacing.label_padding,
+        });
+        nodes[ni] = LayoutNodeBox {
+            node_idx: ni,
+            rect: r,
+            label_rect: lr,
+            rank: 0,
+            order: i,
+        };
         cy += h + spacing.node_gap;
     }
-    let th = if cy > spacing.node_gap { cy - spacing.node_gap } else { 0.0 };
-    DiagramLayout { nodes, clusters: vec![], edges: vec![], bounding_box: LayoutRect { x: 0.0, y: 0.0, width: chart_w.max(0.0), height: th.max(0.0) }, stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: 1, max_rank_width: n, total_bends: 0, position_variance: 0.0 }, degradation: None }
+    let th = if cy > spacing.node_gap {
+        cy - spacing.node_gap
+    } else {
+        0.0
+    };
+    DiagramLayout {
+        nodes,
+        clusters: vec![],
+        edges: vec![],
+        bounding_box: LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: chart_w.max(0.0),
+            height: th.max(0.0),
+        },
+        stats: LayoutStats {
+            iterations_used: 0,
+            max_iterations: config.layout_iteration_budget,
+            budget_exceeded: false,
+            crossings: 0,
+            ranks: 1,
+            max_rank_width: n,
+            total_bends: 0,
+            position_variance: 0.0,
+        },
+        degradation: None,
+    }
 }
 
-fn layout_timeline_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacing: &LayoutSpacing) -> DiagramLayout {
+fn layout_timeline_diagram(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    spacing: &LayoutSpacing,
+) -> DiagramLayout {
     let n = ir.nodes.len();
     if n == 0 {
         return DiagramLayout {
-            nodes: vec![], clusters: vec![], edges: vec![],
-            bounding_box: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
-            stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: 0, max_rank_width: 0, total_bends: 0, position_variance: 0.0 },
+            nodes: vec![],
+            clusters: vec![],
+            edges: vec![],
+            bounding_box: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            stats: LayoutStats {
+                iterations_used: 0,
+                max_iterations: config.layout_iteration_budget,
+                budget_exceeded: false,
+                crossings: 0,
+                ranks: 0,
+                max_rank_width: 0,
+                total_bends: 0,
+                position_variance: 0.0,
+            },
             degradation: None,
         };
     }
@@ -1988,13 +2292,36 @@ fn layout_timeline_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacin
     let period_height = spacing.node_height.max(3.0);
     let section_title_height = 2.0;
     let pad = spacing.cluster_padding;
-    let max_nw = node_sizes.iter().map(|(w, _)| *w).fold(spacing.node_width, f64::max);
+    let max_nw = node_sizes
+        .iter()
+        .map(|(w, _)| *w)
+        .fold(spacing.node_width, f64::max);
     let sec_w = max_nw + 2.0 * pad;
     let cmap = build_cluster_map(ir, n);
     let mut cn: Vec<Vec<usize>> = vec![Vec::new(); ir.clusters.len()];
     let mut uc: Vec<usize> = Vec::new();
-    for (i, cm) in cmap.iter().enumerate().take(n) { if let Some(ci) = *cm { cn[ci].push(i); } else { uc.push(i); } }
-    let mut nodes = vec![LayoutNodeBox { node_idx: 0, rect: LayoutRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }, label_rect: None, rank: 0, order: 0 }; n];
+    for (i, cm) in cmap.iter().enumerate().take(n) {
+        if let Some(ci) = *cm {
+            cn[ci].push(i);
+        } else {
+            uc.push(i);
+        }
+    }
+    let mut nodes = vec![
+        LayoutNodeBox {
+            node_idx: 0,
+            rect: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0
+            },
+            label_rect: None,
+            rank: 0,
+            order: 0
+        };
+        n
+    ];
     let mut clusters = Vec::with_capacity(ir.clusters.len());
     let mut cy = 0.0;
     let mut ord = 0;
@@ -2003,16 +2330,49 @@ fn layout_timeline_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacin
         let (nw, nh) = node_sizes[ni];
         let h = nh.max(period_height);
         let w = nw.max(max_nw);
-        let r = LayoutRect { x: pad, y: cy, width: w, height: h };
-        let lr = Some(LayoutRect { x: r.x + spacing.label_padding, y: r.y + spacing.label_padding, width: r.width - 2.0 * spacing.label_padding, height: r.height - 2.0 * spacing.label_padding });
-        nodes[ni] = LayoutNodeBox { node_idx: ni, rect: r, label_rect: lr, rank: rnk, order: ord };
-        cy += h + spacing.node_gap; ord += 1;
+        let r = LayoutRect {
+            x: pad,
+            y: cy,
+            width: w,
+            height: h,
+        };
+        let lr = Some(LayoutRect {
+            x: r.x + spacing.label_padding,
+            y: r.y + spacing.label_padding,
+            width: r.width - 2.0 * spacing.label_padding,
+            height: r.height - 2.0 * spacing.label_padding,
+        });
+        nodes[ni] = LayoutNodeBox {
+            node_idx: ni,
+            rect: r,
+            label_rect: lr,
+            rank: rnk,
+            order: ord,
+        };
+        cy += h + spacing.node_gap;
+        ord += 1;
     }
     for (ci, members) in cn.iter().enumerate() {
         if members.is_empty() {
             let h = section_title_height + 2.0 * pad;
-            clusters.push(LayoutClusterBox { cluster_idx: ci, rect: LayoutRect { x: 0.0, y: cy, width: sec_w, height: h }, title_rect: Some(LayoutRect { x: pad, y: cy + pad * 0.5, width: sec_w - 2.0 * pad, height: section_title_height }) });
-            cy += h + spacing.rank_gap; rnk += 1; continue;
+            clusters.push(LayoutClusterBox {
+                cluster_idx: ci,
+                rect: LayoutRect {
+                    x: 0.0,
+                    y: cy,
+                    width: sec_w,
+                    height: h,
+                },
+                title_rect: Some(LayoutRect {
+                    x: pad,
+                    y: cy + pad * 0.5,
+                    width: sec_w - 2.0 * pad,
+                    height: section_title_height,
+                }),
+            });
+            cy += h + spacing.rank_gap;
+            rnk += 1;
+            continue;
         }
         let sy = cy;
         let ty = cy + section_title_height + pad;
@@ -2021,18 +2381,74 @@ fn layout_timeline_diagram(ir: &MermaidDiagramIr, config: &MermaidConfig, spacin
             let (nw, nh) = node_sizes[ni];
             let h = nh.max(period_height);
             let w = nw.max(max_nw);
-            let r = LayoutRect { x: pad, y: ty2, width: w, height: h };
-            let lr = Some(LayoutRect { x: r.x + spacing.label_padding, y: r.y + spacing.label_padding, width: r.width - 2.0 * spacing.label_padding, height: r.height - 2.0 * spacing.label_padding });
-            nodes[ni] = LayoutNodeBox { node_idx: ni, rect: r, label_rect: lr, rank: rnk, order: ord + lo };
+            let r = LayoutRect {
+                x: pad,
+                y: ty2,
+                width: w,
+                height: h,
+            };
+            let lr = Some(LayoutRect {
+                x: r.x + spacing.label_padding,
+                y: r.y + spacing.label_padding,
+                width: r.width - 2.0 * spacing.label_padding,
+                height: r.height - 2.0 * spacing.label_padding,
+            });
+            nodes[ni] = LayoutNodeBox {
+                node_idx: ni,
+                rect: r,
+                label_rect: lr,
+                rank: rnk,
+                order: ord + lo,
+            };
             ty2 += h + spacing.node_gap;
         }
         ord += members.len();
         let sh = section_title_height + pad + (ty2 - ty - spacing.node_gap) + pad;
-        clusters.push(LayoutClusterBox { cluster_idx: ci, rect: LayoutRect { x: 0.0, y: sy, width: sec_w, height: sh }, title_rect: Some(LayoutRect { x: pad, y: sy + pad * 0.5, width: sec_w - 2.0 * pad, height: section_title_height }) });
-        cy = sy + sh + spacing.rank_gap; rnk += 1;
+        clusters.push(LayoutClusterBox {
+            cluster_idx: ci,
+            rect: LayoutRect {
+                x: 0.0,
+                y: sy,
+                width: sec_w,
+                height: sh,
+            },
+            title_rect: Some(LayoutRect {
+                x: pad,
+                y: sy + pad * 0.5,
+                width: sec_w - 2.0 * pad,
+                height: section_title_height,
+            }),
+        });
+        cy = sy + sh + spacing.rank_gap;
+        rnk += 1;
     }
-    let th = if cy > spacing.rank_gap { cy - spacing.rank_gap } else { 0.0 };
-    DiagramLayout { nodes, clusters, edges: vec![], bounding_box: LayoutRect { x: 0.0, y: 0.0, width: sec_w.max(0.0), height: th.max(0.0) }, stats: LayoutStats { iterations_used: 0, max_iterations: config.layout_iteration_budget, budget_exceeded: false, crossings: 0, ranks: rnk, max_rank_width: cn.iter().map(|m| m.len()).max().unwrap_or(0), total_bends: 0, position_variance: 0.0 }, degradation: None }
+    let th = if cy > spacing.rank_gap {
+        cy - spacing.rank_gap
+    } else {
+        0.0
+    };
+    DiagramLayout {
+        nodes,
+        clusters,
+        edges: vec![],
+        bounding_box: LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: sec_w.max(0.0),
+            height: th.max(0.0),
+        },
+        stats: LayoutStats {
+            iterations_used: 0,
+            max_iterations: config.layout_iteration_budget,
+            budget_exceeded: false,
+            crossings: 0,
+            ranks: rnk,
+            max_rank_width: cn.iter().map(|m| m.len()).max().unwrap_or(0),
+            total_bends: 0,
+            position_variance: 0.0,
+        },
+        degradation: None,
+    }
 }
 
 fn layout_sequence_diagram(
@@ -2803,6 +3219,9 @@ pub fn layout_diagram_with_spacing(
     }
     if ir.diagram_type == DiagramType::Sequence {
         return layout_sequence_diagram(ir, config, spacing);
+    }
+    if ir.diagram_type == DiagramType::QuadrantChart {
+        return layout_quadrant_diagram(ir, config, spacing);
     }
     if ir.diagram_type == DiagramType::Journey {
         return layout_journey_diagram(ir, config, spacing);
@@ -5732,6 +6151,11 @@ mod tests {
                 guard: empty_guard_report(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
     fn count_crossings_bruteforce(
@@ -6983,6 +7407,11 @@ mod tests {
                 guard: MermaidGuardReport::default(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
     #[test]
@@ -8047,6 +8476,11 @@ mod tests {
                 guard: empty_guard_report(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
     #[test]
@@ -8151,6 +8585,11 @@ mod tests {
                 guard: empty_guard_report(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
     #[test]
@@ -8868,6 +9307,11 @@ mod label_tests {
                 guard: MermaidGuardReport::default(),
             },
             constraints: vec![],
+            quadrant_points: Vec::new(),
+            quadrant_title: None,
+            quadrant_x_axis: None,
+            quadrant_y_axis: None,
+            quadrant_labels: [None, None, None, None],
         }
     }
 

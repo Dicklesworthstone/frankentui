@@ -302,7 +302,7 @@ const FIXTURES: &[MermaidFixture] = &[
         source: include_str!("fixtures/mermaid/quadrant_chart_basic.mmd"),
         family: "quadrantChart",
         tier: FixtureTier::Basic,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     MermaidFixture {
         id: "quadrant_chart_stress",
@@ -310,7 +310,7 @@ const FIXTURES: &[MermaidFixture] = &[
         source: include_str!("fixtures/mermaid/quadrant_chart_stress.mmd"),
         family: "quadrantChart",
         tier: FixtureTier::Stress,
-        expects_raw_fallback: true,
+        expects_raw_fallback: false,
     },
     // -- Sankey --
     MermaidFixture {
@@ -520,6 +520,7 @@ mod tests {
         timeline: usize,
         xy_chart: usize,
         sankey: usize,
+        quadrant: usize,
         raw: usize,
         c4: usize,
     }
@@ -569,6 +570,10 @@ mod tests {
                 | Statement::C4BoundaryStart(_)
                 | Statement::C4BoundaryEnd { .. }
                 | Statement::C4Title { .. } => counts.c4 += 1,
+                Statement::QuadrantTitle { .. }
+                | Statement::QuadrantAxis { .. }
+                | Statement::QuadrantLabel { .. }
+                | Statement::QuadrantPoint(_) => counts.quadrant += 1,
                 Statement::Raw { .. } => counts.raw += 1,
             }
         }
@@ -603,6 +608,7 @@ mod tests {
             + c.xy_chart
             + c.sankey
             + c.c4
+            + c.quadrant
             + c.raw
     }
 
@@ -811,6 +817,21 @@ mod tests {
                     assert!(
                         counts.requirement >= 5,
                         "requirement_edge_case requirement stmts < 5"
+                    );
+                }
+                // -- QuadrantChart family --
+                "quadrant_chart_basic" => {
+                    assert_eq!(parsed.ast.diagram_type, DiagramType::QuadrantChart);
+                    assert!(
+                        counts.quadrant >= 8,
+                        "quadrant_chart_basic quadrant stmts < 8"
+                    );
+                }
+                "quadrant_chart_stress" => {
+                    assert_eq!(parsed.ast.diagram_type, DiagramType::QuadrantChart);
+                    assert!(
+                        counts.quadrant >= 14,
+                        "quadrant_chart_stress quadrant stmts < 14"
                     );
                 }
                 // -- All raw-fallback families --
