@@ -20,7 +20,9 @@
 
 use std::collections::VecDeque;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -31,6 +33,7 @@ use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
+use std::cell::Cell;
 use tracing::{debug, instrument, trace, warn};
 
 use super::{HelpEntry, Screen};
@@ -163,6 +166,7 @@ pub struct ActionTimeline {
     filter_kind: Option<EventKind>,
     next_id: u64,
     tick_count: u64,
+    last_timeline_area: Cell<Rect>,
 }
 
 impl Default for ActionTimeline {
@@ -186,6 +190,7 @@ impl ActionTimeline {
             filter_kind: None,
             next_id: 1,
             tick_count: 0,
+            last_timeline_area: Cell::new(Rect::default()),
         };
         for tick in 0..12 {
             timeline.tick_count = tick;
@@ -713,6 +718,43 @@ impl ActionTimeline {
             .style(theme::body())
             .render(inner, frame);
     }
+
+    /// Handle mouse events: click to select event, scroll to navigate.
+    fn handle_mouse(&mut self, event: &Event) {
+        if let Event::Mouse(mouse) = event {
+            let timeline_area = self.last_timeline_area.get();
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if timeline_area.contains(mouse.x, mouse.y) {
+                        let header_rows = 1_u16;
+                        let relative_y = mouse.y.saturating_sub(timeline_area.y + header_rows);
+                        let clicked_index = self.scroll_offset + relative_y as usize;
+                        let filtered = self.filtered_indices();
+                        if clicked_index < filtered.len() {
+                            self.follow = false;
+                            self.selected = clicked_index;
+                            self.sync_selection();
+                        }
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if timeline_area.contains(mouse.x, mouse.y) {
+                        self.follow = false;
+                        self.selected = self.selected.saturating_sub(3);
+                        self.sync_selection();
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if timeline_area.contains(mouse.x, mouse.y) {
+                        self.follow = false;
+                        self.selected = self.selected.saturating_add(3);
+                        self.sync_selection();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Screen for ActionTimeline {
@@ -720,6 +762,11 @@ impl Screen for ActionTimeline {
 
     #[instrument(name = "action_timeline::update", skip_all, fields(event_type))]
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if matches!(event, Event::Mouse(_)) {
+            self.handle_mouse(event);
+            return Cmd::None;
+        }
+
         if let Event::Resize { height, .. } = event {
             let usable = height.saturating_sub(6).max(1);
             debug!(
@@ -848,6 +895,7 @@ impl Screen for ActionTimeline {
 
         let filtered = self.filtered_indices();
         self.render_filters(frame, rows[0]);
+        self.last_timeline_area.set(cols[0]);
         self.render_timeline(frame, cols[0], &filtered);
         self.render_details(frame, cols[1], &filtered);
     }
@@ -889,6 +937,14 @@ impl Screen for ActionTimeline {
             HelpEntry {
                 key: "Home/End",
                 action: "Jump to first/last event",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Select timeline event",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Navigate timeline",
             },
         ]
     }

@@ -8,7 +8,9 @@
 //! - Cross-container drag between lists
 //! - Various payload types
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -23,6 +25,7 @@ use ftui_widgets::keyboard_drag::{
 };
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::rule::Rule;
+use std::cell::Cell;
 
 use super::{HelpEntry, Screen};
 use crate::theme;
@@ -104,6 +107,8 @@ pub struct DragDropDemo {
     tick_count: u64,
     /// Announcements for screen readers.
     announcements: Vec<String>,
+    last_left_area: Cell<Rect>,
+    last_right_area: Cell<Rect>,
 }
 
 impl Default for DragDropDemo {
@@ -155,6 +160,8 @@ impl DragDropDemo {
             keyboard_drag: KeyboardDragManager::new(KeyboardDragConfig::default()),
             tick_count: 0,
             announcements: Vec::new(),
+            last_left_area: Cell::new(Rect::default()),
+            last_right_area: Cell::new(Rect::default()),
         }
     }
 
@@ -427,12 +434,53 @@ impl DragDropDemo {
 
         targets
     }
+
+    /// Handle mouse events: click to select/focus, scroll to navigate.
+    fn handle_mouse(&mut self, event: &Event) {
+        if let Event::Mouse(mouse) = event {
+            let left = self.last_left_area.get();
+            let right = self.last_right_area.get();
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if left.contains(mouse.x, mouse.y) {
+                        self.focused_list = 0;
+                        let relative_y = mouse.y.saturating_sub(left.y) as usize;
+                        if relative_y < self.left_list.len() {
+                            self.selected_index = relative_y;
+                        }
+                    } else if right.contains(mouse.x, mouse.y) {
+                        self.focused_list = 1;
+                        let relative_y = mouse.y.saturating_sub(right.y) as usize;
+                        if relative_y < self.right_list.len() {
+                            self.selected_index = relative_y;
+                        }
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if left.contains(mouse.x, mouse.y) || right.contains(mouse.x, mouse.y) {
+                        self.select_up();
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if left.contains(mouse.x, mouse.y) || right.contains(mouse.x, mouse.y) {
+                        self.select_down();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Screen for DragDropDemo {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if matches!(event, Event::Mouse(_)) {
+            self.handle_mouse(event);
+            return Cmd::None;
+        }
+
         // In keyboard drag mode, handle drag events first
         if self.mode == DemoMode::KeyboardDrag && self.handle_keyboard_drag(event) {
             return Cmd::None;
@@ -569,6 +617,14 @@ impl Screen for DragDropDemo {
             }
         }
 
+        bindings.push(HelpEntry {
+            key: "Click",
+            action: "Select item",
+        });
+        bindings.push(HelpEntry {
+            key: "Scroll",
+            action: "Navigate list",
+        });
         bindings
     }
 
@@ -621,6 +677,7 @@ impl DragDropDemo {
             return;
         }
 
+        self.last_left_area.set(inner);
         // Only show the left list in sortable mode
         self.render_list(&self.left_list, inner, frame, true);
     }
@@ -656,6 +713,8 @@ impl DragDropDemo {
         let right_inner = right_block.inner(cols[1]);
         right_block.render(cols[1], frame);
 
+        self.last_left_area.set(left_inner);
+        self.last_right_area.set(right_inner);
         self.render_list(&self.left_list, left_inner, frame, self.focused_list == 0);
         self.render_list(&self.right_list, right_inner, frame, self.focused_list == 1);
     }
@@ -701,6 +760,8 @@ impl DragDropDemo {
         let right_inner = right_block.inner(cols[1]);
         right_block.render(cols[1], frame);
 
+        self.last_left_area.set(left_inner);
+        self.last_right_area.set(right_inner);
         self.render_list(&self.left_list, left_inner, frame, self.focused_list == 0);
         self.render_list(&self.right_list, right_inner, frame, self.focused_list == 1);
 
