@@ -8,7 +8,7 @@
 //! - [`Responsive<T>`] for per-breakpoint value adaptation
 //! - Live breakpoint indicator showing the current tier
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{
     Breakpoint, Breakpoints, Constraint, Flex, Responsive, ResponsiveLayout, Visibility,
@@ -441,6 +441,7 @@ fn bp_color(bp: Breakpoint) -> theme::ColorToken {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_core::event::Modifiers;
 
     fn press(code: KeyCode) -> Event {
         Event::Key(KeyEvent {
