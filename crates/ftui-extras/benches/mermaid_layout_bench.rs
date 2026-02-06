@@ -46,6 +46,7 @@ fn make_ir(
             span_all: Vec::new(),
             implicit: false,
             members: Vec::new(),
+        annotation: None,
         })
         .collect();
 
@@ -102,6 +103,11 @@ fn make_ir(
         packet_fields: Vec::new(),
         packet_title: None,
         packet_bits_per_row: 32,
+    sequence_participants: Vec::new(),
+    sequence_controls: Vec::new(),
+    sequence_notes: Vec::new(),
+    sequence_activations: Vec::new(),
+    sequence_autonumber: false,
     }
 }
 

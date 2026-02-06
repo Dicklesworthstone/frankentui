@@ -431,6 +431,7 @@ impl<'a> DotParser<'a> {
             span_all: vec![span],
             implicit: true,
             members: Vec::new(),
+        annotation: None,
         });
         self.node_map.insert(id.to_string(), node_id);
         node_id
@@ -531,6 +532,11 @@ impl<'a> DotParser<'a> {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
+        sequence_participants: Vec::new(),
+        sequence_controls: Vec::new(),
+        sequence_notes: Vec::new(),
+        sequence_activations: Vec::new(),
+        sequence_autonumber: false,
         };
 
         Ok(MermaidIrParse {
