@@ -941,8 +941,7 @@ impl MermaidRenderer {
             self.render_sequence_lifelines(layout, &vp, buf);
         }
         if ir.diagram_type == DiagramType::GitGraph {
-            self.render_gitgraph(layout, ir, &vp, buf);
-            return;
+            self.render_gitgraph_lanes(layout, ir, &vp, buf);
         }
         self.render_edges(&layout.edges, ir, &vp, &resolved_styles.edge_styles, buf);
         self.render_nodes(&layout.nodes, ir, &vp, buf);
@@ -975,8 +974,7 @@ impl MermaidRenderer {
             self.render_sequence_lifelines(layout, &vp, buf);
         }
         if ir.diagram_type == DiagramType::GitGraph {
-            self.render_gitgraph(layout, ir, &vp, buf);
-            return;
+            self.render_gitgraph_lanes(layout, ir, &vp, buf);
         }
         self.render_edges_with_plan(
             &layout.edges,
@@ -2161,88 +2159,6 @@ impl MermaidRenderer {
 
     // ── Cluster rendering ───────────────────────────────────────────
 
-    /// Render gitGraph-specific elements: commit node glyphs and branch lane lines.
-    fn render_gitgraph(
-        &self,
-        layout: &DiagramLayout,
-        ir: &MermaidDiagramIr,
-        vp: &Viewport,
-        buf: &mut Buffer,
-    ) {
-        let branch_colors: &[PackedRgba] = &[
-            self.colors.node_border,
-            self.colors.edge_color,
-            PackedRgba::rgb(0x2e, 0xb8, 0x6c),
-            PackedRgba::rgb(0xe0, 0x73, 0x3a),
-            PackedRgba::rgb(0x9b, 0x59, 0xb6),
-            PackedRgba::rgb(0x34, 0x98, 0xdb),
-        ];
-        let mut lane_nodes: std::collections::BTreeMap<usize, Vec<usize>> =
-            std::collections::BTreeMap::new();
-        for (i, node) in layout.nodes.iter().enumerate() {
-            lane_nodes.entry(node.order).or_default().push(i);
-        }
-        for (&lane, node_indices) in &lane_nodes {
-            if node_indices.is_empty() {
-                continue;
-            }
-            let color = branch_colors[lane % branch_colors.len()];
-            let line_cell = Cell::from_char(self.glyphs.border.vertical).with_fg(color);
-            let mut min_y = f64::MAX;
-            let mut max_y = f64::MIN;
-            let mut lane_x = 0.0;
-            for &ni in node_indices {
-                let rect = &layout.nodes[ni].rect;
-                lane_x = rect.x + rect.width / 2.0;
-                min_y = min_y.min(rect.y);
-                max_y = max_y.max(rect.y + rect.height);
-            }
-            let (cx, cy_top) = vp.to_cell(lane_x, min_y);
-            let (_, cy_bot) = vp.to_cell(lane_x, max_y);
-            let (lo, hi) = if cy_top <= cy_bot {
-                (cy_top, cy_bot)
-            } else {
-                (cy_bot, cy_top)
-            };
-            for y in lo..=hi {
-                buf.set(cx, y, line_cell);
-            }
-        }
-        for (i, node) in layout.nodes.iter().enumerate() {
-            let lane = node.order;
-            let color = branch_colors[lane % branch_colors.len()];
-            let (cx, cy) = vp.to_cell(
-                node.rect.x + node.rect.width / 2.0,
-                node.rect.y + node.rect.height / 2.0,
-            );
-            let glyph = match self.glyph_mode {
-                MermaidGlyphMode::Unicode => '\u{25cf}',
-                MermaidGlyphMode::Ascii => '*',
-            };
-            let commit_cell = Cell::from_char(glyph).with_fg(color);
-            buf.set(cx, cy, commit_cell);
-            if let Some(label_rect) = &node.label_rect
-                && let Some(label_id) = ir.nodes[i].label
-                && let Some(label) = ir.labels.get(label_id.0)
-            {
-                let cell_rect = vp.to_cell_rect(label_rect);
-                let max_w = cell_rect.width as usize;
-                let text = if label.text.len() > max_w && max_w > 3 {
-                    format!("{}...", &label.text[..max_w.saturating_sub(3)])
-                } else {
-                    label.text.clone()
-                };
-                let label_fg = self.colors.node_text;
-                for (j, ch) in text.chars().enumerate() {
-                    let lx = cell_rect.x + j as u16;
-                    if lx < cell_rect.x + cell_rect.width {
-                        buf.set(lx, cell_rect.y, Cell::from_char(ch).with_fg(label_fg));
-                    }
-                }
-            }
-        }
-    }
-
     fn render_clusters(
         &self,
         clusters: &[LayoutClusterBox],
@@ -2358,6 +2274,38 @@ impl MermaidRenderer {
             }
         }
     }
+
+    /// Draw vertical branch lane lines for gitGraph diagrams.
+    fn render_gitgraph_lanes(&self, layout: &DiagramLayout, ir: &MermaidDiagramIr, vp: &Viewport, buf: &mut Buffer) {
+        // Draw a vertical lane line for each cluster (branch).
+        // Lane 0 (main) is implicit and drawn through all commits.
+        let end_y = layout.bounding_box.y + layout.bounding_box.height;
+        let start_y = layout.bounding_box.y;
+
+        // Collect lane x positions from cluster rects.
+        let mut lane_xs: Vec<f64> = Vec::new();
+
+        // Lane 0: center of the leftmost column of nodes (commits not in any cluster)
+        if let Some(first_node) = layout.nodes.first() {
+            lane_xs.push(first_node.rect.x + first_node.rect.width / 2.0);
+        }
+
+        for cluster in &layout.clusters {
+            lane_xs.push(cluster.rect.x + cluster.rect.width / 2.0);
+        }
+
+        let line_cell = Cell::from_char(' ').with_fg(self.colors.edge_color);
+        for x in &lane_xs {
+            let (cx, cy0) = vp.to_cell(*x, start_y);
+            let (_, cy1) = vp.to_cell(*x, end_y);
+            let (lo, hi) = if cy0 <= cy1 { (cy0, cy1) } else { (cy1, cy0) };
+            for y in lo..=hi {
+                self.merge_line_cell(cx, y, LINE_UP | LINE_DOWN, line_cell, buf);
+            }
+        }
+    }
+
+
 
     #[allow(dead_code)]
     fn merge_line_cell(&self, x: u16, y: u16, bits: u8, cell: Cell, buf: &mut Buffer) {
