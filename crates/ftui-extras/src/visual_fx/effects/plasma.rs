@@ -1345,4 +1345,49 @@ mod tests {
             hash1
         );
     }
+
+    #[test]
+    fn plasma_wave_output_in_0_1() {
+        for i in 0..100 {
+            let nx = i as f64 / 100.0;
+            let ny = (100 - i) as f64 / 100.0;
+            let v = plasma_wave(nx, ny, i as f64 * 0.1);
+            assert!((0.0..=1.0).contains(&v), "plasma_wave out of [0,1]: {v}");
+        }
+    }
+
+    #[test]
+    fn plasma_wave_low_output_in_0_1() {
+        for i in 0..100 {
+            let nx = i as f64 / 100.0;
+            let ny = (100 - i) as f64 / 100.0;
+            let v = plasma_wave_low(nx, ny, i as f64 * 0.1);
+            assert!(
+                (0.0..=1.0).contains(&v),
+                "plasma_wave_low out of [0,1]: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn plasma_wave_deterministic() {
+        let a = plasma_wave(0.5, 0.5, 1.0);
+        let b = plasma_wave(0.5, 0.5, 1.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn factory_methods_set_correct_palette() {
+        assert!(matches!(
+            PlasmaFx::theme().palette(),
+            PlasmaPalette::ThemeAccents
+        ));
+        assert!(matches!(
+            PlasmaFx::sunset().palette(),
+            PlasmaPalette::Sunset
+        ));
+        assert!(matches!(PlasmaFx::ocean().palette(), PlasmaPalette::Ocean));
+        assert!(matches!(PlasmaFx::fire().palette(), PlasmaPalette::Fire));
+        assert!(matches!(PlasmaFx::neon().palette(), PlasmaPalette::Neon));
+    }
 }
