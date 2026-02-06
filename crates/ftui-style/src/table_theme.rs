@@ -2602,4 +2602,330 @@ mod tests {
             last = pos;
         }
     }
+
+    // =========================================================================
+    // Gradient tests
+    // =========================================================================
+
+    #[test]
+    fn gradient_empty_returns_transparent() {
+        let g = Gradient::new(vec![]);
+        let c = g.sample(0.5);
+        assert_eq!(c, PackedRgba::TRANSPARENT);
+    }
+
+    #[test]
+    fn gradient_single_stop_returns_that_color() {
+        let red = PackedRgba::rgb(255, 0, 0);
+        let g = Gradient::new(vec![(0.5, red)]);
+        assert_eq!(g.sample(0.0), red);
+        assert_eq!(g.sample(0.5), red);
+        assert_eq!(g.sample(1.0), red);
+    }
+
+    #[test]
+    fn gradient_two_stops_interpolates() {
+        let black = PackedRgba::rgb(0, 0, 0);
+        let white = PackedRgba::rgb(255, 255, 255);
+        let g = Gradient::new(vec![(0.0, black), (1.0, white)]);
+        let mid = g.sample(0.5);
+        // Mid should be roughly 127-128
+        assert!(mid.r() > 120 && mid.r() < 135, "mid.r() = {}", mid.r());
+    }
+
+    #[test]
+    fn gradient_sorts_stops() {
+        let a = PackedRgba::rgb(255, 0, 0);
+        let b = PackedRgba::rgb(0, 255, 0);
+        let g = Gradient::new(vec![(0.8, b), (0.2, a)]);
+        let stops = g.stops();
+        assert!(stops[0].0 < stops[1].0, "stops should be sorted");
+    }
+
+    #[test]
+    fn gradient_clamps_t() {
+        let red = PackedRgba::rgb(255, 0, 0);
+        let blue = PackedRgba::rgb(0, 0, 255);
+        let g = Gradient::new(vec![(0.0, red), (1.0, blue)]);
+        assert_eq!(g.sample(-1.0), red);
+        assert_eq!(g.sample(2.0), blue);
+    }
+
+    // =========================================================================
+    // lerp_u8 tests
+    // =========================================================================
+
+    #[test]
+    fn lerp_u8_basic() {
+        assert_eq!(lerp_u8(0, 100, 0.0), 0);
+        assert_eq!(lerp_u8(0, 100, 1.0), 100);
+        assert_eq!(lerp_u8(0, 100, 0.5), 50);
+    }
+
+    #[test]
+    fn lerp_u8_clamps() {
+        // t out of range should still produce valid u8
+        assert_eq!(lerp_u8(100, 200, -1.0), 0);
+        assert_eq!(lerp_u8(0, 100, 2.0), 200);
+    }
+
+    // =========================================================================
+    // StyleMask tests
+    // =========================================================================
+
+    #[test]
+    fn style_mask_all() {
+        let mask = StyleMask::all();
+        assert!(mask.fg);
+        assert!(mask.bg);
+        assert!(mask.attrs);
+    }
+
+    #[test]
+    fn style_mask_none() {
+        let mask = StyleMask::none();
+        assert!(!mask.fg);
+        assert!(!mask.bg);
+        assert!(!mask.attrs);
+    }
+
+    #[test]
+    fn style_mask_fg_bg_no_attrs() {
+        let mask = StyleMask::fg_bg();
+        assert!(mask.fg);
+        assert!(mask.bg);
+        assert!(!mask.attrs);
+    }
+
+    // =========================================================================
+    // TableEffectRule builder tests
+    // =========================================================================
+
+    #[test]
+    fn effect_rule_defaults() {
+        let rule = TableEffectRule::new(
+            TableEffectTarget::AllRows,
+            pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
+        );
+        assert_eq!(rule.priority, 0);
+        assert_eq!(rule.blend_mode, BlendMode::Replace);
+        assert_eq!(rule.style_mask, StyleMask::fg_bg());
+    }
+
+    #[test]
+    fn effect_rule_builder_chain() {
+        let rule = TableEffectRule::new(
+            TableEffectTarget::AllRows,
+            pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
+        )
+        .priority(5)
+        .blend_mode(BlendMode::Additive)
+        .style_mask(StyleMask::all());
+
+        assert_eq!(rule.priority, 5);
+        assert_eq!(rule.blend_mode, BlendMode::Additive);
+        assert_eq!(rule.style_mask, StyleMask::all());
+    }
+
+    // =========================================================================
+    // TableTheme builder tests
+    // =========================================================================
+
+    #[test]
+    fn default_theme_is_graphite() {
+        let theme = TableTheme::default();
+        assert_eq!(theme.preset_id, Some(TablePresetId::Graphite));
+    }
+
+    #[test]
+    fn preset_factory_matches_named() {
+        let from_preset = TableTheme::preset(TablePresetId::Aurora);
+        let from_named = TableTheme::aurora();
+        assert_eq!(from_preset.style_hash(), from_named.style_hash());
+    }
+
+    #[test]
+    fn with_padding_sets_value() {
+        let theme = TableTheme::graphite().with_padding(3);
+        assert_eq!(theme.padding, 3);
+    }
+
+    #[test]
+    fn with_column_gap_sets_value() {
+        let theme = TableTheme::graphite().with_column_gap(5);
+        assert_eq!(theme.column_gap, 5);
+    }
+
+    #[test]
+    fn with_row_height_sets_value() {
+        let theme = TableTheme::graphite().with_row_height(2);
+        assert_eq!(theme.row_height, 2);
+    }
+
+    #[test]
+    fn with_effect_appends() {
+        let theme = TableTheme::graphite().with_effect(TableEffectRule::new(
+            TableEffectTarget::AllRows,
+            pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
+        ));
+        assert_eq!(theme.effects.len(), 1);
+    }
+
+    #[test]
+    fn clear_effects_removes_all() {
+        let theme = TableTheme::graphite()
+            .with_effect(TableEffectRule::new(
+                TableEffectTarget::AllRows,
+                pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
+            ))
+            .clear_effects();
+        assert!(theme.effects.is_empty());
+    }
+
+    #[test]
+    fn with_preset_id_overrides() {
+        let theme = TableTheme::graphite().with_preset_id(Some(TablePresetId::Neon));
+        assert_eq!(theme.preset_id, Some(TablePresetId::Neon));
+    }
+
+    // =========================================================================
+    // Diagnostics tests
+    // =========================================================================
+
+    #[test]
+    fn diagnostics_captures_theme_state() {
+        let theme = TableTheme::aurora().with_padding(4).with_effect(TableEffectRule::new(
+            TableEffectTarget::AllRows,
+            pulse_effect(PackedRgba::RED, PackedRgba::BLACK),
+        ));
+        let diag = theme.diagnostics();
+        assert_eq!(diag.preset_id, Some(TablePresetId::Aurora));
+        assert_eq!(diag.padding, 4);
+        assert_eq!(diag.effect_count, 1);
+        assert_ne!(diag.style_hash, 0);
+    }
+
+    // =========================================================================
+    // TableEffectScope tests
+    // =========================================================================
+
+    #[test]
+    fn scope_section_has_no_row_or_column() {
+        let s = TableEffectScope::section(TableSection::Header);
+        assert_eq!(s.section, TableSection::Header);
+        assert_eq!(s.row, None);
+        assert_eq!(s.column, None);
+    }
+
+    #[test]
+    fn scope_row_has_row_no_column() {
+        let s = TableEffectScope::row(TableSection::Body, 3);
+        assert_eq!(s.row, Some(3));
+        assert_eq!(s.column, None);
+    }
+
+    #[test]
+    fn scope_column_has_column_no_row() {
+        let s = TableEffectScope::column(TableSection::Footer, 7);
+        assert_eq!(s.column, Some(7));
+        assert_eq!(s.row, None);
+    }
+
+    // =========================================================================
+    // Curve function tests
+    // =========================================================================
+
+    #[test]
+    fn pulse_curve_boundaries() {
+        assert_f32_near("pulse(0.0)", pulse_curve(0.0), 0.0);
+        assert_f32_near("pulse(0.5)", pulse_curve(0.5), 1.0);
+        assert_f32_near("pulse(1.0)", pulse_curve(1.0), 0.0);
+    }
+
+    #[test]
+    fn breathing_curve_zero_asymmetry_matches_pulse() {
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_f32_near(
+                &format!("breathing({t})"),
+                breathing_curve(t, 0.0),
+                pulse_curve(t),
+            );
+        }
+    }
+
+    #[test]
+    fn skew_phase_zero_is_identity() {
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_f32_near(&format!("skew({t})"), skew_phase(t, 0.0), t);
+        }
+    }
+
+    #[test]
+    fn skew_phase_positive_slows_start() {
+        // With positive asymmetry, early phases should be compressed
+        let skewed = skew_phase(0.5, 0.5);
+        assert!(skewed < 0.5, "positive skew should compress early phase: {skewed}");
+    }
+
+    #[test]
+    fn skew_phase_negative_accelerates_start() {
+        let skewed = skew_phase(0.5, -0.5);
+        assert!(skewed > 0.5, "negative skew should expand early phase: {skewed}");
+    }
+
+    // =========================================================================
+    // Blend mode tests (via effect resolver)
+    // =========================================================================
+
+    #[test]
+    fn effect_resolver_additive_blend() {
+        let base_fg = PackedRgba::rgb(100, 50, 50);
+        let effect_fg = PackedRgba::rgb(50, 50, 50);
+        let theme = TableTheme::graphite().with_effect(
+            TableEffectRule::new(
+                TableEffectTarget::AllRows,
+                TableEffect::Pulse {
+                    fg_a: effect_fg,
+                    fg_b: effect_fg,
+                    bg_a: PackedRgba::BLACK,
+                    bg_b: PackedRgba::BLACK,
+                    speed: 1.0,
+                    phase_offset: 0.0,
+                },
+            )
+            .blend_mode(BlendMode::Additive),
+        );
+        let resolver = theme.effect_resolver();
+        let base = Style::new().fg(base_fg).bg(PackedRgba::BLACK);
+        let resolved = resolver.resolve(base, TableEffectScope::row(TableSection::Body, 0), 0.25);
+        // Additive should increase brightness
+        let resolved_fg = resolved.fg.unwrap();
+        assert!(resolved_fg.r() >= base_fg.r(), "additive should brighten red");
+    }
+
+    #[test]
+    fn effect_resolver_multiply_blend() {
+        let base_fg = PackedRgba::rgb(200, 200, 200);
+        let effect_fg = PackedRgba::rgb(128, 128, 128);
+        let theme = TableTheme::graphite().with_effect(
+            TableEffectRule::new(
+                TableEffectTarget::AllRows,
+                TableEffect::Pulse {
+                    fg_a: effect_fg,
+                    fg_b: effect_fg,
+                    bg_a: PackedRgba::BLACK,
+                    bg_b: PackedRgba::BLACK,
+                    speed: 1.0,
+                    phase_offset: 0.0,
+                },
+            )
+            .blend_mode(BlendMode::Multiply),
+        );
+        let resolver = theme.effect_resolver();
+        let base = Style::new().fg(base_fg).bg(PackedRgba::BLACK);
+        let resolved = resolver.resolve(base, TableEffectScope::row(TableSection::Body, 0), 0.25);
+        let resolved_fg = resolved.fg.unwrap();
+        // Multiply should darken
+        assert!(resolved_fg.r() <= base_fg.r(), "multiply should darken");
+    }
 }
