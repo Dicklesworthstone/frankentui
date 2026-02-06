@@ -8,7 +8,7 @@
 //! - WCAG contrast ratio validation
 //! - Export to FrankenTUI JSON and Ghostty formats
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
@@ -25,6 +25,7 @@ use crate::determinism;
 #[cfg(test)]
 use crate::theme::ScopedThemeLock;
 use crate::theme::{self, ThemeId};
+use std::cell::Cell as StdCell;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -569,6 +570,10 @@ pub struct ThemeStudioDemo {
     diagnostic_log: Option<DiagnosticLog>,
     /// Telemetry hooks for external observers (bd-vu0o.5).
     telemetry_hooks: Option<TelemetryHooks>,
+    /// Cached presets panel area for mouse hit-testing.
+    layout_presets: StdCell<Rect>,
+    /// Cached inspector panel area for mouse hit-testing.
+    layout_inspector: StdCell<Rect>,
 }
 
 impl Default for ThemeStudioDemo {
@@ -595,6 +600,8 @@ impl ThemeStudioDemo {
             export_status: None,
             diagnostic_log,
             telemetry_hooks: None,
+            layout_presets: StdCell::new(Rect::default()),
+            layout_inspector: StdCell::new(Rect::default()),
         }
     }
 
@@ -629,6 +636,65 @@ impl ThemeStudioDemo {
 
         if let Some(ref mut log) = self.diagnostic_log {
             log.record(entry);
+        }
+    }
+
+
+    /// Handle mouse events on the presets and token inspector panels.
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        let presets = self.layout_presets.get();
+        let inspector = self.layout_inspector.get();
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if presets.contains(x, y) {
+                    self.focus = Focus::Presets;
+                    let row = (y - presets.y) as usize;
+                    // Row 0 is the border, rows 1+ map to preset indices
+                    if row >= 1 && row <= ThemeId::ALL.len() {
+                        self.preset_index = row - 1;
+                    }
+                } else if inspector.contains(x, y) {
+                    self.focus = Focus::TokenInspector;
+                    let row = (y - inspector.y) as usize;
+                    if row >= 1 && row <= self.tokens.len() {
+                        self.swatch_index = row - 1;
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if presets.contains(x, y) {
+                    self.focus = Focus::Presets;
+                    self.apply_preset();
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if presets.contains(x, y) {
+                    self.focus = Focus::Presets;
+                    if self.preset_index > 0 {
+                        self.preset_index -= 1;
+                    }
+                } else if inspector.contains(x, y) {
+                    self.focus = Focus::TokenInspector;
+                    if self.swatch_index > 0 {
+                        self.swatch_index -= 1;
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if presets.contains(x, y) {
+                    self.focus = Focus::Presets;
+                    if self.preset_index < ThemeId::ALL.len() - 1 {
+                        self.preset_index += 1;
+                    }
+                } else if inspector.contains(x, y) {
+                    self.focus = Focus::TokenInspector;
+                    if self.swatch_index < self.tokens.len() - 1 {
+                        self.swatch_index += 1;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1035,7 +1101,9 @@ impl Screen for ThemeStudioDemo {
         let prev_preset = self.preset_index;
         let prev_index = self.swatch_index;
 
-        if let Event::Key(KeyEvent {
+        if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+        } else if let Event::Key(KeyEvent {
             code,
             kind: KeyEventKind::Press,
             modifiers,
@@ -1238,6 +1306,10 @@ impl Screen for ThemeStudioDemo {
             main_area.height,
         );
 
+        // Store areas for mouse hit-testing
+        self.layout_presets.set(preset_area);
+        self.layout_inspector.set(inspector_area);
+
         // Render panels
         self.render_presets(frame, preset_area);
         self.render_token_inspector(frame, inspector_area);
@@ -1278,6 +1350,18 @@ impl Screen for ThemeStudioDemo {
                 key: "E",
                 action: "Export Ghostty",
             },
+            HelpEntry {
+                key: "Click",
+                action: "Select item",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Navigate list",
+            },
+            HelpEntry {
+                key: "Right-click",
+                action: "Apply preset",
+            },
         ]
     }
 
@@ -1305,7 +1389,7 @@ impl Screen for ThemeStudioDemo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+    use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1807,6 +1891,103 @@ mod tests {
         demo.update(&mouse_event);
         assert_eq!(demo.focus, initial_focus);
         assert_eq!(demo.preset_index, initial_preset);
+    }
+
+    #[test]
+    fn click_preset_selects() {
+        let _lock = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let mut demo = ThemeStudioDemo::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        demo.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let presets = demo.layout_presets.get();
+        assert!(!presets.is_empty());
+
+        // Click row 3 in presets panel (should select preset index 2)
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: presets.x + 1,
+            y: presets.y + 3,
+            modifiers: Modifiers::NONE,
+        });
+        demo.update(&event);
+        assert_eq!(demo.preset_index, 2);
+        assert_eq!(demo.focus, Focus::Presets);
+    }
+
+    #[test]
+    fn click_inspector_selects_token() {
+        let _lock = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let mut demo = ThemeStudioDemo::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        demo.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let inspector = demo.layout_inspector.get();
+        assert!(!inspector.is_empty());
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: inspector.x + 1,
+            y: inspector.y + 2,
+            modifiers: Modifiers::NONE,
+        });
+        demo.update(&event);
+        assert_eq!(demo.swatch_index, 1);
+        assert_eq!(demo.focus, Focus::TokenInspector);
+    }
+
+    #[test]
+    fn scroll_navigates_presets() {
+        let _lock = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let mut demo = ThemeStudioDemo::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        demo.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let presets = demo.layout_presets.get();
+        demo.preset_index = 0;
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x: presets.x + 1,
+            y: presets.y + 1,
+            modifiers: Modifiers::NONE,
+        });
+        demo.update(&event);
+        assert_eq!(demo.preset_index, 1);
+    }
+
+    #[test]
+    fn right_click_applies_preset() {
+        let _lock = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+        let mut demo = ThemeStudioDemo::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        demo.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let presets = demo.layout_presets.get();
+        demo.preset_index = 1;
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            x: presets.x + 1,
+            y: presets.y + 1,
+            modifiers: Modifiers::NONE,
+        });
+        demo.update(&event);
+        // After right-click, preset should be applied (focus changes to Presets)
+        assert_eq!(demo.focus, Focus::Presets);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_hints() {
+        let demo = ThemeStudioDemo::new();
+        let bindings = demo.keybindings();
+        assert!(bindings.iter().any(|e| e.key.contains("Click")));
+        assert!(bindings.iter().any(|e| e.key.contains("Scroll")));
+        assert!(bindings.iter().any(|e| e.key.contains("Right-click")));
     }
 
     #[test]

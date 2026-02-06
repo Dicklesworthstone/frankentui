@@ -6,11 +6,12 @@
 //! and swap deterministic presets. Intended as an interactive playground
 //! that still keeps rendering deterministic and explainable.
 
+use std::cell::Cell as StdCell;
 use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::io::Write;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -240,6 +241,12 @@ pub struct WidgetBuilder {
     widget_state: RefCell<ListState>,
     last_export: Option<String>,
     custom_counter: u32,
+    /// Cached presets panel area for mouse hit-testing.
+    layout_presets: StdCell<Rect>,
+    /// Cached widget tree area for mouse hit-testing.
+    layout_tree: StdCell<Rect>,
+    /// Cached preview area for mouse hit-testing.
+    layout_preview: StdCell<Rect>,
 }
 
 impl Default for WidgetBuilder {
@@ -299,6 +306,74 @@ impl WidgetBuilder {
             widget_state: RefCell::new(widget_state),
             last_export: None,
             custom_counter: 1,
+            layout_presets: StdCell::new(Rect::default()),
+            layout_tree: StdCell::new(Rect::default()),
+            layout_preview: StdCell::new(Rect::default()),
+        }
+    }
+
+
+    /// Handle mouse events for preset list, widget tree, and preview area.
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        let presets = self.layout_presets.get();
+        let tree = self.layout_tree.get();
+        let preview = self.layout_preview.get();
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if presets.contains(x, y) {
+                    let row = (y - presets.y) as usize;
+                    // Row 0 is the border, rows 1+ map to preset indices
+                    if row >= 1 && row <= self.presets.len() {
+                        self.load_preset(row - 1);
+                    }
+                } else if tree.contains(x, y) {
+                    let row = (y - tree.y) as usize;
+                    if row >= 1 && row <= self.widgets.len() {
+                        self.selected_widget = row - 1;
+                        self.clamp_selection();
+                    }
+                } else if preview.contains(x, y) && !self.widgets.is_empty() {
+                    // Click in preview toggles the enabled state of the selected widget
+                    self.toggle_selected(|widget| widget.enabled = !widget.enabled);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if presets.contains(x, y) {
+                    // Right-click in presets: save current as custom preset
+                    self.save_preset();
+                } else if tree.contains(x, y) {
+                    // Right-click in widget tree: toggle border on selected widget
+                    self.toggle_selected(|widget| widget.bordered = !widget.bordered);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if presets.contains(x, y) {
+                    if self.active_preset > 0 {
+                        self.load_preset(self.active_preset - 1);
+                    }
+                } else if tree.contains(x, y) {
+                    if !self.widgets.is_empty() && self.selected_widget > 0 {
+                        self.selected_widget -= 1;
+                        self.clamp_selection();
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if presets.contains(x, y) {
+                    if self.active_preset < self.presets.len() - 1 {
+                        self.load_preset(self.active_preset + 1);
+                    }
+                } else if tree.contains(x, y) {
+                    if !self.widgets.is_empty()
+                        && self.selected_widget < self.widgets.len() - 1
+                    {
+                        self.selected_widget += 1;
+                        self.clamp_selection();
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -631,6 +706,11 @@ impl Screen for WidgetBuilder {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+            return Cmd::None;
+        }
+
         let Event::Key(KeyEvent {
             code,
             modifiers,
@@ -758,16 +838,19 @@ impl Screen for WidgetBuilder {
                 .split(sidebar);
 
             if let Some(preset_area) = sections.first().copied() {
+                self.layout_presets.set(preset_area);
                 self.render_presets(frame, preset_area);
             }
 
             if let Some(tree_area) = sections.get(1).copied() {
+                self.layout_tree.set(tree_area);
                 self.render_widget_tree(frame, tree_area);
             }
         }
 
         if columns.len() > 1 {
             let preview = columns[1];
+            self.layout_preview.set(preview);
             self.render_preview(frame, preview);
         }
 
@@ -817,6 +900,18 @@ impl Screen for WidgetBuilder {
             HelpEntry {
                 key: "R",
                 action: "Reset to preset",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Select preset/widget",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Navigate list",
+            },
+            HelpEntry {
+                key: "Right-click",
+                action: "Save preset/toggle border",
             },
         ]
     }
@@ -919,6 +1014,97 @@ mod tests {
         assert_eq!(restored.widgets.len(), preset.widgets.len());
         assert_eq!(restored.widgets[0].kind, preset.widgets[0].kind);
         assert_eq!(restored.widgets[0].title, preset.widgets[0].title);
+    }
+
+    #[test]
+    fn click_preset_loads() {
+        let mut builder = WidgetBuilder::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        builder.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let presets = builder.layout_presets.get();
+        assert!(!presets.is_empty());
+
+        // Click row 2 in presets panel (should load preset index 1)
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: presets.x + 1,
+            y: presets.y + 2,
+            modifiers: Modifiers::NONE,
+        });
+        builder.update(&event);
+        assert_eq!(builder.active_preset, 1);
+    }
+
+    #[test]
+    fn click_widget_tree_selects() {
+        let mut builder = WidgetBuilder::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        builder.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let tree = builder.layout_tree.get();
+        assert!(!tree.is_empty());
+
+        // Click row 3 in widget tree (should select widget index 2)
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: tree.x + 1,
+            y: tree.y + 3,
+            modifiers: Modifiers::NONE,
+        });
+        builder.update(&event);
+        assert_eq!(builder.selected_widget, 2);
+    }
+
+    #[test]
+    fn scroll_navigates_presets() {
+        let mut builder = WidgetBuilder::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        builder.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let presets = builder.layout_presets.get();
+        assert_eq!(builder.active_preset, 0);
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x: presets.x + 1,
+            y: presets.y + 1,
+            modifiers: Modifiers::NONE,
+        });
+        builder.update(&event);
+        assert_eq!(builder.active_preset, 1);
+    }
+
+    #[test]
+    fn right_click_saves_preset() {
+        let mut builder = WidgetBuilder::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(80, 24, &mut pool);
+        builder.view(&mut frame, Rect::new(0, 0, 80, 24));
+
+        let presets = builder.layout_presets.get();
+        let original_count = builder.presets.len();
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            x: presets.x + 1,
+            y: presets.y + 1,
+            modifiers: Modifiers::NONE,
+        });
+        builder.update(&event);
+        assert_eq!(builder.presets.len(), original_count + 1);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_hints() {
+        let builder = WidgetBuilder::new();
+        let bindings = builder.keybindings();
+        assert!(bindings.iter().any(|e| e.key.contains("Click")));
+        assert!(bindings.iter().any(|e| e.key.contains("Scroll")));
+        assert!(bindings.iter().any(|e| e.key.contains("Right-click")));
     }
 
     #[test]

@@ -31,12 +31,13 @@
 //! - C: Clear recording
 //! - D: Toggle diagnostic panel
 
+use std::cell::Cell as StdCell;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::Duration;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::charts::heatmap_gradient;
 use ftui_layout::{Constraint, Flex};
@@ -450,6 +451,14 @@ pub struct SnapshotPlayer {
     last_export: Option<ExportStatus>,
     /// Export path for JSONL reports.
     export_path: String,
+    /// Whether timeline scrubbing with left mouse drag is active.
+    timeline_scrubbing: bool,
+    /// Cached timeline area for mouse hit-testing.
+    layout_timeline: StdCell<Rect>,
+    /// Cached preview area for mouse hit-testing.
+    layout_preview: StdCell<Rect>,
+    /// Cached info panel area for mouse hit-testing.
+    layout_info: StdCell<Rect>,
 }
 
 impl Default for SnapshotPlayer {
@@ -487,6 +496,10 @@ impl SnapshotPlayer {
             frames_version: 0,
             last_export: None,
             export_path,
+            timeline_scrubbing: false,
+            layout_timeline: StdCell::new(Rect::default()),
+            layout_preview: StdCell::new(Rect::default()),
+            layout_info: StdCell::new(Rect::default()),
         };
 
         if player.config.auto_generate_demo {
@@ -524,6 +537,10 @@ impl SnapshotPlayer {
             frames_version: 0,
             last_export: None,
             export_path,
+            timeline_scrubbing: false,
+            layout_timeline: StdCell::new(Rect::default()),
+            layout_preview: StdCell::new(Rect::default()),
+            layout_info: StdCell::new(Rect::default()),
         };
 
         if player.config.auto_generate_demo {
@@ -1150,6 +1167,97 @@ impl SnapshotPlayer {
     }
 
     // ========================================================================
+    // Mouse Handling
+    // ========================================================================
+
+    fn frame_from_timeline_x(&self, timeline: Rect, x: u16) -> Option<usize> {
+        if self.frames.is_empty() || timeline.is_empty() {
+            return None;
+        }
+        if self.frames.len() == 1 {
+            return Some(0);
+        }
+
+        let right_edge = timeline
+            .x
+            .saturating_add(timeline.width.saturating_sub(1));
+        let clamped_x = x.clamp(timeline.x, right_edge);
+        let rel_x = clamped_x.saturating_sub(timeline.x) as f64;
+        let width = timeline.width.saturating_sub(1).max(1) as f64;
+        let target = (rel_x / width * (self.frames.len() - 1) as f64).round() as usize;
+        Some(target.min(self.frames.len() - 1))
+    }
+
+    fn scrub_timeline_to_x(&mut self, timeline: Rect, x: u16, action: &'static str) {
+        let Some(target) = self.frame_from_timeline_x(timeline, x) else {
+            return;
+        };
+        self.playback_state = PlaybackState::Paused;
+        if target != self.current_frame {
+            let from = self.current_frame;
+            self.current_frame = target;
+            self.log_navigation(action, from);
+        }
+    }
+
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        let timeline = self.layout_timeline.get();
+        let preview = self.layout_preview.get();
+        let info = self.layout_info.get();
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if timeline.contains(x, y) && !self.frames.is_empty() {
+                    self.timeline_scrubbing = true;
+                    self.scrub_timeline_to_x(timeline, x, "click_timeline");
+                } else if preview.contains(x, y) {
+                    self.timeline_scrubbing = false;
+                    self.toggle_playback();
+                } else if info.contains(x, y) {
+                    self.timeline_scrubbing = false;
+                    self.toggle_compare_view();
+                } else {
+                    self.timeline_scrubbing = false;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => {
+                if self.timeline_scrubbing {
+                    self.scrub_timeline_to_x(timeline, x, "drag_timeline");
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.timeline_scrubbing {
+                    self.scrub_timeline_to_x(timeline, x, "release_timeline");
+                }
+                self.timeline_scrubbing = false;
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.timeline_scrubbing = false;
+                if timeline.contains(x, y) {
+                    self.toggle_marker();
+                } else if preview.contains(x, y) {
+                    self.toggle_heatmap();
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                self.timeline_scrubbing = false;
+                if timeline.contains(x, y) || preview.contains(x, y) {
+                    self.playback_state = PlaybackState::Paused;
+                    self.step_forward();
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                self.timeline_scrubbing = false;
+                if timeline.contains(x, y) || preview.contains(x, y) {
+                    self.playback_state = PlaybackState::Paused;
+                    self.step_backward();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ========================================================================
     // Rendering
     // ========================================================================
 
@@ -1176,11 +1284,14 @@ impl SnapshotPlayer {
                 .constraints([Constraint::Fixed(3), Constraint::Min(1)])
                 .split(chunks[0]);
             if left_chunks.len() >= 2 {
+                self.layout_timeline.set(left_chunks[0]);
+                self.layout_preview.set(left_chunks[1]);
                 self.render_timeline(frame, left_chunks[0]);
                 self.render_preview(frame, left_chunks[1]);
             }
 
             // Right side: Info + Controls
+            self.layout_info.set(chunks[1]);
             self.render_info_panel(frame, chunks[1]);
         }
     }
@@ -1195,10 +1306,13 @@ impl SnapshotPlayer {
                 .constraints([Constraint::Fixed(3), Constraint::Min(1)])
                 .split(chunks[0]);
             if left_chunks.len() >= 2 {
+                self.layout_timeline.set(left_chunks[0]);
+                self.layout_preview.set(left_chunks[1]);
                 self.render_timeline(frame, left_chunks[0]);
                 self.render_compare_preview(frame, left_chunks[1]);
             }
 
+            self.layout_info.set(chunks[1]);
             self.render_info_panel(frame, chunks[1]);
         }
     }
@@ -1503,6 +1617,11 @@ impl Screen for SnapshotPlayer {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+            self.refresh_diff_cache();
+            return Cmd::None;
+        }
         if let Event::Key(KeyEvent {
             code,
             kind: KeyEventKind::Press,
@@ -1625,6 +1744,22 @@ impl Screen for SnapshotPlayer {
             HelpEntry {
                 key: "E",
                 action: "Export JSONL report",
+            },
+            HelpEntry {
+                key: "Click timeline",
+                action: "Jump to frame",
+            },
+            HelpEntry {
+                key: "Drag timeline",
+                action: "Scrub frames",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Step frame",
+            },
+            HelpEntry {
+                key: "Right-click",
+                action: "Toggle marker/heatmap",
             },
         ]
     }
@@ -1871,6 +2006,223 @@ mod tests {
         assert_eq!(cache.diff_count, 2);
         assert_eq!(cache.content_diff_count, 1);
         assert_eq!(cache.style_diff_count, 1);
+    }
+
+    #[test]
+    fn click_timeline_jumps_to_frame() {
+        use super::Screen;
+        let mut player = SnapshotPlayer::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        player.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let timeline = player.layout_timeline.get();
+        assert!(!timeline.is_empty());
+
+        let mid_x = timeline.x + timeline.width / 2;
+        let mid_y = timeline.y;
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: mid_x,
+            y: mid_y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        });
+        player.update(&event);
+
+        let expected_mid = player.frame_count() / 2;
+        let tolerance = player.frame_count() / 4;
+        assert!(
+            player.current_frame.abs_diff(expected_mid) <= tolerance,
+            "Expected near frame {} but got {}",
+            expected_mid,
+            player.current_frame
+        );
+        assert_eq!(player.playback_state, PlaybackState::Paused);
+    }
+
+    #[test]
+    fn click_preview_toggles_playback() {
+        use super::Screen;
+        let mut player = SnapshotPlayer::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        player.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let preview = player.layout_preview.get();
+        assert!(!preview.is_empty());
+
+        assert_eq!(player.playback_state, PlaybackState::Paused);
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: preview.x + 1,
+            y: preview.y + 1,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        });
+        player.update(&event);
+        assert_eq!(player.playback_state, PlaybackState::Playing);
+    }
+
+    #[test]
+    fn right_click_timeline_toggles_marker() {
+        use super::Screen;
+        let mut player = SnapshotPlayer::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        player.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let timeline = player.layout_timeline.get();
+        assert!(!player.markers.contains(&player.current_frame));
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            x: timeline.x + 1,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        });
+        player.update(&event);
+        assert!(player.markers.contains(&player.current_frame));
+    }
+
+    #[test]
+    fn scroll_steps_frame() {
+        use super::Screen;
+        let mut player = SnapshotPlayer::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        player.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let timeline = player.layout_timeline.get();
+        assert_eq!(player.current_frame, 0);
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            x: timeline.x + 1,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        });
+        player.update(&event);
+        assert_eq!(player.current_frame, 1);
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x: timeline.x + 1,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        });
+        player.update(&event);
+        assert_eq!(player.current_frame, 0);
+    }
+
+    #[test]
+    fn drag_timeline_scrubs_to_end() {
+        use super::Screen;
+        let mut player = SnapshotPlayer::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        player.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let timeline = player.layout_timeline.get();
+        assert!(!timeline.is_empty());
+
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: timeline.x,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+        assert!(player.timeline_scrubbing);
+
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            x: timeline.x + timeline.width.saturating_sub(1),
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+        assert_eq!(player.current_frame, player.frame_count().saturating_sub(1));
+        assert_eq!(player.playback_state, PlaybackState::Paused);
+    }
+
+    #[test]
+    fn drag_timeline_clamps_when_pointer_moves_outside() {
+        use super::Screen;
+        let mut player = SnapshotPlayer::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        player.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let timeline = player.layout_timeline.get();
+        assert!(!timeline.is_empty());
+
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: timeline.x,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            x: timeline
+                .x
+                .saturating_add(timeline.width)
+                .saturating_add(25),
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+        assert_eq!(player.current_frame, player.frame_count().saturating_sub(1));
+    }
+
+    #[test]
+    fn timeline_release_stops_scrubbing() {
+        use super::Screen;
+        let mut player = SnapshotPlayer::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        player.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let timeline = player.layout_timeline.get();
+        assert!(!timeline.is_empty());
+        let mid_x = timeline.x + timeline.width / 2;
+
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: timeline.x,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            x: mid_x,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+        let scrubbed_frame = player.current_frame;
+
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            x: mid_x,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+        assert!(!player.timeline_scrubbing);
+
+        player.update(&Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Moved,
+            x: timeline.x,
+            y: timeline.y,
+            modifiers: ftui_core::event::Modifiers::NONE,
+        }));
+        assert_eq!(player.current_frame, scrubbed_frame);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_hints() {
+        use super::Screen;
+        let player = SnapshotPlayer::new();
+        let bindings = player.keybindings();
+        assert!(bindings.iter().any(|e| e.key.contains("Click")));
+        assert!(bindings.iter().any(|e| e.key.contains("Scroll")));
+        assert!(bindings.iter().any(|e| e.key.contains("Right-click")));
     }
 
     // ========================================================================
