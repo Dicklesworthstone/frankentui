@@ -506,4 +506,102 @@ mod tests {
         assert!(renderer.stats.faces_tested > 0);
         assert!(renderer.stats.faces_drawn > 0);
     }
+
+    #[test]
+    fn renderer_projection_positive() {
+        let r = QuakeRenderer::new(640, 480);
+        assert!(r.projection > 0.0, "projection should be positive");
+    }
+
+    #[test]
+    fn renderer_resize_updates_half() {
+        let mut r = QuakeRenderer::new(100, 100);
+        r.resize(200, 300);
+        assert_eq!(r.half_width, 100.0);
+        assert_eq!(r.half_height, 150.0);
+    }
+
+    #[test]
+    fn render_stats_default_zeroed() {
+        let stats = RenderStats::default();
+        assert_eq!(stats.faces_tested, 0);
+        assert_eq!(stats.faces_culled, 0);
+        assert_eq!(stats.faces_drawn, 0);
+        assert_eq!(stats.triangles_rasterized, 0);
+        assert_eq!(stats.pixels_written, 0);
+    }
+
+    #[test]
+    fn face_base_color_all_types() {
+        let types_and_expected = [
+            (TexType::Floor, FLOOR_NEAR),
+            (TexType::Ceiling, CEILING_COLOR),
+            (TexType::Sky, SKY_TOP),
+            (TexType::Lava, [200, 80, 20]),
+            (TexType::Metal, [140, 140, 160]),
+        ];
+        for (tex_type, expected) in types_and_expected {
+            let face = Face {
+                vertex_indices: vec![],
+                normal: [0.0, 0.0, 1.0],
+                dist: 0.0,
+                color_index: 0,
+                is_sky: false,
+                light_level: 1.0,
+                tex_type,
+            };
+            assert_eq!(face_base_color(&face), expected, "for {tex_type:?}");
+        }
+    }
+
+    #[test]
+    fn face_base_color_wall_wraps_index() {
+        let face = Face {
+            vertex_indices: vec![],
+            normal: [0.0, 0.0, 1.0],
+            dist: 0.0,
+            color_index: WALL_COLORS.len() as u8 + 2,
+            is_sky: false,
+            light_level: 1.0,
+            tex_type: TexType::Wall,
+        };
+        let expected_idx = (WALL_COLORS.len() as u8 + 2) as usize % WALL_COLORS.len();
+        assert_eq!(face_base_color(&face), WALL_COLORS[expected_idx]);
+    }
+
+    #[test]
+    fn edge_function_degenerate_triangle() {
+        // All points same -> area should be 0
+        let p = [5.0, 5.0, 0.0];
+        assert!(edge_function(p, p, p).abs() < 1e-6);
+    }
+
+    #[test]
+    fn edge_function_signed_area() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [10.0, 0.0, 0.0];
+        let c = [0.0, 10.0, 0.0];
+        // Counter-clockwise: positive area
+        let area = edge_function(a, b, c);
+        assert!(area > 0.0, "CCW triangle should have positive edge function");
+        // Clockwise: negative area
+        let area_cw = edge_function(a, c, b);
+        assert!(area_cw < 0.0, "CW triangle should have negative edge function");
+    }
+
+    #[test]
+    fn lerp_u8_clamps_bounds() {
+        assert_eq!(lerp_u8(0, 255, -1.0), 0);
+        assert_eq!(lerp_u8(0, 255, 2.0), 255);
+    }
+
+    #[test]
+    fn render_zero_size_is_safe() {
+        let mut renderer = QuakeRenderer::new(0, 0);
+        let mut fb = QuakeFramebuffer::new(0, 0);
+        let map = super::super::map::QuakeMap::new();
+        let player = Player::default();
+        renderer.render(&mut fb, &map, &player);
+        // Should not panic
+    }
 }

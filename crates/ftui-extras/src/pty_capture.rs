@@ -238,6 +238,59 @@ fn portable_pty_error<E: fmt::Display>(err: E) -> io::Error {
     io::Error::other(err.to_string())
 }
 
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn default_config_values() {
+        let config = PtyCaptureConfig::default();
+        assert_eq!(config.cols, 80);
+        assert_eq!(config.rows, 24);
+        assert_eq!(config.term, Some("xterm-256color".to_string()));
+        assert!(config.env.is_empty());
+    }
+
+    #[test]
+    fn with_size_overrides_dimensions() {
+        let config = PtyCaptureConfig::default().with_size(120, 50);
+        assert_eq!(config.cols, 120);
+        assert_eq!(config.rows, 50);
+    }
+
+    #[test]
+    fn with_term_overrides_terminal() {
+        let config = PtyCaptureConfig::default().with_term("dumb");
+        assert_eq!(config.term, Some("dumb".to_string()));
+    }
+
+    #[test]
+    fn with_env_appends() {
+        let config = PtyCaptureConfig::default()
+            .with_env("KEY1", "VAL1")
+            .with_env("KEY2", "VAL2");
+        assert_eq!(config.env.len(), 2);
+        assert_eq!(config.env[0], ("KEY1".to_string(), "VAL1".to_string()));
+        assert_eq!(config.env[1], ("KEY2".to_string(), "VAL2".to_string()));
+    }
+
+    #[test]
+    fn config_debug_impl() {
+        let config = PtyCaptureConfig::default();
+        let s = format!("{config:?}");
+        assert!(s.contains("PtyCaptureConfig"));
+    }
+
+    #[test]
+    fn config_clone() {
+        let config = PtyCaptureConfig::default().with_size(100, 40).with_env("A", "B");
+        let cloned = config.clone();
+        assert_eq!(cloned.cols, 100);
+        assert_eq!(cloned.rows, 40);
+        assert_eq!(cloned.env.len(), 1);
+    }
+}
+
 #[cfg(all(test, feature = "pty-capture", unix))]
 mod tests {
     use super::*;

@@ -149,4 +149,97 @@ mod tests {
         let bytes = val.to_le_bytes();
         assert!((f32_le(&bytes, 0) - val).abs() < 1e-6);
     }
+
+    #[test]
+    fn u16_le_roundtrip() {
+        let val: u16 = 0xBEEF;
+        let bytes = val.to_le_bytes();
+        assert_eq!(u16_le(&bytes, 0), val);
+    }
+
+    #[test]
+    fn i16_le_roundtrip() {
+        let val: i16 = -4321;
+        let bytes = val.to_le_bytes();
+        assert_eq!(i16_le(&bytes, 0), val);
+    }
+
+    #[test]
+    fn i32_le_at_offset() {
+        let mut buf = vec![0u8; 8];
+        let val: i32 = 0x12345678;
+        buf[4..8].copy_from_slice(&val.to_le_bytes());
+        assert_eq!(i32_le(&buf, 4), val);
+    }
+
+    #[test]
+    fn f32_le_at_offset() {
+        let mut buf = vec![0u8; 8];
+        let val: f32 = -2.5;
+        buf[4..8].copy_from_slice(&val.to_le_bytes());
+        assert!((f32_le(&buf, 4) - val).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lump_struct_size() {
+        // Lump has offset (i32) + length (i32) = 8 bytes conceptual
+        let lump = Lump { offset: 0, length: 100 };
+        assert_eq!(lump.offset, 0);
+        assert_eq!(lump.length, 100);
+    }
+
+    #[test]
+    fn dvertex_point_access() {
+        let v = DVertex { point: [1.0, 2.0, 3.0] };
+        assert_eq!(v.point[0], 1.0);
+        assert_eq!(v.point[1], 2.0);
+        assert_eq!(v.point[2], 3.0);
+    }
+
+    #[test]
+    fn dplane_fields() {
+        let p = DPlane {
+            normal: [0.0, 1.0, 0.0],
+            dist: 64.0,
+            plane_type: 1,
+        };
+        assert_eq!(p.normal[1], 1.0);
+        assert_eq!(p.dist, 64.0);
+    }
+
+    #[test]
+    fn dedge_vertex_indices() {
+        let e = DEdge { v: [10, 20] };
+        assert_eq!(e.v[0], 10);
+        assert_eq!(e.v[1], 20);
+    }
+
+    #[test]
+    fn dnode_negative_child_is_leaf() {
+        let n = DNode {
+            plane_num: 0,
+            children: [-1, 5],
+            mins: [0; 3],
+            maxs: [100; 3],
+            first_face: 0,
+            num_faces: 4,
+        };
+        // Negative child means -(leaf+1), so -1 is leaf 0
+        assert!(n.children[0] < 0);
+        assert!(n.children[1] >= 0);
+    }
+
+    #[test]
+    fn dleaf_vis_offset_minus_one_means_no_vis() {
+        let leaf = DLeaf {
+            contents: -1,
+            vis_offset: -1,
+            mins: [0; 3],
+            maxs: [0; 3],
+            first_mark_surface: 0,
+            num_mark_surfaces: 0,
+            ambient_level: [0; 4],
+        };
+        assert_eq!(leaf.vis_offset, -1);
+    }
 }
