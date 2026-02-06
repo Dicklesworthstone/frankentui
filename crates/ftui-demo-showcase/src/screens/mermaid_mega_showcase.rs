@@ -637,6 +637,64 @@ struct MegaRenderCache {
     debounce_skips: u64,
     /// Monotonic sequence number for telemetry events.
     telemetry_seq: u64,
+    /// Running stats for parse timing (last 20 samples).
+    parse_stats: RunningStats,
+    /// Running stats for layout timing (last 20 samples).
+    layout_stats: RunningStats,
+    /// Running stats for render timing (last 20 samples).
+    render_stats: RunningStats,
+}
+
+/// Running statistics for a timing metric (last N samples).
+#[derive(Debug, Clone)]
+struct RunningStats {
+    samples: Vec<f32>,
+    capacity: usize,
+}
+
+impl RunningStats {
+    fn new(capacity: usize) -> Self {
+        Self {
+            samples: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn push(&mut self, value: f32) {
+        if self.samples.len() >= self.capacity {
+            self.samples.remove(0);
+        }
+        self.samples.push(value);
+    }
+
+    fn average(&self) -> Option<f32> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        Some(self.samples.iter().sum::<f32>() / self.samples.len() as f32)
+    }
+
+    fn min(&self) -> Option<f32> {
+        self.samples.iter().copied().reduce(f32::min)
+    }
+
+    fn max(&self) -> Option<f32> {
+        self.samples.iter().copied().reduce(f32::max)
+    }
+
+    fn count(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Format as "avg (min–max) [N]"
+    fn summary(&self) -> String {
+        match (self.average(), self.min(), self.max()) {
+            (Some(avg), Some(min), Some(max)) => {
+                format!("{avg:.1}ms ({min:.1}–{max:.1}) [{n}]", n = self.count())
+            }
+            _ => "-".to_string(),
+        }
+    }
 }
 
 impl MegaRenderCache {
@@ -662,6 +720,9 @@ impl MegaRenderCache {
             budget_warning_logged: true,
             debounce_skips: 0,
             telemetry_seq: 0,
+            parse_stats: RunningStats::new(20),
+            layout_stats: RunningStats::new(20),
+            render_stats: RunningStats::new(20),
         }
     }
 }
@@ -2071,7 +2132,9 @@ impl MermaidMegaShowcaseScreen {
             ran_analysis = true;
             let parse_start = Instant::now();
             let parsed = mermaid::parse_with_diagnostics(source);
-            cache.parse_ms = Some(parse_start.elapsed().as_secs_f32() * 1000.0);
+            let parse_elapsed = parse_start.elapsed().as_secs_f32() * 1000.0;
+            cache.parse_ms = Some(parse_elapsed);
+            cache.parse_stats.push(parse_elapsed);
 
             let ir_parse = mermaid::normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
             let mut ir = ir_parse.ir;
@@ -2096,6 +2159,7 @@ impl MermaidMegaShowcaseScreen {
                 let layout = mermaid_layout::layout_diagram_with_spacing(ir, &config, &spacing);
                 let elapsed_ms = layout_start.elapsed().as_secs_f32() * 1000.0;
                 cache.layout_ms = Some(elapsed_ms);
+                cache.layout_stats.push(elapsed_ms);
                 cache.layout = Some(layout);
                 ran_layout = true;
 
@@ -2119,7 +2183,9 @@ impl MermaidMegaShowcaseScreen {
                 let render_start = Instant::now();
                 let _plan =
                     mermaid_render::render_diagram_adaptive(layout, ir, &config, area, &mut buffer);
-                cache.render_ms = Some(render_start.elapsed().as_secs_f32() * 1000.0);
+                let render_elapsed = render_start.elapsed().as_secs_f32() * 1000.0;
+                cache.render_ms = Some(render_elapsed);
+                cache.render_stats.push(render_elapsed);
                 cache.buffer = buffer;
                 ran_render = true;
             }
@@ -2654,6 +2720,36 @@ impl MermaidMegaShowcaseScreen {
                 .render_ms
                 .map_or("-".to_string(), |ms| format!("{ms:.1}ms"))
         ));
+        // Total time
+        let total_ms = [cache.parse_ms, cache.layout_ms, cache.render_ms]
+            .iter()
+            .filter_map(|v| *v)
+            .sum::<f32>();
+        if total_ms > 0.0 {
+            lines.push(format!("Total: {total_ms:.1}ms"));
+        }
+        // Node/edge counts from IR
+        if let Some(ir) = cache.ir.as_ref() {
+            lines.push(format!("Nodes: {} Edges: {}", ir.nodes.len(), ir.edges.len()));
+        }
+        // Layout quality
+        if let Some(layout) = cache.layout.as_ref() {
+            let s = &layout.stats;
+            lines.push(format!("Crossings: {} Bends: {}", s.crossings, s.total_bends));
+            lines.push(format!("Ranks: {} MaxW: {}", s.ranks, s.max_rank_width));
+        }
+        lines.push(String::new());
+        // Running averages
+        if cache.parse_stats.count() > 1 {
+            lines.push(format!("Parse avg: {}", cache.parse_stats.summary()));
+        }
+        if cache.layout_stats.count() > 1 {
+            lines.push(format!("Layout avg: {}", cache.layout_stats.summary()));
+        }
+        if cache.render_stats.count() > 1 {
+            lines.push(format!("Render avg: {}", cache.render_stats.summary()));
+        }
+        lines.push(String::new());
         lines.push(format!(
             "Cache: {}/{}",
             cache.cache_hits, cache.cache_misses
@@ -6328,5 +6424,76 @@ mod tests {
             state.layout_epoch > before,
             "force relayout should bump layout epoch"
         );
+    }
+
+    // ── Performance metrics tests (bd-3oaig.10) ──────────────────────
+
+    #[test]
+    fn running_stats_empty() {
+        let stats = RunningStats::new(5);
+        assert_eq!(stats.count(), 0);
+        assert_eq!(stats.average(), None);
+        assert_eq!(stats.min(), None);
+        assert_eq!(stats.max(), None);
+        assert_eq!(stats.summary(), "-");
+    }
+
+    #[test]
+    fn running_stats_single_sample() {
+        let mut stats = RunningStats::new(5);
+        stats.push(10.0);
+        assert_eq!(stats.count(), 1);
+        assert_eq!(stats.average(), Some(10.0));
+        assert_eq!(stats.min(), Some(10.0));
+        assert_eq!(stats.max(), Some(10.0));
+    }
+
+    #[test]
+    fn running_stats_multiple_samples() {
+        let mut stats = RunningStats::new(5);
+        stats.push(1.0);
+        stats.push(3.0);
+        stats.push(5.0);
+        assert_eq!(stats.count(), 3);
+        assert_eq!(stats.average(), Some(3.0));
+        assert_eq!(stats.min(), Some(1.0));
+        assert_eq!(stats.max(), Some(5.0));
+    }
+
+    #[test]
+    fn running_stats_evicts_oldest_at_capacity() {
+        let mut stats = RunningStats::new(3);
+        stats.push(10.0);
+        stats.push(20.0);
+        stats.push(30.0);
+        assert_eq!(stats.count(), 3);
+        assert_eq!(stats.average(), Some(20.0));
+
+        // Push a 4th — should evict the 10.0
+        stats.push(40.0);
+        assert_eq!(stats.count(), 3);
+        assert_eq!(stats.min(), Some(20.0));
+        assert_eq!(stats.max(), Some(40.0));
+        assert_eq!(stats.average(), Some(30.0));
+    }
+
+    #[test]
+    fn running_stats_summary_format() {
+        let mut stats = RunningStats::new(10);
+        stats.push(1.5);
+        stats.push(3.5);
+        let summary = stats.summary();
+        assert!(summary.contains("2.5ms"), "avg should be 2.5: {summary}");
+        assert!(summary.contains("1.5"), "min should be 1.5: {summary}");
+        assert!(summary.contains("3.5"), "max should be 3.5: {summary}");
+        assert!(summary.contains("[2]"), "count should be 2: {summary}");
+    }
+
+    #[test]
+    fn cache_initialises_running_stats_empty() {
+        let cache = MegaRenderCache::empty();
+        assert_eq!(cache.parse_stats.count(), 0);
+        assert_eq!(cache.layout_stats.count(), 0);
+        assert_eq!(cache.render_stats.count(), 0);
     }
 }
