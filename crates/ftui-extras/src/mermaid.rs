@@ -4400,8 +4400,16 @@ pub fn normalize_ast_to_ir(
                         "block_cell".to_string()
                     };
                     let nid = upsert_node(
-                        &block.id, Some(label), NodeShape::Rect, block.span, false, idx,
-                        &mut node_map, &mut node_drafts, &mut implicit_warned, &mut warnings,
+                        &block.id,
+                        Some(label),
+                        NodeShape::Rect,
+                        block.span,
+                        false,
+                        idx,
+                        &mut node_map,
+                        &mut node_drafts,
+                        &mut implicit_warned,
+                        &mut warnings,
                     );
                     node_drafts[nid].classes.push(class);
                 }
@@ -6746,11 +6754,10 @@ pub fn parse_with_diagnostics(input: &str) -> MermaidParse {
         if !saw_header {
             if let Some((dtype, dir)) = parse_header(trimmed) {
                 if dtype == DiagramType::Pie {
-                    let lower = trimmed.to_ascii_lowercase();
-                    pie_show_data = lower
+                    pie_show_data = trimmed
                         .split_whitespace()
                         .skip(1)
-                        .any(|token| token == "showdata");
+                        .any(|token| token.eq_ignore_ascii_case("showData"));
                 }
                 diagram_type = dtype;
                 direction = dir;
@@ -8706,7 +8713,7 @@ fn strip_quotes(s: &str) -> String {
 const SQUOTE: char = '\'';
 
 fn is_pie_show_data_line(text: &str) -> bool {
-    text.trim().eq_ignore_ascii_case("showdata")
+    text.trim().eq_ignore_ascii_case("showData")
 }
 
 fn parse_pie_title_line(text: &str) -> Option<String> {
@@ -9042,10 +9049,15 @@ fn parse_block_line(trimmed: &str, span: Span) -> Option<Statement> {
         let parts: Vec<&str> = trimmed["block:".len()..].split(':').collect();
         let id = parts.first().map_or("", |s| s.trim()).to_string();
         let span_cols = parts.get(1).and_then(|s| s.trim().parse::<usize>().ok());
-        return Some(Statement::BlockGroupStart { id, span_cols, span });
+        return Some(Statement::BlockGroupStart {
+            id,
+            span_cols,
+            span,
+        });
     }
     if lower == "space" || lower.starts_with("space:") {
-        let n = lower.strip_prefix("space:")
+        let n = lower
+            .strip_prefix("space:")
             .and_then(|s| s.trim().parse::<usize>().ok())
             .unwrap_or(1);
         return Some(Statement::BlockDef(BlockDef {
@@ -9093,35 +9105,60 @@ fn split_block_defs(s: &str) -> Vec<String> {
     let mut in_quotes = false;
     for ch in s.chars() {
         match ch {
-            '[' if !in_quotes => { in_brackets += 1; current.push(ch); }
-            ']' if !in_quotes => { in_brackets -= 1; current.push(ch); }
-            '"' => { in_quotes = !in_quotes; current.push(ch); }
+            '[' if !in_quotes => {
+                in_brackets += 1;
+                current.push(ch);
+            }
+            ']' if !in_quotes => {
+                in_brackets -= 1;
+                current.push(ch);
+            }
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(ch);
+            }
             ' ' | '\t' if in_brackets <= 0 && !in_quotes => {
                 let t = current.trim().to_string();
-                if !t.is_empty() { tokens.push(t); }
+                if !t.is_empty() {
+                    tokens.push(t);
+                }
                 current.clear();
             }
-            _ => { current.push(ch); }
+            _ => {
+                current.push(ch);
+            }
         }
     }
     let t = current.trim().to_string();
-    if !t.is_empty() { tokens.push(t); }
+    if !t.is_empty() {
+        tokens.push(t);
+    }
     tokens
 }
 
 /// Try to parse a single block definition: id["Label"]:N
 fn try_parse_block_def(s: &str, span: Span) -> Option<BlockDef> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     if s.contains("-->") || s.contains("---") || s.contains("-.->") || s.contains("==>") {
         return None;
     }
     let mut id_end = s.len();
     for (i, ch) in s.char_indices() {
-        if ch == '[' || ch == ':' || ch == ' ' { id_end = i; break; }
+        if ch == '[' || ch == ':' || ch == ' ' {
+            id_end = i;
+            break;
+        }
     }
     let id = s[..id_end].to_string();
-    if id.is_empty() || !id.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+    if id.is_empty()
+        || !id
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    {
         return None;
     }
     let rest = &s[id_end..];
@@ -9141,7 +9178,12 @@ fn try_parse_block_def(s: &str, span: Span) -> Option<BlockDef> {
     } else {
         1
     };
-    Some(BlockDef { id, label, span_cols, span })
+    Some(BlockDef {
+        id,
+        label,
+        span_cols,
+        span,
+    })
 }
 
 /// Split a CSV line respecting quoted fields.
@@ -9866,6 +9908,7 @@ mod tests {
     #[allow(dead_code)]
     fn jsonl_event(path: &str, event: &str) -> serde_json::Value {
         let content = std::fs::read_to_string(path).expect("read log");
+        let mut found = None;
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -9873,10 +9916,11 @@ mod tests {
             }
             let value: serde_json::Value = serde_json::from_str(trimmed).expect("jsonl parse");
             if value.get("event").and_then(|v| v.as_str()) == Some(event) {
-                return value;
+                found = Some(value);
+                break;
             }
         }
-        panic!("missing jsonl event: {event}");
+        found.expect("missing jsonl event")
     }
 
     #[test]
@@ -10236,7 +10280,7 @@ mod tests {
             ("|o--|{", "zero-or-one-to-one-or-many"),
         ] {
             let input = format!("erDiagram\nA {} B : {}", arrow, desc);
-            let ast = parse(&input).unwrap_or_else(|_| panic!("parse {}", desc));
+            let ast = parse(&input).expect("parse");
             let edge = ast
                 .statements
                 .iter()
@@ -10244,7 +10288,7 @@ mod tests {
                     Statement::Edge(e) => Some(e),
                     _ => None,
                 })
-                .unwrap_or_else(|| panic!("no edge for {}", desc));
+                .expect("no edge");
             assert_eq!(edge.arrow, arrow, "arrow for {}", desc);
             assert_eq!(edge.label.as_deref(), Some(desc), "label for {}", desc);
         }
@@ -12391,7 +12435,7 @@ B --> C
             LayoutConstraint::SameRank { node_ids, .. } => {
                 assert_eq!(node_ids, &["A", "B", "C"]);
             }
-            other => panic!("expected SameRank, got {other:?}"),
+            other => assert!(false, "expected SameRank, got {other:?}"),
         }
     }
 
@@ -12421,7 +12465,7 @@ A --> B
                 assert_eq!(to_id, "B");
                 assert_eq!(*min_len, 3);
             }
-            other => panic!("expected MinLength, got {other:?}"),
+            other => assert!(false, "expected MinLength, got {other:?}"),
         }
     }
 
@@ -12446,7 +12490,7 @@ A --> B
                 assert!((x - 100.0).abs() < 1e-9);
                 assert!((y - 50.0).abs() < 1e-9);
             }
-            other => panic!("expected Pin, got {other:?}"),
+            other => assert!(false, "expected Pin, got {other:?}"),
         }
     }
 
@@ -12470,7 +12514,7 @@ B --> C
             LayoutConstraint::OrderInRank { node_ids, .. } => {
                 assert_eq!(node_ids, &["A", "B", "C"]);
             }
-            other => panic!("expected OrderInRank, got {other:?}"),
+            other => assert!(false, "expected OrderInRank, got {other:?}"),
         }
     }
 
@@ -12542,14 +12586,14 @@ B --> C
         if let Statement::GitGraphCommit(c) = &commits[1] {
             assert_eq!(c.id.as_deref(), Some("abc"));
         } else {
-            panic!("expected GitGraphCommit");
+            assert!(false, "expected GitGraphCommit");
         }
         // Check third commit has tag
         if let Statement::GitGraphCommit(c) = &commits[2] {
             assert_eq!(c.id.as_deref(), Some("def"));
             assert_eq!(c.tag.as_deref(), Some("v1"));
         } else {
-            panic!("expected GitGraphCommit");
+            assert!(false, "expected GitGraphCommit");
         }
     }
 
@@ -12664,17 +12708,25 @@ B --> C
         );
         let ast = parse(input).expect("parse");
         assert_eq!(ast.diagram_type, DiagramType::BlockBeta);
-        let cols: Vec<_> = ast.statements.iter()
+        let cols: Vec<_> = ast
+            .statements
+            .iter()
             .filter(|s| matches!(s, Statement::BlockColumns { .. }))
             .collect();
         assert_eq!(cols.len(), 1);
         if let Statement::BlockColumns { count, .. } = cols[0] {
             assert_eq!(*count, 3);
         }
-        let blocks: Vec<_> = ast.statements.iter()
+        let blocks: Vec<_> = ast
+            .statements
+            .iter()
             .filter(|s| matches!(s, Statement::BlockDef(_)))
             .collect();
-        assert!(blocks.len() >= 4, "expected at least 4 block defs, got {}", blocks.len());
+        assert!(
+            blocks.len() >= 4,
+            "expected at least 4 block defs, got {}",
+            blocks.len()
+        );
     }
 
     #[test]
@@ -12691,7 +12743,11 @@ B --> C
             &MermaidCompatibilityMatrix::default(),
             &MermaidFallbackPolicy::default(),
         );
-        assert!(ir.ir.nodes.len() >= 2, "expected at least 2 nodes, got {}", ir.ir.nodes.len());
+        assert!(
+            ir.ir.nodes.len() >= 2,
+            "expected at least 2 nodes, got {}",
+            ir.ir.nodes.len()
+        );
     }
 
     #[test]
@@ -12707,11 +12763,15 @@ B --> C
         );
         let ast = parse(input).expect("parse");
         assert_eq!(ast.diagram_type, DiagramType::BlockBeta);
-        let groups_start: Vec<_> = ast.statements.iter()
+        let groups_start: Vec<_> = ast
+            .statements
+            .iter()
             .filter(|s| matches!(s, Statement::BlockGroupStart { .. }))
             .collect();
         assert_eq!(groups_start.len(), 1);
-        let groups_end: Vec<_> = ast.statements.iter()
+        let groups_end: Vec<_> = ast
+            .statements
+            .iter()
             .filter(|s| matches!(s, Statement::BlockGroupEnd { .. }))
             .collect();
         assert_eq!(groups_end.len(), 1);

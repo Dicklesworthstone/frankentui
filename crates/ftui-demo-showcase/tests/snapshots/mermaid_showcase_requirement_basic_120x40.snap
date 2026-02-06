@@ -14,15 +14,15 @@ Mermaid Showcase | Requirement Basic (22/22) | Layout: Auto | Score: -6.0 | View
 │  State Basic [state, S, star││                                                            ││                        │ 
 │  State Composite [state, M, ││                                                            ││                        │ 
 │  ER Basic [er, M, cardinalit││                                                            ││                        │ 
-│  Gantt Basic [gantt, M, sect││                                                            ││                        │ 
-│  Mindmap Seed [mindmap, S, t││                                                            ││                        │ 
+│  Gantt Basic [gantt, M, sect││ ⣤                                                        ⣤ ││                        │ 
+│  Mindmap Seed [mindmap, S, t││ ⣿                                                        ⣿ ││                        │ 
 │  Mindmap Deep [mindmap, L, d││ ⣿                                                        ⣿ ││                        │ 
 │  Pie Basic [pie, S, title, s││ ⣿                  <<requirement>>
 req1                  ⣿ ││                        │ 
 │  Pie Many [pie, M, many-slic││ ⣿                                                        ⣿ ││                        │ 
 │  Gitgraph Basic [gitgraph, M││ ⣿                                                        ⣿ │╰────────────────────────╯ 
-│  Journey Basic [journey, M, ││                                                            │╭────────Metrics─────────╮ 
-│> Requirement Basic [requirem││                                                            ││Parse: 0.00 ms          │ 
+│  Journey Basic [journey, M, ││ ⣿                                                        ⣿ │╭────────Metrics─────────╮ 
+│> Requirement Basic [requirem││ ⠿                                                        ⠿ ││Parse: 0.00 ms          │ 
 │                             ││                                                            ││Layout: 0.00 ms         │ 
 │                             ││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: auto          │ 

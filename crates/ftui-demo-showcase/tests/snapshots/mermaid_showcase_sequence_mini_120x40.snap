@@ -19,9 +19,9 @@ Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport:
 │  Mindmap Deep [mindmap, L, d││               │                            ⢀│              ││                        │ 
 │  Pie Basic [pie, S, title, s││             ⠐⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒Hello⠒⠒⠒⠒⠒⠒⠒⠒⢺⡻⠖             ││                        │ 
 │  Pie Many [pie, M, many-slic││               │                             │              ││                        │ 
-│  Gitgraph Basic [unsupported││                                                            │╰────────────────────────╯ 
-│  Journey Basic [unsupported,││               │                             │              │╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││                                                            ││Parse: 0.00 ms          │ 
+│  Gitgraph Basic [gitgraph, M││                                                            │╰────────────────────────╯ 
+│  Journey Basic [journey, M, ││               │                             │              │╭────────Metrics─────────╮ 
+│  Requirement Basic [requirem││                                                            ││Parse: 0.00 ms          │ 
 │                             ││             ⠠⢶│⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤│⠤             ││Layout: 0.00 ms         │ 
 │                             ││               ⠈                                            ││Render: 0.00 ms         │ 
 │                             ││               │                             │              ││Viewport: auto          │ 

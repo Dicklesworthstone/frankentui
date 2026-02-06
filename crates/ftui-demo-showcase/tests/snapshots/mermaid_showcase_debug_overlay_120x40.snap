@@ -19,9 +19,9 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Mindmap Deep [mindmap, L, d││ ⣀⣀⣀⣀⣀⣀⣀⣀+⣀⣀⣀⣀⣀⣀⡀            ⢀+         ⢀⡨Yes⠿⠿⠿⠿⠿⠿+⠿⠿⠿⠿⠿⠿⠿ ││                        │ 
 │  Pie Basic [pie, S, title, s││ ⣿    Start    ⣿⡇   ⢠⣀  |  Check|     ⡠⠔⠁                   ││                        │ 
 │  Pie Many [pie, M, many-slic││ +       |     ⣿+⠉⠉⠉⠹⠛+ |       |    ⠉+⢄                    ││                        │ 
-│  Gitgraph Basic [unsupported││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉         ⠑⠢⣰⣰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │╰────────────────────────╯ 
-│  Journey Basic [unsupported,││         +                    +          ⠈No⣿⣿⣿⣿⣿⣿⣿+⣿⣿⣿⣿⣿⣿⣿ │╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││                                           ⠘⠛  |      |   ⠛ ││Parse: 0.00 ms          │ 
+│  Gitgraph Basic [gitgraph, M││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉         ⠑⠢⣰⣰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │╰────────────────────────╯ 
+│  Journey Basic [journey, M, ││         +                    +          ⠈No⣿⣿⣿⣿⣿⣿⣿+⣿⣿⣿⣿⣿⣿⣿ │╭────────Metrics─────────╮ 
+│  Requirement Basic [requirem││                                           ⠘⠛  |      |   ⠛ ││Parse: 0.00 ms          │ 
 │                             ││                                               |  Fix |     ││Layout: 0.00 ms         │ 
 │                             ││                                            +  |      |    +││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: auto          │ 

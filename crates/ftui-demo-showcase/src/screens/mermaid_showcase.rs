@@ -1352,6 +1352,7 @@ impl MermaidShowcaseState {
                 return;
             }
         };
+        let diagram_type = ast.diagram_type;
         let parse_elapsed = t0.elapsed();
 
         let ir_parse = ftui_extras::mermaid::normalize_ast_to_ir(&ast, &config, &matrix, &policy);
@@ -1381,10 +1382,10 @@ impl MermaidShowcaseState {
         }
         snap.error_count = Some(ir_parse.errors.len() as u32);
         self.metrics = snap;
-        self.emit_metrics_jsonl(sample);
+        self.emit_metrics_jsonl(sample, diagram_type);
     }
 
-    fn emit_metrics_jsonl(&self, sample: MermaidSample) {
+    fn emit_metrics_jsonl(&self, sample: MermaidSample, diagram_type: mermaid::DiagramType) {
         if !jsonl_enabled() {
             return;
         }
@@ -1392,13 +1393,21 @@ impl MermaidShowcaseState {
         let run_id = determinism::demo_run_id();
         let seed = determinism::demo_seed(0);
         let screen_mode = determinism::demo_screen_mode();
-        let line = self.metrics_jsonl_line(sample, seq, run_id.as_deref(), seed, &screen_mode);
+        let line = self.metrics_jsonl_line(
+            sample,
+            diagram_type,
+            seq,
+            run_id.as_deref(),
+            seed,
+            &screen_mode,
+        );
         let _ = writeln!(std::io::stderr(), "{line}");
     }
 
     fn metrics_jsonl_line(
         &self,
         sample: MermaidSample,
+        diagram_type: mermaid::DiagramType,
         seq: u64,
         run_id: Option<&str>,
         seed: u64,
@@ -1418,6 +1427,15 @@ impl MermaidShowcaseState {
             escape_json(screen_mode)
         ));
         json.push_str(&format!(",\"sample\":\"{}\"", escape_json(sample.name)));
+        json.push_str(&format!(",\"sample_id\":\"{}\"", escape_json(sample.id)));
+        json.push_str(&format!(
+            ",\"sample_family\":\"{}\"",
+            sample.family.as_str()
+        ));
+        json.push_str(&format!(
+            ",\"diagram_type\":\"{}\"",
+            escape_json(diagram_type.as_str())
+        ));
         json.push_str(&format!(
             ",\"layout_mode\":\"{}\"",
             self.layout_mode.as_str()
@@ -4484,7 +4502,10 @@ mod tests {
     fn metrics_jsonl_line_includes_required_fields() {
         let s = new_state();
         let sample = s.selected_sample().expect("sample");
-        let line = s.metrics_jsonl_line(sample, 7, Some("run-1"), 123, "alt");
+        let diagram_type = mermaid::parse(sample.source)
+            .expect("parse sample")
+            .diagram_type;
+        let line = s.metrics_jsonl_line(sample, diagram_type, 7, Some("run-1"), 123, "alt");
         let value: Value = serde_json::from_str(&line).expect("json parse");
 
         assert_eq!(
@@ -4500,6 +4521,15 @@ mod tests {
         assert_eq!(value["seed"].as_u64().unwrap_or_default(), 123);
         assert_eq!(value["screen_mode"].as_str().unwrap_or_default(), "alt");
         assert_eq!(value["sample"].as_str().unwrap_or_default(), sample.name);
+        assert_eq!(value["sample_id"].as_str().unwrap_or_default(), sample.id);
+        assert_eq!(
+            value["sample_family"].as_str().unwrap_or_default(),
+            sample.family.as_str()
+        );
+        assert_eq!(
+            value["diagram_type"].as_str().unwrap_or_default(),
+            diagram_type.as_str()
+        );
         assert_eq!(
             value["layout_mode"].as_str().unwrap_or_default(),
             s.layout_mode.as_str()
@@ -4571,7 +4601,10 @@ mod tests {
     fn metrics_jsonl_quality_fields_populated() {
         let s = new_state();
         let sample = s.selected_sample().expect("sample");
-        let line = s.metrics_jsonl_line(sample, 0, None, 0, "test");
+        let diagram_type = mermaid::parse(sample.source)
+            .expect("parse sample")
+            .diagram_type;
+        let line = s.metrics_jsonl_line(sample, diagram_type, 0, None, 0, "test");
         let value: Value = serde_json::from_str(&line).expect("valid json");
 
         // For a valid flowchart sample, quality fields should be populated.
@@ -4614,7 +4647,10 @@ mod tests {
     fn error_count_in_jsonl_output() {
         let s = new_state();
         let sample = s.selected_sample().expect("sample");
-        let line = s.metrics_jsonl_line(sample, 0, None, 0, "test");
+        let diagram_type = mermaid::parse(sample.source)
+            .expect("parse sample")
+            .diagram_type;
+        let line = s.metrics_jsonl_line(sample, diagram_type, 0, None, 0, "test");
         let value: Value = serde_json::from_str(&line).expect("valid json");
         // error_count field should be present and typed correctly.
         assert!(
@@ -4628,7 +4664,10 @@ mod tests {
     fn error_count_jsonl_zero_for_valid_sample() {
         let s = new_state();
         let sample = s.selected_sample().expect("sample");
-        let line = s.metrics_jsonl_line(sample, 0, None, 0, "test");
+        let diagram_type = mermaid::parse(sample.source)
+            .expect("parse sample")
+            .diagram_type;
+        let line = s.metrics_jsonl_line(sample, diagram_type, 0, None, 0, "test");
         let value: Value = serde_json::from_str(&line).expect("valid json");
         assert_eq!(
             value["error_count"].as_u64().unwrap_or(999),
@@ -4858,10 +4897,11 @@ mod tests {
     #[test]
     fn registry_by_family_unsupported() {
         let unsup = SampleRegistry::by_family(SampleFamily::Unsupported);
-        assert_eq!(unsup.len(), 3);
-        for s in &unsup {
-            assert!(s.edge_cases.contains(&"unsupported-diagram"));
-        }
+        assert!(
+            unsup.is_empty(),
+            "Unsupported sample bucket should be empty (no placeholders); got {} entries",
+            unsup.len()
+        );
     }
 
     #[test]

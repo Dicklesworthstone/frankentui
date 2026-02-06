@@ -19,6 +19,6 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Mindmap Deep [mindma││Render: 0.00 ms                                       │
 │  Pie Basic [pie, S, t││Viewport: auto                                        │
 │  Pie Many [pie, M, ma││Zoom: 100%                                            │
-│  Gitgraph Basic [unsu││Iters: 1                                              │
+│  Gitgraph Basic [gitg││Iters: 1                                              │
 ╰──────────────────────╯╰──────────────────────────────────────────────────────╯
 j/k sample  Enter render  l layout  +/- zoom  m metrics  ? help                 

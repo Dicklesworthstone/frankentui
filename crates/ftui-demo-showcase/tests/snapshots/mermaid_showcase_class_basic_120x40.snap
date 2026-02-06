@@ -19,9 +19,9 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │  Mindmap Deep [mindmap, L, d││                         ⢀⡠⠔⠉  ⠈⠑⠤⣀                         ││                        │ 
 │  Pie Basic [pie, S, title, s││                      ⢀⠤⠒⠁         ⠑⠢⢄                      ││                        │ 
 │  Pie Many [pie, M, many-slic││                   ⣀⠤⠊⠁               ⠉⠢⢄⡀                  ││                        │ 
-│  Gitgraph Basic [unsupported││                ⡠⠔⠊                      ⠈⠒⠤⡀⢠              │╰────────────────────────╯ 
-│  Journey Basic [unsupported,││ ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣭⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤        ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣬⣿⣧⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤ │╭────────Metrics─────────╮ 
-│  Requirement Basic [unsuppor││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.00 ms          │ 
+│  Gitgraph Basic [gitgraph, M││                ⡠⠔⠊                      ⠈⠒⠤⡀⢠              │╰────────────────────────╯ 
+│  Journey Basic [journey, M, ││ ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣭⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤        ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣬⣿⣧⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤ │╭────────Metrics─────────╮ 
+│  Requirement Basic [requirem││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Parse: 0.00 ms          │ 
 │                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Layout: 0.00 ms         │ 
 │                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Render: 0.00 ms         │ 
 │                             ││ ⠉                       ⠉        ⠉                       ⠉ ││Viewport: auto          │ 

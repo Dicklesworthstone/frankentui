@@ -19,9 +19,9 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Mindmap Deep [mindmap, L, deep, wide]           ││                                                                                                      ││                                          │
 │  Pie Basic [pie, S, title, showdata]             ││                                                                                                      ││                                          │
 │  Pie Many [pie, M, many-slices]                  ││                                                                                                      ││                                          │
-│  Gitgraph Basic [unsupported, M, unsupported]    ││                                                                                       OK             ││                                          │
-│  Journey Basic [unsupported, M, unsupported]     ││                                                                                                      ││                                          │
-│  Requirement Basic [unsupported, M, unsupported] ││                                                                                                      ││                                          │
+│  Gitgraph Basic [gitgraph, M, gitgraph, branches]││                                                                                       OK             ││                                          │
+│  Journey Basic [journey, M, journey, sections]   ││                                                                                                      ││                                          │
+│  Requirement Basic [requirement, M, requirement, ││                                                                                                      ││                                          │
 │                                                  ││                                                                          ⢸⣿                        ⣿ ││                                          │
 │                                                  ││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
 │                                                  ││                                                                      Yes⢶⢾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │

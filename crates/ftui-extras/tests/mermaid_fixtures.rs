@@ -253,6 +253,22 @@ const FIXTURES: &[MermaidFixture] = &[
         tier: FixtureTier::Stress,
         expects_raw_fallback: false,
     },
+    MermaidFixture {
+        id: "journey_dense_actors",
+        file: "journey_dense_actors.mmd",
+        source: include_str!("fixtures/mermaid/journey_dense_actors.mmd"),
+        family: "journey",
+        tier: FixtureTier::EdgeCase,
+        expects_raw_fallback: false,
+    },
+    MermaidFixture {
+        id: "journey_malformed",
+        file: "journey_malformed.mmd",
+        source: include_str!("fixtures/mermaid/journey_malformed.mmd"),
+        family: "journey",
+        tier: FixtureTier::EdgeCase,
+        expects_raw_fallback: false,
+    },
     // -- Requirement --
     MermaidFixture {
         id: "requirement_basic",
@@ -805,6 +821,21 @@ mod tests {
                 "journey_stress" => {
                     assert_eq!(parsed.ast.diagram_type, DiagramType::Journey);
                     assert!(counts.journey >= 10, "journey_stress journey stmts < 10");
+                }
+                "journey_dense_actors" => {
+                    assert_eq!(parsed.ast.diagram_type, DiagramType::Journey);
+                    assert!(
+                        counts.journey >= 6,
+                        "journey_dense_actors journey stmts < 6"
+                    );
+                }
+                "journey_malformed" => {
+                    assert_eq!(parsed.ast.diagram_type, DiagramType::Journey);
+                    assert!(
+                        !parsed.errors.is_empty(),
+                        "journey_malformed should produce parse errors"
+                    );
+                    assert!(counts.raw >= 1, "journey_malformed raw fallback missing");
                 }
                 // -- Requirement family --
                 "requirement_basic" => {
