@@ -1,4 +1,4 @@
-Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: auto | OK                                                                                                               
+Mermaid Showcase | Class Basic (10/24) | Layout: Auto | Score: 44.1 | Viewport: auto | OK                                                                                                               
 ╭─────────────────────Samples──────────────────────╮╭───────────────────────────────────────────────Viewport───────────────────────────────────────────────╮╭─────────────────Controls─────────────────╮
 │  Flow Basic [flow, S, branch, decision]          ││                                                                                                      ││Layout: Auto (l)                          │
 │  Flow Subgraphs [flow, M, subgraph, clusters]    ││                                                                                                      ││Tier: auto (t)                            │
@@ -22,8 +22,8 @@ Mermaid Showcase | Class Basic (10/22) | Layout: Auto | Score: 44.1 | Viewport: 
 │  Gitgraph Basic [gitgraph, M, gitgraph, branches]││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
 │  Journey Basic [journey, M, journey, sections]   ││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
 │  Requirement Basic [requirement, M, requirement, ││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
-│                                                  ││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
-│                                                  ││                             ⠸⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⡿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇                             ││                                          │
+│  Block Beta Basic [block-beta, S, block-beta, col││                             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇                             ││                                          │
+│  Block Beta Nested [block-beta, M, block-beta, ne││                             ⠸⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⡿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇                             ││                                          │
 │                                                  ││                                               ⢀⡠⠒⠉⠈⠑⠢⣀                                               ││                                          │
 │                                                  ││                                            ⣀⠤⠊⠁       ⠉⠢⢄⡀                                           ││                                          │
 │                                                  ││                                         ⡠⠔⠊              ⠈⠒⠤⡀                                        ││                                          │

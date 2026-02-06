@@ -1,15 +1,15 @@
-Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: aut
+Mermaid Showcase | Block Beta Basic (23/24) | Layout: Auto | Score: 231.5 | View
 ╭───────Samples────────╮╭───────────────────────Viewport───────────────────────╮
-│> Flow Basic [flow, S,││                                                      │
+│  Flow Basic [flow, S,││                                                      │
 │  Flow Subgraphs [flow││                                                      │
-│  Flow Dense [flow, L,││                                         OK           │
-│  Flow Long Labels [fl││                                       ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│  Flow Unicode [flow, ││                                    Yes⢾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│  Flow Styles [flow, M││ ⣿⣿⣿⣿⣿⣿  Start    ⣄⡀ ⣀  Check   ⣀ ⢀⡠⠊⠁⠈               │
-│  Sequence Mini [seque││ ⣿⣿⣿⣿⣿⣿         ⠉⠉⠟⠋⠉⠙          ⠋⠉⠑⠢⡀                 │
-│  Sequence Checkout [s││                                    ⠈⢑⣼⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│  Sequence Dense [sequ││                                    No ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│  Class Basic [class, ││                                         Fix          │
+│  Flow Dense [flow, L,││                                                      │
+│  Flow Long Labels [fl││                                                      │
+│  Flow Unicode [flow, ││                                                      │
+│  Flow Styles [flow, M││ ⣶⣶⣶⣶⣶⣶⣶⣶⣶⡆  ⢰⣶⣶⣶⣶⣶⣶⣶⣶⣶   ⣶⣶⣶⣶⣶⣶⣶⣶⣶⡆  ⢰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │
+│  Sequence Mini [seque││ ⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇  ⠸⠿⠿⠿⠿⠿⠿⠿⠿⠿   ⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇  ⠸⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿ │
+│  Sequence Checkout [s││                                                      │
+│  Sequence Dense [sequ││                                                      │
+│  Class Basic [class, ││                                                      │
 │  Class Members [class││                                                      │
 │  State Basic [state, ││                                                      │
 │  State Composite [sta│╰──────────────────────────────────────────────────────╯
@@ -19,6 +19,6 @@ Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Mindmap Deep [mindma││Render: 0.00 ms                                       │
 │  Pie Basic [pie, S, t││Viewport: auto                                        │
 │  Pie Many [pie, M, ma││Zoom: 100%                                            │
-│  Gitgraph Basic [gitg││Iters: 1                                              │
+│  Gitgraph Basic [gitg││Iters: 0                                              │
 ╰──────────────────────╯╰──────────────────────────────────────────────────────╯
 j/k sample  Enter render  l layout  +/- zoom  m metrics  ? help                 

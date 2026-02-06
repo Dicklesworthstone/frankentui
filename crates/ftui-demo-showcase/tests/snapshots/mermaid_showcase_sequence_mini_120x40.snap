@@ -1,4 +1,4 @@
-Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport: auto | OK                              
+Mermaid Showcase | Sequence Mini (7/24) | Layout: Auto | Score: 50.9 | Viewport: auto | OK                              
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
 │  Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
@@ -22,8 +22,8 @@ Mermaid Showcase | Sequence Mini (7/22) | Layout: Auto | Score: 50.9 | Viewport:
 │  Gitgraph Basic [gitgraph, M││                                                            │╰────────────────────────╯ 
 │  Journey Basic [journey, M, ││               │                             │              │╭────────Metrics─────────╮ 
 │  Requirement Basic [requirem││                                                            ││Parse: 0.00 ms          │ 
-│                             ││             ⠠⢶│⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤│⠤             ││Layout: 0.00 ms         │ 
-│                             ││               ⠈                                            ││Render: 0.00 ms         │ 
+│  Block Beta Basic [block-bet││             ⠠⢶│⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤│⠤             ││Layout: 0.00 ms         │ 
+│  Block Beta Nested [block-be││               ⠈                                            ││Render: 0.00 ms         │ 
 │                             ││               │                             │              ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
 │                             ││               │               Hi!           │              ││Iters: 0                │ 

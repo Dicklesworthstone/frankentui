@@ -1,6 +1,6 @@
-Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: auto | OK                                  
+Mermaid Showcase | Block Beta Basic (23/24) | Layout: Auto | Score: 231.5 | Viewport: auto | OK                         
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
-│> Flow Basic [flow, S, branch││                                                   B=bounds ││Layout: Auto (l)        │ 
+│  Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
 │  Flow Dense [flow, L, dense,││                                                            ││Glyphs: unicode (g)     │ 
 │  Flow Long Labels [flow, M, ││                                                            ││Render: braille (b)     │ 
@@ -13,26 +13,26 @@ Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Class Members [class, M, fi││                                                            ││                        │ 
 │  State Basic [state, S, star││                                                            ││                        │ 
 │  State Composite [state, M, ││                                                            ││                        │ 
-│  ER Basic [er, M, cardinalit││                                                  OK        ││                        │ 
-│  Gantt Basic [gantt, M, sect││                                           ⢠⣤             ⣤ ││                        │ 
-│  Mindmap Seed [mindmap, S, t││                                           ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                        │ 
-│  Mindmap Deep [mindmap, L, d││ ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀            ⢀⣀         ⢀⡨Yes⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿ ││                        │ 
-│  Pie Basic [pie, S, title, s││ ⣿    Start    ⣿⡇   ⢠⣀     Check      ⡠⠔⠁                   ││                        │ 
-│  Pie Many [pie, M, many-slic││ ⣿             ⣿⡏⠉⠉⠉⠹⠛⠉              ⠉⠢⢄                    ││                        │ 
-│  Gitgraph Basic [gitgraph, M││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉         ⠑⠢⣰⣰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │╰────────────────────────╯ 
-│  Journey Basic [journey, M, ││                                         ⠈No⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╭────────Metrics─────────╮ 
-│  Requirement Basic [requirem││                                           ⠘⠛             ⠛ ││Parse: 0.00 ms          │ 
-│  Block Beta Basic [block-bet││                                                  Fix       ││Layout: 0.00 ms         │ 
+│  ER Basic [er, M, cardinalit││                                                            ││                        │ 
+│  Gantt Basic [gantt, M, sect││                                                            ││                        │ 
+│  Mindmap Seed [mindmap, S, t││                                                            ││                        │ 
+│  Mindmap Deep [mindmap, L, d││                                                            ││                        │ 
+│  Pie Basic [pie, S, title, s││ ⣶Frontend ⡆   ⣶ Backend ⡆   ⣶Database ⡆   ⣶Load Balancer ⣶ ││                        │ 
+│  Pie Many [pie, M, many-slic││ ⠿         ⠇   ⠿         ⠇   ⠿         ⠇   ⠿              ⠿ ││                        │ 
+│  Gitgraph Basic [gitgraph, M││                                                            │╰────────────────────────╯ 
+│  Journey Basic [journey, M, ││                                                            │╭────────Metrics─────────╮ 
+│  Requirement Basic [requirem││                                                            ││Parse: 0.00 ms          │ 
+│> Block Beta Basic [block-bet││                                                            ││Layout: 0.00 ms         │ 
 │  Block Beta Nested [block-be││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
-│                             ││                                                            ││Iters: 1                │ 
-│                             ││                                                            ││Score: 0.77             │ 
+│                             ││                                                            ││Iters: 0                │ 
+│                             ││                                                            ││Score: 231.54           │ 
 │                             ││                                                            ││Cross: 0                │ 
 │                             ││                                                            ││Bends: 0                │ 
-│                             ││                                                            ││Sym: 0.67               │ 
-│                             ││                                                            ││Comp: 0.35              │ 
-│                             ││                                                            ││Edge var: 0.47          │ 
+│                             ││                                                            ││Sym: 0.86               │ 
+│                             ││                                                            ││Comp: 0.83              │ 
+│                             ││                                                            ││Edge var: 0.00          │ 
 │                             ││                                                            ││Label col: 0            │ 
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 

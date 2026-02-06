@@ -1,4 +1,4 @@
-Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: auto | OK                                  
+Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: auto | OK                                  
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
 │> Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
@@ -22,8 +22,8 @@ Mermaid Showcase | Flow Basic (1/22) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Gitgraph Basic [gitgraph, M││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉         ⠑⠢⣰⣰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │╰────────────────────────╯ 
 │  Journey Basic [journey, M, ││                                         ⠈No⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╭────────Metrics─────────╮ 
 │  Requirement Basic [requirem││                                           ⠘⠛             ⠛ ││Parse: 0.00 ms          │ 
-│                             ││                                                  Fix       ││Layout: 0.00 ms         │ 
-│                             ││                                                            ││Render: 0.00 ms         │ 
+│  Block Beta Basic [block-bet││                                                  Fix       ││Layout: 0.00 ms         │ 
+│  Block Beta Nested [block-be││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
 │                             ││                                                            ││Iters: 1                │ 
