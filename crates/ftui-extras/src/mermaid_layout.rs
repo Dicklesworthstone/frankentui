@@ -89,6 +89,16 @@ pub struct LayoutClusterBox {
 pub struct LayoutEdgePath {
     pub edge_idx: usize,
     pub waypoints: Vec<LayoutPoint>,
+    /// Number of underlying IR edges represented by this path.
+    ///
+    /// `1` means this is a normal edge. Values `> 1` indicate an edge bundle
+    /// produced by optional post-layout bundling (bd-70rmj).
+    pub bundle_count: usize,
+    /// Underlying IR edge indices represented by this bundled edge (sorted).
+    ///
+    /// For non-bundled edges (`bundle_count == 1`), this is empty to avoid
+    /// unnecessary metadata.
+    pub bundle_members: Vec<usize>,
 }
 
 /// Statistics from the layout computation.
@@ -1072,6 +1082,8 @@ fn route_edges(
             LayoutEdgePath {
                 edge_idx: idx,
                 waypoints,
+                bundle_count: 1,
+                bundle_members: Vec::new(),
             }
         })
         .collect()
@@ -1304,6 +1316,8 @@ fn layout_sequence_diagram(
         edges.push(LayoutEdgePath {
             edge_idx: idx,
             waypoints: vec![LayoutPoint { x: x0, y }, LayoutPoint { x: x1, y }],
+            bundle_count: 1,
+            bundle_members: Vec::new(),
         });
     }
 
@@ -1804,6 +1818,8 @@ fn layout_mindmap_diagram(
         edges.push(LayoutEdgePath {
             edge_idx,
             waypoints,
+            bundle_count: 1,
+            bundle_members: Vec::new(),
         });
     }
 
@@ -2115,7 +2131,19 @@ pub fn layout_diagram_with_spacing(
     let clusters = compute_cluster_bounds(ir, &node_rects, spacing);
 
     // Phase 5: Edge routing.
-    let edges = route_edges(ir, &node_rects, &ranks, &rank_order, ir.direction, spacing);
+    let mut edges = route_edges(ir, &node_rects, &ranks, &rank_order, ir.direction, spacing);
+    if config.edge_bundling && ir.diagram_type == DiagramType::Graph && edges.len() >= 2 {
+        bundle_parallel_edges(
+            ir,
+            config,
+            spacing,
+            &node_rects,
+            &clusters,
+            &cluster_map,
+            ir.direction,
+            &mut edges,
+        );
+    }
 
     // Compute bounding box (includes edge waypoints).
     let bounding_box = compute_bounding_box(&nodes, &clusters, &edges);
@@ -3750,6 +3778,8 @@ pub fn route_all_edges(
                     all_paths.push(LayoutEdgePath {
                         edge_idx: idx,
                         waypoints,
+                        bundle_count: 1,
+                        bundle_members: Vec::new(),
                     });
                     continue;
                 }
@@ -3768,6 +3798,8 @@ pub fn route_all_edges(
                     all_paths.push(LayoutEdgePath {
                         edge_idx: idx,
                         waypoints: vec![from_pt, to_pt],
+                        bundle_count: 1,
+                        bundle_members: Vec::new(),
                     });
                     continue;
                 }
@@ -3811,6 +3843,8 @@ pub fn route_all_edges(
                 all_paths.push(LayoutEdgePath {
                     edge_idx: idx,
                     waypoints,
+                    bundle_count: 1,
+                    bundle_members: Vec::new(),
                 });
             }
             _ => {
@@ -3823,6 +3857,8 @@ pub fn route_all_edges(
                 all_paths.push(LayoutEdgePath {
                     edge_idx: idx,
                     waypoints: vec![],
+                    bundle_count: 1,
+                    bundle_members: Vec::new(),
                 });
             }
         }

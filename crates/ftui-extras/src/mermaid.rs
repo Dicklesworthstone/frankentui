@@ -453,6 +453,8 @@ const ENV_MERMAID_MAX_NODES: &str = "FTUI_MERMAID_MAX_NODES";
 const ENV_MERMAID_MAX_EDGES: &str = "FTUI_MERMAID_MAX_EDGES";
 const ENV_MERMAID_ROUTE_BUDGET: &str = "FTUI_MERMAID_ROUTE_BUDGET";
 const ENV_MERMAID_LAYOUT_ITER_BUDGET: &str = "FTUI_MERMAID_LAYOUT_ITER_BUDGET";
+const ENV_MERMAID_EDGE_BUNDLING: &str = "FTUI_MERMAID_EDGE_BUNDLING";
+const ENV_MERMAID_EDGE_BUNDLE_MIN_COUNT: &str = "FTUI_MERMAID_EDGE_BUNDLE_MIN_COUNT";
 const ENV_MERMAID_MAX_LABEL_CHARS: &str = "FTUI_MERMAID_MAX_LABEL_CHARS";
 const ENV_MERMAID_MAX_LABEL_LINES: &str = "FTUI_MERMAID_MAX_LABEL_LINES";
 const ENV_MERMAID_WRAP_MODE: &str = "FTUI_MERMAID_WRAP_MODE";
@@ -479,6 +481,8 @@ const ENV_MERMAID_PALETTE: &str = "FTUI_MERMAID_PALETTE";
 /// - `FTUI_MERMAID_MAX_EDGES` (usize)
 /// - `FTUI_MERMAID_ROUTE_BUDGET` (usize)
 /// - `FTUI_MERMAID_LAYOUT_ITER_BUDGET` (usize)
+/// - `FTUI_MERMAID_EDGE_BUNDLING` (bool)
+/// - `FTUI_MERMAID_EDGE_BUNDLE_MIN_COUNT` (usize, >= 2)
 /// - `FTUI_MERMAID_MAX_LABEL_CHARS` (usize)
 /// - `FTUI_MERMAID_MAX_LABEL_LINES` (usize)
 /// - `FTUI_MERMAID_WRAP_MODE` = none|word|char|wordchar
@@ -502,6 +506,8 @@ pub struct MermaidConfig {
     pub max_edges: usize,
     pub route_budget: usize,
     pub layout_iteration_budget: usize,
+    pub edge_bundling: bool,
+    pub edge_bundle_min_count: usize,
     pub max_label_chars: usize,
     pub max_label_lines: usize,
     pub wrap_mode: MermaidWrapMode,
@@ -529,6 +535,8 @@ impl Default for MermaidConfig {
             max_edges: 400,
             route_budget: 4_000,
             layout_iteration_budget: 200,
+            edge_bundling: false,
+            edge_bundle_min_count: 3,
             max_label_chars: 48,
             max_label_lines: 3,
             wrap_mode: MermaidWrapMode::WordChar,
@@ -604,6 +612,13 @@ impl MermaidConfig {
             self.layout_iteration_budget,
             &mut errors,
         );
+        if self.edge_bundle_min_count < 2 {
+            errors.push(MermaidConfigError::new(
+                "edge_bundle_min_count",
+                self.edge_bundle_min_count.to_string(),
+                "expected integer >= 2",
+            ));
+        }
         validate_positive("max_label_chars", self.max_label_chars, &mut errors);
         validate_positive("max_label_lines", self.max_label_lines, &mut errors);
         if !self.enable_links && self.link_mode != MermaidLinkMode::Off {
@@ -722,6 +737,28 @@ where
                 "layout_iteration_budget",
                 value,
                 "expected positive integer",
+            )),
+        }
+    }
+
+    if let Some(value) = get(ENV_MERMAID_EDGE_BUNDLING) {
+        match parse_bool(&value) {
+            Some(parsed) => config.edge_bundling = parsed,
+            None => errors.push(MermaidConfigError::new(
+                "edge_bundling",
+                value,
+                "expected bool (1/0/true/false)",
+            )),
+        }
+    }
+
+    if let Some(value) = get(ENV_MERMAID_EDGE_BUNDLE_MIN_COUNT) {
+        match parse_usize(&value) {
+            Some(parsed) => config.edge_bundle_min_count = parsed,
+            None => errors.push(MermaidConfigError::new(
+                "edge_bundle_min_count",
+                value,
+                "expected integer >= 2",
             )),
         }
     }
@@ -1067,6 +1104,8 @@ pub fn hash_config_layout(config: &MermaidConfig) -> u64 {
     fnv1a_hash_usize(&mut h, config.max_edges);
     fnv1a_hash_usize(&mut h, config.route_budget);
     fnv1a_hash_usize(&mut h, config.layout_iteration_budget);
+    fnv1a_hash_bool(&mut h, config.edge_bundling);
+    fnv1a_hash_usize(&mut h, config.edge_bundle_min_count);
     fnv1a_hash_usize(&mut h, config.max_label_chars);
     fnv1a_hash_usize(&mut h, config.max_label_lines);
     fnv1a_hash_str(&mut h, config.wrap_mode.as_str());
