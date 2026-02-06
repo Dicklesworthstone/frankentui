@@ -1009,4 +1009,531 @@ mod tests {
         assert!(jsonl.contains("\"from\":\"fifo\""));
         assert!(jsonl.contains("\"to\":\"priority\""));
     }
+
+    // ── TraceConfig defaults ────────────────────────────────────────────
+
+    #[test]
+    fn trace_config_default_values() {
+        let config = TraceConfig::default();
+        assert_eq!(config.max_entries, 10_000);
+        assert!(!config.auto_snapshot);
+        assert!(config.snapshot_sampling.is_none());
+        assert_eq!(config.snapshot_change_threshold, 1);
+        assert_eq!(config.seed, 0);
+    }
+
+    // ── ScheduleTrace constructors ──────────────────────────────────────
+
+    #[test]
+    fn schedule_trace_default_impl() {
+        let trace = ScheduleTrace::default();
+        assert!(trace.is_empty());
+        assert_eq!(trace.len(), 0);
+        assert_eq!(trace.tick(), 0);
+    }
+
+    #[test]
+    fn with_config_unlimited_entries() {
+        let config = TraceConfig {
+            max_entries: 0,
+            ..Default::default()
+        };
+        let mut trace = ScheduleTrace::with_config(config);
+        for i in 0..50 {
+            trace.spawn(i, 0, None);
+        }
+        assert_eq!(trace.len(), 50);
+    }
+
+    // ── Tick management ─────────────────────────────────────────────────
+
+    #[test]
+    fn set_tick_explicit() {
+        let mut trace = ScheduleTrace::new();
+        assert_eq!(trace.tick(), 0);
+        trace.set_tick(42);
+        assert_eq!(trace.tick(), 42);
+        trace.advance_tick();
+        assert_eq!(trace.tick(), 43);
+    }
+
+    #[test]
+    fn advance_tick_increments() {
+        let mut trace = ScheduleTrace::new();
+        trace.advance_tick();
+        trace.advance_tick();
+        trace.advance_tick();
+        assert_eq!(trace.tick(), 3);
+    }
+
+    // ── record_with_queue_state_at without auto_snapshot ─────────────────
+
+    #[test]
+    fn record_with_queue_state_no_auto_snapshot() {
+        let config = TraceConfig {
+            auto_snapshot: false,
+            ..Default::default()
+        };
+        let mut trace = ScheduleTrace::with_config(config);
+        let now = Instant::now();
+        trace.record_with_queue_state_at(TaskEvent::Start { task_id: 1 }, 5, 2, now);
+        // Only the Start event, no snapshot
+        assert_eq!(trace.len(), 1);
+        assert!(matches!(
+            trace.entries().front().unwrap().event,
+            TaskEvent::Start { task_id: 1 }
+        ));
+    }
+
+    // ── snapshot_sampling_summary / logs when no sampler ─────────────────
+
+    #[test]
+    fn snapshot_sampling_summary_none_without_sampler() {
+        let trace = ScheduleTrace::new();
+        assert!(trace.snapshot_sampling_summary().is_none());
+    }
+
+    #[test]
+    fn snapshot_sampling_logs_none_without_sampler() {
+        let trace = ScheduleTrace::new();
+        assert!(trace.snapshot_sampling_logs_jsonl().is_none());
+    }
+
+    #[test]
+    fn snapshot_sampling_logs_some_with_sampler() {
+        let config = TraceConfig {
+            auto_snapshot: true,
+            snapshot_sampling: Some(VoiConfig::default()),
+            ..Default::default()
+        };
+        let trace = ScheduleTrace::with_config(config);
+        assert!(trace.snapshot_sampling_logs_jsonl().is_some());
+    }
+
+    // ── clear resets sequence counter ────────────────────────────────────
+
+    #[test]
+    fn clear_resets_seq_counter() {
+        let mut trace = ScheduleTrace::new();
+        trace.spawn(1, 0, None);
+        trace.spawn(2, 0, None);
+        assert_eq!(trace.entries().back().unwrap().seq, 1);
+
+        trace.clear();
+        trace.spawn(3, 0, None);
+        // After clear, seq restarts from 0
+        assert_eq!(trace.entries().front().unwrap().seq, 0);
+    }
+
+    #[test]
+    fn clear_resets_sampler() {
+        let config = TraceConfig {
+            auto_snapshot: true,
+            snapshot_sampling: Some(VoiConfig {
+                max_interval_events: 1,
+                sample_cost: 1.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut trace = ScheduleTrace::with_config(config);
+        let now = Instant::now();
+        trace.record_with_queue_state_at(
+            TaskEvent::Spawn {
+                task_id: 1,
+                priority: 0,
+                name: None,
+            },
+            3,
+            1,
+            now,
+        );
+        trace.clear();
+        assert!(trace.is_empty());
+        // Sampler still exists but is fresh
+        let summary = trace.snapshot_sampling_summary().unwrap();
+        assert_eq!(summary.total_samples, 0);
+    }
+
+    // ── Checksum edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn checksum_empty_trace() {
+        let trace = ScheduleTrace::new();
+        // FNV-1a offset basis for empty input
+        assert_eq!(trace.checksum(), 0xcbf29ce484222325);
+    }
+
+    #[test]
+    fn checksum_hex_format() {
+        let trace = ScheduleTrace::new();
+        let hex = trace.checksum_hex();
+        assert_eq!(hex.len(), 16);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn checksum_differs_for_different_events() {
+        let mut t1 = ScheduleTrace::new();
+        t1.spawn(1, 0, None);
+
+        let mut t2 = ScheduleTrace::new();
+        t2.start(1);
+
+        assert_ne!(t1.checksum(), t2.checksum());
+    }
+
+    // ── GoldenCompareResult ─────────────────────────────────────────────
+
+    #[test]
+    fn golden_missing_golden_variant() {
+        let result = GoldenCompareResult::MissingGolden;
+        assert!(!result.is_match());
+    }
+
+    #[test]
+    fn golden_match_variant() {
+        assert!(GoldenCompareResult::Match.is_match());
+    }
+
+    // ── SchedulerPolicy Display ─────────────────────────────────────────
+
+    #[test]
+    fn scheduler_policy_display_all_variants() {
+        assert_eq!(format!("{}", SchedulerPolicy::Fifo), "fifo");
+        assert_eq!(format!("{}", SchedulerPolicy::Priority), "priority");
+        assert_eq!(
+            format!("{}", SchedulerPolicy::ShortestFirst),
+            "shortest_first"
+        );
+        assert_eq!(format!("{}", SchedulerPolicy::RoundRobin), "round_robin");
+        assert_eq!(
+            format!("{}", SchedulerPolicy::WeightedFair),
+            "weighted_fair"
+        );
+    }
+
+    // ── TraceSummary coverage ───────────────────────────────────────────
+
+    #[test]
+    fn summary_yields_wakeups_failures() {
+        let mut trace = ScheduleTrace::new();
+        trace.spawn(1, 0, None);
+        trace.start(1);
+        trace.record(TaskEvent::Yield { task_id: 1 });
+        trace.record(TaskEvent::Wakeup {
+            task_id: 1,
+            reason: WakeupReason::Timer,
+        });
+        trace.record(TaskEvent::Failed {
+            task_id: 1,
+            error: "oops".to_string(),
+        });
+
+        let summary = trace.summary();
+        assert_eq!(summary.yields, 1);
+        assert_eq!(summary.wakeups, 1);
+        assert_eq!(summary.failures, 1);
+        assert_eq!(summary.spawns, 1);
+        assert_eq!(summary.completes, 0);
+        assert_eq!(summary.cancellations, 0);
+    }
+
+    #[test]
+    fn summary_tick_range() {
+        let mut trace = ScheduleTrace::new();
+        trace.set_tick(10);
+        trace.spawn(1, 0, None);
+        trace.set_tick(50);
+        trace.complete(1);
+
+        let summary = trace.summary();
+        assert_eq!(summary.first_tick, 10);
+        assert_eq!(summary.last_tick, 50);
+    }
+
+    #[test]
+    fn summary_empty_trace() {
+        let trace = ScheduleTrace::new();
+        let summary = trace.summary();
+        assert_eq!(summary.total_events, 0);
+        assert_eq!(summary.first_tick, 0);
+        assert_eq!(summary.last_tick, 0);
+    }
+
+    #[test]
+    fn trace_summary_default() {
+        let summary = TraceSummary::default();
+        assert_eq!(summary.total_events, 0);
+        assert_eq!(summary.spawns, 0);
+        assert_eq!(summary.checksum, 0);
+    }
+
+    // ── JSONL format for uncovered event types ──────────────────────────
+
+    #[test]
+    fn jsonl_yield_event() {
+        let mut trace = ScheduleTrace::new();
+        trace.record(TaskEvent::Yield { task_id: 7 });
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"yield\""));
+        assert!(jsonl.contains("\"task_id\":7"));
+    }
+
+    #[test]
+    fn jsonl_failed_event() {
+        let mut trace = ScheduleTrace::new();
+        trace.record(TaskEvent::Failed {
+            task_id: 3,
+            error: "timeout".to_string(),
+        });
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"failed\""));
+        assert!(jsonl.contains("\"error\":\"timeout\""));
+    }
+
+    #[test]
+    fn jsonl_custom_event() {
+        let mut trace = ScheduleTrace::new();
+        trace.record(TaskEvent::Custom {
+            tag: "metric".to_string(),
+            data: "cpu=42".to_string(),
+        });
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"custom\""));
+        assert!(jsonl.contains("\"tag\":\"metric\""));
+        assert!(jsonl.contains("\"data\":\"cpu=42\""));
+    }
+
+    #[test]
+    fn jsonl_queue_snapshot_event() {
+        let mut trace = ScheduleTrace::new();
+        trace.record(TaskEvent::QueueSnapshot {
+            queued: 5,
+            running: 2,
+        });
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"queue_snapshot\""));
+        assert!(jsonl.contains("\"queued\":5"));
+        assert!(jsonl.contains("\"running\":2"));
+    }
+
+    #[test]
+    fn jsonl_cancelled_event() {
+        let mut trace = ScheduleTrace::new();
+        trace.cancel(4, CancelReason::Shutdown);
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"cancelled\""));
+        assert!(jsonl.contains("\"reason\":\"shutdown\""));
+    }
+
+    #[test]
+    fn jsonl_cancel_other_reason() {
+        let mut trace = ScheduleTrace::new();
+        trace.cancel(5, CancelReason::Other("oom".to_string()));
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"reason\":\"other:oom\""));
+    }
+
+    #[test]
+    fn jsonl_spawn_without_name() {
+        let mut trace = ScheduleTrace::new();
+        trace.spawn(1, 3, None);
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"name\":null"));
+        assert!(jsonl.contains("\"priority\":3"));
+    }
+
+    #[test]
+    fn jsonl_complete_event() {
+        let mut trace = ScheduleTrace::new();
+        trace.complete(99);
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"complete\""));
+        assert!(jsonl.contains("\"task_id\":99"));
+    }
+
+    #[test]
+    fn jsonl_start_event() {
+        let mut trace = ScheduleTrace::new();
+        trace.start(42);
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"event\":\"start\""));
+        assert!(jsonl.contains("\"task_id\":42"));
+    }
+
+    #[test]
+    fn jsonl_empty_trace() {
+        let trace = ScheduleTrace::new();
+        assert_eq!(trace.to_jsonl(), "");
+    }
+
+    // ── Wakeup reasons JSONL ────────────────────────────────────────────
+
+    #[test]
+    fn jsonl_wakeup_user_action() {
+        let mut trace = ScheduleTrace::new();
+        trace.record(TaskEvent::Wakeup {
+            task_id: 1,
+            reason: WakeupReason::UserAction,
+        });
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"reason\":\"user_action\""));
+    }
+
+    #[test]
+    fn jsonl_wakeup_explicit() {
+        let mut trace = ScheduleTrace::new();
+        trace.record(TaskEvent::Wakeup {
+            task_id: 1,
+            reason: WakeupReason::Explicit,
+        });
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"reason\":\"explicit\""));
+    }
+
+    #[test]
+    fn jsonl_wakeup_other() {
+        let mut trace = ScheduleTrace::new();
+        trace.record(TaskEvent::Wakeup {
+            task_id: 1,
+            reason: WakeupReason::Other("custom".to_string()),
+        });
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"reason\":\"other:custom\""));
+    }
+
+    // ── IsomorphismProof ────────────────────────────────────────────────
+
+    #[test]
+    fn isomorphism_proof_with_approval() {
+        let mut proof = IsomorphismProof::new("test change", 0xAA, 0xBB);
+        proof.approved_by = Some("reviewer".to_string());
+        proof.approved_at = Some("2026-01-01".to_string());
+
+        let json = proof.to_json();
+        assert!(json.contains("\"approved_by\":\"reviewer\""));
+        assert!(json.contains("\"approved_at\":\"2026-01-01\""));
+    }
+
+    #[test]
+    fn isomorphism_proof_without_approval() {
+        let proof = IsomorphismProof::new("refactor", 0x11, 0x22);
+        let json = proof.to_json();
+        assert!(json.contains("\"approved_by\":null"));
+        assert!(json.contains("\"approved_at\":null"));
+    }
+
+    #[test]
+    fn isomorphism_proof_builder_chain() {
+        let proof = IsomorphismProof::new("change", 1, 2)
+            .with_invariant("ordering preserved")
+            .with_invariant("no data loss")
+            .with_justification("pure refactor");
+
+        assert_eq!(proof.preserved_invariants.len(), 2);
+        assert_eq!(proof.justification, "pure refactor");
+        let json = proof.to_json();
+        assert!(json.contains("ordering preserved"));
+        assert!(json.contains("no data loss"));
+        assert!(json.contains("pure refactor"));
+    }
+
+    // ── TraceEntry to_jsonl seq/tick ────────────────────────────────────
+
+    #[test]
+    fn trace_entry_jsonl_includes_seq_tick() {
+        let mut trace = ScheduleTrace::new();
+        trace.set_tick(7);
+        trace.spawn(1, 0, None);
+        let jsonl = trace.to_jsonl();
+        assert!(jsonl.contains("\"seq\":0"));
+        assert!(jsonl.contains("\"tick\":7"));
+    }
+
+    // ── Multiple events JSONL produces one line per entry ────────────────
+
+    #[test]
+    fn jsonl_multiple_entries_newline_separated() {
+        let mut trace = ScheduleTrace::new();
+        trace.spawn(1, 0, None);
+        trace.start(1);
+        trace.complete(1);
+
+        let jsonl = trace.to_jsonl();
+        let lines: Vec<_> = jsonl.lines().collect();
+        assert_eq!(lines.len(), 3);
+    }
+
+    // ── snapshot_change_threshold ────────────────────────────────────────
+
+    #[test]
+    fn auto_snapshot_no_violation_below_threshold() {
+        let config = TraceConfig {
+            auto_snapshot: true,
+            snapshot_sampling: Some(VoiConfig {
+                max_interval_events: 1,
+                sample_cost: 1.0,
+                ..Default::default()
+            }),
+            snapshot_change_threshold: 10,
+            ..Default::default()
+        };
+        let mut trace = ScheduleTrace::with_config(config);
+        let now = Instant::now();
+
+        // First event sets last_snapshot
+        trace.record_with_queue_state_at(
+            TaskEvent::Spawn {
+                task_id: 1,
+                priority: 0,
+                name: None,
+            },
+            5,
+            1,
+            now,
+        );
+        // Second event: delta = |5-6| + |1-1| = 1, below threshold of 10
+        trace.record_with_queue_state_at(TaskEvent::Start { task_id: 1 }, 6, 1, now);
+
+        // Should have recorded snapshots (sampling says yes) but observe with violated=false
+        let summary = trace.snapshot_sampling_summary().unwrap();
+        assert_eq!(summary.total_samples, 2);
+    }
+
+    // ── event_to_bytes covers PolicyChange discriminant ──────────────────
+
+    #[test]
+    fn checksum_includes_policy_change() {
+        let mut t1 = ScheduleTrace::new();
+        t1.record(TaskEvent::PolicyChange {
+            from: SchedulerPolicy::Fifo,
+            to: SchedulerPolicy::Priority,
+        });
+
+        let mut t2 = ScheduleTrace::new();
+        t2.record(TaskEvent::PolicyChange {
+            from: SchedulerPolicy::Priority,
+            to: SchedulerPolicy::Fifo,
+        });
+
+        assert_ne!(t1.checksum(), t2.checksum());
+    }
+
+    #[test]
+    fn checksum_includes_custom_event_data() {
+        let mut t1 = ScheduleTrace::new();
+        t1.record(TaskEvent::Custom {
+            tag: "a".to_string(),
+            data: "1".to_string(),
+        });
+
+        let mut t2 = ScheduleTrace::new();
+        t2.record(TaskEvent::Custom {
+            tag: "b".to_string(),
+            data: "1".to_string(),
+        });
+
+        assert_ne!(t1.checksum(), t2.checksum());
+    }
 }
