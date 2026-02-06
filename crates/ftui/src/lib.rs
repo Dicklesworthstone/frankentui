@@ -108,3 +108,62 @@ pub use ftui_runtime as runtime;
 pub use ftui_style as style;
 pub use ftui_text as text;
 pub use ftui_widgets as widgets;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let err: Error = Error::from(io_err);
+        match &err {
+            Error::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+            _ => panic!("expected Io variant"),
+        }
+    }
+
+    #[test]
+    fn error_terminal_display() {
+        let err = Error::Terminal("something broke".into());
+        assert_eq!(format!("{err}"), "something broke");
+    }
+
+    #[test]
+    fn error_io_display() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let err = Error::Io(io_err);
+        assert_eq!(format!("{err}"), "access denied");
+    }
+
+    #[test]
+    fn error_debug() {
+        let err = Error::Terminal("test".into());
+        let debug = format!("{err:?}");
+        assert!(debug.contains("Terminal"));
+    }
+
+    #[test]
+    fn error_is_std_error() {
+        let err = Error::Terminal("msg".into());
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn result_type_alias_works() {
+        fn returns_ok() -> Result<i32> {
+            Ok(42)
+        }
+        assert_eq!(returns_ok().unwrap(), 42);
+
+        let err: Result<i32> = Err(Error::Terminal("fail".into()));
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn prelude_re_exports_core_types() {
+        // Verify key types are accessible via prelude
+        use crate::prelude::*;
+        let _mode = ScreenMode::Inline { ui_height: 10 };
+    }
+}
