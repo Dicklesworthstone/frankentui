@@ -30,6 +30,7 @@ use ftui_widgets::progress::ProgressBar;
 use ftui_widgets::rule::Rule;
 use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ftui_widgets::table::{Row, Table, TableState};
+use ftui_widgets::tree::{Tree, TreeNode};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
@@ -875,4 +876,246 @@ fn dialog_closed_state_renders_nothing() {
         }
     }
     assert!(!any_hit, "Closed dialog should render nothing");
+}
+
+// -----------------------------------------------------------------------
+// bd-iuvb.17.3: Tree hit region tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn tree_registers_hit_regions_in_frame() {
+    init_tracing();
+    info!("tree registers hit regions in frame");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(30, 5, &mut pool);
+
+    let tree = Tree::new(
+        TreeNode::new("root")
+            .child(TreeNode::new("child1"))
+            .child(TreeNode::new("child2")),
+    )
+    .hit_id(HitId::new(60));
+
+    // show_root=true by default: root + child1 + child2 = 3 rows
+    Widget::render(&tree, Rect::new(0, 0, 30, 5), &mut frame);
+
+    let hit0 = frame.hit_test(0, 0).expect("expected hit at row 0 (root)");
+    let hit1 = frame
+        .hit_test(0, 1)
+        .expect("expected hit at row 1 (child1)");
+    let hit2 = frame
+        .hit_test(0, 2)
+        .expect("expected hit at row 2 (child2)");
+    assert_eq!(hit0.0, HitId::new(60));
+    assert_eq!(hit1.0, HitId::new(60));
+    assert_eq!(hit2.0, HitId::new(60));
+    // All regions should be Content
+    assert_eq!(hit0.1, HitRegion::Content);
+    assert_eq!(hit1.1, HitRegion::Content);
+    assert_eq!(hit2.1, HitRegion::Content);
+}
+
+#[test]
+fn tree_hit_data_encodes_visible_row_index() {
+    init_tracing();
+    info!("tree hit data encodes visible row index");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(40, 6, &mut pool);
+
+    // root → child1 → grandchild, child2
+    let tree = Tree::new(
+        TreeNode::new("root")
+            .child(TreeNode::new("child1").child(TreeNode::new("grandchild")))
+            .child(TreeNode::new("child2")),
+    )
+    .hit_id(HitId::new(61));
+
+    // Visible rows: 0=root, 1=child1, 2=grandchild, 3=child2
+    Widget::render(&tree, Rect::new(0, 0, 40, 6), &mut frame);
+
+    for expected_row in 0u16..4 {
+        let msg = format!("expected hit at row {expected_row}");
+        let (id, region, data) = frame.hit_test(0, expected_row).expect(&msg);
+        assert_eq!(id, HitId::new(61));
+        assert_eq!(region, HitRegion::Content);
+        assert_eq!(
+            data, expected_row as u64,
+            "visible row index at row {expected_row}"
+        );
+    }
+    // Row 4 has no tree content
+    assert!(frame.hit_test(0, 4).is_none(), "no hit past tree content");
+}
+
+#[test]
+fn tree_without_hit_id_has_no_hit_regions() {
+    init_tracing();
+    info!("tree without hit_id produces no hit regions");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(30, 5, &mut pool);
+
+    let tree = Tree::new(
+        TreeNode::new("root")
+            .child(TreeNode::new("child1"))
+            .child(TreeNode::new("child2")),
+    );
+
+    Widget::render(&tree, Rect::new(0, 0, 30, 5), &mut frame);
+
+    for y in 0..3u16 {
+        assert!(frame.hit_test(0, y).is_none(), "no hit at y={y}");
+    }
+}
+
+#[test]
+fn tree_collapsed_subtree_skips_hit_regions() {
+    init_tracing();
+    info!("collapsed subtree nodes do not register hit regions");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(40, 6, &mut pool);
+
+    // child1 is collapsed, so grandchild is not rendered
+    let tree = Tree::new(
+        TreeNode::new("root")
+            .child(
+                TreeNode::new("child1")
+                    .with_expanded(false)
+                    .child(TreeNode::new("grandchild")),
+            )
+            .child(TreeNode::new("child2")),
+    )
+    .hit_id(HitId::new(62));
+
+    // Visible rows: 0=root, 1=child1(collapsed), 2=child2
+    Widget::render(&tree, Rect::new(0, 0, 40, 6), &mut frame);
+
+    let (_, _, data0) = frame.hit_test(0, 0).expect("root");
+    let (_, _, data1) = frame.hit_test(0, 1).expect("child1");
+    let (_, _, data2) = frame.hit_test(0, 2).expect("child2");
+    assert_eq!(data0, 0, "root at visible row 0");
+    assert_eq!(data1, 1, "child1 at visible row 1");
+    assert_eq!(data2, 2, "child2 at visible row 2");
+
+    // Row 3 should have no hit (grandchild is hidden)
+    assert!(frame.hit_test(0, 3).is_none(), "grandchild not rendered");
+}
+
+#[test]
+fn tree_hidden_root_adjusts_hit_indices() {
+    init_tracing();
+    info!("tree with show_root=false starts hit indices at children");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(30, 5, &mut pool);
+
+    let tree = Tree::new(
+        TreeNode::new("root")
+            .child(TreeNode::new("child1"))
+            .child(TreeNode::new("child2")),
+    )
+    .with_show_root(false)
+    .hit_id(HitId::new(63));
+
+    // Visible rows: 0=child1, 1=child2 (root is hidden)
+    Widget::render(&tree, Rect::new(0, 0, 30, 5), &mut frame);
+
+    let (id0, _, data0) = frame.hit_test(0, 0).expect("child1");
+    let (id1, _, data1) = frame.hit_test(0, 1).expect("child2");
+    assert_eq!(id0, HitId::new(63));
+    assert_eq!(id1, HitId::new(63));
+    assert_eq!(data0, 0, "child1 at visible row 0");
+    assert_eq!(data1, 1, "child2 at visible row 1");
+    assert!(frame.hit_test(0, 2).is_none(), "no hit at row 2");
+}
+
+// -----------------------------------------------------------------------
+// bd-iuvb.17.3: Dialog button hit data encoding
+// -----------------------------------------------------------------------
+
+#[test]
+fn dialog_button_hit_data_encodes_button_index() {
+    init_tracing();
+    info!("dialog button hit data encodes sequential button indices");
+    let mut pool = GraphemePool::new();
+    let mut frame = Frame::with_hit_grid(80, 24, &mut pool);
+    let area = Rect::new(0, 0, 80, 24);
+    let dialog = Dialog::confirm("Title", "Message").hit_id(HitId::new(101));
+    let mut state = DialogState::new();
+
+    StatefulWidget::render(&dialog, area, &mut frame, &mut state);
+
+    // Collect all Button hit regions and their data values.
+    let mut button_data: Vec<u64> = Vec::new();
+    for y in 0..24u16 {
+        for x in 0..80u16 {
+            if let Some((id, HitRegion::Button, data)) = frame.hit_test(x, y)
+                && id == HitId::new(101)
+                && !button_data.contains(&data)
+            {
+                button_data.push(data);
+            }
+        }
+    }
+    button_data.sort();
+
+    // Dialog::confirm has 2 buttons: OK(0) and Cancel(1)
+    assert_eq!(
+        button_data.len(),
+        2,
+        "confirm dialog should have exactly 2 buttons, found: {button_data:?}"
+    );
+    assert_eq!(button_data[0], 0, "first button index");
+    assert_eq!(button_data[1], 1, "second button index");
+}
+
+// -----------------------------------------------------------------------
+// bd-iuvb.17.3: Cross-widget hit region determinism
+// -----------------------------------------------------------------------
+
+#[test]
+fn cross_widget_hit_regions_deterministic() {
+    init_tracing();
+    info!("multiple widget types produce deterministic hit regions");
+
+    let make_hits = || {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(40, 12, &mut pool);
+
+        // List in top rows
+        let list = List::new(["a", "b", "c"]).hit_id(HitId::new(10));
+        Widget::render(&list, Rect::new(0, 0, 20, 3), &mut frame);
+
+        // Table in middle rows
+        let rows = [
+            Row::new(["x"]).height(1).bottom_margin(0),
+            Row::new(["y"]).height(1).bottom_margin(0),
+        ];
+        let table = Table::new(rows, [Constraint::Fixed(10)]).hit_id(HitId::new(20));
+        Widget::render(&table, Rect::new(0, 3, 20, 2), &mut frame);
+
+        // Tree below that
+        let tree =
+            Tree::new(TreeNode::new("root").child(TreeNode::new("leaf"))).hit_id(HitId::new(30));
+        Widget::render(&tree, Rect::new(0, 5, 30, 3), &mut frame);
+
+        // Scrollbar on the right
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight).hit_id(HitId::new(40));
+        let mut sb_state = ScrollbarState::new(50, 0, 10);
+        StatefulWidget::render(&sb, Rect::new(39, 0, 1, 12), &mut frame, &mut sb_state);
+
+        // Collect all hits
+        let mut hits = Vec::new();
+        for y in 0..12u16 {
+            for x in 0..40u16 {
+                hits.push(frame.hit_test(x, y));
+            }
+        }
+        hits
+    };
+
+    let hits1 = make_hits();
+    let hits2 = make_hits();
+    assert_eq!(
+        hits1, hits2,
+        "cross-widget hit regions must be deterministic"
+    );
 }
