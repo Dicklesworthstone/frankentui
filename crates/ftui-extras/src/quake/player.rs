@@ -290,4 +290,77 @@ mod tests {
         let eye = p.eye_pos();
         assert!(eye[2] > p.pos[2]);
     }
+
+    #[test]
+    fn forward_at_zero_yaw_is_x_axis() {
+        let p = Player::default();
+        let fwd = p.forward();
+        assert!((fwd[0] - 1.0).abs() < 0.01);
+        assert!(fwd[1].abs() < 0.01);
+        assert!(fwd[2].abs() < 0.01);
+    }
+
+    #[test]
+    fn right_perpendicular_to_forward() {
+        let p = Player::default();
+        let fwd = p.forward();
+        let right = p.right();
+        let dot = fwd[0] * right[0] + fwd[1] * right[1] + fwd[2] * right[2];
+        assert!(dot.abs() < 0.01, "forward and right should be perpendicular, dot={dot}");
+    }
+
+    #[test]
+    fn move_forward_adds_velocity() {
+        let mut p = Player::default();
+        p.move_forward(1.0);
+        let speed_sq = p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1];
+        assert!(speed_sq > 0.0, "move_forward should add velocity");
+    }
+
+    #[test]
+    fn strafe_adds_lateral_velocity() {
+        let mut p = Player::default();
+        p.strafe(1.0);
+        // At yaw=0, strafe should add velocity in y direction
+        let speed_sq = p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1];
+        assert!(speed_sq > 0.0, "strafe should add velocity");
+    }
+
+    #[test]
+    fn jump_only_from_ground() {
+        let mut p = Player::default();
+        assert!(p.on_ground);
+        p.jump();
+        assert!(p.vel[2] > 0.0);
+        assert!(!p.on_ground);
+        // Jump again while airborne should do nothing
+        let vel_z = p.vel[2];
+        p.jump();
+        assert!((p.vel[2] - vel_z).abs() < 0.01, "should not double-jump");
+    }
+
+    #[test]
+    fn bob_offset_zero_when_no_bob() {
+        let p = Player::default();
+        assert!((p.bob_offset()).abs() < 0.001);
+    }
+
+    #[test]
+    fn running_increases_move_speed() {
+        let mut p1 = Player::default();
+        let mut p2 = Player::default();
+        p2.running = true;
+        p1.move_forward(1.0);
+        p2.move_forward(1.0);
+        let speed1 = p1.vel[0] * p1.vel[0] + p1.vel[1] * p1.vel[1];
+        let speed2 = p2.vel[0] * p2.vel[0] + p2.vel[1] * p2.vel[1];
+        assert!(speed2 > speed1, "running should increase speed");
+    }
+
+    #[test]
+    fn look_yaw_wraps_around() {
+        let mut p = Player::default();
+        p.look(std::f32::consts::TAU + 0.5, 0.0);
+        assert!(p.yaw >= 0.0 && p.yaw < std::f32::consts::TAU);
+    }
 }
