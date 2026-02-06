@@ -364,6 +364,22 @@ struct GenerationReport {
     actual_node_count: usize,
     actual_edge_count: usize,
 }
+/// Result of the auto-fit heuristic: which spacing was chosen and why.
+#[derive(Debug, Clone)]
+struct AutoFitResult {
+    /// The spacing configuration that scored best.
+    chosen_spacing: mermaid_layout::LayoutSpacing,
+    /// Human label for the chosen spacing (e.g. "dense", "compact").
+    chosen_label: &'static str,
+    /// Number of candidates evaluated.
+    candidates_tried: usize,
+    /// Overflow ratio: bounding_box_area / viewport_area (< 1.0 means fits).
+    overflow_ratio: f32,
+    /// Composite quality score from evaluate_layout (lower is better).
+    quality_score: f64,
+    /// Total time spent evaluating candidates (ms).
+    fit_ms: f32,
+}
 
 fn make_generator_label(index: usize, len: usize) -> String {
     let mut label = format!("N{index}");
@@ -427,6 +443,87 @@ fn generate_parametric_flowchart(params: GeneratorParams) -> (String, Generation
         actual_edge_count: edges.len(),
     };
     (out, report)
+}
+/// Spacing candidates for auto-fit evaluation.
+const AUTO_FIT_CANDIDATES: &[(&str, f64, f64)] = &[
+    ("tight", 1.5, 1.5),
+    ("dense", 2.0, 2.0),
+    ("compact", 3.0, 2.5),
+    ("normal", 4.0, 3.0),
+    ("spacious", 6.0, 5.0),
+];
+
+/// Evaluate multiple spacing configurations and pick the one that best fits
+/// the viewport while maintaining layout quality.
+///
+/// The scoring function penalises overflow (bounding box exceeds viewport)
+/// and rewards lower crossing counts and shorter total edge length.
+fn compute_auto_fit_spacing(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> AutoFitResult {
+    let start = Instant::now();
+    let mut best: Option<(
+        mermaid_layout::DiagramLayout,
+        &'static str,
+        mermaid_layout::LayoutSpacing,
+        f64,
+    )> = None;
+
+    for &(label, rank_gap, node_gap) in AUTO_FIT_CANDIDATES {
+        let spacing = mermaid_layout::LayoutSpacing {
+            rank_gap,
+            node_gap,
+            ..mermaid_layout::LayoutSpacing::default()
+        };
+        let layout = mermaid_layout::layout_diagram_with_spacing(ir, config, &spacing);
+        let bb = &layout.bounding_box;
+
+        // Overflow penalty: how much the bounding box exceeds the viewport.
+        let w_ratio = if viewport_w > 0.0 {
+            bb.width / viewport_w
+        } else {
+            1.0
+        };
+        let h_ratio = if viewport_h > 0.0 {
+            bb.height / viewport_h
+        } else {
+            1.0
+        };
+        let overflow = (w_ratio.max(1.0) - 1.0) + (h_ratio.max(1.0) - 1.0);
+
+        // Quality: crossings + bends (from stats).
+        let quality = layout.stats.crossings as f64 * 2.0 + layout.stats.total_bends as f64 * 0.5;
+
+        // Composite: heavily penalise overflow, then quality.
+        let score = overflow * 100.0 + quality;
+
+        let dominated = best
+            .as_ref()
+            .is_some_and(|(_, _, _, best_score)| score >= *best_score);
+        if !dominated {
+            best = Some((layout, label, spacing, score));
+        }
+    }
+
+    let (layout, label, spacing, _score) = best.unwrap();
+    let bb = &layout.bounding_box;
+    let vp_area = (viewport_w * viewport_h).max(1.0);
+    let bb_area = bb.width * bb.height;
+    let overflow_ratio = (bb_area / vp_area) as f32;
+
+    let obj = mermaid_layout::evaluate_layout(&layout);
+
+    AutoFitResult {
+        chosen_spacing: spacing,
+        chosen_label: label,
+        candidates_tried: AUTO_FIT_CANDIDATES.len(),
+        overflow_ratio,
+        quality_score: obj.score,
+        fit_ms: start.elapsed().as_secs_f32() * 1000.0,
+    }
 }
 
 // ── Panel visibility ────────────────────────────────────────────────
@@ -643,6 +740,10 @@ struct MegaRenderCache {
     layout_stats: RunningStats,
     /// Running stats for render timing (last 20 samples).
     render_stats: RunningStats,
+    /// Result of the last auto-fit evaluation (only when LayoutMode::Auto).
+    auto_fit: Option<AutoFitResult>,
+    /// Computed zoom factor from auto-scale (zoom-to-fit).
+    auto_scale_zoom: Option<f32>,
 }
 
 /// Running statistics for a timing metric (last N samples).
@@ -723,6 +824,8 @@ impl MegaRenderCache {
             parse_stats: RunningStats::new(20),
             layout_stats: RunningStats::new(20),
             render_stats: RunningStats::new(20),
+            auto_fit: None,
+            auto_scale_zoom: None,
         }
     }
 }
@@ -947,6 +1050,13 @@ pub const MEGA_TELEMETRY_NULLABLE_FIELDS: &[&str] = &[
     "layout_max_rank_width",
     "layout_total_bends",
     "layout_position_variance",
+    // Auto-fit metrics (null when not using Auto layout mode)
+    "auto_fit_label",
+    "auto_fit_candidates",
+    "auto_fit_overflow_ratio",
+    "auto_fit_score",
+    "auto_fit_ms",
+    "auto_scale_zoom",
     // Generator parameters (null when not using generated sample)
     "generator_nodes",
     "generator_branching",
@@ -1193,6 +1303,8 @@ pub struct MermaidMegaState {
     status_log: Vec<StatusLogEntry>,
     /// Debug overlay visibility flags.
     debug_overlays: DebugOverlays,
+    /// Whether auto-scale zoom is enabled (zoom-to-fit after auto-fit layout).
+    auto_scale: bool,
     /// Comparison mode: render a second layout side-by-side.
     comparison_enabled: bool,
     /// Layout mode used for the comparison (right-side) pane.
@@ -1230,6 +1342,7 @@ impl Default for MermaidMegaState {
             render_epoch: 0,
             status_log: Vec::new(),
             debug_overlays: DebugOverlays::default(),
+            auto_scale: true,
             comparison_enabled: false,
             comparison_layout_mode: LayoutMode::Dense,
         }
@@ -1478,6 +1591,7 @@ enum MegaAction {
     CollapsePanels,
     ToggleComparison,
     CycleComparisonLayout,
+    ToggleAutoScale,
 }
 
 impl MermaidMegaState {
@@ -1697,6 +1811,7 @@ impl MermaidMegaState {
             MegaAction::FitToView => {
                 self.viewport_zoom = 1.0;
                 self.viewport_pan = (0, 0);
+                self.auto_scale = true;
                 self.bump_render();
             }
             MegaAction::PanLeft => {
@@ -1906,6 +2021,17 @@ impl MermaidMegaState {
                 self.comparison_enabled = !self.comparison_enabled;
                 self.bump_render();
             }
+            MegaAction::ToggleAutoScale => {
+                self.auto_scale = !self.auto_scale;
+                self.log_action(
+                    "toggle_auto_scale",
+                    format!("auto_scale={}", self.auto_scale),
+                );
+                if matches!(self.layout_mode, LayoutMode::Auto) {
+                    self.bump_layout();
+                }
+                self.bump_render();
+            }
             MegaAction::CycleComparisonLayout => {
                 self.comparison_layout_mode = match self.comparison_layout_mode {
                     LayoutMode::Dense => LayoutMode::Normal,
@@ -2002,6 +2128,7 @@ impl MermaidMegaShowcaseScreen {
             KeyCode::Char('w') => Some(MegaAction::CycleWrapMode),
             KeyCode::Char('l') => Some(MegaAction::CycleLayoutMode),
             KeyCode::Char('O') => Some(MegaAction::CycleDirection),
+            KeyCode::Char('A') => Some(MegaAction::ToggleAutoScale),
             KeyCode::Char('r') => Some(MegaAction::ForceRelayout),
             // Theme
             KeyCode::Char('p') => Some(MegaAction::CyclePalette),
@@ -2154,9 +2281,27 @@ impl MermaidMegaShowcaseScreen {
 
         if layout_needed {
             if let Some(ir) = cache.ir.as_ref() {
-                let spacing = self.state.layout_spacing();
                 let layout_start = Instant::now();
-                let layout = mermaid_layout::layout_diagram_with_spacing(ir, &config, &spacing);
+
+                let is_auto = matches!(self.state.layout_mode, LayoutMode::Auto);
+                let (layout, fit_result) = if is_auto {
+                    // Auto-fit: evaluate multiple spacing candidates.
+                    let vp_w = f64::from(render_width);
+                    let vp_h = f64::from(render_height);
+                    let fit = compute_auto_fit_spacing(ir, &config, vp_w, vp_h);
+                    let result = mermaid_layout::layout_diagram_with_spacing(
+                        ir,
+                        &config,
+                        &fit.chosen_spacing,
+                    );
+                    (result, Some(fit))
+                } else {
+                    let spacing = self.state.layout_spacing();
+                    let result = mermaid_layout::layout_diagram_with_spacing(ir, &config, &spacing);
+                    (result, None)
+                };
+                cache.auto_fit = fit_result;
+
                 let elapsed_ms = layout_start.elapsed().as_secs_f32() * 1000.0;
                 cache.layout_ms = Some(elapsed_ms);
                 cache.layout_stats.push(elapsed_ms);
@@ -2192,6 +2337,23 @@ impl MermaidMegaShowcaseScreen {
             cache.viewport = (width, height);
             cache.zoom = zoom;
             cache.render_epoch = self.state.render_epoch;
+        }
+
+        // Auto-scale: compute zoom factor to fit bounding box in viewport.
+        if self.state.auto_scale && matches!(self.state.layout_mode, LayoutMode::Auto) {
+            if let Some(layout) = cache.layout.as_ref() {
+                let bb = &layout.bounding_box;
+                if bb.width > 0.0 && bb.height > 0.0 {
+                    let w_scale = f64::from(width) / bb.width;
+                    let h_scale = f64::from(height) / bb.height;
+                    let fit_scale = w_scale.min(h_scale).clamp(0.25, 2.0);
+                    cache.auto_scale_zoom = Some(fit_scale as f32);
+                } else {
+                    cache.auto_scale_zoom = None;
+                }
+            }
+        } else {
+            cache.auto_scale_zoom = None;
         }
 
         if ran_analysis || ran_layout || ran_render {
@@ -2385,6 +2547,29 @@ impl MermaidMegaShowcaseScreen {
             push_opt_u64(&mut json, "layout_total_bends", None);
             push_opt_f64(&mut json, "layout_position_variance", None);
         }
+        // Auto-fit metrics (bd-3oaig.9)
+        if let Some(fit) = &cache.auto_fit {
+            json.push_str(&format!(",\"auto_fit_label\":\"{}\"", fit.chosen_label));
+            push_opt_u64(
+                &mut json,
+                "auto_fit_candidates",
+                Some(fit.candidates_tried as u64),
+            );
+            push_opt_f32(
+                &mut json,
+                "auto_fit_overflow_ratio",
+                Some(fit.overflow_ratio),
+            );
+            push_opt_f64(&mut json, "auto_fit_score", Some(fit.quality_score));
+            push_opt_f32(&mut json, "auto_fit_ms", Some(fit.fit_ms));
+        } else {
+            json.push_str(",\"auto_fit_label\":null");
+            push_opt_u64(&mut json, "auto_fit_candidates", None);
+            push_opt_f32(&mut json, "auto_fit_overflow_ratio", None);
+            push_opt_f64(&mut json, "auto_fit_score", None);
+            push_opt_f32(&mut json, "auto_fit_ms", None);
+        }
+        push_opt_f32(&mut json, "auto_scale_zoom", cache.auto_scale_zoom);
         // Generator parameters (bd-3oaig.5.10)
         if let Some(report) = &self.state.last_generation_report {
             json.push_str(&format!(",\"generator_nodes\":{}", report.params.nodes));
@@ -2598,8 +2783,9 @@ impl MermaidMegaShowcaseScreen {
         let dir_info = s
             .direction_override
             .map_or("auto".to_string(), |d| d.as_str().to_string());
+        let auto_scale_info = if !s.auto_scale { " Scale:off" } else { "" };
         let status = format!(
-            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Dir:{} Palette:{} Zoom:{:.0}% {}{}{}{}{} ",
+            " Tier:{} Glyph:{} Render:{} Wrap:{} Layout:{} Dir:{} Palette:{} Zoom:{:.0}%{} {}{}{}{}{} ",
             s.tier,
             s.glyph_mode,
             s.render_mode,
@@ -2608,6 +2794,7 @@ impl MermaidMegaShowcaseScreen {
             dir_info,
             s.palette,
             (s.viewport_zoom * 100.0),
+            auto_scale_info,
             viewport_info,
             pan_info,
             err_indicator,
@@ -2745,6 +2932,21 @@ impl MermaidMegaShowcaseScreen {
             ));
             lines.push(format!("Ranks: {} MaxW: {}", s.ranks, s.max_rank_width));
         }
+        // Auto-fit results
+        if let Some(fit) = &cache.auto_fit {
+            lines.push(format!(
+                "AutoFit: {} ({:.0}%)",
+                fit.chosen_label,
+                fit.overflow_ratio * 100.0
+            ));
+            lines.push(format!(
+                "Score: {:.1} ({} tried)",
+                fit.quality_score, fit.candidates_tried
+            ));
+        }
+        if let Some(zoom) = cache.auto_scale_zoom {
+            lines.push(format!("AutoZoom: {:.0}%", zoom * 100.0));
+        }
         lines.push(String::new());
         // Running averages
         if cache.parse_stats.count() > 1 {
@@ -2847,6 +3049,7 @@ impl MermaidMegaShowcaseScreen {
                     ("s", "Toggle styles (classDef/style)"),
                     ("w", "Cycle wrap mode (None/Word/Char/WordChar)"),
                     ("l", "Cycle layout mode (Dense/Normal/Spacious/Auto)"),
+                    ("A", "Toggle auto-scale zoom (zoom-to-fit)"),
                     ("O", "Cycle direction (TB/LR/RL/BT/auto)"),
                     ("r", "Force relayout"),
                     ("p / P", "Cycle palette forward / backward"),
@@ -3349,6 +3552,10 @@ impl Screen for MermaidMegaShowcaseScreen {
             HelpEntry {
                 key: "O",
                 action: "Cycle direction",
+            },
+            HelpEntry {
+                key: "A",
+                action: "Toggle auto-scale",
             },
             HelpEntry {
                 key: "r",
@@ -5394,6 +5601,166 @@ mod tests {
         assert!(matches!(state.comparison_layout_mode, LayoutMode::Dense));
     }
 
+    // ── Auto-fit / auto-scale tests (bd-3oaig.9) ────────────────────
+
+    #[test]
+    fn auto_fit_candidates_constant_nonempty() {
+        assert!(!AUTO_FIT_CANDIDATES.is_empty());
+        for &(label, rank_gap, node_gap) in AUTO_FIT_CANDIDATES {
+            assert!(!label.is_empty());
+            assert!(rank_gap > 0.0);
+            assert!(node_gap > 0.0);
+        }
+    }
+
+    #[test]
+    fn auto_fit_returns_valid_result() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(0, 0, 120, 40);
+        screen.ensure_render_cache(area);
+        let cache = screen.cache.borrow();
+        // Default is LayoutMode::Auto, so auto_fit should be populated.
+        assert!(
+            cache.auto_fit.is_some(),
+            "auto_fit should be set in Auto mode"
+        );
+        let fit = cache.auto_fit.as_ref().unwrap();
+        assert_eq!(fit.candidates_tried, AUTO_FIT_CANDIDATES.len());
+        assert!(
+            fit.overflow_ratio >= 0.0,
+            "overflow ratio must be non-negative"
+        );
+        assert!(fit.fit_ms >= 0.0, "fit_ms must be non-negative");
+    }
+
+    #[test]
+    fn auto_fit_deterministic() {
+        let screen1 = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(0, 0, 120, 40);
+        screen1.ensure_render_cache(area);
+        let label1 = screen1
+            .cache
+            .borrow()
+            .auto_fit
+            .as_ref()
+            .unwrap()
+            .chosen_label;
+
+        let screen2 = MermaidMegaShowcaseScreen::new();
+        screen2.ensure_render_cache(area);
+        let label2 = screen2
+            .cache
+            .borrow()
+            .auto_fit
+            .as_ref()
+            .unwrap()
+            .chosen_label;
+        assert_eq!(label1, label2, "auto-fit should be deterministic");
+    }
+
+    #[test]
+    fn auto_fit_absent_in_manual_mode() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        // Cycle away from Auto to Dense
+        screen.state.apply(MegaAction::CycleLayoutMode);
+        assert!(matches!(screen.state.layout_mode, LayoutMode::Dense));
+        let area = Rect::new(0, 0, 120, 40);
+        screen.ensure_render_cache(area);
+        let cache = screen.cache.borrow();
+        assert!(
+            cache.auto_fit.is_none(),
+            "auto_fit should be None in manual mode"
+        );
+    }
+
+    #[test]
+    fn toggle_auto_scale_flips_state() {
+        let mut state = MermaidMegaState::default();
+        assert!(state.auto_scale, "auto_scale should default to true");
+        state.apply(MegaAction::ToggleAutoScale);
+        assert!(!state.auto_scale);
+        state.apply(MegaAction::ToggleAutoScale);
+        assert!(state.auto_scale);
+    }
+
+    #[test]
+    fn toggle_auto_scale_bumps_render_epoch() {
+        let mut state = MermaidMegaState::default();
+        let epoch = state.render_epoch;
+        state.apply(MegaAction::ToggleAutoScale);
+        assert!(state.render_epoch > epoch);
+    }
+
+    #[test]
+    fn auto_scale_zoom_computed_when_enabled() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        // Default: auto_scale=true, layout_mode=Auto
+        let area = Rect::new(0, 0, 120, 40);
+        screen.ensure_render_cache(area);
+        let cache = screen.cache.borrow();
+        assert!(
+            cache.auto_scale_zoom.is_some(),
+            "auto_scale_zoom should be computed when auto_scale is enabled"
+        );
+        let zoom = cache.auto_scale_zoom.unwrap();
+        assert!(
+            zoom > 0.0 && zoom <= 2.0,
+            "zoom should be in (0.0, 2.0] range"
+        );
+    }
+
+    #[test]
+    fn auto_scale_zoom_absent_when_disabled() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.state.auto_scale = false;
+        let area = Rect::new(0, 0, 120, 40);
+        screen.ensure_render_cache(area);
+        let cache = screen.cache.borrow();
+        assert!(
+            cache.auto_scale_zoom.is_none(),
+            "auto_scale_zoom should be None when auto_scale=false"
+        );
+    }
+
+    #[test]
+    fn fit_to_view_enables_auto_scale() {
+        let mut state = MermaidMegaState {
+            auto_scale: false,
+            viewport_zoom: 2.0,
+            viewport_pan: (10, 5),
+            ..MermaidMegaState::default()
+        };
+        state.apply(MegaAction::FitToView);
+        assert!(state.auto_scale, "FitToView should enable auto_scale");
+        assert!((state.viewport_zoom - 1.0).abs() < f32::EPSILON);
+        assert_eq!(state.viewport_pan, (0, 0));
+    }
+
+    #[test]
+    fn auto_fit_nullable_fields_in_schema() {
+        assert!(MEGA_TELEMETRY_NULLABLE_FIELDS.contains(&"auto_fit_label"));
+        assert!(MEGA_TELEMETRY_NULLABLE_FIELDS.contains(&"auto_fit_candidates"));
+        assert!(MEGA_TELEMETRY_NULLABLE_FIELDS.contains(&"auto_fit_overflow_ratio"));
+        assert!(MEGA_TELEMETRY_NULLABLE_FIELDS.contains(&"auto_fit_score"));
+        assert!(MEGA_TELEMETRY_NULLABLE_FIELDS.contains(&"auto_fit_ms"));
+        assert!(MEGA_TELEMETRY_NULLABLE_FIELDS.contains(&"auto_scale_zoom"));
+    }
+
+    #[test]
+    fn key_a_maps_to_toggle_auto_scale() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        let event = ftui_core::event::KeyEvent {
+            code: ftui_core::event::KeyCode::Char('A'),
+            modifiers: ftui_core::event::Modifiers::empty(),
+            kind: ftui_core::event::KeyEventKind::Press,
+        };
+        let action = screen.handle_key(&event);
+        assert!(
+            matches!(action, Some(MegaAction::ToggleAutoScale)),
+            "A key should map to ToggleAutoScale"
+        );
+    }
+
     // ── Diagnostics panel tests ──────────────────────────────────────
 
     #[test]
@@ -5650,6 +6017,9 @@ mod tests {
         r#""layout_budget_exceeded_layout":false,"layout_crossings":0,"#,
         r#""layout_ranks":3,"layout_max_rank_width":2,"#,
         r#""layout_total_bends":2,"layout_position_variance":1.5,"#,
+        r#""auto_fit_label":"normal","auto_fit_candidates":5,"#,
+        r#""auto_fit_overflow_ratio":0.800,"auto_fit_score":12.500000,"#,
+        r#""auto_fit_ms":3.200,"auto_scale_zoom":1.250,"#,
         r#""generator_nodes":24,"generator_branching":2,"generator_density":25,"#,
         r#""generator_label_len":6,"generator_seed":1,"#,
         r#""generator_actual_nodes":24,"generator_actual_edges":50}"#,
@@ -5675,6 +6045,9 @@ mod tests {
         r#""layout_budget_exceeded_layout":null,"layout_crossings":null,"#,
         r#""layout_ranks":null,"layout_max_rank_width":null,"#,
         r#""layout_total_bends":null,"layout_position_variance":null,"#,
+        r#""auto_fit_label":null,"auto_fit_candidates":null,"#,
+        r#""auto_fit_overflow_ratio":null,"auto_fit_score":null,"#,
+        r#""auto_fit_ms":null,"auto_scale_zoom":null,"#,
         r#""generator_nodes":null,"generator_branching":null,"generator_density":null,"#,
         r#""generator_label_len":null,"generator_seed":null,"#,
         r#""generator_actual_nodes":null,"generator_actual_edges":null}"#,
@@ -5902,6 +6275,9 @@ mod tests {
         parts.push(r#""layout_crossings":0,"layout_ranks":3"#.to_string());
         parts.push(r#""layout_max_rank_width":2,"layout_total_bends":1"#.to_string());
         parts.push(r#""layout_position_variance":0.5"#.to_string());
+        parts.push(r#""auto_fit_label":"normal","auto_fit_candidates":5"#.to_string());
+        parts.push(r#""auto_fit_overflow_ratio":0.800,"auto_fit_score":12.500000"#.to_string());
+        parts.push(r#""auto_fit_ms":3.200,"auto_scale_zoom":1.250"#.to_string());
         parts.push(
             r#""generator_nodes":24,"generator_branching":2,"generator_density":25"#.to_string(),
         );
