@@ -12,7 +12,9 @@ use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -1121,6 +1123,7 @@ fn value_bool(value: &Value, key: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_core::event::MouseEvent;
 
     fn sample_lines() -> Vec<&'static str> {
         vec![
