@@ -732,4 +732,316 @@ mod tests {
         assert_eq!(blocks[1].start, 5);
         assert_eq!(blocks[1].end, 8);
     }
+
+    // --- Direct character classification tests ---
+
+    #[test]
+    fn test_is_horizontal_fill() {
+        assert!(is_horizontal_fill('-'));
+        assert!(is_horizontal_fill('─'));
+        assert!(is_horizontal_fill('━'));
+        assert!(is_horizontal_fill('═'));
+        assert!(is_horizontal_fill('~'));
+        assert!(is_horizontal_fill('='));
+        assert!(is_horizontal_fill('╌'));
+        assert!(is_horizontal_fill('╍'));
+        assert!(is_horizontal_fill('┄'));
+        assert!(is_horizontal_fill('┅'));
+        assert!(is_horizontal_fill('┈'));
+        assert!(is_horizontal_fill('┉'));
+        assert!(!is_horizontal_fill('|'));
+        assert!(!is_horizontal_fill('+'));
+        assert!(!is_horizontal_fill('a'));
+    }
+
+    #[test]
+    fn test_is_vertical_border() {
+        assert!(is_vertical_border('|'));
+        assert!(is_vertical_border('│'));
+        assert!(is_vertical_border('┃'));
+        assert!(is_vertical_border('║'));
+        assert!(is_vertical_border('╎'));
+        assert!(is_vertical_border('╏'));
+        assert!(is_vertical_border('┆'));
+        assert!(is_vertical_border('┇'));
+        assert!(is_vertical_border('┊'));
+        assert!(is_vertical_border('┋'));
+        assert!(!is_vertical_border('-'));
+        assert!(!is_vertical_border('+'));
+        assert!(!is_vertical_border('a'));
+    }
+
+    #[test]
+    fn test_is_junction() {
+        assert!(is_junction('┬'));
+        assert!(is_junction('┴'));
+        assert!(is_junction('├'));
+        assert!(is_junction('┤'));
+        assert!(is_junction('┼'));
+        assert!(is_junction('╦'));
+        assert!(is_junction('╩'));
+        assert!(is_junction('╠'));
+        assert!(is_junction('╣'));
+        assert!(is_junction('╬'));
+        assert!(is_junction('╤'));
+        assert!(is_junction('╧'));
+        assert!(is_junction('╟'));
+        assert!(is_junction('╢'));
+        assert!(is_junction('╫'));
+        assert!(is_junction('╪'));
+        assert!(!is_junction('+'));
+        assert!(!is_junction('─'));
+        assert!(!is_junction('a'));
+    }
+
+    #[test]
+    fn test_is_border_char() {
+        // is_border_char = is_vertical_border || is_corner || is_junction
+        assert!(is_border_char('|'));
+        assert!(is_border_char('+'));
+        assert!(is_border_char('┼'));
+        assert!(is_border_char('│'));
+        assert!(is_border_char('┌'));
+        assert!(!is_border_char('-'));
+        assert!(!is_border_char('─'));
+        assert!(!is_border_char('a'));
+    }
+
+    // --- find_diagram_blocks edge cases ---
+
+    #[test]
+    fn test_find_blocks_empty_input() {
+        let blocks = find_diagram_blocks(&[]);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn test_find_blocks_no_diagrams() {
+        let lines = vec!["hello", "world", "no diagrams"];
+        let blocks = find_diagram_blocks(&lines);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn test_find_blocks_block_at_end() {
+        let lines = vec!["text", "+--+", "|  |", "+--+"];
+        let blocks = find_diagram_blocks(&lines);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].start, 1);
+        assert_eq!(blocks[0].end, 4);
+    }
+
+    #[test]
+    fn test_find_blocks_blank_line_continuation() {
+        // Blank line in middle with boxy content within 2 lines ahead
+        let lines = vec!["+--+", "|  |", "", "|  |", "+--+"];
+        let blocks = find_diagram_blocks(&lines);
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn test_find_blocks_blank_line_terminates() {
+        // Blank line followed by non-boxy content ends the block
+        let lines = vec!["+--+", "|  |", "", "text", "more text"];
+        let blocks = find_diagram_blocks(&lines);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].start, 0);
+        assert_eq!(blocks[0].end, 2);
+    }
+
+    #[test]
+    fn test_find_blocks_confidence_all_strong() {
+        let lines = vec!["+--+", "+--+", "+--+"];
+        let blocks = find_diagram_blocks(&lines);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].confidence > 0.8);
+    }
+
+    #[test]
+    fn test_find_blocks_confidence_all_weak() {
+        let lines = vec!["| a |", "| b |", "| c |"];
+        let blocks = find_diagram_blocks(&lines);
+        assert_eq!(blocks.len(), 1);
+        // All weak → strong_ratio = 0 → confidence = 0 + min(3/20, 0.2) = 0.15
+        assert!(blocks[0].confidence < 0.3);
+    }
+
+    #[test]
+    fn test_find_blocks_starts_at_first_line() {
+        let lines = vec!["+--+", "|  |", "+--+"];
+        let blocks = find_diagram_blocks(&lines);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].start, 0);
+        assert_eq!(blocks[0].end, 3);
+    }
+
+    // --- correct_diagram edge cases ---
+
+    #[test]
+    fn test_correct_diagram_empty() {
+        let output = correct_diagram("");
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_correct_diagram_no_diagrams() {
+        let input = "just plain text\nno diagrams here";
+        let output = correct_diagram(input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_correct_diagram_idempotent() {
+        let input = "+------+\n| Hi|\n| Hello |\n+------+";
+        let first = correct_diagram(input);
+        let second = correct_diagram(&first);
+        assert_eq!(first, second, "correction should be idempotent");
+    }
+
+    #[test]
+    fn test_correct_diagram_with_cjk() {
+        let input = "+--------+\n|你好|\n|Hello   |\n+--------+";
+        let output = correct_diagram(input);
+        assert!(output.contains("你好"));
+        assert!(output.contains("Hello"));
+    }
+
+    #[test]
+    fn test_correct_diagram_with_options_zero_iterations() {
+        let input = "+------+\n| Hi|\n| Hello |\n+------+";
+        let output = correct_diagram_with_options(input, 0, 0.0);
+        assert_eq!(output, input);
+    }
+
+    // --- detect_vertical_border edge cases ---
+
+    #[test]
+    fn test_detect_vertical_border_empty() {
+        let lines: Vec<&str> = vec![];
+        assert_eq!(detect_vertical_border(&lines), '|');
+    }
+
+    #[test]
+    fn test_detect_vertical_border_no_vertical_chars() {
+        let lines = vec!["hello", "world"];
+        assert_eq!(detect_vertical_border(&lines), '|');
+    }
+
+    #[test]
+    fn test_detect_vertical_border_unicode_majority() {
+        let lines = vec!["│ a │", "│ b │", "│ c │", "| d |"];
+        assert_eq!(detect_vertical_border(&lines), '│');
+    }
+
+    // --- LineKind ---
+
+    #[test]
+    fn test_line_kind_is_boxy() {
+        assert!(!LineKind::Blank.is_boxy());
+        assert!(!LineKind::None.is_boxy());
+        assert!(LineKind::Weak.is_boxy());
+        assert!(LineKind::Strong.is_boxy());
+    }
+
+    // --- classify_line edge cases ---
+
+    #[test]
+    fn test_classify_line_junction_only() {
+        // Junction without horizontal or corner → Weak
+        assert_eq!(classify_line("┼"), LineKind::Weak);
+    }
+
+    #[test]
+    fn test_classify_line_double_border() {
+        assert_eq!(classify_line("╔════╗"), LineKind::Strong);
+    }
+
+    #[test]
+    fn test_classify_line_rounded_corners() {
+        assert_eq!(classify_line("╭──╮"), LineKind::Strong);
+        assert_eq!(classify_line("╰──╯"), LineKind::Strong);
+    }
+
+    // --- detect_suffix_border edge cases ---
+
+    #[test]
+    fn test_detect_suffix_border_empty() {
+        assert_eq!(detect_suffix_border(""), None);
+        assert_eq!(detect_suffix_border("   "), None);
+    }
+
+    #[test]
+    fn test_detect_suffix_border_unicode() {
+        assert_eq!(detect_suffix_border("│ hi │"), Some((5, '│')));
+    }
+
+    #[test]
+    fn test_detect_suffix_border_corner() {
+        // Corners are border chars
+        assert_eq!(detect_suffix_border("+--+"), Some((3, '+')));
+    }
+
+    #[test]
+    fn test_detect_suffix_border_junction() {
+        assert_eq!(detect_suffix_border("──┤"), Some((2, '┤')));
+    }
+
+    #[test]
+    fn test_detect_suffix_border_trailing_spaces() {
+        // Trailing spaces are trimmed, so border is still found
+        assert_eq!(detect_suffix_border("| hi |   "), Some((5, '|')));
+    }
+
+    // --- is_zero_width_codepoint ---
+
+    #[test]
+    fn test_zero_width_chars() {
+        // Combining marks
+        assert_eq!(char_width('\u{0300}'), 0); // combining grave accent
+        assert_eq!(char_width('\u{0301}'), 0); // combining acute accent
+        assert_eq!(char_width('\u{036F}'), 0); // combining latin small letter x
+        // Variation selectors
+        assert_eq!(char_width('\u{FE00}'), 0);
+        assert_eq!(char_width('\u{FE0F}'), 0);
+        // Zero-width space/joiner
+        assert_eq!(char_width('\u{200B}'), 0); // zero-width space
+        assert_eq!(char_width('\u{200D}'), 0); // zero-width joiner
+        assert_eq!(char_width('\u{FEFF}'), 0); // BOM / zero-width no-break space
+    }
+
+    // --- visual_width edge cases ---
+
+    #[test]
+    fn test_visual_width_empty() {
+        assert_eq!(visual_width(""), 0);
+    }
+
+    #[test]
+    fn test_visual_width_pure_ascii_printable() {
+        assert_eq!(visual_width("abc"), 3);
+        assert_eq!(visual_width("Hello, World!"), 13);
+    }
+
+    #[test]
+    fn test_visual_width_box_drawing_chars() {
+        assert_eq!(visual_width("┌─┐"), 3);
+        assert_eq!(visual_width("╔═══╗"), 5);
+    }
+
+    #[test]
+    fn test_visual_width_with_combining() {
+        // e + combining acute = visually 1 character
+        assert_eq!(visual_width("e\u{0301}"), 1);
+    }
+
+    // --- Multiple block correction ---
+
+    #[test]
+    fn test_correct_diagram_multiple_blocks() {
+        let input = "+----+\n| a|\n+----+\ntext\n+------+\n| b   |\n+------+";
+        let output = correct_diagram(input);
+        assert!(output.contains("a"));
+        assert!(output.contains("b"));
+        assert!(output.contains("text"));
+    }
 }
