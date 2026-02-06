@@ -900,6 +900,17 @@ impl MermaidRenderer {
         }
     }
 
+    fn bundle_count_label(&self, count: usize) -> Option<String> {
+        if count <= 1 {
+            return None;
+        }
+        let prefix = match self.glyph_mode {
+            MermaidGlyphMode::Unicode => '×',
+            MermaidGlyphMode::Ascii => 'x',
+        };
+        Some(format!("{prefix}{count}"))
+    }
+
     /// Render a diagram layout into the buffer within the given area.
     pub fn render(
         &self,
@@ -1263,11 +1274,14 @@ impl MermaidRenderer {
                 .map(|p| vp.to_cell(p.x, p.y))
                 .collect();
 
-            let line_style = ir
+            let mut line_style = ir
                 .edges
                 .get(edge_path.edge_idx)
                 .map(|e| edge_line_style(&e.arrow, edge_styles.get(edge_path.edge_idx)))
                 .unwrap_or(EdgeLineStyle::Solid);
+            if edge_path.bundle_count > 1 {
+                line_style = EdgeLineStyle::Thick;
+            }
 
             for pair in waypoints.windows(2) {
                 let (x0, y0) = pair[0];
@@ -1283,13 +1297,28 @@ impl MermaidRenderer {
                 buf.set(tx, ty, edge_cell.with_char(arrow_ch));
             }
 
-            // Edge labels only if plan allows.
-            if plan.show_edge_labels
-                && let Some(ir_edge) = ir.edges.get(edge_path.edge_idx)
-                && let Some(label_id) = ir_edge.label
-                && let Some(label) = ir.labels.get(label_id.0)
-            {
-                self.render_edge_label(edge_path, &label.text, plan.max_label_width, vp, buf);
+            let ir_label = if plan.show_edge_labels {
+                ir.edges
+                    .get(edge_path.edge_idx)
+                    .and_then(|e| e.label)
+                    .and_then(|lid| ir.labels.get(lid.0))
+                    .map(|l| l.text.as_str())
+            } else {
+                None
+            };
+            let bundle_label = if plan.fidelity != MermaidFidelity::Outline {
+                self.bundle_count_label(edge_path.bundle_count)
+            } else {
+                None
+            };
+            let label_text = match (ir_label, bundle_label) {
+                (Some(text), Some(mult)) => Some(format!("{text} {mult}")),
+                (Some(text), None) => Some(text.to_string()),
+                (None, Some(mult)) => Some(mult),
+                (None, None) => None,
+            };
+            if let Some(text) = label_text {
+                self.render_edge_label(edge_path, &text, plan.max_label_width, vp, buf);
             }
 
             // ER cardinality labels at edge endpoints (bd-1rnqg).
@@ -1753,20 +1782,29 @@ impl MermaidRenderer {
         plan: &RenderPlan,
         buf: &mut Buffer,
     ) {
-        if plan.show_edge_labels {
-            for edge_path in edges {
-                if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx)
-                    && let Some(label_id) = ir_edge.label
-                    && let Some(label) = ir.labels.get(label_id.0)
-                {
-                    self.render_edge_label_canvas(
-                        edge_path,
-                        &label.text,
-                        plan.max_label_width,
-                        vp,
-                        buf,
-                    );
-                }
+        for edge_path in edges {
+            let ir_label = if plan.show_edge_labels {
+                ir.edges
+                    .get(edge_path.edge_idx)
+                    .and_then(|e| e.label)
+                    .and_then(|lid| ir.labels.get(lid.0))
+                    .map(|l| l.text.as_str())
+            } else {
+                None
+            };
+            let bundle_label = if plan.fidelity != MermaidFidelity::Outline {
+                self.bundle_count_label(edge_path.bundle_count)
+            } else {
+                None
+            };
+            let label_text = match (ir_label, bundle_label) {
+                (Some(text), Some(mult)) => Some(format!("{text} {mult}")),
+                (Some(text), None) => Some(text.to_string()),
+                (None, Some(mult)) => Some(mult),
+                (None, None) => None,
+            };
+            if let Some(text) = label_text {
+                self.render_edge_label_canvas(edge_path, &text, plan.max_label_width, vp, buf);
             }
         }
 
@@ -1954,7 +1992,28 @@ impl MermaidRenderer {
         // Highlight connected edges first (so node border draws on top)
         let highlight_cell = Cell::from_char(' ');
         for edge_path in edges {
-            if let Some(color) = selection.edge_highlight(edge_path.edge_idx) {
+            let color = selection.edge_highlight(edge_path.edge_idx).or_else(|| {
+                if edge_path.bundle_members.is_empty() {
+                    return None;
+                }
+                if edge_path
+                    .bundle_members
+                    .iter()
+                    .any(|m| selection.outgoing_edges.contains(m))
+                {
+                    return Some(HIGHLIGHT_EDGE_OUT_FG);
+                }
+                if edge_path
+                    .bundle_members
+                    .iter()
+                    .any(|m| selection.incoming_edges.contains(m))
+                {
+                    return Some(HIGHLIGHT_EDGE_IN_FG);
+                }
+                None
+            });
+
+            if let Some(color) = color {
                 let cell = highlight_cell.with_fg(color);
                 let waypoints: Vec<(u16, u16)> = edge_path
                     .waypoints
@@ -2082,11 +2141,14 @@ impl MermaidRenderer {
                 .collect();
 
             // Detect line style from arrow syntax.
-            let line_style = ir
+            let mut line_style = ir
                 .edges
                 .get(edge_path.edge_idx)
                 .map(|e| edge_line_style(&e.arrow, edge_styles.get(edge_path.edge_idx)))
                 .unwrap_or(EdgeLineStyle::Solid);
+            if edge_path.bundle_count > 1 {
+                line_style = EdgeLineStyle::Thick;
+            }
 
             // Draw line segments between consecutive waypoints.
             for pair in waypoints.windows(2) {
@@ -2103,12 +2165,21 @@ impl MermaidRenderer {
                 buf.set(tx, ty, edge_cell.with_char(arrow_ch));
             }
 
-            // Render edge label if present.
-            if let Some(ir_edge) = ir.edges.get(edge_path.edge_idx)
-                && let Some(label_id) = ir_edge.label
-                && let Some(label) = ir.labels.get(label_id.0)
-            {
-                self.render_edge_label(edge_path, &label.text, DEFAULT_EDGE_LABEL_WIDTH, vp, buf);
+            let ir_label = ir
+                .edges
+                .get(edge_path.edge_idx)
+                .and_then(|e| e.label)
+                .and_then(|lid| ir.labels.get(lid.0))
+                .map(|l| l.text.as_str());
+            let bundle_label = self.bundle_count_label(edge_path.bundle_count);
+            let label_text = match (ir_label, bundle_label) {
+                (Some(text), Some(mult)) => Some(format!("{text} {mult}")),
+                (Some(text), None) => Some(text.to_string()),
+                (None, Some(mult)) => Some(mult),
+                (None, None) => None,
+            };
+            if let Some(text) = label_text {
+                self.render_edge_label(edge_path, &text, DEFAULT_EDGE_LABEL_WIDTH, vp, buf);
             }
         }
     }
@@ -2823,11 +2894,14 @@ fn render_canvas_edges(
     vp: &CanvasViewport,
 ) {
     for edge_path in edges {
-        let line_style = ir
+        let mut line_style = ir
             .edges
             .get(edge_path.edge_idx)
             .map(|e| edge_line_style(&e.arrow, edge_styles.get(edge_path.edge_idx)))
             .unwrap_or(EdgeLineStyle::Solid);
+        if edge_path.bundle_count > 1 {
+            line_style = EdgeLineStyle::Thick;
+        }
         let mut last: Option<(i32, i32)> = None;
         let mut prev_dir: Option<(i32, i32)> = None;
         for point in &edge_path.waypoints {
@@ -4440,6 +4514,8 @@ mod tests {
                             y: to_node.rect.y,
                         },
                     ],
+                    bundle_count: 1,
+                    bundle_members: Vec::new(),
                 }
             })
             .collect();
@@ -5158,6 +5234,49 @@ mod tests {
         assert!(!plan.show_edge_labels, "compact should hide edge labels");
         assert!(plan.show_node_labels, "compact should keep node labels");
         assert!(!plan.show_clusters, "compact should hide clusters");
+    }
+
+    #[test]
+    fn bundled_edge_renders_count_label_in_compact_tier() {
+        let renderer = MermaidRenderer::with_mode(MermaidGlyphMode::Unicode);
+
+        let ir = make_ir(2, vec![(0, 1), (0, 1), (0, 1), (0, 1), (0, 1)]);
+        let mut layout = make_layout(2, vec![(0, 1)]);
+        // Ensure the label midpoint falls on an interior waypoint (not the target port).
+        // `render_edge_label*()` uses `waypoints[len/2]` as the anchor.
+        let from = layout.edges[0].waypoints[0];
+        let to = layout.edges[0].waypoints[1];
+        layout.edges[0].waypoints.insert(
+            1,
+            LayoutPoint {
+                x: (from.x + to.x) / 2.0,
+                y: (from.y + to.y) / 2.0,
+            },
+        );
+        layout.edges[0].bundle_count = 5;
+        layout.edges[0].bundle_members = vec![0, 1, 2, 3, 4];
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let config = MermaidConfig {
+            tier_override: MermaidTier::Compact,
+            ..Default::default()
+        };
+        let plan = select_render_plan(&config, &layout, &ir, area);
+        assert!(!plan.show_edge_labels, "compact should hide edge labels");
+
+        let mut buf = Buffer::new(80, 24);
+        renderer.render_with_plan(&layout, &ir, &plan, &mut buf);
+
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("×5"),
+            "expected bundle count label to render even when edge labels are hidden"
+        );
     }
 
     #[test]

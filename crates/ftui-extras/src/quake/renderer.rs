@@ -589,7 +589,10 @@ mod tests {
             (area + area_swap).abs() < 1e-5,
             "swapping b and c should negate: {area} vs {area_swap}"
         );
-        assert!(area.abs() > 0.01, "non-degenerate triangle should have non-zero area");
+        assert!(
+            area.abs() > 0.01,
+            "non-degenerate triangle should have non-zero area"
+        );
     }
 
     #[test]

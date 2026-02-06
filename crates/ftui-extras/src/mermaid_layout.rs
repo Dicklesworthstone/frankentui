@@ -1089,6 +1089,261 @@ fn route_edges(
         .collect()
 }
 
+// ── Optional Edge Bundling (bd-70rmj) ───────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BundleEndpointKey {
+    Node(usize),
+    Cluster(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct EdgeBundleKey<'a> {
+    from: BundleEndpointKey,
+    to: BundleEndpointKey,
+    arrow: &'a str,
+    label: Option<usize>,
+    style_sig: u64,
+}
+
+fn rect_for_bundle_endpoint<'a>(
+    ep: BundleEndpointKey,
+    node_rects: &'a [LayoutRect],
+    clusters: &'a [LayoutClusterBox],
+) -> Option<&'a LayoutRect> {
+    match ep {
+        BundleEndpointKey::Node(idx) => node_rects.get(idx),
+        BundleEndpointKey::Cluster(idx) => clusters.get(idx).map(|c| &c.rect),
+    }
+}
+
+fn apply_bundle_offset(waypoints: &mut [LayoutPoint], delta: f64, direction: GraphDirection) {
+    match direction {
+        GraphDirection::LR | GraphDirection::RL => {
+            for wp in waypoints {
+                wp.y += delta;
+            }
+        }
+        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => {
+            for wp in waypoints {
+                wp.x += delta;
+            }
+        }
+    }
+}
+
+fn style_sig_for_edge(properties: &crate::mermaid::MermaidStyleProperties) -> u64 {
+    use crate::mermaid::{MermaidColor, MermaidStrokeDash};
+
+    const FNV1A_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV1A_PRIME: u64 = 0x100000001b3;
+
+    fn hash_u32(hash: &mut u64, val: u32) {
+        for byte in val.to_le_bytes() {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(FNV1A_PRIME);
+        }
+    }
+
+    fn color_sig(c: Option<MermaidColor>) -> u32 {
+        match c {
+            None => 0,
+            Some(MermaidColor::Rgb(r, g, b)) => {
+                0x01_00_00_00 | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+            }
+            Some(MermaidColor::Transparent) => 0x02_00_00_00,
+            Some(MermaidColor::None) => 0x03_00_00_00,
+        }
+    }
+
+    fn dash_sig(d: Option<MermaidStrokeDash>) -> u32 {
+        match d {
+            None => 0,
+            Some(MermaidStrokeDash::Solid) => 1,
+            Some(MermaidStrokeDash::Dashed) => 2,
+            Some(MermaidStrokeDash::Dotted) => 3,
+        }
+    }
+
+    let mut h = FNV1A_OFFSET;
+    hash_u32(&mut h, color_sig(properties.stroke));
+    hash_u32(&mut h, u32::from(properties.stroke_width.unwrap_or(0)));
+    hash_u32(&mut h, dash_sig(properties.stroke_dash));
+    h
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bundle_parallel_edges(
+    ir: &MermaidDiagramIr,
+    config: &MermaidConfig,
+    spacing: &LayoutSpacing,
+    node_rects: &[LayoutRect],
+    clusters: &[LayoutClusterBox],
+    cluster_map: &[Option<usize>],
+    direction: GraphDirection,
+    edges: &mut Vec<LayoutEdgePath>,
+) {
+    let min_bundle = config.edge_bundle_min_count.max(2);
+    if edges.len() < 2 {
+        return;
+    }
+
+    let style_sigs: Option<Vec<u64>> = if config.enable_styles {
+        let resolved = crate::mermaid::resolve_styles(ir);
+        Some(
+            resolved
+                .edge_styles
+                .iter()
+                .map(|s| style_sig_for_edge(&s.properties))
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    let mut groups: std::collections::HashMap<EdgeBundleKey<'_>, Vec<usize>> =
+        std::collections::HashMap::new();
+
+    for (path_idx, path) in edges.iter().enumerate() {
+        if path.waypoints.len() < 2 {
+            continue;
+        }
+        let Some(ir_edge) = ir.edges.get(path.edge_idx) else {
+            continue;
+        };
+        let Some(from_node) = endpoint_node_idx(ir, &ir_edge.from) else {
+            continue;
+        };
+        let Some(to_node) = endpoint_node_idx(ir, &ir_edge.to) else {
+            continue;
+        };
+        if from_node >= cluster_map.len() || to_node >= cluster_map.len() {
+            continue;
+        }
+
+        let from_cluster = cluster_map[from_node];
+        let to_cluster = cluster_map[to_node];
+        let crossing_boundary = from_cluster != to_cluster;
+
+        let from_key = if crossing_boundary {
+            from_cluster
+                .map(BundleEndpointKey::Cluster)
+                .unwrap_or(BundleEndpointKey::Node(from_node))
+        } else {
+            BundleEndpointKey::Node(from_node)
+        };
+        let to_key = if crossing_boundary {
+            to_cluster
+                .map(BundleEndpointKey::Cluster)
+                .unwrap_or(BundleEndpointKey::Node(to_node))
+        } else {
+            BundleEndpointKey::Node(to_node)
+        };
+
+        let style_sig = style_sigs
+            .as_ref()
+            .and_then(|sigs| sigs.get(path.edge_idx).copied())
+            .unwrap_or(0);
+
+        let key = EdgeBundleKey {
+            from: from_key,
+            to: to_key,
+            arrow: ir_edge.arrow.as_str(),
+            label: ir_edge.label.map(|lid| lid.0),
+            style_sig,
+        };
+        groups.entry(key).or_default().push(path_idx);
+    }
+
+    if groups.is_empty() {
+        return;
+    }
+
+    let mut drop = vec![false; edges.len()];
+
+    for (key, mut indices) in groups {
+        if indices.len() < 2 {
+            continue;
+        }
+
+        indices.sort_by_key(|&i| edges.get(i).map(|p| p.edge_idx).unwrap_or(usize::MAX));
+
+        if indices.len() >= min_bundle {
+            let canonical_i = indices[0];
+            let members: Vec<usize> = indices
+                .iter()
+                .filter_map(|&i| edges.get(i).map(|p| p.edge_idx))
+                .collect();
+
+            if let Some(base) = edges.get_mut(canonical_i) {
+                base.bundle_count = members.len().max(1);
+                base.bundle_members = members;
+
+                // For cluster-level bundles, snap endpoints to the cluster boundary
+                // (using the same port selection logic as node routing).
+                if base.waypoints.len() >= 2 {
+                    let from_rect = rect_for_bundle_endpoint(key.from, node_rects, clusters);
+                    let to_rect = rect_for_bundle_endpoint(key.to, node_rects, clusters);
+                    if let (Some(from_rect), Some(to_rect)) = (from_rect, to_rect) {
+                        let from_center = from_rect.center();
+                        let to_center = to_rect.center();
+
+                        if matches!(key.from, BundleEndpointKey::Cluster(_)) {
+                            base.waypoints[0] =
+                                edge_port(from_rect, from_center, to_center, direction, true);
+                        }
+                        if matches!(key.to, BundleEndpointKey::Cluster(_)) {
+                            let last = base.waypoints.len().saturating_sub(1);
+                            base.waypoints[last] =
+                                edge_port(to_rect, to_center, from_center, direction, false);
+                        }
+                    }
+                }
+            }
+
+            for &i in &indices[1..] {
+                drop[i] = true;
+            }
+        } else if indices.len() == 2 && min_bundle > 2 {
+            let a = indices[0];
+            let b = indices[1];
+            if a >= edges.len() || b >= edges.len() {
+                continue;
+            }
+
+            let identical =
+                edges[a].waypoints.len() >= 2 && edges[a].waypoints == edges[b].waypoints;
+            if !identical {
+                continue;
+            }
+
+            let delta = (spacing.node_gap * 0.4).clamp(0.6, 1.2);
+            apply_bundle_offset(&mut edges[a].waypoints, -delta, direction);
+            apply_bundle_offset(&mut edges[b].waypoints, delta, direction);
+        }
+    }
+
+    if drop.iter().any(|d| *d) {
+        let mut out = Vec::with_capacity(edges.len());
+        for (i, edge) in edges.iter().enumerate() {
+            if !drop[i] {
+                out.push(edge.clone());
+            }
+        }
+        *edges = out;
+    }
+
+    // Enforce invariants for downstream renderers/tests.
+    for edge in edges {
+        if edge.bundle_count <= 1 {
+            edge.bundle_count = 1;
+            edge.bundle_members.clear();
+        } else if edge.bundle_members.is_empty() {
+            edge.bundle_members.push(edge.edge_idx);
+        }
+    }
+}
+
 /// Generate waypoints for an edge spanning multiple ranks.
 ///
 /// Inserts intermediate points at each rank boundary, interpolating the
@@ -5077,6 +5332,63 @@ mod tests {
             layout.edges[0].waypoints.len(),
             2,
             "simple edge should have 2 waypoints (source port, target port)"
+        );
+    }
+
+    #[test]
+    fn edge_bundling_bundles_parallel_cluster_edges() {
+        let ir = make_named_clustered_ir(
+            &["A", "B", "C", "D"],
+            &[(0, 2), (0, 3), (1, 2), (1, 3), (0, 2)],
+            &[("g0", &[0, 1]), ("g1", &[2, 3])],
+            GraphDirection::TB,
+        );
+
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+
+        let layout = layout_diagram(&ir, &config);
+        assert_eq!(
+            layout.edges.len(),
+            1,
+            "expected bundled edge to replace parallel set"
+        );
+        assert_eq!(
+            layout.edges[0].edge_idx, 0,
+            "canonical edge should be the lowest idx"
+        );
+        assert_eq!(layout.edges[0].bundle_count, 5);
+        assert_eq!(layout.edges[0].bundle_members, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn edge_bundling_offsets_pair_when_below_min_bundle() {
+        let ir = make_simple_ir(&["A", "B"], &[(0, 1), (0, 1)], GraphDirection::TB);
+        let spacing = LayoutSpacing::default();
+
+        let config = MermaidConfig {
+            edge_bundling: true,
+            edge_bundle_min_count: 3,
+            ..MermaidConfig::default()
+        };
+
+        let layout = layout_diagram_with_spacing(&ir, &config, &spacing);
+        assert_eq!(layout.edges.len(), 2);
+        assert_ne!(layout.edges[0].waypoints, layout.edges[1].waypoints);
+
+        // Vertical graph directions offset in X.
+        let delta = (spacing.node_gap * 0.4).clamp(0.6, 1.2);
+        let dx = (layout.edges[1].waypoints[0].x - layout.edges[0].waypoints[0].x).abs();
+        assert!(
+            (dx - 2.0 * delta).abs() < 1e-9,
+            "expected symmetric ±delta offsets"
+        );
+        assert_eq!(
+            layout.edges[0].waypoints[0].y, layout.edges[1].waypoints[0].y,
+            "offset should not affect Y for TB/TD/BT"
         );
     }
 

@@ -462,6 +462,8 @@ impl SpatialHitIndex {
         self.cache.pos = (x, y);
         self.cache.result = best_idx;
         self.cache.valid = true;
+        // The cache now reflects the current index state, so prior dirties are irrelevant.
+        self.dirty.clear();
 
         best.map(|e| (e.id, e.region, e.data))
     }

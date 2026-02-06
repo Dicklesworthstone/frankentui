@@ -183,14 +183,19 @@ mod tests {
     #[test]
     fn lump_struct_size() {
         // Lump has offset (i32) + length (i32) = 8 bytes conceptual
-        let lump = Lump { offset: 0, length: 100 };
+        let lump = Lump {
+            offset: 0,
+            length: 100,
+        };
         assert_eq!(lump.offset, 0);
         assert_eq!(lump.length, 100);
     }
 
     #[test]
     fn dvertex_point_access() {
-        let v = DVertex { point: [1.0, 2.0, 3.0] };
+        let v = DVertex {
+            point: [1.0, 2.0, 3.0],
+        };
         assert_eq!(v.point[0], 1.0);
         assert_eq!(v.point[1], 2.0);
         assert_eq!(v.point[2], 3.0);

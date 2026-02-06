@@ -415,6 +415,8 @@ mod tests {
                     LayoutPoint { x: 5.0, y: 5.0 },
                     LayoutPoint { x: 35.0, y: 20.0 },
                 ],
+                bundle_count: 1,
+                bundle_members: Vec::new(),
             }],
             bounding_box: LayoutRect {
                 x: 0.0,

@@ -519,8 +519,10 @@ mod tests {
 
     #[test]
     fn engine_render_with_minimap() {
-        let mut engine = QuakeEngine::default();
-        engine.show_minimap = true;
+        let mut engine = QuakeEngine {
+            show_minimap: true,
+            ..QuakeEngine::default()
+        };
         let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
         engine.render(&mut painter, 120, 40, 1);
         // Should not panic with minimap enabled

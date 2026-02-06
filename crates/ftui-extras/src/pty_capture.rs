@@ -283,7 +283,9 @@ mod config_tests {
 
     #[test]
     fn config_clone() {
-        let config = PtyCaptureConfig::default().with_size(100, 40).with_env("A", "B");
+        let config = PtyCaptureConfig::default()
+            .with_size(100, 40)
+            .with_env("A", "B");
         let cloned = config.clone();
         assert_eq!(cloned.cols, 100);
         assert_eq!(cloned.rows, 40);
