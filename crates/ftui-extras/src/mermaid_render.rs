@@ -7538,10 +7538,11 @@ mod tests {
         let mut found_label_with_bg = false;
         for y in 0..buf.height() {
             for x in 0..buf.width() {
-                if let Some(cell) = buf.get(x, y) {
-                    if cell.content.as_char() == Some('N') && cell.bg == fill0 {
-                        found_label_with_bg = true;
-                    }
+                if let Some(cell) = buf.get(x, y)
+                    && cell.content.as_char() == Some('N')
+                    && cell.bg == fill0
+                {
+                    found_label_with_bg = true;
                 }
             }
         }
@@ -7550,5 +7551,4 @@ mod tests {
             "label text should preserve the node fill background color"
         );
     }
-
 }
