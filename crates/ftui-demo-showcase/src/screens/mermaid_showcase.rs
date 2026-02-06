@@ -20,6 +20,7 @@ use ftui_extras::mermaid_render;
 use ftui_extras::mermaid_render::SelectionState;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::buffer::Buffer;
+use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
@@ -1712,11 +1713,13 @@ impl MermaidShowcaseState {
                     );
                 }
             }
-            // Navigation is handled at the Screen level (needs cache access).
+            // Navigation and search input are handled at the Screen level (need cache access).
             MermaidShowcaseAction::NavigateUp
             | MermaidShowcaseAction::NavigateDown
             | MermaidShowcaseAction::NavigateLeft
-            | MermaidShowcaseAction::NavigateRight => {}
+            | MermaidShowcaseAction::NavigateRight
+            | MermaidShowcaseAction::SearchInput(_)
+            | MermaidShowcaseAction::SearchBackspace => {}
         }
         self.normalize();
     }
@@ -1764,6 +1767,8 @@ enum MermaidShowcaseAction {
     ExitMode,
     NextSearchMatch,
     PrevSearchMatch,
+    SearchInput(char),
+    SearchBackspace,
 }
 
 /// Mermaid showcase screen scaffold (state + key handling).
@@ -1980,6 +1985,17 @@ impl MermaidShowcaseScreen {
                 let selection = SelectionState::from_selected(node_idx, ir);
                 renderer.render_with_selection(layout, ir, &plan, &selection, &mut buffer);
             }
+            // Apply search dimming to non-matching nodes.
+            if self.state.mode == ShowcaseMode::Search && !self.state.search_matches.is_empty() {
+                Self::apply_search_dimming(
+                    &mut buffer,
+                    layout,
+                    &self.state.search_matches,
+                    render_width,
+                    render_height,
+                );
+            }
+
             // Compute content flags before mutating cache (avoids borrow conflict with ir).
             let has_content = !ir.nodes.is_empty()
                 || !ir.edges.is_empty()
@@ -2061,6 +2077,151 @@ impl MermaidShowcaseScreen {
         frame
             .buffer
             .copy_from(buf, Rect::new(src_x, src_y, copy_w, copy_h), dst_x, dst_y);
+    }
+
+    /// Recompute search matches against the current IR.
+    fn recompute_search_matches(&mut self) {
+        let cache = self.cache.borrow();
+        let Some(ir) = cache.ir.as_ref() else {
+            return;
+        };
+        let query = &self.state.search_query;
+        if query.is_empty() {
+            self.state.search_matches.clear();
+            self.state.search_match_idx = 0;
+            return;
+        }
+        let query_lower = query.to_lowercase();
+        let mut matches = Vec::new();
+        for (idx, node) in ir.nodes.iter().enumerate() {
+            let id_match = node.id.to_lowercase().contains(&query_lower);
+            let label_match = node.label.is_some_and(|lid| {
+                ir.labels
+                    .get(lid.0)
+                    .is_some_and(|l| format!("{l:?}").to_lowercase().contains(&query_lower))
+            });
+            if id_match || label_match {
+                matches.push(idx);
+            }
+        }
+        drop(cache);
+        self.state.search_matches = matches;
+        if self.state.search_match_idx >= self.state.search_matches.len().max(1) {
+            self.state.search_match_idx = 0;
+        }
+        // Auto-select the current match for highlighting.
+        if !self.state.search_matches.is_empty() {
+            self.state.selected_node_idx =
+                Some(self.state.search_matches[self.state.search_match_idx]);
+        } else {
+            self.state.selected_node_idx = None;
+        }
+        self.state.bump_render();
+    }
+
+    fn apply_search_input(&mut self, ch: char) {
+        self.state.search_query.push(ch);
+        self.recompute_search_matches();
+    }
+
+    fn apply_search_backspace(&mut self) {
+        self.state.search_query.pop();
+        self.recompute_search_matches();
+    }
+
+    /// Render the search input bar at the bottom of the diagram area.
+    fn render_search_bar(&self, frame: &mut Frame<'_>, area: Rect) {
+        if self.state.mode != ShowcaseMode::Search {
+            return;
+        }
+        let bar_y = area.y + area.height.saturating_sub(1);
+        let bar_area = Rect::new(area.x, bar_y, area.width, 1);
+        let match_info = if self.state.search_matches.is_empty() {
+            if self.state.search_query.is_empty() {
+                String::new()
+            } else {
+                " (no matches)".to_string()
+            }
+        } else {
+            format!(
+                " [{}/{}]",
+                self.state.search_match_idx + 1,
+                self.state.search_matches.len()
+            )
+        };
+        let text = format!("/{}{}", self.state.search_query, match_info);
+        let fg = PackedRgba::rgb(255, 255, 100);
+        let bg = PackedRgba::rgb(30, 30, 50);
+        for x in 0..bar_area.width {
+            let ch = text.chars().nth(x as usize).unwrap_or(' ');
+            let cell = Cell::from_char(ch).with_fg(fg).with_bg(bg);
+            frame.buffer.set(bar_area.x + x, bar_area.y, cell);
+        }
+    }
+
+    /// Apply search dimming to non-matching nodes in the rendered buffer.
+    fn apply_search_dimming(
+        buffer: &mut Buffer,
+        layout: &mermaid_layout::DiagramLayout,
+        search_matches: &[usize],
+        render_width: u16,
+        render_height: u16,
+    ) {
+        if search_matches.is_empty() {
+            return;
+        }
+
+        let bb = &layout.bounding_box;
+        let margin = 1.0_f64;
+        let avail_w = f64::from(render_width).max(1.0) - 2.0 * margin;
+        let avail_h = f64::from(render_height).max(1.0) - 2.0 * margin;
+        let bb_w = bb.width.max(1.0);
+        let bb_h = bb.height.max(1.0);
+        let scale = (avail_w / bb_w).min(avail_h / bb_h).max(0.1);
+        let offset_x = margin + (avail_w - bb_w * scale) / 2.0 - bb.x * scale;
+        let offset_y = margin + (avail_h - bb_h * scale) / 2.0 - bb.y * scale;
+
+        // Identify cells belonging to matching nodes (we'll keep these bright).
+        let mut bright_mask = vec![false; (render_width as usize) * (render_height as usize)];
+        for &node_idx in search_matches {
+            if let Some(node) = layout.nodes.iter().find(|n| n.node_idx == node_idx) {
+                let x0 = ((node.rect.x * scale + offset_x).floor() as u16).min(render_width);
+                let y0 = ((node.rect.y * scale + offset_y).floor() as u16).min(render_height);
+                let x1 = (((node.rect.x + node.rect.width) * scale + offset_x).ceil() as u16)
+                    .min(render_width);
+                let y1 = (((node.rect.y + node.rect.height) * scale + offset_y).ceil() as u16)
+                    .min(render_height);
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        bright_mask[y as usize * render_width as usize + x as usize] = true;
+                    }
+                }
+            }
+        }
+
+        // Dim all non-bright cells.
+        for y in 0..render_height {
+            for x in 0..render_width {
+                if bright_mask[y as usize * render_width as usize + x as usize] {
+                    continue;
+                }
+                if let Some(&cell) = buffer.get(x, y) {
+                    let dim_fg = PackedRgba::rgba(
+                        cell.fg.r() / 3,
+                        cell.fg.g() / 3,
+                        cell.fg.b() / 3,
+                        cell.fg.a(),
+                    );
+                    let dim_bg = PackedRgba::rgba(
+                        cell.bg.r() / 3,
+                        cell.bg.g() / 3,
+                        cell.bg.b() / 3,
+                        cell.bg.a(),
+                    );
+                    buffer.set(x, y, cell.with_fg(dim_fg).with_bg(dim_bg));
+                }
+            }
+        }
     }
 
     /// Navigate to a connected node in the given direction using the cached
@@ -2204,8 +2365,12 @@ impl MermaidShowcaseScreen {
         match self.state.mode {
             ShowcaseMode::Search => match event.code {
                 KeyCode::Escape => Some(MermaidShowcaseAction::ExitMode),
-                KeyCode::Char('n') => Some(MermaidShowcaseAction::NextSearchMatch),
+                KeyCode::Enter | KeyCode::Char('n') if event.modifiers.is_empty() => {
+                    Some(MermaidShowcaseAction::NextSearchMatch)
+                }
                 KeyCode::Char('N') => Some(MermaidShowcaseAction::PrevSearchMatch),
+                KeyCode::Backspace => Some(MermaidShowcaseAction::SearchBackspace),
+                KeyCode::Char(c) => Some(MermaidShowcaseAction::SearchInput(c)),
                 _ => None,
             },
             ShowcaseMode::Inspect => match event.code {
@@ -2854,6 +3019,23 @@ impl Screen for MermaidShowcaseScreen {
                 MermaidShowcaseAction::SelectNextNode | MermaidShowcaseAction::SelectPrevNode => {
                     self.apply_select_node(action);
                 }
+                MermaidShowcaseAction::SearchInput(ch) => {
+                    self.apply_search_input(ch);
+                }
+                MermaidShowcaseAction::SearchBackspace => {
+                    self.apply_search_backspace();
+                }
+                MermaidShowcaseAction::NextSearchMatch | MermaidShowcaseAction::PrevSearchMatch
+                    if self.state.mode == ShowcaseMode::Search =>
+                {
+                    self.state.apply_action(action);
+                    // Update selection to current match.
+                    if !self.state.search_matches.is_empty() {
+                        self.state.selected_node_idx =
+                            Some(self.state.search_matches[self.state.search_match_idx]);
+                        self.state.bump_render();
+                    }
+                }
                 _ => {
                     self.state.apply_action(action);
                 }
@@ -2983,6 +3165,9 @@ impl Screen for MermaidShowcaseScreen {
                     }
                 }
             } // close else for show_node_detail
+            // Search bar at the bottom.
+            self.render_search_bar(frame, body);
+
             if self.state.help_visible {
                 self.render_help_overlay(frame, area);
             }
@@ -4494,12 +4679,21 @@ mod tests {
     }
 
     #[test]
-    fn search_mode_ignores_normal_keys() {
+    fn search_mode_captures_chars_as_input() {
         let mut screen = new_screen();
         screen.state.mode = ShowcaseMode::Search;
-        // 'j' is NextSample in Normal mode but should be ignored in Search.
+        // 'j' is NextSample in Normal mode but becomes SearchInput in Search mode.
         let action = screen.handle_key(&press(KeyCode::Char('j')));
-        assert!(action.is_none());
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::SearchInput('j'))
+        ));
+        // Backspace maps to SearchBackspace.
+        let action = screen.handle_key(&press(KeyCode::Backspace));
+        assert!(matches!(
+            action,
+            Some(MermaidShowcaseAction::SearchBackspace)
+        ));
     }
 
     #[test]
