@@ -466,4 +466,47 @@ mod tests {
         let panel = HistoryPanel::new().with_marker_text("=== NOW ===");
         assert_eq!(panel.marker_text, "=== NOW ===");
     }
+
+    #[test]
+    fn history_entry_new() {
+        let entry = HistoryEntry::new("Delete line", false);
+        assert_eq!(entry.description, "Delete line");
+        assert!(!entry.is_redo);
+
+        let redo = HistoryEntry::new("Paste", true);
+        assert!(redo.is_redo);
+    }
+
+    #[test]
+    fn history_panel_mode_default_is_compact() {
+        assert_eq!(HistoryPanelMode::default(), HistoryPanelMode::Compact);
+    }
+
+    #[test]
+    fn with_compact_limit_setter() {
+        let panel = HistoryPanel::new().with_compact_limit(10);
+        assert_eq!(panel.compact_limit, 10);
+    }
+
+    #[test]
+    fn history_entry_equality() {
+        let a = HistoryEntry::new("X", false);
+        let b = HistoryEntry::new("X", false);
+        let c = HistoryEntry::new("X", true);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn full_mode_renders_all_items() {
+        let items: Vec<_> = (0..10).map(|i| format!("Item {i}")).collect();
+        let panel = HistoryPanel::new()
+            .with_mode(HistoryPanelMode::Full)
+            .with_undo_items(&items);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 30, &mut pool);
+        let area = Rect::new(0, 0, 30, 30);
+        panel.render(area, &mut frame); // Should not panic in full mode
+    }
 }
