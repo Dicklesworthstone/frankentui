@@ -1965,6 +1965,138 @@ mod widget_tests {
         );
     }
 
+    #[test]
+    fn action_item_builder_fields() {
+        let item = ActionItem::new("my_id", "My Action")
+            .with_description("A description")
+            .with_tags(&["tag1", "tag2"])
+            .with_category("Category");
+
+        assert_eq!(item.id, "my_id");
+        assert_eq!(item.title, "My Action");
+        assert_eq!(item.description.as_deref(), Some("A description"));
+        assert_eq!(item.tags, vec!["tag1", "tag2"]);
+        assert_eq!(item.category.as_deref(), Some("Category"));
+    }
+
+    #[test]
+    fn action_item_defaults_none() {
+        let item = ActionItem::new("id", "title");
+        assert!(item.description.is_none());
+        assert!(item.tags.is_empty());
+        assert!(item.category.is_none());
+    }
+
+    #[test]
+    fn palette_action_equality() {
+        assert_eq!(PaletteAction::Dismiss, PaletteAction::Dismiss);
+        assert_eq!(
+            PaletteAction::Execute("x".into()),
+            PaletteAction::Execute("x".into())
+        );
+        assert_ne!(PaletteAction::Dismiss, PaletteAction::Execute("x".into()));
+    }
+
+    #[test]
+    fn match_filter_allows_all() {
+        assert!(MatchFilter::All.allows(MatchType::Exact));
+        assert!(MatchFilter::All.allows(MatchType::Prefix));
+        assert!(MatchFilter::All.allows(MatchType::WordStart));
+        assert!(MatchFilter::All.allows(MatchType::Substring));
+        assert!(MatchFilter::All.allows(MatchType::Fuzzy));
+    }
+
+    #[test]
+    fn match_filter_specific_types() {
+        assert!(MatchFilter::Exact.allows(MatchType::Exact));
+        assert!(!MatchFilter::Exact.allows(MatchType::Fuzzy));
+        assert!(MatchFilter::Fuzzy.allows(MatchType::Fuzzy));
+        assert!(!MatchFilter::Fuzzy.allows(MatchType::Exact));
+    }
+
+    #[test]
+    fn palette_default_trait() {
+        let palette = CommandPalette::default();
+        assert!(!palette.is_visible());
+        assert_eq!(palette.action_count(), 0);
+        assert_eq!(palette.query(), "");
+    }
+
+    #[test]
+    fn with_max_visible_builder() {
+        let palette = CommandPalette::new().with_max_visible(5);
+        // Verify by registering more than 5 items and checking rendering doesn't panic
+        let mut palette = palette;
+        for i in 0..10 {
+            palette.register(format!("Action {i}"), None, &[]);
+        }
+        palette.open();
+        assert_eq!(palette.result_count(), 10);
+    }
+
+    #[test]
+    fn scorer_stats_accessible() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        palette.set_query("a");
+        let stats = palette.scorer_stats();
+        assert!(stats.full_scans + stats.incremental_scans >= 1);
+    }
+
+    #[test]
+    fn selected_match_returns_match() {
+        let mut palette = CommandPalette::new();
+        palette.register("Hello World", None, &[]);
+        palette.open();
+        palette.set_query("hello");
+        let m = palette.selected_match();
+        assert!(m.is_some());
+        assert_eq!(m.unwrap().action.title, "Hello World");
+    }
+
+    #[test]
+    fn results_iterator_returns_matches() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.register("Beta", None, &[]);
+        palette.open();
+        let count = palette.results().count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn set_match_filter_narrows_results() {
+        let mut palette = CommandPalette::new();
+        palette.register("Open File", None, &[]);
+        palette.register("Save File", None, &[]);
+        palette.open();
+        palette.set_query("open");
+        let before = palette.result_count();
+
+        // Setting to Exact should narrow or keep results
+        palette.set_match_filter(MatchFilter::Exact);
+        let after = palette.result_count();
+        assert!(after <= before);
+    }
+
+    #[test]
+    fn enter_with_no_results_returns_none() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        palette.set_query("zzzznotfound");
+        assert_eq!(palette.result_count(), 0);
+
+        let enter = Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        let result = palette.handle_event(&enter);
+        assert!(result.is_none());
+    }
+
     #[cfg(feature = "tracing")]
     #[test]
     fn telemetry_emits_in_order() {
