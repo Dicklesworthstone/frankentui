@@ -8,7 +8,11 @@
 //! - Auto-sizing table columns
 //! - Responsive form layout
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use std::cell::Cell;
+
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -42,6 +46,11 @@ pub struct IntrinsicSizingDemo {
     tick_count: u64,
     /// Current terminal width.
     width: u16,
+    /// Manual width override for exploring breakpoint behaviour.
+    /// When `Some`, layouts use this instead of the real terminal width.
+    width_override: Option<u16>,
+    /// Cached content area from last render for mouse hit-testing.
+    last_content_area: Cell<Rect>,
 }
 
 impl Default for IntrinsicSizingDemo {
@@ -57,7 +66,15 @@ impl IntrinsicSizingDemo {
             scenario: 0,
             tick_count: 0,
             width: 80,
+            width_override: None,
+            last_content_area: Cell::new(Rect::default()),
         }
+    }
+
+    /// The effective width for layout breakpoint decisions.
+    /// Uses `width_override` when set, otherwise falls back to the real width.
+    fn effective_width(&self, real_width: u16) -> u16 {
+        self.width_override.unwrap_or(real_width)
     }
 
     fn scenario_title(&self) -> &'static str {
@@ -401,11 +418,17 @@ impl IntrinsicSizingDemo {
             return;
         }
 
+        let width_info = if let Some(w) = self.width_override {
+            format!(" [w={w}]")
+        } else {
+            String::new()
+        };
         let title = format!(
-            " Intrinsic Sizing Demo • {} ({}/{})",
+            " Intrinsic Sizing Demo • {} ({}/{}){}",
             self.scenario_title(),
             self.scenario + 1,
-            SCENARIO_COUNT
+            SCENARIO_COUNT,
+            width_info,
         );
 
         let style = Style::new()
@@ -444,12 +467,55 @@ impl Screen for IntrinsicSizingDemo {
                 (KeyCode::Left, Modifiers::NONE) | (KeyCode::Char('p'), Modifiers::NONE) => {
                     self.scenario = (self.scenario + SCENARIO_COUNT - 1) % SCENARIO_COUNT;
                 }
+                // Width override: toggle between narrow presets
+                (KeyCode::Char('w'), Modifiers::NONE) => {
+                    self.width_override = match self.width_override {
+                        None => Some(50),
+                        Some(w) if w < 60 => Some(80),
+                        Some(w) if w < 100 => Some(120),
+                        _ => None,
+                    };
+                }
+                // Increase simulated width
+                (KeyCode::Char('+') | KeyCode::Char('='), _) => {
+                    let current = self.width_override.unwrap_or(self.width);
+                    self.width_override = Some(current.saturating_add(10).min(300));
+                }
+                // Decrease simulated width
+                (KeyCode::Char('-'), _) => {
+                    let current = self.width_override.unwrap_or(self.width);
+                    self.width_override = Some(current.saturating_sub(10).max(20));
+                }
+                // Reset width override
+                (KeyCode::Char('r'), Modifiers::NONE) => {
+                    self.width_override = None;
+                }
                 _ => {}
             }
         }
 
         if let Event::Resize { width, .. } = event {
             self.width = *width;
+        }
+
+        // Mouse: scroll to cycle scenarios
+        if let Event::Mouse(mouse) = event {
+            let content = self.last_content_area.get();
+            if !content.is_empty() && content.contains(mouse.x, mouse.y) {
+                match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        self.scenario = (self.scenario + 1) % SCENARIO_COUNT;
+                    }
+                    MouseEventKind::ScrollUp => {
+                        self.scenario = (self.scenario + SCENARIO_COUNT - 1) % SCENARIO_COUNT;
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        // Click on content cycles to next scenario
+                        self.scenario = (self.scenario + 1) % SCENARIO_COUNT;
+                    }
+                    _ => {}
+                }
+            }
         }
 
         Cmd::None
@@ -467,11 +533,23 @@ impl Screen for IntrinsicSizingDemo {
 
         self.render_header(frame, chunks[0]);
 
+        let content = chunks[1];
+        self.last_content_area.set(content);
+
+        // When a width override is active, clamp the content area so
+        // layout breakpoints fire as if the terminal were narrower/wider.
+        let eff = self.effective_width(content.width);
+        let content = if eff < content.width {
+            Rect::new(content.x, content.y, eff, content.height)
+        } else {
+            content
+        };
+
         match self.scenario {
-            0 => self.render_adaptive_sidebar(frame, chunks[1]),
-            1 => self.render_flexible_cards(frame, chunks[1]),
-            2 => self.render_auto_table(frame, chunks[1]),
-            3 => self.render_responsive_form(frame, chunks[1]),
+            0 => self.render_adaptive_sidebar(frame, content),
+            1 => self.render_flexible_cards(frame, content),
+            2 => self.render_auto_table(frame, content),
+            3 => self.render_responsive_form(frame, content),
             _ => {}
         }
     }
@@ -487,12 +565,24 @@ impl Screen for IntrinsicSizingDemo {
                 action: "Switch scenario",
             },
             HelpEntry {
-                key: "←/→",
+                key: "←/→/n/p",
                 action: "Prev/Next scenario",
             },
             HelpEntry {
-                key: "n/p",
-                action: "Next/Prev scenario",
+                key: "w",
+                action: "Cycle width preset (50→80→120→auto)",
+            },
+            HelpEntry {
+                key: "+/-",
+                action: "Adjust simulated width ±10",
+            },
+            HelpEntry {
+                key: "r",
+                action: "Reset to terminal width",
+            },
+            HelpEntry {
+                key: "Click/Scroll",
+                action: "Cycle scenario",
             },
         ]
     }
@@ -669,5 +759,95 @@ mod tests {
     fn default_impl() {
         let screen = IntrinsicSizingDemo::default();
         assert_eq!(screen.scenario, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Mouse + keyboard shortcut tests (bd-iuvb.17.9.5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn width_override_cycles() {
+        let mut screen = IntrinsicSizingDemo::new();
+        assert!(screen.width_override.is_none());
+
+        screen.update(&press(KeyCode::Char('w')));
+        assert_eq!(screen.width_override, Some(50));
+
+        screen.update(&press(KeyCode::Char('w')));
+        assert_eq!(screen.width_override, Some(80));
+
+        screen.update(&press(KeyCode::Char('w')));
+        assert_eq!(screen.width_override, Some(120));
+
+        screen.update(&press(KeyCode::Char('w')));
+        assert!(screen.width_override.is_none());
+    }
+
+    #[test]
+    fn plus_minus_adjust_width() {
+        let mut screen = IntrinsicSizingDemo::new();
+        assert!(screen.width_override.is_none());
+
+        // '+' sets override from current width (80) + 10
+        screen.update(&press(KeyCode::Char('+')));
+        assert_eq!(screen.width_override, Some(90));
+
+        screen.update(&press(KeyCode::Char('-')));
+        assert_eq!(screen.width_override, Some(80));
+    }
+
+    #[test]
+    fn reset_clears_width_override() {
+        let mut screen = IntrinsicSizingDemo::new();
+        screen.update(&press(KeyCode::Char('w')));
+        assert!(screen.width_override.is_some());
+
+        screen.update(&press(KeyCode::Char('r')));
+        assert!(screen.width_override.is_none());
+    }
+
+    #[test]
+    fn mouse_scroll_cycles_scenario() {
+        use ftui_core::event::{MouseEvent, MouseEventKind};
+
+        let mut screen = IntrinsicSizingDemo::new();
+        screen.last_content_area.set(Rect::new(0, 1, 80, 23));
+        assert_eq!(screen.scenario, 0);
+
+        let scroll_down = Event::Mouse(MouseEvent::new(MouseEventKind::ScrollDown, 10, 10));
+        screen.update(&scroll_down);
+        assert_eq!(screen.scenario, 1, "Scroll down should advance scenario");
+
+        let scroll_up = Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, 10, 10));
+        screen.update(&scroll_up);
+        assert_eq!(screen.scenario, 0, "Scroll up should go back");
+    }
+
+    #[test]
+    fn mouse_click_cycles_scenario() {
+        use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let mut screen = IntrinsicSizingDemo::new();
+        screen.last_content_area.set(Rect::new(0, 1, 80, 23));
+        assert_eq!(screen.scenario, 0);
+
+        let click = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            40,
+            12,
+        ));
+        screen.update(&click);
+        assert_eq!(screen.scenario, 1, "Click should advance scenario");
+    }
+
+    #[test]
+    fn keybindings_has_at_least_three() {
+        let screen = IntrinsicSizingDemo::new();
+        let bindings = screen.keybindings();
+        assert!(
+            bindings.len() >= 3,
+            "Expected at least 3 keybindings, got {}",
+            bindings.len()
+        );
     }
 }
