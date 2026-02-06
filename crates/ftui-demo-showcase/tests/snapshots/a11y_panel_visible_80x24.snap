@@ -12,12 +12,12 @@
 ││⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││                             ││Status:NOMINAL FPS:0     ││
 ││Click → Visual Eff││Click → Data Viz             ││Click → Performance      ││
 │╰──────────────────╯╰────────────────────╔══════════════ A11y ══════════════╗╯│
-│╭Text FX · 2-Up (1/28)╮╭──────────Activit║ Theme: Cyberpunk AuroraStreaming…║ │
+│╭Text FX · 2-Up (1/28)╮╭──────────Activit║ Theme: Cyberpunk Aurora          ║ │
 ││Sample 1 of 3 · 2-Up ││SEV TIME  COMP  M║ [H] High Contrast: OFF           ║ │
 ││1 · None · S1        ││ INFO  00:02   CP║ [M] Reduced Motion: OFF          ║ │
 ││2 · FadeIn · S2      ││                 ║ [L] Large Text: OFF              ║ │
 ││## GFM Stress · Ledge││                 ║ Press A to close                 ║ │
-││e: next set · click →││Click → Action Ti║eline      ││Click → Markdown     ║ │
+││e: next set · click →││Click → Action Ti║                                  ║ │
 │╰─────────────────────╯╰─────────────────╚══════════════════════════════════╝ │
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit│
 ╰──────────────────────────────────────────────────────────────────────────────╯

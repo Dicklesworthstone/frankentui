@@ -1067,10 +1067,71 @@ fn app_help_overlay_120x40() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let mut app = AppModel::new();
     app.help_visible = true;
-    let mut pool = GraphemePool::new();
-    let mut frame = Frame::new(120, 40, &mut pool);
-    app.view(&mut frame);
-    assert_snapshot!("app_help_overlay_120x40", &frame.buffer);
+    snapshot_app(&mut app, 120, 40, "app_help_overlay_120x40");
+}
+
+#[test]
+fn app_help_overlay_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut app = AppModel::new();
+    app.help_visible = true;
+    snapshot_app(&mut app, 80, 24, "app_help_overlay_80x24");
+}
+
+#[test]
+fn app_help_overlay_mermaid_mega_showcase_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut app = AppModel::new();
+    app.current_screen = ScreenId::MermaidMegaShowcase;
+    app.help_visible = true;
+    snapshot_app(
+        &mut app,
+        80,
+        24,
+        "app_help_overlay_mermaid_mega_showcase_80x24",
+    );
+}
+
+#[test]
+fn app_help_overlay_mermaid_mega_showcase_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut app = AppModel::new();
+    app.current_screen = ScreenId::MermaidMegaShowcase;
+    app.help_visible = true;
+    snapshot_app(
+        &mut app,
+        120,
+        40,
+        "app_help_overlay_mermaid_mega_showcase_120x40",
+    );
+}
+
+#[test]
+fn app_help_overlay_advanced_text_editor_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut app = AppModel::new();
+    app.current_screen = ScreenId::AdvancedTextEditor;
+    app.help_visible = true;
+    snapshot_app(
+        &mut app,
+        80,
+        24,
+        "app_help_overlay_advanced_text_editor_80x24",
+    );
+}
+
+#[test]
+fn app_help_overlay_advanced_text_editor_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut app = AppModel::new();
+    app.current_screen = ScreenId::AdvancedTextEditor;
+    app.help_visible = true;
+    snapshot_app(
+        &mut app,
+        120,
+        40,
+        "app_help_overlay_advanced_text_editor_120x40",
+    );
 }
 
 #[test]

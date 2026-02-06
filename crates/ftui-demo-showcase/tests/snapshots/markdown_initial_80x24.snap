@@ -16,7 +16,7 @@
 │                         │ │                         │ │café        │Latin+ac││
 │Admonitions              │ │                         │ │α β γ δ     │Greek   ││
 │                         │ │                         │ │→ ← ↑ ↓     │Arrows  ││
-│??  NOTE                 │ │                         │ ╰──────────────────────╯
+│?  NOTE                  │ │                         │ ╰──────────────────────╯
 │┃ Information note with  │ │  [░░░░░░░░░░░░░░░░░░░░░]│                         
 │rich emphasis.           │ │  Detection: 0 indicators│ ╭Wrap: Word | Align: Le╮
 │                         │ │  Confidence: 0% | Chars:│ │w: cycle wrap | a: cyc│

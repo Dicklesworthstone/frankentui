@@ -33,7 +33,7 @@
 ││- [x] Tasks                 ││                                             ││   ║ [M] Reduced Motion: ON           ║││
 ││- [ ] Benchmarks            ││                                             ││   ║ [L] Large Text: ON               ║││
 ││- [x] Evidence log          ││                                             ││   ║ Press A to close                 ║││
-││e: next set · click → Visual││Click → Action Timeline                      ││Cli║k → Markdown                      ║││
+││e: next set · click → Visual││Click → Action Timeline                      ││Cli║                                  ║││
 │╰────────────────────────────╯╰─────────────────────────────────────────────╯╰───╚══════════════════════════════════╝╯│
 │g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

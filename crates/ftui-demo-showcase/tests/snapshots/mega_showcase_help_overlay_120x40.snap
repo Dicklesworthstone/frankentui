@@ -6,35 +6,35 @@
 └────────────────────────────────│  Tab             Select next node                  │────────────────────────────────┘
 ┌ Flow Basic [default] ──────────│  S-Tab           Select previous node              │────┐┌ Metrics ─────────────────┐
 │                                │  /               Sample filter/search              │    ││                          │
-│                                │  Enter           Accept match (search)             │    ││Mode: normal              │
-│                                │  Up/Down         Cycle matches (search)            │    ││Sample: Flow Basic        │
-│                                │  Ctrl+U          Clear filter                      │    ││Palette: default          │
-│                                │                                                    │    ││Node: -                   │
-│                                │ Render Config                                      │    ││Epoch: a0/l0/r0           │
+│                            ⣿⣿⣿⣿│  Enter           Accept match (search)             │    ││Mode: normal              │
+│                            ⣿⣿⣿⣿│  Up/Down         Cycle matches (search)            │    ││Sample: Flow Basic        │
+│                            ⣿⣿⣿⣿│  Ctrl+U          Clear filter                      │    ││Palette: default          │
+│                            ⣿⣿⣿⣿│                                                    │    ││Node: -                   │
+│                            ⣿⣿⣿⣿│ Render Config                                      │    ││Epoch: a0/l0/r0           │
 │                                │  t               Cycle tier (Auto/Compact/Normal/R │    ││VP: auto                  │
 │                                │  g               Toggle glyph mode (Unicode/ASCII) │    ││                          │
 │                                │  b               Cycle render mode (Auto/Cell/Brai │    ││Parse: -                  │
 │                                │  s               Toggle styles (classDef/style)    │    ││Layout: -                 │
-│                                │  w               Cycle wrap mode (None/Word/Char/W │    ││Render: -                 │
-│                                │  l               Cycle layout mode (Dense/Normal/S │    ││                          │
-│                                │  O               Cycle direction (TB/LR/RL/BT/auto │    ││                          │
-│                                │  r               Force relayout                    │    ││Cache: 0/0                │
-│                                │  p / P           Cycle palette forward / backward  │    ││Last: MISS                │
-│                                │                                                    │    ││                          │
-│                              ⢀⣆│ Viewport                                           │    ││                          │
-│                  ⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣾⣿│  + / =           Zoom in                           │    ││                          │
-│                  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  -               Zoom out                          │    ││                          │
-│                  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  0               Reset zoom (+ clear pan)          │    ││                          │
-│                  ⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⡿⠿│  f               Fit to view (+ clear pan)         │    ││                          │
-│                              ⠈⠑│  H / J / K / L   Pan left / down / up / right      │    ││                          │
+│                               ⣀│  w               Cycle wrap mode (None/Word/Char/W │    ││Render: -                 │
+│                            ⠒⠿⠿⣿│  l               Cycle layout mode (Dense/Normal/S │    ││                          │
+│                                │  A               Toggle auto-scale zoom (zoom-to-f │    ││                          │
+│                                │  O               Cycle direction (TB/LR/RL/BT/auto │    ││Cache: 0/0                │
+│                                │  r               Force relayout                    │    ││Last: MISS                │
+│                          ⢀⡄⢀⣀⡠⠤│  p / P           Cycle palette forward / backward  │    ││                          │
+│        ⢰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣿⣿⣷⣶⣶⣶│                                                    │    ││                          │
+│        ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿    │ Viewport                                           │    ││                          │
+│        ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿    │  + / =           Zoom in                           │    ││                          │
+│        ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿    │  -               Zoom out                          │    ││                          │
+│        ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│  0               Reset zoom (+ clear pan)          │    ││                          │
+│        ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠙⠫⠭⢍⣉⠉⠉│  f               Fit to view (+ clear pan)         │    ││                          │
+│                              ⠉⠉│  H / J / K / L   Pan left / down / up / right      │    ││                          │
 │                                │  ] / [           Increase / decrease viewport widt │    ││                          │
-│                                │  } / {           Increase / decrease viewport heig │    ││                          │
-│                                │  o               Reset viewport override           │    ││                          │
-│                                │                                                    │    ││                          │
-│                                │ Panels                                             │    ││                          │
-│                                │  m               Toggle metrics panel              │    ││                          │
+│                            ⣿⣿⣿⣿│  } / {           Increase / decrease viewport heig │    ││                          │
+│                            ⣿⣿⣿⣿│  o               Reset viewport override           │    ││                          │
+│                            ⣿⣿⣿⣿│                                                    │    ││                          │
+│                            ⣿⣿⣿⣿│ Panels                                             │    ││                          │
+│                            ⣿⣿⣿⣿│  m               Toggle metrics panel              │    ││                          │
 │                                │  c               Toggle controls strip             │    ││                          │
-│                                │  d               Toggle detail panel               │    ││                          │
-└────────────────────────────────│  i               Toggle status log                 │────┘└──────────────────────────┘
-NORMAL  j/k:sample u/U:nodes x/X:│  e               Toggle diagnostics (errors)       │t /:filter Ctrl+U:clear ?:help   
+└────────────────────────────────│  d               Toggle detail panel               │────┘└──────────────────────────┘
+NORMAL  j/k:sample u/U:nodes x/X:│  i               Toggle status log                 │t /:filter Ctrl+U:clear ?:help   
                                  ╰────────────────────────────────────────────────────╯                                 

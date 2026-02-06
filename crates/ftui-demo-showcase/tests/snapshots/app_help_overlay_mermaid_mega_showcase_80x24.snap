@@ -1,0 +1,24 @@
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
+╭────────────────────────────Mermaid Mega Showcase─────────────────────────────╮
+│┌────────────────────────────────────────────────────────────────────────────┐│
+││ Tier:auto Glyph:unicode Render:braille Wrap:wordchar Layout:auto Dir:auto P││
+││              ╔═════════ ⌨ Keyboard Shortcuts (Esc) ═════════╗              ││
+││              ║ Navigation                                   ║              ││
+││              ║ [1-9, 0]                 Switch to screen by ║              ││
+│└──────────────║─[Tab]                    Next screen─────────║──────────────┘│
+│┌ Flow Basic [d║f[Shift+Tab]              Previous screen─────║──────────────┐│
+││              ║                                              ║              ││
+││              ║ View             ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                  ║              ││
+││              ║ [?]                      Toggle this help ov ║              ││
+││              ║ [Esc]                    Dismiss top overlay ║              ││
+││              ║ [A]                      Toggle A11y panel   ║              ││
+││              ║ [F12]                    Toggle debug overla ║              ││
+││              ║            ⠸⠿⠿⠿⠿⢿⡿⠿⠿⢿⠇⠸⢿⠿⠿⠿⣿⠿⠿⠿⠿⠇            ║              ││
+││              ║ Editing          ⣬⣭⣵⣾⣷⣴⣿⣶⣭⣭                  ║              ││
+││              ║ [Ctrl+Z]                 Undo                ║              ││
+││              ║                                              ║              ││
+│└──────────────╚═══════════Press ? or Esc to close════════════╝──────────────┘│
+│NORMAL  j/k:sample u/U:nodes x/X:density t:tier p:palette H/J/K/L:pan []/{}:si│
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ Mermaid Mega Showcase [17/42]       Tab/Shift+Tab: next/prev       80x24 00:00 

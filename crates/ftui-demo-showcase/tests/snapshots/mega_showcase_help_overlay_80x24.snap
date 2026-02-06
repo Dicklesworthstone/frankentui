@@ -17,8 +17,8 @@
 │            │  s               Toggle styles (classDef/style)    │            │
 │            │  w               Cycle wrap mode (None/Word/Char/W │            │
 │            │  l               Cycle layout mode (Dense/Normal/S │            │
+│            │  A               Toggle auto-scale zoom (zoom-to-f │            │
 │            │  O               Cycle direction (TB/LR/RL/BT/auto │            │
-│            │  r               Force relayout                    │            │
-└────────────│  p / P           Cycle palette forward / backward  │────────────┘
-NORMAL  j/k:s│                                                    │an []/{}:size
+└────────────│  r               Force relayout                    │────────────┘
+NORMAL  j/k:s│  p / P           Cycle palette forward / backward  │an []/{}:size
              ╰────────────────────────────────────────────────────╯             

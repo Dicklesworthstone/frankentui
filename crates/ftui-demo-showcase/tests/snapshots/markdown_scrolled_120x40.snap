@@ -4,13 +4,13 @@
 │                                       │ │                                       │ │Dbl-Underline  Curly-Underline  [H│
 │Admonitions                            │ │                                       │ │                                  │
 │                                       │ │                                       │ │Error  Success  Warning  Link  Cod│
-│??  NOTE                               │ │                                       │ │                                  │
+│?  NOTE                                │ │                                       │ │                                  │
 │┃ Information note with rich emphasis. │ │                                       │ ╰──────────────────────────────────╯
 │                                       │ │                                       │                                     
 │?? TIP                                 │ │                                       │ ╭─────────Unicode Showcase─────────╮
 │┃ Use Tab and Shift+Tab to navigate.   │ │                                       │ │Text         │Type         │Cells │
 │                                       │ │                                       │ │Hello        │ASCII        │5     │
-│??  WARNING                            │ │                                       │ │????????     │CJK          │8     │
+│?  WARNING                             │ │                                       │ │????????     │CJK          │8     │
 │┃ Unsafe mode is forbidden in this     │ │                                       │ │??????????   │Hiragana     │10    │
 │project.                               │ │                                       │ │??????       │Emoji        │6     │
 │                                       │ │                                       │ │café         │Latin+accent │4     │

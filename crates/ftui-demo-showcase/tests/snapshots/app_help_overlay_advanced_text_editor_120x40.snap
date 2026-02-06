@@ -1,0 +1,40 @@
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms │ 8: DataViz │ 9: Files │ 0: Adv           
+╭─────────────────────────────────────────────────Advanced Text Editor─────────────────────────────────────────────────╮
+│╭───────────────────────────────────────────────────────Editor───────────────────────────────────────────────────────╮│
+││ 1  Welcome to the Advanced Text Editor!                                                                            ││
+││ 2                                                                                                                  ││
+││ 3  This is a demonstration of FrankenTUI's text editing capabilities.                                              ││
+││ 4  You can edit text,╔═════════════════════ ⌨ Keyboard Shortcuts (Esc) ═════════════════════╗                      ││
+││ 5                    ║ Navigation                                                           ║                      ││
+││ 6  Features:         ║ [1-9, 0]                    Switch to screen by number               ║                      ││
+││ 7  - Multi-line editi║g[Tab]                       Next screen                              ║                      ││
+││ 8  - Selection with S║i[Shift+Tab]                 Previous screen                          ║                      ││
+││ 9  - Undo (Ctrl+Z) an║ Redo (Ctrl+Y)                                                        ║                      ││
+││10  - Search (Ctrl+F) ║iViewext/prev match                                                   ║                      ││
+││11  - Replace (Ctrl+H)║s[?]                         Toggle this help overlay                 ║                      ││
+││12                    ║ [Esc]                       Dismiss top overlay                      ║                      ││
+││13  Try editing this t║x[A]                         Toggle A11y panel                        ║                      ││
+││14                    ║ [F12]                       Toggle debug overlay                     ║                      ││
+││15  Unicode support:  ║                                                                      ║                      ││
+││16  - Emoji: ?? ?? ?? ║ Editing                                                              ║                      ││
+││17  - CJK: ????????   ║ [Ctrl+Z]                    Undo                                     ║                      ││
+││18  - Accented: café r║s[Ctrl+Y / Ctrl+Shift+Z]     Redo                                     ║                      ││
+││19                    ║                                                                      ║                      ││
+││20  The editor uses a ║oGlobala structure internally for efficient                           ║                      ││
+││21  operations on larg║ [Ctrl+K]                    Open command palette                     ║                      ││
+││22  and proper Unicode║h[Ctrl+T]                    Cycle color theme                        ║                      ││
+││23                    ║ [H/M/L]                     A11y: high contrast, reduced motion, lar ║                      ││
+││                      ║ [Ctrl+1..6]                 Palette: filter by category              ║                      ││
+││                      ║ [Ctrl+0]                    Palette: clear category filter           ║                      ││
+││                      ║ [Ctrl+F]                    Palette: toggle favorite                 ║                      ││
+││                      ║ [Ctrl+Shift+F]              Palette: favorites only                  ║                      ││
+││                      ║ [q / Ctrl+C]                Quit application                         ║                      ││
+││                      ║ Categories: Tour Core Visuals Interact Text Systems                  ║                      ││
+││                      ║                                                                      ║                      ││
+││                      ╚═══════════════════════Press ? or Esc to close════════════════════════╝                      ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+│╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│
+│Ready | Ctrl+F: Search | Ctrl+H: Replace | ?: Help                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Advanced Text Editor [25/42]  Cyberpunk Aurora     Tab: next screen · Shift+Tab: prev │ tick:0 frm:0      120x40 00:00 

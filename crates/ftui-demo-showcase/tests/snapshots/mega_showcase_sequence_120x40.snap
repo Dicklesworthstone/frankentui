@@ -19,8 +19,8 @@
 │                                                                                          ││                          │
 │                                                                                          ││                          │
 │                                                                                          ││Cache: 0/0                │
-│ ⣿   Input   ⡇⢀⣠    ⣿  Reject  ⣿⡇⢀⣠   ⢸⣿ Validate ⣿⡇⢀⣠   ⢸⣿ Transform ⣿⡇⢀⣠  ⢸  Output   ⣿ ││Last: MISS                │
-│ ⣿           ⡏⠙retry⣿          ⣿⡏error⢹⣿          ⣿⡏data⠉⢹⣿           ⣿⡏resul           ⣿ ││                          │
+│ ⣿    Input    ⡇⢀⣠ ⢸   Reject    ⣿ ⣀⡄⢸⣿  Validate  ⣿⡇⢀⣠ ⣿  Transform   ⣿ ⣀⣼   Output    ⣿ ││Last: MISS                │
+│ ⣿             ⡏⠙ret             ⣿⠉erro            ⣿⡏data              ⣿⠉re             ⣿ ││                          │
 │                                                                                          ││                          │
 │                                                                                          ││                          │
 │                                                                                          ││                          │

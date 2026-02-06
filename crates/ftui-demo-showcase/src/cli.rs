@@ -85,11 +85,12 @@ SCREENS:
 
 KEYBINDINGS:
     1-9, 0                Switch to screens 1-10 by number
-    Tab / Shift-Tab       Cycle through all screens
+    Tab / Shift+Tab       Cycle through all screens
     Ctrl+K                Open command palette
     Ctrl+F                Palette: toggle favorite
     Ctrl+Shift+F          Palette: favorites-only filter
     ?                     Toggle help overlay
+    Esc                   Dismiss top overlay
     A                     Toggle A11y panel
     Ctrl+T                Cycle color theme
     Ctrl+P                Toggle performance HUD
@@ -771,6 +772,12 @@ mod tests {
         assert!(HELP_TEXT.contains("Ctrl+Y"));
         assert!(HELP_TEXT.contains("Ctrl+Shift+Z"));
         assert!(HELP_TEXT.contains("Ctrl+P"));
+    }
+
+    #[test]
+    fn help_text_mentions_esc_dismiss() {
+        assert!(HELP_TEXT.contains("Esc"));
+        assert!(HELP_TEXT.contains("Dismiss"));
     }
 
     #[test]

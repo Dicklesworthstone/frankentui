@@ -1,0 +1,24 @@
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
+╭─────────────────────────────Advanced Text Editor─────────────────────────────╮
+│╭───────────────────────────────────Editor───────────────────────────────────╮│
+││ 1  Welcome to the Advanced Text Editor!                                    ││
+││ 2            ╔═════════ ⌨ Keyboard Shortcuts (Esc) ═════════╗              ││
+││ 3  This is a ║eNavigationn of FrankenTUI's text editing capa║ilities.      ││
+││ 4  You can ed║t[1-9, 0]                    Switch to screen ║              ││
+││ 5            ║ [Tab]                       Next screen      ║              ││
+││ 6  Features: ║ [Shift+Tab]                 Previous screen  ║              ││
+││ 7  - Multi-li║e editing with line numbers                   ║              ││
+││ 8  - Selectio║ View Shift+Arrow keys                        ║              ││
+││ 9  - Undo (Ct║l[?]                         Toggle this help ║              ││
+││10  - Search (║t[Esc]                       Dismiss top over ║              ││
+││11  - Replace ║C[A]                         Toggle A11y pane ║              ││
+││12            ║ [F12]                       Toggle debug ove ║              ││
+││13  Try editin║ this text or loading your own content.       ║              ││
+││14            ║ Editing                                      ║              ││
+││15  Unicode su║p[Ctrl+Z]                    Undo             ║              ││
+││16  - Emoji:  ║ ?? ??                                        ║              ││
+││17  - CJK: ?? ╚═══════════Press ? or Esc to close════════════╝              ││
+│╰────────────────────────────────────────────────────────────────────────────╯│
+│Ready | Ctrl+F: Search | Ctrl+H: Replace | ?: Help                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ Advanced Text Editor [25/42]       Tab/Shift+Tab: next/prev        80x24 00:00 

@@ -775,46 +775,7 @@ pub struct HelpEntry {
     pub action: &'static str,
 }
 
-/// Render a centered help overlay with global and screen-specific keybindings.
-///
-/// # Design (bd-3vbf.7)
-///
-/// The overlay uses a professional modal design with:
-/// - Double border for visual emphasis
-/// - Two-column layout with aligned key/action pairs
-/// - Section headers for Global and screen-specific bindings
-/// - Styled keys with bold/accent styling
-/// - Dismissal hint in the title
-pub fn render_help_overlay(
-    current: ScreenId,
-    screen_bindings: &[HelpEntry],
-    frame: &mut Frame,
-    area: Rect,
-) {
-    // Size: 60% width, 70% height, clamped to reasonable bounds
-    let overlay_width = ((area.width as u32 * 60) / 100).clamp(36, 72) as u16;
-    let overlay_height = ((area.height as u32 * 70) / 100).clamp(14, 28) as u16;
-    let overlay_width = overlay_width.min(area.width.saturating_sub(2));
-    let overlay_height = overlay_height.min(area.height.saturating_sub(2));
-    let x = area.x + (area.width.saturating_sub(overlay_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(overlay_height)) / 2;
-    let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
-
-    // Professional modal frame with double border
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .title(" ⌨ Keyboard Shortcuts ")
-        .title_alignment(Alignment::Center)
-        .style(theme::help_overlay());
-
-    let inner = block.inner(overlay_area);
-    block.render(overlay_area, frame);
-
-    if inner.width < 10 || inner.height < 5 {
-        return;
-    }
-
+fn build_help_overlay_hints(current: ScreenId, screen_bindings: &[HelpEntry]) -> KeybindingHints {
     // Key styling: bold with accent color
     let key_style = Style::new().bold().fg(theme::accent::PRIMARY);
 
@@ -843,6 +804,7 @@ pub fn render_help_overlay(
         .global_entry_categorized("Shift+Tab", "Previous screen", HelpCategory::Navigation)
         // View
         .global_entry_categorized("?", "Toggle this help overlay", HelpCategory::View)
+        .global_entry_categorized("Esc", "Dismiss top overlay", HelpCategory::View)
         .global_entry_categorized("A", "Toggle A11y panel", HelpCategory::View)
         .global_entry_categorized("F12", "Toggle debug overlay", HelpCategory::View)
         // Editing
@@ -880,6 +842,51 @@ pub fn render_help_overlay(
         hints =
             hints.contextual_entry_categorized(entry.key, entry.action, screen_category.clone());
     }
+
+    hints
+}
+
+/// Render a centered help overlay with global and screen-specific keybindings.
+///
+/// # Design (bd-3vbf.7)
+///
+/// The overlay uses a professional modal design with:
+/// - Double border for visual emphasis
+/// - Two-column layout with aligned key/action pairs
+/// - Section headers for Global and screen-specific bindings
+/// - Styled keys with bold/accent styling
+/// - Dismissal hint in the title
+pub fn render_help_overlay(
+    current: ScreenId,
+    screen_bindings: &[HelpEntry],
+    frame: &mut Frame,
+    area: Rect,
+) {
+    // Size: 60% width, 70% height, clamped to reasonable bounds
+    let overlay_width = ((area.width as u32 * 60) / 100).clamp(36, 72) as u16;
+    let overlay_height = ((area.height as u32 * 70) / 100).clamp(14, 28) as u16;
+    let overlay_width = overlay_width.min(area.width.saturating_sub(2));
+    let overlay_height = overlay_height.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(overlay_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(overlay_height)) / 2;
+    let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
+
+    // Professional modal frame with double border
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .title(" ⌨ Keyboard Shortcuts (Esc) ")
+        .title_alignment(Alignment::Center)
+        .style(theme::help_overlay());
+
+    let inner = block.inner(overlay_area);
+    block.render(overlay_area, frame);
+
+    if inner.width < 10 || inner.height < 5 {
+        return;
+    }
+
+    let hints = build_help_overlay_hints(current, screen_bindings);
 
     let legend_width = {
         let mut width = display_width("Categories:");
@@ -1109,6 +1116,24 @@ mod tests {
         let cell = frame.buffer.get(center_x, center_y);
         // The overlay writes content, so this cell should not be default
         assert!(cell.is_some(), "Center cell should exist");
+    }
+
+    #[test]
+    fn help_overlay_hints_include_global_dismiss_key() {
+        let hints = build_help_overlay_hints(ScreenId::Dashboard, &[]);
+        let entries = hints.visible_entries();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.key == "[Esc]" && e.desc.contains("Dismiss")),
+            "expected [Esc] global dismiss entry, got: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.key == "[Ctrl+K]" && e.desc.contains("palette")),
+            "expected [Ctrl+K] global palette entry, got: {entries:?}"
+        );
     }
 
     #[test]

@@ -11,8 +11,8 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│ ⣶  Input  ⣶ ⣀⡄  ⢰ Reject  ⣶ ⣀⡄  ⢰⣶Validate⣶⡆⢀⣠   ⣶Transform ⣶ ⣀⡄ ⣶ Output  ⣶ │
-│ ⠿         ⠿⠉retry         ⠿⠉error⠿        ⠿⠏data⠉⠿          ⠿⠉resu         ⠿ │
+│ ⣿   Input   ⡇⢀⣠ ⣿  Reject   ⡇⢀⣠⢸⣿ Validate ⣿⡇⢀⣠⢸⣿ Transform ⣿⡇⢀⣸  Output   ⣿ │
+│ ⣿           ⡏⠙ret           ⡏⠙err          ⣿⡏data           ⣿⡏re           ⣿ │
 │                                                                              │
 │                                                                              │
 │                                                                              │
