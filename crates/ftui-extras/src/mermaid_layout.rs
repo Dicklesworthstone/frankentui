@@ -8094,8 +8094,8 @@ mod label_tests {
 
         assert_eq!(legend.entries.len(), 1);
         assert!(legend.entries[0].was_truncated);
-        assert!(legend.entries[0].text.ends_with("..."));
-        assert!(legend.entries[0].text.len() <= 30);
+        assert!(legend.entries[0].text.ends_with('…'));
+        assert!(visual_width(&legend.entries[0].text) <= 30);
     }
 
     #[test]
