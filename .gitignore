@@ -36,3 +36,6 @@ flamegraph*.svg
 
 # Test checksums (ephemeral)
 golden_checksums.txt
+
+# Local scratch DBs
+storage.sqlite3
