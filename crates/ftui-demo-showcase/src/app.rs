@@ -5147,6 +5147,329 @@ mod tests {
         assert_eq!(app.current_screen, ScreenId::GuidedTour);
     }
 
+    // -----------------------------------------------------------------------
+    // Mouse Dispatcher Tests (bd-iuvb.17.2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_mouse_down_starts_pending_drag() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 5, 5);
+        let result = app.dispatch_mouse(&down);
+        assert_eq!(result, MouseDispatchResult::Consumed);
+        assert!(matches!(
+            app.mouse_dispatcher.drag,
+            DragPhase::PendingDrag {
+                button: MouseButton::Left,
+                start_x: 5,
+                start_y: 5,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn dispatch_mouse_up_without_drag_triggers_click() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        // Direct MouseUp (no preceding Down) should still route as a click.
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 1, 0);
+        let result = app.dispatch_mouse(&up);
+        assert_eq!(result, MouseDispatchResult::Consumed);
+        // If position (1,0) is in tab bar, screen should have changed.
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
+    }
+
+    #[test]
+    fn dispatch_mouse_down_up_cycle_clicks_tab() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        // Down at tab area → pending drag
+        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
+        assert_eq!(app.dispatch_mouse(&down), MouseDispatchResult::Consumed);
+
+        // Up at same position → click activation
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 1, 0);
+        assert_eq!(app.dispatch_mouse(&up), MouseDispatchResult::Consumed);
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
+    }
+
+    #[test]
+    fn dispatch_drag_threshold_prevents_accidental_click() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let initial_screen = app.current_screen;
+
+        // Down at tab area
+        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
+        app.dispatch_mouse(&down);
+
+        // Small drag (1 cell) — below threshold
+        let drag1 = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 2, 0);
+        app.dispatch_mouse(&drag1);
+        assert!(matches!(
+            app.mouse_dispatcher.drag,
+            DragPhase::PendingDrag { .. }
+        ));
+
+        // Large drag (3+ cells) — exceeds threshold
+        let drag2 = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 4, 0);
+        app.dispatch_mouse(&drag2);
+        assert!(app.mouse_dispatcher.is_dragging());
+
+        // Up after drag — should NOT activate click, just end drag.
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 4, 0);
+        app.dispatch_mouse(&up);
+        assert_eq!(
+            app.current_screen, initial_screen,
+            "Drag end should not activate tab click"
+        );
+    }
+
+    #[test]
+    fn dispatch_right_click_does_not_activate() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let initial = app.current_screen;
+
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Right), 1, 0);
+        app.dispatch_mouse(&up);
+        assert_eq!(
+            app.current_screen, initial,
+            "Right-click should not switch tabs"
+        );
+    }
+
+    #[test]
+    fn dispatch_click_dismisses_palette() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        // Open palette.
+        app.command_palette.open();
+        assert!(app.command_palette.is_visible());
+
+        // Click anywhere should dismiss palette (highest priority).
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 50, 20);
+        let result = app.dispatch_mouse(&up);
+        assert_eq!(result, MouseDispatchResult::Consumed);
+        assert!(!app.command_palette.is_visible());
+    }
+
+    #[test]
+    fn dispatch_hover_coalesces_same_target() {
+        let mut app = AppModel::new();
+
+        // First hover update — changes from None.
+        let changed1 = app.mouse_dispatcher.update_hover(Some(HitId::new(1)));
+        assert!(changed1);
+        assert_eq!(app.mouse_dispatcher.hover_hit, Some(HitId::new(1)));
+
+        // Same target — no change.
+        let changed2 = app.mouse_dispatcher.update_hover(Some(HitId::new(1)));
+        assert!(!changed2);
+
+        // Different target — change.
+        let changed3 = app.mouse_dispatcher.update_hover(Some(HitId::new(2)));
+        assert!(changed3);
+        assert_eq!(app.mouse_dispatcher.hover_hit, Some(HitId::new(2)));
+
+        // Back to None — change.
+        let changed4 = app.mouse_dispatcher.update_hover(None);
+        assert!(changed4);
+        assert_eq!(app.mouse_dispatcher.hover_hit, None);
+    }
+
+    #[test]
+    fn dispatch_cancel_drag_resets_to_idle() {
+        let mut app = AppModel::new();
+        app.mouse_dispatcher.drag = DragPhase::Dragging {
+            button: MouseButton::Left,
+            start_x: 0,
+            start_y: 0,
+            last_x: 10,
+            last_y: 10,
+            hit_id: None,
+        };
+        assert!(app.mouse_dispatcher.is_dragging());
+        app.mouse_dispatcher.cancel_drag();
+        assert!(!app.mouse_dispatcher.is_dragging());
+        assert!(matches!(app.mouse_dispatcher.drag, DragPhase::Idle));
+    }
+
+    #[test]
+    fn dispatch_drag_hit_id_tracks_origin() {
+        let mut app = AppModel::new();
+        let target = HitId::new(42);
+
+        app.mouse_dispatcher.drag = DragPhase::PendingDrag {
+            button: MouseButton::Left,
+            start_x: 0,
+            start_y: 0,
+            hit_id: Some(target),
+        };
+        assert_eq!(app.mouse_dispatcher.drag_hit_id(), Some(target));
+
+        app.mouse_dispatcher.drag = DragPhase::Dragging {
+            button: MouseButton::Left,
+            start_x: 0,
+            start_y: 0,
+            last_x: 5,
+            last_y: 5,
+            hit_id: Some(target),
+        };
+        assert_eq!(app.mouse_dispatcher.drag_hit_id(), Some(target));
+
+        app.mouse_dispatcher.drag = DragPhase::Idle;
+        assert_eq!(app.mouse_dispatcher.drag_hit_id(), None);
+    }
+
+    #[test]
+    fn dispatch_move_not_consumed_when_no_hover_change() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        // Move in empty area — no hover change.
+        let move1 = MouseEvent::new(MouseEventKind::Moved, 60, 20);
+        let _r1 = app.dispatch_mouse(&move1);
+        // If there's a hit at that point it's Consumed, otherwise NotConsumed.
+        // Second identical move should not change hover.
+        let r2 = app.dispatch_mouse(&move1);
+        assert_eq!(r2, MouseDispatchResult::NotConsumed);
+    }
+
+    #[test]
+    fn handle_overlay_click_closes_help() {
+        let mut app = AppModel::new();
+        app.help_visible = true;
+        let action = app.handle_overlay_click(crate::chrome::OVERLAY_HELP_CLOSE);
+        assert_eq!(action, "overlay_help_close");
+        assert!(!app.help_visible);
+    }
+
+    #[test]
+    fn handle_overlay_click_closes_debug() {
+        let mut app = AppModel::new();
+        app.debug_visible = true;
+        let action = app.handle_overlay_click(crate::chrome::OVERLAY_DEBUG);
+        assert_eq!(action, "overlay_debug_close");
+        assert!(!app.debug_visible);
+    }
+
+    #[test]
+    fn handle_overlay_click_closes_perf_hud() {
+        let mut app = AppModel::new();
+        app.perf_hud_visible = true;
+        let action = app.handle_overlay_click(crate::chrome::OVERLAY_PERF_HUD);
+        assert_eq!(action, "overlay_perf_close");
+        assert!(!app.perf_hud_visible);
+    }
+
+    #[test]
+    fn handle_overlay_click_closes_a11y() {
+        let mut app = AppModel::new();
+        app.a11y_panel_visible = true;
+        let action = app.handle_overlay_click(crate::chrome::OVERLAY_A11Y);
+        assert_eq!(action, "overlay_a11y_close");
+        assert!(!app.a11y_panel_visible);
+    }
+
+    #[test]
+    fn handle_status_click_toggles_help() {
+        let mut app = AppModel::new();
+        assert!(!app.help_visible);
+
+        let a1 = app.handle_status_click(crate::chrome::STATUS_HELP_TOGGLE);
+        assert_eq!(a1, "status_toggle_help");
+        assert!(app.help_visible);
+
+        let a2 = app.handle_status_click(crate::chrome::STATUS_HELP_TOGGLE);
+        assert_eq!(a2, "status_toggle_help");
+        assert!(!app.help_visible);
+    }
+
+    #[test]
+    fn handle_status_click_toggles_palette() {
+        let mut app = AppModel::new();
+        assert!(!app.command_palette.is_visible());
+
+        app.handle_status_click(crate::chrome::STATUS_PALETTE_TOGGLE);
+        assert!(app.command_palette.is_visible());
+
+        app.handle_status_click(crate::chrome::STATUS_PALETTE_TOGGLE);
+        assert!(!app.command_palette.is_visible());
+    }
+
+    #[test]
+    fn handle_status_click_toggles_debug() {
+        let mut app = AppModel::new();
+        assert!(!app.debug_visible);
+
+        app.handle_status_click(crate::chrome::STATUS_DEBUG_TOGGLE);
+        assert!(app.debug_visible);
+
+        app.handle_status_click(crate::chrome::STATUS_DEBUG_TOGGLE);
+        assert!(!app.debug_visible);
+    }
+
+    #[test]
+    fn handle_status_click_toggles_perf() {
+        let mut app = AppModel::new();
+        assert!(!app.perf_hud_visible);
+
+        app.handle_status_click(crate::chrome::STATUS_PERF_TOGGLE);
+        assert!(app.perf_hud_visible);
+
+        app.handle_status_click(crate::chrome::STATUS_PERF_TOGGLE);
+        assert!(!app.perf_hud_visible);
+    }
+
+    #[test]
+    fn handle_status_click_toggles_a11y() {
+        let mut app = AppModel::new();
+        assert!(!app.a11y_panel_visible);
+
+        app.handle_status_click(crate::chrome::STATUS_A11Y_TOGGLE);
+        assert!(app.a11y_panel_visible);
+
+        app.handle_status_click(crate::chrome::STATUS_A11Y_TOGGLE);
+        assert!(!app.a11y_panel_visible);
+    }
+
     /// Verify the error boundary catches panics and shows fallback.
     #[test]
     fn integration_error_boundary() {
