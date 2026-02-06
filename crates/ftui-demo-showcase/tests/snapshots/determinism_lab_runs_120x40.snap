@@ -1,5 +1,5 @@
 ╭───────────────────────────────────────────────────Determinism Lab────────────────────────────────────────────────────╮
-│Determinism Lab  Seed: 7  Frame: 0  Status: Live  Fault: ON                                                           │
+│Determinism Lab  Seed: 7  Frame: 0  Status: Live  Fault: off                                                          │
 │                                                                                                                      │
 │┌Equivalence──────────────────────────────────────────────────────────┐┌Scene Preview────────────────────────────────┐│
 ││Strategy  Changes   Checksum             Status                      ││O............................................││
@@ -9,27 +9,27 @@
 ││                                                                     ││.............................................││
 ││Mismatch: DirtyRows first at (0, 0) delta 1                          ││.............................................││
 ││                                                                     ││.............................................││
-││Timeline: 7a15c0                                                     ││.............................................││
+││Timeline: d81b52                                                     ││.............................................││
 ││                                                                     ││M.....K..LW......JI.I..N....Y..DUF.......TA..││
-││Scenario: Baseline (10f)                                             ││...R.X...V....A.CH....O..F..GN....EZ...B...TK││
+││Scenario: Fault Injection (1f)                                       ││...R.X...V....A.CH....O..F..GN....EZ...B...TK││
 ││Controls: 1/2/3 strategy  [/] seed  Space pause  F fault  E export  E││.............................................││
-││No runs yet. Click a scenario or press Enter.                        ││.............................................││
-││Keys: Enter/R run selected  A run all  C log checksum                ││.............................................││
+││Selected run: Fault Injection (1f)                                   ││.............................................││
+││Seed: 7  Frames: 1  Fault: ON                                        ││.............................................││
+││First mismatch: frame 0 (DirtyRows) @ (0,0) count=1                  ││.............................................││
 ││                                                                     ││.............................................││
+││Full  OK  changes=73  checksum=0x5611d94c497a15c0                    ││.............................................││
+││timeline: 7a15c0                                                     ││S........Z.FA..BG.S...C.E........R...NA......││
 ││                                                                     ││.............................................││
-││                                                                     ││.............................................││
-││                                                                     ││S........Z.FA..BG.S...C.E........R...NA......││
-││                                                                     ││.............................................││
-││                                                                     │└─────────────────────────────────────────────┘│
-││                                                                     │┌Checks───────────────────────────────────────┐│
+││DirtyRows  MISMATCH  changes=73  checksum=0xcc3750257fd81b52         │└─────────────────────────────────────────────┘│
+││timeline: d81b52                                                     │┌Checks───────────────────────────────────────┐│
 ││                                                                     ││Scenarios  (click/Enter)  A all              ││
-││                                                                     ││> Baseline (10f)                             ││
-││                                                                     ││  Drift (30f)                                ││
-││                                                                     ││  Fault Injection (1f)                       ││
+││FullRedraw  OK  changes=1080  checksum=0x5611d94c497a15c0            ││  Baseline (10f)                             ││
+││timeline: 7a15c0                                                     ││  Drift (30f)                                ││
+││                                                                     ││> Fault Injection (1f)                       ││
 ││                                                                     ││Runs  (click row to inspect)                 ││
-││                                                                     ││                                             ││
-││                                                                     ││                                             ││
-││                                                                     ││                                             ││
+││                                                                     ││  OK Baseline (10f)                          ││
+││                                                                     ││  OK Drift (30f)                             ││
+││                                                                     ││> MISMATCH Fault Injection (1f)              ││
 ││                                                                     ││                                             ││
 ││                                                                     ││                                             ││
 ││                                                                     ││                                             ││

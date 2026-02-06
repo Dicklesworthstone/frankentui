@@ -536,6 +536,28 @@ mod regression_tests {
     use super::*;
     use std::time::Instant;
 
+    const COVERAGE_BUDGET_MULTIPLIER: u128 = 5;
+
+    fn is_coverage_run() -> bool {
+        std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
+    }
+
+    fn budget_us(default_us: u128) -> u128 {
+        if is_coverage_run() {
+            default_us.saturating_mul(COVERAGE_BUDGET_MULTIPLIER)
+        } else {
+            default_us
+        }
+    }
+
+    fn budget_ms(default_ms: u128) -> u128 {
+        if is_coverage_run() {
+            default_ms.saturating_mul(COVERAGE_BUDGET_MULTIPLIER)
+        } else {
+            default_ms
+        }
+    }
+
     /// Budget: Empty render < 50µs (with generous margin for CI)
     #[test]
     fn budget_empty_render() {
@@ -550,11 +572,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed() / 100;
 
-        // Allow 1ms for CI variability (budget is 50µs)
+        // Allow 1ms for CI variability (budget is 50µs), relaxed further under coverage runs.
+        let limit_us = budget_us(1_000);
         assert!(
-            elapsed.as_micros() < 1000,
-            "Empty render took {:?} (budget: 50µs, CI margin: 1ms)",
-            elapsed
+            elapsed.as_micros() < limit_us,
+            "Empty render took {:?} (budget: 50µs, limit: {}µs, coverage={})",
+            elapsed,
+            limit_us,
+            is_coverage_run()
         );
     }
 
@@ -572,11 +597,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed() / 10;
 
-        // Allow 10ms for CI variability (budget is 2ms)
+        // Allow 10ms for CI variability (budget is 2ms), relaxed further under coverage runs.
+        let limit_ms = budget_ms(10);
         assert!(
-            elapsed.as_millis() < 10,
-            "100 tasks render took {:?} (budget: 2ms, CI margin: 10ms)",
-            elapsed
+            elapsed.as_millis() < limit_ms,
+            "100 tasks render took {:?} (budget: 2ms, limit: {}ms, coverage={})",
+            elapsed,
+            limit_ms,
+            is_coverage_run()
         );
     }
 
@@ -591,11 +619,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed() / 100;
 
-        // Allow 1ms for CI variability (budget is 100µs per tick)
+        // Allow 1ms for CI variability (budget is 100µs per tick), relaxed further under coverage runs.
+        let limit_us = budget_us(1_000);
         assert!(
-            elapsed.as_micros() < 1000,
-            "Tick operation took {:?} (budget: 100µs, CI margin: 1ms)",
-            elapsed
+            elapsed.as_micros() < limit_us,
+            "Tick operation took {:?} (budget: 100µs, limit: {}µs, coverage={})",
+            elapsed,
+            limit_us,
+            is_coverage_run()
         );
     }
 
@@ -610,11 +641,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed() / 100;
 
-        // Allow 500µs for CI variability (budget is 10µs)
+        // Allow 500µs for CI variability (budget is 10µs), relaxed further under coverage runs.
+        let limit_us = budget_us(500);
         assert!(
-            elapsed.as_micros() < 500,
-            "Policy switch took {:?} (budget: 10µs, CI margin: 500µs)",
-            elapsed
+            elapsed.as_micros() < limit_us,
+            "Policy switch took {:?} (budget: 10µs, limit: {}µs, coverage={})",
+            elapsed,
+            limit_us,
+            is_coverage_run()
         );
     }
 
@@ -629,11 +663,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed() / 100;
 
-        // Allow 500µs for CI variability (budget is 20µs)
+        // Allow 500µs for CI variability (budget is 20µs), relaxed further under coverage runs.
+        let limit_us = budget_us(500);
         assert!(
-            elapsed.as_micros() < 500,
-            "Task spawn took {:?} (budget: 20µs, CI margin: 500µs)",
-            elapsed
+            elapsed.as_micros() < limit_us,
+            "Task spawn took {:?} (budget: 20µs, limit: {}µs, coverage={})",
+            elapsed,
+            limit_us,
+            is_coverage_run()
         );
     }
 
@@ -648,11 +685,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed();
 
-        // Should complete in under 100ms
+        // Should complete in under 100ms (relaxed under coverage runs).
+        let limit_ms = budget_ms(100);
         assert!(
-            elapsed.as_millis() < 100,
-            "100 ticks with 100 tasks took {:?} (budget: 100ms)",
-            elapsed
+            elapsed.as_millis() < limit_ms,
+            "100 ticks with 100 tasks took {:?} (limit: {}ms, coverage={})",
+            elapsed,
+            limit_ms,
+            is_coverage_run()
         );
     }
 
@@ -671,11 +711,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed() / 100;
 
-        // Allow 500µs for CI variability (budget is 10µs per cancel)
+        // Allow 500µs for CI variability (budget is 10µs per cancel), relaxed further under coverage runs.
+        let limit_us = budget_us(500);
         assert!(
-            elapsed.as_micros() < 500,
-            "Task cancel took {:?} (budget: 10µs, CI margin: 500µs)",
-            elapsed
+            elapsed.as_micros() < limit_us,
+            "Task cancel took {:?} (budget: 10µs, limit: {}µs, coverage={})",
+            elapsed,
+            limit_us,
+            is_coverage_run()
         );
     }
 
@@ -691,11 +734,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed();
 
-        // Should complete in under 50ms
+        // Should complete in under 50ms (relaxed under coverage runs).
+        let limit_ms = budget_ms(50);
         assert!(
-            elapsed.as_millis() < 50,
-            "50 sequential cancels took {:?} (budget: 50ms)",
-            elapsed
+            elapsed.as_millis() < limit_ms,
+            "50 sequential cancels took {:?} (limit: {}ms, coverage={})",
+            elapsed,
+            limit_ms,
+            is_coverage_run()
         );
     }
 
@@ -714,11 +760,14 @@ mod regression_tests {
         }
         let elapsed = start.elapsed();
 
-        // Should complete in under 100ms
+        // Should complete in under 100ms (relaxed under coverage runs).
+        let limit_ms = budget_ms(100);
         assert!(
-            elapsed.as_millis() < 100,
-            "Cancel during ticks took {:?} (budget: 100ms)",
-            elapsed
+            elapsed.as_millis() < limit_ms,
+            "Cancel during ticks took {:?} (limit: {}ms, coverage={})",
+            elapsed,
+            limit_ms,
+            is_coverage_run()
         );
     }
 }
