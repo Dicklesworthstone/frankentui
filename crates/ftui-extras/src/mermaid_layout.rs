@@ -2675,10 +2675,18 @@ fn compact_positions(
     direction: GraphDirection,
     max_passes: usize,
 ) {
+    // Hoist direction check out of the inner loops.
+    let is_horizontal = matches!(
+        direction,
+        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT
+    );
+
     for _pass in 0..max_passes {
         let mut moved = false;
 
         for rank_nodes in rank_order {
+            let min_gap = spacing.node_gap;
+
             for &node in rank_nodes {
                 if node >= node_rects.len() {
                     continue;
@@ -2691,20 +2699,14 @@ fn compact_positions(
                 for &pred in &graph.rev[node] {
                     if pred < node_rects.len() {
                         let c = node_rects[pred].center();
-                        neighbor_sum += match direction {
-                            GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => c.x,
-                            GraphDirection::LR | GraphDirection::RL => c.y,
-                        };
+                        neighbor_sum += if is_horizontal { c.x } else { c.y };
                         neighbor_count += 1;
                     }
                 }
                 for &succ in &graph.adj[node] {
                     if succ < node_rects.len() {
                         let c = node_rects[succ].center();
-                        neighbor_sum += match direction {
-                            GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => c.x,
-                            GraphDirection::LR | GraphDirection::RL => c.y,
-                        };
+                        neighbor_sum += if is_horizontal { c.x } else { c.y };
                         neighbor_count += 1;
                     }
                 }
@@ -2714,11 +2716,10 @@ fn compact_positions(
                 }
 
                 let ideal = neighbor_sum / neighbor_count as f64;
-                let current = match direction {
-                    GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => {
-                        node_rects[node].center().x
-                    }
-                    GraphDirection::LR | GraphDirection::RL => node_rects[node].center().y,
+                let current = if is_horizontal {
+                    node_rects[node].center().x
+                } else {
+                    node_rects[node].center().y
                 };
 
                 let delta = ideal - current;
@@ -2727,44 +2728,31 @@ fn compact_positions(
                 }
 
                 // Check if moving wouldn't overlap with rank neighbors.
-                let min_gap = spacing.node_gap;
-
                 let can_move = rank_nodes.iter().all(|&other| {
                     if other == node || other >= node_rects.len() {
                         return true;
                     }
-                    match direction {
-                        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => {
-                            let new_x = node_rects[node].x + delta;
-                            let other_x = node_rects[other].x;
-                            let half_size = node_rects[node].width / 2.0
-                                + node_rects[other].width / 2.0
-                                + min_gap;
-                            let new_center = new_x + node_rects[node].width / 2.0;
-                            let other_center = other_x + node_rects[other].width / 2.0;
-                            (new_center - other_center).abs() >= half_size - 0.01
-                        }
-                        GraphDirection::LR | GraphDirection::RL => {
-                            let new_y = node_rects[node].y + delta;
-                            let other_y = node_rects[other].y;
-                            let half_size = node_rects[node].height / 2.0
-                                + node_rects[other].height / 2.0
-                                + min_gap;
-                            let new_center = new_y + node_rects[node].height / 2.0;
-                            let other_center = other_y + node_rects[other].height / 2.0;
-                            (new_center - other_center).abs() >= half_size - 0.01
-                        }
+                    if is_horizontal {
+                        let new_center = node_rects[node].x + delta + node_rects[node].width / 2.0;
+                        let other_center = node_rects[other].x + node_rects[other].width / 2.0;
+                        let half_size =
+                            node_rects[node].width / 2.0 + node_rects[other].width / 2.0 + min_gap;
+                        (new_center - other_center).abs() >= half_size - 0.01
+                    } else {
+                        let new_center = node_rects[node].y + delta + node_rects[node].height / 2.0;
+                        let other_center = node_rects[other].y + node_rects[other].height / 2.0;
+                        let half_size = node_rects[node].height / 2.0
+                            + node_rects[other].height / 2.0
+                            + min_gap;
+                        (new_center - other_center).abs() >= half_size - 0.01
                     }
                 });
 
                 if can_move {
-                    match direction {
-                        GraphDirection::TB | GraphDirection::TD | GraphDirection::BT => {
-                            node_rects[node].x += delta;
-                        }
-                        GraphDirection::LR | GraphDirection::RL => {
-                            node_rects[node].y += delta;
-                        }
+                    if is_horizontal {
+                        node_rects[node].x += delta;
+                    } else {
+                        node_rects[node].y += delta;
                     }
                     moved = true;
                 }
@@ -4162,6 +4150,74 @@ fn edge_midpoint(waypoints: &[LayoutPoint]) -> LayoutPoint {
 ///
 /// Returns placed labels with their final positions and collision events.
 #[must_use]
+/// Spatial grid for fast rectangle collision queries during label placement.
+/// Divides the diagram area into uniform cells and tracks which occupied
+/// rectangle indices fall in each cell. Reduces per-candidate collision
+/// checks from O(n) to O(bucket_size).
+struct LabelGrid {
+    cells: Vec<Vec<usize>>,
+    cols: usize,
+    rows: usize,
+    origin_x: f64,
+    origin_y: f64,
+    cell_w: f64,
+    cell_h: f64,
+}
+
+impl LabelGrid {
+    fn new(bbox: &LayoutRect, cell_size: f64) -> Self {
+        let cell_size = cell_size.max(1.0);
+        let cols = ((bbox.width / cell_size).ceil() as usize).max(1);
+        let rows = ((bbox.height / cell_size).ceil() as usize).max(1);
+        Self {
+            cells: vec![Vec::new(); cols * rows],
+            cols,
+            rows,
+            origin_x: bbox.x,
+            origin_y: bbox.y,
+            cell_w: cell_size,
+            cell_h: cell_size,
+        }
+    }
+
+    fn insert(&mut self, idx: usize, rect: &LayoutRect, margin: f64) {
+        let x0 = ((rect.x - margin - self.origin_x) / self.cell_w)
+            .floor()
+            .max(0.0) as usize;
+        let y0 = ((rect.y - margin - self.origin_y) / self.cell_h)
+            .floor()
+            .max(0.0) as usize;
+        let x1 = (((rect.x + rect.width + margin - self.origin_x) / self.cell_w).ceil() as usize)
+            .min(self.cols);
+        let y1 = (((rect.y + rect.height + margin - self.origin_y) / self.cell_h).ceil() as usize)
+            .min(self.rows);
+        for cy in y0..y1 {
+            for cx in x0..x1 {
+                self.cells[cy * self.cols + cx].push(idx);
+            }
+        }
+    }
+
+    /// Return an iterator of occupied-rect indices that *might* overlap `rect`.
+    /// Caller must still do the precise `rects_overlap` check.
+    fn query_candidates(&self, rect: &LayoutRect, margin: f64) -> impl Iterator<Item = usize> + '_ {
+        let x0 = ((rect.x - margin - self.origin_x) / self.cell_w)
+            .floor()
+            .max(0.0) as usize;
+        let y0 = ((rect.y - margin - self.origin_y) / self.cell_h)
+            .floor()
+            .max(0.0) as usize;
+        let x1 = (((rect.x + rect.width + margin - self.origin_x) / self.cell_w).ceil() as usize)
+            .min(self.cols);
+        let y1 = (((rect.y + rect.height + margin - self.origin_y) / self.cell_h).ceil() as usize)
+            .min(self.rows);
+        (y0..y1).flat_map(move |cy| {
+            (x0..x1.min(self.cols))
+                .flat_map(move |cx| self.cells[cy * self.cols + cx].iter().copied())
+        })
+    }
+}
+
 pub fn place_labels(
     ir: &MermaidDiagramIr,
     layout: &DiagramLayout,
@@ -4184,6 +4240,20 @@ pub fn place_labels(
     }
     let edge_occ_end = occupied.len();
 
+    // Build spatial grid for fast collision queries. Cell size chosen to
+    // roughly match typical label dimensions for good bucket distribution.
+    let grid_bbox = LayoutRect {
+        x: layout.bounding_box.x - config.max_offset - config.label_margin,
+        y: layout.bounding_box.y - config.max_offset - config.label_margin,
+        width: layout.bounding_box.width + 2.0 * (config.max_offset + config.label_margin) + 20.0,
+        height: layout.bounding_box.height + 2.0 * (config.max_offset + config.label_margin) + 10.0,
+    };
+    let cell_size = 8.0; // ~2x typical label height for good distribution
+    let mut grid = LabelGrid::new(&grid_bbox, cell_size);
+    for (idx, occ) in occupied.iter().enumerate() {
+        grid.insert(idx, occ, config.label_margin);
+    }
+
     // Place node labels (use existing label_rect from layout, or compute).
     for node in &layout.nodes {
         if let Some(label_rect) = &node.label_rect {
@@ -4205,6 +4275,7 @@ pub fn place_labels(
                     spilled_to_legend: false,
                     leader_line: None,
                 };
+                grid.insert(occupied.len(), &placed.rect, config.label_margin);
                 occupied.push(placed.rect);
                 node_labels.push(placed);
             }
@@ -4259,10 +4330,13 @@ pub fn place_labels(
             };
 
             let mut collision_found = false;
-            for (occ_idx, occ) in occupied.iter().enumerate() {
-                if rects_overlap(&candidate, occ, config.label_margin) {
+            // Use spatial grid for fast candidate filtering instead of
+            // scanning all occupied rectangles.
+            for occ_idx in grid.query_candidates(&candidate, config.label_margin) {
+                if let Some(occ) = occupied.get(occ_idx)
+                    && rects_overlap(&candidate, occ, config.label_margin)
+                {
                     if collider.is_none() {
-                        // Classify collider: node, edge segment, or label.
                         collider = if occ_idx < node_count {
                             Some(LabelCollider::Node(occ_idx))
                         } else if occ_idx < edge_occ_end {
@@ -4320,6 +4394,7 @@ pub fn place_labels(
                     },
                 )),
             };
+            grid.insert(occupied.len(), &placed.rect, config.label_margin);
             occupied.push(placed.rect);
             legend_labels.push(placed);
             continue;
@@ -4345,6 +4420,7 @@ pub fn place_labels(
             spilled_to_legend: false,
             leader_line,
         };
+        grid.insert(occupied.len(), &placed.rect, config.label_margin);
         occupied.push(placed.rect);
         edge_labels.push(placed);
     }
