@@ -740,6 +740,287 @@ mod tests {
         assert!(found, "expected cleanup sequence for {label}");
     }
 
+    // -----------------------------------------------------------------------
+    // Kitty keyboard escape helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kitty_keyboard_enable_writes_correct_sequence() {
+        let mut buf = Vec::new();
+        TerminalSession::enable_kitty_keyboard(&mut buf).unwrap();
+        assert_eq!(buf, b"\x1b[>15u");
+    }
+
+    #[test]
+    fn kitty_keyboard_disable_writes_correct_sequence() {
+        let mut buf = Vec::new();
+        TerminalSession::disable_kitty_keyboard(&mut buf).unwrap();
+        assert_eq!(buf, b"\x1b[<u");
+    }
+
+    #[test]
+    fn kitty_keyboard_roundtrip_writes_both_sequences() {
+        let mut buf = Vec::new();
+        TerminalSession::enable_kitty_keyboard(&mut buf).unwrap();
+        TerminalSession::disable_kitty_keyboard(&mut buf).unwrap();
+        assert_eq!(buf, b"\x1b[>15u\x1b[<u");
+    }
+
+    // -----------------------------------------------------------------------
+    // SessionOptions exhaustive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn session_options_all_enabled() {
+        let opts = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        assert!(opts.alternate_screen);
+        assert!(opts.mouse_capture);
+        assert!(opts.bracketed_paste);
+        assert!(opts.focus_events);
+        assert!(opts.kitty_keyboard);
+    }
+
+    #[test]
+    fn session_options_debug_contains_all_fields() {
+        let opts = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: false,
+            bracketed_paste: true,
+            focus_events: false,
+            kitty_keyboard: true,
+        };
+        let debug = format!("{opts:?}");
+        assert!(debug.contains("alternate_screen: true"), "{debug}");
+        assert!(debug.contains("mouse_capture: false"), "{debug}");
+        assert!(debug.contains("bracketed_paste: true"), "{debug}");
+        assert!(debug.contains("focus_events: false"), "{debug}");
+        assert!(debug.contains("kitty_keyboard: true"), "{debug}");
+    }
+
+    #[test]
+    fn session_options_clone_independence() {
+        let opts = SessionOptions {
+            alternate_screen: true,
+            ..Default::default()
+        };
+        let mut cloned = opts.clone();
+        cloned.alternate_screen = false;
+        // Original unchanged
+        assert!(opts.alternate_screen);
+        assert!(!cloned.alternate_screen);
+    }
+
+    // -----------------------------------------------------------------------
+    // Escape sequence constants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sync_end_sequence_is_correct() {
+        assert_eq!(SYNC_END, b"\x1b[?2026l");
+    }
+
+    // -----------------------------------------------------------------------
+    // new_for_tests construction (requires test-helpers feature)
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn new_for_tests_default_options() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        assert!(!session.mouse_capture_enabled());
+        assert!(!session.alternate_screen_enabled);
+        assert!(!session.mouse_enabled);
+        assert!(!session.bracketed_paste_enabled);
+        assert!(!session.focus_events_enabled);
+        assert!(!session.kitty_keyboard_enabled);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn new_for_tests_preserves_options() {
+        let opts = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let session = TerminalSession::new_for_tests(opts).unwrap();
+        let stored = session.options();
+        assert!(stored.alternate_screen);
+        assert!(stored.mouse_capture);
+        assert!(stored.bracketed_paste);
+        assert!(stored.focus_events);
+        assert!(stored.kitty_keyboard);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn new_for_tests_flags_all_false_regardless_of_options() {
+        // Even if options request features, new_for_tests skips enabling them
+        let opts = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let session = TerminalSession::new_for_tests(opts).unwrap();
+        // Flags track *actual* enabled state, not *requested* state
+        assert!(!session.alternate_screen_enabled);
+        assert!(!session.mouse_enabled);
+        assert!(!session.bracketed_paste_enabled);
+        assert!(!session.focus_events_enabled);
+        assert!(!session.kitty_keyboard_enabled);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn mouse_capture_enabled_getter() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        assert!(!session.mouse_capture_enabled());
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn options_getter_returns_session_options() {
+        let opts = SessionOptions {
+            mouse_capture: true,
+            focus_events: true,
+            ..Default::default()
+        };
+        let session = TerminalSession::new_for_tests(opts).unwrap();
+        assert!(session.options().mouse_capture);
+        assert!(session.options().focus_events);
+        assert!(!session.options().alternate_screen);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn set_mouse_capture_idempotent_disable() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        // Already disabled - should be no-op
+        assert!(!session.mouse_capture_enabled());
+        session.set_mouse_capture(false).unwrap();
+        assert!(!session.mouse_capture_enabled());
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn set_mouse_capture_enable_then_idempotent_enable() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        // Enable mouse
+        session.set_mouse_capture(true).unwrap();
+        assert!(session.mouse_capture_enabled());
+        assert!(session.options().mouse_capture);
+        // Enable again - idempotent
+        session.set_mouse_capture(true).unwrap();
+        assert!(session.mouse_capture_enabled());
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn set_mouse_capture_toggle_roundtrip() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        assert!(!session.mouse_capture_enabled());
+
+        session.set_mouse_capture(true).unwrap();
+        assert!(session.mouse_capture_enabled());
+        assert!(session.options().mouse_capture);
+
+        session.set_mouse_capture(false).unwrap();
+        assert!(!session.mouse_capture_enabled());
+        assert!(!session.options().mouse_capture);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn set_mouse_capture_multiple_toggles() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        for _ in 0..5 {
+            session.set_mouse_capture(true).unwrap();
+            assert!(session.mouse_capture_enabled());
+            session.set_mouse_capture(false).unwrap();
+            assert!(!session.mouse_capture_enabled());
+        }
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn cleanup_clears_all_flags() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        })
+        .unwrap();
+        // Manually set flags to simulate features being enabled
+        session.alternate_screen_enabled = true;
+        session.mouse_enabled = true;
+        session.bracketed_paste_enabled = true;
+        session.focus_events_enabled = true;
+        session.kitty_keyboard_enabled = true;
+
+        session.cleanup();
+
+        assert!(!session.alternate_screen_enabled);
+        assert!(!session.mouse_enabled);
+        assert!(!session.bracketed_paste_enabled);
+        assert!(!session.focus_events_enabled);
+        assert!(!session.kitty_keyboard_enabled);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn cleanup_is_idempotent() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions {
+            mouse_capture: true,
+            ..Default::default()
+        })
+        .unwrap();
+        session.mouse_enabled = true;
+
+        session.cleanup();
+        assert!(!session.mouse_enabled);
+        // Second cleanup should be safe (no-op since flags already cleared)
+        session.cleanup();
+        assert!(!session.mouse_enabled);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn cleanup_only_disables_enabled_features() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        // Only enable mouse, leave others off
+        session.mouse_enabled = true;
+        // Cleanup should handle partial state gracefully
+        session.cleanup();
+        assert!(!session.mouse_enabled);
+        assert!(!session.alternate_screen_enabled);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn session_debug_format() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let debug = format!("{session:?}");
+        assert!(debug.contains("TerminalSession"), "{debug}");
+        assert!(debug.contains("mouse_enabled"), "{debug}");
+        assert!(debug.contains("alternate_screen_enabled"), "{debug}");
+    }
+
+    // -----------------------------------------------------------------------
+    // PTY integration tests
+    // -----------------------------------------------------------------------
+
     #[cfg(unix)]
     #[test]
     fn terminal_session_panic_cleanup_idempotent() {
