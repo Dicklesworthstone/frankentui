@@ -357,4 +357,58 @@ mod tests {
         assert!(a_count.get() > 0);
         assert!(b_count.get() > 0);
     }
+
+    #[test]
+    fn batch_scope_default_trait() {
+        let batch = BatchScope::default();
+        assert!(is_batching());
+        drop(batch);
+        assert!(!is_batching());
+    }
+
+    #[test]
+    fn triple_nested_batch() {
+        let obs = Observable::new(0);
+        let count = Rc::new(Cell::new(0u32));
+        let count_clone = Rc::clone(&count);
+
+        let _sub = obs.subscribe(move |_| {
+            count_clone.set(count_clone.get() + 1);
+        });
+
+        {
+            let _outer = BatchScope::new();
+            obs.set(1);
+            {
+                let _mid = BatchScope::new();
+                obs.set(2);
+                {
+                    let _inner = BatchScope::new();
+                    obs.set(3);
+                }
+                assert_eq!(count.get(), 0, "inner drop should not flush");
+            }
+            assert_eq!(count.get(), 0, "mid drop should not flush");
+        }
+        assert!(count.get() > 0, "outer drop should flush");
+    }
+
+    #[test]
+    fn empty_batch_no_panic() {
+        {
+            let _batch = BatchScope::new();
+            // No observable mutations
+        }
+        assert!(!is_batching());
+    }
+
+    #[test]
+    fn pending_count_zero_without_subscribers() {
+        let obs = Observable::new(0);
+        let batch = BatchScope::new();
+        obs.set(42);
+        // Without subscribers, set doesn't enqueue notifications
+        assert_eq!(batch.pending_count(), 0);
+        drop(batch);
+    }
 }

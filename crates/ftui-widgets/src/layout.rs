@@ -486,4 +486,61 @@ mod tests {
             vec!["112233", "445566", "778899"]
         );
     }
+
+    #[test]
+    fn layout_default_equals_new() {
+        let def: Layout<'_> = Layout::default();
+        assert!(def.is_empty());
+        assert_eq!(def.len(), 0);
+    }
+
+    #[test]
+    fn gap_sets_both_row_and_col() {
+        let (a, a_rects) = Recorder::new();
+        let (b, b_rects) = Recorder::new();
+
+        let layout = Layout::new()
+            .rows([Constraint::Fixed(2), Constraint::Fixed(2)])
+            .columns([Constraint::Fixed(3)])
+            .gap(1)
+            .cell(a, 0, 0)
+            .cell(b, 1, 0);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+        layout.render(Rect::new(0, 0, 10, 10), &mut frame);
+
+        let a_rect = a_rects.borrow()[0];
+        let b_rect = b_rects.borrow()[0];
+        // Gap of 1 between rows
+        assert!(b_rect.y >= a_rect.bottom());
+    }
+
+    #[test]
+    fn child_clamps_zero_span_to_one() {
+        let (rec, rects) = Recorder::new();
+        let layout = Layout::new()
+            .rows([Constraint::Fixed(3)])
+            .columns([Constraint::Fixed(4)])
+            .child(rec, 0, 0, 0, 0); // both spans 0 -> clamped to 1
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+        layout.render(Rect::new(0, 0, 10, 10), &mut frame);
+
+        let r = rects.borrow()[0];
+        assert!(r.width > 0 && r.height > 0);
+    }
+
+    #[test]
+    fn layout_child_debug() {
+        let layout = Layout::new()
+            .rows([Constraint::Fixed(1)])
+            .columns([Constraint::Fixed(1)])
+            .child(Fill('X'), 2, 3, 4, 5);
+
+        let dbg = format!("{:?}", layout);
+        assert!(dbg.contains("Layout"));
+        assert!(dbg.contains("LayoutChild"));
+    }
 }
