@@ -298,7 +298,7 @@ const GENERATOR_MAX_LABEL_LEN: u8 = 20;
 const GENERATOR_MIN_DENSITY: u8 = 0;
 const GENERATOR_MAX_DENSITY: u8 = 100;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct GeneratorParams {
     nodes: u16,
     branching: u8,
@@ -356,6 +356,15 @@ impl GeneratorRng {
     }
 }
 
+/// Structured generation report: captures generator parameters and resulting
+/// graph counts for logging and test reproducibility (bd-3oaig.5.10).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GenerationReport {
+    params: GeneratorParams,
+    actual_node_count: usize,
+    actual_edge_count: usize,
+}
+
 fn make_generator_label(index: usize, len: usize) -> String {
     let mut label = format!("N{index}");
     let mut cursor = 0usize;
@@ -368,7 +377,7 @@ fn make_generator_label(index: usize, len: usize) -> String {
     label
 }
 
-fn generate_parametric_flowchart(params: GeneratorParams) -> String {
+fn generate_parametric_flowchart(params: GeneratorParams) -> (String, GenerationReport) {
     let params = params.clamp();
     let nodes = params.nodes as usize;
     let branching = params.branching as usize;
@@ -409,10 +418,15 @@ fn generate_parametric_flowchart(params: GeneratorParams) -> String {
         attempts = attempts.saturating_add(1);
     }
 
-    for (src, dst) in edges {
+    for (src, dst) in &edges {
         out.push_str(&format!("    N{src} --> N{dst}\n"));
     }
-    out
+    let report = GenerationReport {
+        params,
+        actual_node_count: nodes,
+        actual_edge_count: edges.len(),
+    };
+    (out, report)
 }
 
 // ── Panel visibility ────────────────────────────────────────────────
@@ -872,6 +886,14 @@ pub const MEGA_TELEMETRY_NULLABLE_FIELDS: &[&str] = &[
     "layout_max_rank_width",
     "layout_total_bends",
     "layout_position_variance",
+    // Generator parameters (null when not using generated sample)
+    "generator_nodes",
+    "generator_branching",
+    "generator_density",
+    "generator_label_len",
+    "generator_seed",
+    "generator_actual_nodes",
+    "generator_actual_edges",
 ];
 
 /// Valid values for the `trigger` field in `MegaRecomputeEvent`.
@@ -1090,6 +1112,8 @@ pub struct MermaidMegaState {
     generator: GeneratorParams,
     /// Cached source for the generated sample.
     generated_source: String,
+    /// Last generation report (parameters + resulting counts).
+    last_generation_report: Option<GenerationReport>,
     /// Selected node index for inspect mode.
     selected_node: Option<usize>,
     /// Search query (when in search mode).
@@ -1115,7 +1139,7 @@ pub struct MermaidMegaState {
 impl Default for MermaidMegaState {
     fn default() -> Self {
         let generator = GeneratorParams::default();
-        let generated_source = generate_parametric_flowchart(generator);
+        let (generated_source, generation_report) = generate_parametric_flowchart(generator);
         Self {
             mode: ShowcaseMode::Normal,
             panels: PanelVisibility::default(),
@@ -1132,6 +1156,7 @@ impl Default for MermaidMegaState {
             selected_sample: 0,
             generator,
             generated_source,
+            last_generation_report: Some(generation_report),
             selected_node: None,
             search_query: None,
             search_matches: Vec::new(),
@@ -1213,7 +1238,9 @@ impl MermaidMegaState {
 
     fn regenerate_generated_source(&mut self) {
         self.generator = self.generator.clamp();
-        self.generated_source = generate_parametric_flowchart(self.generator);
+        let (source, report) = generate_parametric_flowchart(self.generator);
+        self.generated_source = source;
+        self.last_generation_report = Some(report);
     }
 
     fn on_generator_change(&mut self) {
@@ -2262,6 +2289,36 @@ impl MermaidMegaShowcaseScreen {
             push_opt_u64(&mut json, "layout_max_rank_width", None);
             push_opt_u64(&mut json, "layout_total_bends", None);
             push_opt_f64(&mut json, "layout_position_variance", None);
+        }
+        // Generator parameters (bd-3oaig.5.10)
+        if let Some(report) = &self.state.last_generation_report {
+            json.push_str(&format!(",\"generator_nodes\":{}", report.params.nodes));
+            json.push_str(&format!(
+                ",\"generator_branching\":{}",
+                report.params.branching
+            ));
+            json.push_str(&format!(",\"generator_density\":{}", report.params.density));
+            json.push_str(&format!(
+                ",\"generator_label_len\":{}",
+                report.params.label_len
+            ));
+            json.push_str(&format!(",\"generator_seed\":{}", report.params.seed));
+            json.push_str(&format!(
+                ",\"generator_actual_nodes\":{}",
+                report.actual_node_count
+            ));
+            json.push_str(&format!(
+                ",\"generator_actual_edges\":{}",
+                report.actual_edge_count
+            ));
+        } else {
+            json.push_str(",\"generator_nodes\":null");
+            json.push_str(",\"generator_branching\":null");
+            json.push_str(",\"generator_density\":null");
+            json.push_str(",\"generator_label_len\":null");
+            json.push_str(",\"generator_seed\":null");
+            json.push_str(",\"generator_actual_nodes\":null");
+            json.push_str(",\"generator_actual_edges\":null");
         }
         json.push('}');
         json
@@ -4759,6 +4816,11 @@ mod tests {
         assert_eq!(state.generator.label_len, 6);
         assert_eq!(state.generator.seed, 1);
         assert!(!state.generated_source.is_empty());
+        assert!(state.last_generation_report.is_some());
+        let report = state.last_generation_report.unwrap();
+        assert_eq!(report.params.nodes, GeneratorParams::default().nodes);
+        assert!(report.actual_node_count > 0);
+        assert!(report.actual_edge_count > 0);
         assert!(state.selected_node.is_none());
         assert!(state.search_query.is_none());
         assert_eq!(state.analysis_epoch, 0);
@@ -5440,7 +5502,10 @@ mod tests {
         r#""layout_iterations":12,"layout_iterations_max":200,"#,
         r#""layout_budget_exceeded_layout":false,"layout_crossings":0,"#,
         r#""layout_ranks":3,"layout_max_rank_width":2,"#,
-        r#""layout_total_bends":2,"layout_position_variance":1.5}"#,
+        r#""layout_total_bends":2,"layout_position_variance":1.5,"#,
+        r#""generator_nodes":24,"generator_branching":2,"generator_density":25,"#,
+        r#""generator_label_len":6,"generator_seed":1,"#,
+        r#""generator_actual_nodes":24,"generator_actual_edges":50}"#,
     );
 
     /// Sample JSONL fixture: cache hit with null layout stats.
@@ -5462,7 +5527,10 @@ mod tests {
         r#""layout_iterations":null,"layout_iterations_max":null,"#,
         r#""layout_budget_exceeded_layout":null,"layout_crossings":null,"#,
         r#""layout_ranks":null,"layout_max_rank_width":null,"#,
-        r#""layout_total_bends":null,"layout_position_variance":null}"#,
+        r#""layout_total_bends":null,"layout_position_variance":null,"#,
+        r#""generator_nodes":null,"generator_branching":null,"generator_density":null,"#,
+        r#""generator_label_len":null,"generator_seed":null,"#,
+        r#""generator_actual_nodes":null,"generator_actual_edges":null}"#,
     );
 
     #[test]
@@ -5687,6 +5755,11 @@ mod tests {
         parts.push(r#""layout_crossings":0,"layout_ranks":3"#.to_string());
         parts.push(r#""layout_max_rank_width":2,"layout_total_bends":1"#.to_string());
         parts.push(r#""layout_position_variance":0.5"#.to_string());
+        parts.push(
+            r#""generator_nodes":24,"generator_branching":2,"generator_density":25"#.to_string(),
+        );
+        parts.push(r#""generator_label_len":6,"generator_seed":1"#.to_string());
+        parts.push(r#""generator_actual_nodes":24,"generator_actual_edges":50"#.to_string());
         format!("{{{}}}", parts.join(","))
     }
 
@@ -6023,5 +6096,112 @@ mod tests {
         // Must pass the structured validator too.
         validate_mega_telemetry_line(&line)
             .expect("recompute_jsonl_line output should pass structured validator");
+    }
+
+    // ── Generator report tests (bd-3oaig.5.10) ──────────────────────
+
+    #[test]
+    fn generate_parametric_flowchart_returns_report() {
+        let params = GeneratorParams::default();
+        let (source, report) = generate_parametric_flowchart(params);
+        assert!(!source.is_empty());
+        assert_eq!(report.params.nodes, params.nodes);
+        assert_eq!(report.params.branching, params.branching);
+        assert_eq!(report.params.density, params.density);
+        assert_eq!(report.params.label_len, params.label_len);
+        assert_eq!(report.params.seed, params.seed);
+        assert_eq!(report.actual_node_count, params.nodes as usize);
+        assert!(report.actual_edge_count > 0);
+    }
+
+    #[test]
+    fn generate_parametric_flowchart_deterministic() {
+        let params = GeneratorParams {
+            nodes: 30,
+            branching: 3,
+            density: 50,
+            label_len: 8,
+            seed: 42,
+        };
+        let (source1, report1) = generate_parametric_flowchart(params);
+        let (source2, report2) = generate_parametric_flowchart(params);
+        assert_eq!(
+            source1, source2,
+            "same params+seed must produce identical output"
+        );
+        assert_eq!(report1.actual_node_count, report2.actual_node_count);
+        assert_eq!(report1.actual_edge_count, report2.actual_edge_count);
+    }
+
+    #[test]
+    fn generate_parametric_flowchart_different_seeds_differ() {
+        let params1 = GeneratorParams {
+            seed: 1,
+            ..GeneratorParams::default()
+        };
+        let params2 = GeneratorParams {
+            seed: 99,
+            ..GeneratorParams::default()
+        };
+        let (source1, _) = generate_parametric_flowchart(params1);
+        let (source2, _) = generate_parametric_flowchart(params2);
+        // Different seeds should produce different edge sets (density > 0)
+        assert_ne!(
+            source1, source2,
+            "different seeds should produce different output"
+        );
+    }
+
+    #[test]
+    fn generate_parametric_flowchart_scales_with_nodes() {
+        let small = GeneratorParams {
+            nodes: 10,
+            ..GeneratorParams::default()
+        };
+        let large = GeneratorParams {
+            nodes: 100,
+            ..GeneratorParams::default()
+        };
+        let (_, report_small) = generate_parametric_flowchart(small);
+        let (_, report_large) = generate_parametric_flowchart(large);
+        assert_eq!(report_small.actual_node_count, 10);
+        assert_eq!(report_large.actual_node_count, 100);
+        assert!(
+            report_large.actual_edge_count > report_small.actual_edge_count,
+            "more nodes should produce more edges"
+        );
+    }
+
+    #[test]
+    fn generation_report_in_jsonl_when_generated_sample_selected() {
+        // Verify that generator params appear in JSONL output
+        let jsonl = make_valid_mega_jsonl();
+        let obj: serde_json::Value = serde_json::from_str(&jsonl).unwrap();
+        assert_eq!(obj["generator_nodes"], 24);
+        assert_eq!(obj["generator_branching"], 2);
+        assert_eq!(obj["generator_density"], 25);
+        assert_eq!(obj["generator_label_len"], 6);
+        assert_eq!(obj["generator_seed"], 1);
+        assert_eq!(obj["generator_actual_nodes"], 24);
+        assert_eq!(obj["generator_actual_edges"], 50);
+    }
+
+    #[test]
+    fn generation_report_nullable_fields_in_schema() {
+        // All generator fields must be in the nullable fields list
+        for field in [
+            "generator_nodes",
+            "generator_branching",
+            "generator_density",
+            "generator_label_len",
+            "generator_seed",
+            "generator_actual_nodes",
+            "generator_actual_edges",
+        ] {
+            assert!(
+                MEGA_TELEMETRY_NULLABLE_FIELDS.contains(&field),
+                "generator field '{field}' missing from MEGA_TELEMETRY_NULLABLE_FIELDS"
+            );
+        }
     }
 }
