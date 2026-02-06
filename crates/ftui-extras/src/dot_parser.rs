@@ -37,15 +37,36 @@ use crate::mermaid::{
 pub fn looks_like_dot(input: &str) -> bool {
     let trimmed = skip_leading_comments(input);
     let lower = trimmed.trim_start().to_ascii_lowercase();
-    lower.starts_with("digraph")
-        || lower.starts_with("strict ")
-        || (lower.starts_with("graph") && !lower.starts_with("graph "))
-        || (lower.starts_with("graph ")
-            && !lower.starts_with("graph td")
-            && !lower.starts_with("graph lr")
-            && !lower.starts_with("graph rl")
-            && !lower.starts_with("graph bt")
-            && !lower.starts_with("graph tb"))
+    if lower.starts_with("digraph") || lower.starts_with("strict ") {
+        return true;
+    }
+    if !lower.starts_with("graph") {
+        return false;
+    }
+    // After "graph", the next char must be whitespace or '{' (not an ident continuation)
+    let after_graph = &lower[5..];
+    if after_graph.is_empty() {
+        return false;
+    }
+    let next = after_graph.as_bytes()[0];
+    if next == b'{' || next == b'\n' || next == b'\r' || next == b'\t' {
+        return true;
+    }
+    if next != b' ' {
+        return false;
+    }
+    // "graph " — check if the next token is a Mermaid direction keyword
+    let after_space = after_graph[1..].trim_start();
+    let mermaid_directions = ["td", "tb", "lr", "rl", "bt"];
+    for dir in &mermaid_directions {
+        if let Some(rest) = after_space.strip_prefix(dir) {
+            // Must be a complete token: followed by whitespace, newline, ';', or EOF
+            if rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_whitespace() || c == ';') {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Parse a DOT string into a [`MermaidIrParse`].
@@ -901,11 +922,29 @@ mod tests {
         assert!(looks_like_dot("strict digraph { }"));
         assert!(looks_like_dot("  digraph { }"));
         assert!(looks_like_dot("// comment\ndigraph { }"));
+        assert!(looks_like_dot("graph G { }"));
+        assert!(looks_like_dot("graph { }"));
+        assert!(looks_like_dot("graph\t{ }"));
+        assert!(looks_like_dot("graph\n{ }"));
+
+        // DOT graph names that START WITH a Mermaid direction should still be DOT
+        assert!(looks_like_dot("graph tdb { }"));
+        assert!(looks_like_dot("graph btree { }"));
+        assert!(looks_like_dot("graph lrp { }"));
+        assert!(looks_like_dot("graph rlx { }"));
 
         // Mermaid formats should NOT match
         assert!(!looks_like_dot("graph TD"));
         assert!(!looks_like_dot("graph LR"));
+        assert!(!looks_like_dot("graph RL"));
+        assert!(!looks_like_dot("graph BT"));
+        assert!(!looks_like_dot("graph TB"));
+        assert!(!looks_like_dot("graph td;"));
         assert!(!looks_like_dot("flowchart LR"));
+
+        // Not valid DOT or Mermaid
+        assert!(!looks_like_dot("graphFoo { }"));
+        assert!(!looks_like_dot("random text"));
     }
 
     #[test]
