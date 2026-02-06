@@ -542,7 +542,11 @@ impl Painter {
     }
 
     /// Compute the half-block character for a 1×2 sub-pixel block.
-    fn halfblock_cell(&self, px_x: i32, px_y: i32) -> (char, Option<PackedRgba>, Option<PackedRgba>) {
+    fn halfblock_cell(
+        &self,
+        px_x: i32,
+        px_y: i32,
+    ) -> (char, Option<PackedRgba>, Option<PackedRgba>) {
         let top = self.get(px_x, px_y);
         let bot = self.get(px_x, px_y + 1);
         let top_color = self.color_at(px_x, px_y);
