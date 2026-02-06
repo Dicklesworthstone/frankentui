@@ -10,10 +10,7 @@ set -euo pipefail
 # - Emit step start/end events with duration and stable hashes.
 #
 # Keybindings used:
-# - Tab: Cycle view (matrix/evidence/simulation)
 # - j: Select capability
-# - P: Cycle simulated profile
-# - R: Reset to detected profile
 # - E: Export JSONL capability report
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,8 +34,7 @@ jsonl_init
 RUN_ID="${E2E_RUN_ID}"
 SEED="${E2E_SEED}"
 
-TAB=$'\t'
-CAPS_SEND_SEQUENCE="${TAB}${TAB}jjPRe"
+CAPS_SEND_SEQUENCE="jE"
 INLINE_UI_HEIGHT="${FTUI_DEMO_UI_HEIGHT:-12}"
 
 ensure_demo_bin() {
@@ -109,6 +105,7 @@ emit_caps_case_end() {
     local rows="$6"
     local output_file="$7"
     local report_file="$8"
+    local canonical_file="${9:-}"
 
     local ts
     ts="$(e2e_timestamp)"
@@ -119,14 +116,27 @@ emit_caps_case_end() {
 
     local output_sha=""
     local output_bytes=0
+    local stable_output_sha=""
+    local stable_output_file="$output_file"
+    if [[ -n "$canonical_file" && -f "$canonical_file" ]]; then
+        stable_output_file="$canonical_file"
+    fi
     if output_sha=$(sha256_file "$output_file" 2>/dev/null); then
         output_bytes=$(wc -c < "$output_file" 2>/dev/null | tr -d ' ')
+    fi
+    if stable_output_sha=$(sha256_file "$stable_output_file" 2>/dev/null); then
+        :
+    else
+        stable_output_sha="$output_sha"
     fi
 
     local report_sha=""
     local report_bytes=0
     if report_sha=$(sha256_file "$report_file" 2>/dev/null); then
         report_bytes=$(wc -c < "$report_file" 2>/dev/null | tr -d ' ')
+        # Treat exported report hash as the deterministic checksum source.
+        stable_output_sha="$report_sha"
+        stable_output_file="$report_file"
     fi
 
     if command -v jq >/dev/null 2>&1; then
@@ -148,6 +158,8 @@ emit_caps_case_end() {
             --argjson seed "$seed_json" \
             --arg output_file "$output_file" \
             --arg output_sha256 "$output_sha" \
+            --arg stable_output_file "$stable_output_file" \
+            --arg stable_output_sha256 "$stable_output_sha" \
             --argjson output_bytes "${output_bytes:-0}" \
             --arg report_file "$report_file" \
             --arg report_sha256 "$report_sha" \
@@ -157,7 +169,7 @@ emit_caps_case_end() {
             --argjson simulation_active "$CAPS_SIMULATION_ACTIVE" \
             --argjson capabilities "$CAPS_CAPABILITIES_JSON" \
             --argjson metrics "$CAPS_METRICS_JSON" \
-            '{schema_version:$schema_version,type:$type,timestamp:$timestamp,run_id:$run_id,seed:$seed,case:$case,step:$step,status:$status,duration_ms:$duration_ms,action:$action,details:$details,mode:$mode,hash_key:$hash_key,cols:$cols,rows:$rows,output_file:$output_file,output_sha256:$output_sha256,output_bytes:$output_bytes,report_file:$report_file,report_sha256:$report_sha256,report_bytes:$report_bytes,detected_profile:$detected_profile,simulated_profile:$simulated_profile,simulation_active:$simulation_active,capabilities:$capabilities,metrics:$metrics}')"
+            '{schema_version:$schema_version,type:$type,timestamp:$timestamp,run_id:$run_id,seed:$seed,case:$case,step:$step,status:$status,duration_ms:$duration_ms,action:$action,details:$details,mode:$mode,hash_key:$hash_key,cols:$cols,rows:$rows,output_file:$output_file,output_sha256:$output_sha256,stable_output_file:$stable_output_file,stable_output_sha256:$stable_output_sha256,output_bytes:$output_bytes,report_file:$report_file,report_sha256:$report_sha256,report_bytes:$report_bytes,detected_profile:$detected_profile,simulated_profile:$simulated_profile,simulation_active:$simulation_active,capabilities:$capabilities,metrics:$metrics}')"
     else
         jsonl_emit "{\"schema_version\":\"${E2E_JSONL_SCHEMA_VERSION}\",\"type\":\"case_step_end\",\"timestamp\":\"$(json_escape "$ts")\",\"run_id\":\"$(json_escape "$RUN_ID")\",\"seed\":${seed_json},\"case\":\"$(json_escape "$name")\",\"step\":\"terminal_caps_flow\",\"status\":\"$(json_escape "$status")\",\"duration_ms\":${duration_ms},\"action\":\"pty_run\",\"details\":\"screen=$CAPS_SCREEN\",\"mode\":\"$(json_escape "$mode")\",\"hash_key\":\"$(json_escape "$hash_key")\",\"cols\":${cols},\"rows\":${rows},\"output_file\":\"$(json_escape "$output_file")\",\"report_file\":\"$(json_escape "$report_file")\"}"
     fi
@@ -169,9 +181,9 @@ run_caps_case() {
     local cols="$3"
     local rows="$4"
 
-    LOG_FILE="$E2E_LOG_DIR/${name}.log"
-    local output_file="$E2E_LOG_DIR/${name}.pty"
-    local report_file="$E2E_LOG_DIR/${name}_report.jsonl"
+    LOG_FILE="$E2E_LOG_DIR/${name}_${RUN_ID}.log"
+    local output_file="$E2E_LOG_DIR/${name}_${RUN_ID}.pty"
+    local report_file="$E2E_LOG_DIR/${name}_${RUN_ID}_report.jsonl"
 
     export E2E_CONTEXT_MODE="$mode"
     export E2E_CONTEXT_COLS="$cols"
@@ -184,22 +196,24 @@ run_caps_case() {
     local start_ms end_ms duration_ms
     start_ms="$(e2e_now_ms)"
 
-    local screen_mode_env=("FTUI_DEMO_SCREEN_MODE=$mode")
+    local exit_code=0
+    export FTUI_DEMO_SCREEN_MODE="$mode"
     if [[ "$mode" == "inline" ]]; then
-        screen_mode_env+=("FTUI_DEMO_UI_HEIGHT=$INLINE_UI_HEIGHT")
+        export FTUI_DEMO_UI_HEIGHT="$INLINE_UI_HEIGHT"
+    else
+        unset FTUI_DEMO_UI_HEIGHT
     fi
 
-    local exit_code=0
     if PTY_COLS="$cols" \
         PTY_ROWS="$rows" \
         PTY_SEND_DELAY_MS=400 \
         PTY_SEND="$CAPS_SEND_SEQUENCE" \
         PTY_TIMEOUT=6 \
+        PTY_CANONICALIZE=1 \
         FTUI_DEMO_EXIT_AFTER_MS=2000 \
         FTUI_TERMCAPS_DIAGNOSTICS=true \
         FTUI_TERMCAPS_DETERMINISTIC=true \
         FTUI_TERMCAPS_REPORT_PATH="$report_file" \
-        "${screen_mode_env[@]}" \
         pty_run "$output_file" "$DEMO_BIN"; then
         exit_code=0
     else
@@ -235,9 +249,10 @@ run_caps_case() {
         record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"
     fi
 
+    local canonical_file="${PTY_CANONICAL_FILE:-}"
     caps_report_load "$report_file"
-    jsonl_pty_capture "$output_file" "$cols" "$rows" "$exit_code" ""
-    emit_caps_case_end "$name" "$status" "$duration_ms" "$mode" "$cols" "$rows" "$output_file" "$report_file"
+    jsonl_pty_capture "$output_file" "$cols" "$rows" "$exit_code" "$canonical_file"
+    emit_caps_case_end "$name" "$status" "$duration_ms" "$mode" "$cols" "$rows" "$output_file" "$report_file" "$canonical_file"
 
     if [[ "$status" != "passed" ]]; then
         return 1

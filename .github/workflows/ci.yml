@@ -156,6 +156,7 @@ jobs:
           python - <<'PY'
           from __future__ import annotations
 
+          import os
           from pathlib import Path
           import sys
 
@@ -163,17 +164,32 @@ jobs:
           if not lcov_path.exists():
               raise SystemExit("lcov.info not found; coverage gate cannot run")
 
+          def threshold(crate: str, default: float) -> float:
+              env_key = f"COVERAGE_MIN_{crate.upper().replace('-', '_')}"
+              raw = os.environ.get(env_key)
+              if raw is None:
+                  return default
+              try:
+                  return float(raw)
+              except ValueError as exc:
+                  raise SystemExit(f"Invalid {env_key}={raw!r}: {exc}") from exc
+
           thresholds = {
-              "ftui-render": 80.0,
-              "ftui-core": 80.0,
-              "ftui-style": 80.0,
-              "ftui-text": 80.0,
-              "ftui-layout": 75.0,
-              "ftui-runtime": 75.0,
-              "ftui-widgets": 70.0,
-              "ftui-extras": 60.0,
+              # Correctness-critical crates get stricter floors.
+              "ftui-render": threshold("ftui-render", 85.0),
+              "ftui-core": threshold("ftui-core", 85.0),
+              "ftui-style": threshold("ftui-style", 80.0),
+              "ftui-text": threshold("ftui-text", 80.0),
+              "ftui-layout": threshold("ftui-layout", 75.0),
+              "ftui-runtime": threshold("ftui-runtime", 75.0),
+              "ftui-widgets": threshold("ftui-widgets", 70.0),
+              "ftui-extras": threshold("ftui-extras", 60.0),
           }
-          overall_target = 70.0
+          overall_raw = os.environ.get("COVERAGE_MIN_OVERALL", "75.0")
+          try:
+              overall_target = float(overall_raw)
+          except ValueError as exc:
+              raise SystemExit(f"Invalid COVERAGE_MIN_OVERALL={overall_raw!r}: {exc}") from exc
 
           crate_totals = {crate: {"LF": 0, "LH": 0} for crate in thresholds}
           overall = {"LF": 0, "LH": 0}
@@ -339,6 +355,11 @@ jobs:
         with:
           toolchain: nightly
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -349,7 +370,28 @@ jobs:
           key: ${{ runner.os }}-cargo-e2e-widget-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Widget API E2E tests
+        env:
+          E2E_JSONL_VALIDATE: "1"
+          E2E_JSONL_VALIDATE_MODE: strict
         run: ./scripts/widget_api_e2e.sh
+
+      - name: Validate Widget API E2E JSONL logs
+        if: always()
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(/tmp/widget_api_e2e_*/widget_api_e2e.jsonl)
+          if (( ${#files[@]} == 0 )); then
+            echo "No widget API JSONL logs found under /tmp/widget_api_e2e_*/widget_api_e2e.jsonl"
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            echo "Validating $file"
+            python3 tests/e2e/lib/validate_jsonl.py "$file" \
+              --schema tests/e2e/lib/e2e_jsonl_schema.json \
+              --registry tests/e2e/lib/e2e_hash_registry.json \
+              --strict
+          done
 
       - name: Upload logs on failure
         if: failure()
@@ -376,6 +418,11 @@ jobs:
           toolchain: nightly
           components: rustfmt, clippy
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -386,7 +433,28 @@ jobs:
           key: ${{ runner.os }}-cargo-demo-showcase-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run demo showcase E2E tests
+        env:
+          E2E_JSONL_VALIDATE: "1"
+          E2E_JSONL_VALIDATE_MODE: strict
         run: ./scripts/demo_showcase_e2e.sh
+
+      - name: Validate demo showcase JSONL logs
+        if: always()
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(/tmp/ftui-demo-e2e-*/demo_showcase_e2e.jsonl)
+          if (( ${#files[@]} == 0 )); then
+            echo "No demo showcase JSONL logs found under /tmp/ftui-demo-e2e-*/demo_showcase_e2e.jsonl"
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            echo "Validating $file"
+            python3 tests/e2e/lib/validate_jsonl.py "$file" \
+              --schema tests/e2e/lib/e2e_jsonl_schema.json \
+              --registry tests/e2e/lib/e2e_hash_registry.json \
+              --strict
+          done
 
       - name: Run snapshot tests
         run: cargo test -p ftui-demo-showcase --test screen_snapshots
@@ -434,7 +502,28 @@ jobs:
           key: ${{ runner.os }}-cargo-e2e-pty-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run PTY E2E tests
+        env:
+          E2E_JSONL_VALIDATE: "1"
+          E2E_JSONL_VALIDATE_MODE: strict
         run: ./scripts/e2e_test.sh
+
+      - name: Validate PTY E2E JSONL logs
+        if: always()
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(/tmp/ftui_e2e_*/e2e.jsonl)
+          if (( ${#files[@]} == 0 )); then
+            echo "No PTY E2E JSONL logs found under /tmp/ftui_e2e_*/e2e.jsonl"
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            echo "Validating $file"
+            python3 tests/e2e/lib/validate_jsonl.py "$file" \
+              --schema tests/e2e/lib/e2e_jsonl_schema.json \
+              --registry tests/e2e/lib/e2e_hash_registry.json \
+              --strict
+          done
 
       - name: Upload E2E logs on failure
         if: failure()
