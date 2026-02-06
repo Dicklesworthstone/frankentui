@@ -567,13 +567,13 @@ mod tests {
 
     #[test]
     fn no_cache_key_default() {
-        let key = NoCacheKey::default();
+        let key = NoCacheKey;
         assert_eq!(CacheKey::<u32>::cache_key(&key, &100), None);
     }
 
     #[test]
     fn hash_key_default() {
-        let key = HashKey::default();
+        let key = HashKey;
         let result = CacheKey::<u32>::cache_key(&key, &42);
         assert!(result.is_some());
     }
