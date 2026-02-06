@@ -8,9 +8,10 @@
 //! - `Spinner` with multiple frame sets
 //! - System information panel
 
+use std::cell::Cell;
 use std::time::Duration;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::timer::{DisplayFormat, Timer};
 use ftui_extras::traceback::{Traceback, TracebackFrame};
@@ -95,6 +96,10 @@ pub struct AdvancedFeatures {
     macro_recorder: Option<FilteredEventRecorder>,
     macro_recording: Option<InputMacro>,
     macro_playback: MacroPlayback,
+    layout_traceback: Cell<Rect>,
+    layout_timers: Cell<Rect>,
+    layout_macro: Cell<Rect>,
+    layout_info: Cell<Rect>,
 }
 
 impl Default for AdvancedFeatures {
@@ -122,6 +127,10 @@ impl AdvancedFeatures {
             macro_recorder: None,
             macro_recording: None,
             macro_playback: MacroPlayback::new(),
+            layout_traceback: Cell::new(Rect::default()),
+            layout_timers: Cell::new(Rect::default()),
+            layout_macro: Cell::new(Rect::default()),
+            layout_info: Cell::new(Rect::default()),
         }
     }
 
@@ -697,7 +706,49 @@ impl Screen for AdvancedFeatures {
             return Cmd::None;
         }
 
+        // Number keys for direct panel focus
+        if let Event::Key(KeyEvent {
+            code,
+            kind: KeyEventKind::Press,
+            modifiers: Modifiers::NONE,
+            ..
+        }) = event
+        {
+            match code {
+                KeyCode::Char('1') => self.focus = Panel::Traceback,
+                KeyCode::Char('2') => self.focus = Panel::Timers,
+                KeyCode::Char('3') => self.focus = Panel::Macro,
+                KeyCode::Char('4') => self.focus = Panel::Info,
+                _ => {}
+            }
+        }
+
         self.apply_event(event);
+
+        // Mouse handling
+        if let Event::Mouse(mouse) = event {
+            let (x, y) = (mouse.x, mouse.y);
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if self.layout_traceback.get().contains(x, y) {
+                        self.focus = Panel::Traceback;
+                    } else if self.layout_timers.get().contains(x, y) {
+                        self.focus = Panel::Timers;
+                    } else if self.layout_macro.get().contains(x, y) {
+                        self.focus = Panel::Macro;
+                    } else if self.layout_info.get().contains(x, y) {
+                        self.focus = Panel::Info;
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    self.focus = self.focus.next();
+                }
+                MouseEventKind::ScrollUp => {
+                    self.focus = self.focus.prev();
+                }
+                _ => {}
+            }
+        }
 
         Cmd::None
     }
@@ -724,6 +775,7 @@ impl Screen for AdvancedFeatures {
             .split(main[0]);
 
         // Left: traceback
+        self.layout_traceback.set(cols[0]);
         self.render_traceback_panel(frame, cols[0]);
 
         // Right: split into timers, macro, and info
@@ -735,6 +787,9 @@ impl Screen for AdvancedFeatures {
             ])
             .split(cols[1]);
 
+        self.layout_timers.set(right_rows[0]);
+        self.layout_macro.set(right_rows[1]);
+        self.layout_info.set(right_rows[2]);
         self.render_timers_panel(frame, right_rows[0]);
         self.render_macro_panel(frame, right_rows[1]);
         self.render_info_panel(frame, right_rows[2]);
@@ -756,6 +811,10 @@ impl Screen for AdvancedFeatures {
                 action: "Switch panel",
             },
             HelpEntry {
+                key: "1/2/3/4",
+                action: "Focus panel directly",
+            },
+            HelpEntry {
                 key: "r",
                 action: "Reset timers",
             },
@@ -766,6 +825,14 @@ impl Screen for AdvancedFeatures {
             HelpEntry {
                 key: "Macro: r/p/l +/-",
                 action: "Record/play/loop/speed",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Focus panel",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Cycle panels",
             },
         ]
     }
@@ -844,5 +911,134 @@ mod tests {
         let tb = build_sample_traceback();
         assert_eq!(tb.frames().len(), 3);
         assert_eq!(tb.exception_type(), "ConnectionError");
+    }
+
+    fn render_screen(screen: &AdvancedFeatures) {
+        use ftui_render::grapheme_pool::GraphemePool;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+    }
+
+    fn mouse_click(x: u16, y: u16) -> Event {
+        use ftui_core::event::MouseEvent;
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn mouse_scroll_down(x: u16, y: u16) -> Event {
+        use ftui_core::event::MouseEvent;
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn mouse_scroll_up(x: u16, y: u16) -> Event {
+        use ftui_core::event::MouseEvent;
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn number_keys_focus_panels() {
+        let mut screen = AdvancedFeatures::new();
+        assert_eq!(screen.focus, Panel::Traceback);
+        screen.update(&press(KeyCode::Char('2')));
+        assert_eq!(screen.focus, Panel::Timers);
+        screen.update(&press(KeyCode::Char('3')));
+        assert_eq!(screen.focus, Panel::Macro);
+        screen.update(&press(KeyCode::Char('4')));
+        assert_eq!(screen.focus, Panel::Info);
+        screen.update(&press(KeyCode::Char('1')));
+        assert_eq!(screen.focus, Panel::Traceback);
+    }
+
+    #[test]
+    fn click_traceback_focuses() {
+        let mut screen = AdvancedFeatures::new();
+        screen.focus = Panel::Info;
+        render_screen(&screen);
+        let tb = screen.layout_traceback.get();
+        assert!(!tb.is_empty());
+        let cx = tb.x + tb.width / 2;
+        let cy = tb.y + tb.height / 2;
+        screen.update(&mouse_click(cx, cy));
+        assert_eq!(screen.focus, Panel::Traceback);
+    }
+
+    #[test]
+    fn click_timers_focuses() {
+        let mut screen = AdvancedFeatures::new();
+        render_screen(&screen);
+        let t = screen.layout_timers.get();
+        assert!(!t.is_empty());
+        let cx = t.x + t.width / 2;
+        let cy = t.y + t.height / 2;
+        screen.update(&mouse_click(cx, cy));
+        assert_eq!(screen.focus, Panel::Timers);
+    }
+
+    #[test]
+    fn click_macro_focuses() {
+        let mut screen = AdvancedFeatures::new();
+        render_screen(&screen);
+        let m = screen.layout_macro.get();
+        assert!(!m.is_empty());
+        let cx = m.x + m.width / 2;
+        let cy = m.y + m.height / 2;
+        screen.update(&mouse_click(cx, cy));
+        assert_eq!(screen.focus, Panel::Macro);
+    }
+
+    #[test]
+    fn click_info_focuses() {
+        let mut screen = AdvancedFeatures::new();
+        render_screen(&screen);
+        let info = screen.layout_info.get();
+        assert!(!info.is_empty());
+        let cx = info.x + info.width / 2;
+        let cy = info.y + info.height / 2;
+        screen.update(&mouse_click(cx, cy));
+        assert_eq!(screen.focus, Panel::Info);
+    }
+
+    #[test]
+    fn scroll_cycles_panels() {
+        let mut screen = AdvancedFeatures::new();
+        assert_eq!(screen.focus, Panel::Traceback);
+        screen.update(&mouse_scroll_down(40, 12));
+        assert_eq!(screen.focus, Panel::Timers);
+        screen.update(&mouse_scroll_down(40, 12));
+        assert_eq!(screen.focus, Panel::Macro);
+        screen.update(&mouse_scroll_up(40, 12));
+        assert_eq!(screen.focus, Panel::Timers);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_hints() {
+        let screen = AdvancedFeatures::new();
+        let bindings = screen.keybindings();
+        assert!(bindings.len() >= 7);
+        let keys: Vec<&str> = bindings.iter().map(|b| b.key).collect();
+        assert!(keys.contains(&"1/2/3/4"));
+        assert!(keys.contains(&"Click"));
+        assert!(keys.contains(&"Scroll"));
+    }
+
+    #[test]
+    fn render_no_panic() {
+        let screen = AdvancedFeatures::new();
+        render_screen(&screen);
     }
 }
