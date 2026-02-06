@@ -59,6 +59,8 @@ pub const STATUS_A11Y_TOGGLE: u32 = STATUS_HIT_BASE + 2;
 pub const STATUS_PERF_TOGGLE: u32 = STATUS_HIT_BASE + 3;
 /// Status bar: debug toggle.
 pub const STATUS_DEBUG_TOGGLE: u32 = STATUS_HIT_BASE + 4;
+/// Status bar: mouse capture toggle.
+pub const STATUS_MOUSE_TOGGLE: u32 = STATUS_HIT_BASE + 5;
 
 const TAB_ACCENT_ALPHA: u8 = 220;
 
@@ -762,6 +764,17 @@ pub fn render_status_bar(state: &StatusBarState<'_>, frame: &mut Frame, area: Re
         total_content = left_content_len + center_content_len + right_content_len;
     }
 
+    // Pre-compute hit region positions for clickable elements (bd-iuvb.17.4).
+    let mouse_hit_x = area.x
+        + 1
+        + display_width(state.screen_title) as u16
+        + 1
+        + display_width(&position_str) as u16
+        + display_width(&theme_str) as u16;
+    let mouse_hit_w = display_width(&mouse_label) as u16;
+    let a11y_hit_x = mouse_hit_x + mouse_hit_w;
+    let a11y_hit_w = display_width(&a11y_label) as u16;
+
     // Build spans for the line
     let mut spans = Vec::with_capacity(14);
 
@@ -820,6 +833,21 @@ pub fn render_status_bar(state: &StatusBarState<'_>, frame: &mut Frame, area: Re
     let line = Line::from_spans(spans);
     let bar = Paragraph::new(Text::from_lines([line]));
     bar.render(area, frame);
+
+    // Register hit regions for clickable status bar elements (bd-iuvb.17.4).
+    // Uses pre-computed positions from above (before spans consumed the strings).
+    if mouse_hit_w > 0 {
+        frame.register_hit_region(
+            Rect::new(mouse_hit_x, area.y, mouse_hit_w, 1),
+            HitId::new(STATUS_MOUSE_TOGGLE),
+        );
+    }
+    if a11y_hit_w > 0 {
+        frame.register_hit_region(
+            Rect::new(a11y_hit_x, area.y, a11y_hit_w, 1),
+            HitId::new(STATUS_A11Y_TOGGLE),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +891,9 @@ pub fn render_a11y_panel(state: &A11yPanelState<'_>, frame: &mut Frame, area: Re
         .style(theme::help_overlay())
         .render(overlay_area, frame);
     block.render(overlay_area, frame);
+
+    // Register hit region for the entire panel (click to dismiss) (bd-iuvb.17.4).
+    frame.register_hit_region(overlay_area, HitId::new(OVERLAY_A11Y));
 
     if inner.width < 10 || inner.height < 4 {
         return;
@@ -1027,6 +1058,15 @@ pub fn render_help_overlay(
 
     let inner = block.inner(overlay_area);
     block.render(overlay_area, frame);
+
+    // Register hit regions for mouse interaction (bd-iuvb.17.4).
+    // Content area: scrolling / click-to-dismiss.
+    frame.register_hit_region(inner, HitId::new(OVERLAY_HELP_CONTENT));
+    // Title bar (top row): close button area.
+    frame.register_hit_region(
+        Rect::new(overlay_area.x, overlay_area.y, overlay_area.width, 1),
+        HitId::new(OVERLAY_HELP_CLOSE),
+    );
 
     if inner.width < 10 || inner.height < 5 {
         return;

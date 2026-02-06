@@ -3866,6 +3866,7 @@ impl AppModel {
         // Hit test at the mouse position using the cached grid.
         let hit = self.hit_test_full(mouse);
         let hit_id = hit.map(|(id, _, _)| id);
+        let hit_layer = hit_id.map(crate::chrome::classify_hit);
 
         // Update hover state (coalesced — only logs when target changes).
         let hover_changed = self.mouse_dispatcher.update_hover(hit_id);
@@ -3873,20 +3874,47 @@ impl AppModel {
             emit_mouse_jsonl(mouse, hit_id, "hover_change", None, current);
         }
 
+        // Command palette has highest priority: do not route chrome/overlay
+        // interactions while it is visible. Let `command_palette.handle_event`
+        // consume/act on mouse events in the main update loop.
+        if self.command_palette.is_visible() {
+            return MouseDispatchResult::NotConsumed;
+        }
+
+        let chrome_hit = matches!(
+            hit_layer,
+            Some(
+                crate::chrome::HitLayer::Overlay(_)
+                    | crate::chrome::HitLayer::StatusToggle(_)
+                    | crate::chrome::HitLayer::Tab(_)
+                    | crate::chrome::HitLayer::Category(_)
+            )
+        );
+
         // Handle drag state machine transitions.
         match mouse.kind {
             MouseEventKind::Down(button) => {
-                // Start a pending drag — will become click (on Up) or drag
-                // (on sufficient movement).
-                self.mouse_dispatcher.drag = DragPhase::PendingDrag {
-                    button,
-                    start_x: mouse.x,
-                    start_y: mouse.y,
-                    hit_id,
-                };
-                emit_mouse_jsonl(mouse, hit_id, "down", None, current);
-                // Down alone does not activate — wait for Up or drag.
-                return MouseDispatchResult::Consumed;
+                // Only capture chrome/overlay Down events; pane/screen events
+                // must flow through to the active screen.
+                if chrome_hit {
+                    // Start a pending drag — will become click (on Up) or drag
+                    // (on sufficient movement).
+                    self.mouse_dispatcher.drag = DragPhase::PendingDrag {
+                        button,
+                        start_x: mouse.x,
+                        start_y: mouse.y,
+                        hit_id,
+                    };
+                    emit_mouse_jsonl(mouse, hit_id, "down", None, current);
+                    // Down alone does not activate — wait for Up or drag.
+                    return MouseDispatchResult::Consumed;
+                }
+
+                // Screen-level input: do not interfere. Also clear any stale
+                // chrome drag state.
+                self.mouse_dispatcher.cancel_drag();
+                emit_mouse_jsonl(mouse, hit_id, "down_forward", None, current);
+                MouseDispatchResult::NotConsumed
             }
             MouseEventKind::Drag(button) => {
                 match self.mouse_dispatcher.drag {
@@ -3910,7 +3938,7 @@ impl AppModel {
                             emit_mouse_jsonl(mouse, drag_hit, "drag_start", None, current);
                         }
                         // Still pending — absorb the event.
-                        return MouseDispatchResult::Consumed;
+                        MouseDispatchResult::Consumed
                     }
                     DragPhase::Dragging {
                         hit_id: drag_hit, ..
@@ -3926,10 +3954,12 @@ impl AppModel {
                             *last_y = mouse.y;
                         }
                         emit_mouse_jsonl(mouse, drag_hit, "drag_move", None, current);
-                        return MouseDispatchResult::Consumed;
+                        MouseDispatchResult::Consumed
                     }
                     DragPhase::Idle => {
-                        // Spurious drag without a preceding Down — ignore.
+                        // Screen-level drag (or spurious drag) — do not interfere.
+                        emit_mouse_jsonl(mouse, hit_id, "drag_forward", None, current);
+                        MouseDispatchResult::NotConsumed
                     }
                 }
             }
@@ -3944,34 +3974,38 @@ impl AppModel {
                     return MouseDispatchResult::Consumed;
                 }
 
-                // Not dragging — this is a click activation (MouseUp).
+                // Not dragging — this may be a click activation (MouseUp) for
+                // chrome/overlay targets, or a screen-level Up event.
                 self.mouse_dispatcher.cancel_drag();
 
-                // Only left-click activates targets.
-                if button != MouseButton::Left {
-                    emit_mouse_jsonl(mouse, hit_id, "click_non_left", None, current);
-                    return MouseDispatchResult::Consumed;
+                if chrome_hit {
+                    // Only left-click activates chrome/overlay targets.
+                    if button != MouseButton::Left {
+                        emit_mouse_jsonl(mouse, hit_id, "click_non_left", None, current);
+                        return MouseDispatchResult::Consumed;
+                    }
+
+                    return self.dispatch_click(mouse, hit, current);
                 }
 
-                return self.dispatch_click(mouse, hit, current);
+                // Screen-level Up — forward to active screen.
+                emit_mouse_jsonl(mouse, hit_id, "up_forward", None, current);
+                MouseDispatchResult::NotConsumed
             }
             MouseEventKind::Moved => {
-                // Pure move (no button) — hover tracking only (handled above).
-                if hover_changed {
+                // Pure move (no button): update hover state (above). Consume
+                // chrome-hover moves to avoid sending noise into screens.
+                if chrome_hit && hover_changed {
                     return MouseDispatchResult::Consumed;
                 }
                 emit_mouse_jsonl(mouse, hit_id, "move", None, current);
-                return MouseDispatchResult::NotConsumed;
+                MouseDispatchResult::NotConsumed
             }
             MouseEventKind::ScrollUp
             | MouseEventKind::ScrollDown
             | MouseEventKind::ScrollLeft
-            | MouseEventKind::ScrollRight => {
-                return self.dispatch_scroll(mouse, hit, current);
-            }
+            | MouseEventKind::ScrollRight => self.dispatch_scroll(mouse, hit, current),
         }
-
-        MouseDispatchResult::NotConsumed
     }
 
     /// Handle a left-click activation at the given hit position.
@@ -3989,13 +4023,8 @@ impl AppModel {
     ) -> MouseDispatchResult {
         use crate::chrome::HitLayer;
 
-        // 1) Command palette (highest priority) — if visible, clicks outside
-        //    dismiss it; clicks inside are handled by palette widget.
-        if self.command_palette.is_visible() {
-            emit_mouse_jsonl(mouse, hit.map(|h| h.0), "palette_dismiss", None, current);
-            self.command_palette.close();
-            return MouseDispatchResult::Consumed;
-        }
+        // NOTE: Command palette priority is handled in `dispatch_mouse` by
+        // returning NotConsumed when visible.
 
         let Some((hit_id, _region, _data)) = hit else {
             emit_mouse_jsonl(mouse, None, "click_no_hit", None, current);
@@ -4158,6 +4187,10 @@ impl AppModel {
             chrome::STATUS_DEBUG_TOGGLE => {
                 self.debug_visible = !self.debug_visible;
                 "status_toggle_debug"
+            }
+            chrome::STATUS_MOUSE_TOGGLE => {
+                self.mouse_capture_enabled = !self.mouse_capture_enabled;
+                "status_toggle_mouse"
             }
             _ => "status_unknown",
         }
@@ -5160,18 +5193,39 @@ mod tests {
         let mut frame = Frame::new(120, 40, &mut pool);
         app.view(&mut frame);
 
-        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 5, 5);
+        // Tab bar hit region is on row 0.
+        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
         let result = app.dispatch_mouse(&down);
         assert_eq!(result, MouseDispatchResult::Consumed);
         assert!(matches!(
             app.mouse_dispatcher.drag,
             DragPhase::PendingDrag {
                 button: MouseButton::Left,
-                start_x: 5,
-                start_y: 5,
+                start_x: 1,
+                start_y: 0,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn dispatch_mouse_down_in_pane_is_forwarded_to_screen() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        // Content pane inner area starts at roughly (1,2) for this layout.
+        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 2, 2);
+        assert_eq!(app.dispatch_mouse(&down), MouseDispatchResult::NotConsumed);
+
+        let drag = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 6, 6);
+        assert_eq!(app.dispatch_mouse(&drag), MouseDispatchResult::NotConsumed);
+
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 6, 6);
+        assert_eq!(app.dispatch_mouse(&up), MouseDispatchResult::NotConsumed);
     }
 
     #[test]
@@ -5267,7 +5321,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_click_dismisses_palette() {
+    fn dispatch_does_not_dismiss_palette_when_visible() {
         let mut app = AppModel::new();
         app.terminal_width = 120;
         app.terminal_height = 40;
@@ -5279,11 +5333,12 @@ mod tests {
         app.command_palette.open();
         assert!(app.command_palette.is_visible());
 
-        // Click anywhere should dismiss palette (highest priority).
+        // When visible, palette has highest priority; dispatcher should not
+        // route chrome interactions.
         let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 50, 20);
         let result = app.dispatch_mouse(&up);
-        assert_eq!(result, MouseDispatchResult::Consumed);
-        assert!(!app.command_palette.is_visible());
+        assert_eq!(result, MouseDispatchResult::NotConsumed);
+        assert!(app.command_palette.is_visible());
     }
 
     #[test]
