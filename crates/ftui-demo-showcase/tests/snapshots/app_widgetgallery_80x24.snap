@@ -11,7 +11,7 @@
 ││3  - Soft wrap enabled      ││.                      │╭ProgressBar──────────╮│
 ││4  - Line numbers           ││> ?? benches           ││         0%          ││
 ││                            ││  ?? data              ││         25%         ││
-││                            ││  ?? proptest-regressio││         50%         ││
+││                            ││  ?? src               ││         50%         ││
 │╰────────────────────────────╯╰───────────────────────╯╰─────────────────────╯│
 │╭Checkbo╮╭Select╮╭Validation ╮╭Notifications──────────╮╭Spinners─────────────╮│
 ││[ ] Ena││Select││! Invalid …││                       ││⠋ Loading (DOTS)     ││

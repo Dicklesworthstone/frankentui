@@ -230,6 +230,8 @@ Command flow:
 ## 8) Visual Composition Notes
 - Viewport must be the dominant visual region at all sizes.
 - Sample list should always remain discoverable, even if collapsed.
+- Use clear semantic colors: status (OK/WARN/ERR), active toggles, and timers.
+- Keep key hints visible at bottom when space allows.
 
 ---
 
@@ -270,12 +272,14 @@ Pie (S/M)
 - Pie Basic — title + showData
 - Pie Many — many slices
 
-Unsupported (kept for coverage + future support)
-- Gitgraph Basic — gitGraph
+GitGraph (M)
+- GitGraph Basic — gitGraph
+
+Journey (M)
 - Journey Basic — journey
+
+Requirement (M)
 - Requirement Basic — requirementDiagram
-- Use clear semantic colors: status (OK/WARN/ERR), active toggles, and timers.
-- Keep key hints visible at bottom when space allows.
 
 ---
 

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use ftui_pty::{PtyConfig, spawn_command};
 use portable_pty::CommandBuilder;
+use serde_json::Value;
 
 const MERMAID_COLS: u16 = 120;
 const MERMAID_ROWS: u16 = 40;
@@ -49,6 +50,19 @@ fn parse_string_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 fn tail_output(output: &[u8], max_bytes: usize) -> String {
     let start = output.len().saturating_sub(max_bytes);
     String::from_utf8_lossy(&output[start..]).to_string()
+}
+
+fn extract_json_object(line: &str) -> Option<&str> {
+    // PTY output can include braces as part of UI hints like `[]/{}` before the
+    // JSONL payload. Anchor on the schema marker to avoid false positives.
+    let start = line
+        .find("{\"schema_version\"")
+        .or_else(|| line.find('{'))?;
+    let end = line[start..].rfind('}')? + start;
+    if end < start {
+        return None;
+    }
+    Some(&line[start..=end])
 }
 
 fn run_mermaid_harness(demo_bin: &str, seed: u64) -> Result<Vec<u8>, String> {
@@ -352,19 +366,61 @@ fn pty_mermaid_harness_metrics_jsonl_present() -> Result<(), String> {
 
     // Validate schema fields on the first mermaid_render line.
     let first = render_lines[0];
+    let first_json = extract_json_object(first)
+        .ok_or_else(|| format!("failed to locate JSON object in mermaid_render line: {first}"))?;
+    let first_value: Value = serde_json::from_str(first_json).map_err(|err| {
+        format!("failed to parse mermaid_render JSONL object: {err}: {first_json}")
+    })?;
     for field in [
-        "\"schema_version\":",
-        "\"event\":\"mermaid_render\"",
-        "\"sample\":",
-        "\"layout_mode\":",
-        "\"tier\":",
-        "\"glyph_mode\":",
+        "schema_version",
+        "event",
+        "sample",
+        "sample_id",
+        "sample_family",
+        "diagram_type",
+        "layout_mode",
+        "tier",
+        "glyph_mode",
     ] {
         assert!(
-            first.contains(field),
+            first_value.get(field).is_some(),
             "mermaid_render event missing {field}: {first}"
         );
     }
+    assert_eq!(
+        first_value["event"].as_str().unwrap_or_default(),
+        "mermaid_render",
+        "unexpected event name in mermaid_render JSONL line: {first}"
+    );
+
+    // Ensure journey is present and renders without fallback/unsupported.
+    let mut found_journey_ok = false;
+    for line in &render_lines {
+        let json = extract_json_object(line).ok_or_else(|| {
+            format!("failed to locate JSON object in mermaid_render line: {line}")
+        })?;
+        let value: Value = serde_json::from_str(json)
+            .map_err(|err| format!("failed to parse mermaid_render JSONL object: {err}: {json}"))?;
+        if value.get("diagram_type").and_then(Value::as_str) != Some("journey") {
+            continue;
+        }
+        if value.get("error_count").and_then(Value::as_u64) != Some(0) {
+            continue;
+        }
+        if value.get("fallback_reason").is_some() {
+            continue;
+        }
+        if value.get("fallback_tier").is_some() {
+            continue;
+        }
+        found_journey_ok = true;
+        break;
+    }
+    assert!(
+        found_journey_ok,
+        "expected at least one journey mermaid_render event with error_count=0 and no fallback; saw {} mermaid_render lines",
+        render_lines.len()
+    );
 
     Ok(())
 }

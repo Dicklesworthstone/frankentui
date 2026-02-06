@@ -17,12 +17,12 @@
 │                                            ││.                                   │╭ProgressBar───────────────────────╮
 │                                            ││> ?? benches                        ││                0%                │
 │                                            ││  ?? data                           ││               25%                │
-│                                            ││  ?? proptest-regressions           ││               50%                │
-│                                            ││  ?? src                            ││               75%                │
-│                                            ││  ?? tests                          ││               100%               │
-│                                            ││    .ubsignore                      ││                                  │
-│                                            ││    a.out                           ││                                  │
+│                                            ││  ?? src                            ││               50%                │
+│                                            ││  ?? tests                          ││               75%                │
+│                                            ││    .ubsignore                      ││               100%               │
 │                                            ││    Cargo.toml                      ││                                  │
+│                                            ││                                    ││                                  │
+│                                            ││                                    ││                                  │
 ╰────────────────────────────────────────────╯│                                    │╰──────────────────────────────────╯
 ╭Checkboxes ╮╭Select + N╮╭Validation + Timer─╮│                                    │╭Spinners──────────────────────────╮
 │[ ] Enable ││Select: [H││! Invalid email ad…│╰────────────────────────────────────╯│⠋ Loading (DOTS)                  │
