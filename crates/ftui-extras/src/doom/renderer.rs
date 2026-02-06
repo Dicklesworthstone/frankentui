@@ -519,4 +519,133 @@ mod tests {
         assert_eq!(lerp_u8(0, 200, 0.0), 0);
         assert_eq!(lerp_u8(0, 200, 1.0), 200);
     }
+
+    #[test]
+    fn lerp_u8_same_values() {
+        assert_eq!(lerp_u8(100, 100, 0.0), 100);
+        assert_eq!(lerp_u8(100, 100, 0.5), 100);
+        assert_eq!(lerp_u8(100, 100, 1.0), 100);
+    }
+
+    #[test]
+    fn lerp_u8_quarter() {
+        assert_eq!(lerp_u8(0, 100, 0.25), 25);
+    }
+
+    #[test]
+    fn lerp_u8_reverse_direction() {
+        // b < a: interpolates downward
+        assert_eq!(lerp_u8(200, 100, 0.5), 150);
+    }
+
+    #[test]
+    fn clip_near_plane_first_behind() {
+        // First vertex behind near plane, second in front
+        let (x1, _y1, x2, y2) = clip_near_plane(-5.0, 10.0, 20.0, -5.0);
+        assert!((x1 - 0.1).abs() < 0.01); // clipped to near
+        assert!((x2 - 20.0).abs() < 0.01); // unchanged
+        assert!((y2 - -5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn clip_near_plane_second_behind() {
+        // First in front, second behind
+        let (x1, y1, x2, _y2) = clip_near_plane(20.0, 5.0, -5.0, -5.0);
+        assert!((x1 - 20.0).abs() < 0.01); // unchanged
+        assert!((y1 - 5.0).abs() < 0.01);
+        assert!((x2 - 0.1).abs() < 0.01); // clipped to near
+    }
+
+    #[test]
+    fn clip_near_plane_y_interpolated_correctly() {
+        // x1=-10, x2=10, y1=0, y2=20
+        // t = (0.1 - (-10)) / (10 - (-10)) = 10.1/20 ≈ 0.505
+        // y1' = 0 + 0.505 * (20 - 0) = 10.1
+        let (x1, y1, x2, y2) = clip_near_plane(-10.0, 0.0, 10.0, 20.0);
+        assert!((x1 - 0.1).abs() < 0.01);
+        assert!((y1 - 10.1).abs() < 0.2);
+        assert!((x2 - 10.0).abs() < 0.01);
+        assert!((y2 - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn renderer_creation_projection_values() {
+        let r = DoomRenderer::new(320, 200);
+        assert!((r.half_width - 160.0).abs() < 0.01);
+        assert!((r.half_height - 100.0).abs() < 0.01);
+        assert!(r.projection > 0.0);
+    }
+
+    #[test]
+    fn renderer_resize() {
+        let mut r = DoomRenderer::new(320, 200);
+        r.resize(640, 400);
+        assert_eq!(r.width, 640);
+        assert_eq!(r.height, 400);
+        assert_eq!(r.column_clips.len(), 640);
+        assert!((r.half_width - 320.0).abs() < 0.01);
+        assert!((r.half_height - 200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn renderer_resize_smaller() {
+        let mut r = DoomRenderer::new(640, 400);
+        r.resize(160, 100);
+        assert_eq!(r.width, 160);
+        assert_eq!(r.height, 100);
+        assert_eq!(r.column_clips.len(), 160);
+    }
+
+    #[test]
+    fn render_stats_default() {
+        let stats = RenderStats::default();
+        assert_eq!(stats.nodes_visited, 0);
+        assert_eq!(stats.subsectors_rendered, 0);
+        assert_eq!(stats.segs_processed, 0);
+        assert_eq!(stats.columns_filled, 0);
+        assert_eq!(stats.total_columns, 0);
+    }
+
+    #[test]
+    fn column_clips_initialized_correctly() {
+        let r = DoomRenderer::new(100, 50);
+        for clip in &r.column_clips {
+            assert_eq!(clip.top, 0);
+            assert_eq!(clip.bottom, 50);
+            assert!(!clip.solid);
+        }
+    }
+
+    #[test]
+    fn renderer_reset_clears_state() {
+        let mut r = DoomRenderer::new(10, 10);
+        r.column_clips[0].solid = true;
+        r.column_clips[0].top = 5;
+        r.solid_count = 1;
+        r.stats.segs_processed = 42;
+
+        r.reset();
+
+        assert_eq!(r.column_clips[0].top, 0);
+        assert_eq!(r.column_clips[0].bottom, 10);
+        assert!(!r.column_clips[0].solid);
+        assert_eq!(r.solid_count, 0);
+        assert_eq!(r.stats.segs_processed, 0);
+    }
+
+    #[test]
+    fn wall_colors_has_entries() {
+        assert_eq!(WALL_COLORS.len(), 8);
+        for color in &WALL_COLORS {
+            // All components should be reasonable values
+            assert!(color[0] > 0 || color[1] > 0 || color[2] > 0);
+        }
+    }
+
+    #[test]
+    fn renderer_projection_positive_for_valid_fov() {
+        // FOV_RADIANS should produce a positive projection factor
+        let r = DoomRenderer::new(320, 200);
+        assert!(r.projection > 100.0); // Should be a decent positive value
+    }
 }
