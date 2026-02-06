@@ -642,4 +642,169 @@ mod tests {
         assert!(!within, "extreme outlier should violate bounds");
         assert!(pred.total_violations() > 0);
     }
+
+    // ── PredictorConfig defaults ─────────────────────────────────
+
+    #[test]
+    fn config_default_values() {
+        let config = PredictorConfig::default();
+        assert_eq!(config.default_height, 1);
+        assert!((config.prior_strength - 2.0).abs() < f64::EPSILON);
+        assert!((config.prior_mean - 1.0).abs() < f64::EPSILON);
+        assert!((config.prior_variance - 4.0).abs() < f64::EPSILON);
+        assert!((config.coverage - 0.90).abs() < f64::EPSILON);
+        assert_eq!(config.calibration_window, 200);
+    }
+
+    // ── HeightPredictor::default ─────────────────────────────────
+
+    #[test]
+    fn default_predictor_has_one_category() {
+        let pred = HeightPredictor::default();
+        assert_eq!(pred.category_count(), 1);
+        assert_eq!(pred.total_measurements(), 0);
+        assert_eq!(pred.total_violations(), 0);
+        assert!((pred.violation_rate() - 0.0).abs() < f64::EPSILON);
+    }
+
+    // ── Predict unknown category ─────────────────────────────────
+
+    #[test]
+    fn predict_unknown_category_returns_cold() {
+        let pred = HeightPredictor::default();
+        let p = pred.predict(999);
+        assert_eq!(p.predicted, pred.config.default_height);
+        assert_eq!(p.observations, 0);
+    }
+
+    // ── Observe auto-creates categories ──────────────────────────
+
+    #[test]
+    fn observe_auto_creates_categories() {
+        let mut pred = HeightPredictor::default();
+        assert_eq!(pred.category_count(), 1);
+        pred.observe(3, 5);
+        // Should auto-create categories 1, 2, 3
+        assert_eq!(pred.category_count(), 4);
+        assert_eq!(pred.category_observations(3), 1);
+    }
+
+    // ── Violation rate ───────────────────────────────────────────
+
+    #[test]
+    fn violation_rate_empty() {
+        let pred = HeightPredictor::default();
+        assert!((pred.violation_rate() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn violation_rate_computation() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            prior_mean: 5.0,
+            prior_strength: 100.0,
+            default_height: 5,
+            coverage: 0.95,
+            ..Default::default()
+        });
+        // Warm up so bounds are tight
+        for _ in 0..50 {
+            pred.observe(0, 5);
+        }
+        // 10 normal observations
+        for _ in 0..10 {
+            pred.observe(0, 5);
+        }
+        let before_violations = pred.total_violations();
+        // 1 extreme outlier
+        pred.observe(0, 100);
+        let after_violations = pred.total_violations();
+        assert!(after_violations > before_violations);
+        assert!(pred.violation_rate() > 0.0);
+    }
+
+    // ── Category accessors ───────────────────────────────────────
+
+    #[test]
+    fn category_observations_returns_zero_for_unknown() {
+        let pred = HeightPredictor::default();
+        assert_eq!(pred.category_observations(999), 0);
+    }
+
+    #[test]
+    fn category_observations_tracks_counts() {
+        let mut pred = HeightPredictor::default();
+        pred.observe(0, 3);
+        pred.observe(0, 4);
+        pred.observe(0, 5);
+        assert_eq!(pred.category_observations(0), 3);
+    }
+
+    // ── Posterior accessors with unknown category ─────────────────
+
+    #[test]
+    fn posterior_mean_unknown_returns_prior() {
+        let pred = HeightPredictor::default();
+        assert!((pred.posterior_mean(999) - pred.config.prior_mean).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn posterior_variance_unknown_returns_prior() {
+        let pred = HeightPredictor::default();
+        assert!(
+            (pred.posterior_variance(999) - pred.config.prior_variance).abs() < f64::EPSILON
+        );
+    }
+
+    // ── Register category ────────────────────────────────────────
+
+    #[test]
+    fn register_category_returns_sequential_ids() {
+        let mut pred = HeightPredictor::default();
+        let id1 = pred.register_category();
+        let id2 = pred.register_category();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(pred.category_count(), 3);
+    }
+
+    // ── Observe returns within_bounds ─────────────────────────────
+
+    #[test]
+    fn observe_returns_true_for_consistent_data() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            prior_mean: 3.0,
+            prior_strength: 1.0,
+            ..Default::default()
+        });
+        // Warm up
+        for _ in 0..20 {
+            pred.observe(0, 3);
+        }
+        // Same value should be within bounds
+        assert!(pred.observe(0, 3));
+    }
+
+    // ── Total measurements ───────────────────────────────────────
+
+    #[test]
+    fn total_measurements_increments() {
+        let mut pred = HeightPredictor::default();
+        for i in 0..7 {
+            pred.observe(0, (i + 1) as u16);
+        }
+        assert_eq!(pred.total_measurements(), 7);
+    }
+
+    // ── HeightPrediction bounds ordering ─────────────────────────
+
+    #[test]
+    fn prediction_lower_le_predicted_le_upper() {
+        let mut pred = HeightPredictor::default();
+        for _ in 0..30 {
+            pred.observe(0, 3);
+        }
+        let p = pred.predict(0);
+        assert!(p.lower <= p.predicted);
+        assert!(p.predicted <= p.upper);
+    }
 }
