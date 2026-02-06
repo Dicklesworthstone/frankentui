@@ -152,4 +152,58 @@ mod tests {
         assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some(' '));
         assert_eq!(frame.buffer.get(1, 0).unwrap().content.as_char(), Some('O'));
     }
+
+    #[test]
+    fn default_padding_is_one() {
+        let badge = Badge::new("X");
+        // "X" is 1 wide + 1 left + 1 right = 3
+        assert_eq!(badge.width(), 3);
+    }
+
+    #[test]
+    fn zero_padding() {
+        let badge = Badge::new("AB").with_padding(0, 0);
+        assert_eq!(badge.width(), 2);
+    }
+
+    #[test]
+    fn empty_label_width() {
+        let badge = Badge::new("");
+        // 0 label + 1 left + 1 right = 2
+        assert_eq!(badge.width(), 2);
+    }
+
+    #[test]
+    fn render_empty_area_is_noop() {
+        let badge = Badge::new("Test");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        badge.render(Rect::new(0, 0, 0, 0), &mut frame);
+        // Should not panic
+    }
+
+    #[test]
+    fn is_not_essential() {
+        let badge = Badge::new("OK");
+        assert!(!badge.is_essential());
+    }
+
+    #[test]
+    fn badge_eq_and_hash() {
+        let a = Badge::new("X").with_padding(1, 1);
+        let b = Badge::new("X").with_padding(1, 1);
+        assert_eq!(a, b);
+
+        let mut set = std::collections::HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b));
+    }
+
+    #[test]
+    fn badge_debug() {
+        let badge = Badge::new("OK");
+        let s = format!("{badge:?}");
+        assert!(s.contains("Badge"));
+        assert!(s.contains("OK"));
+    }
 }

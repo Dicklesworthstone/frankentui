@@ -174,4 +174,79 @@ mod tests {
         fb.set_pixel(100, 100, PackedRgba::RED);
         assert_eq!(fb.get_pixel(100, 100), PackedRgba::BLACK);
     }
+
+    #[test]
+    fn set_pixel_overwrites_unconditionally() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel(2, 3, PackedRgba::RED);
+        assert_eq!(fb.get_pixel(2, 3), PackedRgba::RED);
+        fb.set_pixel(2, 3, PackedRgba::GREEN);
+        assert_eq!(fb.get_pixel(2, 3), PackedRgba::GREEN);
+    }
+
+    #[test]
+    fn clear_resets_pixels_and_depth() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel(0, 0, PackedRgba::RED);
+        fb.set_pixel_depth(1, 1, 10.0, PackedRgba::rgb(0, 255, 0));
+        fb.clear();
+        assert_eq!(fb.get_pixel(0, 0), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(1, 1), PackedRgba::BLACK);
+        // Depth should be reset - a normal value should now win against f32::MAX
+        let color = PackedRgba::rgb(0, 0, 255);
+        fb.set_pixel_depth(1, 1, 100.0, color);
+        assert_eq!(fb.get_pixel(1, 1), color);
+    }
+
+    #[test]
+    fn draw_column_fills_vertical_strip() {
+        let mut fb = QuakeFramebuffer::new(10, 10);
+        fb.draw_column(3, 2, 6, PackedRgba::RED);
+        assert_eq!(fb.get_pixel(3, 1), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(3, 2), PackedRgba::RED);
+        assert_eq!(fb.get_pixel(3, 5), PackedRgba::RED);
+        assert_eq!(fb.get_pixel(3, 6), PackedRgba::BLACK);
+    }
+
+    #[test]
+    fn draw_column_out_of_bounds_x_is_safe() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.draw_column(10, 0, 5, PackedRgba::RED);
+        // Should not panic
+    }
+
+    #[test]
+    fn draw_column_shaded_gradient() {
+        let mut fb = QuakeFramebuffer::new(10, 10);
+        fb.draw_column_shaded(0, 0, 4, 100, 100, 100, 1.0, 0.0);
+        // Top pixel should be brighter than bottom pixel
+        let top = fb.get_pixel(0, 0);
+        let bot = fb.get_pixel(0, 3);
+        assert!(top.r() >= bot.r(), "top should be brighter than bottom");
+    }
+
+    #[test]
+    fn draw_column_shaded_zero_height_is_safe() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.draw_column_shaded(0, 3, 3, 100, 100, 100, 1.0, 1.0);
+        // Should not panic with zero-height column
+    }
+
+    #[test]
+    fn resize_changes_dimensions() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel(2, 2, PackedRgba::RED);
+        fb.resize(10, 10);
+        assert_eq!(fb.width, 10);
+        assert_eq!(fb.height, 10);
+        assert_eq!(fb.pixels.len(), 100);
+        assert_eq!(fb.depth.len(), 100);
+    }
+
+    #[test]
+    fn set_pixel_depth_out_of_bounds_is_safe() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel_depth(10, 10, 1.0, PackedRgba::RED);
+        // Should not panic
+    }
 }
