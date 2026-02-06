@@ -59,11 +59,6 @@ use tracing::{debug, info};
 const TELEMETRY_TARGET: &str = "ftui_widgets::command_palette";
 
 #[cfg(feature = "tracing")]
-fn telemetry_enabled() -> bool {
-    tracing::enabled!(target: TELEMETRY_TARGET, tracing::Level::INFO)
-}
-
-#[cfg(feature = "tracing")]
 fn emit_palette_opened(action_count: usize, result_count: usize) {
     info!(
         target: TELEMETRY_TARGET,
@@ -761,11 +756,10 @@ impl CommandPalette {
     /// Re-score the corpus against the current query.
     fn update_filtered(&mut self, _emit_telemetry: bool) {
         #[cfg(feature = "tracing")]
-        let start = if _emit_telemetry && telemetry_enabled() {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        // Don't gate on `tracing::enabled!` here: callsite interest can be cached across
+        // dynamic subscribers (tests), which may suppress telemetry unexpectedly.
+        // Emitting the event is already cheap when disabled.
+        let start = _emit_telemetry.then(Instant::now);
 
         if self.titles_cache.len() != self.actions.len()
             || self.titles_lower.len() != self.actions.len()
