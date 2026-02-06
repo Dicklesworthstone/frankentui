@@ -1285,8 +1285,8 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|e| e.key == "[F6]" && e.desc.contains("mouse")),
-            "expected [F6] mouse capture entry, got: {entries:?}"
+                .any(|e| e.key == "[m / F6]" && e.desc.contains("mouse")),
+            "expected [m / F6] mouse capture entry, got: {entries:?}"
         );
     }
 

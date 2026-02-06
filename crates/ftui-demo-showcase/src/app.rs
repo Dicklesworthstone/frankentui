@@ -5120,9 +5120,14 @@ mod tests {
         let mut frame = Frame::new(120, 40, &mut pool);
         app.view(&mut frame);
 
-        let mouse = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
-        let handled = app.handle_mouse_tab_click(&mouse);
-        assert!(handled, "Mouse tab click should be handled");
+        // Full click: Down starts pending drag, Up activates.
+        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 0);
+        let handled_down = app.handle_mouse_tab_click(&down);
+        assert!(handled_down, "Mouse down should be consumed");
+
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 1, 0);
+        let handled_up = app.handle_mouse_tab_click(&up);
+        assert!(handled_up, "Mouse up should activate tab click");
         assert_eq!(app.current_screen, ScreenId::GuidedTour);
     }
 
@@ -5314,8 +5319,8 @@ mod tests {
     #[test]
     fn palette_has_actions_for_all_screens() {
         let app = AppModel::new();
-        // One action per screen + 6 global commands (quit, help, theme, debug, perf_hud, evidence_ledger)
-        let expected = screens::screen_registry().len() + 6;
+        // One action per screen + 7 global commands (quit, help, theme, debug, perf_hud, evidence_ledger, toggle_mouse_capture)
+        let expected = screens::screen_registry().len() + 7;
         assert_eq!(app.command_palette.action_count(), expected);
     }
 
@@ -5338,7 +5343,7 @@ mod tests {
             .iter()
             .filter(|meta| meta.category == screens::ScreenCategory::Tour)
             .count();
-        assert_eq!(app.command_palette.action_count(), tour_count + 6);
+        assert_eq!(app.command_palette.action_count(), tour_count + 7);
 
         let ctrl_0 = Event::Key(KeyEvent {
             code: KeyCode::Char('0'),
@@ -5349,7 +5354,7 @@ mod tests {
         assert_eq!(app.palette_category_filter, None);
         assert_eq!(
             app.command_palette.action_count(),
-            screens::screen_registry().len() + 6
+            screens::screen_registry().len() + 7
         );
     }
 
@@ -5382,13 +5387,13 @@ mod tests {
         });
         app.update(AppMsg::from(ctrl_shift_f.clone()));
         assert!(app.palette_favorites_only);
-        assert_eq!(app.command_palette.action_count(), 1 + 6);
+        assert_eq!(app.command_palette.action_count(), 1 + 7);
 
         app.update(AppMsg::from(ctrl_shift_f));
         assert!(!app.palette_favorites_only);
         assert_eq!(
             app.command_palette.action_count(),
-            screens::screen_registry().len() + 6
+            screens::screen_registry().len() + 7
         );
     }
 
@@ -5651,8 +5656,8 @@ mod tests {
     fn palette_includes_perf_hud_action() {
         let app = AppModel::new();
         // The palette should have the perf HUD action registered.
-        // 6 global commands: quit, help, theme, debug, perf_hud, evidence_ledger.
-        let expected = screens::screen_registry().len() + 6;
+        // 7 global commands: quit, help, theme, debug, perf_hud, evidence_ledger, toggle_mouse_capture.
+        let expected = screens::screen_registry().len() + 7;
         assert_eq!(app.command_palette.action_count(), expected);
     }
 
