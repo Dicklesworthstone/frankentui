@@ -567,4 +567,262 @@ mod tests {
         let (order2, _) = r.rank(None);
         assert_eq!(order2[0], a, "heavy usage should promote A above B");
     }
+
+    #[test]
+    fn ranker_config_defaults() {
+        let cfg = RankerConfig::default();
+        assert!((cfg.prior_alpha - 1.0).abs() < f64::EPSILON);
+        assert!((cfg.prior_beta - 1.0).abs() < f64::EPSILON);
+        assert!((cfg.lambda - 0.01).abs() < f64::EPSILON);
+        assert!((cfg.hysteresis - 0.02).abs() < f64::EPSILON);
+        assert!((cfg.voi_weight - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn hint_ranker_default_is_empty() {
+        let r = HintRanker::default();
+        assert_eq!(r.hint_count(), 0);
+    }
+
+    #[test]
+    fn hint_count_tracks_registrations() {
+        let mut r = HintRanker::default();
+        assert_eq!(r.hint_count(), 0);
+        r.register("A", 10.0, HintContext::Global, 1);
+        assert_eq!(r.hint_count(), 1);
+        r.register("B", 5.0, HintContext::Global, 2);
+        assert_eq!(r.hint_count(), 2);
+    }
+
+    #[test]
+    fn stats_returns_none_for_invalid_id() {
+        let r = HintRanker::default();
+        assert!(r.stats(0).is_none());
+        assert!(r.stats(999).is_none());
+    }
+
+    #[test]
+    fn record_usage_invalid_id_is_noop() {
+        let mut r = HintRanker::default();
+        // Should not panic.
+        r.record_usage(0);
+        r.record_usage(999);
+        assert_eq!(r.hint_count(), 0);
+    }
+
+    #[test]
+    fn record_shown_not_used_invalid_id_is_noop() {
+        let mut r = HintRanker::default();
+        r.record_shown_not_used(0);
+        r.record_shown_not_used(42);
+        assert_eq!(r.hint_count(), 0);
+    }
+
+    #[test]
+    fn variance_and_voi_computation() {
+        let s = HintStats {
+            alpha: 3.0,
+            beta: 7.0,
+            cost: 10.0,
+            static_priority: 1,
+            observations: 10,
+        };
+        // E[U] = 3/10 = 0.3
+        assert!((s.expected_utility() - 0.3).abs() < 1e-10);
+        // Var = (3*7) / (10*10*11) = 21/1100
+        let expected_var = 21.0 / 1100.0;
+        assert!((s.variance() - expected_var).abs() < 1e-10);
+        // VOI = sqrt(Var)
+        assert!((s.voi() - expected_var.sqrt()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn observations_track_both_usage_and_nonusage() {
+        let mut r = HintRanker::default();
+        let id = r.register("test", 10.0, HintContext::Global, 1);
+        r.record_usage(id);
+        r.record_usage(id);
+        r.record_shown_not_used(id);
+        let s = r.stats(id).unwrap();
+        assert_eq!(s.observations, 3);
+        assert!((s.alpha - 3.0).abs() < f64::EPSILON); // prior 1 + 2 usages
+        assert!((s.beta - 2.0).abs() < f64::EPSILON); // prior 1 + 1 nonusage
+    }
+
+    #[test]
+    fn mode_context_filtering() {
+        let mut r = HintRanker::new(RankerConfig {
+            hysteresis: 0.0,
+            ..Default::default()
+        });
+        let g = r.register("Global", 10.0, HintContext::Global, 1);
+        let ins = r.register("Insert", 10.0, HintContext::Mode("insert".into()), 2);
+        let norm = r.register("Normal", 10.0, HintContext::Mode("normal".into()), 3);
+
+        // "insert" context: Global + Insert mode hint.
+        let (order, _) = r.rank(Some("insert"));
+        assert!(order.contains(&g));
+        assert!(order.contains(&ins));
+        assert!(
+            !order.contains(&norm),
+            "normal mode hint should not appear in insert context"
+        );
+
+        // "normal" context: Global + Normal mode hint.
+        let (order2, _) = r.rank(Some("normal"));
+        assert!(order2.contains(&g));
+        assert!(order2.contains(&norm));
+        assert!(
+            !order2.contains(&ins),
+            "insert mode hint should not appear in normal context"
+        );
+    }
+
+    #[test]
+    fn high_lambda_penalises_costly_hints() {
+        let mut r = HintRanker::new(RankerConfig {
+            lambda: 1.0, // very high cost penalty
+            hysteresis: 0.0,
+            voi_weight: 0.0,
+            ..Default::default()
+        });
+        let cheap = r.register("Cheap", 1.0, HintContext::Global, 2);
+        let expensive = r.register("Expensive", 100.0, HintContext::Global, 1);
+
+        // Give both some usage so they leave cold-start.
+        for _ in 0..10 {
+            r.record_usage(cheap);
+            r.record_usage(expensive);
+        }
+
+        let (order, _) = r.rank(None);
+        assert_eq!(
+            order[0], cheap,
+            "cheap hint should rank first with high lambda"
+        );
+    }
+
+    #[test]
+    fn ledger_fields_are_accurate() {
+        let mut r = HintRanker::new(RankerConfig {
+            hysteresis: 0.0,
+            ..Default::default()
+        });
+        let id = r.register("Ctrl+X Cut", 11.0, HintContext::Global, 1);
+        for _ in 0..5 {
+            r.record_usage(id);
+        }
+
+        let (_, ledger) = r.rank(None);
+        assert_eq!(ledger.len(), 1);
+        let entry = &ledger[0];
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.label, "Ctrl+X Cut");
+        assert!((entry.cost - 11.0).abs() < f64::EPSILON);
+        assert_eq!(entry.rank, 0);
+        // α=6, β=1 → E[U]=6/7
+        assert!((entry.expected_utility - 6.0 / 7.0).abs() < 1e-10);
+        assert!(entry.voi > 0.0);
+    }
+
+    #[test]
+    fn hysteresis_with_new_hint_appearing() {
+        let mut r = HintRanker::new(RankerConfig {
+            hysteresis: 0.05,
+            ..Default::default()
+        });
+        let a = r.register("A", 10.0, HintContext::Global, 1);
+
+        // Establish ordering with just A.
+        let (order1, _) = r.rank(None);
+        assert_eq!(order1, vec![a]);
+
+        // Add B. It should appear in the ranking.
+        let b = r.register("B", 10.0, HintContext::Global, 2);
+        let (order2, _) = r.rank(None);
+        assert!(order2.contains(&a));
+        assert!(order2.contains(&b));
+    }
+
+    #[test]
+    fn top_n_with_zero_returns_empty() {
+        let mut r = make_ranker();
+        let top = r.top_n(0, None);
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn top_n_exceeding_count_returns_all() {
+        let mut r = make_ranker();
+        let all = r.top_n(100, None);
+        assert_eq!(all.len(), 5); // make_ranker registers 5 hints
+    }
+
+    #[test]
+    fn register_returns_sequential_ids() {
+        let mut r = HintRanker::default();
+        assert_eq!(r.register("A", 1.0, HintContext::Global, 1), 0);
+        assert_eq!(r.register("B", 1.0, HintContext::Global, 2), 1);
+        assert_eq!(r.register("C", 1.0, HintContext::Global, 3), 2);
+    }
+
+    #[test]
+    fn zero_cost_hint_net_value() {
+        let mut r = HintRanker::new(RankerConfig {
+            lambda: 0.5,
+            hysteresis: 0.0,
+            voi_weight: 0.0,
+            ..Default::default()
+        });
+        let id = r.register("Free", 0.0, HintContext::Global, 1);
+        for _ in 0..10 {
+            r.record_usage(id);
+        }
+        // α=11, β=1, E[U]=11/12, cost=0 → net_value = E[U] - 0.5*0 = 11/12
+        let (_, ledger) = r.rank(None);
+        assert!((ledger[0].net_value - 11.0 / 12.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn repeated_rank_same_context_uses_hysteresis_path() {
+        let mut r = HintRanker::new(RankerConfig {
+            hysteresis: 0.5, // large hysteresis
+            voi_weight: 0.0,
+            ..Default::default()
+        });
+        let a = r.register("A", 10.0, HintContext::Global, 1);
+        let b = r.register("B", 10.0, HintContext::Global, 2);
+
+        // Give both some usage so they leave cold-start.
+        for _ in 0..10 {
+            r.record_usage(a);
+        }
+        for _ in 0..5 {
+            r.record_usage(b);
+        }
+
+        // First rank establishes ordering: A should be first (more usage).
+        let (order1, _) = r.rank(Some("ctx"));
+        assert_eq!(order1[0], a);
+
+        // Second rank with same context uses hysteresis branch.
+        // Give B a bit more usage, but not enough to overcome large hysteresis.
+        r.record_usage(b);
+        let (order2, _) = r.rank(Some("ctx"));
+        assert_eq!(order2[0], a, "hysteresis should stabilize ordering");
+    }
+
+    #[test]
+    fn hint_context_equality() {
+        assert_eq!(HintContext::Global, HintContext::Global);
+        assert_eq!(
+            HintContext::Widget("foo".into()),
+            HintContext::Widget("foo".into())
+        );
+        assert_ne!(
+            HintContext::Widget("foo".into()),
+            HintContext::Mode("foo".into())
+        );
+        assert_ne!(HintContext::Global, HintContext::Mode("x".into()));
+    }
 }
