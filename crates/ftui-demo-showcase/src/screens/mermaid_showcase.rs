@@ -17,6 +17,7 @@ use ftui_extras::mermaid::{
 };
 use ftui_extras::mermaid_layout;
 use ftui_extras::mermaid_render;
+use ftui_extras::mermaid_render::SelectionState;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::buffer::Buffer;
 use ftui_render::frame::Frame;
@@ -1169,6 +1170,10 @@ struct MermaidRenderCache {
     cache_hits: u64,
     cache_misses: u64,
     last_cache_hit: bool,
+    /// Adjacency list for node navigation (rebuilt on layout change).
+    adjacency: Vec<Vec<(usize, usize, bool)>>,
+    /// Last rendered selection (for cache invalidation).
+    selected_node_idx: Option<usize>,
 }
 
 impl MermaidRenderCache {
@@ -1187,6 +1192,8 @@ impl MermaidRenderCache {
             cache_hits: 0,
             cache_misses: 0,
             last_cache_hit: false,
+            adjacency: Vec::new(),
+            selected_node_idx: None,
         }
     }
 }
@@ -1705,6 +1712,11 @@ impl MermaidShowcaseState {
                     );
                 }
             }
+            // Navigation is handled at the Screen level (needs cache access).
+            MermaidShowcaseAction::NavigateUp
+            | MermaidShowcaseAction::NavigateDown
+            | MermaidShowcaseAction::NavigateLeft
+            | MermaidShowcaseAction::NavigateRight => {}
         }
         self.normalize();
     }
@@ -1744,6 +1756,10 @@ enum MermaidShowcaseAction {
     ToggleDebugOverlay,
     SelectNextNode,
     SelectPrevNode,
+    NavigateUp,
+    NavigateDown,
+    NavigateLeft,
+    NavigateRight,
     EnterSearchMode,
     ExitMode,
     NextSearchMatch,
@@ -1854,7 +1870,8 @@ impl MermaidShowcaseScreen {
         let mut layout_needed = cache.layout_epoch != self.state.layout_epoch;
         let mut render_needed = cache.render_epoch != self.state.render_epoch
             || cache.viewport != (width, height)
-            || !zoom_matches;
+            || !zoom_matches
+            || cache.selected_node_idx != self.state.selected_node_idx;
 
         if cache.ir.is_none() {
             analysis_needed = true;
@@ -1934,8 +1951,11 @@ impl MermaidShowcaseScreen {
                 snap.set_fallback(self.state.tier, plan);
             }
             metrics = snap;
+            // Rebuild adjacency list for node navigation (compute before mutating cache).
+            let adjacency = mermaid_render::build_adjacency(ir);
             cache.layout = Some(layout);
             cache.layout_epoch = self.state.layout_epoch;
+            cache.adjacency = adjacency;
             render_needed = true;
         }
 
@@ -1948,15 +1968,26 @@ impl MermaidShowcaseScreen {
             let mut buffer = Buffer::new(render_width, render_height);
             let area = Rect::new(0, 0, render_width, render_height);
             let render_start = Instant::now();
-            let _plan =
+            let plan =
                 mermaid_render::render_diagram_adaptive(layout, ir, &config, area, &mut buffer);
             metrics.render_ms = Some(render_start.elapsed().as_secs_f32() * 1000.0);
 
+            // Apply selection highlighting overlay.
+            if let Some(node_idx) = self.state.selected_node_idx
+                && node_idx < ir.nodes.len()
+            {
+                let renderer = mermaid_render::MermaidRenderer::new(&config);
+                let selection = SelectionState::from_selected(node_idx, ir);
+                renderer.render_with_selection(layout, ir, &plan, &selection, &mut buffer);
+            }
+            // Compute content flags before mutating cache (avoids borrow conflict with ir).
+            let has_content = !ir.nodes.is_empty()
+                || !ir.edges.is_empty()
+                || !ir.labels.is_empty()
+                || !ir.clusters.is_empty();
+            cache.selected_node_idx = self.state.selected_node_idx;
+
             if !cache.errors.is_empty() {
-                let has_content = !ir.nodes.is_empty()
-                    || !ir.edges.is_empty()
-                    || !ir.labels.is_empty()
-                    || !ir.clusters.is_empty();
                 if has_content {
                     mermaid_render::render_mermaid_error_overlay(
                         &cache.errors,
@@ -2032,6 +2063,133 @@ impl MermaidShowcaseScreen {
             .copy_from(buf, Rect::new(src_x, src_y, copy_w, copy_h), dst_x, dst_y);
     }
 
+    /// Navigate to a connected node in the given direction using the cached
+    /// adjacency list and layout positions.
+    fn apply_navigate(&mut self, action: MermaidShowcaseAction) {
+        let direction: u8 = match action {
+            MermaidShowcaseAction::NavigateUp => 0,
+            MermaidShowcaseAction::NavigateRight => 1,
+            MermaidShowcaseAction::NavigateDown => 2,
+            MermaidShowcaseAction::NavigateLeft => 3,
+            _ => return,
+        };
+        let node_idx = match self.state.selected_node_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let cache = self.cache.borrow();
+        let layout = match cache.layout.as_ref() {
+            Some(l) => l,
+            None => return,
+        };
+        if cache.adjacency.is_empty() {
+            return;
+        }
+        if let Some(target) =
+            mermaid_render::navigate_direction(node_idx, direction, &cache.adjacency, layout)
+        {
+            drop(cache);
+            self.state.selected_node_idx = Some(target);
+            self.state.mode = ShowcaseMode::Inspect;
+            self.state.bump_render();
+            self.state.log_action("navigate", format!("node {target}"));
+        }
+    }
+
+    /// Select next/previous node using the actual IR node count from cache.
+    fn apply_select_node(&mut self, action: MermaidShowcaseAction) {
+        let cache = self.cache.borrow();
+        let node_count = cache.ir.as_ref().map_or(0, |ir| ir.nodes.len());
+        drop(cache);
+
+        if node_count == 0 {
+            return;
+        }
+
+        let idx = match action {
+            MermaidShowcaseAction::SelectNextNode => self
+                .state
+                .selected_node_idx
+                .map_or(0, |i| (i + 1) % node_count),
+            MermaidShowcaseAction::SelectPrevNode => self
+                .state
+                .selected_node_idx
+                .map_or(node_count - 1, |i| (i + node_count - 1) % node_count),
+            _ => return,
+        };
+        self.state.selected_node_idx = Some(idx);
+        self.state.mode = ShowcaseMode::Inspect;
+        self.state.bump_render();
+        self.state.log_action("inspect", format!("node {idx}"));
+    }
+
+    /// Render a detail panel showing information about the selected node.
+    fn render_node_detail(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Node Detail")
+            .title_alignment(Alignment::Center)
+            .style(Style::new().fg(theme::accent::INFO).bg(theme::bg::DEEP));
+
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.is_empty() {
+            return;
+        }
+
+        let cache = self.cache.borrow();
+        let ir = match cache.ir.as_ref() {
+            Some(ir) => ir,
+            None => return,
+        };
+        let node_idx = match self.state.selected_node_idx {
+            Some(idx) if idx < ir.nodes.len() => idx,
+            _ => return,
+        };
+
+        let node = &ir.nodes[node_idx];
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("ID: {}", node.id));
+        if let Some(label_id) = node.label
+            && let Some(label) = ir.labels.get(label_id.0)
+        {
+            lines.push(format!("Label: {:?}", label));
+        }
+        lines.push(format!("Shape: {:?}", node.shape));
+
+        // Count incoming/outgoing edges.
+        use ftui_extras::mermaid::{IrEndpoint, IrNodeId};
+        let mut incoming = 0usize;
+        let mut outgoing = 0usize;
+        for edge in &ir.edges {
+            if edge.from == IrEndpoint::Node(IrNodeId(node_idx)) {
+                outgoing += 1;
+            }
+            if edge.to == IrEndpoint::Node(IrNodeId(node_idx)) {
+                incoming += 1;
+            }
+        }
+        lines.push(format!("Edges: {} in, {} out", incoming, outgoing));
+
+        // Cluster membership.
+        for cluster in &ir.clusters {
+            if cluster.members.iter().any(|m| m.0 == node_idx) {
+                lines.push(format!("Cluster: #{}", cluster.id.0));
+            }
+        }
+
+        let text = lines.join("\n");
+        Paragraph::new(text)
+            .style(Style::new().fg(theme::fg::PRIMARY))
+            .render(inner, frame);
+    }
+
     fn handle_key(&self, event: &KeyEvent) -> Option<MermaidShowcaseAction> {
         if event.kind != KeyEventKind::Press {
             return None;
@@ -2054,6 +2212,10 @@ impl MermaidShowcaseScreen {
                 KeyCode::Escape => Some(MermaidShowcaseAction::ExitMode),
                 KeyCode::Tab => Some(MermaidShowcaseAction::SelectNextNode),
                 KeyCode::BackTab => Some(MermaidShowcaseAction::SelectPrevNode),
+                KeyCode::Up => Some(MermaidShowcaseAction::NavigateUp),
+                KeyCode::Down => Some(MermaidShowcaseAction::NavigateDown),
+                KeyCode::Left => Some(MermaidShowcaseAction::NavigateLeft),
+                KeyCode::Right => Some(MermaidShowcaseAction::NavigateRight),
                 KeyCode::Char('+') | KeyCode::Char('=') => Some(MermaidShowcaseAction::ZoomIn),
                 KeyCode::Char('-') => Some(MermaidShowcaseAction::ZoomOut),
                 KeyCode::Char('0') => Some(MermaidShowcaseAction::ZoomReset),
@@ -2682,7 +2844,20 @@ impl Screen for MermaidShowcaseScreen {
         if let Event::Key(key) = event
             && let Some(action) = self.handle_key(key)
         {
-            self.state.apply_action(action);
+            match action {
+                MermaidShowcaseAction::NavigateUp
+                | MermaidShowcaseAction::NavigateDown
+                | MermaidShowcaseAction::NavigateLeft
+                | MermaidShowcaseAction::NavigateRight => {
+                    self.apply_navigate(action);
+                }
+                MermaidShowcaseAction::SelectNextNode | MermaidShowcaseAction::SelectPrevNode => {
+                    self.apply_select_node(action);
+                }
+                _ => {
+                    self.state.apply_action(action);
+                }
+            }
         }
         Cmd::None
     }
@@ -2715,76 +2890,99 @@ impl Screen for MermaidShowcaseScreen {
                 return;
             }
 
+            // Show node detail panel when inspecting a node.
+            let show_node_detail =
+                self.state.mode == ShowcaseMode::Inspect && self.state.selected_node_idx.is_some();
+
             // Collect which panels are visible.
             let show_controls = self.state.controls_visible;
             let show_metrics = self.state.metrics_visible;
             let show_log = self.state.status_log_visible;
             let panel_count = show_controls as u8 + show_metrics as u8 + show_log as u8;
 
-            match panel_count {
-                0 => {}
-                1 => {
-                    if show_controls {
-                        self.render_controls_panel(frame, right);
-                    } else if show_metrics {
-                        self.render_metrics_panel(frame, right);
-                    } else {
-                        self.render_status_log(frame, right);
-                    }
-                }
-                2 if right.height >= 12 => {
+            if show_node_detail {
+                // In inspect mode: node detail on top, then other panels below.
+                if right.height >= 16 && panel_count > 0 {
                     let rows = Flex::vertical()
-                        .constraints([Constraint::Percentage(55.0), Constraint::Min(5)])
+                        .constraints([Constraint::Fixed(10), Constraint::Min(4)])
                         .split(right);
-                    let mut slot = 0;
-                    if show_controls {
-                        self.render_controls_panel(frame, rows[slot]);
-                        slot += 1;
-                    }
+                    self.render_node_detail(frame, rows[0]);
                     if show_metrics {
-                        self.render_metrics_panel(frame, rows[slot]);
-                        slot += 1;
+                        self.render_metrics_panel(frame, rows[1]);
+                    } else if show_controls {
+                        self.render_controls_panel(frame, rows[1]);
+                    } else if show_log {
+                        self.render_status_log(frame, rows[1]);
                     }
-                    if show_log && slot < 2 {
-                        self.render_status_log(frame, rows[slot]);
+                } else {
+                    self.render_node_detail(frame, right);
+                }
+            } else {
+                match panel_count {
+                    0 => {}
+                    1 => {
+                        if show_controls {
+                            self.render_controls_panel(frame, right);
+                        } else if show_metrics {
+                            self.render_metrics_panel(frame, right);
+                        } else {
+                            self.render_status_log(frame, right);
+                        }
                     }
-                }
-                2 => {
-                    // Not enough height for two panels; show first visible one.
-                    if show_controls {
-                        self.render_controls_panel(frame, right);
-                    } else if show_metrics {
-                        self.render_metrics_panel(frame, right);
-                    } else {
-                        self.render_status_log(frame, right);
-                    }
-                }
-                _ if right.height >= 18 => {
-                    // All three panels.
-                    let rows = Flex::vertical()
-                        .constraints([
-                            Constraint::Percentage(40.0),
-                            Constraint::Percentage(35.0),
-                            Constraint::Min(4),
-                        ])
-                        .split(right);
-                    self.render_controls_panel(frame, rows[0]);
-                    self.render_metrics_panel(frame, rows[1]);
-                    self.render_status_log(frame, rows[2]);
-                }
-                _ => {
-                    // All visible but not enough height; show controls + metrics.
-                    if right.height >= 12 {
+                    2 if right.height >= 12 => {
                         let rows = Flex::vertical()
                             .constraints([Constraint::Percentage(55.0), Constraint::Min(5)])
                             .split(right);
+                        let mut slot = 0;
+                        if show_controls {
+                            self.render_controls_panel(frame, rows[slot]);
+                            slot += 1;
+                        }
+                        if show_metrics {
+                            self.render_metrics_panel(frame, rows[slot]);
+                            slot += 1;
+                        }
+                        if show_log && slot < 2 {
+                            self.render_status_log(frame, rows[slot]);
+                        }
+                    }
+                    2 => {
+                        // Not enough height for two panels; show first visible one.
+                        if show_controls {
+                            self.render_controls_panel(frame, right);
+                        } else if show_metrics {
+                            self.render_metrics_panel(frame, right);
+                        } else {
+                            self.render_status_log(frame, right);
+                        }
+                    }
+                    _ if right.height >= 18 => {
+                        // All three panels.
+                        let rows = Flex::vertical()
+                            .constraints([
+                                Constraint::Percentage(40.0),
+                                Constraint::Percentage(35.0),
+                                Constraint::Min(4),
+                            ])
+                            .split(right);
                         self.render_controls_panel(frame, rows[0]);
                         self.render_metrics_panel(frame, rows[1]);
-                    } else {
-                        self.render_controls_panel(frame, right);
+                        self.render_status_log(frame, rows[2]);
+                    }
+                    _ => {
+                        // All visible but not enough height; show controls + metrics.
+                        if right.height >= 12 {
+                            let rows = Flex::vertical()
+                                .constraints([Constraint::Percentage(55.0), Constraint::Min(5)])
+                                .split(right);
+                            self.render_controls_panel(frame, rows[0]);
+                            self.render_metrics_panel(frame, rows[1]);
+                        } else {
+                            self.render_controls_panel(frame, right);
+                        }
                     }
                 }
-            }
+            } // close else for show_node_detail
             if self.state.help_visible {
                 self.render_help_overlay(frame, area);
             }
@@ -2900,6 +3098,18 @@ impl Screen for MermaidShowcaseScreen {
             HelpEntry {
                 key: "Esc",
                 action: "Collapse panels",
+            },
+            HelpEntry {
+                key: "Tab / S-Tab",
+                action: "Next/prev node",
+            },
+            HelpEntry {
+                key: "Arrows",
+                action: "Follow edge (inspect)",
+            },
+            HelpEntry {
+                key: "/",
+                action: "Search nodes",
             },
         ]
     }
