@@ -13,6 +13,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use ftui_core::event::{MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_extras::mermaid;
 use ftui_extras::mermaid::{
@@ -2182,6 +2183,14 @@ pub struct MermaidMegaShowcaseScreen {
     cache: RefCell<MegaRenderCache>,
     /// Separate cache for the comparison (right-side) layout.
     comparison_cache: RefCell<MegaRenderCache>,
+    /// Cached diagram region for mouse hit testing.
+    layout_diagram: std::cell::Cell<Rect>,
+    /// Cached side panel region for mouse hit testing.
+    layout_side_panel: std::cell::Cell<Rect>,
+    /// Cached controls region for mouse hit testing.
+    layout_controls: std::cell::Cell<Rect>,
+    /// Cached footer region for mouse hit testing.
+    layout_footer: std::cell::Cell<Rect>,
 }
 
 impl Default for MermaidMegaShowcaseScreen {
@@ -2198,6 +2207,10 @@ impl MermaidMegaShowcaseScreen {
             state: MermaidMegaState::default(),
             cache: RefCell::new(MegaRenderCache::empty()),
             comparison_cache: RefCell::new(MegaRenderCache::empty()),
+            layout_diagram: std::cell::Cell::new(Rect::default()),
+            layout_side_panel: std::cell::Cell::new(Rect::default()),
+            layout_controls: std::cell::Cell::new(Rect::default()),
+            layout_footer: std::cell::Cell::new(Rect::default()),
         }
     }
 
@@ -2294,6 +2307,57 @@ impl MermaidMegaShowcaseScreen {
             KeyCode::Char('/') => Some(MegaAction::EnterSearch),
             // Escape is context-dependent
             KeyCode::Escape => Some(MegaAction::CollapsePanels),
+            _ => None,
+        }
+    }
+
+    /// Map a mouse event to an action based on which panel was clicked/scrolled.
+    fn handle_mouse(&self, mouse: &ftui_core::event::MouseEvent) -> Option<MegaAction> {
+        let (x, y) = (mouse.x, mouse.y);
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.layout_controls.get().contains(x, y) {
+                    Some(MegaAction::ToggleControls)
+                } else if self.layout_side_panel.get().contains(x, y) {
+                    Some(MegaAction::NextSample)
+                } else if self.layout_diagram.get().contains(x, y) {
+                    Some(MegaAction::SelectNextNode)
+                } else if self.layout_footer.get().contains(x, y) {
+                    Some(MegaAction::ToggleHelp)
+                } else {
+                    None
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if self.layout_diagram.get().contains(x, y) {
+                    Some(MegaAction::DeselectNode)
+                } else {
+                    None
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.layout_diagram.get().contains(x, y) {
+                    Some(MegaAction::ZoomOut)
+                } else if self.layout_side_panel.get().contains(x, y) {
+                    Some(MegaAction::NextSample)
+                } else if self.layout_controls.get().contains(x, y) {
+                    Some(MegaAction::CyclePalette)
+                } else {
+                    None
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if self.layout_diagram.get().contains(x, y) {
+                    Some(MegaAction::ZoomIn)
+                } else if self.layout_side_panel.get().contains(x, y) {
+                    Some(MegaAction::PrevSample)
+                } else if self.layout_controls.get().contains(x, y) {
+                    Some(MegaAction::PrevPalette)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -3743,9 +3807,14 @@ impl Screen for MermaidMegaShowcaseScreen {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
-        if let Event::Key(key) = event
-            && let Some(action) = self.handle_key(key)
-        {
+        let action = if let Event::Key(key) = event {
+            self.handle_key(key)
+        } else if let Event::Mouse(mouse) = event {
+            self.handle_mouse(mouse)
+        } else {
+            None
+        };
+        if let Some(action) = action {
             self.state.apply(action);
         }
         Cmd::None
@@ -3799,6 +3868,12 @@ impl Screen for MermaidMegaShowcaseScreen {
 
     fn view(&self, frame: &mut Frame, area: Rect) {
         let regions = LayoutRegions::compute(area, &self.state.panels);
+
+        // Cache layout regions for mouse hit testing.
+        self.layout_diagram.set(regions.diagram);
+        self.layout_side_panel.set(regions.side_panel);
+        self.layout_controls.set(regions.controls);
+        self.layout_footer.set(regions.footer);
 
         // Render in layer order: background panels first, then diagram, then overlay.
         if !regions.controls.is_empty() {
@@ -3973,6 +4048,18 @@ impl Screen for MermaidMegaShowcaseScreen {
             HelpEntry {
                 key: "Esc",
                 action: "Deselect / collapse",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Diagram: select node / Panel: activate",
+            },
+            HelpEntry {
+                key: "Right-click",
+                action: "Diagram: deselect",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Diagram: zoom / Panel: navigate",
             },
         ]
     }
@@ -4182,6 +4269,204 @@ mod tests {
     #[test]
     fn screen_new_does_not_panic() {
         let _screen = MermaidMegaShowcaseScreen::new();
+    }
+
+    // ── Mouse interaction tests ─────────────────────────────────────
+
+    fn mouse_down(x: u16, y: u16, button: MouseButton) -> Event {
+        Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(button),
+            x,
+            y,
+        ))
+    }
+
+    fn mouse_scroll(x: u16, y: u16, down: bool) -> Event {
+        let kind = if down {
+            MouseEventKind::ScrollDown
+        } else {
+            MouseEventKind::ScrollUp
+        };
+        Event::Mouse(ftui_core::event::MouseEvent::new(kind, x, y))
+    }
+
+    #[test]
+    fn click_diagram_selects_node() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        let diagram = screen.layout_diagram.get();
+        assert!(diagram.width > 0 && diagram.height > 0, "diagram region must be non-empty");
+
+        let cx = diagram.x + diagram.width / 2;
+        let cy = diagram.y + diagram.height / 2;
+        screen.update(&mouse_down(cx, cy, MouseButton::Left));
+
+        assert_eq!(screen.state.mode, ShowcaseMode::Inspect);
+        assert_eq!(screen.state.selected_node, Some(0));
+    }
+
+    #[test]
+    fn right_click_diagram_deselects_node() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        screen.state.apply(MegaAction::SelectNextNode);
+        assert_eq!(screen.state.mode, ShowcaseMode::Inspect);
+
+        let diagram = screen.layout_diagram.get();
+        let cx = diagram.x + diagram.width / 2;
+        let cy = diagram.y + diagram.height / 2;
+        screen.update(&mouse_down(cx, cy, MouseButton::Right));
+
+        assert_eq!(screen.state.mode, ShowcaseMode::Normal);
+        assert_eq!(screen.state.selected_node, None);
+    }
+
+    #[test]
+    fn click_controls_toggles_controls_panel() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.state.panels.controls = true;
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        let controls = screen.layout_controls.get();
+        if controls.width > 0 && controls.height > 0 {
+            let was = screen.state.panels.controls;
+            let cx = controls.x + controls.width / 2;
+            let cy = controls.y + controls.height / 2;
+            screen.update(&mouse_down(cx, cy, MouseButton::Left));
+            assert_ne!(screen.state.panels.controls, was);
+        }
+    }
+
+    #[test]
+    fn click_side_panel_advances_sample() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.state.panels.metrics = true;
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        let side = screen.layout_side_panel.get();
+        if side.width > 0 && side.height > 0 {
+            let before = screen.state.selected_sample;
+            let cx = side.x + side.width / 2;
+            let cy = side.y + side.height / 2;
+            screen.update(&mouse_down(cx, cy, MouseButton::Left));
+            assert_ne!(screen.state.selected_sample, before);
+        }
+    }
+
+    #[test]
+    fn click_footer_toggles_help() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        let footer = screen.layout_footer.get();
+        assert!(footer.width > 0 && footer.height > 0, "footer must be visible");
+        let was = screen.state.panels.help_overlay;
+        let cx = footer.x + footer.width / 2;
+        let cy = footer.y + footer.height / 2;
+        screen.update(&mouse_down(cx, cy, MouseButton::Left));
+        assert_ne!(screen.state.panels.help_overlay, was);
+    }
+
+    #[test]
+    fn scroll_diagram_zooms() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        let diagram = screen.layout_diagram.get();
+        let cx = diagram.x + diagram.width / 2;
+        let cy = diagram.y + diagram.height / 2;
+
+        let zoom_before = screen.state.viewport_zoom;
+        screen.update(&mouse_scroll(cx, cy, true));
+        assert!(screen.state.viewport_zoom < zoom_before);
+
+        let zoom_before = screen.state.viewport_zoom;
+        screen.update(&mouse_scroll(cx, cy, false));
+        assert!(screen.state.viewport_zoom > zoom_before);
+    }
+
+    #[test]
+    fn scroll_side_panel_navigates_samples() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.state.panels.metrics = true;
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        let side = screen.layout_side_panel.get();
+        if side.width > 0 && side.height > 0 {
+            let before = screen.state.selected_sample;
+            let cx = side.x + side.width / 2;
+            let cy = side.y + side.height / 2;
+            screen.update(&mouse_scroll(cx, cy, true));
+            assert_ne!(screen.state.selected_sample, before);
+        }
+    }
+
+    #[test]
+    fn scroll_controls_cycles_palette() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.state.panels.controls = true;
+        let area = Rect::new(0, 0, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, area);
+
+        let controls = screen.layout_controls.get();
+        if controls.width > 0 && controls.height > 0 {
+            let palette_before = screen.state.palette;
+            let cx = controls.x + controls.width / 2;
+            let cy = controls.y + controls.height / 2;
+            screen.update(&mouse_scroll(cx, cy, true));
+            assert_ne!(screen.state.palette, palette_before);
+        }
+    }
+
+    #[test]
+    fn mouse_outside_all_regions_is_noop() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        let area = Rect::new(5, 5, 120, 40);
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = ftui_render::frame::Frame::new(130, 50, &mut pool);
+        screen.view(&mut frame, area);
+
+        let sample_before = screen.state.selected_sample;
+        let zoom_before = screen.state.viewport_zoom;
+        let mode_before = screen.state.mode;
+        screen.update(&mouse_down(0, 0, MouseButton::Left));
+        assert_eq!(screen.state.selected_sample, sample_before);
+        assert!((screen.state.viewport_zoom - zoom_before).abs() < f32::EPSILON);
+        assert_eq!(screen.state.mode, mode_before);
+    }
+
+    #[test]
+    fn keybindings_include_mouse_hints() {
+        let screen = MermaidMegaShowcaseScreen::new();
+        let bindings = screen.keybindings();
+        let keys: Vec<&str> = bindings.iter().map(|h| h.key).collect();
+        assert!(keys.contains(&"Click"), "missing Click hint");
+        assert!(keys.contains(&"Scroll"), "missing Scroll hint");
     }
 
     #[test]
