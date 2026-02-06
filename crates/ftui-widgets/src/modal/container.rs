@@ -550,4 +550,422 @@ mod tests {
             }
         }
     }
+
+    // --- BackdropConfig tests ---
+
+    #[test]
+    fn backdrop_config_default() {
+        let bd = BackdropConfig::default();
+        assert_eq!(bd.color, PackedRgba::rgb(0, 0, 0));
+        assert!((bd.opacity - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn backdrop_config_new_and_builders() {
+        let bd = BackdropConfig::new(PackedRgba::rgb(255, 0, 0), 0.8)
+            .color(PackedRgba::rgb(0, 255, 0))
+            .opacity(0.3);
+        assert_eq!(bd.color, PackedRgba::rgb(0, 255, 0));
+        assert!((bd.opacity - 0.3).abs() < f32::EPSILON);
+    }
+
+    // --- ModalSizeConstraints tests ---
+
+    #[test]
+    fn size_constraints_unconstrained() {
+        let c = ModalSizeConstraints::new();
+        let result = c.clamp(Size::new(40, 20));
+        assert_eq!(result, Size::new(40, 20));
+    }
+
+    #[test]
+    fn size_constraints_max_only() {
+        let c = ModalSizeConstraints::new().max_width(10).max_height(5);
+        let result = c.clamp(Size::new(40, 20));
+        assert_eq!(result, Size::new(10, 5));
+    }
+
+    #[test]
+    fn size_constraints_min_only() {
+        let c = ModalSizeConstraints::new().min_width(10).min_height(5);
+        // Available is larger than min: result = available
+        assert_eq!(c.clamp(Size::new(40, 20)), Size::new(40, 20));
+    }
+
+    #[test]
+    fn size_constraints_min_exceeds_available() {
+        let c = ModalSizeConstraints::new().min_width(50).min_height(30);
+        // min > available: clamped back to available
+        let result = c.clamp(Size::new(10, 6));
+        assert_eq!(result, Size::new(10, 6));
+    }
+
+    #[test]
+    fn size_constraints_zero_available() {
+        let c = ModalSizeConstraints::new()
+            .min_width(10)
+            .max_width(20)
+            .min_height(5)
+            .max_height(10);
+        let result = c.clamp(Size::new(0, 0));
+        assert_eq!(result, Size::new(0, 0));
+    }
+
+    #[test]
+    fn size_constraints_min_and_max_equal() {
+        let c = ModalSizeConstraints::new()
+            .min_width(10)
+            .max_width(10)
+            .min_height(5)
+            .max_height(5);
+        let result = c.clamp(Size::new(40, 20));
+        assert_eq!(result, Size::new(10, 5));
+    }
+
+    #[test]
+    fn size_constraints_default_is_unconstrained() {
+        let c = ModalSizeConstraints::default();
+        assert_eq!(c.min_width, None);
+        assert_eq!(c.max_width, None);
+        assert_eq!(c.min_height, None);
+        assert_eq!(c.max_height, None);
+    }
+
+    // --- ModalPosition tests ---
+
+    #[test]
+    fn position_top_center() {
+        let pos = ModalPosition::TopCenter { margin: 2 };
+        let area = Rect::new(0, 0, 40, 20);
+        let size = Size::new(10, 4);
+        let rect = pos.resolve(area, size);
+        assert_eq!(rect.x, 15); // centered: (40-10)/2 = 15
+        assert_eq!(rect.y, 2); // margin from top
+        assert_eq!(rect.width, 10);
+        assert_eq!(rect.height, 4);
+    }
+
+    #[test]
+    fn position_custom_within_bounds() {
+        let pos = ModalPosition::Custom { x: 5, y: 3 };
+        let area = Rect::new(0, 0, 40, 20);
+        let size = Size::new(10, 4);
+        let rect = pos.resolve(area, size);
+        assert_eq!(rect, Rect::new(5, 3, 10, 4));
+    }
+
+    #[test]
+    fn position_custom_clamped_to_area() {
+        // Custom position beyond area bounds gets clamped
+        let pos = ModalPosition::Custom { x: 100, y: 100 };
+        let area = Rect::new(0, 0, 40, 20);
+        let size = Size::new(10, 4);
+        let rect = pos.resolve(area, size);
+        assert_eq!(rect.x, 30); // max_x = 40-10
+        assert_eq!(rect.y, 16); // max_y = 20-4
+    }
+
+    #[test]
+    fn position_center_offset_clamped() {
+        // Large negative offset gets clamped to area origin
+        let pos = ModalPosition::CenterOffset { x: -100, y: -100 };
+        let area = Rect::new(0, 0, 40, 20);
+        let size = Size::new(10, 4);
+        let rect = pos.resolve(area, size);
+        assert_eq!(rect.x, 0);
+        assert_eq!(rect.y, 0);
+    }
+
+    #[test]
+    fn position_default_is_center() {
+        assert_eq!(ModalPosition::default(), ModalPosition::Center);
+    }
+
+    #[test]
+    fn position_resolve_with_nonzero_area_origin() {
+        let pos = ModalPosition::Center;
+        let area = Rect::new(10, 5, 40, 20);
+        let size = Size::new(10, 4);
+        let rect = pos.resolve(area, size);
+        // center_x = 10 + (40-10)/2 = 25
+        // center_y = 5 + (20-4)/2 = 13
+        assert_eq!(rect, Rect::new(25, 13, 10, 4));
+    }
+
+    #[test]
+    fn position_top_center_with_area_offset() {
+        let pos = ModalPosition::TopCenter { margin: 1 };
+        let area = Rect::new(5, 3, 20, 10);
+        let size = Size::new(8, 4);
+        let rect = pos.resolve(area, size);
+        // center_x = 5 + (20-8)/2 = 11
+        // y = 3 + 1 = 4
+        assert_eq!(rect, Rect::new(11, 4, 8, 4));
+    }
+
+    // --- ModalConfig tests ---
+
+    #[test]
+    fn modal_config_default_values() {
+        let config = ModalConfig::default();
+        assert_eq!(config.position, ModalPosition::Center);
+        assert!(config.close_on_backdrop);
+        assert!(config.close_on_escape);
+        assert!(config.hit_id.is_none());
+    }
+
+    #[test]
+    fn modal_config_builder_chain() {
+        let config = ModalConfig::default()
+            .position(ModalPosition::TopCenter { margin: 5 })
+            .backdrop(BackdropConfig::new(PackedRgba::rgb(255, 0, 0), 0.5))
+            .size(ModalSizeConstraints::new().max_width(20))
+            .close_on_backdrop(false)
+            .close_on_escape(false)
+            .hit_id(HitId::new(42));
+        assert_eq!(config.position, ModalPosition::TopCenter { margin: 5 });
+        assert!(!config.close_on_backdrop);
+        assert!(!config.close_on_escape);
+        assert_eq!(config.hit_id, Some(HitId::new(42)));
+    }
+
+    // --- ModalState tests ---
+
+    #[test]
+    fn modal_state_default_is_open() {
+        let state = ModalState::default();
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_open_close_lifecycle() {
+        let mut state = ModalState::default();
+        assert!(state.is_open());
+        state.close();
+        assert!(!state.is_open());
+        state.open();
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_escape_closes() {
+        let mut state = ModalState::default();
+        let config = ModalConfig::default();
+        let event = Event::Key(KeyEvent::new(KeyCode::Escape));
+        let action = state.handle_event(&event, None, &config);
+        assert_eq!(action, Some(ModalAction::EscapePressed));
+        assert!(!state.is_open());
+    }
+
+    #[test]
+    fn modal_state_escape_disabled() {
+        let mut state = ModalState::default();
+        let config = ModalConfig::default().close_on_escape(false);
+        let event = Event::Key(KeyEvent::new(KeyCode::Escape));
+        let action = state.handle_event(&event, None, &config);
+        assert_eq!(action, None);
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_closed_ignores_events() {
+        let mut state = ModalState::default();
+        state.close();
+        let config = ModalConfig::default();
+        let event = Event::Key(KeyEvent::new(KeyCode::Escape));
+        let action = state.handle_event(&event, None, &config);
+        assert_eq!(action, None);
+        assert!(!state.is_open());
+    }
+
+    #[test]
+    fn modal_state_content_click_does_not_close() {
+        let mut state = ModalState::default();
+        let config = ModalConfig::default().hit_id(HitId::new(1));
+        let hit = Some((HitId::new(1), MODAL_HIT_CONTENT, 0));
+        let event = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let action = state.handle_event(&event, hit, &config);
+        assert_eq!(action, None);
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_backdrop_click_wrong_hit_id() {
+        let mut state = ModalState::default();
+        let config = ModalConfig::default().hit_id(HitId::new(1));
+        // Hit id doesn't match config
+        let hit = Some((HitId::new(999), MODAL_HIT_BACKDROP, 0));
+        let event = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+        ));
+        let action = state.handle_event(&event, hit, &config);
+        assert_eq!(action, None);
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_backdrop_click_no_hit_id_in_config() {
+        let mut state = ModalState::default();
+        // close_on_backdrop is true, but config has no hit_id
+        let config = ModalConfig::default();
+        let hit = Some((HitId::new(1), MODAL_HIT_BACKDROP, 0));
+        let event = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+        ));
+        let action = state.handle_event(&event, hit, &config);
+        assert_eq!(action, None);
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_backdrop_click_disabled() {
+        let mut state = ModalState::default();
+        let config = ModalConfig::default()
+            .hit_id(HitId::new(1))
+            .close_on_backdrop(false);
+        let hit = Some((HitId::new(1), MODAL_HIT_BACKDROP, 0));
+        let event = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+        ));
+        let action = state.handle_event(&event, hit, &config);
+        assert_eq!(action, None);
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_right_click_does_not_close() {
+        let mut state = ModalState::default();
+        let config = ModalConfig::default().hit_id(HitId::new(1));
+        let hit = Some((HitId::new(1), MODAL_HIT_BACKDROP, 0));
+        let event = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Right),
+            0,
+            0,
+        ));
+        let action = state.handle_event(&event, hit, &config);
+        assert_eq!(action, None);
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn modal_state_no_hit_data_backdrop_click() {
+        let mut state = ModalState::default();
+        let config = ModalConfig::default().hit_id(HitId::new(1));
+        // No hit (mouse missed all regions)
+        let event = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+        ));
+        let action = state.handle_event(&event, None, &config);
+        assert_eq!(action, None);
+        assert!(state.is_open());
+    }
+
+    // --- Modal widget tests ---
+
+    #[test]
+    fn modal_content_rect_zero_area() {
+        let modal = Modal::new(Stub);
+        let area = Rect::new(0, 0, 0, 0);
+        let rect = modal.content_rect(area);
+        assert!(rect.is_empty());
+    }
+
+    #[test]
+    fn modal_render_empty_area_does_nothing() {
+        let modal = Modal::new(Stub);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(10, 10, &mut pool);
+        // Empty area should be a no-op
+        modal.render(Rect::new(0, 0, 0, 0), &mut frame);
+        // No hits registered
+        assert_eq!(frame.hit_test(0, 0), None);
+    }
+
+    #[test]
+    fn modal_no_hit_regions_without_hit_id() {
+        let modal = Modal::new(Stub).size(
+            ModalSizeConstraints::new()
+                .min_width(4)
+                .max_width(4)
+                .min_height(2)
+                .max_height(2),
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(20, 10, &mut pool);
+        modal.render(Rect::new(0, 0, 20, 10), &mut frame);
+        // No hit_id -> no hit regions
+        assert_eq!(frame.hit_test(0, 0), None);
+        assert_eq!(frame.hit_test(10, 5), None);
+    }
+
+    #[test]
+    fn modal_builder_methods() {
+        let modal = Modal::new(Stub)
+            .position(ModalPosition::TopCenter { margin: 3 })
+            .backdrop(BackdropConfig::new(PackedRgba::rgb(0, 0, 0), 0.5))
+            .size(ModalSizeConstraints::new().max_width(10).max_height(5))
+            .close_on_backdrop(false)
+            .close_on_escape(false)
+            .hit_id(HitId::new(99));
+
+        assert_eq!(modal.config.position, ModalPosition::TopCenter { margin: 3 });
+        assert!(!modal.config.close_on_backdrop);
+        assert!(!modal.config.close_on_escape);
+        assert_eq!(modal.config.hit_id, Some(HitId::new(99)));
+    }
+
+    #[test]
+    fn modal_config_method_replaces_full_config() {
+        let config = ModalConfig::default()
+            .close_on_escape(false)
+            .hit_id(HitId::new(5));
+        let modal = Modal::new(Stub).config(config);
+        assert!(!modal.config.close_on_escape);
+        assert_eq!(modal.config.hit_id, Some(HitId::new(5)));
+    }
+
+    #[test]
+    fn modal_content_rect_size_bigger_than_area() {
+        // When content size exceeds area, it gets clamped
+        let modal = Modal::new(Stub).size(
+            ModalSizeConstraints::new()
+                .min_width(100)
+                .max_width(100)
+                .min_height(100)
+                .max_height(100),
+        );
+        let area = Rect::new(0, 0, 20, 10);
+        let rect = modal.content_rect(area);
+        // min > available: clamped to available
+        assert_eq!(rect.width, 20);
+        assert_eq!(rect.height, 10);
+    }
+
+    // --- ModalAction tests ---
+
+    #[test]
+    fn modal_action_variants_are_distinct() {
+        assert_ne!(ModalAction::Close, ModalAction::BackdropClicked);
+        assert_ne!(ModalAction::Close, ModalAction::EscapePressed);
+        assert_ne!(ModalAction::BackdropClicked, ModalAction::EscapePressed);
+    }
+
+    // --- Hit region constants ---
+
+    #[test]
+    fn hit_region_constants_are_distinct() {
+        assert_ne!(MODAL_HIT_BACKDROP, MODAL_HIT_CONTENT);
+    }
 }
