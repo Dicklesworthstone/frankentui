@@ -738,6 +738,57 @@ mod tests {
         assert_ne!(style.filename.fg, None);
     }
 
+    #[test]
+    fn accessors_return_correct_values() {
+        let tb = Traceback::new(
+            vec![TracebackFrame::new("main", 10)],
+            "RuntimeError",
+            "bad input",
+        );
+        assert_eq!(tb.exception_type(), "RuntimeError");
+        assert_eq!(tb.exception_message(), "bad input");
+        assert_eq!(tb.frames().len(), 1);
+        assert_eq!(tb.frames()[0].name, "main");
+        assert_eq!(tb.frames()[0].line, 10);
+    }
+
+    #[test]
+    fn push_frame_appends() {
+        let mut tb = Traceback::new(Vec::new(), "E", "msg");
+        assert_eq!(tb.frames().len(), 0);
+
+        tb.push_frame(TracebackFrame::new("first", 1));
+        assert_eq!(tb.frames().len(), 1);
+
+        tb.push_frame(TracebackFrame::new("second", 2));
+        assert_eq!(tb.frames().len(), 2);
+        assert_eq!(tb.frames()[1].name, "second");
+    }
+
+    #[test]
+    fn custom_title() {
+        let tb = Traceback::new(Vec::new(), "E", "msg").title("Custom Error Trace");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 5, &mut pool);
+        tb.render(Rect::new(0, 0, 60, 5), &mut frame);
+
+        let title_text = read_line(&frame.buffer, 0, 60);
+        assert!(
+            title_text.contains("Custom Error Trace"),
+            "Title should be custom, got: {title_text}"
+        );
+    }
+
+    #[test]
+    fn traceback_frame_equality() {
+        let a = TracebackFrame::new("func", 42).filename("test.rs");
+        let b = TracebackFrame::new("func", 42).filename("test.rs");
+        assert_eq!(a, b);
+
+        let c = TracebackFrame::new("func", 43).filename("test.rs");
+        assert_ne!(a, c);
+    }
+
     /// Helper: read a line from the buffer as text.
     fn read_line(buffer: &Buffer, y: u16, width: u16) -> String {
         let mut s = String::new();

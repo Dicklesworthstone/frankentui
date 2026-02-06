@@ -756,4 +756,41 @@ mod tests {
 
         assert!(tl.event_value_at(5).is_none());
     }
+
+    #[test]
+    fn idle_timeline_value_is_zero() {
+        let tl = Timeline::new()
+            .add(Duration::ZERO, Fade::new(MS_500))
+            .set_duration(MS_500);
+
+        // Not yet played: value should be 0.0
+        assert!((tl.value() - 0.0).abs() < f32::EPSILON);
+        assert_eq!(tl.state(), PlaybackState::Idle);
+    }
+
+    #[test]
+    fn overshoot_is_zero_while_playing() {
+        let mut tl = Timeline::new()
+            .add(Duration::ZERO, Fade::new(MS_500))
+            .set_duration(MS_500);
+
+        tl.play();
+        tl.tick(MS_250);
+
+        assert_eq!(tl.overshoot(), Duration::ZERO);
+    }
+
+    #[test]
+    fn seek_to_zero_resets_animations() {
+        let mut tl = Timeline::new()
+            .add(Duration::ZERO, Fade::new(MS_500))
+            .set_duration(MS_500);
+
+        tl.play();
+        tl.tick(MS_250);
+        assert!(tl.event_value_at(0).unwrap() > 0.0);
+
+        tl.seek(Duration::ZERO);
+        assert_eq!(tl.current_time(), Duration::ZERO);
+    }
 }
