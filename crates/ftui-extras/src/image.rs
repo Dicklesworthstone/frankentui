@@ -515,4 +515,72 @@ mod tests {
         let err = Image::from_bytes(b"not an image").expect_err("expected decode error");
         assert!(matches!(err, ImageError::Decode(_)));
     }
+
+    #[test]
+    fn detect_protocol_iterm2() {
+        let caps = TerminalCapabilities::basic();
+        let hints = DetectionHints::default().with_iterm2_inline(true);
+        assert_eq!(detect_protocol(caps, &hints), ImageProtocol::Iterm2);
+    }
+
+    #[test]
+    fn detect_protocol_sixel() {
+        let caps = TerminalCapabilities::basic();
+        let hints = DetectionHints::default().with_sixel(true);
+        assert_eq!(detect_protocol(caps, &hints), ImageProtocol::Sixel);
+    }
+
+    #[test]
+    fn detect_protocol_ascii_fallback() {
+        let caps = TerminalCapabilities::basic();
+        let hints = DetectionHints::default();
+        assert_eq!(detect_protocol(caps, &hints), ImageProtocol::Ascii);
+    }
+
+    #[test]
+    fn protocol_cache_returns_cached() {
+        let caps = TerminalCapabilities::basic();
+        let hints = DetectionHints::default().with_kitty_graphics(true);
+        let mut cache = ProtocolCache::new();
+
+        let first = cache.detect(caps, &hints);
+        assert_eq!(first, ImageProtocol::Kitty);
+
+        // Second call with different hints should still return cached value
+        let other_hints = DetectionHints::default().with_sixel(true);
+        let second = cache.detect(caps, &other_hints);
+        assert_eq!(second, ImageProtocol::Kitty);
+    }
+
+    #[test]
+    fn iterm2_options_defaults() {
+        let opts = Iterm2Options::default();
+        assert!(opts.width.is_none());
+        assert!(opts.height.is_none());
+        assert!(opts.preserve_aspect_ratio);
+        assert!(opts.inline);
+        assert!(opts.name.is_none());
+    }
+
+    #[test]
+    fn image_error_display() {
+        let err = Image::from_bytes(b"bad").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("decode error"), "got: {msg}");
+    }
+
+    #[test]
+    fn scale_to_fit_contain_smaller_than_max() {
+        // 2x4 image in 10x10 box, contain should scale uniformly
+        let (w, h) = scale_to_fit(2, 4, 10, 10, false);
+        // Scale = min(10/2, 10/4) = min(5, 2.5) = 2.5 → (5, 10)
+        assert_eq!((w, h), (5, 10));
+    }
+
+    #[test]
+    fn scale_to_fit_cover_fills_box() {
+        let (w, h) = scale_to_fit(2, 4, 10, 10, true);
+        // Scale = max(10/2, 10/4) = max(5, 2.5) = 5 → (10, 20)
+        assert_eq!((w, h), (10, 20));
+    }
 }
