@@ -1915,10 +1915,7 @@ mod tests {
 
     #[test]
     fn virtualized_search_focus_change_via_event() {
-        use ftui_core::event::{
-            Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
-        };
-        use std::cell::Cell;
+        use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 
         reset_event_counter();
         let mut screen = VirtualizedSearch::new().with_diagnostics();
@@ -1942,10 +1939,7 @@ mod tests {
 
     #[test]
     fn virtualized_search_query_change_via_event() {
-        use ftui_core::event::{
-            Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
-        };
-        use std::cell::Cell;
+        use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 
         reset_event_counter();
         let mut screen = VirtualizedSearch::new().with_diagnostics();
