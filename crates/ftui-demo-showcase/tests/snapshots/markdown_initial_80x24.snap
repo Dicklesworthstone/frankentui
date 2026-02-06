@@ -18,7 +18,7 @@
 │                         │ │                         │ │→ ← ↑ ↓     │Arrows  ││
 │ℹ  NOTE                  │ │                         │ ╰──────────────────────╯
 │┃ Information note with  │ │  [░░░░░░░░░░░░░░░░░░░░░]│                         
-│rich emphasis.           │ │  Detection: 0 indicators│ ╭Wrap: Word | Align: Le╮
+│┃ rich emphasis.         │ │  Detection: 0 indicators│ ╭Wrap: Word | Align: Le╮
 │                         │ │  Confidence: 0% | Chars:│ │w: cycle wrap | a: cyc│
 │?? TIP                   │ │  Space: play/pause | r: │ │The quick brown fox   │
 ╰─────────────────────────╯ ╰─────────────────────────╯ ╰──────────────────────╯

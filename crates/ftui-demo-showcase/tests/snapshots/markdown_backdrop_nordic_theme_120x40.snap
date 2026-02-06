@@ -22,7 +22,7 @@
 │                                       │ │                                       │ │w: cycle wrap | a: cycle alignment│
 │⚠  WARNING                             │ │                                       │ │The quick brown fox jumps over the│
 │┃ Unsafe mode is forbidden in this     │ │                                       │ │lazy dog.                         │
-│project.                               │ │                                       │ │Supercalifragilisticexpialidocious│
+│┃ project.                             │ │                                       │ │Supercalifragilisticexpialidocious│
 │                                       │ │                                       │ │is quite a long word that tests   │
 │Task Lists + Links                     │ │                                       │ │character-level wrapping behavior.│
 │✓ Inline mode + scrollback             │ │                                       │ │???????? contains CJK characters  │

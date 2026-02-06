@@ -12,7 +12,7 @@
 │                                       │ │                                       │ │Hello        │ASCII        │5     │
 │⚠  WARNING                             │ │                                       │ │????????     │CJK          │8     │
 │┃ Unsafe mode is forbidden in this     │ │                                       │ │??????????   │Hiragana     │10    │
-│project.                               │ │                                       │ │??????       │Emoji        │6     │
+│┃ project.                             │ │                                       │ │??????       │Emoji        │6     │
 │                                       │ │                                       │ │café         │Latin+accent │4     │
 │Task Lists + Links                     │ │                                       │ │α β γ δ      │Greek        │7     │
 │✓ Inline mode + scrollback             │ │                                       │ │→ ← ↑ ↓      │Arrows       │7     │

@@ -1,4 +1,4 @@
- runtime snapshot: inline-auto  |  fallback: local sampler  |  r:reset          
+ src: inline-auto|fallback  focus: —  Tab:section v:detail n/p:ledger           
       ╭───────────────────────────VOI Overlay────────────────────────────╮      
       │VOI Overlay (tick 0) [demo:fallback]                              │      
       │----------------------------------------------------------------  │      
