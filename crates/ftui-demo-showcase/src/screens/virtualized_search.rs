@@ -26,7 +26,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
@@ -39,6 +41,7 @@ use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::input::TextInput;
 use ftui_widgets::paragraph::Paragraph;
+use std::cell::Cell;
 
 use super::{HelpEntry, Screen};
 use crate::determinism;
@@ -624,6 +627,10 @@ pub struct VirtualizedSearch {
     diagnostic_log: Option<DiagnosticLog>,
     /// Telemetry hooks for external observers (bd-2zbk.5).
     telemetry_hooks: Option<TelemetryHooks>,
+    /// Cached list panel area for mouse hit-testing.
+    last_list_area: Cell<Rect>,
+    /// Cached search bar area for mouse hit-testing.
+    last_search_area: Cell<Rect>,
 }
 
 impl Default for VirtualizedSearch {
@@ -697,6 +704,8 @@ impl VirtualizedSearch {
             tick_count: 0,
             diagnostic_log,
             telemetry_hooks: None,
+            last_list_area: Cell::new(Rect::default()),
+            last_search_area: Cell::new(Rect::default()),
         };
 
         // Initialize with all items (no filter)
@@ -1129,12 +1138,67 @@ impl VirtualizedSearch {
                 .render(row_area, frame);
         }
     }
+
+    /// Handle mouse events: click to select/focus, scroll to navigate.
+    fn handle_mouse(&mut self, event: &Event) {
+        if let Event::Mouse(mouse) = event {
+            let list_area = self.last_list_area.get();
+            let search_area = self.last_search_area.get();
+
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if search_area.contains(mouse.x, mouse.y) {
+                        // Click search bar: focus search
+                        if self.focus != Focus::Search {
+                            self.focus = Focus::Search;
+                            self.search_input = TextInput::new()
+                                .with_placeholder("Type to search...")
+                                .with_style(Style::new().fg(theme::fg::PRIMARY))
+                                .with_focused(true);
+                        }
+                    } else if list_area.contains(mouse.x, mouse.y) {
+                        // Click list: select item based on y position
+                        if self.focus == Focus::Search {
+                            self.focus = Focus::List;
+                            self.search_input = TextInput::new()
+                                .with_placeholder("Type to search...")
+                                .with_style(Style::new().fg(theme::fg::PRIMARY))
+                                .with_focused(false);
+                        }
+                        let inner_y = mouse.y.saturating_sub(list_area.y + 1) as usize;
+                        let target = self.scroll_offset + inner_y;
+                        if target < self.filtered.len() {
+                            self.selected = target;
+                        }
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if list_area.contains(mouse.x, mouse.y) {
+                        self.selected = self.selected.saturating_sub(3);
+                        self.ensure_visible();
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if list_area.contains(mouse.x, mouse.y) {
+                        self.selected =
+                            (self.selected + 3).min(self.filtered.len().saturating_sub(1));
+                        self.ensure_visible();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Screen for VirtualizedSearch {
     type Message = ();
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if matches!(event, Event::Mouse(_)) {
+            self.handle_mouse(event);
+            return Cmd::none();
+        }
         if let Event::Key(KeyEvent {
             code,
             modifiers,
@@ -1303,6 +1367,7 @@ impl Screen for VirtualizedSearch {
         let search_area = v_chunks[0];
         let content_area = v_chunks[1];
 
+        self.last_search_area.set(search_area);
         self.render_search_bar(frame, search_area);
 
         // Main content: list (70%) + stats (30%)
@@ -1319,6 +1384,7 @@ impl Screen for VirtualizedSearch {
         // Note: We can't mutate self.viewport_height here since view takes &self
         // The navigation uses the last known value, which is fine for this demo
 
+        self.last_list_area.set(list_area);
         self.render_list_panel(frame, list_area);
         self.render_stats_panel(frame, stats_area);
     }
@@ -1360,6 +1426,14 @@ impl Screen for VirtualizedSearch {
             HelpEntry {
                 key: "PgUp/Dn",
                 action: "Page scroll",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Select item / focus search",
+            },
+            HelpEntry {
+                key: "Scroll",
+                action: "Navigate list",
             },
         ]
     }
@@ -1841,7 +1915,10 @@ mod tests {
 
     #[test]
     fn virtualized_search_focus_change_via_event() {
-        use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+        use ftui_core::event::{
+            Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+        };
+        use std::cell::Cell;
 
         reset_event_counter();
         let mut screen = VirtualizedSearch::new().with_diagnostics();
@@ -1865,7 +1942,10 @@ mod tests {
 
     #[test]
     fn virtualized_search_query_change_via_event() {
-        use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+        use ftui_core::event::{
+            Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+        };
+        use std::cell::Cell;
 
         reset_event_counter();
         let mut screen = VirtualizedSearch::new().with_diagnostics();
@@ -1977,5 +2057,81 @@ mod tests {
 
         // "cat" at start of "category" should score higher than "cat" in "concatenate"
         assert!(result1.unwrap().score > result2.unwrap().score);
+    }
+
+    #[test]
+    fn mouse_click_list_selects_item() {
+        use crate::screens::Screen;
+        let mut screen = VirtualizedSearch::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let list_area = screen.last_list_area.get();
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: list_area.x + 2,
+            y: list_area.y + 3,
+            modifiers: Modifiers::NONE,
+        });
+        screen.update(&event);
+        assert_eq!(screen.selected, 2, "click should select item at row");
+    }
+
+    #[test]
+    fn mouse_click_search_focuses() {
+        use crate::screens::Screen;
+        let mut screen = VirtualizedSearch::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        assert!(matches!(screen.focus, Focus::List));
+        let search_area = screen.last_search_area.get();
+        let event = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: search_area.x + 2,
+            y: search_area.y + 1,
+            modifiers: Modifiers::NONE,
+        });
+        screen.update(&event);
+        assert!(
+            matches!(screen.focus, Focus::Search),
+            "click should focus search"
+        );
+    }
+
+    #[test]
+    fn mouse_scroll_navigates_list() {
+        use crate::screens::Screen;
+        let mut screen = VirtualizedSearch::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let list_area = screen.last_list_area.get();
+        let scroll_down = Event::Mouse(ftui_core::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x: list_area.x + 2,
+            y: list_area.y + 2,
+            modifiers: Modifiers::NONE,
+        });
+        screen.update(&scroll_down);
+        assert_eq!(screen.selected, 3, "scroll down should advance 3 items");
+    }
+
+    #[test]
+    fn keybindings_includes_mouse() {
+        use crate::screens::Screen;
+        let screen = VirtualizedSearch::new();
+        let bindings = screen.keybindings();
+        assert!(
+            bindings.iter().any(|h| h.key == "Click"),
+            "missing Click keybinding"
+        );
+        assert!(
+            bindings.iter().any(|h| h.key == "Scroll"),
+            "missing Scroll keybinding"
+        );
     }
 }
