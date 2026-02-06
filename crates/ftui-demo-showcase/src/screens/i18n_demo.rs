@@ -2,7 +2,11 @@
 
 //! Internationalization (i18n) demo screen (bd-ic6i.5).
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use std::cell::Cell;
+
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+};
 use ftui_core::geometry::Rect;
 use ftui_i18n::catalog::{LocaleStrings, StringCatalog};
 use ftui_i18n::plural::PluralForms;
@@ -11,13 +15,13 @@ use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
 use ftui_text::{
-    WrapMode, display_width, grapheme_count, grapheme_width, graphemes,
-    truncate_to_width_with_info, truncate_with_ellipsis, wrap_text,
+    display_width, grapheme_count, grapheme_width, graphemes, truncate_to_width_with_info,
+    truncate_with_ellipsis, wrap_text, WrapMode,
 };
-use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::paragraph::Paragraph;
+use ftui_widgets::Widget;
 use serde_json::json;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -133,7 +137,8 @@ const SAMPLE_SET_RTL: &[SampleCase] = &[
     SampleCase {
         id: "arabic_hello",
         label: "Arabic greeting",
-        text: "\u{645}\u{631}\u{62D}\u{628}\u{627} \u{628}\u{627}\u{644}\u{639}\u{627}\u{644}\u{645}",
+        text:
+            "\u{645}\u{631}\u{62D}\u{628}\u{627} \u{628}\u{627}\u{644}\u{639}\u{627}\u{644}\u{645}",
     },
     SampleCase {
         id: "arabic_mixed",
@@ -230,6 +235,8 @@ pub struct I18nDemo {
     sample_idx: usize,
     cursor_idx: usize,
     tick_count: u64,
+    layout_locale_bar: Cell<Rect>,
+    layout_panel: Cell<Rect>,
 }
 
 impl Default for I18nDemo {
@@ -250,6 +257,8 @@ impl I18nDemo {
             sample_idx: 0,
             cursor_idx: 0,
             tick_count: 0,
+            layout_locale_bar: Cell::new(Rect::new(0, 0, 0, 0)),
+            layout_panel: Cell::new(Rect::new(0, 0, 0, 0)),
         }
     }
 
@@ -337,6 +346,59 @@ impl I18nDemo {
         }
         self.sample_idx = (self.sample_idx + count - 1) % count;
         self.cursor_idx = 0;
+    }
+
+    fn toggle_rtl(&mut self) {
+        let current_rtl = self.current_info().rtl;
+        let target_rtl = !current_rtl;
+        if let Some(idx) = LOCALES.iter().position(|loc| loc.rtl == target_rtl) {
+            self.locale_idx = idx;
+        }
+    }
+
+    fn reset_to_defaults(&mut self) {
+        let catalog = std::mem::replace(&mut self.catalog, build_catalog());
+        *self = Self::new();
+        self.catalog = catalog;
+    }
+
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) -> Cmd<()> {
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let locale_bar = self.layout_locale_bar.get();
+                if locale_bar.contains(x, y) {
+                    let rel_x = x.saturating_sub(locale_bar.x) as usize;
+                    let half = locale_bar.width as usize / 2;
+                    if rel_x < half {
+                        self.prev_locale();
+                    } else {
+                        self.next_locale();
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                let panel = self.layout_panel.get();
+                if panel.contains(x, y) {
+                    if self.panel == 1 {
+                        self.plural_count = self.plural_count.saturating_add(1);
+                    } else if self.panel == 3 {
+                        self.prev_sample();
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                let panel = self.layout_panel.get();
+                if panel.contains(x, y) {
+                    if self.panel == 1 {
+                        self.plural_count = (self.plural_count - 1).max(0);
+                    } else if self.panel == 3 {
+                        self.next_sample();
+                    }
+                }
+            }
+            _ => {}
+        }
+        Cmd::None
     }
 
     fn report_path() -> String {
@@ -659,7 +721,7 @@ impl I18nDemo {
         let width_ok = total_width == grapheme_sum;
         let status = if width_ok { "ok" } else { "diff" };
         let lines = [
-            format!("Set: {} — {}", set.name, set.description),
+            format!("Set: {} \u{2014} {}", set.name, set.description),
             format!(
                 "Sample {}/{}: {} ({})",
                 self.sample_idx + 1,
@@ -869,6 +931,9 @@ impl I18nDemo {
 impl Screen for I18nDemo {
     type Message = ();
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            return self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+        }
         if let Event::Key(KeyEvent {
             code,
             kind: KeyEventKind::Press,
@@ -901,6 +966,9 @@ impl Screen for I18nDemo {
                 KeyCode::Char('e') | KeyCode::Char('E') if self.panel == 3 => {
                     let _ = self.export_stress_report();
                 }
+                KeyCode::Char('d') | KeyCode::Char('D') => self.toggle_rtl(),
+                KeyCode::Char('l') | KeyCode::Char('L') => self.next_locale(),
+                KeyCode::Char('r') | KeyCode::Char('R') => self.reset_to_defaults(),
                 KeyCode::Tab => {
                     self.panel = (self.panel + 1) % PANEL_COUNT;
                 }
@@ -923,6 +991,8 @@ impl Screen for I18nDemo {
         let rows = Flex::vertical()
             .constraints([Constraint::Fixed(3), Constraint::Fill, Constraint::Fixed(1)])
             .split(area);
+        self.layout_locale_bar.set(rows[0]);
+        self.layout_panel.set(rows[1]);
         self.render_locale_bar(frame, rows[0]);
         match self.panel {
             0 => self.render_overview_panel(frame, rows[1]),
@@ -954,6 +1024,26 @@ impl Screen for I18nDemo {
             HelpEntry {
                 key: "E",
                 action: "Export stress report (Stress)",
+            },
+            HelpEntry {
+                key: "D",
+                action: "Toggle RTL/LTR locale",
+            },
+            HelpEntry {
+                key: "L",
+                action: "Cycle to next locale",
+            },
+            HelpEntry {
+                key: "R",
+                action: "Reset to defaults",
+            },
+            HelpEntry {
+                key: "Click",
+                action: "Locale bar left/right half",
+            },
+            HelpEntry {
+                key: "Wheel",
+                action: "Scroll count/sample in panel",
             },
             HelpEntry {
                 key: "Tab/1-4",
@@ -1143,6 +1233,7 @@ fn build_catalog() -> StringCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_core::event::MouseEvent;
     use ftui_render::grapheme_pool::GraphemePool;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1153,6 +1244,19 @@ mod tests {
             modifiers: Modifiers::NONE,
             kind: KeyEventKind::Press,
         })
+    }
+    fn mouse_click(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        ))
+    }
+    fn mouse_scroll_up(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent::new(MouseEventKind::ScrollUp, x, y))
+    }
+    fn mouse_scroll_down(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent::new(MouseEventKind::ScrollDown, x, y))
     }
     fn render_hash(screen: &I18nDemo, w: u16, h: u16) -> u64 {
         let mut pool = GraphemePool::new();
@@ -1323,7 +1427,6 @@ mod tests {
     fn small_terminal_no_panic() {
         assert_ne!(render_hash(&I18nDemo::new(), 30, 8), 0);
     }
-
     #[test]
     fn sample_sets_have_samples() {
         for set in SAMPLE_SETS {
@@ -1334,7 +1437,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn sample_widths_match_grapheme_sum() {
         for set in SAMPLE_SETS {
@@ -1348,5 +1450,108 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn toggle_rtl_switches_locale() {
+        let mut d = I18nDemo::new();
+        assert!(!d.current_info().rtl);
+        d.toggle_rtl();
+        assert!(d.current_info().rtl);
+        assert_eq!(d.current_locale(), "ar");
+        d.toggle_rtl();
+        assert!(!d.current_info().rtl);
+        assert_eq!(d.current_locale(), "en");
+    }
+
+    #[test]
+    fn reset_to_defaults_restores_state() {
+        let mut d = I18nDemo::new();
+        d.locale_idx = 3;
+        d.panel = 2;
+        d.plural_count = 42;
+        d.reset_to_defaults();
+        assert_eq!(d.locale_idx, 0);
+        assert_eq!(d.panel, 0);
+        assert_eq!(d.plural_count, 1);
+    }
+
+    #[test]
+    fn d_key_toggles_rtl() {
+        let mut d = I18nDemo::new();
+        d.update(&press(KeyCode::Char('d')));
+        assert!(d.current_info().rtl);
+        d.update(&press(KeyCode::Char('D')));
+        assert!(!d.current_info().rtl);
+    }
+
+    #[test]
+    fn l_key_cycles_locale() {
+        let mut d = I18nDemo::new();
+        d.update(&press(KeyCode::Char('l')));
+        assert_eq!(d.current_locale(), "es");
+        d.update(&press(KeyCode::Char('L')));
+        assert_eq!(d.current_locale(), "fr");
+    }
+
+    #[test]
+    fn r_key_resets() {
+        let mut d = I18nDemo::new();
+        d.panel = 3;
+        d.locale_idx = 4;
+        d.update(&press(KeyCode::Char('r')));
+        assert_eq!(d.panel, 0);
+        assert_eq!(d.locale_idx, 0);
+    }
+
+    #[test]
+    fn mouse_click_locale_bar_switches_locale() {
+        let mut d = I18nDemo::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        d.view(&mut frame, Rect::new(0, 0, 80, 24));
+        d.update(&mouse_click(50, 1));
+        assert_eq!(d.current_locale(), "es");
+        d.update(&mouse_click(10, 1));
+        assert_eq!(d.current_locale(), "en");
+    }
+
+    #[test]
+    fn mouse_scroll_plural_panel() {
+        let mut d = I18nDemo::new();
+        d.panel = 1;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        d.view(&mut frame, Rect::new(0, 0, 80, 24));
+        d.update(&mouse_scroll_up(40, 5));
+        assert_eq!(d.plural_count, 2);
+        d.update(&mouse_scroll_down(40, 5));
+        assert_eq!(d.plural_count, 1);
+    }
+
+    #[test]
+    fn mouse_scroll_stress_panel() {
+        let mut d = I18nDemo::new();
+        d.panel = 3;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        d.view(&mut frame, Rect::new(0, 0, 80, 24));
+        assert_eq!(d.sample_idx, 0);
+        d.update(&mouse_scroll_down(40, 10));
+        assert_eq!(d.sample_idx, 1);
+        d.update(&mouse_scroll_up(40, 10));
+        assert_eq!(d.sample_idx, 0);
+    }
+
+    #[test]
+    fn keybindings_include_new_entries() {
+        let d = I18nDemo::new();
+        let bindings = d.keybindings();
+        let keys: Vec<&str> = bindings.iter().map(|b| b.key).collect();
+        assert!(keys.contains(&"D"), "missing D keybinding");
+        assert!(keys.contains(&"L"), "missing L keybinding");
+        assert!(keys.contains(&"R"), "missing R keybinding");
+        assert!(keys.contains(&"Click"), "missing Click keybinding");
+        assert!(keys.contains(&"Wheel"), "missing Wheel keybinding");
     }
 }
