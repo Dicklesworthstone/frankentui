@@ -5,13 +5,14 @@
 //! This screen consolidates diff strategy, resize regime, and budget decisions
 //! into a single panel with a compact timeline for debugging.
 
+use std::cell::Cell as StdCell;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::frame::Frame;
@@ -136,6 +137,14 @@ impl ExplainabilityData {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusPanel {
+    Diff,
+    Resize,
+    Budget,
+    Timeline,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CockpitMode {
     Full,
@@ -149,6 +158,17 @@ pub struct ExplainabilityCockpit {
     last_refresh_tick: u64,
     last_modified: Option<SystemTime>,
     last_size: Option<u64>,
+    /// When true, auto-refresh is paused.
+    paused: bool,
+    /// Currently focused panel.
+    focused_panel: FocusPanel,
+    /// Timeline scroll offset (number of entries scrolled from the bottom).
+    timeline_scroll: usize,
+    // Cached layout rects for mouse hit testing.
+    layout_diff: StdCell<Rect>,
+    layout_resize: StdCell<Rect>,
+    layout_budget: StdCell<Rect>,
+    layout_timeline: StdCell<Rect>,
 }
 
 impl Default for ExplainabilityCockpit {
@@ -173,6 +193,13 @@ impl ExplainabilityCockpit {
             last_refresh_tick: 0,
             last_modified: None,
             last_size: None,
+            paused: false,
+            focused_panel: FocusPanel::Timeline,
+            timeline_scroll: 0,
+            layout_diff: StdCell::new(Rect::ZERO),
+            layout_resize: StdCell::new(Rect::ZERO),
+            layout_budget: StdCell::new(Rect::ZERO),
+            layout_timeline: StdCell::new(Rect::ZERO),
         };
         cockpit.refresh(true);
         cockpit
@@ -322,9 +349,15 @@ impl ExplainabilityCockpit {
             ])
             .split(rows[1]);
 
-        self.render_diff_panel(frame, cols[0]);
-        self.render_resize_panel(frame, cols[1]);
-        self.render_budget_panel(frame, cols[2]);
+        // Cache layout rects for mouse hit testing.
+        self.layout_diff.set(cols[0]);
+        self.layout_resize.set(cols[1]);
+        self.layout_budget.set(cols[2]);
+        self.layout_timeline.set(rows[2]);
+
+        self.render_diff_panel(frame, cols[0], self.focused_panel == FocusPanel::Diff);
+        self.render_resize_panel(frame, cols[1], self.focused_panel == FocusPanel::Resize);
+        self.render_budget_panel(frame, cols[2], self.focused_panel == FocusPanel::Budget);
         self.render_timeline(frame, rows[2], mode);
     }
 
@@ -377,8 +410,8 @@ impl ExplainabilityCockpit {
             .render(inner, frame);
     }
 
-    fn render_diff_panel(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block("Diff Strategy", theme::accent::PRIMARY);
+    fn render_diff_panel(&self, frame: &mut Frame, area: Rect, focused: bool) {
+        let block = panel_block("Diff Strategy", theme::accent::PRIMARY, focused);
         let inner = block.inner(area);
         block.render(area, frame);
         if inner.is_empty() {
@@ -395,8 +428,8 @@ impl ExplainabilityCockpit {
             .render(inner, frame);
     }
 
-    fn render_resize_panel(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block("Resize Regime (BOCPD)", theme::accent::INFO);
+    fn render_resize_panel(&self, frame: &mut Frame, area: Rect, focused: bool) {
+        let block = panel_block("Resize Regime (BOCPD)", theme::accent::INFO, focused);
         let inner = block.inner(area);
         block.render(area, frame);
         if inner.is_empty() {
@@ -413,8 +446,8 @@ impl ExplainabilityCockpit {
             .render(inner, frame);
     }
 
-    fn render_budget_panel(&self, frame: &mut Frame, area: Rect) {
-        let block = panel_block("Budget Decisions", theme::accent::WARNING);
+    fn render_budget_panel(&self, frame: &mut Frame, area: Rect, focused: bool) {
+        let block = panel_block("Budget Decisions", theme::accent::WARNING, focused);
         let inner = block.inner(area);
         block.render(area, frame);
         if inner.is_empty() {
@@ -439,9 +472,15 @@ impl ExplainabilityCockpit {
             CockpitMode::Full => MAX_TIMELINE_ROWS,
             CockpitMode::Overlay => MAX_TIMELINE_ROWS.min(6),
         };
+        let focused = self.focused_panel == FocusPanel::Timeline;
+        let border = if focused {
+            BorderType::Double
+        } else {
+            BorderType::Rounded
+        };
         let block = Block::new()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(border)
             .title("Decision Timeline")
             .title_alignment(Alignment::Center)
             .style(theme::content_border());
@@ -455,7 +494,11 @@ impl ExplainabilityCockpit {
         if self.data.timeline.is_empty() {
             lines.push(empty_panel_line("No recent decisions."));
         } else {
-            for entry in self.data.timeline.iter().rev().take(max_rows).rev() {
+            let total = self.data.timeline.len();
+            let scroll = self.timeline_scroll.min(total.saturating_sub(max_rows));
+            let end = total.saturating_sub(scroll);
+            let start = end.saturating_sub(max_rows);
+            for entry in &self.data.timeline[start..end] {
                 let label = match entry.kind {
                     EvidenceKind::Diff => "diff",
                     EvidenceKind::Resize => "resize",
@@ -476,6 +519,13 @@ impl ExplainabilityCockpit {
                 }
                 lines.push(Line::from_spans(spans));
             }
+            // Show scroll indicator when not at the bottom.
+            if scroll > 0 {
+                lines.push(Line::from_spans([Span::styled(
+                    format!("  ({scroll} more below)"),
+                    theme::muted(),
+                )]));
+            }
         }
         Paragraph::new(Text::from_lines(lines))
             .wrap(WrapMode::Word)
@@ -487,13 +537,81 @@ impl Screen for ExplainabilityCockpit {
     type Message = ();
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        // Mouse: click to focus panels, wheel to scroll timeline.
+        if let Event::Mouse(mouse) = event {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let diff = self.layout_diff.get();
+                    let resize = self.layout_resize.get();
+                    let budget = self.layout_budget.get();
+                    let timeline = self.layout_timeline.get();
+                    if diff.contains(mouse.x, mouse.y) {
+                        self.focused_panel = FocusPanel::Diff;
+                    } else if resize.contains(mouse.x, mouse.y) {
+                        self.focused_panel = FocusPanel::Resize;
+                    } else if budget.contains(mouse.x, mouse.y) {
+                        self.focused_panel = FocusPanel::Budget;
+                    } else if timeline.contains(mouse.x, mouse.y) {
+                        self.focused_panel = FocusPanel::Timeline;
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    let timeline = self.layout_timeline.get();
+                    if timeline.contains(mouse.x, mouse.y) {
+                        let max = self.data.timeline.len().saturating_sub(1);
+                        self.timeline_scroll = (self.timeline_scroll + 1).min(max);
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    let timeline = self.layout_timeline.get();
+                    if timeline.contains(mouse.x, mouse.y) {
+                        self.timeline_scroll = self.timeline_scroll.saturating_sub(1);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let Event::Key(KeyEvent {
-            code: KeyCode::Char('r'),
+            code,
             kind: KeyEventKind::Press,
             ..
         }) = event
         {
-            self.refresh(true);
+            match code {
+                KeyCode::Char('r') => self.refresh(true),
+                KeyCode::Char(' ') => self.paused = !self.paused,
+                KeyCode::Char('c') => {
+                    // Clear accumulated evidence and re-read from source.
+                    self.data.timeline.clear();
+                    self.data.diff = None;
+                    self.data.resize = None;
+                    self.data.budget = None;
+                    self.refresh(true);
+                }
+                // Panel focus via number keys.
+                KeyCode::Char('1') => self.focused_panel = FocusPanel::Diff,
+                KeyCode::Char('2') => self.focused_panel = FocusPanel::Resize,
+                KeyCode::Char('3') => self.focused_panel = FocusPanel::Budget,
+                KeyCode::Char('4') => self.focused_panel = FocusPanel::Timeline,
+                // Navigate timeline: n = scroll up (older), p = scroll down (newer).
+                KeyCode::Char('n') => {
+                    let max = self.data.timeline.len().saturating_sub(1);
+                    self.timeline_scroll = (self.timeline_scroll + 1).min(max);
+                }
+                KeyCode::Char('p') => {
+                    self.timeline_scroll = self.timeline_scroll.saturating_sub(1);
+                }
+                // Arrow keys for timeline scroll.
+                KeyCode::Up => {
+                    let max = self.data.timeline.len().saturating_sub(1);
+                    self.timeline_scroll = (self.timeline_scroll + 1).min(max);
+                }
+                KeyCode::Down => {
+                    self.timeline_scroll = self.timeline_scroll.saturating_sub(1);
+                }
+                _ => {}
+            }
         }
         Cmd::None
     }
@@ -503,13 +621,42 @@ impl Screen for ExplainabilityCockpit {
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
-        vec![HelpEntry {
-            key: "r",
-            action: "Refresh evidence log",
-        }]
+        vec![
+            HelpEntry {
+                key: "r",
+                action: "Refresh evidence log",
+            },
+            HelpEntry {
+                key: "Space",
+                action: if self.paused {
+                    "Resume auto-refresh"
+                } else {
+                    "Pause auto-refresh"
+                },
+            },
+            HelpEntry {
+                key: "c",
+                action: "Clear evidence and re-read",
+            },
+            HelpEntry {
+                key: "1/2/3/4",
+                action: "Focus panel (Diff/Resize/Budget/Timeline)",
+            },
+            HelpEntry {
+                key: "n/p",
+                action: "Scroll timeline (older/newer)",
+            },
+            HelpEntry {
+                key: "\u{2191}/\u{2193}",
+                action: "Scroll timeline",
+            },
+        ]
     }
 
     fn tick(&mut self, tick_count: u64) {
+        if self.paused {
+            return;
+        }
         if tick_count.saturating_sub(self.last_refresh_tick) >= REFRESH_EVERY_TICKS {
             self.last_refresh_tick = tick_count;
             self.refresh(false);
@@ -525,10 +672,15 @@ impl Screen for ExplainabilityCockpit {
     }
 }
 
-fn panel_block(title: &str, accent: theme::ColorToken) -> Block<'_> {
+fn panel_block(title: &str, accent: theme::ColorToken, focused: bool) -> Block<'_> {
+    let border = if focused {
+        BorderType::Double
+    } else {
+        BorderType::Rounded
+    };
     Block::new()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border)
         .title(title)
         .title_alignment(Alignment::Center)
         .style(Style::new().fg(accent))
