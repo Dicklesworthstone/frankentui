@@ -776,6 +776,142 @@ mod tests {
     }
 
     #[test]
+    fn queue_config_default_values() {
+        let config = QueueConfig::default();
+        assert_eq!(config.max_visible, 3);
+        assert_eq!(config.max_queued, 10);
+        assert_eq!(config.default_duration, Duration::from_secs(5));
+        assert_eq!(config.position, ToastPosition::TopRight);
+        assert_eq!(config.stagger_offset, 1);
+        assert_eq!(config.dedup_window_ms, 1000);
+    }
+
+    #[test]
+    fn notification_priority_default_is_normal() {
+        assert_eq!(NotificationPriority::default(), NotificationPriority::Normal);
+    }
+
+    #[test]
+    fn notification_priority_ordering() {
+        assert!(NotificationPriority::Low < NotificationPriority::Normal);
+        assert!(NotificationPriority::Normal < NotificationPriority::High);
+        assert!(NotificationPriority::High < NotificationPriority::Urgent);
+    }
+
+    #[test]
+    fn queue_default_trait_delegates_to_with_defaults() {
+        let queue = NotificationQueue::default();
+        assert!(queue.is_empty());
+        assert_eq!(queue.config().max_visible, 3);
+    }
+
+    #[test]
+    fn is_empty_false_when_pending() {
+        let mut queue = NotificationQueue::with_defaults();
+        queue.push(make_toast("X"), NotificationPriority::Normal);
+        assert!(!queue.is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_when_visible() {
+        let mut queue = NotificationQueue::with_defaults();
+        queue.push(make_toast("X"), NotificationPriority::Normal);
+        queue.tick(Duration::from_millis(16));
+        assert!(!queue.is_empty());
+    }
+
+    #[test]
+    fn visible_mut_allows_modification() {
+        let mut queue = NotificationQueue::with_defaults();
+        queue.push(make_toast("Original"), NotificationPriority::Normal);
+        queue.tick(Duration::from_millis(16));
+
+        // Dismiss via visible_mut
+        queue.visible_mut()[0].dismiss();
+        queue.tick(Duration::from_millis(16));
+        assert_eq!(queue.visible_count(), 0);
+    }
+
+    #[test]
+    fn config_accessor_returns_config() {
+        let config = QueueConfig::default().max_visible(7).stagger_offset(3);
+        let queue = NotificationQueue::new(config);
+        assert_eq!(queue.config().max_visible, 7);
+        assert_eq!(queue.config().stagger_offset, 3);
+    }
+
+    #[test]
+    fn dismiss_all_clears_queue_and_visible() {
+        let config = QueueConfig::default().max_visible(1);
+        let mut queue = NotificationQueue::new(config);
+
+        queue.push(make_toast("A"), NotificationPriority::Normal);
+        queue.push(make_toast("B"), NotificationPriority::Normal);
+        queue.tick(Duration::from_millis(16));
+
+        // After tick: A is visible, B is pending.
+        assert_eq!(queue.visible_count(), 1);
+        assert_eq!(queue.pending_count(), 1);
+
+        queue.dismiss_all();
+        // dismiss_all: marks visible toasts dismissed, clears queue,
+        // increments user_dismissed by queue.len() (1 for B)
+        assert_eq!(queue.stats().user_dismissed, 1);
+        assert_eq!(queue.pending_count(), 0);
+
+        // Next tick removes the dismissed visible toast
+        queue.tick(Duration::from_millis(16));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn queue_action_equality() {
+        let id = ToastId::new(42);
+        assert_eq!(QueueAction::Show(id), QueueAction::Show(id));
+        assert_eq!(QueueAction::Hide(id), QueueAction::Hide(id));
+        assert_eq!(QueueAction::Reposition(id), QueueAction::Reposition(id));
+        assert_ne!(QueueAction::Show(id), QueueAction::Hide(id));
+    }
+
+    #[test]
+    fn queue_stats_default_all_zero() {
+        let stats = QueueStats::default();
+        assert_eq!(stats.total_pushed, 0);
+        assert_eq!(stats.overflow_count, 0);
+        assert_eq!(stats.dedup_count, 0);
+        assert_eq!(stats.user_dismissed, 0);
+        assert_eq!(stats.auto_expired, 0);
+    }
+
+    #[test]
+    fn calculate_positions_empty_returns_empty() {
+        let queue = NotificationQueue::with_defaults();
+        let positions = queue.calculate_positions(80, 24, 1);
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn notification_stack_empty_area_renders_nothing() {
+        let mut queue = NotificationQueue::with_defaults();
+        queue.push(make_toast("Hello"), NotificationPriority::Normal);
+        queue.tick(Duration::from_millis(16));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        let empty_area = Rect::new(0, 0, 0, 0);
+
+        // Should not panic
+        NotificationStack::new(&queue).render(empty_area, &mut frame);
+    }
+
+    #[test]
+    fn notification_stack_margin_builder() {
+        let queue = NotificationQueue::with_defaults();
+        let stack = NotificationStack::new(&queue).margin(5);
+        assert_eq!(stack.margin, 5);
+    }
+
+    #[test]
     fn notification_stack_renders_visible_toast() {
         let mut queue = NotificationQueue::with_defaults();
         queue.push(make_toast("Hello"), NotificationPriority::Normal);

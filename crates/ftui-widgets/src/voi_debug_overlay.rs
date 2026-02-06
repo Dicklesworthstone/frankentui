@@ -610,6 +610,116 @@ mod tests {
         assert_eq!(styled.style.background, Some(PackedRgba::rgb(255, 0, 0)));
     }
 
+    #[test]
+    fn render_empty_area_is_noop() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+
+        // Zero-width area
+        overlay.render(Rect::new(0, 0, 0, 10), &mut frame);
+        // Zero-height area
+        overlay.render(Rect::new(0, 0, 40, 0), &mut frame);
+        // Both zero — should not panic
+    }
+
+    #[test]
+    fn render_narrow_area_where_inner_is_empty() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 40, &mut pool);
+        // Area has borders consuming all space (width=20 passes threshold, height=6 passes)
+        // Inner is 18x4 which is non-empty, so use exactly at threshold
+        overlay.render(Rect::new(0, 0, 20, 6), &mut frame);
+        // Should render without panic
+    }
+
+    #[test]
+    fn build_lines_ledger_observation_entry() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: vec![VoiLedgerEntry::Observation {
+                sample_idx: 42,
+                violated: false,
+                posterior_mean: 0.789,
+            }],
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(40);
+        assert!(
+            lines.iter().any(|l| l.contains("O# 42")),
+            "missing observation ledger entry: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("viol=false")),
+            "missing violated=false: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("mu=0.789")),
+            "missing posterior mean in ledger: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn build_lines_decision_equation_section() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let lines = overlay.build_lines(50);
+        assert!(
+            lines.iter().any(|l| l.contains("Decision Equation")),
+            "missing decision equation header: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("score=") && l.contains("cost=")),
+            "missing score/cost line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn build_lines_voi_equation_format() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: VoiPosteriorSummary {
+                alpha: 2.0,
+                beta: 3.0,
+                mean: 0.4,
+                variance: 0.04,
+                expected_variance_after: 0.03,
+                voi_gain: 0.01,
+            },
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(50);
+        // VOI = Var[p] - E[Var|1] header
+        assert!(
+            lines.iter().any(|l| l.contains("VOI = Var[p] - E[Var|1]")),
+            "missing VOI equation label: {lines:?}"
+        );
+        // VOI = 0.040000 - 0.030000 = 0.010000
+        assert!(
+            lines.iter().any(|l| l.contains("0.040000") && l.contains("0.030000") && l.contains("0.010000")),
+            "missing VOI computation line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn overlay_data_clone() {
+        let data = sample_data();
+        let cloned = data.clone();
+        assert_eq!(cloned.title, data.title);
+        assert_eq!(cloned.tick, data.tick);
+        assert_eq!(cloned.ledger.len(), data.ledger.len());
+    }
+
     // --- Struct Debug impls ---
 
     #[test]

@@ -534,6 +534,87 @@ mod tests {
     }
 
     #[test]
+    fn spinner_renders_braille_char() {
+        let status = StatusLine::new().left(StatusItem::Spinner(0));
+        let area = Rect::new(0, 0, 10, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        status.render(area, &mut frame);
+
+        let c = frame.buffer.get(0, 0).and_then(|c| c.content.as_char()).unwrap();
+        assert_eq!(c, '⠋');
+    }
+
+    #[test]
+    fn spinner_cycles_through_frames() {
+        // Frame index wraps modulo 10
+        let item0 = StatusItem::Spinner(0);
+        let item10 = StatusItem::Spinner(10);
+        assert_eq!(item0.render_to_string(), item10.render_to_string());
+
+        let item1 = StatusItem::Spinner(1);
+        assert_ne!(item0.render_to_string(), item1.render_to_string());
+    }
+
+    #[test]
+    fn spinner_width_is_one() {
+        let item = StatusItem::Spinner(5);
+        assert_eq!(item.width(), 1);
+    }
+
+    #[test]
+    fn progress_zero_total_shows_zero_percent() {
+        let item = StatusItem::progress(50, 0);
+        assert_eq!(item.render_to_string(), "0%");
+    }
+
+    #[test]
+    fn spacer_width_is_zero() {
+        assert_eq!(StatusItem::spacer().width(), 0);
+    }
+
+    #[test]
+    fn spacer_render_to_string_is_empty() {
+        assert_eq!(StatusItem::spacer().render_to_string(), "");
+    }
+
+    #[test]
+    fn status_line_default_is_empty() {
+        let status = StatusLine::default();
+        assert!(status.left.is_empty());
+        assert!(status.center.is_empty());
+        assert!(status.right.is_empty());
+        assert_eq!(status.separator, "");
+    }
+
+    #[test]
+    fn multiple_items_right() {
+        let status = StatusLine::new()
+            .right(StatusItem::text("X"))
+            .right(StatusItem::text("Y"));
+        let area = Rect::new(0, 0, 20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        status.render(area, &mut frame);
+
+        let s = row_string(&frame.buffer, 0, 20);
+        assert!(s.contains("X Y"), "Got: '{s}'");
+    }
+
+    #[test]
+    fn key_hint_width() {
+        let item = StatusItem::key_hint("^C", "Quit");
+        // "^C" = 2 + " " = 1 + "Quit" = 4 = 7
+        assert_eq!(item.width(), 7);
+    }
+
+    #[test]
+    fn progress_full_hundred_percent() {
+        let item = StatusItem::progress(100, 100);
+        assert_eq!(item.render_to_string(), "100%");
+    }
+
+    #[test]
     fn truncation_when_too_narrow() {
         let status = StatusLine::new()
             .left(StatusItem::text("VERYLONGTEXT"))
