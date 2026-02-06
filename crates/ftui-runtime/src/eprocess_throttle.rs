@@ -1054,6 +1054,97 @@ mod tests {
     }
 
     #[test]
+    fn config_default_values() {
+        let cfg = ThrottleConfig::default();
+        assert!((cfg.alpha - 0.05).abs() < f64::EPSILON);
+        assert!((cfg.mu_0 - 0.1).abs() < f64::EPSILON);
+        assert!((cfg.initial_lambda - 0.5).abs() < f64::EPSILON);
+        assert!((cfg.grapa_eta - 0.1).abs() < f64::EPSILON);
+        assert_eq!(cfg.hard_deadline_ms, 500);
+        assert_eq!(cfg.min_observations_between, 8);
+        assert_eq!(cfg.rate_window_size, 64);
+        assert!(!cfg.enable_logging);
+    }
+
+    #[test]
+    fn throttle_decision_fields() {
+        let base = Instant::now();
+        let mut cfg = test_config();
+        cfg.hard_deadline_ms = u64::MAX;
+        let mut t = EProcessThrottle::new_at(cfg, base);
+        let d = t.observe_at(true, base + Duration::from_millis(1));
+
+        assert!(!d.should_recompute);
+        assert!(!d.forced_by_deadline);
+        assert!(d.wealth > 1.0);
+        assert!(d.lambda > 0.0);
+        assert!((d.empirical_rate - 1.0).abs() < f64::EPSILON);
+        assert_eq!(d.observations_since_recompute, 1);
+    }
+
+    #[test]
+    fn stats_no_recomputes_avg_is_zero() {
+        let base = Instant::now();
+        let mut cfg = test_config();
+        cfg.hard_deadline_ms = u64::MAX;
+        cfg.min_observations_between = u64::MAX;
+        let mut t = EProcessThrottle::new_at(cfg, base);
+
+        t.observe_at(false, base + Duration::from_millis(1));
+        let stats = t.stats();
+        assert_eq!(stats.total_recomputes, 0);
+        assert!((stats.avg_observations_between_recomputes - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn set_mu_0_clamps_extreme_values() {
+        let base = Instant::now();
+        let mut t = EProcessThrottle::new_at(test_config(), base);
+
+        t.set_mu_0(0.0);
+        assert!(t.mu_0 >= MU_0_MIN);
+
+        t.set_mu_0(2.0);
+        assert!(t.mu_0 <= MU_0_MAX);
+    }
+
+    #[test]
+    fn reset_preserves_lambda() {
+        let base = Instant::now();
+        let mut cfg = test_config();
+        cfg.hard_deadline_ms = u64::MAX;
+        cfg.min_observations_between = u64::MAX;
+        let mut t = EProcessThrottle::new_at(cfg, base);
+
+        for i in 1..=20 {
+            t.observe_at(true, base + Duration::from_millis(i));
+        }
+        let lambda_before = t.lambda();
+        t.reset_at(base + Duration::from_millis(30));
+        assert!(
+            (t.lambda() - lambda_before).abs() < f64::EPSILON,
+            "Lambda should be preserved across reset"
+        );
+    }
+
+    #[test]
+    fn logging_records_match_status_and_action() {
+        let base = Instant::now();
+        let mut cfg = test_config();
+        cfg.enable_logging = true;
+        cfg.hard_deadline_ms = u64::MAX;
+        cfg.min_observations_between = u64::MAX;
+        let mut t = EProcessThrottle::new_at(cfg, base);
+
+        t.observe_at(true, base + Duration::from_millis(1));
+        let log = &t.logs()[0];
+        assert!(log.matched);
+        assert_eq!(log.observation_idx, 1);
+        assert_eq!(log.action, "observe");
+        assert!(log.wealth_after > log.wealth_before);
+    }
+
+    #[test]
     fn consecutive_recomputes_tracked() {
         let base = Instant::now();
         let mut cfg = test_config();
