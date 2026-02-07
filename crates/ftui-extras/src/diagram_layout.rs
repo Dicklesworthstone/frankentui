@@ -191,8 +191,15 @@ impl LayoutGraph {
         let mut radj = vec![Vec::new(); num_nodes];
 
         for edge in &ir.edges {
-            let from = resolve_node(ir, edge.from);
-            let to = resolve_node(ir, edge.to);
+            let Some(from) = resolve_node(ir, edge.from, num_nodes) else {
+                continue;
+            };
+            let Some(to) = resolve_node(ir, edge.to, num_nodes) else {
+                continue;
+            };
+            if from == to {
+                continue;
+            }
             adj[from].push(to);
             radj[to].push(from);
         }
@@ -217,11 +224,12 @@ impl LayoutGraph {
     }
 }
 
-fn resolve_node(ir: &MermaidDiagramIr, endpoint: IrEndpoint) -> usize {
-    match endpoint {
+fn resolve_node(ir: &MermaidDiagramIr, endpoint: IrEndpoint, num_nodes: usize) -> Option<usize> {
+    let idx = match endpoint {
         IrEndpoint::Node(id) => id.0,
-        IrEndpoint::Port(pid) => ir.ports[pid.0].node.0,
-    }
+        IrEndpoint::Port(pid) => ir.ports.get(pid.0)?.node.0,
+    };
+    if idx < num_nodes { Some(idx) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,11 +1064,15 @@ fn compute_ports(
     node_heights: &[f64],
     direction: GraphDirection,
 ) -> Vec<PortPoint> {
+    let num_nodes = x.len();
     ir.ports
         .iter()
         .enumerate()
-        .map(|(i, port)| {
+        .filter_map(|(i, port)| {
             let nid = port.node.0;
+            if nid >= num_nodes {
+                return None;
+            }
             let (px, py, side) = match port.side_hint {
                 IrPortSideHint::Horizontal => match direction {
                     GraphDirection::LR => {
@@ -1083,13 +1095,13 @@ fn compute_ports(
                 },
             };
 
-            PortPoint {
+            Some(PortPoint {
                 ir_port: IrPortId(i),
                 ir_node: port.node,
                 x: px,
                 y: py,
                 side,
-            }
+            })
         })
         .collect()
 }
@@ -1113,9 +1125,14 @@ fn route_edges_simple(
     let mut v_channels: Vec<f64> = Vec::new();
     let mut h_channels: Vec<f64> = Vec::new();
 
+    let num_nodes = x.len();
     for (idx, edge) in ir.edges.iter().enumerate() {
-        let from_id = resolve_node(ir, edge.from);
-        let to_id = resolve_node(ir, edge.to);
+        let Some(from_id) = resolve_node(ir, edge.from, num_nodes) else {
+            continue;
+        };
+        let Some(to_id) = resolve_node(ir, edge.to, num_nodes) else {
+            continue;
+        };
         let is_reversed = reversed_set.contains(&(from_id, to_id));
 
         // Always clip from→to in the original IR direction so waypoints
