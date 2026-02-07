@@ -85,6 +85,9 @@ pub mod mermaid_render;
 pub mod mermaid_minimap;
 
 #[cfg(feature = "diagram")]
+pub mod mermaid_diff;
+
+#[cfg(feature = "diagram")]
 pub mod dot_parser;
 #[cfg(feature = "export")]
 pub mod export;
