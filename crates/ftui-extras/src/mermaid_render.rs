@@ -215,7 +215,9 @@ pub fn navigate_direction(
 
     let mut best: Option<(usize, f64)> = None;
     for &(neighbor_idx, _, _) in neighbors {
-        let neighbor = layout.nodes.iter().find(|n| n.node_idx == neighbor_idx)?;
+        let Some(neighbor) = layout.nodes.iter().find(|n| n.node_idx == neighbor_idx) else {
+            continue;
+        };
         let nx = neighbor.rect.x + neighbor.rect.width / 2.0;
         let ny = neighbor.rect.y + neighbor.rect.height / 2.0;
         let dx = nx - cx;
@@ -234,7 +236,7 @@ pub fn navigate_direction(
         }
 
         let dist = dx * dx + dy * dy;
-        if best.is_none() || dist < best.unwrap().1 {
+        if best.map_or(true, |(_, d)| dist < d) {
             best = Some((neighbor_idx, dist));
         }
     }
@@ -490,8 +492,8 @@ impl Viewport {
 
     /// Convert a world-space point to cell coordinates.
     fn to_cell(&self, x: f64, y: f64) -> (u16, u16) {
-        let cx = (x * self.scale_x + self.offset_x).round().max(0.0) as u16;
-        let cy = (y * self.scale_y + self.offset_y).round().max(0.0) as u16;
+        let cx = (x * self.scale_x + self.offset_x).round().clamp(0.0, u16::MAX as f64) as u16;
+        let cy = (y * self.scale_y + self.offset_y).round().clamp(0.0, u16::MAX as f64) as u16;
         (cx, cy)
     }
 
@@ -1088,6 +1090,10 @@ impl MermaidRenderer {
             self.render_requirement_entities(layout, ir, &vp, buf);
             return;
         }
+        if ir.diagram_type.is_c4() {
+            self.render_c4_entities(layout, ir, &vp, buf);
+            return;
+        }
         self.render_edges_with_plan(
             &layout.edges,
             ir,
@@ -1326,11 +1332,7 @@ impl MermaidRenderer {
             milestones.push(milestone || duration == 0);
         }
 
-        let base_start_day = explicit_starts
-            .iter()
-            .filter_map(|d| *d)
-            .min()
-            .unwrap_or(0);
+        let base_start_day = explicit_starts.iter().filter_map(|d| *d).min().unwrap_or(0);
 
         let mut id_to_task_idx: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
@@ -1488,10 +1490,10 @@ impl MermaidRenderer {
 
                     let off0 = (start_idx.saturating_mul(bw)) / span_days;
                     let off1 = (last_idx.saturating_mul(bw)) / span_days;
-                    let off0: u16 = u16::try_from(off0.clamp(0, i64::from(u16::MAX)))
-                        .unwrap_or(u16::MAX);
-                    let off1: u16 = u16::try_from(off1.clamp(0, i64::from(u16::MAX)))
-                        .unwrap_or(u16::MAX);
+                    let off0: u16 =
+                        u16::try_from(off0.clamp(0, i64::from(u16::MAX))).unwrap_or(u16::MAX);
+                    let off1: u16 =
+                        u16::try_from(off1.clamp(0, i64::from(u16::MAX))).unwrap_or(u16::MAX);
                     let bx0 = bar_start_x.saturating_add(off0);
                     let bx1 = bar_start_x.saturating_add(off1).max(bx0);
 
@@ -1747,15 +1749,13 @@ impl MermaidRenderer {
         if let Some(ref y_axis) = ir.quadrant_y_axis {
             if let Some(label) = ir.labels.get(y_axis.label_start.0) {
                 let cell = Cell::from_char(' ').with_fg(axis_fg);
-                let text = &label.text;
-                let tw = text.len().min(buf_x0 as usize);
-                buf.print_text_clipped(0, buf_mid_y.saturating_add(1), &text[..tw], cell, buf_x0);
+                let text = truncate_label(&label.text, buf_x0 as usize);
+                buf.print_text_clipped(0, buf_mid_y.saturating_add(1), &text, cell, buf_x0);
             }
             if let Some(label) = ir.labels.get(y_axis.label_end.0) {
                 let cell = Cell::from_char(' ').with_fg(axis_fg);
-                let text = &label.text;
-                let tw = text.len().min(buf_x0 as usize);
-                buf.print_text_clipped(0, buf_mid_y.saturating_sub(1), &text[..tw], cell, buf_x0);
+                let text = truncate_label(&label.text, buf_x0 as usize);
+                buf.print_text_clipped(0, buf_mid_y.saturating_sub(1), &text, cell, buf_x0);
             }
         }
 
@@ -3039,7 +3039,8 @@ impl MermaidRenderer {
             );
 
             // Render label inside the box (collapsed if let for clippy).
-            if let Some(label_id) = ir.nodes[i].label
+            if let Some(ir_node) = ir.nodes.get(node.node_idx)
+                && let Some(label_id) = ir_node.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
                 let inner_w = cell_rect.width.saturating_sub(2) as usize;
@@ -3052,11 +3053,7 @@ impl MermaidRenderer {
                     if y >= cell_rect.y + cell_rect.height.saturating_sub(1) {
                         break;
                     }
-                    let display = if line.len() > inner_w && inner_w > 3 {
-                        format!("{}...", &line[..inner_w.saturating_sub(3)])
-                    } else {
-                        line.to_string()
-                    };
+                    let display = truncate_label(line, inner_w);
                     for (j, ch) in display.chars().enumerate() {
                         let x = inner_x + j as u16;
                         if x < cell_rect.x + cell_rect.width.saturating_sub(1) {
@@ -3135,7 +3132,8 @@ impl MermaidRenderer {
             );
 
             // Render multi-line label.
-            if let Some(label_id) = ir.nodes[i].label
+            if let Some(ir_node) = ir.nodes.get(node.node_idx)
+                && let Some(label_id) = ir_node.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
                 let inner_w = cell_rect.width.saturating_sub(2) as usize;
@@ -3148,11 +3146,7 @@ impl MermaidRenderer {
                     if y >= cell_rect.y + cell_rect.height.saturating_sub(1) {
                         break;
                     }
-                    let display = if line.len() > inner_w && inner_w > 3 {
-                        format!("{}...", &line[..inner_w.saturating_sub(3)])
-                    } else {
-                        line.to_string()
-                    };
+                    let display = truncate_label(line, inner_w);
                     for (j, ch) in display.chars().enumerate() {
                         let x = inner_x + j as u16;
                         if x < cell_rect.x + cell_rect.width.saturating_sub(1) {
