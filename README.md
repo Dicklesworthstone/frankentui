@@ -61,6 +61,13 @@ cargo run -p ftui-demo-showcase
 
 ---
 
+## Getting Started (Library Consumers)
+
+If you want to embed FrankenTUI in your own Rust app (not just run the demo),
+start here: `docs/getting-started.md`.
+
+---
+
 ## Quick Example
 
 ```bash
