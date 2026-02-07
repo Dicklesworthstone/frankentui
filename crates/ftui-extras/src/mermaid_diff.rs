@@ -307,6 +307,286 @@ fn edge_attrs_differ(
     old_label != new_label
 }
 
+
+// ── Diff Rendering ──────────────────────────────────────────────────────
+
+use crate::mermaid::MermaidConfig;
+use crate::mermaid_layout::{DiagramLayout, LayoutRect};
+use crate::mermaid_render::render_diagram;
+use ftui_core::geometry::Rect;
+use ftui_core::text_width::display_width;
+use ftui_render::buffer::Buffer;
+use ftui_render::cell::{Cell, PackedRgba};
+
+/// Diff-specific color constants.
+pub struct DiffColors;
+
+impl DiffColors {
+    /// Green for added nodes/edges.
+    pub const ADDED: PackedRgba = PackedRgba::rgb(46, 204, 113);
+    /// Red for removed nodes/edges.
+    pub const REMOVED: PackedRgba = PackedRgba::rgb(231, 76, 60);
+    /// Yellow for changed nodes/edges.
+    pub const CHANGED: PackedRgba = PackedRgba::rgb(241, 196, 15);
+    /// Dim gray for unchanged nodes/edges.
+    pub const UNCHANGED: PackedRgba = PackedRgba::rgb(100, 100, 100);
+}
+
+/// Simple viewport for mapping layout-space to cell coordinates.
+///
+/// Duplicated from the private `Viewport` in `mermaid_render` since
+/// that type is not publicly exported.
+struct DiffViewport {
+    scale_x: f64,
+    scale_y: f64,
+    offset_x: f64,
+    offset_y: f64,
+}
+
+impl DiffViewport {
+    fn fit(bounding_box: &LayoutRect, area: Rect) -> Self {
+        let margin = 1.0;
+        let avail_w = f64::from(area.width).max(1.0) - 2.0 * margin;
+        let avail_h = f64::from(area.height).max(1.0) - 2.0 * margin;
+
+        let bb_w = bounding_box.width.max(1.0);
+        let bb_h = bounding_box.height.max(1.0);
+
+        let scale = (avail_w / bb_w).min(avail_h / bb_h).max(0.1);
+
+        let used_w = bb_w * scale;
+        let used_h = bb_h * scale;
+        let pad_x = (avail_w - used_w) / 2.0;
+        let pad_y = (avail_h - used_h) / 2.0;
+
+        Self {
+            scale_x: scale,
+            scale_y: scale,
+            offset_x: f64::from(area.x) + margin + pad_x - bounding_box.x * scale,
+            offset_y: f64::from(area.y) + margin + pad_y - bounding_box.y * scale,
+        }
+    }
+
+    fn to_cell(&self, x: f64, y: f64) -> (u16, u16) {
+        let cx = (x * self.scale_x + self.offset_x).round().max(0.0) as u16;
+        let cy = (y * self.scale_y + self.offset_y).round().max(0.0) as u16;
+        (cx, cy)
+    }
+
+    fn to_cell_rect(&self, r: &LayoutRect) -> Rect {
+        let (x, y) = self.to_cell(r.x, r.y);
+        let (x2, y2) = self.to_cell(r.x + r.width, r.y + r.height);
+        Rect {
+            x,
+            y,
+            width: x2.saturating_sub(x).max(1),
+            height: y2.saturating_sub(y).max(1),
+        }
+    }
+}
+
+/// Render a diagram diff into a buffer with color-coded highlighting.
+///
+/// Renders the NEW diagram as the base, then overlays diff colors:
+/// - **Added** nodes/edges: green border with `+` marker
+/// - **Changed** nodes/edges: yellow border with `~` marker
+/// - **Unchanged** nodes/edges: dimmed (gray)
+/// - **Removed** items: listed in a legend footer (red text)
+///
+/// For removed nodes, a compact legend is rendered at the bottom of the area
+/// since their positions exist only in the old layout coordinate space.
+pub fn render_diff(
+    diff: &DiagramDiff,
+    new_layout: &DiagramLayout,
+    config: &MermaidConfig,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    // Reserve bottom rows for removed-items legend if needed
+    let has_removed = diff.removed_nodes > 0 || diff.removed_edges > 0;
+    let legend_rows = if has_removed {
+        2u16.min(area.height.saturating_sub(4))
+    } else {
+        0
+    };
+    let diagram_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height.saturating_sub(legend_rows),
+    };
+
+    // 1. Render the base (new) diagram
+    render_diagram(new_layout, &diff.new_ir, config, diagram_area, buf);
+
+    // 2. Compute viewport for coordinate mapping
+    let vp = DiffViewport::fit(&new_layout.bounding_box, diagram_area);
+
+    // 3. Overlay node diff colors
+    for dn in &diff.nodes {
+        let (color, marker) = match dn.status {
+            DiffStatus::Added => (DiffColors::ADDED, Some('+')),
+            DiffStatus::Changed => (DiffColors::CHANGED, Some('~')),
+            DiffStatus::Unchanged => (DiffColors::UNCHANGED, None),
+            DiffStatus::Removed => continue, // handled in legend
+        };
+
+        // Find the node in new_layout by index
+        if let Some(node_box) = new_layout
+            .nodes
+            .iter()
+            .find(|n| n.node_idx == dn.node_idx)
+        {
+            let cell_rect = vp.to_cell_rect(&node_box.rect);
+            recolor_rect_border(cell_rect, color, buf);
+
+            // Dim interior text for unchanged nodes
+            if dn.status == DiffStatus::Unchanged {
+                dim_rect_interior(cell_rect, color, buf);
+            }
+
+            // Place status marker in top-right corner
+            if let Some(m) = marker {
+                let mx = cell_rect.x + cell_rect.width.saturating_sub(1);
+                let my = cell_rect.y;
+                buf.set(mx, my, Cell::from_char(m).with_fg(color));
+            }
+        }
+    }
+
+    // 4. Overlay edge diff colors
+    for de in &diff.edges {
+        let color = match de.status {
+            DiffStatus::Added => DiffColors::ADDED,
+            DiffStatus::Changed => DiffColors::CHANGED,
+            DiffStatus::Unchanged => DiffColors::UNCHANGED,
+            DiffStatus::Removed => continue, // handled in legend
+        };
+
+        // Find the edge in new_layout by index
+        if let Some(edge_path) = new_layout
+            .edges
+            .iter()
+            .find(|e| e.edge_idx == de.edge_idx)
+        {
+            for wp in &edge_path.waypoints {
+                let (cx, cy) = vp.to_cell(wp.x, wp.y);
+                if let Some(c) = buf.get(cx, cy) {
+                    buf.set(cx, cy, c.with_fg(color));
+                }
+            }
+        }
+    }
+
+    // 5. Render removed-items legend
+    if has_removed && legend_rows > 0 {
+        render_removed_legend(diff, area, legend_rows, buf);
+    }
+}
+
+/// Recolor the border cells of a rectangle.
+fn recolor_rect_border(rect: Rect, color: PackedRgba, buf: &mut Buffer) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = x0 + rect.width.saturating_sub(1);
+    let y1 = y0 + rect.height.saturating_sub(1);
+
+    // Top and bottom edges
+    for col in x0..=x1 {
+        if let Some(c) = buf.get(col, y0) {
+            buf.set(col, y0, c.with_fg(color));
+        }
+        if let Some(c) = buf.get(col, y1) {
+            buf.set(col, y1, c.with_fg(color));
+        }
+    }
+    // Left and right edges
+    for row in y0..=y1 {
+        if let Some(c) = buf.get(x0, row) {
+            buf.set(x0, row, c.with_fg(color));
+        }
+        if let Some(c) = buf.get(x1, row) {
+            buf.set(x1, row, c.with_fg(color));
+        }
+    }
+}
+
+/// Dim interior cells of a rectangle (for unchanged nodes).
+fn dim_rect_interior(rect: Rect, color: PackedRgba, buf: &mut Buffer) {
+    if rect.width < 3 || rect.height < 3 {
+        return;
+    }
+    for row in (rect.y + 1)..(rect.y + rect.height.saturating_sub(1)) {
+        for col in (rect.x + 1)..(rect.x + rect.width.saturating_sub(1)) {
+            if let Some(c) = buf.get(col, row)
+                && c.content.as_char().unwrap_or(' ') != ' '
+            {
+                buf.set(col, row, c.with_fg(color));
+            }
+        }
+    }
+}
+
+/// Render a compact legend for removed nodes/edges at the bottom of the area.
+fn render_removed_legend(diff: &DiagramDiff, area: Rect, rows: u16, buf: &mut Buffer) {
+    let legend_y = area.y + area.height.saturating_sub(rows);
+    let max_w = area.width as usize;
+
+    // Collect removed node IDs
+    let removed_names: Vec<&str> = diff
+        .nodes
+        .iter()
+        .filter(|n| n.status == DiffStatus::Removed)
+        .map(|n| n.id.as_str())
+        .collect();
+
+    // Build legend text
+    let mut parts = Vec::new();
+    if !removed_names.is_empty() {
+        let names = removed_names.join(", ");
+        parts.push(format!("-nodes: {names}"));
+    }
+    if diff.removed_edges > 0 {
+        parts.push(format!("-edges: {}", diff.removed_edges));
+    }
+    let legend_text = parts.join(" | ");
+
+    // Truncate to fit
+    let display_text = if display_width(&legend_text) > max_w {
+        let mut result = String::new();
+        let mut w = 0;
+        for ch in legend_text.chars() {
+            let cw = display_width(&ch.to_string());
+            if w + cw + 1 > max_w {
+                result.push('…');
+                break;
+            }
+            result.push(ch);
+            w += cw;
+        }
+        result
+    } else {
+        legend_text
+    };
+
+    // Write legend text in red
+    let cell = Cell::from_char(' ').with_fg(DiffColors::REMOVED);
+    for (i, ch) in display_text.chars().enumerate() {
+        let x = area.x + i as u16;
+        if x >= area.x + area.width {
+            break;
+        }
+        buf.set(x, legend_y, cell.with_char(ch));
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -611,4 +891,131 @@ mod tests {
         assert_eq!(c.node_idx, 2);
         assert_eq!(c.old_node_idx, None);
     }
+
+    // ── render_diff tests ─────────────────────────────────────────
+
+    use crate::mermaid::MermaidConfig;
+    use crate::mermaid_layout::layout_diagram as mermaid_layout_diagram;
+    use super::{DiffColors, render_diff};
+    use ftui_core::geometry::Rect;
+    use ftui_render::buffer::Buffer;
+
+    fn make_test_buffer(w: u16, h: u16) -> Buffer {
+        Buffer::new(w, h)
+    }
+
+    #[test]
+    fn render_diff_empty_diff_produces_output() {
+        let ir = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&ir, &ir);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&ir, &config);
+        let area = Rect { x: 0, y: 0, width: 40, height: 20 };
+        let mut buf = make_test_buffer(40, 20);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // Should render something (not all empty)
+        let has_content = (0..40).any(|x| {
+            (0..20).any(|y| {
+                buf.get(x, y)
+                    .and_then(|c| c.content.as_char())
+                    .unwrap_or(' ')
+                    != ' '
+            })
+        });
+        assert!(has_content, "render_diff should produce visible output");
+    }
+
+    #[test]
+    fn render_diff_added_nodes_get_green_border() {
+        let old = make_test_ir(&["A"], &[]);
+        let new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        let area = Rect { x: 0, y: 0, width: 60, height: 30 };
+        let mut buf = make_test_buffer(60, 30);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // Check that at least one cell has the green added color
+        let has_green = (0..60).any(|x| {
+            (0..30).any(|y| {
+                buf.get(x, y).is_some_and(|c| c.fg == DiffColors::ADDED)
+            })
+        });
+        assert!(has_green, "added node should have green-colored cells");
+    }
+
+    #[test]
+    fn render_diff_unchanged_nodes_are_dimmed() {
+        let ir = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&ir, &ir);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&ir, &config);
+        let area = Rect { x: 0, y: 0, width: 60, height: 30 };
+        let mut buf = make_test_buffer(60, 30);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // Check that at least one cell has the dim unchanged color
+        let has_dim = (0..60).any(|x| {
+            (0..30).any(|y| {
+                buf.get(x, y)
+                    .is_some_and(|c| c.fg == DiffColors::UNCHANGED)
+            })
+        });
+        assert!(has_dim, "unchanged nodes should have dimmed cells");
+    }
+
+    #[test]
+    fn render_diff_changed_node_has_yellow() {
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let mut new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        new.nodes[1].shape = NodeShape::Diamond;
+        let diff = diff_diagrams(&old, &new);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        let area = Rect { x: 0, y: 0, width: 60, height: 30 };
+        let mut buf = make_test_buffer(60, 30);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        let has_yellow = (0..60).any(|x| {
+            (0..30).any(|y| {
+                buf.get(x, y)
+                    .is_some_and(|c| c.fg == DiffColors::CHANGED)
+            })
+        });
+        assert!(has_yellow, "changed node should have yellow cells");
+    }
+
+    #[test]
+    fn render_diff_removed_legend_shown() {
+        let old = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2)]);
+        let new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        let area = Rect { x: 0, y: 0, width: 60, height: 30 };
+        let mut buf = make_test_buffer(60, 30);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // Check bottom rows for red removed-legend text
+        let has_red_bottom = (0..60).any(|x| {
+            (28..30).any(|y| {
+                buf.get(x, y)
+                    .is_some_and(|c| c.fg == DiffColors::REMOVED)
+            })
+        });
+        assert!(
+            has_red_bottom,
+            "removed nodes should show red legend at bottom"
+        );
+    }
+
+    #[test]
+    fn render_diff_zero_area_does_not_panic() {
+        let ir = make_test_ir(&["A"], &[]);
+        let diff = diff_diagrams(&ir, &ir);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&ir, &config);
+        let area = Rect { x: 0, y: 0, width: 0, height: 0 };
+        let mut buf = make_test_buffer(1, 1);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // Should not panic
+    }
+
 }
