@@ -1,0 +1,24 @@
+Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: aut
+╭───────Samples────────╮╭───────────────────────Viewport───────────────────────╮
+│> Flow Basic [flow, S,││                                                      │
+│  Flow Subgraphs [flow││                                     +---------+      │
+│  Flow Dense [flow, L,││                                     |   OK    |      │
+│  Flow Long Labels [fl││                                     +---------+      │
+│  Flow Unicode [flow, ││      +---------+         \/        Yes               │
+│  Flow Styles [flow, M││      |  Start  |      \Check/       |                │
+│  Sequence Mini [seque││      |         |----\          /----+                │
+│  Sequence Checkout [s││      +---------+      /     \       |                │
+│  Sequence Dense [sequ││                                    N+---------+      │
+│  Class Basic [class, ││                                     |   Fix   |      │
+│  Class Members [class││                                     +---------+      │
+│  State Basic [state, ││                                                      │
+│  State Composite [sta│╰──────────────────────────────────────────────────────╯
+│  ER Basic [er, M, car│╭───────────────────────Metrics────────────────────────╮
+│  Gantt Basic [gantt, ││Parse: 0.00 ms                                        │
+│  Mindmap Seed [mindma││Layout: 0.00 ms                                       │
+│  Mindmap Deep [mindma││Render: 0.00 ms                                       │
+│  Pie Basic [pie, S, t││Viewport: auto                                        │
+│  Pie Many [pie, M, ma││Zoom: 100%                                            │
+│  Gitgraph Basic [gitg││Iters: 1                                              │
+╰──────────────────────╯╰──────────────────────────────────────────────────────╯
+j/k sample  Enter render  l layout  +/- zoom  m metrics  ? help                 

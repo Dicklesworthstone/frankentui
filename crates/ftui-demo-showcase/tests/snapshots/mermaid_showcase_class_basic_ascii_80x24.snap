@@ -1,0 +1,24 @@
+Mermaid Showcase | Class Basic (10/24) | Layout: Auto | Score: 44.1 | Viewport: 
+╭───────Samples────────╮╭───────────────────────Viewport───────────────────────╮
+│  Flow Basic [flow, S,││                                                      │
+│  Flow Subgraphs [flow││                      +--------+                      │
+│  Flow Dense [flow, L,││                      |  User  |                      │
+│  Flow Long Labels [fl││                      +--------+                      │
+│  Flow Unicode [flow, ││                     +------------+                   │
+│  Flow Styles [flow, M││                     |            |                   │
+│  Sequence Mini [seque││                     |            |                   │
+│  Sequence Checkout [s││                     |            |                   │
+│  Sequence Dense [sequ││                +--------+   +--------+               │
+│> Class Basic [class, ││                | Admin  |   | Order  |               │
+│  Class Members [class││                +--------+   +--------+               │
+│  State Basic [state, ││                                                      │
+│  State Composite [sta│╰──────────────────────────────────────────────────────╯
+│  ER Basic [er, M, car│╭───────────────────────Metrics────────────────────────╮
+│  Gantt Basic [gantt, ││Parse: 0.00 ms                                        │
+│  Mindmap Seed [mindma││Layout: 0.00 ms                                       │
+│  Mindmap Deep [mindma││Render: 0.00 ms                                       │
+│  Pie Basic [pie, S, t││Viewport: auto                                        │
+│  Pie Many [pie, M, ma││Zoom: 100%                                            │
+│  Gitgraph Basic [gitg││Iters: 1                                              │
+╰──────────────────────╯╰──────────────────────────────────────────────────────╯
+j/k sample  Enter render  l layout  +/- zoom  m metrics  ? help                 
