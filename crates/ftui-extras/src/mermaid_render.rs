@@ -1014,6 +1014,8 @@ impl MermaidRenderer {
         self.render_clusters(&layout.clusters, ir, &vp, buf);
         if ir.diagram_type == DiagramType::Sequence {
             self.render_sequence_lifelines(layout, &vp, buf);
+            self.render_sequence_controls(layout, ir, &vp, buf);
+            self.render_sequence_activations(layout, ir, &vp, buf);
         }
         if ir.diagram_type == DiagramType::GitGraph {
             self.render_gitgraph_lanes(layout, ir, &vp, buf);
@@ -1071,6 +1073,8 @@ impl MermaidRenderer {
         }
         if ir.diagram_type == DiagramType::Sequence {
             self.render_sequence_lifelines(layout, &vp, buf);
+            self.render_sequence_controls(layout, ir, &vp, buf);
+            self.render_sequence_activations(layout, ir, &vp, buf);
         }
         if ir.diagram_type == DiagramType::GitGraph {
             self.render_gitgraph_lanes(layout, ir, &vp, buf);
@@ -2988,6 +2992,127 @@ impl MermaidRenderer {
         }
     }
 
+    /// Draw control block frames (loop, alt, opt, etc.) for sequence diagrams.
+    fn render_sequence_controls(
+        &self,
+        layout: &DiagramLayout,
+        ir: &MermaidDiagramIr,
+        vp: &Viewport,
+        buf: &mut Buffer,
+    ) {
+        let border_cell = Cell::from_char(' ').with_fg(self.colors.cluster_border);
+        let label_cell = Cell::from_char(' ').with_fg(self.colors.cluster_title);
+
+        for (ci, ctrl) in ir.sequence_controls.iter().enumerate() {
+            if ctrl.kind == crate::mermaid::SeqControlKind::End {
+                continue;
+            }
+            let Some(cluster) = layout.clusters.iter().find(|c| c.cluster_idx == ci) else {
+                continue;
+            };
+            let cell_rect = vp.to_cell_rect(&cluster.rect);
+            if cell_rect.width < 2 || cell_rect.height < 2 {
+                continue;
+            }
+
+            buf.draw_border(cell_rect, self.glyphs.border, border_cell);
+
+            let keyword = match ctrl.kind {
+                crate::mermaid::SeqControlKind::Loop => "loop",
+                crate::mermaid::SeqControlKind::Alt => "alt",
+                crate::mermaid::SeqControlKind::Else => "else",
+                crate::mermaid::SeqControlKind::Opt => "opt",
+                crate::mermaid::SeqControlKind::Par => "par",
+                crate::mermaid::SeqControlKind::And => "and",
+                crate::mermaid::SeqControlKind::Critical => "critical",
+                crate::mermaid::SeqControlKind::Break => "break",
+                crate::mermaid::SeqControlKind::Rect => "rect",
+                crate::mermaid::SeqControlKind::End => continue,
+            };
+
+            let kw_x = cell_rect.x.saturating_add(1);
+            let kw_y = cell_rect.y;
+            let max_w = cell_rect.width.saturating_sub(2) as usize;
+            let kw_text = if keyword.len() > max_w {
+                &keyword[..max_w]
+            } else {
+                keyword
+            };
+            buf.print_text_clipped(
+                kw_x,
+                kw_y,
+                kw_text,
+                label_cell,
+                cell_rect.x.saturating_add(cell_rect.width),
+            );
+
+            if let Some(label_id) = ctrl.label
+                && let Some(label) = ir.labels.get(label_id.0)
+            {
+                let label_x = kw_x + keyword.len() as u16 + 1;
+                let remaining = cell_rect
+                    .x
+                    .saturating_add(cell_rect.width)
+                    .saturating_sub(label_x)
+                    .saturating_sub(1) as usize;
+                if remaining > 0 {
+                    let text = truncate_label(&label.text, remaining);
+                    buf.print_text_clipped(
+                        label_x,
+                        kw_y,
+                        &text,
+                        label_cell,
+                        cell_rect.x.saturating_add(cell_rect.width),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Draw activation bars (vertical rectangles on lifelines) for sequence diagrams.
+    fn render_sequence_activations(
+        &self,
+        layout: &DiagramLayout,
+        ir: &MermaidDiagramIr,
+        vp: &Viewport,
+        buf: &mut Buffer,
+    ) {
+        let bar_cell = Cell::from_char(' ').with_fg(self.colors.node_border);
+        let spacing_rank_gap = 2.0f64;
+        let actor_height = layout
+            .nodes
+            .iter()
+            .map(|n| n.rect.height)
+            .fold(0.0f64, f64::max);
+        let start_y = actor_height + spacing_rank_gap;
+
+        for activation in &ir.sequence_activations {
+            let node_idx = activation.node_idx;
+            let Some(node) = layout.nodes.get(node_idx) else {
+                continue;
+            };
+            let center_x = node.rect.x + node.rect.width / 2.0;
+            let bar_half_w = 0.5;
+            let y_top = start_y + activation.start_edge_idx as f64 * spacing_rank_gap;
+            let y_bot = start_y + activation.end_edge_idx as f64 * spacing_rank_gap;
+
+            let (cx_l, cy_top) = vp.to_cell(center_x - bar_half_w, y_top);
+            let (cx_r, cy_bot) = vp.to_cell(center_x + bar_half_w, y_bot);
+            let (top, bot) = if cy_top <= cy_bot {
+                (cy_top, cy_bot)
+            } else {
+                (cy_bot, cy_top)
+            };
+
+            for y in top..=bot {
+                self.merge_line_cell(cx_l, y, LINE_UP | LINE_DOWN, bar_cell, buf);
+                if cx_r > cx_l {
+                    self.merge_line_cell(cx_r, y, LINE_UP | LINE_DOWN, bar_cell, buf);
+                }
+            }
+        }
+    }
+
     /// Draw vertical branch lane lines for gitGraph diagrams.
     fn render_gitgraph_lanes(
         &self,
@@ -3739,6 +3864,8 @@ fn render_diagram_canvas_with_plan(
     }
     if ir.diagram_type == DiagramType::Sequence {
         renderer.render_sequence_lifelines(layout, &cell_vp, buf);
+        renderer.render_sequence_controls(layout, ir, &cell_vp, buf);
+        renderer.render_sequence_activations(layout, ir, &cell_vp, buf);
     }
     renderer.canvas_composite_labels(&layout.nodes, &layout.edges, ir, &cell_vp, plan, buf);
 }

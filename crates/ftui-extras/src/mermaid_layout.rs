@@ -2831,7 +2831,13 @@ fn layout_sequence_diagram(
     config: &MermaidConfig,
     spacing: &LayoutSpacing,
 ) -> DiagramLayout {
-    let n = ir.nodes.len();
+    // Use sequence_participants if available, otherwise fall back to ir.nodes
+    let participant_nodes: &[crate::mermaid::IrNode] = if !ir.sequence_participants.is_empty() {
+        &ir.sequence_participants
+    } else {
+        &ir.nodes
+    };
+    let n = participant_nodes.len();
     if n == 0 {
         return DiagramLayout {
             nodes: vec![],
@@ -2857,17 +2863,34 @@ fn layout_sequence_diagram(
         };
     }
 
-    let node_sizes = compute_node_sizes(ir, spacing);
+    // Compute sizes for participant header boxes using label widths
+    let participant_sizes: Vec<(f64, f64)> = participant_nodes
+        .iter()
+        .map(|pn| {
+            let label_width = pn
+                .label
+                .and_then(|lid| ir.labels.get(lid.0).map(|l| l.text.as_str()))
+                .map(|t| visual_width(t) as f64)
+                .unwrap_or(pn.id.len() as f64);
+            let w = spacing
+                .node_width
+                .max(label_width + 2.0 * spacing.label_padding);
+            let h = spacing.node_height;
+            (w, h)
+        })
+        .collect();
+
+    // Position participant header boxes along the top row
     let mut nodes = Vec::with_capacity(n);
     let mut cursor_x = 0.0;
-    for (i, (width, height)) in node_sizes.iter().copied().enumerate() {
+    for (i, &(width, height)) in participant_sizes.iter().enumerate() {
         let rect = LayoutRect {
             x: cursor_x,
             y: 0.0,
             width,
             height,
         };
-        let label_rect = ir.nodes[i].label.map(|_| LayoutRect {
+        let label_rect = Some(LayoutRect {
             x: rect.x + spacing.label_padding,
             y: rect.y + spacing.label_padding,
             width: rect.width - 2.0 * spacing.label_padding,
@@ -2883,8 +2906,12 @@ fn layout_sequence_diagram(
         cursor_x += width + spacing.node_gap;
     }
 
+    // Route message edges as horizontal lines at increasing Y positions
     let message_gap = spacing.rank_gap.max(2.0);
-    let actor_height = nodes.iter().map(|n| n.rect.height).fold(0.0f64, f64::max);
+    let actor_height = nodes
+        .iter()
+        .map(|n| n.rect.height)
+        .fold(0.0f64, f64::max);
     let start_y = actor_height + spacing.rank_gap;
     let mut edges = Vec::with_capacity(ir.edges.len());
     for (idx, edge) in ir.edges.iter().enumerate() {
@@ -2894,11 +2921,10 @@ fn layout_sequence_diagram(
         let Some(to_idx) = endpoint_node_idx(ir, &edge.to) else {
             continue;
         };
-        if from_idx >= n || to_idx >= n {
-            continue;
-        }
-        let from_rect = &nodes[from_idx].rect;
-        let to_rect = &nodes[to_idx].rect;
+        let from_col = if from_idx < n { from_idx } else { continue };
+        let to_col = if to_idx < n { to_idx } else { continue };
+        let from_rect = &nodes[from_col].rect;
+        let to_rect = &nodes[to_col].rect;
         let y = start_y + idx as f64 * message_gap;
         let x0 = from_rect.x + from_rect.width / 2.0;
         let x1 = to_rect.x + to_rect.width / 2.0;
@@ -2910,21 +2936,55 @@ fn layout_sequence_diagram(
         });
     }
 
-    let mut bounding_box = compute_bounding_box(&nodes, &[], &edges);
+    // Compute lifeline endpoint
     let lifeline_end = if edges.is_empty() {
-        start_y
+        start_y + spacing.rank_gap
     } else {
         start_y + (edges.len().saturating_sub(1) as f64) * message_gap + spacing.rank_gap
     };
-    let bottom = bounding_box.y + bounding_box.height;
-    if lifeline_end > bottom {
+
+    // Build control block clusters from sequence_controls
+    let mut clusters = Vec::new();
+    for (ci, ctrl) in ir.sequence_controls.iter().enumerate() {
+        if ctrl.kind == crate::mermaid::SeqControlKind::End {
+            continue;
+        }
+        let start_edge = ctrl.start_edge_idx;
+        let end_edge = ctrl.end_edge_idx;
+        let y_top = start_y + start_edge as f64 * message_gap - message_gap * 0.4;
+        let y_bot = start_y + end_edge as f64 * message_gap + message_gap * 0.6;
+        let indent = ctrl.depth as f64 * spacing.label_padding;
+        let x_left = -spacing.label_padding - indent;
+        let x_right = cursor_x - spacing.node_gap + spacing.label_padding + indent;
+        let rect = LayoutRect {
+            x: x_left,
+            y: y_top,
+            width: x_right - x_left,
+            height: y_bot - y_top,
+        };
+        let title_rect = ctrl.label.map(|_| LayoutRect {
+            x: x_left + 1.0,
+            y: y_top,
+            width: (x_right - x_left) * 0.4,
+            height: spacing.node_height * 0.6,
+        });
+        clusters.push(LayoutClusterBox {
+            cluster_idx: ci,
+            rect,
+            title_rect,
+        });
+    }
+
+    // Extend bounding box to include lifelines and clusters
+    let mut bounding_box = compute_bounding_box(&nodes, &clusters, &edges);
+    if lifeline_end > bounding_box.y + bounding_box.height {
         bounding_box.height = lifeline_end - bounding_box.y;
     }
 
     let pos_var = compute_position_variance(&nodes);
     let layout = DiagramLayout {
         nodes,
-        clusters: vec![],
+        clusters,
         edges,
         bounding_box,
         stats: LayoutStats {
