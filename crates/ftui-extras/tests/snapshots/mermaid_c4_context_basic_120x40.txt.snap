@@ -1,12 +1,10 @@
                                                                                                                         
                                               ┌──────────────────────────┐                                              
-                                              │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│                                              
-                                              │[Person]
-Customer
-(A user │                                              
-                                              │      of the system)      │                                              
+                                              │[Person]                  │                                              
+                                              │Customer                  │                                              
+                                              │(A user of the system)    │                                              
                                               │                          │                                              
-                                              │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│                                              
+                                              │                          │                                              
                                               └──────────────────────────┘                                              
                                                             │                                                           
                                                             │                                                           
@@ -16,31 +14,27 @@ Customer
                                                             │                                                           
                                                             │                                                           
                                                             │                                                           
-                                              ┌──────────────────────────┐                                              
-                                              │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│                                              
-                                              │       [System]
-Web       │                                              
-                                              │  Application
-(The main   │                                              
-                                              │       application)       │                                              
+                                              ┌─────────────▼────────────┐                                              
+                                              │[System]                  │                                              
+                                              │Web Application           │                                              
+                                              │(The main application)    │                                              
                                               │                          │                                              
-                                              │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│                                              
+                                              │                          │                                              
+                                              │                          │                                              
                                               └──────────────────────────┘                                              
                                                             │                                                           
                                                             │                                                           
                                                             │                                                           
                                                             │                                                           
-                                                            │Sends emails using                                         
+                                                            │Sends emails us…                                           
                                                             │                                                           
                                                             │                                                           
                                                             │                                                           
-                                              ┌──────────────────────────┐                                              
-                                              │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│                                              
-                                              │    [System_Ext]
-Email    │                                              
-                                              │  System
-(Sends emails)   │                                              
+                                              ┌─────────────▼────────────┐                                              
+                                              │[System_Ext]              │                                              
+                                              │Email System              │                                              
+                                              │(Sends emails)            │                                              
                                               │                          │                                              
-                                              │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│                                              
+                                              │                          │                                              
                                               └──────────────────────────┘                                              
                                                                                                                         

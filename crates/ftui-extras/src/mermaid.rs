@@ -5081,6 +5081,9 @@ pub fn normalize_ast_to_ir(
     });
 
     let mut node_id_map = std::collections::HashMap::new();
+    // Save labels from the first interner so we can re-intern stale IDs
+    // (seq_controls, seq_notes, pie_entries used the first interner).
+    let first_pass_labels = labels.labels;
     let mut labels = LabelInterner::default();
     let mut nodes = Vec::with_capacity(nodes_sorted.len());
 
@@ -5335,6 +5338,27 @@ pub fn normalize_ast_to_ir(
                 quadrant_points_out[pi].label = labels.intern(&pt.name, pt.span);
                 pi += 1;
             }
+        }
+    }
+
+    // Re-intern stale label IDs from the first interner pass.
+    // seq_controls, seq_notes, and pie_entries stored IDs from the first
+    // LabelInterner which was shadowed at line 5084.  Map old → new.
+    for ctrl in &mut seq_controls {
+        if let Some(old_id) = ctrl.label
+            && let Some(old_label) = first_pass_labels.get(old_id.0)
+        {
+            ctrl.label = Some(labels.intern(&old_label.text, old_label.span));
+        }
+    }
+    for note in &mut seq_notes {
+        if let Some(old_label) = first_pass_labels.get(note.text.0) {
+            note.text = labels.intern(&old_label.text, old_label.span);
+        }
+    }
+    for entry in &mut pie_entries {
+        if let Some(old_label) = first_pass_labels.get(entry.label.0) {
+            entry.label = labels.intern(&old_label.text, old_label.span);
         }
     }
 
