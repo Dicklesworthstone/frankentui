@@ -2913,7 +2913,21 @@ fn layout_sequence_diagram(
         .map(|n| n.rect.height)
         .fold(0.0f64, f64::max);
     let start_y = actor_height + spacing.rank_gap;
+
+    // Build mapping from ir.nodes index -> participant column index.
+    // endpoint_node_idx returns ir.nodes indices, but layout.nodes uses
+    // participant column indices (0..n). Without this mapping, any
+    // sequence diagram with note nodes or other non-participant nodes
+    // would route edges to wrong columns or skip them entirely.
+    let mut ir_node_to_col: Vec<Option<usize>> = vec![None; ir.nodes.len()];
+    for (col, pn) in participant_nodes.iter().enumerate() {
+        if let Some(pos) = ir.nodes.iter().position(|n| n.id == pn.id) {
+            ir_node_to_col[pos] = Some(col);
+        }
+    }
+
     let mut edges = Vec::with_capacity(ir.edges.len());
+    let mut rendered_idx: usize = 0;
     for (idx, edge) in ir.edges.iter().enumerate() {
         let Some(from_idx) = endpoint_node_idx(ir, &edge.from) else {
             continue;
@@ -2921,11 +2935,17 @@ fn layout_sequence_diagram(
         let Some(to_idx) = endpoint_node_idx(ir, &edge.to) else {
             continue;
         };
-        let from_col = if from_idx < n { from_idx } else { continue };
-        let to_col = if to_idx < n { to_idx } else { continue };
+        let from_col = match ir_node_to_col.get(from_idx).copied().flatten() {
+            Some(c) => c,
+            None => continue,
+        };
+        let to_col = match ir_node_to_col.get(to_idx).copied().flatten() {
+            Some(c) => c,
+            None => continue,
+        };
         let from_rect = &nodes[from_col].rect;
         let to_rect = &nodes[to_col].rect;
-        let y = start_y + idx as f64 * message_gap;
+        let y = start_y + rendered_idx as f64 * message_gap;
         let x0 = from_rect.x + from_rect.width / 2.0;
         let x1 = to_rect.x + to_rect.width / 2.0;
         edges.push(LayoutEdgePath {
@@ -2934,6 +2954,7 @@ fn layout_sequence_diagram(
             bundle_count: 1,
             bundle_members: Vec::new(),
         });
+        rendered_idx += 1;
     }
 
     // Compute lifeline endpoint

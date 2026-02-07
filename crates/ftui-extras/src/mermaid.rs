@@ -2883,7 +2883,7 @@ impl MermaidCompatibilityMatrix {
             sequence: MermaidSupportLevel::Partial,
             state: MermaidSupportLevel::Partial,
             gantt: MermaidSupportLevel::Partial,
-            class: MermaidSupportLevel::Partial,
+            class: MermaidSupportLevel::Supported,
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
@@ -2943,7 +2943,7 @@ impl Default for MermaidCompatibilityMatrix {
             sequence: MermaidSupportLevel::Partial,
             state: MermaidSupportLevel::Partial,
             gantt: MermaidSupportLevel::Partial,
-            class: MermaidSupportLevel::Partial,
+            class: MermaidSupportLevel::Supported,
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
@@ -3470,6 +3470,7 @@ struct NodeDraft {
     insertion_idx: usize,
     implicit: bool,
     members: Vec<String>,
+    annotation: Option<String>,
 }
 
 #[derive(Debug)]
@@ -3625,6 +3626,7 @@ fn upsert_node(
         insertion_idx,
         implicit,
         members: Vec::new(),
+        annotation: None,
     });
     if implicit && implicit_warned.insert(node_id.to_string()) {
         warnings.push(MermaidWarning::new(
@@ -5008,7 +5010,16 @@ pub fn normalize_ast_to_ir(
                         &mut implicit_warned,
                         &mut warnings,
                     );
-                    node_drafts[node_idx].members.push(member.clone());
+                    let trimmed = member.trim();
+                    if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
+                        let ann = trimmed[2..trimmed.len() - 2].trim();
+                        if !ann.is_empty() {
+                            node_drafts[node_idx].annotation =
+                                Some(format!("<<{ann}>>"));
+                        }
+                    } else {
+                        node_drafts[node_idx].members.push(member.clone());
+                    }
                 }
             }
             _ => {}
@@ -5052,7 +5063,7 @@ pub fn normalize_ast_to_ir(
             span_all: draft.spans,
             implicit: draft.implicit,
             members: draft.members,
-            annotation: None,
+            annotation: draft.annotation,
         });
     }
 
@@ -9212,6 +9223,7 @@ fn split_architecture_in_clause(input: &str) -> (&str, Option<&str>) {
             && &lower_bytes[i..i + 4] == b" in "
         {
             split_at = Some(i);
+            break;
         }
         i += 1;
     }
