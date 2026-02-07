@@ -2068,18 +2068,18 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Done,       // fixtures
+            StageStatus::Done,       // snapshots
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "participants, messages, activation bars, notes, alt/opt/loop/par blocks",
         terminal_degradations: "activation bars may simplify to single-char markers in compact mode",
-        notes: "parse + IR + layout + render implemented (bd-2kn9a)",
+        notes: "full pipeline implemented (bd-2kn9a closed); needs pty_e2e + demo_picker",
     },
     DiagramFamilyEntry {
         family: DiagramType::State,
@@ -2088,18 +2088,18 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Done,       // layout
+            StageStatus::Done,       // render
+            StageStatus::Done,       // fixtures (basic, composite, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "states, transitions, composite states, start/end markers, notes",
         terminal_degradations: "notes may omit borders in compact mode",
-        notes: "parser+layout+render done; needs fixture expansion",
+        notes: "parser+layout+render done; needs pty_e2e + demo_picker",
     },
     DiagramFamilyEntry {
         family: DiagramType::Gantt,
@@ -2108,18 +2108,18 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Partial,    // layout (adaptive time scale pending)
+            StageStatus::Done,       // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "title, sections, tasks, date-based timelines, milestones",
         terminal_degradations: "date formatting simplified; milestones as text markers",
-        notes: "parser done; layout/render in progress (bd-30t8a)",
+        notes: "IR+render done (bd-30t8a); adaptive layout pending",
     },
     DiagramFamilyEntry {
         family: DiagramType::Class,
@@ -2128,14 +2128,14 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "classes, members, inheritance/association edges, annotations",
         terminal_degradations: "annotations shown as text prefix",
@@ -2168,18 +2168,18 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "root, branches, indent-based hierarchy, node shapes, annotations",
         terminal_degradations: "collapse deeper levels on small screens; linear fallback at 80-col",
-        notes: "parser done; layout/render in progress (bd-9ta1z)",
+        notes: "parser done; layout/render partial (bd-9ta1z closed)",
     },
     DiagramFamilyEntry {
         family: DiagramType::Pie,
@@ -2188,14 +2188,14 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "title, entries with values, showData toggle",
         terminal_degradations: "half-block or ASCII bar fallback instead of arc rendering",
@@ -2209,14 +2209,14 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "commit, branch, checkout, merge, cherry-pick, commit labels",
         terminal_degradations: "ASCII lane characters; merge dots simplified",
@@ -2229,14 +2229,14 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress, dense_actors, malformed)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "sections, tasks with scores, actor participation, section boundaries",
         terminal_degradations: "score bars as ASCII; actors as column headers",
@@ -2249,14 +2249,14 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         support_level: MermaidSupportLevel::Partial,
         is_beta: false,
         pipeline: [
-            StageStatus::Done,
-            StageStatus::Done,
-            StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
-            StageStatus::NotStarted,
+            StageStatus::Done,       // parser
+            StageStatus::Done,       // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress, edge_case)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
         ],
         min_feature_slice: "requirement entities, typed relations, categories, risk/verify/derive links",
         terminal_degradations: "entity boxes simplified; relation arrows as ASCII",
@@ -2266,20 +2266,38 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::Timeline,
         canonical_keyword: "timeline",
         introduced_version: "10.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Partial,    // parser (type detected, body uses raw fallback)
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "title, sections, time periods, events",
         terminal_degradations: "compact layout on narrow terminals",
-        notes: "planned: bd-hudcn.1.10",
+        notes: "planned: bd-hudcn.1.10; parser detects type, partial body parsing",
     },
     DiagramFamilyEntry {
         family: DiagramType::QuadrantChart,
         canonical_keyword: "quadrantChart",
         introduced_version: "10.2",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser (dedicated quadrant statements)
+            StageStatus::Done,       // ir (quadrant fields in MermaidDiagramIr)
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Partial,    // snapshots (80x24, 120x40; missing 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "quadrant labels, data points with coordinates",
         terminal_degradations: "half-block scatter rendering; ASCII axis labels",
         notes: "planned: bd-hudcn.1.11",
@@ -2289,9 +2307,18 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::Sankey,
         canonical_keyword: "sankey-beta",
         introduced_version: "10.3",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: true,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser (SankeyLink statements)
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "nodes, flows with values, multi-level paths",
         terminal_degradations: "flow widths approximated with block chars",
         notes: "planned: bd-hudcn.1.13",
@@ -2300,12 +2327,21 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::XyChart,
         canonical_keyword: "xychart-beta",
         introduced_version: "10.5",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: true,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Partial,    // parser (type detected, body uses raw fallback)
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Partial,    // snapshots (80x24, 120x40; missing 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "title, x-axis, y-axis, bar/line data series",
         terminal_degradations: "ASCII axes; braille or half-block data points",
-        notes: "planned: bd-hudcn.1.12",
+        notes: "planned: bd-hudcn.1.12; parser detects type, body uses raw fallback",
     },
     DiagramFamilyEntry {
         family: DiagramType::BlockBeta,
@@ -2325,15 +2361,24 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         ],
         min_feature_slice: "columns, blocks, block labels, nested blocks, spacing",
         terminal_degradations: "grid layout with box-drawing chars",
-        notes: "planned: bd-hudcn.1.15",
+        notes: "fully supported",
     },
     DiagramFamilyEntry {
         family: DiagramType::PacketBeta,
         canonical_keyword: "packet-beta",
         introduced_version: "10.9",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: true,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser (PacketField statements)
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Partial,    // snapshots (80x24, 120x40; missing 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "field definitions, bit ranges, labels, row breaks",
         terminal_degradations: "box-drawing grid; bit widths rounded to cell boundaries",
         notes: "planned: bd-hudcn.1.16",
@@ -2342,7 +2387,7 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::ArchitectureBeta,
         canonical_keyword: "architecture-beta",
         introduced_version: "11.1",
-        support_level: MermaidSupportLevel::Supported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: true,
         pipeline: [
             StageStatus::Done,       // parser
@@ -2350,22 +2395,31 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
             StageStatus::Done,       // layout
             StageStatus::Done,       // render
             StageStatus::Done,       // fixtures
-            StageStatus::NotStarted, // snapshots
+            StageStatus::Partial,    // snapshots (80x24, 120x40; missing 200x60)
             StageStatus::NotStarted, // pty_e2e
             StageStatus::Partial,    // demo_picker
         ],
         min_feature_slice: "services, groups, edges, icons, junction points",
         terminal_degradations: "icons as text labels; groups as bordered regions",
-        notes: "bd-hudcn.1.17",
+        notes: "bd-hudcn.1.17; demoted from Supported pending snapshot + pty_e2e completion",
     },
     // ── C4 family ───────────────────────────────────────────────────
     DiagramFamilyEntry {
         family: DiagramType::C4Context,
         canonical_keyword: "C4Context",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser (C4Element, C4Relation, C4Boundary)
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Done,       // snapshots (80x24, 120x40, 200x60)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Person, System, SystemDb, SystemQueue, Boundary, Rel",
         terminal_degradations: "C4 shapes as labeled boxes; boundary as bordered region",
         notes: "planned: bd-hudcn.1.14; all C4 variants share parser infrastructure",
@@ -2374,9 +2428,18 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::C4Container,
         canonical_keyword: "C4Container",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Partial,    // snapshots (80x24 only)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Container, ContainerDb, ContainerQueue, System_Ext, Rel",
         terminal_degradations: "container shapes as labeled boxes with type annotation",
         notes: "shares infrastructure with C4Context",
@@ -2385,9 +2448,18 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::C4Component,
         canonical_keyword: "C4Component",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Partial,    // snapshots (80x24 only)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Component, ComponentDb, ComponentQueue, Rel",
         terminal_degradations: "component shapes as labeled boxes",
         notes: "shares infrastructure with C4Context",
@@ -2396,20 +2468,38 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         family: DiagramType::C4Dynamic,
         canonical_keyword: "C4Dynamic",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::NotStarted, // snapshots (none yet)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "numbered Rel interactions, Person, System",
         terminal_degradations: "numbered arrows as text labels",
-        notes: "shares infrastructure with C4Context",
+        notes: "shares infrastructure with C4Context; needs snapshot coverage",
     },
     DiagramFamilyEntry {
         family: DiagramType::C4Deployment,
         canonical_keyword: "C4Deployment",
         introduced_version: "9.0",
-        support_level: MermaidSupportLevel::Unsupported,
+        support_level: MermaidSupportLevel::Partial,
         is_beta: false,
-        pipeline: [StageStatus::NotStarted; 8],
+        pipeline: [
+            StageStatus::Done,       // parser
+            StageStatus::Partial,    // ir
+            StageStatus::Partial,    // layout
+            StageStatus::Partial,    // render
+            StageStatus::Done,       // fixtures (basic, stress)
+            StageStatus::Partial,    // snapshots (80x24 only)
+            StageStatus::NotStarted, // pty_e2e
+            StageStatus::NotStarted, // demo_picker
+        ],
         min_feature_slice: "Deployment_Node, Container, System, Rel",
         terminal_degradations: "deployment nodes as nested bordered regions",
         notes: "shares infrastructure with C4Context",

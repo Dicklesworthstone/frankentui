@@ -1017,4 +1017,194 @@ mod tests {
             );
         }
     }
+
+    // ── CI Completion Gate Tests (bd-hudcn.1.6) ─────────────────────
+
+    use ftui_extras::mermaid::{
+        DIAGRAM_FAMILY_REGISTRY, DiagramFamilyEntry, MermaidSupportLevel, PipelineStage,
+        StageStatus, registry_entry_for,
+    };
+
+    /// CI gate: the registry must cover every canonical DiagramType (except Unknown).
+    #[test]
+    fn ci_gate_registry_covers_all_diagram_types() {
+        let mut missing = Vec::new();
+        for &dt in DiagramType::all_families() {
+            if registry_entry_for(dt).is_none() {
+                missing.push(dt.as_str());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "DiagramType variants missing from DIAGRAM_FAMILY_REGISTRY: {missing:?}"
+        );
+    }
+
+    /// CI gate: no canonical family may remain at `Unsupported`.
+    ///
+    /// When this test fails a family has regressed or was never promoted.
+    /// Update the registry entry to at least `Partial` once parser + IR land.
+    #[test]
+    fn ci_gate_no_unsupported_families() {
+        let unsupported: Vec<&str> = DIAGRAM_FAMILY_REGISTRY
+            .iter()
+            .filter(|e| e.support_level == MermaidSupportLevel::Unsupported)
+            .map(|e| e.family.as_str())
+            .collect();
+        assert!(
+            unsupported.is_empty(),
+            "Unsupported families found — each must reach at least Partial: {unsupported:?}"
+        );
+    }
+
+    /// CI gate: every `Supported` family must have a fully complete pipeline.
+    ///
+    /// Each of the 8 pipeline stages must be `Done` or `NotApplicable`.
+    /// Failure output names the family and the first incomplete stage.
+    #[test]
+    fn ci_gate_supported_families_have_complete_pipeline() {
+        let mut failures = Vec::new();
+        for entry in DIAGRAM_FAMILY_REGISTRY {
+            if entry.support_level != MermaidSupportLevel::Supported {
+                continue;
+            }
+            for &stage in PipelineStage::ALL {
+                let status = entry.stage_status(stage);
+                if !status.is_complete() {
+                    failures.push(format!(
+                        "{}: stage {} is {} (expected done/n_a)",
+                        entry.family.as_str(),
+                        stage.as_str(),
+                        status.as_str(),
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "Supported families with incomplete pipeline stages:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    /// CI gate: every family in the registry must have at least one fixture file.
+    ///
+    /// Matches registry families to fixtures via `DiagramType::as_str()`.
+    #[test]
+    fn ci_gate_every_registry_family_has_fixtures() {
+        let fixture_families: HashSet<&str> = mermaid_fixtures().iter().map(|f| f.family).collect();
+        let mut missing = Vec::new();
+        for entry in DIAGRAM_FAMILY_REGISTRY {
+            let family_str = entry.family.as_str();
+            // Fixture family strings use DiagramType::as_str() or the canonical
+            // keyword (e.g. "sankey-beta"). Check both.
+            let has_fixture = fixture_families.contains(family_str)
+                || fixture_families.contains(entry.canonical_keyword);
+            if !has_fixture {
+                missing.push(family_str);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "Registry families with no fixture files: {missing:?}"
+        );
+    }
+
+    /// CI gate: every `Supported` family whose fixtures stage is `Done` must
+    /// have snapshot files at the 80x24 tier (minimum required coverage).
+    ///
+    /// Uses the snapshot directory listing to verify.
+    #[test]
+    fn ci_gate_supported_families_have_snapshots() {
+        // Map from DiagramType to the snapshot filename prefix used in
+        // `assert_buffer_snapshot_text`. These must stay in sync with the
+        // snapshot test naming convention.
+        fn snapshot_prefix(entry: &DiagramFamilyEntry) -> &'static str {
+            match entry.family {
+                DiagramType::Graph => "mermaid_flowchart",
+                DiagramType::Sequence => "mermaid_sequence",
+                DiagramType::State => "mermaid_state",
+                DiagramType::Gantt => "mermaid_gantt",
+                DiagramType::Class => "mermaid_class",
+                DiagramType::Er => "mermaid_er",
+                DiagramType::Mindmap => "mermaid_mindmap",
+                DiagramType::Pie => "mermaid_pie",
+                DiagramType::GitGraph => "mermaid_gitgraph",
+                DiagramType::Journey => "mermaid_journey",
+                DiagramType::Requirement => "mermaid_requirement",
+                DiagramType::Timeline => "mermaid_timeline",
+                DiagramType::QuadrantChart => "mermaid_quadrant",
+                DiagramType::Sankey => "mermaid_sankey",
+                DiagramType::XyChart => "mermaid_xychart",
+                DiagramType::BlockBeta => "mermaid_block_beta",
+                DiagramType::PacketBeta => "mermaid_packet",
+                DiagramType::ArchitectureBeta => "mermaid_arch_beta",
+                DiagramType::C4Context => "mermaid_c4_context",
+                DiagramType::C4Container => "mermaid_c4_container",
+                DiagramType::C4Component => "mermaid_c4_component",
+                DiagramType::C4Dynamic => "mermaid_c4_dynamic",
+                DiagramType::C4Deployment => "mermaid_c4_deployment",
+                DiagramType::Unknown => "mermaid_unknown",
+            }
+        }
+
+        let snap_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+        let snap_files: Vec<String> = std::fs::read_dir(&snap_dir)
+            .expect("snapshot directory missing")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+
+        let mut missing = Vec::new();
+        for entry in DIAGRAM_FAMILY_REGISTRY {
+            if entry.support_level != MermaidSupportLevel::Supported {
+                continue;
+            }
+            if entry.stage_status(PipelineStage::Snapshots) != StageStatus::Done {
+                continue;
+            }
+            let prefix = snapshot_prefix(entry);
+            let has_snap = snap_files.iter().any(|f| f.starts_with(prefix));
+            if !has_snap {
+                missing.push(format!(
+                    "{} (expected prefix: {prefix})",
+                    entry.family.as_str(),
+                ));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "Supported families with Done snapshots stage but no snapshot files:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    /// CI gate: the pipeline stage labelled `Fixtures` must be `Done` for every
+    /// family that actually has fixture files, and vice versa.
+    #[test]
+    fn ci_gate_fixture_stage_matches_reality() {
+        let fixture_families: HashSet<&str> = mermaid_fixtures().iter().map(|f| f.family).collect();
+        let mut mismatches = Vec::new();
+        for entry in DIAGRAM_FAMILY_REGISTRY {
+            let family_str = entry.family.as_str();
+            let has_fixture = fixture_families.contains(family_str)
+                || fixture_families.contains(entry.canonical_keyword);
+            let stage = entry.stage_status(PipelineStage::Fixtures);
+            if has_fixture && stage == StageStatus::NotStarted {
+                mismatches.push(format!(
+                    "{family_str}: has fixture files but pipeline.fixtures == not_started"
+                ));
+            }
+            if !has_fixture && stage == StageStatus::Done {
+                mismatches.push(format!(
+                    "{family_str}: pipeline.fixtures == done but no fixture files found"
+                ));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "Pipeline fixtures stage / actual fixture mismatches:\n  {}",
+            mismatches.join("\n  ")
+        );
+    }
 }
