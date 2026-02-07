@@ -669,17 +669,16 @@ mod tests {
         }
         let from = tour.active_screen();
         let event = tour.jump_to(1).expect("jump to next step");
-        match event {
-            TourEvent::StepChanged {
-                from: seen_from,
-                reason,
-                ..
-            } => {
-                assert_eq!(seen_from, from);
-                assert_eq!(reason, TourAdvanceReason::Jump);
-            }
-            _ => panic!("expected step change"),
-        }
+        let TourEvent::StepChanged {
+            from: seen_from,
+            reason,
+            ..
+        } = event
+        else {
+            unreachable!("expected step change");
+        };
+        assert_eq!(seen_from, from);
+        assert_eq!(reason, TourAdvanceReason::Jump);
     }
 
     #[test]
@@ -693,13 +692,11 @@ mod tests {
         tour.step_index = 0;
 
         let event = tour.jump_to(99).expect("jump to last step");
-        match event {
-            TourEvent::StepChanged { to, reason, .. } => {
-                assert_eq!(to, ScreenId::MarkdownRichText);
-                assert_eq!(reason, TourAdvanceReason::Jump);
-            }
-            _ => panic!("expected step change"),
-        }
+        let TourEvent::StepChanged { to, reason, .. } = event else {
+            unreachable!("expected step change");
+        };
+        assert_eq!(to, ScreenId::MarkdownRichText);
+        assert_eq!(reason, TourAdvanceReason::Jump);
         assert_eq!(tour.step_index(), 1);
     }
 
