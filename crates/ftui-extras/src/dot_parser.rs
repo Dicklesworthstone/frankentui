@@ -605,8 +605,25 @@ impl<'a> DotParser<'a> {
 
             // Try to read a node ID
             let Some(first_id) = self.read_id() else {
-                // Skip unknown character
-                self.advance();
+                // Skip unknown byte(s) — advance past a full UTF-8 character
+                // to keep self.pos on a valid char boundary.
+                if let Some(b) = self.advance() {
+                    // UTF-8 leading byte tells us how many continuation bytes follow
+                    let extra = if b >= 0xF0 {
+                        3
+                    } else if b >= 0xE0 {
+                        2
+                    } else if b >= 0xC0 {
+                        1
+                    } else {
+                        0
+                    };
+                    for _ in 0..extra {
+                        if self.peek().is_some_and(|c| c & 0xC0 == 0x80) {
+                            self.advance();
+                        }
+                    }
+                }
                 continue;
             };
 
@@ -1157,5 +1174,23 @@ mod tests {
         // Cluster should exist but without a title
         assert_eq!(result.ir.clusters.len(), 1);
         assert!(result.ir.clusters[0].title.is_none());
+    }
+
+    #[test]
+    fn parse_dot_with_multibyte_utf8_does_not_panic() {
+        // Non-ASCII characters at the top level (outside quoted strings)
+        // should be skipped gracefully without panicking on UTF-8 boundaries.
+        let input = "digraph G { café -> naïve; }";
+        let result = parse_dot(input).unwrap();
+        // The parser should skip the non-ASCII chars and still find edges
+        assert!(!result.ir.edges.is_empty() || !result.ir.nodes.is_empty());
+    }
+
+    #[test]
+    fn parse_dot_with_emoji_does_not_panic() {
+        // 4-byte UTF-8 characters (emoji) should not cause panics
+        let input = "digraph { 🎉 -> 🚀; }";
+        let _ = parse_dot(input);
+        // Just verifying no panic — result may or may not parse correctly
     }
 }
