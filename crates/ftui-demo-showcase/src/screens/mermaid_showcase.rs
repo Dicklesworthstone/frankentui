@@ -4,6 +4,8 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -54,6 +56,12 @@ click D "https://example.com/fix" "Fix""#;
 
 const MERMAID_JSONL_EVENT: &str = "mermaid_render";
 static MERMAID_JSONL_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn hash64_str(value: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
 
 // ── Performance thresholds (good / ok / bad) ────────────────────────
 /// Parse time thresholds in milliseconds.
@@ -446,17 +454,17 @@ impl SampleRegistry {
 // | Node shapes: >]      | (none explicitly)                 | TODO: asymmetric shape sample |
 // | Edge labels          | Flow Basic, Flow Long Labels,     | —                             |
 // |                      | Flow Subgraphs                    |                               |
-// | Dotted edges -.->    | Sequence Checkout                 | TODO: flow sample with dotted |
-// | Thick edges ==>      | (none explicitly)                 | TODO: thick edge sample       |
-// | Bidir edges <-->     | (none explicitly)                 | TODO: bidirectional sample    |
-// | Endpoint markers o/x | (none explicitly)                 | TODO: marker endpoint sample  |
+// | Dotted edges -.->    | Flow Dense                        | —                             |
+// | Thick edges ==>      | Flow Dense                        | —                             |
+// | Bidir edges <-->     | Flow Dense                        | —                             |
+// | Endpoint markers o/x | Flow Dense                        | —                             |
 // | Subgraphs            | Flow Subgraphs                    | —                             |
 // | Nested subgraphs     | Flow Subgraphs                    | —                             |
 // | classDef             | Flow Styles                       | —                             |
 // | style directive      | Flow Styles                       | —                             |
-// | linkStyle            | (none explicitly)                 | TODO: linkStyle sample        |
-// | init directives      | (off by default)                  | TODO: init directive sample   |
-// | click/link           | (off by default)                  | TODO: link sample             |
+// | linkStyle            | Flow Basic (links toggle)         | —                             |
+// | init directives      | Flow Basic (init toggle)          | —                             |
+// | click/link           | Flow Basic (links toggle)         | —                             |
 // | Unicode labels       | Flow Unicode                      | —                             |
 // | Long/wrap labels     | Flow Long Labels                  | —                             |
 // | ER cardinality       | ER Basic                          | —                             |
@@ -475,8 +483,8 @@ impl SampleRegistry {
 // |-----------|--------------------------|-------------------------------------|
 // | LR        | Flow Basic               | —                                   |
 // | TB        | Flow Subgraphs, most     | —                                   |
-// | RL        | (none explicitly)        | TODO: RL direction sample           |
-// | BT        | (none explicitly)        | TODO: BT direction sample           |
+// | RL        | Flow Dense               | —                                   |
+// | BT        | Flow Subgraphs           | —                                   |
 //
 // ## Rendering Features
 //
@@ -522,10 +530,19 @@ const KNOWN_FEATURE_TAGS: &[&str] = &[
     "subgraph",
     "classDef",
     "style",
+    "linkStyle",
+    "init-directives",
+    "click-link",
     "unicode-labels",
     "long-labels",
     "many-nodes",
     "many-edges",
+    "dotted-edges",
+    "thick-edges",
+    "bidir-edges",
+    "endpoint-markers",
+    "direction-rl",
+    "direction-bt",
     // Sequence features
     "messages",
     "responses",
@@ -588,31 +605,6 @@ const FEATURE_GAPS: &[(&str, &str)] = &[
         "node-asymmetric",
         "Asymmetric node shape >] — no sample exercises this",
     ),
-    (
-        "dotted-edges",
-        "Dotted edges -.-> in flowcharts — only used in sequence",
-    ),
-    ("thick-edges", "Thick edges ==> — no sample exercises this"),
-    (
-        "bidir-edges",
-        "Bidirectional edges <--> — no sample exercises this",
-    ),
-    (
-        "endpoint-markers",
-        "Endpoint markers o--o, x--x — no sample exercises this",
-    ),
-    (
-        "linkStyle",
-        "linkStyle directive — no sample exercises this",
-    ),
-    (
-        "direction-rl",
-        "Right-to-left layout — no sample exercises this",
-    ),
-    (
-        "direction-bt",
-        "Bottom-to-top layout — no sample exercises this",
-    ),
 ];
 
 const DEFAULT_SAMPLES: &[MermaidSample] = &[
@@ -622,7 +614,13 @@ const DEFAULT_SAMPLES: &[MermaidSample] = &[
         family: SampleFamily::Flow,
         complexity: SampleComplexity::S,
         tags: &["branch", "decision"],
-        features: &["edge-labels", "basic-nodes"],
+        features: &[
+            "edge-labels",
+            "basic-nodes",
+            "linkStyle",
+            "init-directives",
+            "click-link",
+        ],
         edge_cases: &[],
         default_size: SampleSizeHint {
             width: 40,
@@ -640,14 +638,14 @@ B -->|No| D[Fix]"#,
         family: SampleFamily::Flow,
         complexity: SampleComplexity::M,
         tags: &["subgraph", "clusters"],
-        features: &["subgraph", "edge-labels"],
+        features: &["subgraph", "edge-labels", "direction-bt"],
         edge_cases: &["nested-grouping"],
         default_size: SampleSizeHint {
             width: 60,
             height: 20,
         },
-        notes: "Tests cluster rendering and cross-cluster edges",
-        source: r#"graph TB
+        notes: "Tests cluster rendering and cross-cluster edges in BT layout",
+        source: r#"graph BT
   subgraph Cluster_A
     A1[Ingress] --> A2[Parse]
   end
@@ -663,25 +661,34 @@ B -->|No| D[Fix]"#,
         family: SampleFamily::Flow,
         complexity: SampleComplexity::L,
         tags: &["dense", "dag"],
-        features: &["many-nodes", "many-edges"],
+        features: &[
+            "many-nodes",
+            "many-edges",
+            "dotted-edges",
+            "thick-edges",
+            "bidir-edges",
+            "endpoint-markers",
+            "direction-rl",
+        ],
         edge_cases: &["edge-crossing"],
         default_size: SampleSizeHint {
             width: 80,
             height: 30,
         },
-        notes: "Stress test for edge crossing minimization",
-        source: r#"graph LR
-  A-->B
-  A-->C
-  B-->D
-  C-->D
-  D-->E
-  E-->F
-  F-->G
-  C-->H
-  H-->I
-  I-->J
-  J-->K"#,
+        notes: "Stress test for edge crossing minimization and edge-style variants",
+        source: r#"graph RL
+  A[Start] -.-> B[Queue]
+  B ==> C[Compute]
+  C <--> D[Cache]
+  D --> E[Fanout]
+  E --> F[Sink]
+  F --> G[Audit]
+  C --> H[Branch]
+  H --> I[Merge]
+  I --> J[Commit]
+  J --> K[Done]
+  K o--o L[Open]
+  L x--x M[Closed]"#,
     },
     MermaidSample {
         id: "flow-long-labels",
@@ -2133,6 +2140,30 @@ pub struct MermaidShowcaseScreen {
     layout_right: StdCell<Rect>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MermaidHarnessFrameTelemetry {
+    pub sample_id: String,
+    pub sample_family: String,
+    pub diagram_type: String,
+    pub tier: String,
+    pub glyph_mode: String,
+    pub cache_hit: bool,
+    pub checksum: u64,
+    pub render_time_ms: Option<f32>,
+    pub warnings: u32,
+    pub guard_triggers: bool,
+    pub config_hash: u64,
+    pub init_config_hash: u64,
+    pub capability_profile: String,
+    pub link_count: u64,
+    pub link_mode: String,
+    pub legend_height: u16,
+    pub parse_ms: Option<f32>,
+    pub layout_ms: Option<f32>,
+    pub route_ms: Option<f32>,
+    pub render_ms: Option<f32>,
+}
+
 impl Default for MermaidShowcaseScreen {
     fn default() -> Self {
         Self::new()
@@ -2153,6 +2184,85 @@ impl MermaidShowcaseScreen {
     /// Number of built-in samples (used by the E2E harness).
     pub fn sample_count(&self) -> usize {
         self.state.samples.len()
+    }
+
+    /// Telemetry snapshot used by the Mermaid PTY harness JSONL stream.
+    pub fn harness_frame_telemetry(&self, checksum: u64) -> MermaidHarnessFrameTelemetry {
+        let selected = self.state.selected_sample();
+        let sample_id = selected.map_or_else(String::new, |s| s.id.to_string());
+        let sample_family = selected.map_or_else(String::new, |s| s.family.as_str().to_string());
+
+        let cache = self.cache.borrow();
+        let diagram_type = cache
+            .ir
+            .as_ref()
+            .map(|ir| ir.diagram_type.as_str().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let link_count = cache.ir.as_ref().map_or(0_u64, |ir| ir.links.len() as u64);
+        let guard_triggers = cache.ir.as_ref().is_some_and(|ir| {
+            let guard = &ir.meta.guard;
+            guard.limits_exceeded
+                || guard.budget_exceeded
+                || guard.node_limit_exceeded
+                || guard.edge_limit_exceeded
+                || guard.label_limit_exceeded
+                || guard.route_budget_exceeded
+                || guard.layout_budget_exceeded
+                || guard.label_chars_over > 0
+                || guard.label_lines_over > 0
+        });
+        let cache_hit = cache.last_cache_hit;
+        let metrics = self.state.metrics;
+        drop(cache);
+
+        let config_hash = hash64_str(&format!("{:?}", self.build_config()));
+        let init_config_hash = selected.map_or(0, |sample| {
+            let source = self.state.effective_source(sample);
+            hash64_str(source.as_ref())
+        });
+        let capability_profile = format!(
+            "glyph:{};render:{};wrap:{};links:{};styles:{};init:{}",
+            self.state.glyph_mode,
+            self.state.render_mode,
+            self.state.wrap_mode,
+            self.state.link_mode,
+            self.state.styles_enabled,
+            self.state.init_directives_enabled,
+        );
+        let legend_height = match self.state.link_mode {
+            MermaidLinkMode::Off => 0,
+            MermaidLinkMode::Inline => u16::from(link_count > 0),
+            MermaidLinkMode::Footnote => {
+                if link_count == 0 {
+                    0
+                } else {
+                    (link_count as u16).min(10).saturating_add(1)
+                }
+            }
+        };
+
+        MermaidHarnessFrameTelemetry {
+            sample_id,
+            sample_family,
+            diagram_type,
+            tier: self.state.tier.to_string(),
+            glyph_mode: self.state.glyph_mode.to_string(),
+            cache_hit,
+            checksum,
+            render_time_ms: metrics.render_ms,
+            warnings: metrics.warning_count.unwrap_or(0),
+            guard_triggers,
+            config_hash,
+            init_config_hash,
+            capability_profile,
+            link_count,
+            link_mode: self.state.link_mode.to_string(),
+            legend_height,
+            parse_ms: metrics.parse_ms,
+            layout_ms: metrics.layout_ms,
+            route_ms: None,
+            render_ms: metrics.render_ms,
+        }
     }
 
     /// Zero out timing-dependent metrics so that snapshots are deterministic.
@@ -5443,6 +5553,66 @@ mod tests {
         for s in &edge_label {
             assert!(s.features.contains(&"edge-labels"));
         }
+    }
+
+    #[test]
+    fn registry_by_feature_links_and_init() {
+        let links = SampleRegistry::by_feature("click-link");
+        assert!(
+            links.iter().any(|s| s.id == "flow-basic"),
+            "Expected flow-basic to exercise click-link via links toggle"
+        );
+
+        let init = SampleRegistry::by_feature("init-directives");
+        assert!(
+            init.iter().any(|s| s.id == "flow-basic"),
+            "Expected flow-basic to exercise init-directives via init toggle"
+        );
+
+        let link_style = SampleRegistry::by_feature("linkStyle");
+        assert!(
+            link_style.iter().any(|s| s.id == "flow-basic"),
+            "Expected flow-basic to exercise linkStyle via links toggle"
+        );
+    }
+
+    #[test]
+    fn registry_by_feature_edge_styles_and_directions() {
+        let dotted = SampleRegistry::by_feature("dotted-edges");
+        assert!(
+            dotted.iter().any(|s| s.id == "flow-dense"),
+            "Expected flow-dense to exercise dotted-edges"
+        );
+
+        let thick = SampleRegistry::by_feature("thick-edges");
+        assert!(
+            thick.iter().any(|s| s.id == "flow-dense"),
+            "Expected flow-dense to exercise thick-edges"
+        );
+
+        let bidir = SampleRegistry::by_feature("bidir-edges");
+        assert!(
+            bidir.iter().any(|s| s.id == "flow-dense"),
+            "Expected flow-dense to exercise bidirectional edges"
+        );
+
+        let markers = SampleRegistry::by_feature("endpoint-markers");
+        assert!(
+            markers.iter().any(|s| s.id == "flow-dense"),
+            "Expected flow-dense to exercise endpoint markers"
+        );
+
+        let rl = SampleRegistry::by_feature("direction-rl");
+        assert!(
+            rl.iter().any(|s| s.id == "flow-dense"),
+            "Expected flow-dense to exercise RL direction"
+        );
+
+        let bt = SampleRegistry::by_feature("direction-bt");
+        assert!(
+            bt.iter().any(|s| s.id == "flow-subgraphs"),
+            "Expected flow-subgraphs to exercise BT direction"
+        );
     }
 
     #[test]

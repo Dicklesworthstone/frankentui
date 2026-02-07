@@ -2255,16 +2255,71 @@ impl MermaidHarnessModel {
         let _ = writeln!(self.writer.borrow_mut(), "{line}");
     }
 
-    fn write_frame(&self, frame_idx: u64, hash: u64) {
+    fn write_frame(
+        &self,
+        frame_idx: u64,
+        hash: u64,
+        telemetry: &screens::mermaid_showcase::MermaidHarnessFrameTelemetry,
+    ) {
         let timestamp = determinism::chrono_like_timestamp();
         let sample_idx = if frame_idx == 0 {
             0
         } else {
             (frame_idx as usize).min(self.sample_count.saturating_sub(1))
         };
+        let render_time_ms = telemetry
+            .render_time_ms
+            .map_or_else(|| "null".to_string(), |v| format!("{v:.3}"));
+        let parse_ms = telemetry
+            .parse_ms
+            .map_or_else(|| "null".to_string(), |v| format!("{v:.3}"));
+        let layout_ms = telemetry
+            .layout_ms
+            .map_or_else(|| "null".to_string(), |v| format!("{v:.3}"));
+        let route_ms = telemetry
+            .route_ms
+            .map_or_else(|| "null".to_string(), |v| format!("{v:.3}"));
+        let render_ms = telemetry
+            .render_ms
+            .map_or_else(|| "null".to_string(), |v| format!("{v:.3}"));
+        let timestamp = escape_json(&timestamp);
         let line = format!(
-            "{{\"event\":\"mermaid_frame\",\"timestamp\":\"{timestamp}\",\"run_id\":\"{}\",\"frame\":{frame_idx},\"sample_idx\":{sample_idx},\"hash\":{hash}}}",
+            "{{\"event\":\"mermaid_frame\",\"timestamp\":\"{}\",\"run_id\":\"{}\",\
+\"frame\":{},\"sample_idx\":{},\"hash\":{},\
+\"cols\":{},\"rows\":{},\"tick_ms\":{},\"sample_id\":\"{}\",\"sample_family\":\"{}\",\
+\"diagram_type\":\"{}\",\"tier\":\"{}\",\"glyph_mode\":\"{}\",\"cache_hit\":{},\
+\"checksum\":{},\"render_time_ms\":{},\"warnings\":{},\"guard_triggers\":{},\
+\"config_hash\":{},\"init_config_hash\":{},\"capability_profile\":\"{}\",\
+\"link_count\":{},\"link_mode\":\"{}\",\"legend_height\":{},\
+\"parse_ms\":{},\"layout_ms\":{},\"route_ms\":{},\"render_ms\":{}}}",
+            timestamp,
             escape_json(&self.run_id),
+            frame_idx,
+            sample_idx,
+            hash,
+            self.cols,
+            self.rows,
+            self.tick_ms,
+            escape_json(&telemetry.sample_id),
+            escape_json(&telemetry.sample_family),
+            escape_json(&telemetry.diagram_type),
+            escape_json(&telemetry.tier),
+            escape_json(&telemetry.glyph_mode),
+            telemetry.cache_hit,
+            telemetry.checksum,
+            render_time_ms,
+            telemetry.warnings,
+            telemetry.guard_triggers,
+            telemetry.config_hash,
+            telemetry.init_config_hash,
+            escape_json(&telemetry.capability_profile),
+            telemetry.link_count,
+            escape_json(&telemetry.link_mode),
+            telemetry.legend_height,
+            parse_ms,
+            layout_ms,
+            route_ms,
+            render_ms,
         );
         let _ = writeln!(self.writer.borrow_mut(), "{line}");
     }
@@ -2362,7 +2417,8 @@ impl Model for MermaidHarnessModel {
         self.frame_idx.set(idx);
         let pool = &*frame.pool;
         let hash = checksum_buffer(&frame.buffer, pool);
-        self.write_frame(idx - 1, hash);
+        let telemetry = self.screen.harness_frame_telemetry(hash);
+        self.write_frame(idx - 1, hash, &telemetry);
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
@@ -2420,6 +2476,8 @@ pub struct AppModel {
     pub current_screen: ScreenId,
     /// Guided tour storyboard state.
     pub tour: GuidedTourState,
+    /// Guided tour landing: selected starting step index for the next run.
+    tour_landing_start_step: usize,
     /// Per-screen state storage.
     pub screens: ScreenStates,
     /// Whether the help overlay is visible.
@@ -2515,6 +2573,7 @@ impl AppModel {
         let mut app = Self {
             current_screen: ScreenId::Dashboard,
             tour: GuidedTourState::new(),
+            tour_landing_start_step: 0,
             screens: ScreenStates::default(),
             help_visible: false,
             debug_visible: false,
@@ -2578,6 +2637,18 @@ impl AppModel {
         } else {
             self.current_screen
         }
+    }
+
+    fn clamp_tour_landing_start_step(&mut self) {
+        let max_index = self.tour.step_count().saturating_sub(1);
+        self.tour_landing_start_step = self.tour_landing_start_step.min(max_index);
+    }
+
+    fn adjust_tour_landing_start_step(&mut self, delta: i32) {
+        self.clamp_tour_landing_start_step();
+        let max_index = self.tour.step_count().saturating_sub(1) as i32;
+        let next = (self.tour_landing_start_step as i32 + delta).clamp(0, max_index);
+        self.tour_landing_start_step = next as usize;
     }
 
     fn tick_interval_ms(&self) -> u64 {
@@ -2658,13 +2729,15 @@ impl AppModel {
         } else {
             self.current_screen
         };
-        self.tour.start(resume_screen, start_step, speed);
+        let clamped_start_step = start_step.min(self.tour.step_count().saturating_sub(1));
+        self.tour_landing_start_step = clamped_start_step;
+        self.tour.start(resume_screen, clamped_start_step, speed);
         self.current_screen = ScreenId::GuidedTour;
         self.screens.action_timeline.record_command_event(
             self.tick_count,
             "Start guided tour",
             vec![
-                ("start_step".to_string(), start_step.to_string()),
+                ("start_step".to_string(), clamped_start_step.to_string()),
                 ("speed".to_string(), format!("{:.2}", self.tour.speed())),
             ],
         );
@@ -2911,7 +2984,19 @@ impl AppModel {
             AppMsg::SwitchScreen(id) => {
                 let from = self.display_screen().title();
                 if id == ScreenId::GuidedTour {
-                    self.start_tour(0, self.tour.speed());
+                    if self.tour.is_active() {
+                        self.stop_tour(false, "switch_screen");
+                    }
+                    self.current_screen = ScreenId::GuidedTour;
+                    self.clamp_tour_landing_start_step();
+                    self.screens.action_timeline.record_command_event(
+                        self.tick_count,
+                        "Switch screen",
+                        vec![
+                            ("from".to_string(), from.to_string()),
+                            ("to".to_string(), id.title().to_string()),
+                        ],
+                    );
                     return Cmd::None;
                 }
                 if self.tour.is_active() {
@@ -2933,7 +3018,19 @@ impl AppModel {
                 let from_screen = self.display_screen();
                 let to_screen = from_screen.next();
                 if to_screen == ScreenId::GuidedTour {
-                    self.start_tour(0, self.tour.speed());
+                    if self.tour.is_active() {
+                        self.stop_tour(false, "next_screen");
+                    }
+                    self.current_screen = ScreenId::GuidedTour;
+                    self.clamp_tour_landing_start_step();
+                    self.screens.action_timeline.record_command_event(
+                        self.tick_count,
+                        "Next screen",
+                        vec![
+                            ("from".to_string(), from_screen.title().to_string()),
+                            ("to".to_string(), to_screen.title().to_string()),
+                        ],
+                    );
                     return Cmd::None;
                 }
                 if self.tour.is_active() {
@@ -2955,7 +3052,19 @@ impl AppModel {
                 let from_screen = self.display_screen();
                 let to_screen = from_screen.prev();
                 if to_screen == ScreenId::GuidedTour {
-                    self.start_tour(0, self.tour.speed());
+                    if self.tour.is_active() {
+                        self.stop_tour(false, "prev_screen");
+                    }
+                    self.current_screen = ScreenId::GuidedTour;
+                    self.clamp_tour_landing_start_step();
+                    self.screens.action_timeline.record_command_event(
+                        self.tick_count,
+                        "Previous screen",
+                        vec![
+                            ("from".to_string(), from_screen.title().to_string()),
+                            ("to".to_string(), to_screen.title().to_string()),
+                        ],
+                    );
                     return Cmd::None;
                 }
                 if self.tour.is_active() {
@@ -3229,7 +3338,28 @@ impl AppModel {
                 {
                     match *code {
                         KeyCode::Enter | KeyCode::Char(' ') => {
-                            self.start_tour(0, self.tour.speed());
+                            self.start_tour(self.tour_landing_start_step, self.tour.speed());
+                            return Cmd::None;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('n') => {
+                            self.adjust_tour_landing_start_step(1);
+                            return Cmd::None;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('p') => {
+                            self.adjust_tour_landing_start_step(-1);
+                            return Cmd::None;
+                        }
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            self.tour.set_speed(self.tour.speed() * 1.25);
+                            return Cmd::None;
+                        }
+                        KeyCode::Char('-') => {
+                            self.tour.set_speed(self.tour.speed() / 1.25);
+                            return Cmd::None;
+                        }
+                        KeyCode::Char('r') | KeyCode::Char('R') => {
+                            self.tour_landing_start_step = 0;
+                            self.tour.set_speed(1.0);
                             return Cmd::None;
                         }
                         KeyCode::Escape => {
@@ -3803,7 +3933,23 @@ impl AppModel {
             ScreenId::GuidedTour => vec![
                 screens::HelpEntry {
                     key: "Click / Enter / Space",
-                    action: "Start guided tour",
+                    action: "Start guided tour from selected step",
+                },
+                screens::HelpEntry {
+                    key: "↑ / ↓ or j / k",
+                    action: "Tour landing: previous / next start step",
+                },
+                screens::HelpEntry {
+                    key: "Wheel",
+                    action: "Tour landing: cycle start step",
+                },
+                screens::HelpEntry {
+                    key: "+ / -",
+                    action: "Tour landing: speed up / down",
+                },
+                screens::HelpEntry {
+                    key: "r",
+                    action: "Tour landing: reset step + speed",
                 },
                 screens::HelpEntry {
                     key: "Esc",
@@ -4182,6 +4328,27 @@ impl AppModel {
             return MouseDispatchResult::NotConsumed;
         }
 
+        // Guided Tour landing: wheel cycles the selected start step.
+        if current == ScreenId::GuidedTour
+            && !self.tour.is_active()
+            && let Some((id, _, _)) = hit
+            && id.id() == crate::chrome::OVERLAY_TOUR
+        {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    self.adjust_tour_landing_start_step(1);
+                    emit_mouse_jsonl(mouse, Some(id), "tour_landing_step_next", None, current);
+                    return MouseDispatchResult::Consumed;
+                }
+                MouseEventKind::ScrollUp => {
+                    self.adjust_tour_landing_start_step(-1);
+                    emit_mouse_jsonl(mouse, Some(id), "tour_landing_step_prev", None, current);
+                    return MouseDispatchResult::Consumed;
+                }
+                _ => {}
+            }
+        }
+
         // Tab bar scroll = cycle screens.
         if let Some((id, _, _)) = hit {
             let layer = crate::chrome::classify_hit(id);
@@ -4231,7 +4398,7 @@ impl AppModel {
 
                 // Tour landing screen: allow mouse click to start the tour.
                 if self.current_screen == ScreenId::GuidedTour {
-                    self.start_tour(0, self.tour.speed());
+                    self.start_tour(self.tour_landing_start_step, self.tour.speed());
                     return "overlay_tour_start";
                 }
 
@@ -4881,6 +5048,12 @@ impl AppModel {
             return;
         }
 
+        let step_count = self.tour.step_count().max(1);
+        let selected_step = self
+            .tour_landing_start_step
+            .min(step_count.saturating_sub(1))
+            + 1;
+
         let lines = vec![
             Line::from_spans([Span::styled(
                 "A 2–3 minute auto-play tour across key screens.",
@@ -4891,11 +5064,18 @@ impl AppModel {
                 Style::new().fg(theme::accent::INFO).bold(),
             )]),
             Line::from_spans([Span::styled(
-                "Controls while running: Space pause · ←/→ step · Esc exit · +/- speed",
+                format!(
+                    "Start step: {selected_step}/{step_count} · Speed: {:.2}x",
+                    self.tour.speed()
+                ),
+                Style::new().fg(theme::fg::SECONDARY),
+            )]),
+            Line::from_spans([Span::styled(
+                "Landing controls: ↑/↓ or j/k step · wheel cycle · +/- speed · r reset",
                 Style::new().fg(theme::fg::MUTED),
             )]),
             Line::from_spans([Span::styled(
-                "Tip: You can restart anytime from the Tour tab.",
+                "In-tour controls: Space pause · ←/→ or n/p step · Esc exit",
                 Style::new().fg(theme::fg::SECONDARY),
             )]),
         ];
@@ -5682,15 +5862,143 @@ mod tests {
     }
 
     #[test]
+    fn switch_screen_to_guided_tour_opens_landing_without_autostart() {
+        let mut app = AppModel::new();
+        app.update(AppMsg::SwitchScreen(ScreenId::GuidedTour));
+        assert_eq!(app.current_screen, ScreenId::GuidedTour);
+        assert!(!app.tour.is_active());
+    }
+
+    #[test]
+    fn guided_tour_landing_keyboard_controls_adjust_step_and_speed() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::GuidedTour;
+        let base_speed = app.tour.speed();
+
+        let next_step = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(next_step));
+        let expected_step = app.tour.step_count().saturating_sub(1).min(1);
+        assert_eq!(app.tour_landing_start_step, expected_step);
+
+        let faster = Event::Key(KeyEvent {
+            code: KeyCode::Char('+'),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(faster));
+        assert!(app.tour.speed() > base_speed);
+
+        let reset = Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(reset));
+        assert_eq!(app.tour_landing_start_step, 0);
+        assert!((app.tour.speed() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn guided_tour_landing_mouse_wheel_cycles_start_step() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::GuidedTour;
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let mut overlay_xy = None;
+        for y in 0..40u16 {
+            for x in 0..120u16 {
+                if let Some((id, _region, _data)) = frame.hit_test(x, y)
+                    && id.id() == crate::chrome::OVERLAY_TOUR
+                {
+                    overlay_xy = Some((x, y));
+                    break;
+                }
+            }
+            if overlay_xy.is_some() {
+                break;
+            }
+        }
+
+        let (x, y) = overlay_xy.expect("guided tour landing should register overlay hit region");
+
+        app.update(AppMsg::from(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            x,
+            y,
+        ))));
+        let expected_step = app.tour.step_count().saturating_sub(1).min(1);
+        assert_eq!(app.tour_landing_start_step, expected_step);
+
+        app.update(AppMsg::from(Event::Mouse(MouseEvent::new(
+            MouseEventKind::ScrollUp,
+            x,
+            y,
+        ))));
+        assert_eq!(app.tour_landing_start_step, 0);
+    }
+
+    #[test]
+    fn guided_tour_landing_enter_starts_from_selected_step() {
+        let mut app = AppModel::new();
+        app.current_screen = ScreenId::GuidedTour;
+        let target_step = app.tour.step_count().saturating_sub(1).min(2);
+        app.tour_landing_start_step = target_step;
+
+        let start = Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        });
+        app.update(AppMsg::from(start));
+        assert!(app.tour.is_active());
+        assert_eq!(app.tour.step_index(), target_step);
+    }
+
+    #[test]
+    fn tour_screens_have_shortcut_and_mouse_help_coverage() {
+        let mut app = AppModel::new();
+
+        app.current_screen = ScreenId::GuidedTour;
+        let guided = app.current_screen_keybindings();
+        assert!(guided.len() >= 5);
+        assert!(guided.iter().any(|entry| entry.key.contains("Click")));
+        assert!(guided.iter().any(|entry| entry.key.contains("Wheel")));
+
+        app.current_screen = ScreenId::Dashboard;
+        let dashboard = app.current_screen_keybindings();
+        assert!(dashboard.len() >= 5);
+        assert!(dashboard.iter().any(|entry| entry.key.contains("Mouse")));
+        assert!(dashboard.iter().any(|entry| entry.key.contains("Wheel")));
+
+        app.current_screen = ScreenId::InlineModeStory;
+        let inline_story = app.current_screen_keybindings();
+        assert!(inline_story.len() >= 5);
+        assert!(inline_story.iter().any(|entry| entry.key.contains("Mouse")));
+        assert!(inline_story.iter().any(|entry| entry.key.contains("Wheel")));
+    }
+
+    #[test]
     fn handle_overlay_click_starts_guided_tour_on_landing_screen() {
         let mut app = AppModel::new();
         app.current_screen = ScreenId::GuidedTour;
+        let target_step = app.tour.step_count().saturating_sub(1).min(2);
+        app.tour_landing_start_step = target_step;
         assert!(!app.tour.is_active());
 
         let action = app.handle_overlay_click(crate::chrome::OVERLAY_TOUR);
         assert_eq!(action, "overlay_tour_start");
         assert!(app.tour.is_active());
         assert_eq!(app.current_screen, ScreenId::GuidedTour);
+        assert_eq!(app.tour.step_index(), target_step);
     }
 
     #[test]
@@ -5881,7 +6189,10 @@ mod tests {
         let expected_end = ids[(start_idx + ids.len() - 1) % ids.len()];
         assert_eq!(app.current_screen, expected_end);
         if expected_end == ScreenId::GuidedTour {
-            assert!(app.tour.is_active());
+            assert!(
+                !app.tour.is_active(),
+                "cycling onto GuidedTour should open landing, not auto-start"
+            );
         }
     }
 
