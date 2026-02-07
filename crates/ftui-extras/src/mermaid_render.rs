@@ -236,7 +236,7 @@ pub fn navigate_direction(
         }
 
         let dist = dx * dx + dy * dy;
-        if best.map_or(true, |(_, d)| dist < d) {
+        if best.is_none_or(|(_, d)| dist < d) {
             best = Some((neighbor_idx, dist));
         }
     }
@@ -492,8 +492,12 @@ impl Viewport {
 
     /// Convert a world-space point to cell coordinates.
     fn to_cell(&self, x: f64, y: f64) -> (u16, u16) {
-        let cx = (x * self.scale_x + self.offset_x).round().clamp(0.0, u16::MAX as f64) as u16;
-        let cy = (y * self.scale_y + self.offset_y).round().clamp(0.0, u16::MAX as f64) as u16;
+        let cx = (x * self.scale_x + self.offset_x)
+            .round()
+            .clamp(0.0, u16::MAX as f64) as u16;
+        let cy = (y * self.scale_y + self.offset_y)
+            .round()
+            .clamp(0.0, u16::MAX as f64) as u16;
         (cx, cy)
     }
 
@@ -1301,18 +1305,18 @@ impl MermaidRenderer {
                     }
                     continue;
                 }
-                if start_day.is_none() {
-                    if let Some(day) = parse_yyyy_mm_dd(t) {
-                        start_day = Some(day);
-                        has_any_explicit_date = true;
-                        continue;
-                    }
+                if start_day.is_none()
+                    && let Some(day) = parse_yyyy_mm_dd(t)
+                {
+                    start_day = Some(day);
+                    has_any_explicit_date = true;
+                    continue;
                 }
-                if duration_days.is_none() {
-                    if let Some(d) = parse_duration_days(t) {
-                        duration_days = Some(d);
-                        continue;
-                    }
+                if duration_days.is_none()
+                    && let Some(d) = parse_duration_days(t)
+                {
+                    duration_days = Some(d);
+                    continue;
                 }
                 if id.is_none() {
                     id = Some(t.to_string());
