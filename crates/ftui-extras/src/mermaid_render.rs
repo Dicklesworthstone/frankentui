@@ -8625,4 +8625,51 @@ mod tests {
             "sequence render should produce visible content, got {non_empty}"
         );
     }
+
+    // -- gantt diagram snapshots at multiple sizes --
+
+    #[test]
+    fn snapshot_gantt_basic_80x24() {
+        let source = include_str!("../tests/fixtures/mermaid/gantt_basic.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert_buffer_snapshot_text("mermaid_gantt_basic_80x24", &buf);
+    }
+
+    #[test]
+    fn snapshot_gantt_basic_120x40() {
+        let source = include_str!("../tests/fixtures/mermaid/gantt_basic.mmd");
+        let (buf, _plan) = e2e_render(source, 120, 40);
+        assert_buffer_snapshot_text("mermaid_gantt_basic_120x40", &buf);
+    }
+
+    #[test]
+    fn snapshot_gantt_stress_80x24() {
+        let source = include_str!("../tests/fixtures/mermaid/gantt_stress.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert_buffer_snapshot_text("mermaid_gantt_stress_80x24", &buf);
+    }
+
+    #[test]
+    fn snapshot_gantt_stress_120x40() {
+        let source = include_str!("../tests/fixtures/mermaid/gantt_stress.mmd");
+        let (buf, _plan) = e2e_render(source, 120, 40);
+        assert_buffer_snapshot_text("mermaid_gantt_stress_120x40", &buf);
+    }
+
+    #[test]
+    fn e2e_gantt_layout_structure() {
+        let source = "gantt\n  title Test\n  section S1\n  Task A :a1, 2024-01-01, 3d\n";
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        // Verify buffer has non-trivial content (task bars, labels, section headers)
+        let non_empty = (0..buf.width())
+            .flat_map(|x| (0..buf.height()).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                buf.get(x, y)
+                    .and_then(|c| c.content.as_char())
+                    .is_some_and(|ch| ch != ' ')
+            })
+            .count();
+        assert!(non_empty > 5, "gantt render should produce visible content, got {non_empty}");
+    }
+
 }
