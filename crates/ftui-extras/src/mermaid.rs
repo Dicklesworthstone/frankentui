@@ -4187,14 +4187,22 @@ pub fn normalize_ast_to_ir(
                 seq_participants.push(id);
             }
             Statement::SequenceNote(n) => {
-                let over_ids: Vec<usize> = n
-                    .over
-                    .iter()
-                    .filter_map(|name| {
-                        let id = normalize_id(name);
-                        node_map.get(id.as_str()).copied()
-                    })
-                    .collect();
+                let mut over_ids: Vec<usize> = Vec::new();
+                for name in &n.over {
+                    let id = normalize_id(name);
+                    if let Some(&idx) = node_map.get(id.as_str()) {
+                        over_ids.push(idx);
+                    } else {
+                        warnings.push(MermaidWarning::new(
+                            MermaidWarningCode::InvalidEdge,
+                            format!(
+                                "note references unknown participant '{}'",
+                                name
+                            ),
+                            n.span,
+                        ));
+                    }
+                }
                 let text_id = labels.intern(&n.text, n.span);
                 seq_notes.push(IrSeqNote {
                     position: n.position,
@@ -4238,6 +4246,12 @@ pub fn normalize_ast_to_ir(
                             end_edge_idx: edge_drafts.len(),
                             depth: seq_control_stack.len(),
                         });
+                    } else {
+                        warnings.push(MermaidWarning::new(
+                            MermaidWarningCode::InvalidEdge,
+                            "else/and without matching alt/par block",
+                            c.span,
+                        ));
                     }
                     let label_id = c.label.as_deref().map(|l| labels.intern(l, c.span));
                     seq_control_stack.push((c.kind, label_id, edge_drafts.len()));
@@ -9164,6 +9178,16 @@ fn parse_sequence_control(line: &str, span: Span) -> Option<SequenceControl> {
     let label = if label.is_empty() {
         None
     } else {
+        // If the label looks like a sequence message (contains arrow + colon),
+        // this line was likely misclassified. Return None so the message
+        // parser handles it instead.
+        if label.contains(':')
+            && (label.contains("->>")
+                || label.contains("-->")
+                || label.contains("->"))
+        {
+            return None;
+        }
         Some(label.to_string())
     };
     Some(SequenceControl { kind, label, span })
@@ -9173,19 +9197,44 @@ fn parse_gantt(line: &str, span: Span) -> Option<Statement> {
     let lower = line.to_ascii_lowercase();
     // Match keywords case-insensitively but extract values from the
     // original `line` to preserve the user's casing.
-    if lower.starts_with("title ") {
-        let rest = &line["title ".len()..];
+    if lower.starts_with("title ") || lower.starts_with("title:") {
+        let sep = if lower.starts_with("title:") { "title:".len() } else { "title ".len() };
+        let rest = &line[sep..];
         return Some(Statement::GanttTitle {
             title: normalize_ws(rest),
             span,
         });
     }
-    if lower.starts_with("section ") {
-        let rest = &line["section ".len()..];
+    if lower.starts_with("section ") || lower.starts_with("section:") {
+        let sep = if lower.starts_with("section:") {
+            "section:".len()
+        } else {
+            "section ".len()
+        };
+        let rest = &line[sep..];
         return Some(Statement::GanttSection {
             name: normalize_ws(rest),
             span,
         });
+    }
+    // Skip known Gantt directives — they are not tasks.
+    {
+        let directives = [
+            "dateformat",
+            "axisformat",
+            "excludes",
+            "todaymarker",
+            "tickinterval",
+            "weekday",
+            "inclusiveenddates",
+        ];
+        for d in &directives {
+            if let Some(rest) = lower.strip_prefix(d)
+                && (rest.is_empty() || rest.starts_with(' ') || rest.starts_with(':'))
+            {
+                return None;
+            }
+        }
     }
     if line.contains(':') {
         let mut parts = line.splitn(2, ':');

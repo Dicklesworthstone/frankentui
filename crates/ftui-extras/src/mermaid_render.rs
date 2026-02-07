@@ -1159,7 +1159,7 @@ impl MermaidRenderer {
         section_label_width = section_label_width.min(area.width / 3);
 
         let total_tasks = ir.gantt_tasks.len();
-        let bar_start_x = area.x + section_label_width + 2;
+        let bar_start_x = area.x.saturating_add(section_label_width).saturating_add(2);
         let bar_width = max_x.saturating_sub(bar_start_x);
 
         for (sec_idx, section) in ir.gantt_sections.iter().enumerate() {
@@ -1215,18 +1215,22 @@ impl MermaidRenderer {
                     };
                     let cell = Cell::from_char(' ').with_fg(title_fg);
                     buf.print_text_clipped(
-                        area.x + 1,
+                        area.x.saturating_add(1),
                         y,
                         &text,
                         cell,
-                        area.x + section_label_width,
+                        area.x.saturating_add(section_label_width),
                     );
                 }
                 if bar_width > 0 && total_tasks > 0 {
                     let frac_start = *task_global_idx as f64 / total_tasks as f64;
                     let frac_end = (*task_global_idx + 1) as f64 / total_tasks as f64;
-                    let bx0 = bar_start_x + (frac_start * bar_width as f64) as u16;
-                    let bx1 = bar_start_x + (frac_end * bar_width as f64) as u16;
+                    let bx0 = bar_start_x.saturating_add(
+                        (frac_start * bar_width as f64).min(u16::MAX as f64) as u16,
+                    );
+                    let bx1 = bar_start_x.saturating_add(
+                        (frac_end * bar_width as f64).min(u16::MAX as f64) as u16,
+                    );
                     let bar_char = self.glyphs.border.horizontal;
                     let bar_cell = Cell::from_char(bar_char).with_fg(self.colors.node_border);
                     for x in bx0..=bx1.min(max_x) {
@@ -3063,7 +3067,7 @@ impl MermaidRenderer {
             if let Some(label_id) = ctrl.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
-                let label_x = kw_x + keyword.len() as u16 + 1;
+                let label_x = kw_x.saturating_add(keyword.len() as u16).saturating_add(1);
                 let remaining = cell_rect
                     .x
                     .saturating_add(cell_rect.width)

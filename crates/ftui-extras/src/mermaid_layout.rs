@@ -1018,7 +1018,7 @@ fn compute_cluster_bounds(
             let title_rect = cluster.title.map(|_| LayoutRect {
                 x: rect.x + spacing.label_padding,
                 y: rect.y + spacing.label_padding,
-                width: rect.width - 2.0 * spacing.label_padding,
+                width: (rect.width - 2.0 * spacing.label_padding).max(0.0),
                 height: spacing.node_height * 0.5,
             });
 
@@ -1633,8 +1633,8 @@ fn layout_gitgraph_diagram(
         let label_rect = ir.nodes[i].label.map(|_| LayoutRect {
             x: rect.x + spacing.label_padding,
             y: rect.y + spacing.label_padding,
-            width: rect.width - 2.0 * spacing.label_padding,
-            height: rect.height - 2.0 * spacing.label_padding,
+            width: (rect.width - 2.0 * spacing.label_padding).max(0.0),
+            height: (rect.height - 2.0 * spacing.label_padding).max(0.0),
         });
         nodes.push(LayoutNodeBox {
             node_idx: i,
@@ -2893,8 +2893,8 @@ fn layout_sequence_diagram(
         let label_rect = Some(LayoutRect {
             x: rect.x + spacing.label_padding,
             y: rect.y + spacing.label_padding,
-            width: rect.width - 2.0 * spacing.label_padding,
-            height: rect.height - 2.0 * spacing.label_padding,
+            width: (rect.width - 2.0 * spacing.label_padding).max(0.0),
+            height: (rect.height - 2.0 * spacing.label_padding).max(0.0),
         });
         nodes.push(LayoutNodeBox {
             node_idx: i,
@@ -3423,8 +3423,8 @@ fn layout_mindmap_diagram(
             let label_rect = ir.nodes[i].label.map(|_| LayoutRect {
                 x: rect.x + spacing.label_padding,
                 y: rect.y + spacing.label_padding,
-                width: rect.width - 2.0 * spacing.label_padding,
-                height: rect.height - 2.0 * spacing.label_padding,
+                width: (rect.width - 2.0 * spacing.label_padding).max(0.0),
+                height: (rect.height - 2.0 * spacing.label_padding).max(0.0),
             });
             LayoutNodeBox {
                 node_idx: i,
