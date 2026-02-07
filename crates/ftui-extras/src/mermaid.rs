@@ -3910,7 +3910,35 @@ pub fn normalize_ast_to_ir(
             Statement::Raw { text, span } => {
                 let is_pie_meta = ast.diagram_type == DiagramType::Pie
                     && (is_pie_show_data_line(text) || parse_pie_title_line(text).is_some());
-                if !is_pie_meta {
+                let is_gantt_meta = if ast.diagram_type == DiagramType::Gantt {
+                    let lower = text.trim().to_ascii_lowercase();
+                    lower.starts_with("dateformat") || lower.starts_with("axisformat")
+                } else {
+                    false
+                };
+                if is_gantt_meta {
+                    // Support a minimal subset of gantt metadata statements without flagging
+                    // them as "unsupported statements".
+                    let lower = text.trim().to_ascii_lowercase();
+                    if lower.starts_with("dateformat") {
+                        let mut parts = text.split_whitespace();
+                        let _ = parts.next(); // "dateFormat"
+                        let fmt = parts.next().unwrap_or("");
+                        if !fmt.is_empty() && !fmt.eq_ignore_ascii_case("YYYY-MM-DD") {
+                            warnings.push(MermaidWarning::new(
+                                MermaidWarningCode::UnsupportedFeature,
+                                "unsupported gantt dateFormat; only YYYY-MM-DD is supported",
+                                *span,
+                            ));
+                        }
+                    } else if lower.starts_with("axisformat") {
+                        warnings.push(MermaidWarning::new(
+                            MermaidWarningCode::UnsupportedFeature,
+                            "gantt axisFormat is not supported yet; ignoring",
+                            *span,
+                        ));
+                    }
+                } else if !is_pie_meta {
                     apply_fallback_action(
                         policy.unsupported_feature,
                         MermaidWarningCode::UnsupportedFeature,
