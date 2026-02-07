@@ -2126,12 +2126,12 @@ impl MermaidRenderer {
                 && let Some(label_id) = ir_node.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
-                if !ir_node.members.is_empty() || ir_node.annotation.is_some() {
+                if !ir_node.members.is_empty() {
+                    // Class diagram node with compartments.
                     self.render_class_compartments(
                         cell_rect,
                         &label.text,
                         &ir_node.members,
-                        ir_node.annotation.as_deref(),
                         plan.max_label_width,
                         fill_color,
                         buf,
@@ -2198,13 +2198,12 @@ impl MermaidRenderer {
             if let Some(label_id) = ir_node.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
-                if !ir_node.members.is_empty() || ir_node.annotation.is_some() {
+                if !ir_node.members.is_empty() {
                     let fill_color = self.colors.node_fill_for(node.node_idx);
                     self.render_class_compartments(
                         cell_rect,
                         &label.text,
                         &ir_node.members,
-                        ir_node.annotation.as_deref(),
                         plan.max_label_width,
                         fill_color,
                         buf,
@@ -2294,12 +2293,11 @@ impl MermaidRenderer {
             if let Some(label_id) = ir_node.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
-                if !ir_node.members.is_empty() || ir_node.annotation.is_some() {
+                if !ir_node.members.is_empty() {
                     self.render_class_compartments(
                         cell_rect,
                         &label.text,
                         &ir_node.members,
-                        ir_node.annotation.as_deref(),
                         plan.max_label_width,
                         fill,
                         buf,
@@ -3232,12 +3230,11 @@ impl MermaidRenderer {
             if let Some(label_id) = ir_node.label
                 && let Some(label) = ir.labels.get(label_id.0)
             {
-                if !ir_node.members.is_empty() || ir_node.annotation.is_some() {
+                if !ir_node.members.is_empty() {
                     self.render_class_compartments(
                         cell_rect,
                         &label.text,
                         &ir_node.members,
-                        ir_node.annotation.as_deref(),
                         0,
                         fill_color,
                         buf,
@@ -3356,13 +3353,11 @@ impl MermaidRenderer {
     }
 
     /// Render a class diagram node with compartments (name + members).
-    #[allow(clippy::too_many_arguments)]
     fn render_class_compartments(
         &self,
         cell_rect: Rect,
         label_text: &str,
         members: &[String],
-        annotation: Option<&str>,
         max_label_width: usize,
         fill_bg: PackedRgba,
         buf: &mut Buffer,
@@ -3371,16 +3366,13 @@ impl MermaidRenderer {
         let label_cell = Cell::from_char(' ')
             .with_fg(self.colors.node_text)
             .with_bg(fill_bg);
-        let annotation_cell = Cell::from_char(' ')
-            .with_fg(self.colors.edge_color)
-            .with_bg(fill_bg);
         let member_cell = Cell::from_char(' ')
             .with_fg(self.colors.edge_color)
             .with_bg(fill_bg);
         let inner_w = cell_rect.width.saturating_sub(2) as usize;
 
-        let min_height: u16 = if annotation.is_some() { 5 } else { 4 };
-        if inner_w == 0 || cell_rect.height < min_height {
+        if inner_w == 0 || cell_rect.height < 4 {
+            // Too small for compartments, fall back to normal label.
             self.render_node_label(cell_rect, label_text, fill_bg, buf);
             return;
         }
@@ -3390,17 +3382,9 @@ impl MermaidRenderer {
             .saturating_add(cell_rect.width)
             .saturating_sub(1);
 
-        let mut current_row: u16 = 1;
-        if let Some(ann_text) = annotation {
-            let ann_y = cell_rect.y.saturating_add(current_row);
-            let ann_width = display_width(ann_text).min(inner_w);
-            let ann_pad = inner_w.saturating_sub(ann_width) / 2;
-            let ann_x = cell_rect.x.saturating_add(1).saturating_add(ann_pad as u16);
-            buf.print_text_clipped(ann_x, ann_y, ann_text, annotation_cell, max_x);
-            current_row += 1;
-        }
-
-        let name_y = cell_rect.y.saturating_add(current_row);
+        // Row 0 = top border (already drawn by draw_box)
+        // Row 1 = class name (centered)
+        let name_y = cell_rect.y.saturating_add(1);
         let name_text = if max_label_width > 0 {
             truncate_label(label_text, max_label_width)
         } else {
@@ -3414,10 +3398,8 @@ impl MermaidRenderer {
             .saturating_add(name_pad as u16);
         buf.print_text_clipped(name_x, name_y, &name_text, label_cell, max_x);
 
-        current_row += 1;
-
-        // Separator line (├───┤)
-        let sep_y = cell_rect.y.saturating_add(current_row);
+        // Row 2 = separator line (├───┤)
+        let sep_y = cell_rect.y.saturating_add(2);
         if sep_y
             < cell_rect
                 .y

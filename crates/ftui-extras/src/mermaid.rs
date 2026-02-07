@@ -2883,7 +2883,7 @@ impl MermaidCompatibilityMatrix {
             sequence: MermaidSupportLevel::Partial,
             state: MermaidSupportLevel::Partial,
             gantt: MermaidSupportLevel::Partial,
-            class: MermaidSupportLevel::Supported,
+            class: MermaidSupportLevel::Partial,
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
@@ -2943,7 +2943,7 @@ impl Default for MermaidCompatibilityMatrix {
             sequence: MermaidSupportLevel::Partial,
             state: MermaidSupportLevel::Partial,
             gantt: MermaidSupportLevel::Partial,
-            class: MermaidSupportLevel::Supported,
+            class: MermaidSupportLevel::Partial,
             er: MermaidSupportLevel::Supported,
             mindmap: MermaidSupportLevel::Partial,
             pie: MermaidSupportLevel::Partial,
@@ -3470,7 +3470,6 @@ struct NodeDraft {
     insertion_idx: usize,
     implicit: bool,
     members: Vec<String>,
-    annotation: Option<String>,
 }
 
 #[derive(Debug)]
@@ -3626,7 +3625,6 @@ fn upsert_node(
         insertion_idx,
         implicit,
         members: Vec::new(),
-        annotation: None,
     });
     if implicit && implicit_warned.insert(node_id.to_string()) {
         warnings.push(MermaidWarning::new(
@@ -4966,16 +4964,7 @@ pub fn normalize_ast_to_ir(
                         &mut implicit_warned,
                         &mut warnings,
                     );
-                    let trimmed_member = member.trim();
-                    if trimmed_member.starts_with("<<") && trimmed_member.ends_with(">>") {
-                        let ann = trimmed_member[2..trimmed_member.len() - 2].trim();
-                        if !ann.is_empty() {
-                            node_drafts[node_idx].annotation =
-                                Some(format!("<<{ann}>>"));
-                        }
-                    } else {
-                        node_drafts[node_idx].members.push(member.clone());
-                    }
+                    node_drafts[node_idx].members.push(member.clone());
                 }
             }
             _ => {}
@@ -5019,7 +5008,7 @@ pub fn normalize_ast_to_ir(
             span_all: draft.spans,
             implicit: draft.implicit,
             members: draft.members,
-            annotation: draft.annotation,
+            annotation: None,
         });
     }
 
@@ -13962,5 +13951,218 @@ B --> C
             !ir.ir.edges.is_empty(),
             "requirement relations should produce edges"
         );
+    }
+
+    #[test]
+    fn parse_sequence_participant_basic() {
+        let input = "sequenceDiagram\n  participant Alice\n  participant Bob\n  Alice->>Bob: Hello";
+        let ast = parse(input).expect("parse");
+        let participants: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceParticipant(_)))
+            .collect();
+        assert_eq!(participants.len(), 2, "expected 2 participants");
+        if let Statement::SequenceParticipant(p) = &participants[0] {
+            assert_eq!(p.id, "Alice");
+            assert!(!p.is_actor);
+            assert!(p.label.is_none());
+        }
+    }
+
+    #[test]
+    fn parse_sequence_actor() {
+        let input = "sequenceDiagram\n  actor Alice\n  actor Bob as Robert\n  Alice->>Bob: Hi";
+        let ast = parse(input).expect("parse");
+        let participants: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceParticipant(_)))
+            .collect();
+        assert_eq!(participants.len(), 2);
+        if let Statement::SequenceParticipant(p) = &participants[0] {
+            assert!(p.is_actor);
+            assert_eq!(p.id, "Alice");
+        }
+        if let Statement::SequenceParticipant(p) = &participants[1] {
+            assert!(p.is_actor);
+            assert_eq!(p.id, "Bob");
+            assert_eq!(p.label.as_deref(), Some("Robert"));
+        }
+    }
+
+    #[test]
+    fn parse_sequence_participant_with_alias() {
+        let input = "sequenceDiagram\n  participant A as Alice\n  participant B as Bob\n  A->>B: Hi";
+        let ast = parse(input).expect("parse");
+        let participants: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceParticipant(_)))
+            .collect();
+        assert_eq!(participants.len(), 2);
+        if let Statement::SequenceParticipant(p) = &participants[0] {
+            assert_eq!(p.id, "A");
+            assert_eq!(p.label.as_deref(), Some("Alice"));
+        }
+    }
+
+    #[test]
+    fn parse_sequence_note_over() {
+        let input = "sequenceDiagram\n  Alice->>Bob: Hi\n  Note over Alice,Bob: This is a note";
+        let ast = parse(input).expect("parse");
+        let notes: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceNote(_)))
+            .collect();
+        assert_eq!(notes.len(), 1);
+        if let Statement::SequenceNote(n) = &notes[0] {
+            assert_eq!(n.position, SeqNotePosition::Over);
+            assert_eq!(n.over, vec!["Alice", "Bob"]);
+            assert_eq!(n.text, "This is a note");
+        }
+    }
+
+    #[test]
+    fn parse_sequence_note_left_right() {
+        let input = "sequenceDiagram\n  Alice->>Bob: Hi\n  Note left of Alice: Left note\n  Note right of Bob: Right note";
+        let ast = parse(input).expect("parse");
+        let notes: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceNote(_)))
+            .collect();
+        assert_eq!(notes.len(), 2);
+        if let Statement::SequenceNote(n) = &notes[0] {
+            assert_eq!(n.position, SeqNotePosition::LeftOf);
+        }
+        if let Statement::SequenceNote(n) = &notes[1] {
+            assert_eq!(n.position, SeqNotePosition::RightOf);
+        }
+    }
+
+    #[test]
+    fn parse_sequence_activation() {
+        let input = "sequenceDiagram\n  Alice->>Bob: Hi\n  activate Bob\n  Bob->>Alice: Reply\n  deactivate Bob";
+        let ast = parse(input).expect("parse");
+        let activations: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceActivation(_)))
+            .collect();
+        assert_eq!(activations.len(), 2);
+        if let Statement::SequenceActivation(a) = &activations[0] {
+            assert!(a.activate);
+            assert_eq!(a.participant, "Bob");
+        }
+        if let Statement::SequenceActivation(a) = &activations[1] {
+            assert!(!a.activate);
+            assert_eq!(a.participant, "Bob");
+        }
+    }
+
+    #[test]
+    fn parse_sequence_control_loop() {
+        let input = "sequenceDiagram\n  Alice->>Bob: Hi\n  loop Every 5s\n    Alice->>Bob: Ping\n  end";
+        let ast = parse(input).expect("parse");
+        let controls: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceControl(_)))
+            .collect();
+        assert_eq!(controls.len(), 1, "loop keyword should produce 1 SequenceControl");
+        if let Statement::SequenceControl(c) = &controls[0] {
+            assert_eq!(c.kind, SeqControlKind::Loop);
+            assert_eq!(c.label.as_deref(), Some("Every 5s"));
+        }
+    }
+
+    #[test]
+    fn parse_sequence_control_alt_else() {
+        let input = "sequenceDiagram\n  alt Happy\n    Alice->>Bob: Yay\n  else Sad\n    Alice->>Bob: Boo\n  end";
+        let ast = parse(input).expect("parse");
+        let controls: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceControl(_)))
+            .collect();
+        assert_eq!(controls.len(), 2, "alt + else = 2 controls");
+        if let Statement::SequenceControl(c) = &controls[0] {
+            assert_eq!(c.kind, SeqControlKind::Alt);
+            assert_eq!(c.label.as_deref(), Some("Happy"));
+        }
+        if let Statement::SequenceControl(c) = &controls[1] {
+            assert_eq!(c.kind, SeqControlKind::Else);
+            assert_eq!(c.label.as_deref(), Some("Sad"));
+        }
+    }
+
+    #[test]
+    fn sequence_ir_has_participants() {
+        let input = "sequenceDiagram\n  participant A as Alice\n  participant B as Bob\n  A->>B: Hello";
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(!ir.ir.sequence_participants.is_empty());
+        assert_eq!(ir.ir.sequence_participants.len(), 2);
+    }
+
+    #[test]
+    fn sequence_ir_has_notes() {
+        let input = "sequenceDiagram\n  Alice->>Bob: Hi\n  Note over Alice,Bob: Test note";
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert_eq!(ir.ir.sequence_notes.len(), 1);
+    }
+
+    #[test]
+    fn sequence_ir_has_activations() {
+        let input = "sequenceDiagram\n  Alice->>Bob: Hi\n  activate Bob\n  Bob->>Alice: Reply\n  deactivate Bob";
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert_eq!(ir.ir.sequence_activations.len(), 1);
+    }
+
+    #[test]
+    fn sequence_ir_has_controls() {
+        let input = "sequenceDiagram\n  Alice->>Bob: Hi\n  loop Every 5s\n    Alice->>Bob: Ping\n  end";
+        let ast = parse(input).expect("parse");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(!ir.ir.sequence_controls.is_empty());
+    }
+
+    #[test]
+    fn sequence_stress_fixture_parses_all_constructs() {
+        let input = include_str!("../tests/fixtures/mermaid/sequence_stress.mmd");
+        let ast = parse(input).expect("parse stress fixture");
+        let participants: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceParticipant(_)))
+            .collect();
+        let messages: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceMessage(_)))
+            .collect();
+        let controls: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceControl(_)))
+            .collect();
+        let notes: Vec<_> = ast.statements.iter()
+            .filter(|s| matches!(s, Statement::SequenceNote(_)))
+            .collect();
+        assert!(participants.len() >= 6, "stress has 6 participants, got {}", participants.len());
+        assert!(messages.len() >= 10, "stress has many messages, got {}", messages.len());
+        assert!(controls.len() >= 3, "stress has loop+alt+else+opt, got {}", controls.len());
+        assert_eq!(notes.len(), 1, "stress has 1 note");
+        let ir = normalize_ast_to_ir(
+            &ast,
+            &MermaidConfig::default(),
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert_eq!(ir.ir.sequence_participants.len(), 6);
+        assert!(!ir.ir.sequence_controls.is_empty());
+        assert_eq!(ir.ir.sequence_notes.len(), 1);
     }
 }
