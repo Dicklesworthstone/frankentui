@@ -2109,9 +2109,9 @@ pub const DIAGRAM_FAMILY_REGISTRY: &[DiagramFamilyEntry] = &[
         is_beta: false,
         pipeline: [
             StageStatus::Done,
+            StageStatus::Done,
             StageStatus::Partial,
-            StageStatus::Partial,
-            StageStatus::Partial,
+            StageStatus::Done,
             StageStatus::Partial,
             StageStatus::NotStarted,
             StageStatus::NotStarted,
