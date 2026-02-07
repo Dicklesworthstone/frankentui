@@ -87,6 +87,7 @@ static MEGA_JSONL_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// A curated Mermaid sample for the mega showcase.
 struct MegaSample {
+    id: &'static str,
     name: &'static str,
     source: &'static str,
 }
@@ -105,6 +106,8 @@ fn mega_sample_category(sample: &MegaSample) -> &'static str {
         "block-beta"
     } else if src.starts_with("architecture-beta") {
         "architecture-beta"
+    } else if src.starts_with("journey") {
+        "journey"
     } else if src.starts_with("sequenceDiagram") {
         "sequence"
     } else if src.starts_with("classDiagram") {
@@ -140,18 +143,22 @@ fn mega_sample_matches_tokens(sample: &MegaSample, tokens: &[&str]) -> bool {
 
 const MEGA_SAMPLES: &[MegaSample] = &[
     MegaSample {
+        id: "flow-basic",
         name: "Flow Basic",
         source: "graph TD\n    A[Start] --> B{Decision}\n    B -->|Yes| C[OK]\n    B -->|No| D[Error]\n    C --> E[End]\n    D --> E",
     },
     MegaSample {
+        id: "flow-subgraphs",
         name: "Flow Subgraphs",
         source: "graph LR\n    subgraph Frontend\n        A[React] --> B[Redux]\n    end\n    subgraph Backend\n        C[API] --> D[DB]\n    end\n    B --> C",
     },
     MegaSample {
+        id: "flow-dense",
         name: "Flow Dense",
         source: "graph TD\n    A --> B --> C --> D\n    A --> C\n    B --> D\n    E --> F --> G\n    D --> G\n    A --> E",
     },
     MegaSample {
+        id: "flow-rl-labels",
         name: "Flow RL Labels",
         source: "graph RL
     Z[Output] -->|result| Y[Transform]
@@ -161,6 +168,7 @@ const MEGA_SAMPLES: &[MegaSample] = &[
     V -->|retry| W",
     },
     MegaSample {
+        id: "flow-nested-subgraphs",
         name: "Flow Nested Subgraphs",
         source: "graph TB
     subgraph Cluster A
@@ -176,6 +184,7 @@ const MEGA_SAMPLES: &[MegaSample] = &[
     B1 --> A3",
     },
     MegaSample {
+        id: "flow-bt-shapes",
         name: "Flow BT Shapes",
         source: "graph BT
     D[(Database)] --> S{{Service}}
@@ -185,6 +194,7 @@ const MEGA_SAMPLES: &[MegaSample] = &[
     L --> M[[Monitor]]",
     },
     MegaSample {
+        id: "flow-complex",
         name: "Flow Complex",
         source: "graph LR
     A[Request] -->|HTTP| B{Auth?}
@@ -200,127 +210,156 @@ const MEGA_SAMPLES: &[MegaSample] = &[
     J --> K([User])",
     },
     MegaSample {
+        id: "sequence-basic",
         name: "Sequence",
         source: "sequenceDiagram\n    Alice->>Bob: Hello Bob\n    Bob-->>Alice: Hi Alice\n    Alice->>Bob: How are you?\n    Bob-->>Alice: Great!",
     },
     MegaSample {
+        id: "class-basic",
         name: "Class",
         source: "classDiagram\n    class Animal {\n        +String name\n        +makeSound()\n    }\n    class Dog {\n        +fetch()\n    }\n    Animal <|-- Dog",
     },
     MegaSample {
+        id: "state-basic",
         name: "State",
         source: "stateDiagram-v2\n    [*] --> Idle\n    Idle --> Processing : start\n    Processing --> Done : finish\n    Processing --> Error : fail\n    Error --> Idle : retry\n    Done --> [*]",
     },
     MegaSample {
+        id: "er-basic",
         name: "ER",
         source: "erDiagram\n    CUSTOMER ||--o{ ORDER : places\n    ORDER ||--|{ LINE-ITEM : contains\n    PRODUCT ||--o{ LINE-ITEM : \"ordered in\"",
     },
     MegaSample {
+        id: "pie-basic",
         name: "Pie",
         source: "pie title Browser Share\n    \"Chrome\" : 65\n    \"Firefox\" : 15\n    \"Safari\" : 12\n    \"Edge\" : 8",
     },
     MegaSample {
+        id: "gantt-basic",
         name: "Gantt",
         source: "gantt\n    title Project Plan\n    section Design\n    Wireframes :a1, 2024-01-01, 7d\n    Mockups :a2, after a1, 5d\n    section Dev\n    Frontend :b1, after a2, 14d\n    Backend :b2, after a2, 14d",
     },
     MegaSample {
+        id: "mindmap-basic",
         name: "Mindmap",
         source: "mindmap\n  root((Project))\n    Planning\n      Goals\n      Timeline\n    Development\n      Frontend\n      Backend\n    Testing",
     },
     // -- Sequence samples (bd-3oaig.5.2) --
     MegaSample {
+        id: "sequence-loops",
         name: "Sequence Loops",
         source: "sequenceDiagram\n    participant C as Client\n    participant S as Server\n    participant DB as Database\n    C->>S: Login\n    activate S\n    S->>DB: Query user\n    activate DB\n    DB-->>S: User data\n    deactivate DB\n    alt Valid credentials\n        S-->>C: 200 OK\n    else Invalid\n        S-->>C: 401 Unauthorized\n    end\n    deactivate S\n    loop Every 30s\n        C->>S: Heartbeat\n        S-->>C: ACK\n    end",
     },
     MegaSample {
+        id: "sequence-parallel",
         name: "Sequence Parallel",
         source: "sequenceDiagram\n    participant U as User\n    participant GW as Gateway\n    participant A as Auth Service\n    participant P as Product Service\n    participant O as Order Service\n    U->>GW: Place Order\n    par Auth Check\n        GW->>A: Validate token\n        A-->>GW: OK\n    and Inventory\n        GW->>P: Check stock\n        P-->>GW: Available\n    end\n    GW->>O: Create order\n    Note over O: Processing...\n    O-->>GW: Order ID\n    GW-->>U: Confirmation",
     },
     // -- Class diagram samples (bd-3oaig.5.3) --
     MegaSample {
+        id: "class-inheritance",
         name: "Class Inheritance",
         source: "classDiagram\n    class Shape {\n        <<abstract>>\n        +area() float\n        +perimeter() float\n    }\n    class Circle {\n        -float radius\n        +area() float\n    }\n    class Rectangle {\n        -float width\n        -float height\n        +area() float\n    }\n    class Square {\n        +Square(float side)\n    }\n    Shape <|-- Circle\n    Shape <|-- Rectangle\n    Rectangle <|-- Square\n    Shape *-- Color",
     },
     MegaSample {
+        id: "class-large",
         name: "Class Large",
         source: "classDiagram\n    class Controller {\n        +handle()\n    }\n    class Service {\n        +execute()\n    }\n    class Repository {\n        +find()\n        +save()\n    }\n    class Model {\n        +validate()\n    }\n    class DTO {\n        +serialize()\n    }\n    class Mapper {\n        +toDTO()\n        +toModel()\n    }\n    class Config {\n        +load()\n    }\n    class Logger {\n        +info()\n        +error()\n    }\n    class Cache {\n        +get()\n        +set()\n    }\n    class Queue {\n        +push()\n        +pop()\n    }\n    Controller --> Service\n    Service --> Repository\n    Service --> Cache\n    Repository --> Model\n    Controller --> DTO\n    Mapper --> DTO\n    Mapper --> Model\n    Service --> Logger\n    Service --> Queue\n    Config <.. Service",
     },
     // -- State diagram samples (bd-3oaig.5.4) --
     MegaSample {
+        id: "state-nested",
         name: "State Nested",
         source: "stateDiagram-v2\n    [*] --> Active\n    state Active {\n        [*] --> Running\n        state Running {\n            [*] --> Normal\n            Normal --> Degraded : high_load\n            Degraded --> Normal : load_reduced\n        }\n        Running --> Paused : pause\n        Paused --> Running : resume\n    }\n    Active --> Stopped : shutdown\n    Stopped --> Active : restart\n    Stopped --> [*]",
     },
     MegaSample {
+        id: "state-parallel",
         name: "State Parallel",
         source: "stateDiagram-v2\n    [*] --> Online\n    state Online {\n        state Network {\n            Connected --> Disconnected : timeout\n            Disconnected --> Connected : reconnect\n        }\n        --\n        state Auth {\n            LoggedIn --> LoggedOut : expire\n            LoggedOut --> LoggedIn : login\n        }\n    }\n    Online --> Offline : shutdown\n    Offline --> [*]",
     },
     // -- ER diagram samples (bd-3oaig.5.5) --
     MegaSample {
+        id: "er-complex",
         name: "ER Complex",
         source: "erDiagram\n    CUSTOMER {\n        int id PK\n        string name\n        string email UK\n    }\n    ORDER {\n        int id PK\n        date created\n        string status\n    }\n    PRODUCT {\n        int id PK\n        string name\n        float price\n    }\n    LINE_ITEM {\n        int qty\n        float subtotal\n    }\n    ADDRESS {\n        string street\n        string city\n    }\n    CUSTOMER ||--o{ ORDER : places\n    CUSTOMER ||--o{ ADDRESS : has\n    ORDER ||--|{ LINE_ITEM : contains\n    PRODUCT ||--o{ LINE_ITEM : includes\n    ORDER }o--|| ADDRESS : ships_to",
     },
     MegaSample {
+        id: "er-minimal",
         name: "ER Minimal",
         source: "erDiagram\n    USER ||--o{ POST : writes\n    POST ||--o{ COMMENT : has\n    USER ||--o{ COMMENT : authors",
     },
     // -- Journey + Gantt samples (bd-3oaig.5.6) --
     MegaSample {
+        id: "gantt-multi-section",
         name: "Gantt Multi-Section",
         source: "gantt\n    title Release Cycle\n    dateFormat YYYY-MM-DD\n    section Planning\n    Requirements :a1, 2024-01-01, 10d\n    Architecture :a2, after a1, 7d\n    section Development\n    Core Module :b1, after a2, 21d\n    API Layer   :b2, after a2, 14d\n    UI Components :b3, after b2, 14d\n    section QA\n    Unit Tests  :c1, after b1, 7d\n    Integration :c2, after b3, 10d\n    section Release\n    Staging     :d1, after c2, 5d\n    Production  :d2, after d1, 3d",
     },
     MegaSample {
+        id: "journey-basic",
         name: "Journey",
         source: "journey\n    title User Onboarding\n    section Discovery\n      Visit landing page: 5: User\n      Read features: 3: User\n      Watch demo video: 4: User\n    section Signup\n      Create account: 5: User\n      Verify email: 2: User, System\n      Set preferences: 3: User\n    section First Use\n      Complete tutorial: 4: User\n      Create first project: 5: User\n      Invite team: 3: User",
     },
     // -- Mindmap samples (bd-3oaig.5.7) --
     MegaSample {
+        id: "mindmap-deep",
         name: "Mindmap Deep",
         source: "mindmap\n  root((Architecture))\n    Frontend\n      Components\n        Atoms\n        Molecules\n        Organisms\n      State\n        Redux\n        Context\n      Routing\n    Backend\n      API\n        REST\n        GraphQL\n      Database\n        SQL\n        NoSQL\n      Auth\n        OAuth\n        JWT\n    DevOps\n      CI/CD\n      Monitoring\n      Containers",
     },
     MegaSample {
+        id: "mindmap-wide",
         name: "Mindmap Wide",
         source: "mindmap\n  root((Product))\n    Design\n    Engineering\n    Marketing\n    Sales\n    Support\n    Legal\n    Finance\n    Operations",
     },
     // -- Pie chart samples (bd-3oaig.5.8) --
     MegaSample {
+        id: "pie-many-slices",
         name: "Pie Many Slices",
         source: "pie title Language Popularity\n    \"JavaScript\" : 28\n    \"Python\" : 22\n    \"Java\" : 15\n    \"TypeScript\" : 12\n    \"C#\" : 8\n    \"Rust\" : 5\n    \"Go\" : 5\n    \"Other\" : 5",
     },
     MegaSample {
+        id: "pie-dominant",
         name: "Pie Dominant",
         source: "pie title Market Share\n    \"Leader\" : 72\n    \"Runner-up\" : 15\n    \"Others\" : 13",
     },
     // -- Mixed/stress samples (bd-3oaig.5.9) --
     MegaSample {
+        id: "flow-stress-20",
         name: "Flow Stress 20",
         source: "graph TD\n    N1 --> N2 --> N3 --> N4 --> N5\n    N1 --> N3\n    N2 --> N5\n    N6 --> N7 --> N8 --> N9 --> N10\n    N5 --> N6\n    N3 --> N8\n    N11 --> N12 --> N13 --> N14 --> N15\n    N10 --> N11\n    N7 --> N13\n    N16 --> N17 --> N18 --> N19 --> N20\n    N15 --> N16\n    N12 --> N18\n    N1 --> N11\n    N6 --> N16\n    N5 --> N20",
     },
     MegaSample {
+        id: "sequence-dense",
         name: "Sequence Dense",
         source: "sequenceDiagram\n    participant A\n    participant B\n    participant C\n    participant D\n    participant E\n    A->>B: msg1\n    B->>C: msg2\n    C->>D: msg3\n    D->>E: msg4\n    E-->>D: reply4\n    D-->>C: reply3\n    C-->>B: reply2\n    B-->>A: reply1\n    A->>C: direct\n    C->>E: skip\n    B->>D: cross\n    D->>A: back",
     },
     // Intentionally invalid sample (bd-3oaig.15): exercise error overlay + diagnostics view.
     MegaSample {
+        id: "flow-invalid-parse-error",
         name: "Flow Invalid (Parse Error)",
         source: "graph TD\n    A[Start] --> B[Ok]\n    classDef",
     },
     MegaSample {
+        id: "generated",
         name: "Generated",
         source: GENERATED_SAMPLE_SOURCE,
     },
     MegaSample {
+        id: "block-beta-basic",
         name: "Block Beta Basic",
         source: "block-beta\n  columns 3\n  a[\"Frontend\"] b[\"Backend\"] c[\"Database\"]\n  space\n  d[\"Load Balancer\"]:3",
     },
     MegaSample {
+        id: "block-beta-stress",
         name: "Block Beta Stress",
         source: "block-beta\n  columns 4\n  a[\"Service A\"]:2 b[\"Service B\"]:2\n  block:inner1:2\n    columns 2\n    c[\"Cache\"] d[\"Queue\"]\n  end\n  block:inner2:2\n    columns 2\n    e[\"Worker 1\"] f[\"Worker 2\"]\n  end\n  g[\"Load Balancer\"]:4\n  space:2\n  h[\"Database\"]:2",
     },
     MegaSample {
+        id: "architecture-beta-basic",
         name: "Architecture Beta Basic",
         source: "architecture-beta\n  group edge(cloud)[Edge]\n  group core(server)[Core]\n  service api(server)[API] in edge\n  service auth(lock)[Auth] in core\n  service db(database)[DB] in core\n  api:R --> L:auth\n  auth:R --> L:db",
     },
     MegaSample {
+        id: "architecture-beta-stress",
         name: "Architecture Beta Stress",
         source: "architecture-beta\n  group edge(cloud)[Edge]\n  group core(server)[Core]\n  group data(database)[Data]\n  service gateway(server)[Gateway] in edge\n  service api(server)[API] in core\n  service auth(lock)[Auth] in core\n  service cache(database)[Cache] in data\n  service db(database)[DB] in data\n  gateway{group}:R --> L:api{group}\n  api:R --> L:auth\n  auth:R --> L:cache\n  cache:R --> L:db",
     },
@@ -2232,6 +2271,22 @@ impl MermaidMegaShowcaseScreen {
             layout_controls: std::cell::Cell::new(Rect::default()),
             layout_footer: std::cell::Cell::new(Rect::default()),
         }
+    }
+
+    /// Select a sample by stable id (used by snapshot tests).
+    ///
+    /// This avoids brittle index-based navigation when new samples are inserted.
+    #[doc(hidden)]
+    pub fn select_sample_by_id_for_test(&mut self, id: &str) -> bool {
+        let Some(idx) = MEGA_SAMPLES.iter().position(|s| s.id == id) else {
+            return false;
+        };
+
+        self.state.selected_sample = idx;
+        self.state.selected_node = None;
+        self.state.rebuild_search_matches();
+        self.state.bump_analysis();
+        true
     }
 
     /// Map a key event to an action.

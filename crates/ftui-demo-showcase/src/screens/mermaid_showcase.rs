@@ -2275,6 +2275,56 @@ impl MermaidShowcaseScreen {
         self.state.metrics.render_ms = Some(0.0);
     }
 
+    /// Select a sample by stable id (used by snapshot/E2E harnesses).
+    ///
+    /// This avoids brittle index-based navigation when new samples are inserted.
+    #[doc(hidden)]
+    pub fn select_sample_by_id_for_test(&mut self, id: &str) -> bool {
+        let Some(pos) = self.state.samples.iter().position(|s| s.id == id) else {
+            return false;
+        };
+
+        self.state.selected_index = pos;
+        self.state.selected_node_idx = None;
+        self.state.mode = ShowcaseMode::Normal;
+        self.state.search_query.clear();
+        self.state.search_matches.clear();
+        self.state.search_match_idx = 0;
+        self.state.bump_all();
+        self.state.log_action("sample", format!("id:{id}"));
+        self.state.normalize();
+        true
+    }
+
+    /// Override the currently selected sample (used by deterministic snapshot tests).
+    #[doc(hidden)]
+    pub fn override_selected_sample_for_test(
+        &mut self,
+        id: &'static str,
+        name: &'static str,
+        source: &'static str,
+    ) {
+        if self.state.samples.is_empty() {
+            return;
+        }
+        let idx = self
+            .state
+            .selected_index
+            .min(self.state.samples.len().saturating_sub(1));
+        let sample = &mut self.state.samples[idx];
+        sample.id = id;
+        sample.name = name;
+        sample.source = source;
+
+        self.state.selected_node_idx = None;
+        self.state.mode = ShowcaseMode::Normal;
+        self.state.search_query.clear();
+        self.state.search_matches.clear();
+        self.state.search_match_idx = 0;
+        self.state.bump_all();
+        self.state.normalize();
+    }
+
     fn build_config(&self) -> MermaidConfig {
         self.state.build_config()
     }

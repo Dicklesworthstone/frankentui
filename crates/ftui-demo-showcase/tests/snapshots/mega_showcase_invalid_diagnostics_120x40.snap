@@ -10,7 +10,7 @@
 │ 1. classDef missing name                                                                 ││Sample: Flow Invalid (Pars│
 │    line 3, col 1                                                                         ││Palette: default          │
 │    expected: classDef <name> <style>                                                     ││Node: -                   │
-│                                                                                          ││Epoch: a30/l30/r30        │
+│                                                                                          ││Epoch: a1/l1/r1           │
 │                                                                                          ││VP: auto                  │
 │                                                                                          ││                          │
 │                                                                                          ││Parse: -                  │
