@@ -456,7 +456,7 @@ fn reserve_pie_legend_area(area: Rect, max_label_width: usize) -> (Rect, Option<
 
 /// Maps abstract layout coordinates to terminal cell positions.
 #[derive(Debug, Clone)]
-struct Viewport {
+pub(crate) struct Viewport {
     scale_x: f64,
     scale_y: f64,
     offset_x: f64,
@@ -465,7 +465,7 @@ struct Viewport {
 
 impl Viewport {
     /// Compute a viewport that fits `bounding_box` into `area` with 1-cell margin.
-    fn fit(bounding_box: &LayoutRect, area: Rect) -> Self {
+    pub(crate) fn fit(bounding_box: &LayoutRect, area: Rect) -> Self {
         let margin = 1.0;
         let avail_w = f64::from(area.width).max(1.0) - 2.0 * margin;
         let avail_h = f64::from(area.height).max(1.0) - 2.0 * margin;
@@ -491,7 +491,7 @@ impl Viewport {
     }
 
     /// Convert a world-space point to cell coordinates.
-    fn to_cell(&self, x: f64, y: f64) -> (u16, u16) {
+    pub(crate) fn to_cell(&self, x: f64, y: f64) -> (u16, u16) {
         let cx = (x * self.scale_x + self.offset_x)
             .round()
             .clamp(0.0, u16::MAX as f64) as u16;
@@ -502,7 +502,7 @@ impl Viewport {
     }
 
     /// Convert a world-space rect to cell rect, clamping to non-negative sizes.
-    fn to_cell_rect(&self, r: &LayoutRect) -> Rect {
+    pub(crate) fn to_cell_rect(&self, r: &LayoutRect) -> Rect {
         let (x, y) = self.to_cell(r.x, r.y);
         let (x2, y2) = self.to_cell(r.x + r.width, r.y + r.height);
         Rect {

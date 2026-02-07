@@ -572,9 +572,9 @@ impl<W: Write> Presenter<W> {
         //
         // EXCEPTION: Orphan continuations (not covered by a preceding wide char)
         // must be treated as empty cells to ensure old content is cleared.
-        // If cursor_x <= x, it means the cursor hasn't been advanced past this
-        // position by a previous wide char emission, so this is an orphan.
-        let is_orphan = cell.is_continuation() && self.cursor_x.is_some_and(|cx| cx <= x);
+        // If cursor_x is unknown (None) or hasn't been advanced past this
+        // position by a previous wide char emission (cx <= x), treat as orphan.
+        let is_orphan = cell.is_continuation() && self.cursor_x.is_none_or(|cx| cx <= x);
 
         if cell.is_continuation() && !is_orphan {
             return Ok(());

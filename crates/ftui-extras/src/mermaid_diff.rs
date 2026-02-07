@@ -310,8 +310,8 @@ fn edge_attrs_differ(
 // ── Diff Rendering ──────────────────────────────────────────────────────
 
 use crate::mermaid::MermaidConfig;
-use crate::mermaid_layout::{DiagramLayout, LayoutRect};
-use crate::mermaid_render::render_diagram;
+use crate::mermaid_layout::DiagramLayout;
+use crate::mermaid_render::{Viewport, render_diagram};
 use ftui_core::geometry::Rect;
 use ftui_core::text_width::display_width;
 use ftui_render::buffer::Buffer;
@@ -329,59 +329,6 @@ impl DiffColors {
     pub const CHANGED: PackedRgba = PackedRgba::rgb(241, 196, 15);
     /// Dim gray for unchanged nodes/edges.
     pub const UNCHANGED: PackedRgba = PackedRgba::rgb(100, 100, 100);
-}
-
-/// Simple viewport for mapping layout-space to cell coordinates.
-///
-/// Duplicated from the private `Viewport` in `mermaid_render` since
-/// that type is not publicly exported.
-struct DiffViewport {
-    scale_x: f64,
-    scale_y: f64,
-    offset_x: f64,
-    offset_y: f64,
-}
-
-impl DiffViewport {
-    fn fit(bounding_box: &LayoutRect, area: Rect) -> Self {
-        let margin = 1.0;
-        let avail_w = f64::from(area.width).max(1.0) - 2.0 * margin;
-        let avail_h = f64::from(area.height).max(1.0) - 2.0 * margin;
-
-        let bb_w = bounding_box.width.max(1.0);
-        let bb_h = bounding_box.height.max(1.0);
-
-        let scale = (avail_w / bb_w).min(avail_h / bb_h).max(0.1);
-
-        let used_w = bb_w * scale;
-        let used_h = bb_h * scale;
-        let pad_x = (avail_w - used_w) / 2.0;
-        let pad_y = (avail_h - used_h) / 2.0;
-
-        Self {
-            scale_x: scale,
-            scale_y: scale,
-            offset_x: f64::from(area.x) + margin + pad_x - bounding_box.x * scale,
-            offset_y: f64::from(area.y) + margin + pad_y - bounding_box.y * scale,
-        }
-    }
-
-    fn to_cell(&self, x: f64, y: f64) -> (u16, u16) {
-        let cx = (x * self.scale_x + self.offset_x).round().max(0.0) as u16;
-        let cy = (y * self.scale_y + self.offset_y).round().max(0.0) as u16;
-        (cx, cy)
-    }
-
-    fn to_cell_rect(&self, r: &LayoutRect) -> Rect {
-        let (x, y) = self.to_cell(r.x, r.y);
-        let (x2, y2) = self.to_cell(r.x + r.width, r.y + r.height);
-        Rect {
-            x,
-            y,
-            width: x2.saturating_sub(x).max(1),
-            height: y2.saturating_sub(y).max(1),
-        }
-    }
 }
 
 /// Render a diagram diff into a buffer with color-coded highlighting.
@@ -423,9 +370,23 @@ pub fn render_diff(
     render_diagram(new_layout, &diff.new_ir, config, diagram_area, buf);
 
     // 2. Compute viewport for coordinate mapping
-    let vp = DiffViewport::fit(&new_layout.bounding_box, diagram_area);
+    let vp = Viewport::fit(&new_layout.bounding_box, diagram_area);
 
-    // 3. Overlay node diff colors
+    // 3. Build index maps for O(1) lookup of layout nodes/edges by their idx
+    let node_by_idx: std::collections::HashMap<usize, usize> = new_layout
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.node_idx, i))
+        .collect();
+    let edge_by_idx: std::collections::HashMap<usize, usize> = new_layout
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.edge_idx, i))
+        .collect();
+
+    // 4. Overlay node diff colors
     for dn in &diff.nodes {
         let (color, marker) = match dn.status {
             DiffStatus::Added => (DiffColors::ADDED, Some('+')),
@@ -434,8 +395,8 @@ pub fn render_diff(
             DiffStatus::Removed => continue, // handled in legend
         };
 
-        // Find the node in new_layout by index
-        if let Some(node_box) = new_layout.nodes.iter().find(|n| n.node_idx == dn.node_idx) {
+        if let Some(&layout_idx) = node_by_idx.get(&dn.node_idx) {
+            let node_box = &new_layout.nodes[layout_idx];
             let cell_rect = vp.to_cell_rect(&node_box.rect);
             recolor_rect_border(cell_rect, color, buf);
 
@@ -453,7 +414,7 @@ pub fn render_diff(
         }
     }
 
-    // 4. Overlay edge diff colors
+    // 5. Overlay edge diff colors
     for de in &diff.edges {
         let color = match de.status {
             DiffStatus::Added => DiffColors::ADDED,
@@ -462,9 +423,8 @@ pub fn render_diff(
             DiffStatus::Removed => continue, // handled in legend
         };
 
-        // Find the edge in new_layout by index
-        if let Some(edge_path) = new_layout.edges.iter().find(|e| e.edge_idx == de.edge_idx) {
-            for wp in &edge_path.waypoints {
+        if let Some(&layout_idx) = edge_by_idx.get(&de.edge_idx) {
+            for wp in &new_layout.edges[layout_idx].waypoints {
                 let (cx, cy) = vp.to_cell(wp.x, wp.y);
                 if let Some(c) = buf.get(cx, cy) {
                     buf.set(cx, cy, c.with_fg(color));
@@ -473,7 +433,7 @@ pub fn render_diff(
         }
     }
 
-    // 5. Render removed-items legend
+    // 6. Render removed-items legend
     if has_removed && legend_rows > 0 {
         render_removed_legend(diff, area, legend_rows, buf);
     }
