@@ -1,4 +1,4 @@
-Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: 88x26 (override) | OK                      
+Mermaid Showcase | Flow Basic (1/25) | Layout: Auto | Score: 0.8 | Viewport: 88x26 (override) | OK                      
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
 │> Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
@@ -8,26 +8,26 @@ Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: 88x
 │  Flow Styles [flow, M, class││                                                            ││Wrap: wordchar (w)      │ 
 │  Sequence Mini [sequence, S,││                                                            ││Styles: on (s)          │ 
 │  Sequence Checkout [sequence││                                                            ││Links: off (u)          │ 
-│  Sequence Dense [sequence, L││                                                  ┌─────────││Init: off (I)           │ 
-│  Class Basic [class, S, inhe││                                                  │▄▄▄▄▄▄▄▄▄││Errors: panel (e)       │ 
-│  Class Members [class, M, fi││                                                  │         ││Viewport: 88x26 (v)     │ 
-│  State Basic [state, S, star││                                                  │         ││Zoom: 100% (+/-)        │ 
-│  State Composite [state, M, ││                                                  │         ││Fit: f                  │ 
-│  ER Basic [er, M, cardinalit││                                                  │▀▀▀▀▀▀▀▀▀││Metrics: on (m)         │ 
-│  Gantt Basic [gantt, M, sect││                                                  └─────────││                        │ 
-│  Mindmap Seed [mindmap, S, t││─────────┐                   ╲╱                Yes│         ││                        │ 
-│  Mindmap Deep [mindmap, L, d││▄▄▄▄▄▄▄▄▄│                ╲      ╱                │         ││                        │ 
-│  Pie Basic [pie, S, title, s││t        │            ╲    Check    ╱             │         ││                        │ 
-│  Pie Many [pie, M, many-slic││         │─────────╲                    ╱─────────┤         ││                        │ 
-│  Gitgraph Basic [gitgraph, M││▀▀▀▀▀▀▀▀▀│            ╱             ╲             │         │╰────────────────────────╯ 
-│  Journey Basic [journey, M, ││─────────┘                ╱      ╲                │         │╭────────Metrics─────────╮ 
-│  Requirement Basic [requirem││                                               No ┌─────────││Cache: hit 0  miss 1  la│ 
-│  Block Beta Basic [block-bet││                                                  │▄▄▄▄▄▄▄▄▄││Warnings: 0             │ 
-│  Block Beta Nested [block-be││                                                  │         ││Parse: 0.00 ms          │ 
-│                             ││                                                  │         ││Layout: 0.00 ms         │ 
-│                             ││                                                  │         ││Render: 0.00 ms         │ 
-│                             ││                                                  │▀▀▀▀▀▀▀▀▀││Viewport: 88x26         │ 
-│                             ││                                                  └─────────││Zoom: 100%              │ 
+│  Sequence Dense [sequence, L││                                                            ││Init: off (I)           │ 
+│  Class Basic [class, S, inhe││                                                            ││Errors: panel (e)       │ 
+│  Class Members [class, M, fi││                                                            ││Viewport: 88x26 (v)     │ 
+│  State Basic [state, S, star││                                                            ││Zoom: 100% (+/-)        │ 
+│  State Composite [state, M, ││                                                            ││Fit: f                  │ 
+│  ER Basic [er, M, cardinalit││                                                  ⢸         ││Metrics: on (m)         │ 
+│  Gantt Basic [gantt, M, sect││                                                ⢀⣀⣸⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        │ 
+│  Mindmap Seed [mindmap, S, t││                                               Yes⢹⣿⣿⣿⣿⣿⣿⣿⣿⣿││                        │ 
+│  Mindmap Deep [mindmap, L, d││         ⡆                                  ⢀⡠⠊   ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠉││                        │ 
+│  Pie Basic [pie, S, title, s││t        ⡇      ⢠⣀ ⢀       Check        ⡀ ⡠⠔⠁               ││                        │ 
+│  Pie Many [pie, M, many-slic││         ⡏⠉⠉⠉⠉⠉⠉⠹⠛⠉⠙                    ⠋⠉⠢⢄                ││                        │ 
+│  Gitgraph Basic [gitgraph, M││         ⠇                                  ⠑⠢⡀   ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀│╰────────────────────────╯ 
+│  Journey Basic [journey, M, ││                                              ⠈⠒⢄⢠⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿│╭────────Metrics─────────╮ 
+│  Requirement Basic [requirem││                                               No⠛⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿││Cache: hit 0  miss 1  la│ 
+│  Block Beta Basic [block-bet││                                                  ⢸         ││Warnings: 0             │ 
+│  Block Beta Nested [block-be││                                                            ││Parse: 0.00 ms          │ 
+│  Flow Node Shapes [flow, S, ││                                                            ││Layout: 0.00 ms         │ 
+│                             ││                                                            ││Render: 0.00 ms         │ 
+│                             ││                                                            ││Viewport: 88x26         │ 
+│                             ││                                                            ││Zoom: 100%              │ 
 │                             ││                                                            ││Iters: 1                │ 
 │                             ││                                                            ││Score: 0.77             │ 
 │                             ││                                                            ││Cross: 0                │ 

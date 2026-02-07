@@ -1,4 +1,4 @@
-Mermaid Showcase | Journey Basic (21/24) | Layout: Auto | Score: -7.6 | Viewport: auto | OK                             
+Mermaid Showcase | Journey Basic (21/25) | Layout: Auto | Score: -7.6 | Viewport: auto | OK                             
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
 │  Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                 +-------------------------+                ││Tier: auto (t)          │ 
@@ -26,7 +26,7 @@ Mermaid Showcase | Journey Basic (21/24) | Layout: Auto | Score: -7.6 | Viewport
 │  Requirement Basic [requirem││                 | Activate                |                ││Cache: hit 0  miss 1  la│ 
 │  Block Beta Basic [block-bet││                 |                         |                ││Warnings: 1             │ 
 │  Block Beta Nested [block-be││                 |                         |                ││Parse: 0.00 ms          │ 
-│                             ││                 | +---------------------+ |                ││Layout: 0.00 ms         │ 
+│  Flow Node Shapes [flow, S, ││                 | +---------------------+ |                ││Layout: 0.00 ms         │ 
 │                             ││                 | | Tutorial
 ●●●○○ User | |                ││Render: 0.00 ms         │ 
 │                             ││                 | +---------------------+ |                ││Viewport: auto          │ 

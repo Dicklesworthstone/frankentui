@@ -1,16 +1,16 @@
-Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: aut
+Mermaid Showcase | Flow Basic (1/25) | Layout: Auto | Score: 0.8 | Viewport: aut
 ╭───────Samples────────╮╭───────────────────────Viewport───────────────────────╮
 │> Flow Basic [flow, S,││                                                      │
-│  Flow Subgraphs [flow││                                     ┌─────────┐      │
-│  Flow Dense [flow, L,││                                     │   OK    │      │
-│  Flow Long Labels [fl││                                     └─────────┘      │
-│  Flow Unicode [flow, ││      ┌─────────┐         ╲╱        Yes               │
-│  Flow Styles [flow, M││      │▄▄Start▄▄│      ╲Check╱       │                │
-│  Sequence Mini [seque││      │▀▀▀▀▀▀▀▀▀│────╲          ╱────┤                │
-│  Sequence Checkout [s││      └─────────┘      ╱     ╲       │                │
-│  Sequence Dense [sequ││                                    N┌─────────┐      │
-│  Class Basic [class, ││                                     │   Fix   │      │
-│  Class Members [class││                                     └─────────┘      │
+│  Flow Subgraphs [flow││                                                      │
+│  Flow Dense [flow, L,││                                         OK           │
+│  Flow Long Labels [fl││                                       ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Flow Unicode [flow, ││                                    Yes⢾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Flow Styles [flow, M││ ⣿⣿⣿⣿⣿⣿  Start    ⣄⡀ ⣀  Check   ⣀ ⢀⡠⠊⠁⠈               │
+│  Sequence Mini [seque││ ⣿⣿⣿⣿⣿⣿         ⠉⠉⠟⠋⠉⠙          ⠋⠉⠑⠢⡀                 │
+│  Sequence Checkout [s││                                    ⠈⢑⣼⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Sequence Dense [sequ││                                    No ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Class Basic [class, ││                                         Fix          │
+│  Class Members [class││                                                      │
 │  State Basic [state, ││                                                      │
 │  State Composite [sta│╰──────────────────────────────────────────────────────╯
 │  ER Basic [er, M, car│╭───────────────────────Metrics────────────────────────╮

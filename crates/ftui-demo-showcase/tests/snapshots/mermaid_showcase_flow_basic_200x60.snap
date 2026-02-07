@@ -1,4 +1,4 @@
-Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: auto | OK                                                                                                                  
+Mermaid Showcase | Flow Basic (1/25) | Layout: Auto | Score: 0.8 | Viewport: auto | OK                                                                                                                  
 ╭─────────────────────Samples──────────────────────╮╭───────────────────────────────────────────────Viewport───────────────────────────────────────────────╮╭─────────────────Controls─────────────────╮
 │> Flow Basic [flow, S, branch, decision]          ││                                                                                                      ││Layout: Auto (l)                          │
 │  Flow Subgraphs [flow, M, subgraph, clusters]    ││                                                                                                      ││Tier: auto (t)                            │
@@ -16,30 +16,30 @@ Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  ER Basic [er, M, cardinality, relations]        ││                                                                                                      ││Metrics: on (m)                           │
 │  Gantt Basic [gantt, M, sections, tasks]         ││                                                                                                      ││                                          │
 │  Mindmap Seed [mindmap, S, tree]                 ││                                                                                                      ││                                          │
-│  Mindmap Deep [mindmap, L, deep, wide]           ││                                                                           ┌────────────────────────┐ ││                                          │
-│  Pie Basic [pie, S, title, showdata]             ││                                                                           │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│ ││                                          │
-│  Pie Many [pie, M, many-slices]                  ││                                                                           │                        │ ││                                          │
-│  Gitgraph Basic [gitgraph, M, gitgraph, branches]││                                                                           │           OK           │ ││                                          │
-│  Journey Basic [journey, M, journey, sections]   ││                                                                           │                        │ ││                                          │
-│  Requirement Basic [requirement, M, requirement, ││                                                                           │                        │ ││                                          │
-│  Block Beta Basic [block-beta, S, block-beta, col││                                                                           │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│ ││                                          │
-│  Block Beta Nested [block-beta, M, block-beta, ne││                                                                           └────────────────────────┘ ││                                          │
-│                                                  ││ ┌────────────────────────┐                       ╲╱                  Yes  │                          ││                                          │
-│                                                  ││ │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│                    ╲      ╱                    │                          ││                                          │
-│                                                  ││ │                        │                 ╲            ╱                 │                          ││                                          │
-│                                                  ││ │         Start          │              ╲      Check       ╱              │                          ││                                          │
-│                                                  ││ │                        │───────────╲                        ╱───────────┤                          ││                                          │
-│                                                  ││ │                        │              ╱                  ╲              │                          ││                                          │
-│                                                  ││ │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│                 ╱            ╲                 │                          │╰──────────────────────────────────────────╯
-│                                                  ││ └────────────────────────┘                    ╱      ╲                    │                          │╭─────────────────Metrics──────────────────╮
-│                                                  ││                                                                      No   ┌────────────────────────┐ ││Cache: hit 0  miss 1  last miss           │
-│                                                  ││                                                                           │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│ ││Warnings: 0                               │
-│                                                  ││                                                                           │                        │ ││Parse: 0.00 ms                            │
-│                                                  ││                                                                           │          Fix           │ ││Layout: 0.00 ms                           │
-│                                                  ││                                                                           │                        │ ││Render: 0.00 ms                           │
-│                                                  ││                                                                           │                        │ ││Viewport: auto                            │
-│                                                  ││                                                                           │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│ ││Zoom: 100%                                │
-│                                                  ││                                                                           └────────────────────────┘ ││Iters: 1                                  │
+│  Mindmap Deep [mindmap, L, deep, wide]           ││                                                                                                      ││                                          │
+│  Pie Basic [pie, S, title, showdata]             ││                                                                                                      ││                                          │
+│  Pie Many [pie, M, many-slices]                  ││                                                                                                      ││                                          │
+│  Gitgraph Basic [gitgraph, M, gitgraph, branches]││                                                                                       OK             ││                                          │
+│  Journey Basic [journey, M, journey, sections]   ││                                                                                                      ││                                          │
+│  Requirement Basic [requirement, M, requirement, ││                                                                                                      ││                                          │
+│  Block Beta Basic [block-beta, S, block-beta, col││                                                                          ⢸⣿                        ⣿ ││                                          │
+│  Block Beta Nested [block-beta, M, block-beta, ne││                                                                          ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│  Flow Node Shapes [flow, S, shapes, node-shapes] ││                                                                      Yes⢶⢾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│                                                  ││                                                                      ⡠⠒⠁⠈⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│                                                  ││ ⣿                        ⣿⡇                                       ⣀⠔⠉                                ││                                          │
+│                                                  ││ ⣿         Start          ⣿⡇        ⣄⡀          Check           ⢀⠤⠊                                   ││                                          │
+│                                                  ││ ⣿                        ⣿⡏⠉⠉⠉⠉⠉⠉⠉⠉⠟⠋⠉                        ⠉⠑⠤⡀                                   ││                                          │
+│                                                  ││ ⣿                        ⣿⡇                                      ⠈⠒⢄                                 ││                                          │
+│                                                  ││                                                                     ⠉⠢⣀  ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╰──────────────────────────────────────────╯
+│                                                  ││                                                                        ⢑⣼⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │╭─────────────────Metrics──────────────────╮
+│                                                  ││                                                                      No  ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Cache: hit 0  miss 1  last miss           │
+│                                                  ││                                                                          ⢸⣿                        ⣿ ││Warnings: 0                               │
+│                                                  ││                                                                                                      ││Parse: 0.00 ms                            │
+│                                                  ││                                                                                      Fix             ││Layout: 0.00 ms                           │
+│                                                  ││                                                                                                      ││Render: 0.00 ms                           │
+│                                                  ││                                                                                                      ││Viewport: auto                            │
+│                                                  ││                                                                                                      ││Zoom: 100%                                │
+│                                                  ││                                                                                                      ││Iters: 1                                  │
 │                                                  ││                                                                                                      ││Score: 0.77                               │
 │                                                  ││                                                                                                      ││Cross: 0                                  │
 │                                                  ││                                                                                                      ││Bends: 0                                  │

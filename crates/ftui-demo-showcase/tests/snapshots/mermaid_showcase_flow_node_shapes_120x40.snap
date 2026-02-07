@@ -1,4 +1,4 @@
-Mermaid Showcase | Block Beta Basic (23/25) | Layout: Auto | Score: 231.5 | Viewport: auto | OK                         
+Mermaid Showcase | Flow Node Shapes (25/25) | Layout: Auto | Score: 4.5 | Viewport: auto | OK                           
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
 │  Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
@@ -17,24 +17,24 @@ Mermaid Showcase | Block Beta Basic (23/25) | Layout: Auto | Score: 231.5 | View
 │  Gantt Basic [gantt, M, sect││                                                            ││                        │ 
 │  Mindmap Seed [mindmap, S, t││                                                            ││                        │ 
 │  Mindmap Deep [mindmap, L, d││                                                            ││                        │ 
-│  Pie Basic [pie, S, title, s││ ⣶Frontend ⡆   ⣶ Backend ⡆   ⣶Database ⡆   ⣶Load Balancer ⣶ ││                        │ 
-│  Pie Many [pie, M, many-slic││ ⠿         ⠇   ⠿         ⠇   ⠿         ⠇   ⠿              ⠿ ││                        │ 
+│  Pie Basic [pie, S, title, s││ ⣠⣤⣤⣤⣤⣤⡀ ⣄⡀⣠⣤⣤⣤⣤⣤⡀ ⣄⡀⣤⣤⣤⣤⣤⣤⣤⡄⢠⣀ ⣀⣤⣤⣤⣀  ⢠⣀  ⢀⣤⣄   ⢠⣀⢠⣤⣤⣤⣤⣤⣤⣄ ││                        │ 
+│  Pie Many [pie, M, many-slic││ ⠙⠛⠛⠛⠛⠛⠉⠉⠟⠋⠻⠿⠛⠛⠻⠿⠋⠉⠟⠋⠛⠛⠛⠛⠛⠛⠛⠋⠹⠛⠉⠙⠛⠛⠛⠋⠉⠉⠹⠛⠉ ⠘⠿⠟ ⠈⠉⠹⠛⠙⠛⠛⠛⠛⠛⠛⠋ ││                        │ 
 │  Gitgraph Basic [gitgraph, M││                                                            │╰────────────────────────╯ 
 │  Journey Basic [journey, M, ││                                                            │╭────────Metrics─────────╮ 
 │  Requirement Basic [requirem││                                                            ││Cache: hit 0  miss 1  la│ 
-│> Block Beta Basic [block-bet││                                                            ││Warnings: 0             │ 
+│  Block Beta Basic [block-bet││                                                            ││Warnings: 0             │ 
 │  Block Beta Nested [block-be││                                                            ││Parse: 0.00 ms          │ 
-│  Flow Node Shapes [flow, S, ││                                                            ││Layout: 0.00 ms         │ 
+│> Flow Node Shapes [flow, S, ││                                                            ││Layout: 0.00 ms         │ 
 │                             ││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
-│                             ││                                                            ││Iters: 0                │ 
-│                             ││                                                            ││Score: 231.54           │ 
+│                             ││                                                            ││Iters: 1                │ 
+│                             ││                                                            ││Score: 4.49             │ 
 │                             ││                                                            ││Cross: 0                │ 
 │                             ││                                                            ││Bends: 0                │ 
-│                             ││                                                            ││Sym: 0.86               │ 
-│                             ││                                                            ││Comp: 0.83              │ 
-│                             ││                                                            ││Edge var: 0.00          │ 
+│                             ││                                                            ││Sym: 0.97               │ 
+│                             ││                                                            ││Comp: 0.70              │ 
+│                             ││                                                            ││Edge var: 0.80          │ 
 │                             ││                                                            ││Label col: 0            │ 
 ╰─────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰────────────────────────╯ 
 j/k sample  Enter render  l layout  t tier  u links  I init  e errors  x guard  v view  +/- zoom  m metrics  ? help | pa
