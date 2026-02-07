@@ -312,7 +312,7 @@ impl PlasmaCanvasAdapter {
                 };
 
                 let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
-                painter.point_colored(x as i32, y as i32, color);
+                painter.point_colored_in_bounds(x, y, color);
             }
         }
     }
@@ -593,7 +593,7 @@ impl MetaballsCanvasAdapter {
                         (sum - glow) / (threshold - glow)
                     };
                     let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
-                    painter.point_colored(x as i32, y as i32, color);
+                    painter.point_colored_in_bounds(x, y, color);
                 }
             }
         }

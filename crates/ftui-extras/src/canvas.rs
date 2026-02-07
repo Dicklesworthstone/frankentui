@@ -164,6 +164,18 @@ impl Painter {
         }
     }
 
+    /// Set a single pixel with color when coordinates are already bounds-checked.
+    ///
+    /// This avoids repeated `i32` conversion and bounds checks in tight inner loops.
+    #[inline]
+    pub fn point_colored_in_bounds(&mut self, x: usize, y: usize, color: PackedRgba) {
+        debug_assert!(x < self.width_usize);
+        debug_assert!(y < self.height as usize);
+        let idx = y * self.width_usize + x;
+        self.pixels[idx] = true;
+        self.colors[idx] = Some(color);
+    }
+
     /// Draw a line from (x0, y0) to (x1, y1) using Bresenham's algorithm.
     pub fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
         self.line_colored(x0, y0, x1, y1, None);
@@ -379,7 +391,7 @@ impl Painter {
                     };
 
                     let color = color_fn(avg_hue, intensity);
-                    self.point_colored(px as i32, py as i32, color);
+                    self.point_colored_in_bounds(px as usize, py as usize, color);
                 }
             }
         }
@@ -912,6 +924,16 @@ mod tests {
         assert!(p.get(0, 0));
         let (_, color, _) = p.braille_cell(0, 0);
         assert_eq!(color, Some(red));
+    }
+
+    #[test]
+    fn colored_point_in_bounds() {
+        let mut p = Painter::new(2, 4, Mode::Braille);
+        let blue = PackedRgba::rgb(0, 0, 255);
+        p.point_colored_in_bounds(1, 3, blue);
+        assert!(p.get(1, 3));
+        let idx = p.index(1, 3).expect("index should exist");
+        assert_eq!(p.colors[idx], Some(blue));
     }
 
     #[test]
