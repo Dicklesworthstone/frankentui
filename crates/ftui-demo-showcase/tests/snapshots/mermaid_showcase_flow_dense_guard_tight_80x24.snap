@@ -1,13 +1,13 @@
-Mermaid Showcase | Flow Dense (3/24) | Layout: Auto | Score: 8.9 | Viewport: aut
+Mermaid Showcase | Flow Dense (3/25) | Layout: Auto | Score: 8.9 | Viewport: aut
 ╭───────Samples────────╮╭───────────────────────Viewport───────────────────────╮
 │  Flow Basic [flow, S,││                                                      │
 │  Flow Subgraphs [flow││                                                      │
 │> Flow Dense [flow, L,││                                                      │
 │  Flow Long Labels [fl││                                                      │
-│  Flow Unicode [flow, ││             *     *     *     *                      │
-│  Flow Styles [flow, M││                 ◀──   ◀──   ◀──   ◀ ┌──┐  ┌──┐  ┌──┐ │
-│  Sequence Mini [seque││ ┌──┐  ┌──┐                        ├─└──┘◀─└──┘◀ └──┘ │
-│  Sequence Checkout [s││ └──┘◀─└──┘◀─*   ◀─*   ◀─*   ◀─*   ◀                  │
+│  Flow Unicode [flow, ││                   ⡀     ⡀     ⡀                      │
+│  Flow Styles [flow, M││             ⠿⠿⠿⠿⠒⠿⡿⠿⠿⠿⠒⠿⡿⠿⠿⠿⠒⠿⡿⠿⠿⠿⣢⣧⣄⣀⣀⣀ ⣀⣄⣀⣀⣀ ⢀⣀⣀⣀⣀ │
+│  Sequence Mini [seque││ ⠶⠶⠶⠶⠦⠤⠶⠶⠶⢶⣷⣤⣶⣶⣶⣶⣀⣤⣶⣶⣶⣶⣀⣤⣶⣶⣶⣶⣀⣤⣶⣶⣶⣶⡰⠷⠍⠉⠉⠉⠛⠛⠏⠉⠉⠉⠉⠉⠉⠉⠉⠉ │
+│  Sequence Checkout [s││           ⠁⠈⠋    ⠉⠃    ⠉⠃    ⠉⠃                      │
 │  Sequence Dense [sequ││                                                      │
 │  Class Basic [class, ││                                                      │
 │  Class Members [class││                                                      │

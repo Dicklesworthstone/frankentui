@@ -1,4 +1,4 @@
-Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: auto | OK                                  
+Mermaid Showcase | Flow Basic (1/25) | Layout: Auto | Score: 0.8 | Viewport: auto | OK                                  
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭───────Status Log───────╮ 
 │> Flow Basic [flow, S, branch││                                                            ││metrics: off            │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││controls: off           │ 
@@ -11,20 +11,20 @@ Mermaid Showcase | Flow Basic (1/24) | Layout: Auto | Score: 0.8 | Viewport: aut
 │  Sequence Dense [sequence, L││                                                            ││                        │ 
 │  Class Basic [class, S, inhe││                                                            ││                        │ 
 │  Class Members [class, M, fi││                                                            ││                        │ 
-│  State Basic [state, S, star││                                            ┌─────────────┐ ││                        │ 
-│  State Composite [state, M, ││                                            │▄▄▄▄▄▄▄▄▄▄▄▄▄│ ││                        │ 
-│  ER Basic [er, M, cardinalit││                                            │     OK      │ ││                        │ 
-│  Gantt Basic [gantt, M, sect││                                            │▀▀▀▀▀▀▀▀▀▀▀▀▀│ ││                        │ 
-│  Mindmap Seed [mindmap, S, t││                                            └─────────────┘ ││                        │ 
-│  Mindmap Deep [mindmap, L, d││ ┌─────────────┐             ╲╱           Yes               ││                        │ 
-│  Pie Basic [pie, S, title, s││ │▄▄▄▄Start▄▄▄▄│         ╲ Check ╱          │               ││                        │ 
-│  Pie Many [pie, M, many-slic││ │▀▀▀▀▀▀▀▀▀▀▀▀▀│──────╲              ╱──────┤               ││                        │ 
-│  Gitgraph Basic [gitgraph, M││ └─────────────┘         ╱       ╲          │               ││                        │ 
-│  Journey Basic [journey, M, ││                                          No┌─────────────┐ ││                        │ 
-│  Requirement Basic [requirem││                                            │▄▄▄▄▄▄▄▄▄▄▄▄▄│ ││                        │ 
-│  Block Beta Basic [block-bet││                                            │     Fix     │ ││                        │ 
-│  Block Beta Nested [block-be││                                            │▀▀▀▀▀▀▀▀▀▀▀▀▀│ ││                        │ 
-│                             ││                                            └─────────────┘ ││                        │ 
+│  State Basic [state, S, star││                                                            ││                        │ 
+│  State Composite [state, M, ││                                                            ││                        │ 
+│  ER Basic [er, M, cardinalit││                                                  OK        ││                        │ 
+│  Gantt Basic [gantt, M, sect││                                           ⢠⣤             ⣤ ││                        │ 
+│  Mindmap Seed [mindmap, S, t││                                           ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                        │ 
+│  Mindmap Deep [mindmap, L, d││ ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀            ⢀⣀         ⢀⡨Yes⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿ ││                        │ 
+│  Pie Basic [pie, S, title, s││ ⣿    Start    ⣿⡇   ⢠⣀     Check      ⡠⠔⠁                   ││                        │ 
+│  Pie Many [pie, M, many-slic││ ⣿             ⣿⡏⠉⠉⠉⠹⠛⠉              ⠉⠢⢄                    ││                        │ 
+│  Gitgraph Basic [gitgraph, M││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉         ⠑⠢⣰⣰⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ ││                        │ 
+│  Journey Basic [journey, M, ││                                         ⠈No⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                        │ 
+│  Requirement Basic [requirem││                                           ⠘⠛             ⠛ ││                        │ 
+│  Block Beta Basic [block-bet││                                                  Fix       ││                        │ 
+│  Block Beta Nested [block-be││                                                            ││                        │ 
+│  Flow Node Shapes [flow, S, ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 
 │                             ││                                                            ││                        │ 

@@ -1,4 +1,4 @@
-Mermaid Showcase | Error Sample (1/24) | Layout: Auto | Score: -4.2 | Viewport: auto | OK                               
+Mermaid Showcase | Error Sample (1/25) | Layout: Auto | Score: -4.2 | Viewport: auto | OK                               
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
 │> Error Sample [flow, S, bran││╔══════════════════════════════════════════════════════════╗││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││║Mermaid error (1)                                         ║││Tier: auto (t)          │ 
@@ -24,7 +24,7 @@ Mermaid Showcase | Error Sample (1/24) | Layout: Auto | Score: -4.2 | Viewport: 
 │  Requirement Basic [requirem││                              ⡇                             ││Cache: hit 0  miss 1  la│ 
 │  Block Beta Basic [block-bet││                             ⣀⣇⡀                            ││Warnings: 1             │ 
 │  Block Beta Nested [block-be││ ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣘⣟⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ ││Parse: 0.00 ms          │ 
-│                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Layout: 0.00 ms         │ 
+│  Flow Node Shapes [flow, S, ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Layout: 0.00 ms         │ 
 │                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Render: 0.00 ms         │ 
 │                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Viewport: auto          │ 
 │                             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Zoom: 100%              │ 

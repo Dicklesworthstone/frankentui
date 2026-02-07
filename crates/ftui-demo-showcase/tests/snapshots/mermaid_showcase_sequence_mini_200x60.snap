@@ -1,33 +1,33 @@
-Mermaid Showcase | Sequence Mini (7/24) | Layout: Auto | Score: 50.9 | Viewport: auto | OK                                                                                                              
+Mermaid Showcase | Sequence Mini (7/25) | Layout: Auto | Score: 50.9 | Viewport: auto | OK                                                                                                              
 ╭─────────────────────Samples──────────────────────╮╭───────────────────────────────────────────────Viewport───────────────────────────────────────────────╮╭─────────────────Controls─────────────────╮
 │  Flow Basic [flow, S, branch, decision]          ││                                                                                                      ││Layout: Auto (l)                          │
-│  Flow Subgraphs [flow, M, subgraph, clusters]    ││          ┌──────────────────────────────────┐          ┌──────────────────────────────────┐          ││Tier: auto (t)                            │
-│  Flow Dense [flow, L, dense, dag]                ││          │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│          │▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄│          ││Guard: Default (x)                        │
-│  Flow Long Labels [flow, M, labels, wrap]        ││          │                                  │          │                                  │          ││Glyphs: unicode (g)                       │
-│  Flow Unicode [flow, S, unicode, labels]         ││          │                                  │          │                                  │          ││Render: braille (b)                       │
-│  Flow Styles [flow, M, classdef, style]          ││          │                                  │          │                                  │          ││Wrap: wordchar (w)                        │
-│> Sequence Mini [sequence, S, compact]            ││          │                                  │          │                                  │          ││Styles: on (s)                            │
-│  Sequence Checkout [sequence, M, multi-hop, api] ││          │                                  │          │                                  │          ││Links: off (u)                            │
-│  Sequence Dense [sequence, L, dense, timing]     ││          │                                  │          │                                  │          ││Init: off (I)                             │
-│  Class Basic [class, S, inheritance, association]││          │                                  │          │                                  │          ││Errors: panel (e)                         │
-│  Class Members [class, M, fields, methods]       ││          │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│          │▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│          ││Viewport: auto (v)                        │
-│  State Basic [state, S, start-end]               ││          └──────────────────────────────────┘          └──────────────────────────────────┘          ││Zoom: 100% (+/-)                          │
-│  State Composite [state, M, composite, notes]    ││                            │                                             │                           ││Fit: f                                    │
-│  ER Basic [er, M, cardinality, relations]        ││                                                                                                      ││Metrics: on (m)                           │
-│  Gantt Basic [gantt, M, sections, tasks]         ││                            │                                             │                           ││                                          │
-│  Mindmap Seed [mindmap, S, tree]                 ││                                                                                                      ││                                          │
-│  Mindmap Deep [mindmap, L, deep, wide]           ││                            │                                             │                           ││                                          │
-│  Pie Basic [pie, S, title, showdata]             ││                                                                                                      ││                                          │
-│  Pie Many [pie, M, many-slices]                  ││                            │                                             │                           ││                                          │
+│  Flow Subgraphs [flow, M, subgraph, clusters]    ││                                                                                                      ││Tier: auto (t)                            │
+│  Flow Dense [flow, L, dense, dag]                ││                                                                                                      ││Guard: Default (x)                        │
+│  Flow Long Labels [flow, M, labels, wrap]        ││                                                                                                      ││Glyphs: unicode (g)                       │
+│  Flow Unicode [flow, S, unicode, labels]         ││                                                                                                      ││Render: braille (b)                       │
+│  Flow Styles [flow, M, classdef, style]          ││                                                                                                      ││Wrap: wordchar (w)                        │
+│> Sequence Mini [sequence, S, compact]            ││                                                                                                      ││Styles: on (s)                            │
+│  Sequence Checkout [sequence, M, multi-hop, api] ││                                                                                                      ││Links: off (u)                            │
+│  Sequence Dense [sequence, L, dense, timing]     ││                                                                                                      ││Init: off (I)                             │
+│  Class Basic [class, S, inheritance, association]││                                                                                                      ││Errors: panel (e)                         │
+│  Class Members [class, M, fields, methods]       ││                                                                                                      ││Viewport: auto (v)                        │
+│  State Basic [state, S, start-end]               ││ ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀            ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ ││Zoom: 100% (+/-)                          │
+│  State Composite [state, M, composite, notes]    ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Fit: f                                    │
+│  ER Basic [er, M, cardinality, relations]        ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││Metrics: on (m)                           │
+│  Gantt Basic [gantt, M, sections, tasks]         ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│  Mindmap Seed [mindmap, S, tree]                 ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│  Mindmap Deep [mindmap, L, deep, wide]           ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│  Pie Basic [pie, S, title, showdata]             ││ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇            ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ ││                                          │
+│  Pie Many [pie, M, many-slices]                  ││ ⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉│⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁            ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉│⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉ ││                                          │
 │  Gitgraph Basic [gitgraph, M, gitgraph, branches]││                                                                                                      ││                                          │
 │  Journey Basic [journey, M, journey, sections]   ││                            │                                             │                           ││                                          │
 │  Requirement Basic [requirement, M, requirement, ││                                                                                                      ││                                          │
 │  Block Beta Basic [block-beta, S, block-beta, col││                            │                                             │                           ││                                          │
 │  Block Beta Nested [block-beta, M, block-beta, ne││                                                                                                      ││                                          │
-│                                                  ││                            │                                             │                           ││                                          │
+│  Flow Node Shapes [flow, S, shapes, node-shapes] ││                            │                                             │                           ││                                          │
 │                                                  ││                                                                                                      ││                                          │
-│                                                  ││                            ┼───────────────────────Hello─────────────────▶                           ││                                          │
-│                                                  ││                                                                                                      ││                                          │
+│                                                  ││                            │                       Hello                 │  ⢠⣀                       ││                                          │
+│                                                  ││                      ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠹⠝⠋                      ││                                          │
 │                                                  ││                            │                                             │                           ││                                          │
 │                                                  ││                                                                                                      ││                                          │
 │                                                  ││                            │                                             │                           │╰──────────────────────────────────────────╯
@@ -35,13 +35,13 @@ Mermaid Showcase | Sequence Mini (7/24) | Layout: Auto | Score: 50.9 | Viewport:
 │                                                  ││                            │                                             │                           ││Cache: hit 0  miss 1  last miss           │
 │                                                  ││                                                                                                      ││Warnings: 2                               │
 │                                                  ││                            │                                             │                           ││Parse: 0.00 ms                            │
-│                                                  ││                                                                                                      ││Layout: 0.00 ms                           │
-│                                                  ││                            │                                             │                           ││Render: 0.00 ms                           │
+│                                                  ││                      ⠠⢶⣽⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤                      ││Layout: 0.00 ms                           │
+│                                                  ││                        ⠈   │                                             │                           ││Render: 0.00 ms                           │
 │                                                  ││                                                                                                      ││Viewport: auto                            │
 │                                                  ││                            │                                             │                           ││Zoom: 100%                                │
 │                                                  ││                                                                                                      ││Iters: 0                                  │
 │                                                  ││                            │                                             │                           ││Score: 50.90                              │
-│                                                  ││                            ◀───────────────────────Hi!────────────────────                           ││Cross: 0                                  │
+│                                                  ││                                                    Hi!                                               ││Cross: 0                                  │
 │                                                  ││                            │                                             │                           ││Bends: 0                                  │
 │                                                  ││                                                                                                      ││Sym: 1.00                                 │
 │                                                  ││                            │                                             │                           ││Comp: 0.17                                │

@@ -446,12 +446,12 @@ impl SampleRegistry {
 // |----------------------|-----------------------------------|-------------------------------|
 // | Node shapes: []      | Flow Basic, all flow samples      | —                             |
 // | Node shapes: {}      | Flow Basic (decision diamond)     | —                             |
-// | Node shapes: ()      | (none explicitly)                 | TODO: rounded node sample     |
-// | Node shapes: ([])    | (none explicitly)                 | TODO: stadium shape sample    |
-// | Node shapes: [[]]    | (none explicitly)                 | TODO: subroutine sample       |
-// | Node shapes: {{}}    | (none explicitly)                 | TODO: hexagon sample          |
-// | Node shapes: (())    | (none explicitly)                 | TODO: circle shape sample     |
-// | Node shapes: >]      | (none explicitly)                 | TODO: asymmetric shape sample |
+// | Node shapes: ()      | Flow Node Shapes                  | —                             |
+// | Node shapes: ([])    | Flow Node Shapes                  | —                             |
+// | Node shapes: [[]]    | Flow Node Shapes                  | —                             |
+// | Node shapes: {{}}    | Flow Node Shapes                  | —                             |
+// | Node shapes: (())    | Flow Node Shapes                  | —                             |
+// | Node shapes: >]      | Flow Node Shapes                  | —                             |
 // | Edge labels          | Flow Basic, Flow Long Labels,     | —                             |
 // |                      | Flow Subgraphs                    |                               |
 // | Dotted edges -.->    | Flow Dense                        | —                             |
@@ -526,6 +526,12 @@ impl SampleRegistry {
 const KNOWN_FEATURE_TAGS: &[&str] = &[
     // Syntax features
     "basic-nodes",
+    "node-rounded",
+    "node-stadium",
+    "node-subroutine",
+    "node-hexagon",
+    "node-circle",
+    "node-asymmetric",
     "edge-labels",
     "subgraph",
     "classDef",
@@ -580,32 +586,7 @@ const KNOWN_FEATURE_TAGS: &[&str] = &[
 
 /// Features known to be supported but lacking dedicated samples.
 /// Each entry is (feature_tag, description).
-const FEATURE_GAPS: &[(&str, &str)] = &[
-    (
-        "node-rounded",
-        "Rounded node shape () — no sample exercises this",
-    ),
-    (
-        "node-stadium",
-        "Stadium node shape ([]) — no sample exercises this",
-    ),
-    (
-        "node-subroutine",
-        "Subroutine node shape [[]] — no sample exercises this",
-    ),
-    (
-        "node-hexagon",
-        "Hexagon node shape {{}} — no sample exercises this",
-    ),
-    (
-        "node-circle",
-        "Circle node shape (()) — no sample exercises this",
-    ),
-    (
-        "node-asymmetric",
-        "Asymmetric node shape >] — no sample exercises this",
-    ),
-];
+const FEATURE_GAPS: &[(&str, &str)] = &[];
 
 const DEFAULT_SAMPLES: &[MermaidSample] = &[
     MermaidSample {
@@ -1132,9 +1113,37 @@ B -->|No| D[Fix]"#,
     columns 2
     e["Worker 1"] f["Worker 2"]
   end
-  g["Load Balancer"]:4
-  space:2
-  h["Database"]:2"#,
+	  g["Load Balancer"]:4
+	  space:2
+	  h["Database"]:2"#,
+    },
+    MermaidSample {
+        id: "flow-node-shapes",
+        name: "Flow Node Shapes",
+        family: SampleFamily::Flow,
+        complexity: SampleComplexity::S,
+        tags: &["shapes", "node-shapes"],
+        features: &[
+            "basic-nodes",
+            "node-rounded",
+            "node-stadium",
+            "node-subroutine",
+            "node-hexagon",
+            "node-circle",
+            "node-asymmetric",
+        ],
+        edge_cases: &[],
+        default_size: SampleSizeHint {
+            width: 60,
+            height: 12,
+        },
+        notes: "Flowchart node-shape syntax coverage: rounded, stadium, subroutine, hexagon, circle, asymmetric",
+        source: r#"graph LR
+  A(Rounded) --> B([Stadium])
+  B --> C[[Subroutine]]
+  C --> D{{Hexagon}}
+  D --> E((Circle))
+  E --> F>Asymmetric]"#,
     },
 ];
 
@@ -5525,10 +5534,6 @@ mod tests {
 
     #[test]
     fn feature_gaps_are_documented() {
-        assert!(
-            !FEATURE_GAPS.is_empty(),
-            "FEATURE_GAPS should document known uncovered features"
-        );
         for (tag, description) in FEATURE_GAPS {
             assert!(!tag.is_empty(), "Gap tag must not be empty");
             assert!(!description.is_empty(), "Gap description must not be empty");

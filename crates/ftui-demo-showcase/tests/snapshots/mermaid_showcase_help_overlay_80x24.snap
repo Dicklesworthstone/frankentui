@@ -1,16 +1,16 @@
 Mermaid Showca╭─────────────── Help (? to close) ────────────────╮ Viewport: aut
 ╭───────Sample│  Navigation─────────────────────Viewport─────────│─────────────╮
 │> Flow Basic │        j / Down  Next sample                     │             │
-│  Flow Subgra│          k / Up  Previous sample              ┌──│──────┐      │
-│  Flow Dense │      Home / End  First / last sample          │  │OK    │      │
-│  Flow Long L│           Enter  Re-render sample             └──│──────┘      │
-│  Flow Unicod│             Tab  Select next node  ╲╱        Yes │             │
-│  Flow Styles│           S-Tab  Select previous nodek╱       │  │             │
-│  Sequence Mi│               /  Enter search mode       ╱────┤  │             │
-│  Sequence Ch│  Render Config └─────────┘      ╱     ╲       │  │             │
-│  Sequence De│               l  Cycle layout mode           N┌──│──────┐      │
-│  Class Basic│               r  Force re-layout              │  │Fix   │      │
-│  Class Membe│               t  Cycle tier                   └──│──────┘      │
+│  Flow Subgra│          k / Up  Previous sample                 │             │
+│  Flow Dense │      Home / End  First / last sample             │OK           │
+│  Flow Long L│           Enter  Re-render sample               ⢸│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Flow Unicod│             Tab  Select next node            Yes⢾│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Flow Styles│           S-Tab  Select previous nodek   ⣀ ⢀⡠⠊⠁⠈ │             │
+│  Sequence Mi│               /  Enter search mode       ⠋⠉⠑⠢⡀   │             │
+│  Sequence Ch│  Render Config                               ⠈⢑⣼⣼│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Sequence De│               l  Cycle layout mode           No ⢸│⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│  Class Basic│               r  Force re-layout                 │Fix          │
+│  Class Membe│               t  Cycle tier                      │             │
 │  State Basic│               x  Toggle guard profile            │             │
 │  State Compo│               g  Toggle glyph mode───────────────│─────────────╯
 │  ER Basic [e│               b  Cycle render modetrics──────────│─────────────╮

@@ -2901,7 +2901,7 @@ fn mermaid_showcase_flow_basic_200x60() {
 fn mermaid_showcase_flow_dense_guard_tight_80x24() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
-    mermaid_showcase_goto_sample(&mut screen, 2);
+    mermaid_showcase_goto_sample(&mut screen, "flow-dense");
     screen.update(&press(KeyCode::Char('x')));
     mermaid_showcase_snapshot(
         &mut screen,
@@ -2915,13 +2915,26 @@ fn mermaid_showcase_flow_dense_guard_tight_80x24() {
 fn mermaid_showcase_flow_dense_init_directives_120x40() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
-    mermaid_showcase_goto_sample(&mut screen, 2);
+    mermaid_showcase_goto_sample(&mut screen, "flow-dense");
     screen.update(&press(KeyCode::Char('I')));
     mermaid_showcase_snapshot(
         &mut screen,
         120,
         40,
         "mermaid_showcase_flow_dense_init_directives_120x40",
+    );
+}
+
+#[test]
+fn mermaid_showcase_flow_node_shapes_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
+    mermaid_showcase_goto_sample(&mut screen, "flow-node-shapes");
+    mermaid_showcase_snapshot(
+        &mut screen,
+        120,
+        40,
+        "mermaid_showcase_flow_node_shapes_120x40",
     );
 }
 

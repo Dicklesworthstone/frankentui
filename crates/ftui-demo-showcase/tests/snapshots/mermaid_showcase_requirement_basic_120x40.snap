@@ -1,4 +1,4 @@
-Mermaid Showcase | Requirement Basic (22/24) | Layout: Auto | Score: -6.0 | Viewport: auto | OK                         
+Mermaid Showcase | Requirement Basic (22/25) | Layout: Auto | Score: -6.0 | Viewport: auto | OK                         
 ╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
 │  Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
 │  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
@@ -11,20 +11,21 @@ Mermaid Showcase | Requirement Basic (22/24) | Layout: Auto | Score: -6.0 | View
 │  Sequence Dense [sequence, L││                                                            ││Init: off (I)           │ 
 │  Class Basic [class, S, inhe││                                                            ││Errors: panel (e)       │ 
 │  Class Members [class, M, fi││                                                            ││Viewport: auto (v)      │ 
-│  State Basic [state, S, star││ ┌────────────────────────────────────────────────────────┐ ││Zoom: 100% (+/-)        │ 
-│  State Composite [state, M, ││ │<<requirement>>                                         │ ││Fit: f                  │ 
-│  ER Basic [er, M, cardinalit││ │req1                                                    │ ││Metrics: on (m)         │ 
-│  Gantt Basic [gantt, M, sect││ │                                                        │ ││                        │ 
-│  Mindmap Seed [mindmap, S, t││ │                                                        │ ││                        │ 
-│  Mindmap Deep [mindmap, L, d││ │                                                        │ ││                        │ 
-│  Pie Basic [pie, S, title, s││ │                                                        │ ││                        │ 
-│  Pie Many [pie, M, many-slic││ │                                                        │ ││                        │ 
-│  Gitgraph Basic [gitgraph, M││ │                                                        │ │╰────────────────────────╯ 
-│  Journey Basic [journey, M, ││ │                                                        │ │╭────────Metrics─────────╮ 
-│> Requirement Basic [requirem││ │                                                        │ ││Cache: hit 0  miss 1  la│ 
-│  Block Beta Basic [block-bet││ │                                                        │ ││Warnings: 5             │ 
-│  Block Beta Nested [block-be││ │                                                        │ ││Parse: 0.00 ms          │ 
-│                             ││ └────────────────────────────────────────────────────────┘ ││Layout: 0.00 ms         │ 
+│  State Basic [state, S, star││                                                            ││Zoom: 100% (+/-)        │ 
+│  State Composite [state, M, ││                                                            ││Fit: f                  │ 
+│  ER Basic [er, M, cardinalit││                                                            ││Metrics: on (m)         │ 
+│  Gantt Basic [gantt, M, sect││ ⣤                                                        ⣤ ││                        │ 
+│  Mindmap Seed [mindmap, S, t││ ⣿                                                        ⣿ ││                        │ 
+│  Mindmap Deep [mindmap, L, d││ ⣿                                                        ⣿ ││                        │ 
+│  Pie Basic [pie, S, title, s││ ⣿                  <<requirement>>
+req1                  ⣿ ││                        │ 
+│  Pie Many [pie, M, many-slic││ ⣿                                                        ⣿ ││                        │ 
+│  Gitgraph Basic [gitgraph, M││ ⣿                                                        ⣿ │╰────────────────────────╯ 
+│  Journey Basic [journey, M, ││ ⣿                                                        ⣿ │╭────────Metrics─────────╮ 
+│> Requirement Basic [requirem││ ⠿                                                        ⠿ ││Cache: hit 0  miss 1  la│ 
+│  Block Beta Basic [block-bet││                                                            ││Warnings: 5             │ 
+│  Block Beta Nested [block-be││                                                            ││Parse: 0.00 ms          │ 
+│  Flow Node Shapes [flow, S, ││                                                            ││Layout: 0.00 ms         │ 
 │                             ││                                                            ││Render: 0.00 ms         │ 
 │                             ││                                                            ││Viewport: auto          │ 
 │                             ││                                                            ││Zoom: 100%              │ 
