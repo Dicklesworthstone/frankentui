@@ -8504,4 +8504,64 @@ mod tests {
             "label text should preserve the node fill background color"
         );
     }
+
+    // -- sequence diagram snapshots at multiple sizes --
+
+    
+
+    
+
+    
+
+    
+
+    
+
+
+    // -- sequence diagram snapshots at multiple sizes --
+
+    #[test]
+    fn snapshot_sequence_basic_80x24() {
+        let source = include_str!("../tests/fixtures/mermaid/sequence_basic.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert_buffer_snapshot_text("mermaid_sequence_basic_80x24", &buf);
+    }
+
+    #[test]
+    fn snapshot_sequence_basic_120x40() {
+        let source = include_str!("../tests/fixtures/mermaid/sequence_basic.mmd");
+        let (buf, _plan) = e2e_render(source, 120, 40);
+        assert_buffer_snapshot_text("mermaid_sequence_basic_120x40", &buf);
+    }
+
+    #[test]
+    fn snapshot_sequence_stress_80x24() {
+        let source = include_str!("../tests/fixtures/mermaid/sequence_stress.mmd");
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        assert_buffer_snapshot_text("mermaid_sequence_stress_80x24", &buf);
+    }
+
+    #[test]
+    fn snapshot_sequence_stress_120x40() {
+        let source = include_str!("../tests/fixtures/mermaid/sequence_stress.mmd");
+        let (buf, _plan) = e2e_render(source, 120, 40);
+        assert_buffer_snapshot_text("mermaid_sequence_stress_120x40", &buf);
+    }
+
+    #[test]
+    fn e2e_sequence_layout_structure() {
+        let source = "sequenceDiagram\nAlice->>Bob: Hello\nBob-->>Alice: Reply\n";
+        let (buf, _plan) = e2e_render(source, 80, 24);
+        // Verify buffer has non-trivial content (lifelines, arrows, text)
+        let non_empty = (0..buf.width())
+            .flat_map(|x| (0..buf.height()).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                buf.get(x, y)
+                    .and_then(|c| c.content.as_char())
+                    .map_or(false, |ch| ch != ' ')
+            })
+            .count();
+        assert!(non_empty > 10, "sequence render should produce visible content, got {non_empty}");
+    }
+
 }

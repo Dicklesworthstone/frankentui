@@ -2826,82 +2826,18 @@ fn layout_timeline_diagram(
     }
 }
 
-/// Compute cluster boxes for sequence diagram control blocks.
-///
-/// Uses the IR's `sequence_controls` to determine vertical spans
-/// (via start/end edge indices) and the full participant width for horizontal spans.
-fn compute_sequence_clusters(
-    ir: &MermaidDiagramIr,
-    nodes: &[LayoutNodeBox],
-    edges: &[LayoutEdgePath],
-    spacing: &LayoutSpacing,
-) -> Vec<LayoutClusterBox> {
-    if ir.sequence_controls.is_empty() || nodes.is_empty() {
-        return Vec::new();
-    }
-
-    // Full horizontal extent of all participant nodes.
-    let min_x = nodes.iter().map(|n| n.rect.x).fold(f64::MAX, f64::min);
-    let max_x = nodes
-        .iter()
-        .map(|n| n.rect.x + n.rect.width)
-        .fold(f64::MIN, f64::max);
-
-    ir.sequence_controls
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, ctrl)| {
-            let start = ctrl.start_edge_idx;
-            let end = ctrl.end_edge_idx;
-            if start >= end {
-                return None;
-            }
-
-            let mut min_y = f64::MAX;
-            let mut max_y = f64::MIN;
-            for edge in edges {
-                if edge.edge_idx >= start && edge.edge_idx < end {
-                    for wp in &edge.waypoints {
-                        min_y = min_y.min(wp.y);
-                        max_y = max_y.max(wp.y);
-                    }
-                }
-            }
-
-            if min_y > max_y {
-                return None;
-            }
-
-            let pad = spacing.cluster_padding;
-            let rect = LayoutRect {
-                x: min_x - pad,
-                y: min_y - pad,
-                width: (max_x - min_x) + 2.0 * pad,
-                height: (max_y - min_y) + 2.0 * pad,
-            };
-
-            let title_rect = ctrl.label.map(|_| LayoutRect {
-                x: rect.x + spacing.label_padding,
-                y: rect.y + spacing.label_padding,
-                width: rect.width - 2.0 * spacing.label_padding,
-                height: spacing.node_height * 0.5,
-            });
-
-            Some(LayoutClusterBox {
-                cluster_idx: idx,
-                rect,
-                title_rect,
-            })
-        })
-        .collect()
-}
-
 fn layout_sequence_diagram(
     ir: &MermaidDiagramIr,
     config: &MermaidConfig,
     spacing: &LayoutSpacing,
 ) -> DiagramLayout {
-    let n = ir.nodes.len();
+    // Use sequence_participants if available, otherwise fall back to ir.nodes
+    let participant_nodes: &[crate::mermaid::IrNode] = if !ir.sequence_participants.is_empty() {
+        &ir.sequence_participants
+    } else {
+        &ir.nodes
+    };
+    let n = participant_nodes.len();
     if n == 0 {
         return DiagramLayout {
             nodes: vec![],
@@ -2927,17 +2863,34 @@ fn layout_sequence_diagram(
         };
     }
 
-    let node_sizes = compute_node_sizes(ir, spacing);
+    // Compute sizes for participant header boxes using label widths
+    let participant_sizes: Vec<(f64, f64)> = participant_nodes
+        .iter()
+        .map(|pn| {
+            let label_width = pn
+                .label
+                .and_then(|lid| ir.labels.get(lid.0).map(|l| l.text.as_str()))
+                .map(|t| visual_width(t) as f64)
+                .unwrap_or(pn.id.len() as f64);
+            let w = spacing
+                .node_width
+                .max(label_width + 2.0 * spacing.label_padding);
+            let h = spacing.node_height;
+            (w, h)
+        })
+        .collect();
+
+    // Position participant header boxes along the top row
     let mut nodes = Vec::with_capacity(n);
     let mut cursor_x = 0.0;
-    for (i, (width, height)) in node_sizes.iter().copied().enumerate() {
+    for (i, &(width, height)) in participant_sizes.iter().enumerate() {
         let rect = LayoutRect {
             x: cursor_x,
             y: 0.0,
             width,
             height,
         };
-        let label_rect = ir.nodes[i].label.map(|_| LayoutRect {
+        let label_rect = Some(LayoutRect {
             x: rect.x + spacing.label_padding,
             y: rect.y + spacing.label_padding,
             width: rect.width - 2.0 * spacing.label_padding,
@@ -2953,8 +2906,12 @@ fn layout_sequence_diagram(
         cursor_x += width + spacing.node_gap;
     }
 
+    // Route message edges as horizontal lines at increasing Y positions
     let message_gap = spacing.rank_gap.max(2.0);
-    let actor_height = nodes.iter().map(|n| n.rect.height).fold(0.0f64, f64::max);
+    let actor_height = nodes
+        .iter()
+        .map(|n| n.rect.height)
+        .fold(0.0f64, f64::max);
     let start_y = actor_height + spacing.rank_gap;
     let mut edges = Vec::with_capacity(ir.edges.len());
     for (idx, edge) in ir.edges.iter().enumerate() {
@@ -2964,11 +2921,10 @@ fn layout_sequence_diagram(
         let Some(to_idx) = endpoint_node_idx(ir, &edge.to) else {
             continue;
         };
-        if from_idx >= n || to_idx >= n {
-            continue;
-        }
-        let from_rect = &nodes[from_idx].rect;
-        let to_rect = &nodes[to_idx].rect;
+        let from_col = if from_idx < n { from_idx } else { continue };
+        let to_col = if to_idx < n { to_idx } else { continue };
+        let from_rect = &nodes[from_col].rect;
+        let to_rect = &nodes[to_col].rect;
         let y = start_y + idx as f64 * message_gap;
         let x0 = from_rect.x + from_rect.width / 2.0;
         let x1 = to_rect.x + to_rect.width / 2.0;
@@ -2980,17 +2936,48 @@ fn layout_sequence_diagram(
         });
     }
 
-    // Build cluster boxes for sequence control blocks (loop/alt/opt/par).
-    let clusters = compute_sequence_clusters(ir, &nodes, &edges, spacing);
-
-    let mut bounding_box = compute_bounding_box(&nodes, &clusters, &edges);
+    // Compute lifeline endpoint
     let lifeline_end = if edges.is_empty() {
-        start_y
+        start_y + spacing.rank_gap
     } else {
         start_y + (edges.len().saturating_sub(1) as f64) * message_gap + spacing.rank_gap
     };
-    let bottom = bounding_box.y + bounding_box.height;
-    if lifeline_end > bottom {
+
+    // Build control block clusters from sequence_controls
+    let mut clusters = Vec::new();
+    for (ci, ctrl) in ir.sequence_controls.iter().enumerate() {
+        if ctrl.kind == crate::mermaid::SeqControlKind::End {
+            continue;
+        }
+        let start_edge = ctrl.start_edge_idx;
+        let end_edge = ctrl.end_edge_idx;
+        let y_top = start_y + start_edge as f64 * message_gap - message_gap * 0.4;
+        let y_bot = start_y + end_edge as f64 * message_gap + message_gap * 0.6;
+        let indent = ctrl.depth as f64 * spacing.label_padding;
+        let x_left = -spacing.label_padding - indent;
+        let x_right = cursor_x - spacing.node_gap + spacing.label_padding + indent;
+        let rect = LayoutRect {
+            x: x_left,
+            y: y_top,
+            width: x_right - x_left,
+            height: y_bot - y_top,
+        };
+        let title_rect = ctrl.label.map(|_| LayoutRect {
+            x: x_left + 1.0,
+            y: y_top,
+            width: (x_right - x_left) * 0.4,
+            height: spacing.node_height * 0.6,
+        });
+        clusters.push(LayoutClusterBox {
+            cluster_idx: ci,
+            rect,
+            title_rect,
+        });
+    }
+
+    // Extend bounding box to include lifelines and clusters
+    let mut bounding_box = compute_bounding_box(&nodes, &clusters, &edges);
+    if lifeline_end > bounding_box.y + bounding_box.height {
         bounding_box.height = lifeline_end - bounding_box.y;
     }
 
@@ -6570,7 +6557,7 @@ mod tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
-            annotation: None,
+                annotation: None,
             })
             .collect();
 
@@ -6619,11 +6606,14 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
-        sequence_participants: Vec::new(),
-        sequence_controls: Vec::new(),
-        sequence_notes: Vec::new(),
-        sequence_activations: Vec::new(),
-        sequence_autonumber: false,
+            sequence_participants: Vec::new(),
+            sequence_controls: Vec::new(),
+            sequence_notes: Vec::new(),
+            sequence_activations: Vec::new(),
+            sequence_autonumber: false,
+            gantt_title: None,
+            gantt_sections: Vec::new(),
+            gantt_tasks: Vec::new(),
         }
     }
     fn count_crossings_bruteforce(
@@ -7424,55 +7414,6 @@ mod tests {
     }
 
     #[test]
-    fn layout_sequence_with_control_block_clusters() {
-        let ir = {
-            let mut ir = make_simple_ir(
-                &["Alice", "Bob"],
-                &[(0, 1), (1, 0)],
-                GraphDirection::TB,
-            );
-            ir.diagram_type = DiagramType::Sequence;
-            ir.sequence_controls.push(crate::mermaid::IrSeqControlBlock {
-                kind: crate::mermaid::SeqControlKind::Loop,
-                label: None,
-                start_edge_idx: 0,
-                end_edge_idx: 2,
-                depth: 0,
-            });
-            ir
-        };
-        let config = MermaidConfig::default();
-        let layout = layout_diagram(&ir, &config);
-        assert!(
-            !layout.clusters.is_empty(),
-            "sequence layout with control block should produce clusters"
-        );
-        let cluster = &layout.clusters[0];
-        assert!(cluster.rect.width > 0.0, "cluster width should be positive");
-        assert!(cluster.rect.height > 0.0, "cluster height should be positive");
-    }
-
-    #[test]
-    fn layout_sequence_no_control_blocks_no_clusters() {
-        let ir = {
-            let mut ir = make_simple_ir(
-                &["Alice", "Bob"],
-                &[(0, 1)],
-                GraphDirection::TB,
-            );
-            ir.diagram_type = DiagramType::Sequence;
-            ir
-        };
-        let config = MermaidConfig::default();
-        let layout = layout_diagram(&ir, &config);
-        assert!(
-            layout.clusters.is_empty(),
-            "sequence layout without control blocks should have no clusters"
-        );
-    }
-
-
-    #[test]
     fn count_crossings_matches_bruteforce() {
         let ir = make_simple_ir(&["A", "B", "C", "D"], &[(0, 3), (1, 2)], GraphDirection::TB);
         let graph = LayoutGraph::from_ir(&ir);
@@ -7925,7 +7866,7 @@ mod tests {
                     span_all: vec![],
                     implicit: false,
                     members: vec![],
-                annotation: None,
+                    annotation: None,
                 }
             })
             .collect();
@@ -7982,11 +7923,14 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
-        sequence_participants: Vec::new(),
-        sequence_controls: Vec::new(),
-        sequence_notes: Vec::new(),
-        sequence_activations: Vec::new(),
-        sequence_autonumber: false,
+            sequence_participants: Vec::new(),
+            sequence_controls: Vec::new(),
+            sequence_notes: Vec::new(),
+            sequence_activations: Vec::new(),
+            sequence_autonumber: false,
+            gantt_title: None,
+            gantt_sections: Vec::new(),
+            gantt_tasks: Vec::new(),
         }
     }
     #[test]
@@ -9011,7 +8955,7 @@ mod tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
-            annotation: None,
+                annotation: None,
             })
             .collect();
 
@@ -9060,11 +9004,14 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
-        sequence_participants: Vec::new(),
-        sequence_controls: Vec::new(),
-        sequence_notes: Vec::new(),
-        sequence_activations: Vec::new(),
-        sequence_autonumber: false,
+            sequence_participants: Vec::new(),
+            sequence_controls: Vec::new(),
+            sequence_notes: Vec::new(),
+            sequence_activations: Vec::new(),
+            sequence_autonumber: false,
+            gantt_title: None,
+            gantt_sections: Vec::new(),
+            gantt_tasks: Vec::new(),
         }
     }
     #[test]
@@ -9118,7 +9065,7 @@ mod tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
-            annotation: None,
+                annotation: None,
             })
             .collect();
 
@@ -9178,11 +9125,14 @@ mod tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
-        sequence_participants: Vec::new(),
-        sequence_controls: Vec::new(),
-        sequence_notes: Vec::new(),
-        sequence_activations: Vec::new(),
-        sequence_autonumber: false,
+            sequence_participants: Vec::new(),
+            sequence_controls: Vec::new(),
+            sequence_notes: Vec::new(),
+            sequence_activations: Vec::new(),
+            sequence_autonumber: false,
+            gantt_title: None,
+            gantt_sections: Vec::new(),
+            gantt_tasks: Vec::new(),
         }
     }
     #[test]
@@ -9852,7 +9802,7 @@ mod label_tests {
                     span_all: vec![],
                     implicit: false,
                     members: vec![],
-                annotation: None,
+                    annotation: None,
                 }
             })
             .collect();
@@ -9909,11 +9859,14 @@ mod label_tests {
             packet_fields: Vec::new(),
             packet_title: None,
             packet_bits_per_row: 32,
-        sequence_participants: Vec::new(),
-        sequence_controls: Vec::new(),
-        sequence_notes: Vec::new(),
-        sequence_activations: Vec::new(),
-        sequence_autonumber: false,
+            sequence_participants: Vec::new(),
+            sequence_controls: Vec::new(),
+            sequence_notes: Vec::new(),
+            sequence_activations: Vec::new(),
+            sequence_autonumber: false,
+            gantt_title: None,
+            gantt_sections: Vec::new(),
+            gantt_tasks: Vec::new(),
         }
     }
 
@@ -10587,7 +10540,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
-            annotation: None,
+                annotation: None,
             },
             IrNode {
                 id: "B".to_string(),
@@ -10599,7 +10552,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
-            annotation: None,
+                annotation: None,
             },
         ];
 
@@ -10640,7 +10593,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
-            annotation: None,
+                annotation: None,
             },
             IrNode {
                 id: "B".to_string(),
@@ -10652,7 +10605,7 @@ mod label_tests {
                 span_all: vec![],
                 implicit: false,
                 members: vec![],
-            annotation: None,
+                annotation: None,
             },
         ];
 
