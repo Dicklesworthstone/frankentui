@@ -5024,7 +5024,16 @@ pub fn normalize_ast_to_ir(
                                 node_drafts[node_idx].annotation = Some(format!("<<{ann}>>"));
                             }
                         } else {
-                            node_drafts[node_idx].members.push(member.clone());
+                            let trimmed = member.trim();
+                    if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
+                        let ann = trimmed[2..trimmed.len() - 2].trim();
+                        if !ann.is_empty() {
+                            node_drafts[node_idx].annotation =
+                                Some(format!("<<{ann}>>"));
+                        }
+                    } else {
+                        node_drafts[node_idx].members.push(member.clone());
+                    }
                         }
                     }
                 }
@@ -5346,6 +5355,32 @@ pub fn normalize_ast_to_ir(
     // Remap pre-sort node_map indices to post-sort ir.nodes indices for
     // sequence activations and notes. node_map stores insertion-order indices,
     // but ir.nodes uses post-sort indices. Without this remapping, activations
+    // and notes reference wrong nodes when participants aren't alphabetically ordered.
+    {
+        let mut pre_to_post: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        for (id, &pre_idx) in &node_map {
+            if let Some(post_id) = node_id_map.get(id) {
+                pre_to_post.insert(pre_idx, post_id.0);
+            }
+        }
+        for activation in &mut seq_activations {
+            if let Some(&post) = pre_to_post.get(&activation.node_idx) {
+                activation.node_idx = post;
+            }
+        }
+        for note in &mut seq_notes {
+            note.over_nodes = note
+                .over_nodes
+                .iter()
+                .filter_map(|pre| pre_to_post.get(pre).copied())
+                .collect();
+        }
+    }
+
+    // Remap pre-sort node_map indices to post-sort ir.nodes indices for
+    // sequence activations and notes. node_map stores insertion-order indices,
+    // but ir.nodes uses post-sort order. Without this remapping, activations
     // and notes reference wrong nodes when participants aren't alphabetically ordered.
     {
         let mut pre_to_post: std::collections::HashMap<usize, usize> =

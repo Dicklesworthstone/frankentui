@@ -3092,17 +3092,51 @@ impl MermaidRenderer {
         buf: &mut Buffer,
     ) {
         let bar_cell = Cell::from_char(' ').with_fg(self.colors.node_border);
-        let spacing_rank_gap = 2.0f64;
-        let actor_height = layout
-            .nodes
-            .iter()
-            .map(|n| n.rect.height)
-            .fold(0.0f64, f64::max);
-        let start_y = actor_height + spacing_rank_gap;
+
+        // Derive message_gap and start_y from actual layout edge positions
+        // instead of hardcoded constants, so activation bars align with edges.
+        let (start_y, spacing_rank_gap) = if layout.edges.len() >= 2 {
+            let y0 = layout.edges[0].waypoints.first().map_or(0.0, |p| p.y);
+            let y1 = layout.edges[1].waypoints.first().map_or(0.0, |p| p.y);
+            (y0, (y1 - y0).abs().max(0.1))
+        } else if let Some(first) = layout.edges.first() {
+            let y0 = first.waypoints.first().map_or(0.0, |p| p.y);
+            (y0, 2.0)
+        } else {
+            let actor_height = layout
+                .nodes
+                .iter()
+                .map(|n| n.rect.height)
+                .fold(0.0f64, f64::max);
+            (actor_height + 2.0, 2.0)
+        };
+
+        // Map ir.nodes index -> layout column index for activation positioning.
+        // activation.node_idx is a post-sort ir.nodes index, but layout.nodes
+        // are indexed by participant column. We need the mapping when note nodes
+        // or other non-participant nodes exist in ir.nodes.
+        let participant_nodes = if !ir.sequence_participants.is_empty() {
+            &ir.sequence_participants
+        } else {
+            &ir.nodes
+        };
+        let mut ir_node_to_col: Vec<Option<usize>> = vec![None; ir.nodes.len()];
+        for (col, pn) in participant_nodes.iter().enumerate() {
+            if let Some(pos) = ir.nodes.iter().position(|n| n.id == pn.id) {
+                ir_node_to_col[pos] = Some(col);
+            }
+        }
 
         for activation in &ir.sequence_activations {
-            let node_idx = activation.node_idx;
-            let Some(node) = layout.nodes.get(node_idx) else {
+            let col = match ir_node_to_col
+                .get(activation.node_idx)
+                .copied()
+                .flatten()
+            {
+                Some(c) => c,
+                None => continue,
+            };
+            let Some(node) = layout.nodes.get(col) else {
                 continue;
             };
             let center_x = node.rect.x + node.rect.width / 2.0;
