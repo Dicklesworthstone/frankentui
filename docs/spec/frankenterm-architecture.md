@@ -518,6 +518,33 @@ Minimal example (JSONL; one object per line):
 | WebSocket frame overhead | < 4 bytes/cell | Binary frame size measurement |
 | Reconnect time | < 2s | Session resumption benchmark |
 
+### 8.4 Formal Cost Models (bd-lff4p.5.6)
+
+We tune cache eviction and queue scheduling using explicit objective functions.
+
+Scheduler objective (implemented in `crates/ftui-runtime/src/queueing_scheduler.rs`):
+
+```text
+priority = (weight / remaining_time) + aging_factor * wait_time
+priority = max(priority, (weight / remaining_time) * starve_boost_ratio) when wait>=wait_starve_ms
+loss_proxy = 1 / max(priority, w_min)
+```
+
+Cache objective (implemented in `crates/frankenterm-web/src/glyph_atlas.rs`):
+
+```text
+miss_rate      = misses / (hits + misses)
+eviction_rate  = evictions / max(1, misses)
+pressure_ratio = bytes_cached / max_cached_bytes
+cache_loss     = miss_rate + 0.25*eviction_rate + 0.5*pressure_ratio
+```
+
+Evidence ledger requirements:
+- Log objective components (not just final decisions) in JSONL traces.
+- Record priors (`aging_factor`, `starve_boost_ratio`, cache loss weights) with each run.
+- Report posteriors as before/after objective measurements per candidate policy.
+- Only land policy changes when loss improves without violating determinism checksums.
+
 ---
 
 ## 9. Invariants
