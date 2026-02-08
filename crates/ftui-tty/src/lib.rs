@@ -1185,12 +1185,19 @@ mod tests {
         let (reader, mut writer) = pipe_pair();
         let mut src = TtyEventSource::from_reader(80, 24, reader);
         let payload = vec![b'a'; 4 * 1024 * 1024];
-        writer.write_all(&payload).unwrap();
-
-        assert!(src.poll_event(Duration::from_millis(100)).unwrap());
+        let expected_len = payload.len();
+        let writer_thread = std::thread::spawn(move || writer.write_all(&payload));
 
         let mut count = 0usize;
-        loop {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while count < expected_len {
+            if !src.poll_event(Duration::from_millis(100)).unwrap() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for burst events: received {count} / {expected_len}"
+                );
+                continue;
+            }
             while let Some(event) = src.read_event().unwrap() {
                 match event {
                     Event::Key(KeyEvent {
@@ -1200,17 +1207,10 @@ mod tests {
                     other => panic!("unexpected event in ascii burst test: {other:?}"),
                 }
             }
-
-            if !src.poll_event(Duration::from_millis(0)).unwrap() {
-                break;
-            }
         }
+        writer_thread.join().unwrap().unwrap();
 
-        assert_eq!(
-            count,
-            payload.len(),
-            "all bytes should decode to key events"
-        );
+        assert_eq!(count, expected_len, "all bytes should decode to key events");
     }
 
     #[test]
