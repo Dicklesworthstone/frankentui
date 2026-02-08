@@ -81,7 +81,11 @@ impl RawModeGuard {
     /// restores the original termios on drop.
     pub fn enter() -> io::Result<Self> {
         let tty = std::fs::File::open("/dev/tty")?;
+        Self::enter_on(tty)
+    }
 
+    /// Enter raw mode on a specific terminal file (e.g., a PTY slave for testing).
+    pub fn enter_on(tty: std::fs::File) -> io::Result<Self> {
         let original_termios = nix::sys::termios::tcgetattr(&tty).map_err(io::Error::other)?;
 
         let mut raw = original_termios.clone();
@@ -1282,5 +1286,146 @@ mod tests {
         assert_eq!(src.features(), BackendFeatures::default());
         // Verify disable sequences were written.
         assert!(!buf.is_empty());
+    }
+
+    // ── PTY-based raw mode tests ─────────────────────────────────────
+
+    #[cfg(unix)]
+    mod pty_tests {
+        use super::*;
+        use nix::pty::openpty;
+        use nix::sys::termios::{self, LocalFlags};
+        use std::io::Read;
+
+        fn pty_pair() -> (std::fs::File, std::fs::File) {
+            let result = openpty(None, None).expect("openpty failed");
+            (
+                std::fs::File::from(result.master),
+                std::fs::File::from(result.slave),
+            )
+        }
+
+        #[test]
+        fn raw_mode_entered_and_restored_on_drop() {
+            let (_master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            // Before: canonical mode with ECHO.
+            let before = termios::tcgetattr(&slave_dup).unwrap();
+            assert!(
+                before.local_flags.contains(LocalFlags::ECHO),
+                "default termios should have ECHO"
+            );
+            assert!(
+                before.local_flags.contains(LocalFlags::ICANON),
+                "default termios should have ICANON"
+            );
+
+            {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+
+                // During: raw mode — no echo, no canonical.
+                let during = termios::tcgetattr(&slave_dup).unwrap();
+                assert!(
+                    !during.local_flags.contains(LocalFlags::ECHO),
+                    "raw mode should clear ECHO"
+                );
+                assert!(
+                    !during.local_flags.contains(LocalFlags::ICANON),
+                    "raw mode should clear ICANON"
+                );
+            }
+
+            // After drop: original termios restored.
+            let after = termios::tcgetattr(&slave_dup).unwrap();
+            assert!(
+                after.local_flags.contains(LocalFlags::ECHO),
+                "should restore ECHO after drop"
+            );
+            assert!(
+                after.local_flags.contains(LocalFlags::ICANON),
+                "should restore ICANON after drop"
+            );
+        }
+
+        #[test]
+        fn panic_restores_termios() {
+            let (_master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            // Spawn a thread that panics with the guard held.
+            let handle = std::thread::spawn(move || {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+                panic!("intentional panic for testing raw mode cleanup");
+            });
+
+            assert!(handle.join().is_err(), "thread should have panicked");
+
+            // Verify termios restored despite the panic.
+            let after = termios::tcgetattr(&slave_dup).unwrap();
+            assert!(
+                after.local_flags.contains(LocalFlags::ECHO),
+                "ECHO should be restored after panic"
+            );
+            assert!(
+                after.local_flags.contains(LocalFlags::ICANON),
+                "ICANON should be restored after panic"
+            );
+        }
+
+        #[test]
+        fn backend_drop_writes_cleanup_sequences() {
+            let (mut master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+
+                // Write feature-enable sequences to the PTY.
+                let mut stdout_buf = Vec::new();
+                let all_on = BackendFeatures {
+                    mouse_capture: true,
+                    bracketed_paste: true,
+                    focus_events: true,
+                    kitty_keyboard: true,
+                };
+                TtyEventSource::write_feature_delta(
+                    &BackendFeatures::default(),
+                    &all_on,
+                    &mut stdout_buf,
+                )
+                .unwrap();
+                // Also write cleanup as if TtyBackend::drop ran.
+                write_cleanup_sequence(&all_on, true, &mut stdout_buf).unwrap();
+
+                // Write it all to the slave so master can read it.
+                use std::io::Write;
+                let mut slave_writer = slave_dup.try_clone().unwrap();
+                slave_writer.write_all(&stdout_buf).unwrap();
+                slave_writer.flush().unwrap();
+            }
+
+            // Read from master to verify cleanup sequences were written.
+            let mut buf = vec![0u8; 2048];
+            let n = master.read(&mut buf).unwrap();
+            let output = &buf[..n];
+
+            assert!(
+                output.windows(CURSOR_SHOW.len()).any(|w| w == CURSOR_SHOW),
+                "cleanup must show cursor"
+            );
+            assert!(
+                output
+                    .windows(MOUSE_DISABLE.len())
+                    .any(|w| w == MOUSE_DISABLE),
+                "cleanup must disable mouse"
+            );
+            assert!(
+                output
+                    .windows(ALT_SCREEN_LEAVE.len())
+                    .any(|w| w == ALT_SCREEN_LEAVE),
+                "cleanup must leave alt-screen"
+            );
+        }
     }
 }
