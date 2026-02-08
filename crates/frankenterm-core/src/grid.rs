@@ -171,6 +171,11 @@ impl Grid {
         let sr = start_row.min(self.rows);
         let er = end_row.min(self.rows);
 
+        // Both bounds clamped to self.rows means nothing to erase.
+        if sr >= self.rows {
+            return;
+        }
+
         if sr == er {
             // Single row partial erase.
             let sc = start_col.min(self.cols);
