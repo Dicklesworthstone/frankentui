@@ -1,0 +1,15 @@
+[package]
+name = "ftui-tty"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Native Unix terminal backend for FrankenTUI (replaces Crossterm)."
+repository = "https://github.com/Dicklesworthstone/frankentui"
+homepage = "https://github.com/Dicklesworthstone/frankentui"
+documentation = "https://docs.rs/ftui-tty"
+readme = "../../README.md"
+
+[dependencies]
+ftui-backend = { path = "../ftui-backend", version = "0.1.0" }
+ftui-core = { path = "../ftui-core", version = "0.1.1" }
+ftui-render = { path = "../ftui-render", version = "0.1.1" }

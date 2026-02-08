@@ -18,6 +18,8 @@ members = [
   "crates/ftui-demo-showcase",
   "crates/frankenterm-core",
   "crates/frankenterm-web",
+  "crates/ftui-backend",
+  "crates/ftui-tty",
 ]
 
 [profile.release]
