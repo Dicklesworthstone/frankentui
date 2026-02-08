@@ -88,6 +88,51 @@ See `.github/workflows/ci.yml` for the full configuration.
 - Expanded PTY tests on Windows CI runners
 - More explicit capability probes for missing env vars
 
+## Deferred Native Backend Strategy (bd-lff4p.4.9)
+
+This is the implementation plan for Windows **after** the Unix backend (`ftui-tty`)
+is stable. It is intentionally non-blocking for current Unix + web delivery.
+
+### Strategy Decision
+
+- Keep backend abstraction in `ftui-backend` as the stable seam.
+- Implement Windows support as a dedicated crate (`ftui-win32`, name tentative),
+  not by re-expanding `crossterm` usage in runtime/core.
+- Reuse existing shared layers unchanged:
+  - `ftui-core` event/capability model
+  - `ftui-render` frame/diff/presenter
+  - `ftui-runtime` program loop + one-writer ownership model
+
+### Dependency Plan
+
+| Phase | Goal | Primary Dependencies | Notes |
+|------|------|----------------------|-------|
+| 0 (current) | Keep Windows CI green while Unix backend evolves | Existing workspace deps only | No new Windows-only runtime dependency yet |
+| 1 | Introduce backend crate skeleton + RAII lifecycle | `windows-sys` (or `windows`) APIs for console mode + handles | Mirror `TerminalSession` cleanup invariants |
+| 2 | Input path parity (key/mouse/resize/focus) | Win32 console input records + ConPTY/terminal mode probes | Normalize to `ftui_core::event::Event` |
+| 3 | Output + capability parity | VT enablement APIs, cursor/screen mode toggles, synchronized flushing | Preserve one-writer rule from `TerminalWriter` |
+| 4 | Validation + hardening | Windows CI matrix + deterministic snapshot/e2e fixtures | Add terminal-specific fixtures (Windows Terminal + legacy paths) |
+
+### Scope Boundaries (Non-Blocking)
+
+- Work in this plan must **not** block:
+  - `bd-lff4p.2*` (web renderer/input path)
+  - `bd-lff4p.3*` (ftui-web WASM path)
+  - `bd-lff4p.10*` (remote protocol/PTY bridge)
+- Unix-first milestones remain priority; Windows native backend starts only after:
+  1. Unix backend API stabilizes,
+  2. parity tests for core lifecycle pass consistently,
+  3. CI signal for existing targets is green.
+
+### Risk Register (Windows-Specific)
+
+- Console capability fragmentation (Windows Terminal vs ConHost/cmd.exe):
+  mitigate by capability-driven branches and strict downgrade paths.
+- Input encoding differences:
+  mitigate with explicit normalization tests (modifiers, IME, surrogate pairs).
+- Cleanup regressions on abrupt exits:
+  mitigate with RAII + panic-path tests mirroring Unix teardown guarantees.
+
 ## Cross-References
 
 - ADR-004 (Windows v1 scope) — pending

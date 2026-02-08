@@ -42,6 +42,105 @@ Optional / higher-churn:
 - Rust nightly (required by `rust-toolchain.toml`)
 - A terminal with basic ANSI support (tmux/zellij are supported)
 
+## Embedding In `frankentui_website` (Next.js + bun)
+
+This section is for the web stack (`ftui-web` + `frankenterm-web`) and is
+explicitly **xterm.js-free**.
+
+### 1. Build artifacts from this repo
+
+From `frankentui/`:
+
+```bash
+# One-time target install
+rustup target add wasm32-unknown-unknown
+
+# Verify ftui-web compiles for wasm32 (backend crate used by the web stack)
+cargo check -p ftui-web --target wasm32-unknown-unknown
+
+# Optional: emit ftui-web release artifacts into target/wasm32-unknown-unknown/release/deps/
+cargo build -p ftui-web --target wasm32-unknown-unknown --release
+
+# Build frankenterm-web for browser consumption and write directly into the website repo
+wasm-pack build crates/frankenterm-web \
+  --target web \
+  --release \
+  --out-dir ../frankentui_website/src/wasm/frankenterm-web
+```
+
+Expected output files in `frankentui_website/src/wasm/frankenterm-web/`:
+
+- `frankenterm_web.js`
+- `frankenterm_web_bg.wasm`
+- `frankenterm_web.d.ts`
+
+### 2. Initialize in a Next.js client component
+
+```tsx
+"use client";
+
+import { useEffect, useRef } from "react";
+import init, { FrankenTermWeb } from "@/wasm/frankenterm-web/frankenterm_web";
+
+export function TerminalCanvas() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    let term: FrankenTermWeb | null = null;
+    let disposed = false;
+
+    (async () => {
+      await init(); // loads frankenterm_web_bg.wasm
+      if (disposed || !canvasRef.current) return;
+
+      term = new FrankenTermWeb();
+      await term.init(canvasRef.current, undefined);
+      term.resize(120, 40);
+      term.render();
+    })();
+
+    return () => {
+      disposed = true;
+      term?.destroy();
+    };
+  }, []);
+
+  return <canvas ref={canvasRef} className="h-full w-full" />;
+}
+```
+
+### 3. Feed input and patches
+
+- Forward normalized DOM input with `term.input(...)`.
+- For ftui-driven rendering, call `term.applyPatch(patch)` followed by `term.render()`.
+- For ANSI-stream mode, call `term.feed(data)` followed by `term.render()`.
+
+Minimal keyboard event forwarding example:
+
+```ts
+term.input({
+  kind: "key",
+  phase: "down",
+  key: event.key,
+  code: event.code,
+  repeat: event.repeat,
+  mods: {
+    shift: event.shiftKey,
+    ctrl: event.ctrlKey,
+    alt: event.altKey,
+    meta: event.metaKey,
+  },
+});
+```
+
+### 4. Current `ftui-web` status (important)
+
+`ftui-web` currently provides the WASM-friendly backend core in Rust, but does
+not yet expose a public `wasm-bindgen` JS wrapper by itself. The browser-facing
+entrypoint today is `frankenterm-web` (which exports `FrankenTermWeb`).
+
+Do **not** embed xterm.js as a fallback for this integration path.
+
 ## Add The Dependency
 
 Right now only a subset of crates are published on crates.io (`ftui-core`,

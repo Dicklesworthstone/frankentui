@@ -66,6 +66,15 @@ cargo run -p ftui-demo-showcase
 If you want to embed FrankenTUI in your own Rust app (not just run the demo),
 start here: [docs/getting-started.md](docs/getting-started.md).
 
+For web embedding into `frankentui_website` (Next.js + bun), see the
+`Embedding In frankentui_website` section in
+[`docs/getting-started.md`](docs/getting-started.md). It includes:
+
+- exact build commands for `ftui-web` and `frankenterm-web`,
+- expected wasm/js output locations in the website repo,
+- runtime initialization using `FrankenTermWeb`,
+- and explicit no-`xterm.js` guidance.
+
 ---
 
 ## Quick Example
@@ -891,7 +900,8 @@ Not yet. It’s a kernel plus core widgets. You can build a framework on top, bu
 
 ### Does it work on Windows?
 
-Windows support is tracked in `docs/WINDOWS.md` and is still being validated.
+Windows support is tracked in `docs/WINDOWS.md` and the deferred native-backend
+strategy is documented in `docs/spec/frankenterm-architecture.md` (Section 13.5).
 
 ### Can I embed it in an existing CLI tool?
 
