@@ -36,6 +36,11 @@ const MAX_OSC_LEN: usize = 4096;
 
 /// DoS protection: maximum paste content length.
 const MAX_PASTE_LEN: usize = 1024 * 1024; // 1MB
+/// Upper bound for event vector preallocation hints.
+///
+/// Keep this bounded so callers passing very large slices do not cause
+/// disproportionate reserve spikes.
+const MAX_EVENT_RESERVE_HINT: usize = 8 * 1024 + 1;
 
 /// Parser state machine states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -102,6 +107,11 @@ impl Default for InputParser {
 }
 
 impl InputParser {
+    #[inline]
+    fn event_reserve_hint(input_len: usize) -> usize {
+        input_len.saturating_add(1).min(MAX_EVENT_RESERVE_HINT)
+    }
+
     /// Create a new input parser.
     #[must_use]
     pub fn new() -> Self {
@@ -117,7 +127,7 @@ impl InputParser {
 
     /// Parse input bytes and return any completed events.
     pub fn parse(&mut self, input: &[u8]) -> Vec<Event> {
-        let mut events = Vec::new();
+        let mut events = Vec::with_capacity(Self::event_reserve_hint(input.len()));
         self.parse_with(input, |event| events.push(event));
         events
     }
@@ -142,6 +152,11 @@ impl InputParser {
     /// This variant lets callers reuse a scratch buffer across parses to avoid
     /// repeated allocations on hot input paths.
     pub fn parse_into(&mut self, input: &[u8], events: &mut Vec<Event>) {
+        let needed = Self::event_reserve_hint(input.len());
+        let available = events.capacity().saturating_sub(events.len());
+        if available < needed {
+            events.reserve(needed - available);
+        }
         self.parse_with(input, |event| events.push(event));
     }
 

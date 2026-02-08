@@ -33,7 +33,7 @@
 
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -1693,6 +1693,18 @@ fn env_string(name: &str) -> Option<String> {
     })
 }
 
+fn default_minimized_trace_path(trace_path: &Path) -> PathBuf {
+    trace_path.with_extension("min.jsonl")
+}
+
+fn default_minimize_report_path(trace_path: &Path) -> PathBuf {
+    trace_path.with_extension("min.report.json")
+}
+
+fn default_minimize_ledger_path(trace_path: &Path) -> PathBuf {
+    trace_path.with_extension("min.report.jsonl")
+}
+
 fn main() -> std::io::Result<()> {
     if std::env::var("FTUI_HARNESS_FLICKER_ANALYZE").is_ok() {
         let input_path = std::env::var("FTUI_HARNESS_FLICKER_INPUT").map_err(|_| {
@@ -1717,6 +1729,54 @@ fn main() -> std::io::Result<()> {
         }
 
         return Ok(());
+    }
+
+    if let Ok(trace_path) = std::env::var("FTUI_HARNESS_MINIMIZE_TRACE") {
+        let trace_path = PathBuf::from(trace_path);
+        let output_path = env_string("FTUI_HARNESS_MINIMIZE_OUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_minimized_trace_path(&trace_path));
+        let report_path = env_string("FTUI_HARNESS_MINIMIZE_REPORT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_minimize_report_path(&trace_path));
+        let ledger_path = env_string("FTUI_HARNESS_MINIMIZE_LEDGER")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_minimize_ledger_path(&trace_path));
+
+        let mut options = ftui_harness::trace_replay::MinimizeOptions::default();
+        if let Some(value) = env_u64("FTUI_HARNESS_MINIMIZE_MAX_ATTEMPTS")
+            && let Ok(parsed) = usize::try_from(value)
+        {
+            options.max_attempts = parsed;
+        }
+        if let Some(value) = env_u64("FTUI_HARNESS_MINIMIZE_MAX_MS") {
+            options.max_duration = Some(Duration::from_millis(value));
+        }
+        if env_flag("FTUI_HARNESS_MINIMIZE_NO_TIMEOUT").unwrap_or(false) {
+            options.max_duration = None;
+        }
+
+        match ftui_harness::trace_replay::minimize_failing_trace(&trace_path, &output_path, options)
+        {
+            Ok(report) => {
+                ftui_harness::trace_replay::write_minimization_report_json(&report_path, &report)?;
+                ftui_harness::trace_replay::write_minimization_report_jsonl(&ledger_path, &report)?;
+                eprintln!(
+                    "trace minimize OK: input_lines={} minimized_lines={} attempts={} output={} report={} ledger={}",
+                    report.original_lines,
+                    report.minimized_lines,
+                    report.attempts,
+                    output_path.display(),
+                    report_path.display(),
+                    ledger_path.display()
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                eprintln!("trace minimize failed: {err}");
+                std::process::exit(2);
+            }
+        }
     }
 
     if let Ok(trace_path) = std::env::var("FTUI_HARNESS_REPLAY_TRACE") {

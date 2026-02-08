@@ -597,10 +597,11 @@ impl<W: Write + Send> BackendPresenter for TtyPresenter<W> {
         &self.capabilities
     }
 
-    fn write_log(&mut self, text: &str) -> Result<(), Self::Error> {
-        if self.inner.is_some() {
-            eprint!("{text}");
-        }
+    fn write_log(&mut self, _text: &str) -> Result<(), Self::Error> {
+        // The runtime's terminal path routes logs through `TerminalWriter`, which
+        // positions output in the inline scrollback region safely. Emitting from
+        // here risks interleaving with UI ANSI output on the same terminal stream.
+        // Until this backend owns a dedicated safe log channel, keep this a no-op.
         Ok(())
     }
 
@@ -1371,10 +1372,12 @@ mod tests {
     }
 
     #[test]
-    fn write_log_live_does_not_panic() {
+    fn write_log_live_does_not_corrupt_ui_stream() {
         let caps = TerminalCapabilities::detect();
         let mut presenter = TtyPresenter::with_writer(Vec::<u8>::new(), caps);
         presenter.write_log("live log test").unwrap();
+        let bytes = presenter.inner.unwrap().into_inner().unwrap();
+        assert!(bytes.is_empty(), "write_log must not emit UI bytes");
     }
 
     #[test]

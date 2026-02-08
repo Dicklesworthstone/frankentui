@@ -8,13 +8,15 @@
 //! Designed for CI use: non-interactive, bounded, and deterministic.
 
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
+const VOI_BUCKETS: usize = 6;
 
 #[derive(Debug, Clone)]
 enum TraceContent {
@@ -218,6 +220,358 @@ pub struct ReplaySummary {
     pub last_checksum: Option<u64>,
 }
 
+/// Configuration for failing-trace minimization.
+#[derive(Debug, Clone, Copy)]
+pub struct MinimizeOptions {
+    /// Hard cap on replay attempts.
+    pub max_attempts: usize,
+    /// Optional wall-clock budget.
+    pub max_duration: Option<Duration>,
+    /// Bayesian prior alpha for preservation probability.
+    pub alpha_prior: f64,
+    /// Bayesian prior beta for preservation probability.
+    pub beta_prior: f64,
+}
+
+impl Default for MinimizeOptions {
+    fn default() -> Self {
+        Self {
+            max_attempts: 2048,
+            max_duration: Some(Duration::from_secs(30)),
+            alpha_prior: 1.0,
+            beta_prior: 3.0,
+        }
+    }
+}
+
+/// One minimization replay attempt (evidence ledger row).
+#[derive(Debug, Clone)]
+pub struct MinimizeAttempt {
+    pub attempt: usize,
+    pub granularity: usize,
+    pub removed_lines: usize,
+    pub candidate_lines: usize,
+    pub replay_ms: u64,
+    pub replay_class: String,
+    pub preserved_failure: bool,
+    pub posterior_mean: f64,
+    pub posterior_variance: f64,
+    pub voi_score: f64,
+}
+
+/// Final minimization output and ledger summary.
+#[derive(Debug, Clone)]
+pub struct MinimizeReport {
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
+    pub baseline_error: String,
+    pub baseline_class: String,
+    pub final_error: String,
+    pub original_lines: usize,
+    pub minimized_lines: usize,
+    pub attempts: usize,
+    pub preserved_attempts: usize,
+    pub duration_ms: u64,
+    pub ledger: Vec<MinimizeAttempt>,
+}
+
+#[derive(Debug, Clone)]
+struct ReplayFailure {
+    class: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BetaPosterior {
+    alpha: f64,
+    beta: f64,
+}
+
+impl BetaPosterior {
+    fn new(alpha: f64, beta: f64) -> Self {
+        Self { alpha, beta }
+    }
+
+    fn mean(self) -> f64 {
+        self.alpha / (self.alpha + self.beta)
+    }
+
+    fn variance(self) -> f64 {
+        (self.alpha * self.beta)
+            / ((self.alpha + self.beta).powi(2) * (self.alpha + self.beta + 1.0))
+    }
+
+    fn update(&mut self, success: bool) {
+        if success {
+            self.alpha += 1.0;
+        } else {
+            self.beta += 1.0;
+        }
+    }
+}
+
+/// Minimize a failing trace to a smaller failing trace using ddmin + VOI ordering.
+pub fn minimize_failing_trace(
+    input_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    options: MinimizeOptions,
+) -> io::Result<MinimizeReport> {
+    let input_path = input_path.as_ref();
+    let output_path = output_path.as_ref();
+    let start = Instant::now();
+
+    if options.max_attempts == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "max_attempts must be > 0",
+        ));
+    }
+    if options.alpha_prior <= 0.0 || options.beta_prior <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "alpha_prior and beta_prior must be > 0",
+        ));
+    }
+
+    let lines = read_trace_lines(input_path)?;
+    if lines.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trace file is empty",
+        ));
+    }
+
+    let baseline = replay_trace(input_path).map_or_else(
+        |err| {
+            let msg = err.to_string();
+            Ok(ReplayFailure {
+                class: classify_replay_error(&msg),
+                message: msg,
+            })
+        },
+        |_| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trace replay succeeded; minimizer requires a failing trace",
+            ))
+        },
+    )?;
+
+    let deadline = options.max_duration.map(|d| start + d);
+    let mut keep: Vec<usize> = (0..lines.len()).collect();
+    let mut granularity = keep.len().clamp(2, usize::MAX);
+    let mut attempts = 0usize;
+    let mut preserved_attempts = 0usize;
+    let mut ledger = Vec::new();
+    let mut posteriors = [BetaPosterior::new(1.0, 1.0); VOI_BUCKETS];
+    for posterior in &mut posteriors {
+        *posterior = BetaPosterior::new(options.alpha_prior, options.beta_prior);
+    }
+
+    let mut scratch_path = std::env::temp_dir();
+    let scratch_id = format!(
+        "ftui-trace-minimize-{}-{}.jsonl",
+        std::process::id(),
+        start.elapsed().as_nanos()
+    );
+    scratch_path.push(scratch_id);
+
+    while keep.len() > 1 && attempts < options.max_attempts {
+        if deadline.is_some_and(|limit| Instant::now() >= limit) {
+            break;
+        }
+
+        let ranges = partition_ranges(keep.len(), granularity);
+        let mut candidates = Vec::new();
+        for (chunk_idx, (start_idx, end_idx)) in ranges.into_iter().enumerate() {
+            let removed = end_idx.saturating_sub(start_idx);
+            if removed == 0 || removed >= keep.len() {
+                continue;
+            }
+            let bucket = removal_bucket(removed, keep.len());
+            let posterior = posteriors[bucket];
+            let score = voi_score(removed, keep.len().saturating_sub(removed), posterior);
+            candidates.push((chunk_idx, start_idx, end_idx, removed, bucket, score));
+        }
+        if candidates.is_empty() {
+            break;
+        }
+        candidates.sort_by(|a, b| {
+            b.5.partial_cmp(&a.5)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        let mut accepted: Option<Vec<usize>> = None;
+        for (_chunk_idx, start_idx, end_idx, removed, bucket, score) in candidates {
+            if attempts >= options.max_attempts {
+                break;
+            }
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                break;
+            }
+
+            let candidate_lines = keep.len() - removed;
+            let mut candidate = Vec::with_capacity(candidate_lines);
+            candidate.extend_from_slice(&keep[..start_idx]);
+            candidate.extend_from_slice(&keep[end_idx..]);
+
+            write_trace_subset(&lines, &candidate, &scratch_path)?;
+            let replay_start = Instant::now();
+            let (preserved, replay_class) = match replay_trace(&scratch_path) {
+                Ok(_) => (false, "pass".to_string()),
+                Err(err) => {
+                    let msg = err.to_string();
+                    let class = classify_replay_error(&msg);
+                    (class == baseline.class, class)
+                }
+            };
+            let replay_ms = replay_start.elapsed().as_millis() as u64;
+            let posterior = posteriors[bucket];
+            let attempt = MinimizeAttempt {
+                attempt: attempts + 1,
+                granularity,
+                removed_lines: removed,
+                candidate_lines,
+                replay_ms,
+                replay_class,
+                preserved_failure: preserved,
+                posterior_mean: posterior.mean(),
+                posterior_variance: posterior.variance(),
+                voi_score: score,
+            };
+            ledger.push(attempt);
+            attempts += 1;
+            posteriors[bucket].update(preserved);
+
+            if preserved {
+                preserved_attempts += 1;
+                accepted = Some(candidate);
+                break;
+            }
+        }
+
+        if let Some(next_keep) = accepted {
+            keep = next_keep;
+            granularity = granularity.saturating_sub(1).max(2);
+        } else if granularity >= keep.len() {
+            break;
+        } else {
+            granularity = (granularity.saturating_mul(2)).min(keep.len());
+        }
+    }
+
+    write_trace_subset(&lines, &keep, output_path)?;
+    let final_err = replay_trace(output_path).map_or_else(
+        |err| Ok(err.to_string()),
+        |_| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "minimized trace unexpectedly replays successfully",
+            ))
+        },
+    )?;
+    let final_class = classify_replay_error(&final_err);
+    if final_class != baseline.class {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "minimized trace changed failure class: baseline={} minimized={}",
+                baseline.class, final_class
+            ),
+        ));
+    }
+
+    Ok(MinimizeReport {
+        input_path: input_path.to_path_buf(),
+        output_path: output_path.to_path_buf(),
+        baseline_error: baseline.message,
+        baseline_class: baseline.class,
+        final_error: final_err,
+        original_lines: lines.len(),
+        minimized_lines: keep.len(),
+        attempts,
+        preserved_attempts,
+        duration_ms: start.elapsed().as_millis() as u64,
+        ledger,
+    })
+}
+
+/// Write a minimization report as a structured JSON document.
+pub fn write_minimization_report_json(
+    path: impl AsRef<Path>,
+    report: &MinimizeReport,
+) -> io::Result<()> {
+    let mut attempts_json = Vec::with_capacity(report.ledger.len());
+    for item in &report.ledger {
+        attempts_json.push(serde_json::json!({
+            "attempt": item.attempt,
+            "granularity": item.granularity,
+            "removed_lines": item.removed_lines,
+            "candidate_lines": item.candidate_lines,
+            "replay_ms": item.replay_ms,
+            "replay_class": item.replay_class,
+            "preserved_failure": item.preserved_failure,
+            "posterior_mean": item.posterior_mean,
+            "posterior_variance": item.posterior_variance,
+            "voi_score": item.voi_score,
+        }));
+    }
+
+    let payload = serde_json::json!({
+        "input_path": report.input_path,
+        "output_path": report.output_path,
+        "baseline_error": report.baseline_error,
+        "baseline_class": report.baseline_class,
+        "final_error": report.final_error,
+        "original_lines": report.original_lines,
+        "minimized_lines": report.minimized_lines,
+        "removed_lines": report.original_lines.saturating_sub(report.minimized_lines),
+        "reduction_factor": if report.minimized_lines == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::from(report.original_lines as f64 / report.minimized_lines as f64)
+        },
+        "attempts": report.attempts,
+        "preserved_attempts": report.preserved_attempts,
+        "duration_ms": report.duration_ms,
+        "ledger": attempts_json,
+    });
+
+    let path = path.as_ref();
+    let mut file = File::create(path)?;
+    serde_json::to_writer_pretty(&mut file, &payload)
+        .map_err(|err| io::Error::other(format!("failed to serialize report: {err}")))?;
+    file.write_all(b"\n")?;
+    Ok(())
+}
+
+/// Write the minimization evidence ledger as JSONL.
+pub fn write_minimization_report_jsonl(
+    path: impl AsRef<Path>,
+    report: &MinimizeReport,
+) -> io::Result<()> {
+    let path = path.as_ref();
+    let mut file = File::create(path)?;
+    for item in &report.ledger {
+        let line = serde_json::json!({
+            "event": "minimize_attempt",
+            "attempt": item.attempt,
+            "granularity": item.granularity,
+            "removed_lines": item.removed_lines,
+            "candidate_lines": item.candidate_lines,
+            "replay_ms": item.replay_ms,
+            "replay_class": item.replay_class,
+            "preserved_failure": item.preserved_failure,
+            "posterior_mean": item.posterior_mean,
+            "posterior_variance": item.posterior_variance,
+            "voi_score": item.voi_score,
+        });
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
 /// Replay a render-trace JSONL file and verify per-frame checksums.
 pub fn replay_trace(path: impl AsRef<Path>) -> io::Result<ReplaySummary> {
     let path = path.as_ref();
@@ -318,6 +672,81 @@ pub fn replay_trace(path: impl AsRef<Path>) -> io::Result<ReplaySummary> {
         frames,
         last_checksum,
     })
+}
+
+fn classify_replay_error(message: &str) -> String {
+    if message.contains("checksum mismatch") {
+        "checksum_mismatch".to_string()
+    } else if message.contains("no frame records found") {
+        "no_frame_records".to_string()
+    } else if message.contains("invalid JSONL") {
+        "invalid_jsonl".to_string()
+    } else if message.contains("payload dimensions do not match") {
+        "dimension_mismatch".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+fn read_trace_lines(path: &Path) -> io::Result<Vec<String>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    for line in reader.lines() {
+        lines.push(line?);
+    }
+    Ok(lines)
+}
+
+fn write_trace_subset(lines: &[String], keep: &[usize], path: &Path) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    for &idx in keep {
+        if let Some(line) = lines.get(idx) {
+            writeln!(file, "{line}")?;
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "subset index out of bounds",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn partition_ranges(len: usize, parts: usize) -> Vec<(usize, usize)> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let parts = parts.clamp(1, len);
+    let base = len / parts;
+    let extra = len % parts;
+    let mut ranges = Vec::with_capacity(parts);
+    let mut start = 0usize;
+    for idx in 0..parts {
+        let chunk = base + usize::from(idx < extra);
+        let end = start + chunk;
+        ranges.push((start, end));
+        start = end;
+    }
+    ranges
+}
+
+fn removal_bucket(removed: usize, total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let ratio = removed as f64 / total as f64;
+    let bucket = (ratio * VOI_BUCKETS as f64).floor() as usize;
+    bucket.min(VOI_BUCKETS - 1)
+}
+
+fn voi_score(removed: usize, candidate_lines: usize, posterior: BetaPosterior) -> f64 {
+    let mean = posterior.mean();
+    let variance = posterior.variance();
+    let stddev = variance.sqrt();
+    let expected_gain = removed as f64 * (mean + stddev);
+    let replay_cost = candidate_lines.max(1) as f64;
+    expected_gain / replay_cost
 }
 
 fn resolve_payload_path(base_dir: &Path, payload: &str) -> PathBuf {
@@ -1060,5 +1489,147 @@ mod tests {
             g2.checksum(),
             "same grid content should produce same checksum regardless of apply method"
         );
+    }
+
+    // ── Failing-trace minimizer ──────────────────────────────────────
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        dir.push(format!(
+            "ftui-trace-replay-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    fn frame_line(frame_idx: u64, cols: u16, rows: u16, checksum: u64) -> String {
+        format!(
+            "{{\"event\":\"frame\",\"frame_idx\":{frame_idx},\"cols\":{cols},\"rows\":{rows},\"payload_kind\":\"none\",\"checksum\":\"{checksum:016x}\"}}"
+        )
+    }
+
+    fn write_lines(path: &Path, lines: &[String]) {
+        let mut file = File::create(path).expect("create trace file");
+        for line in lines {
+            writeln!(file, "{line}").expect("write trace line");
+        }
+    }
+
+    #[test]
+    fn minimize_failing_trace_reduces_and_preserves_checksum_mismatch() {
+        let dir = unique_test_dir("minimize");
+        let input = dir.join("input.jsonl");
+        let output = dir.join("output.min.jsonl");
+        let checksum = TraceGrid::new(1, 1).checksum();
+        let mut lines = vec!["{\"event\":\"meta\",\"version\":1}".to_string()];
+        for frame_idx in 0..20 {
+            lines.push(frame_line(frame_idx, 1, 1, checksum));
+        }
+        lines.push(frame_line(20, 1, 1, 0xDEADBEEFDEADBEEF)); // failing frame
+        lines.push(frame_line(21, 1, 1, checksum));
+        write_lines(&input, &lines);
+
+        let options = MinimizeOptions {
+            max_attempts: 256,
+            max_duration: Some(Duration::from_secs(2)),
+            ..MinimizeOptions::default()
+        };
+        let report = minimize_failing_trace(&input, &output, options).expect("minimize succeeds");
+
+        assert_eq!(report.baseline_class, "checksum_mismatch");
+        assert_eq!(
+            classify_replay_error(&report.final_error),
+            "checksum_mismatch"
+        );
+        assert!(
+            report.minimized_lines < report.original_lines,
+            "expected minimization to reduce line count"
+        );
+        assert!(
+            report.original_lines as f64 / report.minimized_lines as f64 >= 10.0,
+            "expected >=10x reduction"
+        );
+        assert!(report.attempts > 0);
+        assert!(report.preserved_attempts > 0);
+        assert!(
+            replay_trace(&output).is_err(),
+            "minimized trace must still fail"
+        );
+    }
+
+    #[test]
+    fn minimizer_is_deterministic_for_same_input() {
+        let dir = unique_test_dir("deterministic");
+        let input = dir.join("input.jsonl");
+        let out_a = dir.join("a.min.jsonl");
+        let out_b = dir.join("b.min.jsonl");
+        let checksum = TraceGrid::new(1, 1).checksum();
+        let lines = vec![
+            frame_line(0, 1, 1, checksum),
+            frame_line(1, 1, 1, checksum),
+            frame_line(2, 1, 1, checksum),
+            frame_line(3, 1, 1, 0xBAD0BAD0BAD0BAD0),
+        ];
+        write_lines(&input, &lines);
+
+        let options = MinimizeOptions {
+            max_attempts: 256,
+            max_duration: Some(Duration::from_secs(2)),
+            ..MinimizeOptions::default()
+        };
+        let report_a =
+            minimize_failing_trace(&input, &out_a, options).expect("first minimize succeeds");
+        let report_b =
+            minimize_failing_trace(&input, &out_b, options).expect("second minimize succeeds");
+        let bytes_a = std::fs::read(&out_a).expect("read output A");
+        let bytes_b = std::fs::read(&out_b).expect("read output B");
+
+        assert_eq!(bytes_a, bytes_b, "minimized traces must be byte-identical");
+        assert_eq!(report_a.minimized_lines, report_b.minimized_lines);
+        assert_eq!(report_a.baseline_class, report_b.baseline_class);
+    }
+
+    #[test]
+    fn minimization_report_writers_emit_valid_json() {
+        let dir = unique_test_dir("report");
+        let report_path = dir.join("report.json");
+        let ledger_path = dir.join("report.jsonl");
+        let report = MinimizeReport {
+            input_path: PathBuf::from("in.jsonl"),
+            output_path: PathBuf::from("out.jsonl"),
+            baseline_error: "checksum mismatch".to_string(),
+            baseline_class: "checksum_mismatch".to_string(),
+            final_error: "checksum mismatch".to_string(),
+            original_lines: 100,
+            minimized_lines: 10,
+            attempts: 12,
+            preserved_attempts: 4,
+            duration_ms: 123,
+            ledger: vec![MinimizeAttempt {
+                attempt: 1,
+                granularity: 2,
+                removed_lines: 50,
+                candidate_lines: 50,
+                replay_ms: 7,
+                replay_class: "checksum_mismatch".to_string(),
+                preserved_failure: true,
+                posterior_mean: 0.25,
+                posterior_variance: 0.01,
+                voi_score: 0.5,
+            }],
+        };
+
+        write_minimization_report_json(&report_path, &report).expect("write json report");
+        write_minimization_report_jsonl(&ledger_path, &report).expect("write jsonl report");
+
+        let json: Value = serde_json::from_slice(&std::fs::read(&report_path).expect("read json"))
+            .expect("parse report json");
+        assert_eq!(json["baseline_class"], "checksum_mismatch");
+        let jsonl_text = std::fs::read_to_string(&ledger_path).expect("read jsonl");
+        assert!(jsonl_text.contains("\"event\":\"minimize_attempt\""));
     }
 }
