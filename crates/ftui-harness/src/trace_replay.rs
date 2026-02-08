@@ -619,16 +619,18 @@ pub fn replay_trace(path: impl AsRef<Path>) -> io::Result<ReplaySummary> {
 
         let stats = match payload_kind {
             "diff_runs_v1" => {
-                let payload_path = payload_path.ok_or_else(|| {
+                let payload_result = payload_path.ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "payload_path missing")
                 })?;
+                let payload_path = payload_result?;
                 let payload = std::fs::read(&payload_path)?;
                 grid.apply_diff_runs(&payload)?
             }
             "full_buffer_v1" => {
-                let payload_path = payload_path.ok_or_else(|| {
+                let payload_result = payload_path.ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "payload_path missing")
                 })?;
+                let payload_path = payload_result?;
                 let payload = std::fs::read(&payload_path)?;
                 grid.apply_full_buffer(&payload)?
             }
@@ -749,13 +751,31 @@ fn voi_score(removed: usize, candidate_lines: usize, posterior: BetaPosterior) -
     expected_gain / replay_cost
 }
 
-fn resolve_payload_path(base_dir: &Path, payload: &str) -> PathBuf {
+fn resolve_payload_path(base_dir: &Path, payload: &str) -> io::Result<PathBuf> {
     let payload_path = Path::new(payload);
-    if payload_path.is_absolute() {
+    let resolved = if payload_path.is_absolute() {
         payload_path.to_path_buf()
     } else {
         base_dir.join(payload_path)
+    };
+    // Prevent directory traversal: canonicalize and verify the resolved path
+    // stays within the base directory (or is an absolute path from the trace).
+    if !payload_path.is_absolute() {
+        if let Ok(canon) = resolved.canonicalize() {
+            if let Ok(canon_base) = base_dir.canonicalize() {
+                if !canon.starts_with(&canon_base) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "payload path escapes base directory: {}",
+                            resolved.display()
+                        ),
+                    ));
+                }
+            }
+        }
     }
+    Ok(resolved)
 }
 
 fn parse_u64(value: &Value, field: &str) -> io::Result<u64> {
@@ -1308,15 +1328,23 @@ mod tests {
     #[test]
     fn resolve_payload_path_relative() {
         let base = Path::new("/trace/output");
-        let result = resolve_payload_path(base, "frames/f0.bin");
+        let result = resolve_payload_path(base, "frames/f0.bin").unwrap();
         assert_eq!(result, PathBuf::from("/trace/output/frames/f0.bin"));
     }
 
     #[test]
     fn resolve_payload_path_absolute() {
         let base = Path::new("/trace/output");
-        let result = resolve_payload_path(base, "/other/path/f0.bin");
+        let result = resolve_payload_path(base, "/other/path/f0.bin").unwrap();
         assert_eq!(result, PathBuf::from("/other/path/f0.bin"));
+    }
+
+    #[test]
+    fn resolve_payload_path_traversal_blocked() {
+        // Use a real temp directory so canonicalize() succeeds and the check fires.
+        let tmp = std::env::temp_dir();
+        let err = resolve_payload_path(&tmp, "../etc/passwd").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 
     // ── apply_diff_runs ───────────────────────────────────────────────
