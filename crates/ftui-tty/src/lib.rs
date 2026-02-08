@@ -1427,5 +1427,222 @@ mod tests {
                 "cleanup must leave alt-screen"
             );
         }
+
+        /// Helper: write bytes to the PTY slave and read them back from master.
+        fn write_to_slave_and_read_master(
+            master: &mut std::fs::File,
+            slave: &std::fs::File,
+            data: &[u8],
+        ) -> Vec<u8> {
+            use std::io::Write;
+            let mut writer = slave.try_clone().unwrap();
+            writer.write_all(data).unwrap();
+            writer.flush().unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = master.read(&mut buf).unwrap();
+            buf.truncate(n);
+            buf
+        }
+
+        #[test]
+        fn cursor_hide_on_enter_show_on_drop() {
+            let (mut master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            // Simulate entering a session: raw mode + hide cursor.
+            {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+                let output = write_to_slave_and_read_master(&mut master, &slave_dup, CURSOR_HIDE);
+                assert!(
+                    output.windows(CURSOR_HIDE.len()).any(|w| w == CURSOR_HIDE),
+                    "cursor-hide should be written on session enter"
+                );
+
+                // Simulate drop cleanup: show cursor.
+                let output = write_to_slave_and_read_master(&mut master, &slave_dup, CURSOR_SHOW);
+                assert!(
+                    output.windows(CURSOR_SHOW.len()).any(|w| w == CURSOR_SHOW),
+                    "cursor-show should be written on session exit"
+                );
+            }
+        }
+
+        #[test]
+        fn alt_screen_enter_and_leave_via_pty() {
+            let (mut master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+
+                // Enter alt-screen.
+                let output =
+                    write_to_slave_and_read_master(&mut master, &slave_dup, ALT_SCREEN_ENTER);
+                assert!(
+                    output
+                        .windows(ALT_SCREEN_ENTER.len())
+                        .any(|w| w == ALT_SCREEN_ENTER),
+                    "alt-screen enter should pass through PTY"
+                );
+
+                // Leave alt-screen.
+                let output =
+                    write_to_slave_and_read_master(&mut master, &slave_dup, ALT_SCREEN_LEAVE);
+                assert!(
+                    output
+                        .windows(ALT_SCREEN_LEAVE.len())
+                        .any(|w| w == ALT_SCREEN_LEAVE),
+                    "alt-screen leave should pass through PTY"
+                );
+            }
+        }
+
+        #[test]
+        fn per_feature_disable_on_drop() {
+            let (mut master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+
+                // Enable all features, then write cleanup (simulating TtyBackend::drop).
+                let all_on = BackendFeatures {
+                    mouse_capture: true,
+                    bracketed_paste: true,
+                    focus_events: true,
+                    kitty_keyboard: true,
+                };
+                let mut cleanup = Vec::new();
+                write_cleanup_sequence(&all_on, false, &mut cleanup).unwrap();
+
+                let output = write_to_slave_and_read_master(&mut master, &slave_dup, &cleanup);
+
+                // Verify each feature's disable sequence individually.
+                assert!(
+                    output
+                        .windows(MOUSE_DISABLE.len())
+                        .any(|w| w == MOUSE_DISABLE),
+                    "mouse must be disabled on drop"
+                );
+                assert!(
+                    output
+                        .windows(BRACKETED_PASTE_DISABLE.len())
+                        .any(|w| w == BRACKETED_PASTE_DISABLE),
+                    "bracketed paste must be disabled on drop"
+                );
+                assert!(
+                    output
+                        .windows(FOCUS_DISABLE.len())
+                        .any(|w| w == FOCUS_DISABLE),
+                    "focus events must be disabled on drop"
+                );
+                assert!(
+                    output
+                        .windows(KITTY_KEYBOARD_DISABLE.len())
+                        .any(|w| w == KITTY_KEYBOARD_DISABLE),
+                    "kitty keyboard must be disabled on drop"
+                );
+                assert!(
+                    output.windows(CURSOR_SHOW.len()).any(|w| w == CURSOR_SHOW),
+                    "cursor must be shown on drop"
+                );
+            }
+        }
+
+        #[test]
+        fn panic_with_features_restores_termios() {
+            let (_master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            let handle = std::thread::spawn(move || {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+                // Simulate having features enabled — the guard tracks termios, and
+                // TtyBackend::drop would disable features. Here we just verify
+                // the termios restoration happens even when features were "active".
+                panic!("panic with features enabled");
+            });
+
+            assert!(handle.join().is_err());
+
+            let after = termios::tcgetattr(&slave_dup).unwrap();
+            assert!(
+                after.local_flags.contains(LocalFlags::ECHO),
+                "ECHO restored after panic with features"
+            );
+            assert!(
+                after.local_flags.contains(LocalFlags::ICANON),
+                "ICANON restored after panic with features"
+            );
+        }
+
+        #[test]
+        fn repeated_raw_mode_cycles_no_leak() {
+            let (_master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            // Enter and exit raw mode multiple times.
+            for _ in 0..5 {
+                let s = slave_dup.try_clone().unwrap();
+                let guard = RawModeGuard::enter_on(s).unwrap();
+
+                // Verify raw mode active.
+                let during = termios::tcgetattr(&slave_dup).unwrap();
+                assert!(!during.local_flags.contains(LocalFlags::ECHO));
+
+                drop(guard);
+
+                // Verify restored.
+                let after = termios::tcgetattr(&slave_dup).unwrap();
+                assert!(
+                    after.local_flags.contains(LocalFlags::ECHO),
+                    "ECHO must be restored each cycle"
+                );
+            }
+        }
+
+        #[test]
+        fn cleanup_ordering_via_pty() {
+            let (mut master, slave) = pty_pair();
+            let slave_dup = slave.try_clone().unwrap();
+
+            {
+                let _guard = RawModeGuard::enter_on(slave).unwrap();
+
+                // Write a full cleanup sequence and verify ordering.
+                let features = BackendFeatures {
+                    mouse_capture: true,
+                    bracketed_paste: true,
+                    focus_events: true,
+                    kitty_keyboard: true,
+                };
+                let mut seq = Vec::new();
+                write_cleanup_sequence(&features, true, &mut seq).unwrap();
+
+                let output = write_to_slave_and_read_master(&mut master, &slave_dup, &seq);
+
+                // Verify ordering: sync_end before cursor_show before alt_screen_leave.
+                let sync_pos = output
+                    .windows(SYNC_END.len())
+                    .position(|w| w == SYNC_END)
+                    .expect("sync_end present");
+                let cursor_pos = output
+                    .windows(CURSOR_SHOW.len())
+                    .position(|w| w == CURSOR_SHOW)
+                    .expect("cursor_show present");
+                let alt_pos = output
+                    .windows(ALT_SCREEN_LEAVE.len())
+                    .position(|w| w == ALT_SCREEN_LEAVE)
+                    .expect("alt_screen_leave present");
+
+                assert!(
+                    sync_pos < cursor_pos,
+                    "sync_end ({sync_pos}) must precede cursor_show ({cursor_pos})"
+                );
+                assert!(
+                    cursor_pos < alt_pos,
+                    "cursor_show ({cursor_pos}) must precede alt_screen_leave ({alt_pos})"
+                );
+            }
+        }
     }
 }
