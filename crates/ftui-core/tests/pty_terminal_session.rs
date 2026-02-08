@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![cfg(unix)]
+#![cfg(all(unix, feature = "crossterm"))]
 
 use std::io::{self, Read, Write};
 use std::sync::mpsc;

@@ -37,7 +37,7 @@ pub mod logging;
 pub mod mux_passthrough;
 pub mod semantic_event;
 pub mod terminal_capabilities;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 pub mod terminal_session;
 
 #[cfg(feature = "caps-probe")]

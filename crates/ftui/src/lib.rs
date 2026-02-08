@@ -32,6 +32,7 @@ pub use ftui_core::event::{
     MouseButton, MouseEvent, MouseEventKind, PasteEvent,
 };
 pub use ftui_core::terminal_capabilities::TerminalCapabilities;
+#[cfg(not(target_arch = "wasm32"))]
 pub use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 
 // --- Render re-exports -----------------------------------------------------
@@ -51,8 +52,9 @@ pub use ftui_style::{
     StyleFlags, StyleId, StyleSheet, TablePresetId, TableTheme, Theme, ThemeBuilder,
 };
 
-// --- Runtime re-exports ----------------------------------------------------
+// --- Runtime re-exports (feature-gated for wasm32 compatibility) ----------
 
+#[cfg(feature = "runtime")]
 pub use ftui_runtime::{
     App, Cmd, EffectQueueConfig, InlineAutoRemeasureConfig, Locale, LocaleContext, LocaleOverride,
     Model, Program, ProgramConfig, ResizeBehavior, RuntimeDiffConfig, ScreenMode, TaskSpec,
@@ -93,17 +95,26 @@ pub type Result<T> = std::result::Result<T, Error>;
 // --- Prelude --------------------------------------------------------------
 
 pub mod prelude {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use crate::TerminalSession;
     pub use crate::{
-        App, Buffer, Cmd, Error, Event, Frame, KeyCode, KeyEvent, Model, Modifiers, Result,
-        ScreenMode, Style, TablePresetId, TableTheme, TerminalSession, TerminalWriter, Theme,
+        Buffer, Error, Event, Frame, KeyCode, KeyEvent, Modifiers, Result, Style, TablePresetId,
+        TableTheme, Theme,
     };
 
-    pub use crate::{core, layout, render, runtime, style, text, widgets};
+    #[cfg(feature = "runtime")]
+    pub use crate::{App, Cmd, Model, ScreenMode, TerminalWriter};
+
+    pub use crate::{core, layout, render, style, text, widgets};
+
+    #[cfg(feature = "runtime")]
+    pub use crate::runtime;
 }
 
 pub use ftui_core as core;
 pub use ftui_layout as layout;
 pub use ftui_render as render;
+#[cfg(feature = "runtime")]
 pub use ftui_runtime as runtime;
 pub use ftui_style as style;
 pub use ftui_text as text;
@@ -161,6 +172,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "runtime")]
     fn prelude_re_exports_core_types() {
         // Verify key types are accessible via prelude
         use crate::prelude::*;

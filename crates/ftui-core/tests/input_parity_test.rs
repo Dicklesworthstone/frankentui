@@ -20,6 +20,7 @@
 //! - Special: Null (Ctrl+Space), Kitty keyboard protocol
 
 #![forbid(unsafe_code)]
+#![cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 
 use crossterm::event as cte;
 use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};

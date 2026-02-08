@@ -14,7 +14,7 @@
 //! - Clipboard events are optional and feature-gated in the future
 
 use bitflags::bitflags;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 use crossterm::event as cte;
 
 /// Canonical input event.
@@ -59,7 +59,7 @@ pub enum Event {
 impl Event {
     /// Convert a Crossterm event into an ftui [`Event`].
     #[must_use]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
     pub fn from_crossterm(event: cte::Event) -> Option<Self> {
         map_crossterm_event_internal(event)
     }
@@ -389,7 +389,7 @@ pub enum ClipboardSource {
     Unknown,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 fn map_crossterm_event_internal(event: cte::Event) -> Option<Event> {
     match event {
         cte::Event::Key(key) => map_key_event(key).map(Event::Key),
@@ -401,7 +401,7 @@ fn map_crossterm_event_internal(event: cte::Event) -> Option<Event> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 fn map_key_event(event: cte::KeyEvent) -> Option<KeyEvent> {
     let code = map_key_code(event.code)?;
     let modifiers = map_modifiers(event.modifiers);
@@ -413,7 +413,7 @@ fn map_key_event(event: cte::KeyEvent) -> Option<KeyEvent> {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 fn map_key_kind(kind: cte::KeyEventKind) -> KeyEventKind {
     match kind {
         cte::KeyEventKind::Press => KeyEventKind::Press,
@@ -422,7 +422,7 @@ fn map_key_kind(kind: cte::KeyEventKind) -> KeyEventKind {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 pub(crate) fn map_key_code(code: cte::KeyCode) -> Option<KeyCode> {
     match code {
         cte::KeyCode::Backspace => Some(KeyCode::Backspace),
@@ -448,7 +448,7 @@ pub(crate) fn map_key_code(code: cte::KeyCode) -> Option<KeyCode> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 fn map_media_key(code: cte::MediaKeyCode) -> Option<KeyCode> {
     match code {
         cte::MediaKeyCode::Play | cte::MediaKeyCode::Pause | cte::MediaKeyCode::PlayPause => {
@@ -461,7 +461,7 @@ fn map_media_key(code: cte::MediaKeyCode) -> Option<KeyCode> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 fn map_modifiers(modifiers: cte::KeyModifiers) -> Modifiers {
     let mut mapped = Modifiers::NONE;
     if modifiers.contains(cte::KeyModifiers::SHIFT) {
@@ -482,7 +482,7 @@ fn map_modifiers(modifiers: cte::KeyModifiers) -> Modifiers {
     mapped
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 fn map_mouse_event(event: cte::MouseEvent) -> MouseEvent {
     let kind = match event.kind {
         cte::MouseEventKind::Down(button) => MouseEventKind::Down(map_mouse_button(button)),
@@ -498,7 +498,7 @@ fn map_mouse_event(event: cte::MouseEvent) -> MouseEvent {
     MouseEvent::new(kind, event.column, event.row).with_modifiers(map_modifiers(event.modifiers))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 fn map_mouse_button(button: cte::MouseButton) -> MouseButton {
     match button {
         cte::MouseButton::Left => MouseButton::Left,
@@ -507,7 +507,7 @@ fn map_mouse_button(button: cte::MouseButton) -> MouseButton {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "crossterm"))]
 mod tests {
     use super::*;
     use crossterm::event as ct_event;

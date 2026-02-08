@@ -9,12 +9,17 @@ homepage = "https://github.com/Dicklesworthstone/frankentui"
 documentation = "https://docs.rs/ftui"
 readme = "../../README.md"
 
+[features]
+default = ["runtime", "extras"]
+runtime = ["dep:ftui-runtime"]
+extras = ["dep:ftui-extras"]
+
 [dependencies]
 ftui-core = { path = "../ftui-core", version = "0.1.1" }
 ftui-render = { path = "../ftui-render", version = "0.1.1" }
 ftui-style = { path = "../ftui-style", version = "0.1.1" }
 ftui-text = { path = "../ftui-text", version = "0.1.1" }
 ftui-layout = { path = "../ftui-layout", version = "0.1.1" }
-ftui-runtime = { path = "../ftui-runtime", version = "0.1.1" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.1.1", optional = true }
 ftui-widgets = { path = "../ftui-widgets", version = "0.1.1" }
-ftui-extras = { path = "../ftui-extras", version = "0.1.1" }
+ftui-extras = { path = "../ftui-extras", version = "0.1.1", optional = true }
