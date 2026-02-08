@@ -27,6 +27,7 @@ use ftui_render::grapheme_pool::GraphemePool;
 use ftui_style::Color;
 use ftui_widgets::StatefulWidget;
 use portable_pty::CommandBuilder;
+use vt100::Parser as Vt100Parser;
 
 // ============================================================================
 // PTY Management Tests
@@ -392,23 +393,49 @@ fn terminal_state_screen_text(state: &TerminalState) -> String {
         .join("\n")
 }
 
+fn vt100_screen_text(screen: &vt100::Screen) -> String {
+    let (_rows, cols) = screen.size();
+    screen
+        .rows(0, cols)
+        .map(|row| row.trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn assert_differential_parity(width: u16, height: u16, stream: &[u8]) {
     let mut handler = TestHandler::new(width, height);
     let mut parser = AnsiParser::new();
     let mut reference = VirtualTerminal::new(width, height);
+    let mut vt100 = Vt100Parser::new(height, width, 0);
 
     parser.parse(stream, &mut handler);
     reference.feed(stream);
+    vt100.process(stream);
 
     let lhs = terminal_state_screen_text(&handler.state);
-    let rhs = reference.screen_text();
-    assert_eq!(lhs, rhs, "screen text must match reference emulator");
+    let rhs_virtual = reference.screen_text();
+    assert_eq!(
+        lhs, rhs_virtual,
+        "screen text must match VirtualTerminal reference emulator"
+    );
+    let rhs_vt100 = vt100_screen_text(vt100.screen());
+    assert_eq!(
+        lhs, rhs_vt100,
+        "screen text must match vt100 reference emulator"
+    );
 
     let lhs_cursor = (handler.state.cursor().x, handler.state.cursor().y);
     let rhs_cursor = reference.cursor();
     assert_eq!(
         lhs_cursor, rhs_cursor,
-        "cursor must match reference emulator"
+        "cursor must match VirtualTerminal reference emulator"
+    );
+
+    let (row, col) = vt100.screen().cursor_position();
+    let rhs_cursor_vt100 = (col, row);
+    assert_eq!(
+        lhs_cursor, rhs_cursor_vt100,
+        "cursor must match vt100 reference emulator"
     );
 }
 

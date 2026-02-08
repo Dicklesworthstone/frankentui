@@ -176,9 +176,11 @@ For parser/engine correctness, differential testing is the fastest way to find e
 
 ### 5.1 Baseline Differential Harness (Current)
 
-Current in-tree baseline:
+Current in-tree baselines:
 - `crates/frankenterm-core/tests/differential_terminal.rs`
 - Reference model: `ftui_pty::virtual_terminal::VirtualTerminal`
+- `crates/frankenterm-core/tests/differential_extras_reference.rs`
+- Reference model: `ftui_extras::terminal::TerminalState` driven by `ftui_extras::terminal::AnsiParser`
 - Compared state: visible grid text + cursor position
 
 Scope of the baseline harness:

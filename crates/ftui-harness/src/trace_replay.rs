@@ -760,20 +760,18 @@ fn resolve_payload_path(base_dir: &Path, payload: &str) -> io::Result<PathBuf> {
     };
     // Prevent directory traversal: canonicalize and verify the resolved path
     // stays within the base directory (or is an absolute path from the trace).
-    if !payload_path.is_absolute() {
-        if let Ok(canon) = resolved.canonicalize() {
-            if let Ok(canon_base) = base_dir.canonicalize() {
-                if !canon.starts_with(&canon_base) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        format!(
-                            "payload path escapes base directory: {}",
-                            resolved.display()
-                        ),
-                    ));
-                }
-            }
-        }
+    if !payload_path.is_absolute()
+        && let Ok(canon) = resolved.canonicalize()
+        && let Ok(canon_base) = base_dir.canonicalize()
+        && !canon.starts_with(&canon_base)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "payload path escapes base directory: {}",
+                resolved.display()
+            ),
+        ));
     }
     Ok(resolved)
 }
@@ -1341,10 +1339,19 @@ mod tests {
 
     #[test]
     fn resolve_payload_path_traversal_blocked() {
-        // Use a real temp directory so canonicalize() succeeds and the check fires.
-        let tmp = std::env::temp_dir();
-        let err = resolve_payload_path(&tmp, "../etc/passwd").unwrap_err();
+        // Create a real nested directory so canonicalize() succeeds and the guard fires.
+        let tmp = std::env::temp_dir().join("ftui_test_traversal");
+        let child = tmp.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        // Place a file in the parent that the child should not escape to.
+        let secret = tmp.join("secret.bin");
+        std::fs::write(&secret, b"x").unwrap();
+        // Traversal attempt: child + "../secret.bin" resolves outside child.
+        let err = resolve_payload_path(&child, "../secret.bin").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        // Cleanup.
+        let _ = std::fs::remove_file(&secret);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // ── apply_diff_runs ───────────────────────────────────────────────

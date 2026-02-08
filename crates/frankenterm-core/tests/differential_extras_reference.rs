@@ -71,6 +71,61 @@ impl CoreTerminalHarness {
                 self.cursor
                     .move_to(row, self.cursor.col, self.rows, self.cols);
             }
+            Action::SetScrollRegion { top, bottom } => {
+                let bottom = if bottom == 0 {
+                    self.rows
+                } else {
+                    bottom.min(self.rows)
+                };
+                self.cursor.set_scroll_region(top, bottom, self.rows);
+                self.cursor.move_to(0, 0, self.rows, self.cols);
+            }
+            Action::ScrollUp(count) => self.grid.scroll_up_into(
+                self.cursor.scroll_top(),
+                self.cursor.scroll_bottom(),
+                count,
+                &mut self.scrollback,
+            ),
+            Action::ScrollDown(count) => {
+                self.grid
+                    .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), count)
+            }
+            Action::InsertLines(count) => {
+                self.grid.insert_lines(
+                    self.cursor.row,
+                    count,
+                    self.cursor.scroll_top(),
+                    self.cursor.scroll_bottom(),
+                );
+                self.cursor.pending_wrap = false;
+            }
+            Action::DeleteLines(count) => {
+                self.grid.delete_lines(
+                    self.cursor.row,
+                    count,
+                    self.cursor.scroll_top(),
+                    self.cursor.scroll_bottom(),
+                );
+                self.cursor.pending_wrap = false;
+            }
+            Action::InsertChars(count) => {
+                self.grid.insert_chars(
+                    self.cursor.row,
+                    self.cursor.col,
+                    count,
+                    self.cursor.attrs.bg,
+                );
+                self.cursor.pending_wrap = false;
+            }
+            Action::DeleteChars(count) => {
+                self.grid.delete_chars(
+                    self.cursor.row,
+                    self.cursor.col,
+                    count,
+                    self.cursor.attrs.bg,
+                );
+                self.cursor.pending_wrap = false;
+            }
             Action::CursorPosition { row, col } => {
                 self.cursor.move_to(row, col, self.rows, self.cols);
             }
@@ -349,7 +404,9 @@ fn render_core_screen_text(grid: &Grid, cols: u16, rows: u16) -> String {
         .map(|row| {
             let mut line = String::with_capacity(cols as usize);
             for col in 0..cols {
-                let ch = grid.cell(row, col).map_or(' ', frankenterm_core::Cell::content);
+                let ch = grid
+                    .cell(row, col)
+                    .map_or(' ', frankenterm_core::Cell::content);
                 line.push(ch);
             }
             line.trim_end().to_string()

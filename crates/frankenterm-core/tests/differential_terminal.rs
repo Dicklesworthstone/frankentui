@@ -74,6 +74,61 @@ impl CoreTerminalHarness {
                 self.cursor
                     .move_to(self.cursor.row, col, self.rows, self.cols);
             }
+            Action::SetScrollRegion { top, bottom } => {
+                let bottom = if bottom == 0 {
+                    self.rows
+                } else {
+                    bottom.min(self.rows)
+                };
+                self.cursor.set_scroll_region(top, bottom, self.rows);
+                self.cursor.move_to(0, 0, self.rows, self.cols);
+            }
+            Action::ScrollUp(count) => self.grid.scroll_up_into(
+                self.cursor.scroll_top(),
+                self.cursor.scroll_bottom(),
+                count,
+                &mut self.scrollback,
+            ),
+            Action::ScrollDown(count) => {
+                self.grid
+                    .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), count)
+            }
+            Action::InsertLines(count) => {
+                self.grid.insert_lines(
+                    self.cursor.row,
+                    count,
+                    self.cursor.scroll_top(),
+                    self.cursor.scroll_bottom(),
+                );
+                self.cursor.pending_wrap = false;
+            }
+            Action::DeleteLines(count) => {
+                self.grid.delete_lines(
+                    self.cursor.row,
+                    count,
+                    self.cursor.scroll_top(),
+                    self.cursor.scroll_bottom(),
+                );
+                self.cursor.pending_wrap = false;
+            }
+            Action::InsertChars(count) => {
+                self.grid.insert_chars(
+                    self.cursor.row,
+                    self.cursor.col,
+                    count,
+                    self.cursor.attrs.bg,
+                );
+                self.cursor.pending_wrap = false;
+            }
+            Action::DeleteChars(count) => {
+                self.grid.delete_chars(
+                    self.cursor.row,
+                    self.cursor.col,
+                    count,
+                    self.cursor.attrs.bg,
+                );
+                self.cursor.pending_wrap = false;
+            }
             Action::CursorPosition { row, col } => {
                 self.cursor.move_to(row, col, self.rows, self.cols);
             }
@@ -278,6 +333,43 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             cols: 10,
             rows: 3,
             bytes: b"ABCDE\x1b[1GZ",
+        },
+        SupportedFixture {
+            id: "csi_cnl_next_line",
+            cols: 10,
+            rows: 3,
+            bytes: b"abc\x1b[2EZ",
+        },
+        SupportedFixture {
+            id: "csi_cpl_prev_line",
+            cols: 10,
+            rows: 3,
+            bytes: b"\x1b[3;5Habc\x1b[2FZ",
+        },
+        SupportedFixture {
+            id: "csi_vpa_row_absolute",
+            cols: 10,
+            rows: 4,
+            bytes: b"ABCDE\x1b[3dZ",
+        },
+        SupportedFixture {
+            id: "csi_scroll_up",
+            cols: 10,
+            rows: 3,
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[1S",
+        },
+        SupportedFixture {
+            id: "csi_scroll_down",
+            cols: 10,
+            rows: 3,
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[1T",
+        },
+        SupportedFixture {
+            id: "csi_scroll_region_and_scroll",
+            cols: 10,
+            rows: 5,
+            bytes:
+                b"\x1b[1;1HAAAA\x1b[2;1HBBBB\x1b[3;1HCCCC\x1b[4;1HDDDD\x1b[5;1HEEEE\x1b[2;4r\x1b[1S",
         },
     ]
 }

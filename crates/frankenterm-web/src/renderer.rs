@@ -436,7 +436,7 @@ mod gpu {
         atlas_width: u16,
         atlas_height: u16,
         glyph_cache: GlyphAtlasCache,
-        glyph_slot_by_codepoint: HashMap<u32, u32>,
+        glyph_slot_by_key: HashMap<GlyphKey, u32>,
         glyph_meta_cpu: Vec<GlyphMetaEntry>,
         next_glyph_slot: u32,
         /// Shadow copy of cell data for resize-time buffer rebuilds.
@@ -729,7 +729,7 @@ mod gpu {
                 atlas_width,
                 atlas_height,
                 glyph_cache,
-                glyph_slot_by_codepoint: HashMap::new(),
+                glyph_slot_by_key: HashMap::new(),
                 glyph_meta_cpu,
                 next_glyph_slot: 1,
                 cells_cpu,
@@ -843,20 +843,24 @@ mod gpu {
             if codepoint == 0 {
                 return 0;
             }
-            if let Some(slot) = self.glyph_slot_by_codepoint.get(&codepoint).copied() {
-                return slot;
-            }
-            if (self.next_glyph_slot as usize) >= MAX_GLYPH_SLOTS {
-                return 0;
-            }
 
             let Some(ch) = char::from_u32(codepoint) else {
                 return 0;
             };
+            if ch.is_whitespace() {
+                // The background path already renders whitespace cells; avoid
+                // wasting atlas/slots on empty glyphs.
+                return 0;
+            }
             let (cell_w, cell_h) = self.glyph_pixel_size();
             let glyph_w = cell_w.saturating_sub(2).max(1);
             let glyph_h = cell_h.saturating_sub(2).max(1);
             let key = GlyphKey::from_char(ch, cell_h.max(1));
+
+            let existing_slot = self.glyph_slot_by_key.get(&key).copied();
+            if existing_slot.is_none() && (self.next_glyph_slot as usize) >= MAX_GLYPH_SLOTS {
+                return 0;
+            }
 
             let placement = match self.glyph_cache.get_or_insert_with(key, |_| {
                 rasterize_procedural_glyph(codepoint, glyph_w, glyph_h)
@@ -865,19 +869,20 @@ mod gpu {
                 Err(_) => return 0,
             };
 
-            let slot = self.next_glyph_slot;
-            self.next_glyph_slot = self.next_glyph_slot.saturating_add(1);
-            self.glyph_slot_by_codepoint.insert(codepoint, slot);
+            let slot = existing_slot.unwrap_or_else(|| {
+                let slot = self.next_glyph_slot;
+                self.next_glyph_slot = self.next_glyph_slot.saturating_add(1);
+                self.glyph_slot_by_key.insert(key, slot);
+                slot
+            });
 
             let meta =
                 GlyphMetaEntry::from_placement(placement, self.atlas_width, self.atlas_height);
-            self.glyph_meta_cpu[slot as usize] = meta;
-            let byte_offset = (slot as u64) * (GLYPH_META_BYTES as u64);
-            self.queue
-                .write_buffer(&self.glyph_meta_buffer, byte_offset, &meta.to_bytes());
-
-            if !self.glyph_cache.take_dirty_rects().is_empty() {
-                self.upload_full_atlas();
+            if self.glyph_meta_cpu[slot as usize] != meta {
+                self.glyph_meta_cpu[slot as usize] = meta;
+                let byte_offset = (slot as u64) * (GLYPH_META_BYTES as u64);
+                self.queue
+                    .write_buffer(&self.glyph_meta_buffer, byte_offset, &meta.to_bytes());
             }
 
             slot
@@ -915,6 +920,13 @@ mod gpu {
                     .write_buffer(&self.cell_buffer, byte_offset, &self.patch_upload_scratch);
                 dirty += count as u32;
             }
+
+            // Upload the atlas at most once per patch batch to avoid N× full
+            // uploads when many new glyphs are encountered in a single frame.
+            if !self.glyph_cache.take_dirty_rects().is_empty() {
+                self.upload_full_atlas();
+            }
+
             self.last_dirty_cells = dirty;
             dirty
         }

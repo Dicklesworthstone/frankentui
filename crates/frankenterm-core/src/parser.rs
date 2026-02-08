@@ -42,6 +42,23 @@ pub enum Action {
     CursorColumn(u16),
     /// VPA (`CSI Ps d`): move cursor to absolute row (0-indexed).
     CursorRow(u16),
+    /// DECSTBM (`CSI Pt ; Pb r`): set scrolling region. `bottom == 0` means
+    /// "use full height" (default), since the parser does not know the grid size.
+    ///
+    /// `top` is 0-indexed inclusive. `bottom` is 0-indexed exclusive when non-zero.
+    SetScrollRegion { top: u16, bottom: u16 },
+    /// SU (`CSI Ps S`): scroll the scroll region up by count (default 1).
+    ScrollUp(u16),
+    /// SD (`CSI Ps T`): scroll the scroll region down by count (default 1).
+    ScrollDown(u16),
+    /// IL (`CSI Ps L`): insert blank lines at cursor row within scroll region.
+    InsertLines(u16),
+    /// DL (`CSI Ps M`): delete lines at cursor row within scroll region.
+    DeleteLines(u16),
+    /// ICH (`CSI Ps @`): insert blank cells at cursor column.
+    InsertChars(u16),
+    /// DCH (`CSI Ps P`): delete cells at cursor column.
+    DeleteChars(u16),
     /// CUP/HVP: move cursor to absolute 0-indexed row/col.
     CursorPosition { row: u16, col: u16 },
     /// ED mode (`CSI Ps J`): 0, 1, or 2.
@@ -250,6 +267,34 @@ impl Parser {
             b'd' => Some(Action::CursorRow(
                 Self::csi_count_or_one(params.first().copied()).saturating_sub(1),
             )),
+            b'L' => Some(Action::InsertLines(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'M' => Some(Action::DeleteLines(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'@' => Some(Action::InsertChars(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'P' => Some(Action::DeleteChars(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'S' => Some(Action::ScrollUp(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'T' => Some(Action::ScrollDown(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'r' => {
+                let top = params
+                    .first()
+                    .copied()
+                    .unwrap_or(0)
+                    .max(1)
+                    .saturating_sub(1);
+                let bottom = params.get(1).copied().unwrap_or(0);
+                Some(Action::SetScrollRegion { top, bottom })
+            }
             _ => None,
         }
     }
@@ -365,6 +410,24 @@ mod tests {
                 Action::CursorRow(2),
                 Action::CursorRow(0),
                 Action::CursorRow(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn csi_scroll_region_and_insert_delete_are_decoded() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b[2;4r\x1b[r\x1b[2S\x1b[T\x1b[3L\x1b[M\x1b[4@\x1b[P"),
+            vec![
+                Action::SetScrollRegion { top: 1, bottom: 4 },
+                Action::SetScrollRegion { top: 0, bottom: 0 },
+                Action::ScrollUp(2),
+                Action::ScrollDown(1),
+                Action::InsertLines(3),
+                Action::DeleteLines(1),
+                Action::InsertChars(4),
+                Action::DeleteChars(1),
             ]
         );
     }

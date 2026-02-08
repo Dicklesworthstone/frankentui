@@ -83,38 +83,6 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
             cursor.pending_wrap = false;
         }
         Action::ScrollUp(count) => {
-            grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), count, scrollback);
-            cursor.pending_wrap = false;
-        }
-        Action::ScrollDown(count) => {
-            grid.scroll_down(cursor.scroll_top(), cursor.scroll_bottom(), count);
-            cursor.pending_wrap = false;
-        }
-        Action::InsertLines(count) => {
-            grid.insert_lines(cursor.row, count, cursor.scroll_top(), cursor.scroll_bottom());
-            cursor.pending_wrap = false;
-        }
-        Action::DeleteLines(count) => {
-            grid.delete_lines(cursor.row, count, cursor.scroll_top(), cursor.scroll_bottom());
-            cursor.pending_wrap = false;
-        }
-        Action::InsertChars(count) => {
-            grid.insert_chars(cursor.row, cursor.col, count, cursor.attrs.bg);
-            cursor.pending_wrap = false;
-        }
-        Action::DeleteChars(count) => {
-            grid.delete_chars(cursor.row, cursor.col, count, cursor.attrs.bg);
-            cursor.pending_wrap = false;
-        }
-        Action::CursorPosition { row, col } => {
-            cursor.move_to(row, col, rows, cols);
-        }
-        Action::SetScrollRegion { top, bottom } => {
-            let bottom = if bottom == 0 { rows } else { bottom.min(rows) };
-            cursor.set_scroll_region(top, bottom, rows);
-            cursor.move_to(0, 0, rows, cols);
-        }
-        Action::ScrollUp(count) => {
             grid.scroll_up_into(
                 cursor.scroll_top(),
                 cursor.scroll_bottom(),
@@ -152,6 +120,9 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
         Action::DeleteChars(count) => {
             grid.delete_chars(cursor.row, cursor.col, count, cursor.attrs.bg);
             cursor.pending_wrap = false;
+        }
+        Action::CursorPosition { row, col } => {
+            cursor.move_to(row, col, rows, cols);
         }
         Action::EraseInDisplay(mode) => {
             let bg = cursor.attrs.bg;
