@@ -712,25 +712,18 @@ jobs:
           cargo test -p ftui-web session_record::tests::gate_trace_fails_with_actionable_diff -- --nocapture
           cargo test -p ftui-web session_record::tests::gate_trace_diff_has_event_context -- --nocapture
 
-      - name: Replay gates (time-bounded PR profile)
+      - name: Harness replay gate (time-bounded PR profile)
         if: github.event_name == 'pull_request'
-        env:
-          E2E_JSONL_VALIDATE: "1"
-          E2E_JSONL_VALIDATE_MODE: strict
         run: |
           set -euo pipefail
-          export E2E_LOG_DIR="/tmp/ftui_e2e_trace_gates_pr_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-          ./scripts/e2e_test.sh --trace-only --no-large --no-span --no-tile --no-selector
+          cargo test -p ftui-harness trace_replay -- --nocapture
 
-      - name: Replay gates (expanded main/nightly profile)
+      - name: Harness replay gate (expanded main/nightly profile)
         if: github.event_name != 'pull_request'
-        env:
-          E2E_JSONL_VALIDATE: "1"
-          E2E_JSONL_VALIDATE_MODE: strict
         run: |
           set -euo pipefail
-          export E2E_LOG_DIR="/tmp/ftui_e2e_trace_gates_full_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-          ./scripts/e2e_test.sh --trace-only
+          cargo test -p ftui-harness trace_replay -- --nocapture
+          cargo test -p ftui-harness checksum -- --nocapture
 
       - name: Remote replay gate (when available)
         run: |
@@ -754,8 +747,6 @@ jobs:
         with:
           name: golden-trace-logs
           path: |
-            /tmp/ftui_e2e_trace_gates_pr_*/
-            /tmp/ftui_e2e_trace_gates_full_*/
             /tmp/ftui_schedule_trace_e2e/
           retention-days: 7
           if-no-files-found: ignore
