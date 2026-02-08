@@ -142,6 +142,8 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
                 _ => {}
             }
         }
+        Action::Sgr(params) => cursor.attrs.apply_sgr_params(&params),
+        Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
         Action::Escape(_) => {
             // Unsupported sequences are ignored.
         }

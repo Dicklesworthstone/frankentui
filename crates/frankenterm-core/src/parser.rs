@@ -65,6 +65,17 @@ pub enum Action {
     EraseInDisplay(u8),
     /// EL mode (`CSI Ps K`): 0, 1, or 2.
     EraseInLine(u8),
+    /// SGR (`CSI ... m`): set graphics rendition parameters (attributes/colors).
+    ///
+    /// Parameters are returned as parsed numeric values; interpretation is
+    /// performed by the terminal engine (they are stateful/delta-based).
+    Sgr(Vec<u16>),
+    /// OSC 0/2: set terminal title.
+    SetTitle(String),
+    /// OSC 8: start a hyperlink with the given URI.
+    HyperlinkStart(String),
+    /// OSC 8: end the current hyperlink.
+    HyperlinkEnd,
     /// A raw escape/CSI/OSC sequence captured verbatim (starts with ESC).
     Escape(Vec<u8>),
 }
@@ -179,7 +190,8 @@ impl Parser {
             0x07 => {
                 // BEL terminator.
                 self.state = State::Ground;
-                Some(Action::Escape(self.take_buf()))
+                let seq = self.take_buf();
+                Some(Self::decode_osc(&seq).unwrap_or(Action::Escape(seq)))
             }
             0x1b => {
                 // ESC, possibly starting ST terminator (ESC \).
@@ -195,7 +207,8 @@ impl Parser {
         if b == b'\\' {
             // ST terminator.
             self.state = State::Ground;
-            return Some(Action::Escape(self.take_buf()));
+            let seq = self.take_buf();
+            return Some(Self::decode_osc(&seq).unwrap_or(Action::Escape(seq)));
         }
         // False alarm; continue OSC.
         self.state = State::Osc;
@@ -295,6 +308,47 @@ impl Parser {
                 let bottom = params.get(1).copied().unwrap_or(0);
                 Some(Action::SetScrollRegion { top, bottom })
             }
+            b'm' => Some(Action::Sgr(params)),
+            _ => None,
+        }
+    }
+
+    fn decode_osc(seq: &[u8]) -> Option<Action> {
+        if seq.len() < 4 || seq[0] != 0x1b || seq[1] != b']' {
+            return None;
+        }
+
+        // Strip terminator (BEL or ST).
+        let content = if *seq.last()? == 0x07 {
+            &seq[2..seq.len().saturating_sub(1)]
+        } else if seq.len() >= 4 && seq[seq.len() - 2] == 0x1b && seq[seq.len() - 1] == b'\\' {
+            &seq[2..seq.len().saturating_sub(2)]
+        } else {
+            return None;
+        };
+
+        let first_semi = content.iter().position(|&b| b == b';')?;
+        let cmd = core::str::from_utf8(&content[..first_semi]).ok()?;
+        let cmd: u16 = cmd.parse().ok()?;
+        let rest = &content[first_semi + 1..];
+
+        match cmd {
+            0 | 2 => {
+                let title = String::from_utf8_lossy(rest).to_string();
+                Some(Action::SetTitle(title))
+            }
+            8 => {
+                // OSC 8 ; params ; uri ST/BEL
+                let second_semi = rest.iter().position(|&b| b == b';')?;
+                let uri = &rest[second_semi + 1..];
+                if uri.is_empty() {
+                    Some(Action::HyperlinkEnd)
+                } else {
+                    Some(Action::HyperlinkStart(
+                        String::from_utf8_lossy(uri).to_string(),
+                    ))
+                }
+            }
             _ => None,
         }
     }
@@ -345,12 +399,19 @@ mod tests {
     #[test]
     fn csi_sequence_is_captured_as_escape() {
         let mut p = Parser::new();
-        let actions = p.feed(b"\x1b[31m");
+        let actions = p.feed(b"\x1b[?25l");
         assert_eq!(actions.len(), 1);
         assert!(matches!(
             &actions[0],
-            Action::Escape(seq) if seq.as_slice() == b"\x1b[31m"
+            Action::Escape(seq) if seq.as_slice() == b"\x1b[?25l"
         ));
+    }
+
+    #[test]
+    fn csi_sgr_is_decoded() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[31m"), vec![Action::Sgr(vec![31])]);
+        assert_eq!(p.feed(b"\x1b[m"), vec![Action::Sgr(vec![])]);
     }
 
     #[test]
@@ -435,11 +496,28 @@ mod tests {
     #[test]
     fn osc_sequence_bel_terminated_is_captured() {
         let mut p = Parser::new();
-        let actions = p.feed(b"\x1b]0;title\x07");
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(
-            &actions[0],
-            Action::Escape(seq) if seq.starts_with(b"\x1b]0;")
-        ));
+        assert_eq!(
+            p.feed(b"\x1b]0;title\x07"),
+            vec![Action::SetTitle("title".to_string())]
+        );
+        assert_eq!(
+            p.feed(b"\x1b]2;hi\x1b\\"),
+            vec![Action::SetTitle("hi".to_string())]
+        );
+    }
+
+    #[test]
+    fn osc8_hyperlink_is_decoded() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b]8;;https://example.com\x07"),
+            vec![Action::HyperlinkStart("https://example.com".to_string())]
+        );
+        assert_eq!(p.feed(b"\x1b]8;;\x07"), vec![Action::HyperlinkEnd]);
+        assert_eq!(
+            p.feed(b"\x1b]8;;https://a.test\x1b\\"),
+            vec![Action::HyperlinkStart("https://a.test".to_string())]
+        );
+        assert_eq!(p.feed(b"\x1b]8;;\x1b\\"), vec![Action::HyperlinkEnd]);
     }
 }

@@ -154,6 +154,8 @@ impl CoreTerminalHarness {
                     _ => {}
                 }
             }
+            Action::Sgr(params) => self.cursor.attrs.apply_sgr_params(&params),
+            Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
             Action::Escape(_) => {
                 // Remaining escape actions are intentionally left unsupported in the
                 // baseline harness and tracked via known-mismatch fixtures.

@@ -484,8 +484,12 @@ mod gpu {
                 .map_err(|e| RendererError::DeviceError(e.to_string()))?;
 
             let dpr = config.dpr;
-            let pixel_width = (cols as f32 * config.cell_width as f32 * dpr) as u32;
-            let pixel_height = (rows as f32 * config.cell_height as f32 * dpr) as u32;
+            // Use rounded pixel sizes to keep the grid perfectly aligned with
+            // the surface even on fractional device pixel ratios.
+            let cell_w_px = (config.cell_width as f32 * dpr).round().max(1.0);
+            let cell_h_px = (config.cell_height as f32 * dpr).round().max(1.0);
+            let pixel_width = (cols as f32 * cell_w_px).round() as u32;
+            let pixel_height = (rows as f32 * cell_h_px).round() as u32;
 
             let surface_caps = surface.get_capabilities(&adapter);
             let format = surface_caps
@@ -667,8 +671,8 @@ mod gpu {
             let uniform_bytes = uniforms_bytes(
                 pixel_width as f32,
                 pixel_height as f32,
-                config.cell_width as f32 * dpr,
-                config.cell_height as f32 * dpr,
+                cell_w_px,
+                cell_h_px,
                 cols as u32,
                 rows as u32,
             );
@@ -746,8 +750,10 @@ mod gpu {
             self.cols = cols;
             self.rows = rows;
 
-            let pixel_w = (cols as f32 * self.cell_width as f32 * self.dpr) as u32;
-            let pixel_h = (rows as f32 * self.cell_height as f32 * self.dpr) as u32;
+            let cell_w_px = (self.cell_width as f32 * self.dpr).round().max(1.0);
+            let cell_h_px = (self.cell_height as f32 * self.dpr).round().max(1.0);
+            let pixel_w = (cols as f32 * cell_w_px).round() as u32;
+            let pixel_h = (rows as f32 * cell_h_px).round() as u32;
 
             self.surface_config.width = pixel_w.max(1);
             self.surface_config.height = pixel_h.max(1);
@@ -772,8 +778,8 @@ mod gpu {
             let ub = uniforms_bytes(
                 pixel_w as f32,
                 pixel_h as f32,
-                self.cell_width as f32 * self.dpr,
-                self.cell_height as f32 * self.dpr,
+                cell_w_px,
+                cell_h_px,
                 cols as u32,
                 rows as u32,
             );

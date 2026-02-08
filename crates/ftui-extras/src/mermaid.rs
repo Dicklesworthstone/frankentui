@@ -11705,6 +11705,97 @@ mod tests {
     }
 
     #[test]
+    fn prepare_emits_jsonl_with_init_hash_and_warnings() {
+        let log_path = next_log_path("prepare_jsonl");
+
+        let input = concat!(
+            "graph TD\n",
+            "%%{init: {\"theme\":\"base\",",
+            "\"themeVariables\":{\"primaryColor\":\"#ffcc00\",\"primaryTextColor\":\"#111111\",\"primaryBorderColor\":\"#ff9900\"},",
+            "\"flowchart\":{\"direction\":\"LR\"}}}%%\n",
+            "A-->B\n",
+        );
+        let config = MermaidConfig {
+            enable_init_directives: true,
+            log_path: Some(log_path.clone()),
+            ..MermaidConfig::default()
+        };
+
+        let prepared = prepare_with_policy(
+            input,
+            &config,
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+
+        let value = jsonl_event(&log_path, "mermaid_prepare");
+        assert_eq!(
+            value["event"].as_str().unwrap_or_default(),
+            "mermaid_prepare"
+        );
+        assert_eq!(value["diagram_type"].as_str().unwrap_or_default(), "graph");
+        assert_eq!(value["init_theme"].as_str().unwrap_or_default(), "base");
+        assert_eq!(value["init_theme_vars"].as_u64().unwrap_or_default(), 3);
+
+        let init_hash = value["init_config_hash"].as_str().unwrap_or_default();
+        assert!(
+            init_hash.starts_with("0x") && init_hash.len() == 18,
+            "expected init_config_hash to be 0x + 16 hex digits, got {:?}",
+            init_hash
+        );
+
+        assert!(
+            value["warnings"].as_u64().is_some(),
+            "expected warnings count in JSONL, got: {:?}",
+            value
+        );
+        assert!(
+            value["errors"].as_u64().is_some(),
+            "expected errors count in JSONL, got: {:?}",
+            value
+        );
+
+        assert_eq!(
+            value["init_config_hash"].as_str().unwrap_or_default(),
+            format!("0x{:016x}", prepared.init_config_hash),
+            "expected emitted init_config_hash to match prepared.init_config_hash"
+        );
+    }
+
+    #[test]
+    fn guard_emits_jsonl_codes_when_limits_exceeded() {
+        let log_path = next_log_path("guard_jsonl");
+
+        let ast = parse("graph TD\nA-->B\nB-->C\nC-->D\nD-->E\n").expect("parse");
+        let config = MermaidConfig {
+            max_nodes: 2,
+            max_edges: 2,
+            log_path: Some(log_path.clone()),
+            ..MermaidConfig::default()
+        };
+        let normalized = normalize_ast_to_ir(
+            &ast,
+            &config,
+            &MermaidCompatibilityMatrix::default(),
+            &MermaidFallbackPolicy::default(),
+        );
+        assert!(normalized.ir.meta.guard.limits_exceeded);
+
+        let value = jsonl_event(&log_path, "mermaid_guard");
+        assert_eq!(value["event"].as_str().unwrap_or_default(), "mermaid_guard");
+        let codes = value["guard_codes"]
+            .as_array()
+            .expect("guard_codes should be an array");
+        assert!(
+            codes
+                .iter()
+                .any(|c| c.as_str() == Some("mermaid/limit/exceeded")),
+            "expected mermaid/limit/exceeded in guard_codes, got: {:?}",
+            codes
+        );
+    }
+
+    #[test]
     fn parse_subgraph_direction_and_styles() {
         let input = "graph TD\nsubgraph Cluster A\n  direction LR\n  A-->B\nend\nclassDef hot fill:#f00\nclass A,B hot\nstyle A fill:#f00\nlinkStyle 1 stroke:#333\nclick A \"https://example.com\" \"tip\"\n";
         let ast = parse(input).expect("parse");

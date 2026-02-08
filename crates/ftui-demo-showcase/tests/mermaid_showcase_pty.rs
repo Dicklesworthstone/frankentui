@@ -8,7 +8,7 @@
 
 #![cfg(unix)]
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ftui_pty::{PtyConfig, spawn_command};
 use portable_pty::CommandBuilder;
@@ -102,6 +102,66 @@ fn run_mermaid_harness(demo_bin: &str, seed: u64) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
+fn next_mermaid_log_path(label: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "ftui_mermaid_{label}_{}_{}.jsonl",
+        std::process::id(),
+        nanos
+    ));
+    path.to_string_lossy().to_string()
+}
+
+fn run_mermaid_showcase_with_init(
+    demo_bin: &str,
+    seed: u64,
+    log_path: &str,
+) -> Result<Vec<u8>, String> {
+    let config = PtyConfig::default()
+        .with_size(MERMAID_COLS, MERMAID_ROWS)
+        .with_test_name("mermaid_showcase_init")
+        .with_env("FTUI_DEMO_DETERMINISTIC", "1")
+        .with_env("E2E_SEED", seed.to_string())
+        .with_env("E2E_JSONL", "1")
+        .with_env("FTUI_MERMAID_LOG_PATH", log_path)
+        .logging(false);
+
+    let mut cmd = CommandBuilder::new(demo_bin);
+    cmd.arg("--screen=16"); // MermaidShowcase (SCREEN_REGISTRY index 15)
+    cmd.arg("--screen-mode=alt");
+    cmd.arg("--no-mouse");
+    cmd.arg("--exit-after-ms=5000");
+
+    let mut session =
+        spawn_command(config, cmd).map_err(|err| format!("spawn mermaid showcase: {err}"))?;
+
+    // Allow the program to enter raw mode; early keystrokes can be drained during initialization.
+    std::thread::sleep(Duration::from_millis(250));
+
+    // Toggle init directives so the engine must parse/apply them.
+    session
+        .send_input(b"I")
+        .map_err(|err| format!("send init toggle: {err}"))?;
+
+    let status = session
+        .wait_and_drain(Duration::from_secs(10))
+        .map_err(|err| format!("wait mermaid showcase: {err}"))?;
+    let output = session.output().to_vec();
+
+    if !status.success() {
+        let tail = tail_output(&output, 4096);
+        return Err(format!(
+            "mermaid showcase exit failure: {status:?}\nTAIL:\n{tail}"
+        ));
+    }
+
+    Ok(output)
+}
+
 fn extract_mermaid_frames(output: &[u8]) -> Result<Vec<MermaidFrame>, String> {
     let text = String::from_utf8_lossy(output);
     let mut frames = Vec::new();
@@ -157,6 +217,58 @@ fn pty_mermaid_harness_exits_cleanly() -> Result<(), String> {
 
     // Verify the harness runs and exits without error.
     let _output = run_mermaid_harness(&demo_bin, MERMAID_SEED)?;
+    Ok(())
+}
+
+#[test]
+fn pty_mermaid_init_directives_prepare_jsonl_present() -> Result<(), String> {
+    let demo_bin = std::env::var("CARGO_BIN_EXE_ftui-demo-showcase").map_err(|err| {
+        format!("CARGO_BIN_EXE_ftui-demo-showcase must be set for PTY tests: {err}")
+    })?;
+
+    let log_path = next_mermaid_log_path("prepare");
+    let _output = run_mermaid_showcase_with_init(&demo_bin, MERMAID_SEED, &log_path)?;
+
+    let content = std::fs::read_to_string(&log_path)
+        .map_err(|err| format!("read FTUI_MERMAID_LOG_PATH={log_path}: {err}"))?;
+
+    let mut found = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(trimmed).map_err(|err| {
+            format!("invalid JSONL in FTUI_MERMAID_LOG_PATH={log_path}: {err}: {trimmed}")
+        })?;
+        if value.get("event").and_then(Value::as_str) != Some("mermaid_prepare") {
+            continue;
+        }
+        if value.get("init_theme").and_then(Value::as_str) != Some("base") {
+            continue;
+        }
+        if value.get("init_theme_vars").and_then(Value::as_u64) != Some(3) {
+            continue;
+        }
+        if value
+            .get("init_config_hash")
+            .and_then(Value::as_str)
+            .is_none()
+        {
+            continue;
+        }
+        if value.get("warnings").and_then(Value::as_u64).is_none() {
+            continue;
+        }
+        found = true;
+        break;
+    }
+
+    assert!(
+        found,
+        "expected at least one mermaid_prepare JSONL event with init_theme=base, init_theme_vars=3, init_config_hash, and warnings; log_path={log_path}"
+    );
+
     Ok(())
 }
 

@@ -1,0 +1,24 @@
+Mermaid Showcase | Flow Basic (1/25) | Layout: Auto | Score: 47.0 | Viewport: au
+╭───────Samples────────╮╭───────────────────────Viewport───────────────────────╮
+│> Flow Basic [flow, S,││                                                      │
+│  Flow Subgraphs [flow││                     ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                     │
+│  Flow Dense [flow, L,││                     ⠿⠿⠿⠿⠿⠿⡿⠿⠿⠿⠿⠿                     │
+│  Flow Long Labels [fl││                           ⡇                          │
+│  Flow Unicode [flow, ││                          ⠹⡿⠁                         │
+│  Flow Styles [flow, M││                      ⣀⣠⣤⣶⣾⣿⣶⣦⣄⣀                      │
+│  Sequence Mini [seque││                     ⠉⠙⠛⠻⠿⢿⣿⠿⠿⠛⠛⠉                     │
+│  Sequence Checkout [s││                        ⢀⠤⠒⠑⠢⢄                        │
+│  Sequence Dense [sequ││                    ⣰⣀⠔⠊⠁     ⠉⠒⢄⣰⡀                   │
+│  Class Basic [class, ││             ⢰⣶⣶⣶⣶⣶⣶⣿⣷⣶⣶⣶    ⣶⣶⣶⣶⣿⣷⣶⣶⣶⣶⣶⡆             │
+│  Class Members [class││             ⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿    ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇             │
+│  State Basic [state, ││                                                      │
+│  State Composite [sta│╰──────────────────────────────────────────────────────╯
+│  ER Basic [er, M, car│╭───────────────────────Metrics────────────────────────╮
+│  Gantt Basic [gantt, ││Cache: hit 0  miss 1  last miss                       │
+│  Mindmap Seed [mindma││Warnings: 0                                           │
+│  Mindmap Deep [mindma││Parse: 0.00 ms                                        │
+│  Pie Basic [pie, S, t││Layout: 0.00 ms                                       │
+│  Pie Many [pie, M, ma││Render: 0.00 ms                                       │
+│  Gitgraph Basic [gitg││Viewport: auto                                        │
+╰──────────────────────╯╰──────────────────────────────────────────────────────╯
+j/k sample  Enter render  l layout  u links  m metrics  ? help                  

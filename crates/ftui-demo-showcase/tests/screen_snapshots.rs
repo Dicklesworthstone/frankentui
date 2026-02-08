@@ -2878,6 +2878,19 @@ fn mermaid_showcase_flow_basic_init_directives_120x40() {
 }
 
 #[test]
+fn mermaid_showcase_flow_basic_init_directives_80x24() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
+    screen.update(&press(KeyCode::Char('I')));
+    mermaid_showcase_snapshot(
+        &mut screen,
+        80,
+        24,
+        "mermaid_showcase_flow_basic_init_directives_80x24",
+    );
+}
+
+#[test]
 fn mermaid_showcase_flow_basic_ascii_120x40() {
     let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
     let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();

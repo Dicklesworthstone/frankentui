@@ -71,6 +71,107 @@ impl SgrAttrs {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    /// Apply an SGR parameter list (`CSI ... m`) to this attribute state.
+    ///
+    /// Notes
+    /// - SGR is stateful and delta-based: parameters mutate the current state.
+    /// - An empty parameter list is treated as `[0]` (full reset).
+    pub fn apply_sgr_params(&mut self, params: &[u16]) {
+        let mut i = 0usize;
+        let params = if params.is_empty() {
+            &[0u16][..]
+        } else {
+            params
+        };
+
+        while i < params.len() {
+            let p = params[i];
+            match p {
+                0 => self.reset(),
+
+                1 => self.flags.insert(SgrFlags::BOLD),
+                2 => self.flags.insert(SgrFlags::DIM),
+                3 => self.flags.insert(SgrFlags::ITALIC),
+                4 => self.flags.insert(SgrFlags::UNDERLINE),
+                5 => self.flags.insert(SgrFlags::BLINK),
+                7 => self.flags.insert(SgrFlags::INVERSE),
+                8 => self.flags.insert(SgrFlags::HIDDEN),
+                9 => self.flags.insert(SgrFlags::STRIKETHROUGH),
+                21 => self.flags.insert(SgrFlags::DOUBLE_UNDERLINE),
+                53 => self.flags.insert(SgrFlags::OVERLINE),
+
+                22 => self.flags.remove(SgrFlags::BOLD | SgrFlags::DIM),
+                23 => self.flags.remove(SgrFlags::ITALIC),
+                24 => self.flags.remove(
+                    SgrFlags::UNDERLINE | SgrFlags::DOUBLE_UNDERLINE | SgrFlags::CURLY_UNDERLINE,
+                ),
+                25 => self.flags.remove(SgrFlags::BLINK),
+                27 => self.flags.remove(SgrFlags::INVERSE),
+                28 => self.flags.remove(SgrFlags::HIDDEN),
+                29 => self.flags.remove(SgrFlags::STRIKETHROUGH),
+                55 => self.flags.remove(SgrFlags::OVERLINE),
+
+                30..=37 => self.fg = Color::Named((p - 30) as u8),
+                39 => self.fg = Color::Default,
+                40..=47 => self.bg = Color::Named((p - 40) as u8),
+                49 => self.bg = Color::Default,
+                90..=97 => self.fg = Color::Named(((p - 90) as u8).saturating_add(8)),
+                100..=107 => self.bg = Color::Named(((p - 100) as u8).saturating_add(8)),
+
+                // Extended colors.
+                38 => {
+                    if let Some((c, consumed)) = parse_extended_color(params, i) {
+                        self.fg = c;
+                        i = i.saturating_add(consumed);
+                        continue;
+                    }
+                }
+                48 => {
+                    if let Some((c, consumed)) = parse_extended_color(params, i) {
+                        self.bg = c;
+                        i = i.saturating_add(consumed);
+                        continue;
+                    }
+                }
+                58 => {
+                    if let Some((c, consumed)) = parse_extended_color(params, i) {
+                        self.underline_color = Some(c);
+                        i = i.saturating_add(consumed);
+                        continue;
+                    }
+                }
+                59 => self.underline_color = None,
+
+                _ => {}
+            }
+            i = i.saturating_add(1);
+        }
+
+        fn parse_extended_color(params: &[u16], start: usize) -> Option<(Color, usize)> {
+            // Formats:
+            // - 38;5;n     (indexed fg)
+            // - 38;2;r;g;b (truecolor fg)
+            // ... same for 48 (bg) and 58 (underline color).
+            let mode = *params.get(start + 1)?;
+            match mode {
+                5 => {
+                    let idx = *params.get(start + 2)?;
+                    Some((Color::Indexed(idx.min(255) as u8), 3))
+                }
+                2 => {
+                    let r = *params.get(start + 2)?;
+                    let g = *params.get(start + 3)?;
+                    let b = *params.get(start + 4)?;
+                    Some((
+                        Color::Rgb(r.min(255) as u8, g.min(255) as u8, b.min(255) as u8),
+                        5,
+                    ))
+                }
+                _ => None,
+            }
+        }
+    }
 }
 
 /// Hyperlink identifier for OSC 8 links.
@@ -457,6 +558,41 @@ mod tests {
             underline_color: Some(Color::Named(3)),
         };
         attrs.reset();
+        assert_eq!(attrs, SgrAttrs::default());
+    }
+
+    #[test]
+    fn sgr_attrs_apply_params_basic_colors_and_reset() {
+        let mut attrs = SgrAttrs::default();
+        attrs.apply_sgr_params(&[31]);
+        assert_eq!(attrs.fg, Color::Named(1));
+        attrs.apply_sgr_params(&[44]);
+        assert_eq!(attrs.bg, Color::Named(4));
+        attrs.apply_sgr_params(&[0]);
+        assert_eq!(attrs, SgrAttrs::default());
+    }
+
+    #[test]
+    fn sgr_attrs_apply_params_extended_colors() {
+        let mut attrs = SgrAttrs::default();
+        attrs.apply_sgr_params(&[38, 5, 200]);
+        assert_eq!(attrs.fg, Color::Indexed(200));
+        attrs.apply_sgr_params(&[48, 2, 1, 2, 3]);
+        assert_eq!(attrs.bg, Color::Rgb(1, 2, 3));
+        attrs.apply_sgr_params(&[39, 49]);
+        assert_eq!(attrs.fg, Color::Default);
+        assert_eq!(attrs.bg, Color::Default);
+    }
+
+    #[test]
+    fn sgr_attrs_apply_params_empty_means_reset() {
+        let mut attrs = SgrAttrs {
+            flags: SgrFlags::BOLD,
+            fg: Color::Named(2),
+            bg: Color::Named(3),
+            underline_color: Some(Color::Indexed(7)),
+        };
+        attrs.apply_sgr_params(&[]);
         assert_eq!(attrs, SgrAttrs::default());
     }
 

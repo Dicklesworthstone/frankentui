@@ -1415,6 +1415,15 @@ impl MermaidShowcaseState {
             ..MermaidConfig::default()
         };
 
+        // Optional E2E logging hook. This is intentionally env-driven so PTY/E2E
+        // tests can assert mermaid_prepare JSONL without adding CLI flags.
+        if let Ok(path) = std::env::var("FTUI_MERMAID_LOG_PATH") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                config.log_path = Some(trimmed.to_string());
+            }
+        }
+
         match self.guard_profile {
             GuardProfile::Default => {}
             GuardProfile::Tight => {
@@ -2437,6 +2446,13 @@ impl MermaidShowcaseScreen {
             let parse_start = Instant::now();
             let parsed = mermaid::parse_with_diagnostics(source.as_ref());
             metrics.parse_ms = Some(parse_start.elapsed().as_secs_f32() * 1000.0);
+
+            // E2E-only: emit a mermaid_prepare JSONL record (init hash + warnings/errors)
+            // when a log path is configured.
+            if config.log_path.is_some() {
+                let _prepared =
+                    mermaid::prepare_with_policy(source.as_ref(), &config, &matrix, &policy);
+            }
 
             let ir_parse = mermaid::normalize_ast_to_ir(&parsed.ast, &config, &matrix, &policy);
             metrics.warning_count = Some(ir_parse.warnings.len() as u32);
