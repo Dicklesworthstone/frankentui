@@ -141,6 +141,8 @@ pub struct VisualEffectsScreen {
     fps_last_mouse: Option<(u16, u16)>,
     /// Mouse sensitivity for FPS-style mouse look.
     fps_mouse_sensitivity: f32,
+    /// Render mode for FPS effects (Braille = high-density dots, HalfBlock = colored block pixels).
+    fps_render_mode: Mode,
     /// Deterministic mode for harness runs (fixed FPS stats).
     deterministic_mode: bool,
     /// Tick cadence used for deterministic FPS stats.
@@ -3336,6 +3338,7 @@ impl Default for VisualEffectsScreen {
             fps_input: FpsInputState::default(),
             fps_last_mouse: None,
             fps_mouse_sensitivity: 0.014,
+            fps_render_mode: Mode::Braille,
             deterministic_mode: false,
             deterministic_tick_ms: 0,
         }
@@ -3378,8 +3381,8 @@ impl VisualEffectsScreen {
 
     fn canvas_mode_for_effect(&self, _quality: FxQuality, _area_cells: usize) -> Mode {
         match self.effect {
-            // FPS effects render in full braille resolution.
-            EffectType::DoomE1M1 | EffectType::QuakeE1M1 => Mode::Braille,
+            // FPS effects: user-toggleable between Braille (high density) and HalfBlock (colored pixels).
+            EffectType::DoomE1M1 | EffectType::QuakeE1M1 => self.fps_render_mode,
             _ => Mode::Braille,
         }
     }
@@ -3511,6 +3514,13 @@ impl VisualEffectsScreen {
             KeyCode::Char(']') => {
                 let effect = self.effect.next();
                 self.switch_effect(effect);
+            }
+            KeyCode::Char('r') => {
+                // Toggle between high-density braille and colored block pixels.
+                self.fps_render_mode = match self.fps_render_mode {
+                    Mode::Braille => Mode::HalfBlock,
+                    _ => Mode::Braille,
+                };
             }
             _ => {}
         }
@@ -4122,7 +4132,7 @@ impl Screen for VisualEffectsScreen {
         );
         let header_text = if self.is_fps_effect() {
             format!(
-                " {} │ WASD move/strafe │ Mouse look │ Space jump │ Click fire │ ←/→ Switch │ [t] Text FX{}",
+                " {} │ WASD move/strafe │ Mouse look │ Space jump │ Click fire │ [r] Render mode │ ←/→ Switch │ [t] Text FX{}",
                 self.effect.name(),
                 fps_stats
             )
@@ -4516,6 +4526,10 @@ impl Screen for VisualEffectsScreen {
                         HelpEntry {
                             key: "Click",
                             action: "Fire",
+                        },
+                        HelpEntry {
+                            key: "r",
+                            action: "Toggle render mode",
                         },
                         HelpEntry {
                             key: "←/→",
