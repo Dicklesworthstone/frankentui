@@ -19,6 +19,7 @@
 use core::time::Duration;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
+use std::sync::mpsc;
 
 use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures, BackendPresenter};
 use ftui_core::event::Event;
@@ -26,6 +27,11 @@ use ftui_core::input_parser::InputParser;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
+
+#[cfg(unix)]
+use signal_hook::consts::signal::SIGWINCH;
+#[cfg(unix)]
+use signal_hook::iterator::Signals;
 
 // ── Escape Sequences ─────────────────────────────────────────────────────
 
@@ -142,6 +148,47 @@ impl BackendClock for TtyClock {
 }
 
 // ── Event Source ──────────────────────────────────────────────────────────
+
+// Resize notifications are produced via SIGWINCH on Unix.
+//
+// We use a dedicated signal thread to avoid unsafe `sigaction` calls in-tree
+// (unsafe is forbidden) while still delivering low-latency resize events.
+#[cfg(unix)]
+#[derive(Debug)]
+struct ResizeSignalGuard {
+    handle: signal_hook::iterator::Handle,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl ResizeSignalGuard {
+    fn new(tx: mpsc::SyncSender<()>) -> io::Result<Self> {
+        let mut signals = Signals::new([SIGWINCH]).map_err(io::Error::other)?;
+        let handle = signals.handle();
+        let thread = std::thread::spawn(move || {
+            for _ in signals.forever() {
+                // Coalesce storms: a single pending notification is enough since we
+                // query the authoritative size via ioctl when generating the Event.
+                let _ = tx.try_send(());
+            }
+        });
+
+        Ok(Self {
+            handle,
+            thread: Some(thread),
+        })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ResizeSignalGuard {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 
 /// Native Unix event source (raw terminal bytes → `Event`).
 ///
