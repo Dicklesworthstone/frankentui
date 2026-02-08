@@ -8,6 +8,7 @@ use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
 use ftui_runtime::program::{Cmd, Model};
+use ftui_runtime::render_trace::checksum_buffer;
 use ftui_web::step_program::StepProgram;
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -80,31 +81,6 @@ fn buffer_text(buffer: &Buffer) -> String {
         .collect()
 }
 
-fn checksum_buffer(buffer: &Buffer) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in buffer.width().to_le_bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for byte in buffer.height().to_le_bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for y in 0..buffer.height() {
-        for x in 0..buffer.width() {
-            let ch = buffer
-                .get(x, y)
-                .and_then(|cell| cell.content.as_char())
-                .unwrap_or('\0');
-            for byte in (ch as u32).to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        }
-    }
-    hash
-}
-
 fn scenario_checksums() -> Vec<u64> {
     let mut program = StepProgram::new(CounterModel::default(), 16, 2);
     program.init().expect("initialization should succeed");
@@ -116,6 +92,7 @@ fn scenario_checksums() -> Vec<u64> {
             .last_buffer
             .as_ref()
             .expect("init should render first frame"),
+        program.pool(),
     ));
 
     program.push_event(key_event('+'));
@@ -128,6 +105,7 @@ fn scenario_checksums() -> Vec<u64> {
                 .last_buffer
                 .as_ref()
                 .expect("step 1 should have rendered"),
+            program.pool(),
         ));
     }
 
@@ -141,8 +119,17 @@ fn scenario_checksums() -> Vec<u64> {
                 .last_buffer
                 .as_ref()
                 .expect("step 2 should have rendered"),
+            program.pool(),
         ));
     }
+    assert_eq!(program.size(), (20, 3));
+    let resized = program
+        .outputs()
+        .last_buffer
+        .as_ref()
+        .expect("step 2 should have rendered");
+    assert_eq!(resized.width(), 20);
+    assert_eq!(resized.height(), 3);
 
     program.push_event(key_event('-'));
     program.push_event(Event::Tick);
@@ -155,9 +142,11 @@ fn scenario_checksums() -> Vec<u64> {
                 .last_buffer
                 .as_ref()
                 .expect("step 3 should have rendered"),
+            program.pool(),
         ));
     }
 
+    assert_eq!(checksums.len(), 4);
     checksums
 }
 
