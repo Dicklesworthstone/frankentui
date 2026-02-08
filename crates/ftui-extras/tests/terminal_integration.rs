@@ -19,6 +19,7 @@ use ftui_extras::terminal::{
     TerminalModes, TerminalState,
 };
 use ftui_pty::input_forwarding::{BracketedPaste, Key, KeyEvent, Modifiers, key_to_sequence};
+use ftui_pty::virtual_terminal::VirtualTerminal;
 use ftui_pty::{PtyConfig, spawn_command};
 use ftui_render::cell::StyleFlags;
 use ftui_render::frame::Frame;
@@ -377,6 +378,20 @@ fn color_from_256(idx: u8) -> Color {
     }
 }
 
+fn terminal_state_screen_text(state: &TerminalState) -> String {
+    (0..state.height())
+        .map(|y| {
+            let mut row = String::with_capacity(usize::from(state.width()));
+            for x in 0..state.width() {
+                let ch = state.cell(x, y).map_or(' ', |cell| cell.ch);
+                row.push(ch);
+            }
+            row.trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn parser_to_state_basic_text() {
     let mut handler = TestHandler::new(80, 24);
@@ -503,6 +518,30 @@ fn parser_to_state_line_wrapping() {
         let cell = handler.state.cell(i as u16, 1).expect("cell should exist");
         assert_eq!(cell.ch, ch, "line 1 position {}", i);
     }
+}
+
+#[test]
+fn differential_replay_matches_virtual_terminal_for_basic_stream() {
+    let mut handler = TestHandler::new(12, 4);
+    let mut parser = AnsiParser::new();
+    let mut reference = VirtualTerminal::new(12, 4);
+
+    // Covers print + cursor moves + line clearing + final cursor position.
+    let stream = b"HELLO\x1b[2;1Hworld\x1b[1;3HX\x1b[K\x1b[4;5H!";
+
+    parser.parse(stream, &mut handler);
+    reference.feed(stream);
+
+    let lhs = terminal_state_screen_text(&handler.state);
+    let rhs = reference.screen_text();
+    assert_eq!(lhs, rhs, "screen text must match reference emulator");
+
+    let lhs_cursor = (handler.state.cursor().x, handler.state.cursor().y);
+    let rhs_cursor = reference.cursor();
+    assert_eq!(
+        lhs_cursor, rhs_cursor,
+        "cursor must match reference emulator"
+    );
 }
 
 // ============================================================================
