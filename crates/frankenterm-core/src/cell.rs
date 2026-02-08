@@ -26,6 +26,18 @@ bitflags! {
     }
 }
 
+bitflags! {
+    /// Cell-level flags that are orthogonal to SGR attributes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct CellFlags: u8 {
+        /// This cell is the leading (left) cell of a wide (2-column) character.
+        const WIDE_CHAR = 1 << 0;
+        /// This cell is the trailing (right) continuation of a wide character.
+        /// Its content is meaningless; rendering uses the leading cell.
+        const WIDE_CONTINUATION = 1 << 1;
+    }
+}
+
 /// Color representation for terminal cells.
 ///
 /// Supports the standard terminal color model hierarchy:
@@ -60,16 +72,25 @@ impl SgrAttrs {
     }
 }
 
+/// Hyperlink identifier for OSC 8 links.
+///
+/// Zero means "no link". Non-zero values index into an external link registry
+/// that maps IDs to URIs.
+pub type HyperlinkId = u16;
+
 /// A single cell in the terminal grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     /// The character content. A space for empty/erased cells.
-    /// Multi-codepoint grapheme clusters are stored as full strings.
     content: char,
     /// Display width of the content in terminal columns (1 or 2 for wide chars).
     width: u8,
+    /// Cell-level flags (wide char, continuation, etc.).
+    pub flags: CellFlags,
     /// SGR text attributes.
     pub attrs: SgrAttrs,
+    /// Hyperlink ID (0 = no link).
+    pub hyperlink: HyperlinkId,
 }
 
 impl Default for Cell {
@@ -77,7 +98,9 @@ impl Default for Cell {
         Self {
             content: ' ',
             width: 1,
+            flags: CellFlags::empty(),
             attrs: SgrAttrs::default(),
+            hyperlink: 0,
         }
     }
 }
@@ -88,7 +111,9 @@ impl Cell {
         Self {
             content: ch,
             width: 1,
+            flags: CellFlags::empty(),
             attrs: SgrAttrs::default(),
+            hyperlink: 0,
         }
     }
 
@@ -97,8 +122,32 @@ impl Cell {
         Self {
             content: ch,
             width,
+            flags: CellFlags::empty(),
             attrs,
+            hyperlink: 0,
         }
+    }
+
+    /// Create a wide (2-column) character cell.
+    ///
+    /// Returns `(leading, continuation)` pair. The leading cell holds the
+    /// character; the continuation cell is a placeholder.
+    pub fn wide(ch: char, attrs: SgrAttrs) -> (Self, Self) {
+        let leading = Self {
+            content: ch,
+            width: 2,
+            flags: CellFlags::WIDE_CHAR,
+            attrs,
+            hyperlink: 0,
+        };
+        let continuation = Self {
+            content: ' ',
+            width: 0,
+            flags: CellFlags::WIDE_CONTINUATION,
+            attrs,
+            hyperlink: 0,
+        };
+        (leading, continuation)
     }
 
     /// The character content of this cell.
@@ -111,10 +160,23 @@ impl Cell {
         self.width
     }
 
+    /// Whether this cell is the leading half of a wide character.
+    pub fn is_wide(&self) -> bool {
+        self.flags.contains(CellFlags::WIDE_CHAR)
+    }
+
+    /// Whether this cell is a continuation (trailing half) of a wide character.
+    pub fn is_wide_continuation(&self) -> bool {
+        self.flags.contains(CellFlags::WIDE_CONTINUATION)
+    }
+
     /// Set the character content and display width.
     pub fn set_content(&mut self, ch: char, width: u8) {
         self.content = ch;
         self.width = width;
+        // Clear wide flags when replacing content.
+        self.flags
+            .remove(CellFlags::WIDE_CHAR | CellFlags::WIDE_CONTINUATION);
     }
 
     /// Reset this cell to a blank space with the given background attributes.
@@ -124,10 +186,17 @@ impl Cell {
     pub fn erase(&mut self, bg: Color) {
         self.content = ' ';
         self.width = 1;
+        self.flags = CellFlags::empty();
         self.attrs = SgrAttrs {
             bg,
             ..SgrAttrs::default()
         };
+        self.hyperlink = 0;
+    }
+
+    /// Reset this cell to a blank space with default attributes.
+    pub fn clear(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -141,6 +210,9 @@ mod tests {
         assert_eq!(cell.content(), ' ');
         assert_eq!(cell.width(), 1);
         assert_eq!(cell.attrs, SgrAttrs::default());
+        assert!(!cell.is_wide());
+        assert!(!cell.is_wide_continuation());
+        assert_eq!(cell.hyperlink, 0);
     }
 
     #[test]
@@ -164,11 +236,46 @@ mod tests {
                 underline_color: None,
             },
         );
+        cell.hyperlink = 42;
         cell.erase(Color::Named(2));
         assert_eq!(cell.content(), ' ');
         assert_eq!(cell.attrs.flags, SgrFlags::empty());
         assert_eq!(cell.attrs.fg, Color::Default);
         assert_eq!(cell.attrs.bg, Color::Named(2));
+        assert_eq!(cell.hyperlink, 0);
+    }
+
+    #[test]
+    fn wide_char_pair() {
+        let attrs = SgrAttrs {
+            flags: SgrFlags::BOLD,
+            ..SgrAttrs::default()
+        };
+        let (lead, cont) = Cell::wide('\u{4E2D}', attrs); // '中'
+        assert!(lead.is_wide());
+        assert!(!lead.is_wide_continuation());
+        assert_eq!(lead.width(), 2);
+        assert_eq!(lead.content(), '中');
+
+        assert!(!cont.is_wide());
+        assert!(cont.is_wide_continuation());
+        assert_eq!(cont.width(), 0);
+    }
+
+    #[test]
+    fn set_content_clears_wide_flags() {
+        let (mut lead, _) = Cell::wide('中', SgrAttrs::default());
+        assert!(lead.is_wide());
+        lead.set_content('A', 1);
+        assert!(!lead.is_wide());
+        assert!(!lead.is_wide_continuation());
+    }
+
+    #[test]
+    fn erase_clears_wide_flags() {
+        let (mut lead, _) = Cell::wide('中', SgrAttrs::default());
+        lead.erase(Color::Default);
+        assert!(!lead.is_wide());
     }
 
     #[test]
@@ -186,5 +293,23 @@ mod tests {
     #[test]
     fn color_default() {
         assert_eq!(Color::default(), Color::Default);
+    }
+
+    #[test]
+    fn cell_clear_resets_everything() {
+        let mut cell = Cell::with_attrs(
+            'Z',
+            2,
+            SgrAttrs {
+                flags: SgrFlags::BOLD | SgrFlags::UNDERLINE,
+                fg: Color::Rgb(1, 2, 3),
+                bg: Color::Named(5),
+                underline_color: Some(Color::Indexed(100)),
+            },
+        );
+        cell.hyperlink = 99;
+        cell.flags = CellFlags::WIDE_CHAR;
+        cell.clear();
+        assert_eq!(cell, Cell::default());
     }
 }
