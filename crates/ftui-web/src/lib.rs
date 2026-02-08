@@ -11,6 +11,7 @@
 //! purpose is to provide backend building blocks that `frankenterm-web` can
 //! wrap with a stable JS API.
 
+pub mod session_record;
 pub mod step_program;
 
 use core::time::Duration;

@@ -284,6 +284,11 @@ impl<M: Model> StepProgram<M> {
         self.tick_rate
     }
 
+    /// Access the grapheme pool (needed for deterministic checksumming).
+    pub fn pool(&self) -> &GraphemePool {
+        &self.pool
+    }
+
     // --- Private helpers ---
 
     fn handle_event(&mut self, event: Event) {
