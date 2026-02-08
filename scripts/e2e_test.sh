@@ -14,6 +14,7 @@ source "$LIB_DIR/pty.sh"
 
 VERBOSE=false
 QUICK=false
+RUN_BASELINE=true
 RUN_LARGE=true
 RUN_BUDGETED=true
 RUN_SPAN=true
@@ -45,12 +46,16 @@ for arg in "$@"; do
         --no-selector)
             RUN_SELECTOR=false
             ;;
+        --trace-only)
+            RUN_BASELINE=false
+            ;;
         --help|-h)
-            echo "Usage: $0 [--verbose] [--quick] [--no-large] [--no-budget] [--no-span] [--no-tile] [--no-selector]"
+            echo "Usage: $0 [--verbose] [--quick] [--trace-only] [--no-large] [--no-budget] [--no-span] [--no-tile] [--no-selector]"
             echo ""
             echo "Options:"
             echo "  --verbose, -v   Enable debug logging"
             echo "  --quick, -q     Run only core tests (inline + cleanup)"
+            echo "  --trace-only    Skip run_all baseline suites and run trace replay scenarios only"
             echo "  --no-large      Skip large-screen scenarios"
             echo "  --no-budget     Skip budgeted refresh scenario"
             echo "  --no-span       Skip span-diff scenario"
@@ -99,18 +104,25 @@ log_info "Project root: $PROJECT_ROOT"
 log_info "Log directory: $E2E_LOG_DIR"
 log_info "Mode: $([ "$QUICK" = true ] && echo quick || echo normal)"
 
-set +e
-run_all_start_ms="$(e2e_now_ms)"
-jsonl_step_start "run_all"
-"$PROJECT_ROOT/tests/e2e/scripts/run_all.sh" "${ARGS[@]}"
-RUN_ALL_STATUS=$?
-run_all_duration_ms=$(( $(e2e_now_ms) - run_all_start_ms ))
-if [ "$RUN_ALL_STATUS" -eq 0 ]; then
-    jsonl_step_end "run_all" "success" "$run_all_duration_ms"
+RUN_ALL_STATUS=0
+if $RUN_BASELINE; then
+    set +e
+    run_all_start_ms="$(e2e_now_ms)"
+    jsonl_step_start "run_all"
+    "$PROJECT_ROOT/tests/e2e/scripts/run_all.sh" "${ARGS[@]}"
+    RUN_ALL_STATUS=$?
+    run_all_duration_ms=$(( $(e2e_now_ms) - run_all_start_ms ))
+    if [ "$RUN_ALL_STATUS" -eq 0 ]; then
+        jsonl_step_end "run_all" "success" "$run_all_duration_ms"
+    else
+        jsonl_step_end "run_all" "failed" "$run_all_duration_ms"
+    fi
+    set -e
 else
-    jsonl_step_end "run_all" "failed" "$run_all_duration_ms"
+    log_info "Skipping baseline run_all suites (--trace-only)"
+    jsonl_step_start "run_all"
+    jsonl_step_end "run_all" "success" 0
 fi
-set -e
 
 escape_json() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g; s/\n/\\n/g'
