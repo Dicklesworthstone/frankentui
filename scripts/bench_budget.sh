@@ -48,7 +48,7 @@ declare -A BUDGETS=(
     ["present/full_100pct/present/80x24"]=5000000  # <5ms
 
     # Full pipeline
-    ["pipeline/diff_and_present/full/80x24@5.0%"]=1000000  # <1ms
+    ["pipeline/diff_and_present/full/80x24@5%"]=1000000  # <1ms
 
     # Widget rendering
     ["widget/block/bordered/80x24"]=100000     # <100us
@@ -89,6 +89,25 @@ declare -A BUDGETS=(
     ["telemetry/redaction/contains_sensitive_password"]=500
     ["telemetry/redaction/contains_sensitive_url"]=500
     ["telemetry/redaction/contains_sensitive_long_clean"]=500
+
+    # ---------------------------------------------------------------------
+    # FrankenTerm core parser throughput (bd-lff4p.5.5)
+    # ---------------------------------------------------------------------
+    #
+    # NOTE: These are intentionally *loose* budgets meant to catch only
+    # significant regressions (multi-x slowdowns), not micro-noise.
+    ["parser_throughput/feed_vec/build_log_v1"]=4000
+    ["parser_throughput/feed_vec/dense_sgr_v1"]=3500
+    ["parser_throughput/feed_vec/markdownish_v1"]=1500
+    ["parser_throughput/feed_vec/unicode_heavy_v1"]=1000
+
+    # ---------------------------------------------------------------------
+    # FrankenTerm web CPU-side frame-time harness (bd-lff4p.5.5)
+    # ---------------------------------------------------------------------
+    ["web/frame_harness_stats/sparse_5pct/80x24"]=20000
+    ["web/frame_harness_stats/heavy_50pct/80x24"]=30000
+    ["web/frame_harness_stats/sparse_5pct/120x40"]=40000
+    ["web/frame_harness_stats/heavy_50pct/120x40"]=40000
 )
 
 # PANIC threshold multiplier (2x budget = hard failure)
@@ -168,17 +187,36 @@ run_benchmarks() {
             "ftui-text:width_bench"
             "ftui-runtime:telemetry_bench:telemetry"
         )
+    else
+        # Focused perf gates: parser throughput + web patch-pipeline frame-time harness.
+        benches+=(
+            "frankenterm-core:parser_patch_bench"
+            "frankenterm-web:renderer_bench"
+        )
     fi
 
     for bench_spec in "${benches[@]}"; do
         IFS=':' read -r pkg bench features <<< "$bench_spec"
         log "  Running $pkg/$bench..."
+
+        # Default Criterion args.
+        local bench_args=(-- --noplot)
+        if [[ "$QUICK_MODE" == "true" ]]; then
+            # CI-friendly: keep perf gates fast and stable.
+            bench_args=(-- --noplot --warm-up-time 0.1 --measurement-time 0.1 --sample-size 10)
+        fi
+        if [[ "$pkg" == "frankenterm-core" && "$bench" == "parser_patch_bench" ]]; then
+            bench_args+=(parser_throughput)
+        elif [[ "$pkg" == "frankenterm-web" && "$bench" == "renderer_bench" ]]; then
+            bench_args+=(frame_harness_stats)
+        fi
+
         if [[ -n "${features:-}" ]]; then
-            cargo bench -p "$pkg" --bench "$bench" --features "$features" -- --noplot \
-                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt" || true
+            cargo bench -p "$pkg" --bench "$bench" --features "$features" "${bench_args[@]}" \
+                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt"
         else
-            cargo bench -p "$pkg" --bench "$bench" -- --noplot \
-                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt" || true
+            cargo bench -p "$pkg" --bench "$bench" "${bench_args[@]}" \
+                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt"
         fi
     done
 }
@@ -187,32 +225,71 @@ parse_criterion_output() {
     local file="$1"
     local benchmark="$2"
 
-    # Extract time from Criterion output format:
-    # "bench_name    time:   [123.45 ns 125.67 ns 127.89 ns]"
-    # We want the middle value (estimate)
-    local time_line
-    time_line=$(grep -E "^\s*${benchmark}.*time:" "$file" 2>/dev/null | head -1 || true)
+    # Criterion output has two common shapes:
+    #
+    # 1) Single-line:
+    #    "bench/name    time:   [1.23 ns 1.45 ns 1.67 ns]"
+    #
+    # 2) Multi-line (often when throughput is enabled):
+    #    "bench/name"
+    #    "            time:   [1.23 us 1.45 us 1.67 us]"
+    #
+    # We parse the middle estimate and return integer nanoseconds. "-1" means
+    # not found / unparsable.
+    awk -v b="$benchmark" '
+        function trim(s) {
+            sub(/^[[:space:]]+/, "", s)
+            sub(/[[:space:]]+$/, "", s)
+            return s
+        }
+        function to_ns(val, unit,    ns) {
+            if (unit == "ps") ns = val / 1000.0
+            else if (unit == "ns") ns = val
+            else if (unit == "us" || unit == "µs") ns = val * 1000.0
+            else if (unit == "ms") ns = val * 1000000.0
+            else if (unit == "s") ns = val * 1000000000.0
+            else ns = -1
+            return ns
+        }
+        function parse_time_line(line,    m, val, unit, ns) {
+            # Extract the middle estimate (2nd value inside the bracket list).
+            if (match(line, /\[[0-9.]+[[:space:]]+[^[:space:]]+[[:space:]]+([0-9.]+)[[:space:]]+([^[:space:]]+)/, m)) {
+                val = m[1] + 0.0
+                unit = m[2]
+                ns = to_ns(val, unit)
+                if (ns < 0) return 0
+                printf "%.0f\n", ns
+                printed = 1
+                return 1
+            }
+            return 0
+        }
+        BEGIN { want_next_time = 0; printed = 0; }
+        {
+            t = trim($0)
 
-    if [[ -z "$time_line" ]]; then
-        echo "-1"
-        return
-    fi
+            # One-line format: "<bench>  time: [..]"
+            if (index(t, b) == 1) {
+                rest = substr(t, length(b) + 1)
+                if (rest ~ /^[[:space:]]+time:/) {
+                    if (parse_time_line(t)) exit
+                }
+            }
 
-    # Extract the middle time value
-    local time_value
-    time_value=$(echo "$time_line" | sed -E 's/.*time:[^[]*\[([0-9.]+)\s*(ns|µs|us|ms|s)\s+([0-9.]+)\s*(ns|µs|us|ms|s).*/\3 \4/')
-
-    local value unit
-    read -r value unit <<< "$time_value"
-
-    # Convert to nanoseconds
-    case "$unit" in
-        ns) echo "${value%.*}" ;;
-        µs|us) echo "$((${value%.*} * 1000))" ;;
-        ms) echo "$((${value%.*} * 1000000))" ;;
-        s) echo "$((${value%.*} * 1000000000))" ;;
-        *) echo "-1" ;;
-    esac
+            # Multi-line format: "<bench>" then later "time: [..]"
+            if (t == b) {
+                want_next_time = 1
+                next
+            }
+            if (want_next_time && $0 ~ /time:/) {
+                if (parse_time_line($0)) exit
+                want_next_time = 0
+            }
+        }
+        END {
+            if (!printed) print "-1"
+        }
+    ' "$file"
 }
 
 check_budgets() {
@@ -241,6 +318,8 @@ check_budgets() {
             present/*|pipeline/*) result_file="${RESULTS_DIR}/presenter_bench.txt" ;;
             widget/*) result_file="${RESULTS_DIR}/widget_bench.txt" ;;
             telemetry/*) result_file="${RESULTS_DIR}/telemetry_bench.txt" ;;
+            parser_throughput/*|patch_diff_apply/*|parser_action_mix/*) result_file="${RESULTS_DIR}/parser_patch_bench.txt" ;;
+            web/*) result_file="${RESULTS_DIR}/renderer_bench.txt" ;;
             *) result_file="" ;;
         esac
 

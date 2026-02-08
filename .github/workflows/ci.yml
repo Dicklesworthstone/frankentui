@@ -311,28 +311,14 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run benchmarks
-        run: |
-          # Core render benchmarks
-          cargo bench -p ftui-render --bench cell_bench -- --output-format bencher | tee bench-output.txt
-          cargo bench -p ftui-render --bench diff_bench -- --output-format bencher | tee -a bench-output.txt
-          cargo bench -p ftui-render --bench buffer_bench -- --output-format bencher | tee -a bench-output.txt
-          cargo bench -p ftui-render --bench presenter_bench -- --output-format bencher | tee -a bench-output.txt
-          # Layout and text benchmarks
-          cargo bench -p ftui-layout --bench layout_bench -- --output-format bencher | tee -a bench-output.txt
-          cargo bench -p ftui-text --bench width_bench -- --output-format bencher | tee -a bench-output.txt
-          # Widget benchmarks (bd-3cwi)
-          cargo bench -p ftui-widgets --bench widget_bench -- --output-format bencher | tee -a bench-output.txt
-
-      - name: Run budget enforcement (bd-3cwi)
-        run: ./scripts/bench_budget.sh --check-only || echo "Budget check completed (warn-only)"
-        continue-on-error: true
+      - name: Run perf gates (bd-3cwi, bd-lff4p.5.5)
+        run: ./scripts/bench_budget.sh --quick
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: bench-output.txt
+          path: target/benchmark-results
           retention-days: 30
 
   # ==========================================================================

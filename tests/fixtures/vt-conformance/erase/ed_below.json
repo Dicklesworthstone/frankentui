@@ -2,7 +2,7 @@
   "name": "ed_below",
   "description": "ED 0 (CSI 0 J) erases from cursor to end of display",
   "initial_size": [10, 3],
-  "input_bytes_hex": "41414141414141414141424242424242424242424343434343434343434331b5b323b3548311b5b304a",
+  "input_bytes_hex": "4141414141414141414142424242424242424242434343434343434343431b5b323b35481b5b304a",
   "comment": "Fill 10x3 grid with A/B/C rows, CUP(2,5), ED(0) → row 1 cols 4-9 erased, row 2 fully erased",
   "expected": {
     "cursor": { "row": 1, "col": 4 },
