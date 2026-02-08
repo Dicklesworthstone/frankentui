@@ -51,6 +51,11 @@ The renderer consumes patches (dirty spans or diff runs) from the engine:
 
 This aligns with the engine's determinism model: identical traces => identical patch stream.
 
+Hard rule:
+- `frankenterm-web` MUST NOT access the engine's full Grid directly; it only consumes the patch stream
+  (plus explicit geometry/config inputs). This is required for trace replay (renderer can be driven from
+  recorded patches) and prevents nondeterministic reads from leaking into the present path.
+
 ### D4) Correctness gates are patch/trace first; pixel gates are optional
 
 Web pixel output can vary across GPU drivers. Therefore:
@@ -156,4 +161,3 @@ Logging requirements:
 - bd-lff4p.2.10 (web perf harness)
 - bd-lff4p.5.1 (golden trace format)
 - bd-lff4p.5.2 (trace replayer + checksum gates)
-

@@ -438,22 +438,20 @@ All timers, animations, and schedulers take `&dyn Clock` instead of calling
 
 ### 6.3 Golden Trace Format
 
-```json
-{
-  "version": 1,
-  "run_id": "trace-2026-02-08-abc123",
-  "env": { "target": "native", "os": "linux", "term": "xterm-256color" },
-  "seed": 42,
-  "events": [
-    { "ts_ns": 0, "kind": "resize", "cols": 120, "rows": 40 },
-    { "ts_ns": 16000000, "kind": "key", "code": "a", "mods": 0 },
-    { "ts_ns": 32000000, "kind": "tick" }
-  ],
-  "frames": [
-    { "ts_ns": 16000000, "buffer_sha256": "a1b2c3...", "cells_changed": 42 },
-    { "ts_ns": 32000000, "buffer_sha256": "d4e5f6...", "cells_changed": 7 }
-  ]
-}
+Golden traces are stored as JSONL bundles (`trace.jsonl` + optional sidecar payloads).
+The canonical spec lives in:
+- `docs/spec/frankenterm-golden-trace-format.md`
+
+Minimal example (JSONL; one object per line):
+
+```jsonl
+{"schema_version":"golden-trace-v1","event":"trace_header","run_id":"trace-2026-02-08-abc123","git_sha":"<git sha>","seed":42,"env":{"target":"native","os":"linux","term":"xterm-256color"},"profile":"modern"}
+{"schema_version":"golden-trace-v1","event":"resize","ts_ns":0,"cols":120,"rows":40}
+{"schema_version":"golden-trace-v1","event":"input","ts_ns":16000000,"kind":"key","code":"a","mods":0}
+{"schema_version":"golden-trace-v1","event":"frame","frame_idx":0,"ts_ns":16000000,"hash_algo":"sha256","frame_hash":"a1b2c3...","cells_changed":42}
+{"schema_version":"golden-trace-v1","event":"tick","ts_ns":32000000}
+{"schema_version":"golden-trace-v1","event":"frame","frame_idx":1,"ts_ns":32000000,"hash_algo":"sha256","frame_hash":"d4e5f6...","cells_changed":7}
+{"schema_version":"golden-trace-v1","event":"trace_summary","total_frames":2,"final_checksum_chain":"..."}
 ```
 
 ---

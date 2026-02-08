@@ -64,13 +64,16 @@ These are the minimum viable harnesses. Each must be:
 
 ### A) Core Engine (Parser/Grid/Patch Apply)
 
-Target command shape (future crates):
+Target command shape (planned; not all harnesses exist yet as of 2026-02-08):
 ```bash
 # Bench harness (criterion or custom)
 cargo bench -p frankenterm-core
 
-# Deterministic trace replay gate (curated corpus)
-./scripts/trace_replay_gate.sh --corpus tests/fixtures/frankenterm_traces/ --strict
+# Deterministic trace replay gate (current)
+./scripts/e2e_test.sh --quick
+
+# Replay a single trace directly (current)
+FTUI_HARNESS_REPLAY_TRACE=path/to/trace.jsonl cargo run -p ftui-harness
 ```
 
 Required metrics:
@@ -80,10 +83,10 @@ Required metrics:
 
 ### B) Web Renderer (WebGPU)
 
-Target command shape:
+Target command shape (planned; not implemented yet as of 2026-02-08):
 ```bash
 # Browser harness (headless OK) emits JSON summary + JSONL detail
-./scripts/web_bench.sh --case smoke --size 120x40 --dpr 2 --seed 0
+# ./scripts/web_bench.sh --case smoke --size 120x40 --dpr 2 --seed 0
 ```
 
 Required metrics:
@@ -169,4 +172,3 @@ Fail criteria example (p95):
 
 - "Perf improvements" without proofs/gates are not accepted.
 - If you cannot get actionable profiling (e.g., kernel perf restrictions), record that as a blocker and switch to a different evidence source (instrumentation counters, alloc stats, byte counts).
-
