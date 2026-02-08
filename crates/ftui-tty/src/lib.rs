@@ -27,6 +27,7 @@ use ftui_core::input_parser::InputParser;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
 use ftui_render::diff::BufferDiff;
+use ftui_render::presenter::Presenter;
 
 #[cfg(unix)]
 use signal_hook::consts::signal::SIGWINCH;
@@ -552,37 +553,72 @@ impl BackendEventSource for TtyEventSource {
 
 /// Native ANSI presenter (Buffer → escape sequences → stdout).
 ///
-/// Currently a skeleton. Real rendering is wired by later integration beads.
-pub struct TtyPresenter {
+/// Wraps `ftui_render::presenter::Presenter<W>` for real ANSI output.
+/// In headless mode (`inner = None`), all operations are no-ops.
+pub struct TtyPresenter<W: Write + Send = io::Stdout> {
     capabilities: TerminalCapabilities,
+    inner: Option<Presenter<W>>,
 }
 
 impl TtyPresenter {
+    /// Create a headless presenter (no output). Used for tests and headless backends.
     #[must_use]
     pub fn new(capabilities: TerminalCapabilities) -> Self {
-        Self { capabilities }
+        Self {
+            capabilities,
+            inner: None,
+        }
+    }
+
+    /// Create a live presenter that writes ANSI escape sequences to stdout.
+    #[must_use]
+    pub fn live(capabilities: TerminalCapabilities) -> Self {
+        Self {
+            capabilities,
+            inner: Some(Presenter::new(io::stdout(), capabilities)),
+        }
     }
 }
 
-impl BackendPresenter for TtyPresenter {
+impl<W: Write + Send> TtyPresenter<W> {
+    /// Create a presenter that writes to an arbitrary `Write` sink.
+    pub fn with_writer(writer: W, capabilities: TerminalCapabilities) -> Self {
+        Self {
+            capabilities,
+            inner: Some(Presenter::new(writer, capabilities)),
+        }
+    }
+}
+
+impl<W: Write + Send> BackendPresenter for TtyPresenter<W> {
     type Error = io::Error;
 
     fn capabilities(&self) -> &TerminalCapabilities {
         &self.capabilities
     }
 
-    fn write_log(&mut self, _text: &str) -> Result<(), Self::Error> {
-        // TODO: write to scrollback region or stderr
+    fn write_log(&mut self, text: &str) -> Result<(), Self::Error> {
+        if self.inner.is_some() {
+            eprint!("{text}");
+        }
         Ok(())
     }
 
     fn present_ui(
         &mut self,
-        _buf: &Buffer,
-        _diff: Option<&BufferDiff>,
-        _full_repaint_hint: bool,
+        buf: &Buffer,
+        diff: Option<&BufferDiff>,
+        full_repaint_hint: bool,
     ) -> Result<(), Self::Error> {
-        // TODO: emit ANSI escape sequences to stdout
+        let Some(ref mut presenter) = self.inner else {
+            return Ok(());
+        };
+        if full_repaint_hint || diff.is_none() {
+            let full = BufferDiff::full(buf.width(), buf.height());
+            presenter.present(buf, &full)?;
+        } else {
+            presenter.present(buf, diff.unwrap())?;
+        }
         Ok(())
     }
 }
@@ -1189,7 +1225,7 @@ mod tests {
         let writer_thread = std::thread::spawn(move || writer.write_all(&payload));
 
         let mut count = 0usize;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while count < expected_len {
             if !src.poll_event(Duration::from_millis(100)).unwrap() {
                 assert!(

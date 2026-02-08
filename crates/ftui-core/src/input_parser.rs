@@ -118,7 +118,7 @@ impl InputParser {
     /// Parse input bytes and return any completed events.
     pub fn parse(&mut self, input: &[u8]) -> Vec<Event> {
         let mut events = Vec::new();
-        self.parse_into(input, &mut events);
+        self.parse_with(input, |event| events.push(event));
         events
     }
 
@@ -142,7 +142,6 @@ impl InputParser {
     /// This variant lets callers reuse a scratch buffer across parses to avoid
     /// repeated allocations on hot input paths.
     pub fn parse_into(&mut self, input: &[u8], events: &mut Vec<Event>) {
-        events.reserve(input.len().saturating_add(1));
         self.parse_with(input, |event| events.push(event));
     }
 
