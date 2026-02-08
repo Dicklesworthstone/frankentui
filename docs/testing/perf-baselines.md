@@ -55,3 +55,41 @@ hyperfine --warmup 3 --min-runs 20 --export-json docs/testing/perf-baselines.120
 | Hotspot | Impact | Confidence | Effort | Score | Evidence |
 |---|---:|---:|---:|---:|---|
 | TBD | - | - | - | - | - |
+
+## Formal Cost Model Ledger (bd-lff4p.5.6)
+
+This ledger tracks explicit priors/posteriors for cache + scheduler policies.
+
+### Objective Definitions
+
+- Scheduler:
+  `priority = (weight / remaining_time) + aging_factor * wait_time`
+  and `loss_proxy = 1 / max(priority, w_min)`.
+- Glyph cache:
+  `cache_loss = miss_rate + 0.25*eviction_rate + 0.5*pressure_ratio`.
+
+### Priors (current defaults)
+
+| Model | Parameter | Prior value | Source |
+|---|---|---:|---|
+| Scheduler | `aging_factor` | `0.1` | `SchedulerConfig::default()` |
+| Scheduler | `starve_boost_ratio` | `1.5` | `SchedulerConfig::default()` |
+| Cache | miss weight | `1.0` | `CACHE_LOSS_MISS_WEIGHT` |
+| Cache | eviction weight | `0.25` | `CACHE_LOSS_EVICTION_WEIGHT` |
+| Cache | pressure weight | `0.5` | `CACHE_LOSS_PRESSURE_WEIGHT` |
+
+### Posterior / Experiment Template
+
+| Date | Candidate policy | Dataset/run id | Before loss | After loss | Determinism checksum status | Decision |
+|---|---|---|---:|---:|---|---|
+| 2026-02-08 | Baseline instrumentation only | local unit tests | N/A | N/A | unchanged | keep priors |
+
+### Repro Commands
+
+```bash
+# Scheduler objective evidence sanity
+cargo test -p ftui-runtime evidence_reports_priority_objective_terms
+
+# Cache objective evidence sanity
+cargo test -p frankenterm-web objective_tracks_pressure_and_evictions
+```
