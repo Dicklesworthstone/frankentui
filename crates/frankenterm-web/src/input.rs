@@ -58,6 +58,9 @@ pub enum MousePhase {
 pub enum CompositionPhase {
     Start,
     Update,
+    /// Final commit for the current composition session.
+    ///
+    /// The serialized form remains `"end"` to match DOM event naming.
     End,
     Cancel,
 }
@@ -260,6 +263,117 @@ pub enum InputEvent {
     Touch(TouchInput),
     Composition(CompositionInput),
     Focus(FocusInput),
+}
+
+/// Rewrite result after applying composition-state normalization.
+///
+/// The normalizer may synthesize one extra composition event for malformed
+/// host streams (for example, `update` without a prior `start`) and may also
+/// drop key events while composition is active to prevent duplicate inserts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompositionRewrite {
+    pub synthetic: Option<InputEvent>,
+    pub primary: Option<InputEvent>,
+}
+
+impl CompositionRewrite {
+    pub fn into_events(self) -> impl Iterator<Item = InputEvent> {
+        [self.synthetic, self.primary].into_iter().flatten()
+    }
+}
+
+/// Tracks IME composition session state and normalizes event streams.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CompositionState {
+    active: bool,
+}
+
+impl CompositionState {
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Normalize one input event against current composition state.
+    ///
+    /// Guarantees:
+    /// - No key events leak while composition is active.
+    /// - `update`/`end` without an active composition synthesize a `start`.
+    /// - Starting a new composition while active synthesizes a `cancel` first.
+    /// - Focus loss during composition emits a synthetic `cancel`.
+    #[must_use]
+    pub fn rewrite(&mut self, event: InputEvent) -> CompositionRewrite {
+        match event {
+            InputEvent::Composition(comp) => self.rewrite_composition(comp),
+            InputEvent::Focus(FocusInput { focused: false }) if self.active => {
+                self.active = false;
+                CompositionRewrite {
+                    synthetic: Some(synthetic_composition_event(CompositionPhase::Cancel)),
+                    primary: Some(InputEvent::Focus(FocusInput { focused: false })),
+                }
+            }
+            InputEvent::Key(_) if self.active => CompositionRewrite {
+                synthetic: None,
+                primary: None,
+            },
+            other => CompositionRewrite {
+                synthetic: None,
+                primary: Some(other),
+            },
+        }
+    }
+
+    fn rewrite_composition(&mut self, comp: CompositionInput) -> CompositionRewrite {
+        match comp.phase {
+            CompositionPhase::Start => {
+                let synthetic = if self.active {
+                    Some(synthetic_composition_event(CompositionPhase::Cancel))
+                } else {
+                    None
+                };
+                self.active = true;
+                CompositionRewrite {
+                    synthetic,
+                    primary: Some(InputEvent::Composition(comp)),
+                }
+            }
+            CompositionPhase::Update => {
+                let synthetic = if self.active {
+                    None
+                } else {
+                    self.active = true;
+                    Some(synthetic_composition_event(CompositionPhase::Start))
+                };
+                CompositionRewrite {
+                    synthetic,
+                    primary: Some(InputEvent::Composition(comp)),
+                }
+            }
+            CompositionPhase::End => {
+                let synthetic = if self.active {
+                    None
+                } else {
+                    Some(synthetic_composition_event(CompositionPhase::Start))
+                };
+                self.active = false;
+                CompositionRewrite {
+                    synthetic,
+                    primary: Some(InputEvent::Composition(comp)),
+                }
+            }
+            CompositionPhase::Cancel => {
+                self.active = false;
+                CompositionRewrite {
+                    synthetic: None,
+                    primary: Some(InputEvent::Composition(comp)),
+                }
+            }
+        }
+    }
+}
+
+fn synthetic_composition_event(phase: CompositionPhase) -> InputEvent {
+    InputEvent::Composition(CompositionInput { phase, data: None })
 }
 
 /// Minimal modifier tracker used to guarantee "no stuck modifiers" after focus loss.
@@ -573,6 +687,85 @@ mod tests {
         assert_eq!(j1, j2);
         let back = InputEvent::from_json_str(&j1).expect("deserialize");
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn composition_update_without_start_synthesizes_start() {
+        let mut state = CompositionState::default();
+        let update = InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::Update,
+            data: Some("に".into()),
+        });
+
+        let out: Vec<InputEvent> = state.rewrite(update.clone()).into_events().collect();
+        assert_eq!(
+            out,
+            vec![
+                InputEvent::Composition(CompositionInput {
+                    phase: CompositionPhase::Start,
+                    data: None,
+                }),
+                update,
+            ]
+        );
+        assert!(state.is_active());
+    }
+
+    #[test]
+    fn composition_drops_key_events_until_end() {
+        let mut state = CompositionState::default();
+        let start = InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::Start,
+            data: None,
+        });
+        let _ = state.rewrite(start);
+
+        let key = InputEvent::Key(KeyInput {
+            phase: KeyPhase::Down,
+            code: KeyCode::Char('a'),
+            mods: Modifiers::empty(),
+            repeat: false,
+        });
+
+        let dropped: Vec<InputEvent> = state.rewrite(key.clone()).into_events().collect();
+        assert!(dropped.is_empty());
+
+        let end = InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::End,
+            data: Some("あ".into()),
+        });
+        let end_out: Vec<InputEvent> = state.rewrite(end).into_events().collect();
+        assert_eq!(end_out.len(), 1);
+        assert!(!state.is_active());
+
+        let pass_through: Vec<InputEvent> = state.rewrite(key.clone()).into_events().collect();
+        assert_eq!(pass_through, vec![key]);
+    }
+
+    #[test]
+    fn composition_focus_loss_emits_cancel_before_focus_event() {
+        let mut state = CompositionState::default();
+        let _ = state.rewrite(InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::Start,
+            data: None,
+        }));
+        assert!(state.is_active());
+
+        let out: Vec<InputEvent> = state
+            .rewrite(InputEvent::Focus(FocusInput { focused: false }))
+            .into_events()
+            .collect();
+        assert_eq!(
+            out,
+            vec![
+                InputEvent::Composition(CompositionInput {
+                    phase: CompositionPhase::Cancel,
+                    data: None,
+                }),
+                InputEvent::Focus(FocusInput { focused: false }),
+            ]
+        );
+        assert!(!state.is_active());
     }
 
     proptest! {

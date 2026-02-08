@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 
 use crate::input::{
-    CompositionInput, CompositionPhase, FocusInput, InputEvent, KeyInput, KeyPhase,
-    ModifierTracker, Modifiers, MouseButton, MouseInput, MousePhase, TouchInput, TouchPhase,
-    TouchPoint, WheelInput, normalize_dom_key_code,
+    CompositionInput, CompositionPhase, CompositionState, FocusInput, InputEvent, KeyInput,
+    KeyPhase, ModifierTracker, Modifiers, MouseButton, MouseInput, MousePhase, TouchInput,
+    TouchPhase, TouchPoint, WheelInput, normalize_dom_key_code,
 };
 use js_sys::{Array, Reflect};
 use wasm_bindgen::prelude::*;
@@ -23,6 +23,7 @@ pub struct FrankenTermWeb {
     initialized: bool,
     canvas: Option<HtmlCanvasElement>,
     mods: ModifierTracker,
+    composition: CompositionState,
     encoded_inputs: Vec<String>,
 }
 
@@ -42,6 +43,7 @@ impl FrankenTermWeb {
             initialized: false,
             canvas: None,
             mods: ModifierTracker::default(),
+            composition: CompositionState::default(),
             encoded_inputs: Vec::new(),
         }
     }
@@ -75,19 +77,22 @@ impl FrankenTermWeb {
     /// then queued for downstream consumption (e.g. feeding `ftui-web`).
     pub fn input(&mut self, event: JsValue) -> Result<(), JsValue> {
         let ev = parse_input_event(&event)?;
+        let rewrite = self.composition.rewrite(ev);
 
-        // Guarantee no "stuck modifiers" after focus loss by treating focus loss as
-        // an explicit modifier reset point.
-        if let InputEvent::Focus(focus) = &ev {
-            self.mods.handle_focus(focus.focused);
-        } else {
-            self.mods.reconcile(event_mods(&ev));
+        for ev in rewrite.into_events() {
+            // Guarantee no "stuck modifiers" after focus loss by treating focus
+            // loss as an explicit modifier reset point.
+            if let InputEvent::Focus(focus) = &ev {
+                self.mods.handle_focus(focus.focused);
+            } else {
+                self.mods.reconcile(event_mods(&ev));
+            }
+
+            let json = ev
+                .to_json_string()
+                .map_err(|err| JsValue::from_str(&err.to_string()))?;
+            self.encoded_inputs.push(json);
         }
-
-        let json = ev
-            .to_json_string()
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
-        self.encoded_inputs.push(json);
         Ok(())
     }
 
@@ -214,7 +219,7 @@ fn parse_touch_event(event: &JsValue) -> Result<InputEvent, JsValue> {
 
 fn parse_composition_event(event: &JsValue) -> Result<InputEvent, JsValue> {
     let phase = parse_composition_phase(event)?;
-    let data = get_string(event, "data").ok().map(Into::into);
+    let data = get_string_opt(event, "data")?.map(Into::into);
     Ok(InputEvent::Composition(CompositionInput { phase, data }))
 }
 
@@ -258,10 +263,10 @@ fn parse_touch_phase(event: &JsValue) -> Result<TouchPhase, JsValue> {
 fn parse_composition_phase(event: &JsValue) -> Result<CompositionPhase, JsValue> {
     let phase = get_string(event, "phase")?;
     match phase.as_str() {
-        "start" => Ok(CompositionPhase::Start),
-        "update" => Ok(CompositionPhase::Update),
-        "end" => Ok(CompositionPhase::End),
-        "cancel" => Ok(CompositionPhase::Cancel),
+        "start" | "compositionstart" => Ok(CompositionPhase::Start),
+        "update" | "compositionupdate" => Ok(CompositionPhase::Update),
+        "end" | "commit" | "compositionend" => Ok(CompositionPhase::End),
+        "cancel" | "compositioncancel" => Ok(CompositionPhase::Cancel),
         other => Err(JsValue::from_str(&format!(
             "invalid composition phase: {other}"
         ))),
@@ -320,6 +325,16 @@ fn get_string(obj: &JsValue, key: &str) -> Result<String, JsValue> {
         )));
     }
     v.as_string()
+        .ok_or_else(|| JsValue::from_str(&format!("field {key} must be a string")))
+}
+
+fn get_string_opt(obj: &JsValue, key: &str) -> Result<Option<String>, JsValue> {
+    let v = Reflect::get(obj, &JsValue::from_str(key))?;
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    v.as_string()
+        .map(Some)
         .ok_or_else(|| JsValue::from_str(&format!("field {key} must be a string")))
 }
 
