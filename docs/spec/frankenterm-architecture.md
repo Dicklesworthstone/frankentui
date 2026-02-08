@@ -671,6 +671,66 @@ Windows terminal support has historically different semantics (ConPTY, legacy co
 Starting with Unix lets us nail correctness and performance on the primary target. Windows
 support can be added later as a separate backend implementation behind the same trait.
 
+### 13.5 Windows Native Backend Strategy (Deferred, Non-Blocking)
+
+This is the execution plan for `bd-lff4p.4.9`: support Windows without blocking
+Unix/web delivery.
+
+#### Scope Boundary
+
+- `ftui-tty` remains the default native backend on Unix.
+- Windows work lands behind a dedicated feature gate and backend implementation.
+- No compatibility shim that reintroduces Crossterm into the core/runtime default graph.
+
+#### Proposed Backend Shape
+
+- Add `ftui-wincon` crate implementing the same backend contract used by `ftui-runtime`
+  (`BackendEventSource` / terminal backend abstraction).
+- Keep feature split explicit:
+  - `native-backend-unix` → `ftui-tty`
+  - `native-backend-windows` → `ftui-wincon`
+- Runtime selection remains compile-time + explicit constructor choice; no hidden fallback.
+
+#### Dependency Plan
+
+Primary dependency set (Windows-only target deps):
+
+- `windows-sys` (preferred low-level binding) with minimal features:
+  - `Win32_Foundation`
+  - `Win32_System_Console`
+  - `Win32_Storage_FileSystem`
+  - `Win32_System_IO`
+  - `Win32_System_Threading`
+
+Optional helper dependencies (add only if profiling justifies):
+
+- `mio` (polling abstraction) for event waits.
+- `widestring` for UTF-16 conversion ergonomics.
+
+Explicitly avoided in the default path:
+
+- `crossterm`
+- broad Windows wrapper crates with large transitive surfaces when `windows-sys` suffices.
+
+#### Phased Rollout
+
+1. **Phase W0 — Capability + behavior matrix (docs/tests only)**  
+   Pin support targets (Windows Terminal + PowerShell first; cmd/legacy console as degraded).
+2. **Phase W1 — Session lifecycle parity**  
+   Implement raw-ish mode toggles, size query, cursor visibility, teardown guarantees.
+3. **Phase W2 — Input parity**  
+   Map key/mouse/resize/focus events into `ftui-core::Event` with deterministic semantics.
+4. **Phase W3 — PTY/remote integration**  
+   Use ConPTY path in `ftui-remote` where appropriate; keep transport schema unchanged.
+5. **Phase W4 — CI hardening**  
+   Add Windows-targeted checks/tests to CI and promote from optional to required once stable.
+
+#### Non-Blocking Rules
+
+- Unix/web milestones proceed regardless of Windows phase status.
+- Windows backend remains opt-in until parity + stability thresholds are met.
+- Any Windows-only breakage must not regress Unix/web gates.
+
 ---
 
 ## 14. References

@@ -3285,6 +3285,32 @@ impl<M: Model> AppBuilder<M> {
         let mut program = Program::with_native_backend(self.model, self.config)?;
         program.run()
     }
+
+    /// Run the application using the legacy Crossterm backend.
+    #[cfg(not(feature = "crossterm-compat"))]
+    pub fn run(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
+        let _ = (self.model, self.config);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "enable `crossterm-compat` feature to use AppBuilder::run()",
+        ))
+    }
+
+    /// Run the application using the native TTY backend.
+    #[cfg(not(feature = "native-backend"))]
+    pub fn run_native(self) -> io::Result<()>
+    where
+        M::Message: Send + 'static,
+    {
+        let _ = (self.model, self.config);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "enable `native-backend` feature to use AppBuilder::run_native()",
+        ))
+    }
 }
 
 // =============================================================================
