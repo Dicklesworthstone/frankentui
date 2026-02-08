@@ -5,7 +5,7 @@
 /legacy_reference_library_code/
 
 # Rust build artifacts
-/target/
+target/
 Cargo.lock
 fuzz/target/
 fuzz/artifacts/
@@ -39,6 +39,14 @@ golden_checksums.txt
 
 # Local scratch DBs
 storage.sqlite3
+storage.sqlite3-*
+
+# Local scratch dirs (agent/temp)
+.scratch/
+.tmp*/
+
+# One-off scratch scripts (keep local, never commit)
+crates/ftui-extras/src/seq_*.py
 
 # Local agent scratch
 .plan
