@@ -392,6 +392,26 @@ fn terminal_state_screen_text(state: &TerminalState) -> String {
         .join("\n")
 }
 
+fn assert_differential_parity(width: u16, height: u16, stream: &[u8]) {
+    let mut handler = TestHandler::new(width, height);
+    let mut parser = AnsiParser::new();
+    let mut reference = VirtualTerminal::new(width, height);
+
+    parser.parse(stream, &mut handler);
+    reference.feed(stream);
+
+    let lhs = terminal_state_screen_text(&handler.state);
+    let rhs = reference.screen_text();
+    assert_eq!(lhs, rhs, "screen text must match reference emulator");
+
+    let lhs_cursor = (handler.state.cursor().x, handler.state.cursor().y);
+    let rhs_cursor = reference.cursor();
+    assert_eq!(
+        lhs_cursor, rhs_cursor,
+        "cursor must match reference emulator"
+    );
+}
+
 #[test]
 fn parser_to_state_basic_text() {
     let mut handler = TestHandler::new(80, 24);
@@ -522,26 +542,31 @@ fn parser_to_state_line_wrapping() {
 
 #[test]
 fn differential_replay_matches_virtual_terminal_for_basic_stream() {
-    let mut handler = TestHandler::new(12, 4);
-    let mut parser = AnsiParser::new();
-    let mut reference = VirtualTerminal::new(12, 4);
-
     // Covers print + cursor moves + line clearing + final cursor position.
     let stream = b"HELLO\x1b[2;1Hworld\x1b[1;3HX\x1b[K\x1b[4;5H!";
+    assert_differential_parity(12, 4, stream);
+}
 
-    parser.parse(stream, &mut handler);
-    reference.feed(stream);
+#[test]
+fn differential_replay_matches_virtual_terminal_for_erase_sequences() {
+    // Covers ED/EL combinations and explicit cursor repositioning.
+    let stream = b"abcde\x1b[2;1H12345\x1b[1;3H\x1b[K\x1b[2J\x1b[1;1HZ";
+    assert_differential_parity(10, 4, stream);
+}
 
-    let lhs = terminal_state_screen_text(&handler.state);
-    let rhs = reference.screen_text();
-    assert_eq!(lhs, rhs, "screen text must match reference emulator");
+#[test]
+fn differential_replay_matches_virtual_terminal_for_scroll_progression() {
+    // Force scroll-up behavior on a small viewport.
+    let stream = b"one\r\ntwo\r\nthree\r\nfour\r\n";
+    assert_differential_parity(6, 3, stream);
+}
 
-    let lhs_cursor = (handler.state.cursor().x, handler.state.cursor().y);
-    let rhs_cursor = reference.cursor();
-    assert_eq!(
-        lhs_cursor, rhs_cursor,
-        "cursor must match reference emulator"
-    );
+#[test]
+fn differential_replay_matches_virtual_terminal_for_sgr_heavy_stream() {
+    // We still compare terminal text/cursor here; styling side-effects are
+    // exercised in the parse path to catch control-flow regressions.
+    let stream = b"\x1b[31mR\x1b[0m-\x1b[38;5;196mX\x1b[0m-\x1b[38;2;1;2;3mY\x1b[0m";
+    assert_differential_parity(20, 4, stream);
 }
 
 // ============================================================================
