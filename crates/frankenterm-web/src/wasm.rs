@@ -3,9 +3,11 @@
 use crate::input::{
     CompositionInput, CompositionPhase, CompositionState, FocusInput, InputEvent, KeyInput,
     KeyPhase, ModifierTracker, Modifiers, MouseButton, MouseInput, MousePhase, TouchInput,
-    TouchPhase, TouchPoint, WheelInput, normalize_dom_key_code,
+    TouchPhase, TouchPoint, VtInputEncoderFeatures, WheelInput, encode_vt_input_event,
+    normalize_dom_key_code,
 };
-use js_sys::{Array, Reflect};
+use crate::renderer::{CellData, CellPatch, RendererConfig, WebGpuRenderer};
+use js_sys::{Array, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -24,7 +26,10 @@ pub struct FrankenTermWeb {
     canvas: Option<HtmlCanvasElement>,
     mods: ModifierTracker,
     composition: CompositionState,
+    encoder_features: VtInputEncoderFeatures,
     encoded_inputs: Vec<String>,
+    encoded_input_bytes: Vec<Vec<u8>>,
+    renderer: Option<WebGpuRenderer>,
 }
 
 impl Default for FrankenTermWeb {
@@ -44,20 +49,47 @@ impl FrankenTermWeb {
             canvas: None,
             mods: ModifierTracker::default(),
             composition: CompositionState::default(),
+            encoder_features: VtInputEncoderFeatures::default(),
             encoded_inputs: Vec::new(),
+            encoded_input_bytes: Vec::new(),
+            renderer: None,
         }
     }
 
     /// Initialize the terminal surface with an existing `<canvas>`.
     ///
-    /// Exported as an async JS function returning a Promise, matching the
-    /// `frankenterm-web` architecture spec.
+    /// Creates the WebGPU renderer, performing adapter/device negotiation.
+    /// Exported as an async JS function returning a Promise.
     pub async fn init(
         &mut self,
         canvas: HtmlCanvasElement,
-        _options: Option<JsValue>,
+        options: Option<JsValue>,
     ) -> Result<(), JsValue> {
+        let cols = parse_init_u16(&options, "cols").unwrap_or(80);
+        let rows = parse_init_u16(&options, "rows").unwrap_or(24);
+        let cell_width = parse_init_u16(&options, "cellWidth").unwrap_or(8);
+        let cell_height = parse_init_u16(&options, "cellHeight").unwrap_or(16);
+        let dpr = options
+            .as_ref()
+            .and_then(|o| Reflect::get(o, &JsValue::from_str("dpr")).ok())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+
+        let config = RendererConfig {
+            cell_width,
+            cell_height,
+            dpr,
+        };
+
+        let renderer = WebGpuRenderer::init(canvas.clone(), cols, rows, &config)
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        self.cols = cols;
+        self.rows = rows;
         self.canvas = Some(canvas);
+        self.renderer = Some(renderer);
+        self.encoder_features = parse_encoder_features(&options);
         self.initialized = true;
         Ok(())
     }
@@ -66,6 +98,9 @@ impl FrankenTermWeb {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
+        if let Some(r) = self.renderer.as_mut() {
+            r.resize(cols, rows);
+        }
     }
 
     /// Accepts DOM-derived keyboard/mouse/touch events.
@@ -92,6 +127,11 @@ impl FrankenTermWeb {
                 .to_json_string()
                 .map_err(|err| JsValue::from_str(&err.to_string()))?;
             self.encoded_inputs.push(json);
+
+            let vt = encode_vt_input_event(&ev, self.encoder_features);
+            if !vt.is_empty() {
+                self.encoded_input_bytes.push(vt);
+            }
         }
         Ok(())
     }
@@ -106,24 +146,74 @@ impl FrankenTermWeb {
         arr
     }
 
+    /// Drain queued VT-compatible input byte chunks for remote PTY forwarding.
+    #[wasm_bindgen(js_name = drainEncodedInputBytes)]
+    pub fn drain_encoded_input_bytes(&mut self) -> Array {
+        let arr = Array::new();
+        for bytes in self.encoded_input_bytes.drain(..) {
+            let chunk = Uint8Array::from(bytes.as_slice());
+            arr.push(&chunk.into());
+        }
+        arr
+    }
+
     /// Feed a VT/ANSI byte stream (remote mode).
     pub fn feed(&mut self, _data: &[u8]) {}
 
     /// Apply a cell patch (ftui-web mode).
+    ///
+    /// Accepts a JS object: `{ offset: number, cells: [{bg, fg, glyph, attrs}] }`.
+    /// Only the patched cells are uploaded to the GPU.
     #[wasm_bindgen(js_name = applyPatch)]
-    pub fn apply_patch(&mut self, _patch: JsValue) {}
+    pub fn apply_patch(&mut self, patch: JsValue) -> Result<(), JsValue> {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return Err(JsValue::from_str("renderer not initialized"));
+        };
 
-    /// Request a frame render. In the full implementation this will schedule a
-    /// WebGPU pass and present atomically.
-    pub fn render(&mut self) {
-        // Stub: real rendering will be implemented after WebGPU init work lands.
+        let offset = get_u32(&patch, "offset")?;
+        let cells_val = Reflect::get(&patch, &JsValue::from_str("cells"))?;
+        if cells_val.is_null() || cells_val.is_undefined() {
+            return Err(JsValue::from_str("patch missing cells[]"));
+        }
+
+        let cells_arr = Array::from(&cells_val);
+        let mut cells = Vec::with_capacity(cells_arr.length() as usize);
+        for c in cells_arr.iter() {
+            let bg = get_u32(&c, "bg").unwrap_or(0x000000FF);
+            let fg = get_u32(&c, "fg").unwrap_or(0xFFFFFFFF);
+            let glyph = get_u32(&c, "glyph").unwrap_or(0);
+            let attrs = get_u32(&c, "attrs").unwrap_or(0);
+            cells.push(CellData {
+                bg_rgba: bg,
+                fg_rgba: fg,
+                glyph_id: glyph,
+                attrs,
+            });
+        }
+
+        renderer.apply_patches(&[CellPatch { offset, cells }]);
+        Ok(())
     }
 
-    /// Explicit teardown for JS callers. Clears internal references so the
-    /// canvas and any GPU resources can be reclaimed.
+    /// Request a frame render. Encodes and submits a WebGPU draw pass.
+    pub fn render(&mut self) -> Result<(), JsValue> {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return Ok(());
+        };
+        renderer
+            .render_frame()
+            .map(|_| ())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Explicit teardown for JS callers. Drops GPU resources and clears
+    /// internal references so the canvas can be reclaimed.
     pub fn destroy(&mut self) {
+        self.renderer = None;
         self.initialized = false;
         self.canvas = None;
+        self.encoded_inputs.clear();
+        self.encoded_input_bytes.clear();
     }
 }
 
@@ -396,6 +486,39 @@ fn get_i16(obj: &JsValue, key: &str) -> Result<i16, JsValue> {
     };
     let n_i64 = number_to_i64_exact(n, key)?;
     i16::try_from(n_i64).map_err(|_| JsValue::from_str(&format!("field {key} out of range")))
+}
+
+fn parse_init_u16(options: &Option<JsValue>, key: &str) -> Option<u16> {
+    let obj = options.as_ref()?;
+    let v = Reflect::get(obj, &JsValue::from_str(key)).ok()?;
+    let n = v.as_f64()?;
+    u16::try_from(n as i64).ok()
+}
+
+fn parse_init_bool(options: &Option<JsValue>, key: &str) -> Option<bool> {
+    let obj = options.as_ref()?;
+    let v = Reflect::get(obj, &JsValue::from_str(key)).ok()?;
+    if v.is_null() || v.is_undefined() {
+        return None;
+    }
+    v.as_bool()
+}
+
+fn parse_encoder_features(options: &Option<JsValue>) -> VtInputEncoderFeatures {
+    let sgr_mouse = parse_init_bool(options, "sgrMouse").or(parse_init_bool(options, "sgr_mouse"));
+    let bracketed_paste =
+        parse_init_bool(options, "bracketedPaste").or(parse_init_bool(options, "bracketed_paste"));
+    let focus_events =
+        parse_init_bool(options, "focusEvents").or(parse_init_bool(options, "focus_events"));
+    let kitty_keyboard =
+        parse_init_bool(options, "kittyKeyboard").or(parse_init_bool(options, "kitty_keyboard"));
+
+    VtInputEncoderFeatures {
+        sgr_mouse: sgr_mouse.unwrap_or(false),
+        bracketed_paste: bracketed_paste.unwrap_or(false),
+        focus_events: focus_events.unwrap_or(false),
+        kitty_keyboard: kitty_keyboard.unwrap_or(false),
+    }
 }
 
 fn number_to_i64_exact(n: f64, key: &str) -> Result<i64, JsValue> {

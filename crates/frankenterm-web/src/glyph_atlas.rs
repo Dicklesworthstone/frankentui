@@ -330,7 +330,11 @@ impl GlyphAtlasCache {
         self.insert_raster(key, raster)
     }
 
-    fn insert_raster(&mut self, key: GlyphKey, raster: GlyphRaster) -> Result<GlyphPlacement, GlyphCacheError> {
+    fn insert_raster(
+        &mut self,
+        key: GlyphKey,
+        raster: GlyphRaster,
+    ) -> Result<GlyphPlacement, GlyphCacheError> {
         let GlyphRaster {
             width,
             height,
@@ -378,7 +382,10 @@ impl GlyphAtlasCache {
         let entry = Entry {
             key,
             placement,
-            lru: LruLinks { prev: None, next: None },
+            lru: LruLinks {
+                prev: None,
+                next: None,
+            },
         };
 
         let idx = self.alloc_entry_index();
@@ -492,32 +499,34 @@ impl GlyphAtlasCache {
     }
 
     fn remove_from_list(&mut self, idx: usize) {
-        let Some(entry) = self.entries[idx].as_mut() else {
+        // Read prev/next via a shared borrow first, then drop it before
+        // mutating neighbors (avoids double-mutable-borrow of self.entries).
+        let Some(entry) = self.entries[idx].as_ref() else {
             return;
         };
         let prev = entry.lru.prev;
         let next = entry.lru.next;
 
-        if let Some(p) = prev
-            && let Some(p_entry) = self.entries[p].as_mut()
-        {
-            p_entry.lru.next = next;
+        if let Some(p) = prev {
+            if let Some(p_entry) = self.entries[p].as_mut() {
+                p_entry.lru.next = next;
+            }
         } else {
-            // idx was head
             self.lru_head = next;
         }
 
-        if let Some(n) = next
-            && let Some(n_entry) = self.entries[n].as_mut()
-        {
-            n_entry.lru.prev = prev;
+        if let Some(n) = next {
+            if let Some(n_entry) = self.entries[n].as_mut() {
+                n_entry.lru.prev = prev;
+            }
         } else {
-            // idx was tail
             self.lru_tail = prev;
         }
 
-        entry.lru.prev = None;
-        entry.lru.next = None;
+        if let Some(entry) = self.entries[idx].as_mut() {
+            entry.lru.prev = None;
+            entry.lru.next = None;
+        }
     }
 }
 
@@ -640,4 +649,3 @@ mod tests {
         assert_eq!(p3.slot.y, p1.slot.y);
     }
 }
-

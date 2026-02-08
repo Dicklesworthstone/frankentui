@@ -12,7 +12,9 @@
 //! The actual WebGPU renderer and full input system will be implemented behind
 //! this API.
 
+pub mod glyph_atlas;
 pub mod input;
+pub mod renderer;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;

@@ -649,6 +649,325 @@ impl From<InputEventJson> for InputEvent {
     }
 }
 
+/// Feature toggles controlling VT input encoding behavior.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VtInputEncoderFeatures {
+    /// Emit SGR mouse protocol bytes for mouse/wheel events.
+    pub sgr_mouse: bool,
+    /// Wrap pasted text with bracketed paste delimiters.
+    pub bracketed_paste: bool,
+    /// Emit focus-in/focus-out CSI sequences.
+    pub focus_events: bool,
+    /// Prefer Kitty keyboard protocol for key events.
+    pub kitty_keyboard: bool,
+}
+
+/// Encode one normalized input event into a VT-compatible byte sequence.
+///
+/// Returns an empty vector for events that are intentionally not encoded under
+/// the provided feature toggles.
+#[must_use]
+pub fn encode_vt_input_event(event: &InputEvent, features: VtInputEncoderFeatures) -> Vec<u8> {
+    match event {
+        InputEvent::Key(key) => encode_key_input(key, features),
+        InputEvent::Mouse(mouse) => encode_mouse_input(mouse, features),
+        InputEvent::Wheel(wheel) => encode_wheel_input(wheel, features),
+        InputEvent::Touch(_) => Vec::new(),
+        InputEvent::Composition(comp) => encode_composition_input(comp, features),
+        InputEvent::Focus(focus) => encode_focus_input(*focus, features),
+    }
+}
+
+/// Encode text as plain bytes or bracketed-paste bytes.
+#[must_use]
+pub fn encode_paste_text(text: &str, bracketed_paste: bool) -> Vec<u8> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::with_capacity(text.len() + 16);
+    if bracketed_paste {
+        out.extend_from_slice(b"\x1b[200~");
+    }
+    out.extend_from_slice(text.as_bytes());
+    if bracketed_paste {
+        out.extend_from_slice(b"\x1b[201~");
+    }
+    out
+}
+
+fn encode_key_input(key: &KeyInput, features: VtInputEncoderFeatures) -> Vec<u8> {
+    if features.kitty_keyboard {
+        return encode_key_kitty(key);
+    }
+    // Legacy terminal streams do not represent key-up; only encode key-down/repeat.
+    if key.phase == KeyPhase::Up {
+        return Vec::new();
+    }
+    encode_key_legacy(key)
+}
+
+fn encode_key_legacy(key: &KeyInput) -> Vec<u8> {
+    match key.code {
+        KeyCode::Char(ch) => encode_legacy_char(ch, key.mods),
+        KeyCode::Enter => maybe_alt_prefix(key.mods, b"\r"),
+        KeyCode::Escape => maybe_alt_prefix(key.mods, b"\x1b"),
+        KeyCode::Backspace => maybe_alt_prefix(key.mods, &[0x7f]),
+        KeyCode::Tab => maybe_alt_prefix(key.mods, b"\t"),
+        KeyCode::BackTab => csi_with_mod_or_plain('Z', key.mods),
+        KeyCode::Up => csi_with_mod_or_plain('A', key.mods),
+        KeyCode::Down => csi_with_mod_or_plain('B', key.mods),
+        KeyCode::Right => csi_with_mod_or_plain('C', key.mods),
+        KeyCode::Left => csi_with_mod_or_plain('D', key.mods),
+        KeyCode::Home => csi_with_mod_or_plain('H', key.mods),
+        KeyCode::End => csi_with_mod_or_plain('F', key.mods),
+        KeyCode::Insert => csi_tilde_with_mod(2, key.mods),
+        KeyCode::Delete => csi_tilde_with_mod(3, key.mods),
+        KeyCode::PageUp => csi_tilde_with_mod(5, key.mods),
+        KeyCode::PageDown => csi_tilde_with_mod(6, key.mods),
+        KeyCode::F(n) => encode_legacy_function_key(n, key.mods),
+        KeyCode::Unidentified { .. } => Vec::new(),
+    }
+}
+
+fn encode_legacy_char(ch: char, mods: Modifiers) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8);
+    if mods.contains(Modifiers::ALT) {
+        out.push(0x1b);
+    }
+
+    if mods.contains(Modifiers::CTRL)
+        && let Some(ctrl) = ctrl_char_to_byte(ch)
+    {
+        out.push(ctrl);
+        return out;
+    }
+
+    let mut buf = [0u8; 4];
+    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+    out
+}
+
+fn encode_legacy_function_key(n: u8, mods: Modifiers) -> Vec<u8> {
+    match n {
+        1..=4 => {
+            if !mods.is_empty() {
+                return Vec::new();
+            }
+            let ss3 = match n {
+                1 => b'P',
+                2 => b'Q',
+                3 => b'R',
+                _ => b'S',
+            };
+            vec![0x1b, b'O', ss3]
+        }
+        5 => csi_tilde_with_mod(15, mods),
+        6 => csi_tilde_with_mod(17, mods),
+        7 => csi_tilde_with_mod(18, mods),
+        8 => csi_tilde_with_mod(19, mods),
+        9 => csi_tilde_with_mod(20, mods),
+        10 => csi_tilde_with_mod(21, mods),
+        11 => csi_tilde_with_mod(23, mods),
+        12 => csi_tilde_with_mod(24, mods),
+        _ => Vec::new(),
+    }
+}
+
+fn encode_key_kitty(key: &KeyInput) -> Vec<u8> {
+    let Some(codepoint) = kitty_codepoint_for_keycode(&key.code) else {
+        return Vec::new();
+    };
+
+    let mod_value = xterm_modifier_value(key.mods);
+    let kind_value = match (key.phase, key.repeat) {
+        (KeyPhase::Up, _) => 3,
+        (_, true) => 2,
+        _ => 1,
+    };
+
+    let seq = if kind_value == 1 {
+        format!("\x1b[{codepoint};{mod_value}u")
+    } else {
+        format!("\x1b[{codepoint};{mod_value}:{kind_value}u")
+    };
+    seq.into_bytes()
+}
+
+fn kitty_codepoint_for_keycode(code: &KeyCode) -> Option<u32> {
+    match code {
+        KeyCode::Char(ch) => Some(u32::from(*ch)),
+        KeyCode::Enter => Some(57_345),
+        KeyCode::Escape => Some(57_344),
+        KeyCode::Backspace => Some(57_347),
+        KeyCode::Tab | KeyCode::BackTab => Some(57_346),
+        KeyCode::Delete => Some(57_349),
+        KeyCode::Insert => Some(57_348),
+        KeyCode::Home => Some(57_356),
+        KeyCode::End => Some(57_357),
+        KeyCode::PageUp => Some(57_354),
+        KeyCode::PageDown => Some(57_355),
+        KeyCode::Up => Some(57_352),
+        KeyCode::Down => Some(57_353),
+        KeyCode::Left => Some(57_350),
+        KeyCode::Right => Some(57_351),
+        KeyCode::F(n @ 1..=24) => Some(57_364 + (u32::from(*n) - 1)),
+        KeyCode::F(_) | KeyCode::Unidentified { .. } => None,
+    }
+}
+
+fn maybe_alt_prefix(mods: Modifiers, bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + 1);
+    if mods.contains(Modifiers::ALT) {
+        out.push(0x1b);
+    }
+    out.extend_from_slice(bytes);
+    out
+}
+
+fn csi_with_mod_or_plain(final_byte: char, mods: Modifiers) -> Vec<u8> {
+    if mods.is_empty() {
+        format!("\x1b[{final_byte}").into_bytes()
+    } else {
+        let mod_value = xterm_modifier_value(mods);
+        format!("\x1b[1;{mod_value}{final_byte}").into_bytes()
+    }
+}
+
+fn csi_tilde_with_mod(code: u16, mods: Modifiers) -> Vec<u8> {
+    if mods.is_empty() {
+        format!("\x1b[{code}~").into_bytes()
+    } else {
+        let mod_value = xterm_modifier_value(mods);
+        format!("\x1b[{code};{mod_value}~").into_bytes()
+    }
+}
+
+fn xterm_modifier_value(mods: Modifiers) -> u8 {
+    // xterm encoding is `1 + bits`, with bits matching our bitflag layout.
+    1 + mods.bits()
+}
+
+fn ctrl_char_to_byte(ch: char) -> Option<u8> {
+    match ch {
+        '@' | ' ' => Some(0x00),
+        'a'..='z' => Some((u32::from(ch) as u8) - b'a' + 1),
+        'A'..='Z' => Some((u32::from(ch) as u8) - b'A' + 1),
+        '[' => Some(0x1b),
+        '\\' => Some(0x1c),
+        ']' => Some(0x1d),
+        '^' => Some(0x1e),
+        '_' => Some(0x1f),
+        _ => None,
+    }
+}
+
+fn encode_mouse_input(mouse: &MouseInput, features: VtInputEncoderFeatures) -> Vec<u8> {
+    if !features.sgr_mouse {
+        return Vec::new();
+    }
+
+    let mut code = u16::from(mouse_mod_bits(mouse.mods));
+    let final_byte = match mouse.phase {
+        MousePhase::Down => {
+            code |= u16::from(mouse_button_code(mouse.button));
+            'M'
+        }
+        MousePhase::Up => {
+            code |= u16::from(mouse_button_code(mouse.button));
+            'm'
+        }
+        MousePhase::Move => {
+            code |= 32 + 3;
+            'M'
+        }
+        MousePhase::Drag => {
+            code |= 32;
+            code |= u16::from(mouse_button_code(mouse.button));
+            'M'
+        }
+    };
+
+    let x = mouse.x.saturating_add(1);
+    let y = mouse.y.saturating_add(1);
+    format!("\x1b[<{code};{x};{y}{final_byte}").into_bytes()
+}
+
+fn encode_wheel_input(wheel: &WheelInput, features: VtInputEncoderFeatures) -> Vec<u8> {
+    if !features.sgr_mouse {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let steps = i16::max(wheel.dx.abs(), wheel.dy.abs()).clamp(0, 16);
+    if steps == 0 {
+        return out;
+    }
+
+    let base_code = if wheel.dy != 0 {
+        if wheel.dy > 0 { 65u16 } else { 64u16 }
+    } else if wheel.dx > 0 {
+        67u16
+    } else {
+        66u16
+    };
+    let code = base_code | u16::from(mouse_mod_bits(wheel.mods));
+    let x = wheel.x.saturating_add(1);
+    let y = wheel.y.saturating_add(1);
+    for _ in 0..steps {
+        out.extend_from_slice(format!("\x1b[<{code};{x};{y}M").as_bytes());
+    }
+    out
+}
+
+fn mouse_button_code(button: Option<MouseButton>) -> u8 {
+    match button {
+        Some(MouseButton::Left) => 0,
+        Some(MouseButton::Middle) => 1,
+        Some(MouseButton::Right) => 2,
+        Some(MouseButton::Other(n)) => n & 0b11,
+        None => 0,
+    }
+}
+
+fn mouse_mod_bits(mods: Modifiers) -> u8 {
+    let mut bits = 0u8;
+    if mods.contains(Modifiers::SHIFT) {
+        bits |= 4;
+    }
+    if mods.contains(Modifiers::ALT) {
+        bits |= 8;
+    }
+    if mods.contains(Modifiers::CTRL) {
+        bits |= 16;
+    }
+    bits
+}
+
+fn encode_composition_input(
+    composition: &CompositionInput,
+    features: VtInputEncoderFeatures,
+) -> Vec<u8> {
+    if composition.phase != CompositionPhase::End {
+        return Vec::new();
+    }
+    let Some(data) = composition.data.as_deref() else {
+        return Vec::new();
+    };
+    encode_paste_text(data, features.bracketed_paste)
+}
+
+fn encode_focus_input(focus: FocusInput, features: VtInputEncoderFeatures) -> Vec<u8> {
+    if !features.focus_events {
+        return Vec::new();
+    }
+    if focus.focused {
+        b"\x1b[I".to_vec()
+    } else {
+        b"\x1b[O".to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,6 +1085,123 @@ mod tests {
             ]
         );
         assert!(!state.is_active());
+    }
+
+    #[test]
+    fn vt_encoder_plain_and_ctrl_keys() {
+        let plain = InputEvent::Key(KeyInput {
+            phase: KeyPhase::Down,
+            code: KeyCode::Char('x'),
+            mods: Modifiers::empty(),
+            repeat: false,
+        });
+        assert_eq!(
+            encode_vt_input_event(&plain, VtInputEncoderFeatures::default()),
+            b"x".to_vec()
+        );
+
+        let ctrl_c = InputEvent::Key(KeyInput {
+            phase: KeyPhase::Down,
+            code: KeyCode::Char('c'),
+            mods: Modifiers::CTRL,
+            repeat: false,
+        });
+        assert_eq!(
+            encode_vt_input_event(&ctrl_c, VtInputEncoderFeatures::default()),
+            vec![0x03]
+        );
+    }
+
+    #[test]
+    fn vt_encoder_arrow_with_modifier_uses_csi_modifier_form() {
+        let key = InputEvent::Key(KeyInput {
+            phase: KeyPhase::Down,
+            code: KeyCode::Up,
+            mods: Modifiers::CTRL,
+            repeat: false,
+        });
+        assert_eq!(
+            encode_vt_input_event(&key, VtInputEncoderFeatures::default()),
+            b"\x1b[1;5A".to_vec()
+        );
+    }
+
+    #[test]
+    fn vt_encoder_mouse_and_focus_respect_toggles() {
+        let mouse = InputEvent::Mouse(MouseInput {
+            phase: MousePhase::Down,
+            button: Some(MouseButton::Left),
+            x: 9,
+            y: 19,
+            mods: Modifiers::empty(),
+        });
+        assert!(
+            encode_vt_input_event(&mouse, VtInputEncoderFeatures::default()).is_empty(),
+            "mouse must be gated by sgr_mouse feature"
+        );
+        assert_eq!(
+            encode_vt_input_event(
+                &mouse,
+                VtInputEncoderFeatures {
+                    sgr_mouse: true,
+                    ..VtInputEncoderFeatures::default()
+                }
+            ),
+            b"\x1b[<0;10;20M".to_vec()
+        );
+
+        let focus = InputEvent::Focus(FocusInput { focused: true });
+        assert!(
+            encode_vt_input_event(&focus, VtInputEncoderFeatures::default()).is_empty(),
+            "focus events must be gated by focus_events feature"
+        );
+        assert_eq!(
+            encode_vt_input_event(
+                &focus,
+                VtInputEncoderFeatures {
+                    focus_events: true,
+                    ..VtInputEncoderFeatures::default()
+                }
+            ),
+            b"\x1b[I".to_vec()
+        );
+    }
+
+    #[test]
+    fn vt_encoder_composition_commit_uses_paste_mode_when_enabled() {
+        let commit = InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::End,
+            data: Some("你好".into()),
+        });
+        let encoded = encode_vt_input_event(
+            &commit,
+            VtInputEncoderFeatures {
+                bracketed_paste: true,
+                ..VtInputEncoderFeatures::default()
+            },
+        );
+        assert_eq!(
+            encoded,
+            b"\x1b[200~\xe4\xbd\xa0\xe5\xa5\xbd\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn vt_encoder_kitty_encodes_release_kind() {
+        let key = InputEvent::Key(KeyInput {
+            phase: KeyPhase::Up,
+            code: KeyCode::F(1),
+            mods: Modifiers::CTRL,
+            repeat: false,
+        });
+        let encoded = encode_vt_input_event(
+            &key,
+            VtInputEncoderFeatures {
+                kitty_keyboard: true,
+                ..VtInputEncoderFeatures::default()
+            },
+        );
+        assert_eq!(encoded, b"\x1b[57364;5:3u".to_vec());
     }
 
     proptest! {
