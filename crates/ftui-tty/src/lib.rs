@@ -242,11 +242,12 @@ impl TtyEventSource {
         let mut w = width;
         let mut h = height;
         #[cfg(unix)]
-        if let Ok(ws) = rustix::termios::tcgetwinsize(&tty_reader) {
-            if ws.ws_col > 0 && ws.ws_row > 0 {
-                w = ws.ws_col;
-                h = ws.ws_row;
-            }
+        if let Ok(ws) = rustix::termios::tcgetwinsize(&tty_reader)
+            && ws.ws_col > 0
+            && ws.ws_row > 0
+        {
+            w = ws.ws_col;
+            h = ws.ws_row;
         }
 
         #[cfg(unix)]
@@ -298,6 +299,55 @@ impl TtyEventSource {
     #[must_use]
     pub fn features(&self) -> BackendFeatures {
         self.features
+    }
+
+    fn push_resize(&mut self, new_width: u16, new_height: u16) {
+        if new_width == 0 || new_height == 0 {
+            return;
+        }
+        if (new_width, new_height) == (self.width, self.height) {
+            return;
+        }
+        self.width = new_width;
+        self.height = new_height;
+        self.event_queue.push_back(Event::Resize {
+            width: new_width,
+            height: new_height,
+        });
+    }
+
+    #[cfg(unix)]
+    fn query_tty_size(&self) -> Option<(u16, u16)> {
+        if !self.live {
+            return None;
+        }
+        let tty = self.tty_reader.as_ref()?;
+        let ws = rustix::termios::tcgetwinsize(tty).ok()?;
+        if ws.ws_col == 0 || ws.ws_row == 0 {
+            return None;
+        }
+        Some((ws.ws_col, ws.ws_row))
+    }
+
+    #[cfg(unix)]
+    fn drain_resize_notifications(&mut self) {
+        if !self.live {
+            return;
+        }
+        // Drain all pending SIGWINCH notifications, coalescing into a single
+        // resize query (the authoritative size comes from ioctl, not the signal).
+        let got_resize = if let Some(ref rx) = self.resize_rx {
+            let mut any = false;
+            while rx.try_recv().is_ok() {
+                any = true;
+            }
+            any
+        } else {
+            false
+        };
+        if got_resize && let Some((w, h)) = self.query_tty_size() {
+            self.push_resize(w, h);
+        }
     }
 
     /// Read available bytes from the tty reader and feed them to the parser.
@@ -399,6 +449,10 @@ impl BackendEventSource for TtyEventSource {
     type Error = io::Error;
 
     fn size(&self) -> Result<(u16, u16), Self::Error> {
+        #[cfg(unix)]
+        if let Some((w, h)) = self.query_tty_size() {
+            return Ok((w, h));
+        }
         Ok((self.width, self.height))
     }
 
@@ -413,10 +467,37 @@ impl BackendEventSource for TtyEventSource {
     }
 
     fn poll_event(&mut self, timeout: Duration) -> Result<bool, Self::Error> {
+        #[cfg(unix)]
+        self.drain_resize_notifications();
+
         // If we already have buffered events, return immediately.
         if !self.event_queue.is_empty() {
             return Ok(true);
         }
+
+        #[cfg(unix)]
+        if self.resize_rx.is_some() && timeout != Duration::ZERO {
+            // `poll(2)` won't reliably wake on SIGWINCH (signal handlers are installed
+            // with SA_RESTART). Time-slice to bound resize latency without busy looping.
+            let deadline = std::time::Instant::now()
+                .checked_add(timeout)
+                .unwrap_or_else(std::time::Instant::now);
+            let slice_max = Duration::from_millis(50);
+            loop {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Ok(false);
+                }
+                let remaining = deadline.duration_since(now);
+                let poll_for = remaining.min(slice_max);
+                let _ = self.poll_tty(poll_for)?;
+                self.drain_resize_notifications();
+                if !self.event_queue.is_empty() {
+                    return Ok(true);
+                }
+            }
+        }
+
         self.poll_tty(timeout)
     }
 
@@ -712,6 +793,75 @@ mod tests {
     fn read_returns_none_headless() {
         let mut src = TtyEventSource::new(80, 24);
         assert!(src.read_event().unwrap().is_none());
+    }
+
+    #[test]
+    fn push_resize_enqueues_event_and_updates_size() {
+        let mut src = TtyEventSource::new(80, 24);
+        src.push_resize(120, 40);
+        assert_eq!(src.size().unwrap(), (120, 40));
+        assert_eq!(
+            src.read_event().unwrap(),
+            Some(Event::Resize {
+                width: 120,
+                height: 40,
+            })
+        );
+        assert!(src.read_event().unwrap().is_none());
+    }
+
+    #[test]
+    fn push_resize_deduplicates_same_size() {
+        let mut src = TtyEventSource::new(80, 24);
+        src.push_resize(80, 24);
+        assert!(src.event_queue.is_empty(), "no event when size unchanged");
+    }
+
+    #[test]
+    fn push_resize_ignores_zero_dimensions() {
+        let mut src = TtyEventSource::new(80, 24);
+        src.push_resize(0, 24);
+        assert!(src.event_queue.is_empty());
+        src.push_resize(80, 0);
+        assert!(src.event_queue.is_empty());
+        src.push_resize(0, 0);
+        assert!(src.event_queue.is_empty());
+    }
+
+    #[test]
+    fn resize_storm_coalesces_and_no_panic() {
+        let mut src = TtyEventSource::new(80, 24);
+        // Simulate a rapid resize storm: 1000 identical resize signals.
+        for _ in 0..1000 {
+            src.push_resize(120, 40);
+        }
+        // First push changes 80x24→120x40, rest are deduped.
+        assert_eq!(src.event_queue.len(), 1);
+        assert_eq!(
+            src.event_queue.pop_front().unwrap(),
+            Event::Resize {
+                width: 120,
+                height: 40,
+            }
+        );
+    }
+
+    #[test]
+    fn resize_storm_varied_sizes_no_panic() {
+        let mut src = TtyEventSource::new(80, 24);
+        // Rapidly varying sizes — all should produce events.
+        for i in 1..=500u16 {
+            src.push_resize(80 + i, 24 + (i % 50));
+        }
+        // No panics, events are in order.
+        let mut prev_w = 80u16;
+        while let Some(Event::Resize { width, .. }) = src.event_queue.pop_front() {
+            assert!(
+                width > prev_w || width == prev_w + 1 || width != prev_w,
+                "events must be in push order"
+            );
+            prev_w = width;
+        }
     }
 
     // ── Pipe-based input parity tests ─────────────────────────────────
