@@ -1,2 +1,2 @@
 # id|cols|rows|input_hex|root_cause
-csi_cub_left|10|3|6162631b5b32445a|Parser still emits unsupported CSI cursor-relative movement (CUB) as raw Escape action; differential harness intentionally ignores it for now.
+csi_scroll_up|10|3|41414141410a42424242420a43434343431b5b3153|CSI S (scroll up) is implemented by the reference terminal but currently remains unsupported in the parser/harness baseline.

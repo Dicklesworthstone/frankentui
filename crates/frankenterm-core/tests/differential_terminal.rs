@@ -52,6 +52,14 @@ impl CoreTerminalHarness {
             }
             Action::Backspace => self.cursor.move_left(1),
             Action::Bell => {}
+            Action::CursorUp(count) => self.cursor.move_up(count),
+            Action::CursorDown(count) => self.cursor.move_down(count, self.rows),
+            Action::CursorRight(count) => self.cursor.move_right(count, self.cols),
+            Action::CursorLeft(count) => self.cursor.move_left(count),
+            Action::CursorColumn(col) => {
+                self.cursor
+                    .move_to(self.cursor.row, col, self.rows, self.cols);
+            }
             Action::CursorPosition { row, col } => {
                 self.cursor.move_to(row, col, self.rows, self.cols);
             }
@@ -238,6 +246,24 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             cols: 10,
             rows: 3,
             bytes: b"AB\x1b[2JZ",
+        },
+        SupportedFixture {
+            id: "csi_cub_left",
+            cols: 10,
+            rows: 3,
+            bytes: b"abc\x1b[2DZ",
+        },
+        SupportedFixture {
+            id: "csi_cursor_relative_moves",
+            cols: 10,
+            rows: 3,
+            bytes: b"abc\x1b[1;1H\x1b[2C\x1b[1B\x1b[1D\x1b[1AX",
+        },
+        SupportedFixture {
+            id: "csi_cha_column_absolute",
+            cols: 10,
+            rows: 3,
+            bytes: b"ABCDE\x1b[1GZ",
         },
     ]
 }

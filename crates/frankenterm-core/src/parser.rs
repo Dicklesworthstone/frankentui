@@ -26,6 +26,22 @@ pub enum Action {
     Backspace,
     /// Bell (`\x07`).
     Bell,
+    /// CUU (`CSI Ps A`): move cursor up by count (default 1).
+    CursorUp(u16),
+    /// CUD (`CSI Ps B`): move cursor down by count (default 1).
+    CursorDown(u16),
+    /// CUF (`CSI Ps C`): move cursor right by count (default 1).
+    CursorRight(u16),
+    /// CUB (`CSI Ps D`): move cursor left by count (default 1).
+    CursorLeft(u16),
+    /// CNL (`CSI Ps E`): move cursor down by count and to column 0.
+    CursorNextLine(u16),
+    /// CPL (`CSI Ps F`): move cursor up by count and to column 0.
+    CursorPrevLine(u16),
+    /// CHA (`CSI Ps G`): move cursor to absolute column (0-indexed).
+    CursorColumn(u16),
+    /// VPA (`CSI Ps d`): move cursor to absolute row (0-indexed).
+    CursorRow(u16),
     /// CUP/HVP: move cursor to absolute 0-indexed row/col.
     CursorPosition { row: u16, col: u16 },
     /// ED mode (`CSI Ps J`): 0, 1, or 2.
@@ -183,6 +199,27 @@ impl Parser {
         let params = Self::parse_csi_params(&seq[2..seq.len().saturating_sub(1)])?;
 
         match final_byte {
+            b'A' => Some(Action::CursorUp(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'B' => Some(Action::CursorDown(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'C' => Some(Action::CursorRight(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'D' => Some(Action::CursorLeft(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'E' => Some(Action::CursorNextLine(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'F' => Some(Action::CursorPrevLine(Self::csi_count_or_one(
+                params.first().copied(),
+            ))),
+            b'G' => Some(Action::CursorColumn(
+                Self::csi_count_or_one(params.first().copied()).saturating_sub(1),
+            )),
             b'H' | b'f' => {
                 // CUP/HVP use 1-indexed coordinates; 0 is treated as 1.
                 let row = params
@@ -210,6 +247,9 @@ impl Parser {
                     None
                 }
             }
+            b'd' => Some(Action::CursorRow(
+                Self::csi_count_or_one(params.first().copied()).saturating_sub(1),
+            )),
             _ => None,
         }
     }
@@ -229,6 +269,10 @@ impl Parser {
             out.push(value.min(u16::MAX as u32) as u16);
         }
         Some(out)
+    }
+
+    fn csi_count_or_one(value: Option<u16>) -> u16 {
+        value.unwrap_or(1).max(1)
     }
 }
 
@@ -287,6 +331,42 @@ mod tests {
         let mut p = Parser::new();
         assert_eq!(p.feed(b"\x1b[2J"), vec![Action::EraseInDisplay(2)]);
         assert_eq!(p.feed(b"\x1b[K"), vec![Action::EraseInLine(0)]);
+    }
+
+    #[test]
+    fn csi_cursor_relative_moves_are_decoded() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b[2A\x1b[B\x1b[3C\x1b[0D"),
+            vec![
+                Action::CursorUp(2),
+                Action::CursorDown(1),
+                Action::CursorRight(3),
+                Action::CursorLeft(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn csi_cha_is_decoded_to_absolute_column() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[5G"), vec![Action::CursorColumn(4)]);
+        assert_eq!(p.feed(b"\x1b[0G"), vec![Action::CursorColumn(0)]);
+    }
+
+    #[test]
+    fn csi_cnl_cpl_and_vpa_are_decoded() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b[2E\x1b[F\x1b[3d\x1b[0d\x1b[d"),
+            vec![
+                Action::CursorNextLine(2),
+                Action::CursorPrevLine(1),
+                Action::CursorRow(2),
+                Action::CursorRow(0),
+                Action::CursorRow(0),
+            ]
+        );
     }
 
     #[test]
