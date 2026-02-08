@@ -1380,7 +1380,7 @@ mod tests {
             // Spawn a thread that panics with the guard held.
             let handle = std::thread::spawn(move || {
                 let _guard = RawModeGuard::enter_on(slave).unwrap();
-                Result::<(), &str>::Err("intentional panic for testing raw mode cleanup").unwrap();
+                std::panic::panic_any("intentional panic for testing raw mode cleanup");
             });
 
             assert!(handle.join().is_err(), "thread should have panicked");
@@ -1583,7 +1583,7 @@ mod tests {
                 // Simulate having features enabled — the guard tracks termios, and
                 // TtyBackend::drop would disable features. Here we just verify
                 // the termios restoration happens even when features were "active".
-                Result::<(), &str>::Err("panic with features enabled").unwrap();
+                std::panic::panic_any("panic with features enabled");
             });
 
             assert!(handle.join().is_err());
