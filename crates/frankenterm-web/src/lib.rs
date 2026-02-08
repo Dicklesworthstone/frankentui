@@ -12,6 +12,7 @@
 //! The actual WebGPU renderer and full input system will be implemented behind
 //! this API.
 
+pub mod frame_harness;
 pub mod glyph_atlas;
 pub mod input;
 pub mod patch_feed;

@@ -30,4 +30,9 @@ web-sys = { version = "0.3.85", features = ["HtmlCanvasElement"] }
 wgpu = { version = "28.0.0", default-features = false, features = ["std", "wgsl", "webgpu"] }
 
 [dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.7.0"
+
+[[bench]]
+name = "renderer_bench"
+harness = false
