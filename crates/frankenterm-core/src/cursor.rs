@@ -125,13 +125,13 @@ impl Cursor {
     /// CUD: Move cursor down by `count` rows, stopping at the bottom margin.
     pub fn move_down(&mut self, count: u16, rows: u16) {
         let limit = self.scroll_bottom.min(rows).saturating_sub(1);
-        self.row = (self.row + count).min(limit);
+        self.row = self.row.saturating_add(count).min(limit);
         self.pending_wrap = false;
     }
 
     /// CUF: Move cursor right by `count` columns, stopping at the right margin.
     pub fn move_right(&mut self, count: u16, cols: u16) {
-        self.col = (self.col + count).min(cols.saturating_sub(1));
+        self.col = self.col.saturating_add(count).min(cols.saturating_sub(1));
         self.pending_wrap = false;
     }
 
@@ -151,7 +151,7 @@ impl Cursor {
 
     /// Advance to the next tab stop. Returns the new column.
     pub fn next_tab_stop(&self, cols: u16) -> u16 {
-        let start = (self.col + 1) as usize;
+        let start = (self.col as usize).saturating_add(1);
         for i in start..self.tab_stops.len().min(cols as usize) {
             if self.tab_stops[i] {
                 return i as u16;
