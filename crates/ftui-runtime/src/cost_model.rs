@@ -431,7 +431,7 @@ impl PipelineCostParams {
             .iter()
             .map(|s| {
                 let cv = if s.mean_us > 0.0 {
-                    s.var_us2.sqrt() / s.mean_us
+                    s.var_us2.max(0.0).sqrt() / s.mean_us
                 } else {
                     0.0
                 };
@@ -454,7 +454,11 @@ impl PipelineCostParams {
             utilization: rho,
             mean_sojourn_us: mean_sojourn,
             stable,
-            budget_fraction: total_mean / self.frame_budget_us,
+            budget_fraction: if self.frame_budget_us > 0.0 {
+                total_mean / self.frame_budget_us
+            } else {
+                f64::INFINITY
+            },
             stage_breakdown,
             headroom_us: self.frame_budget_us - mean_sojourn,
         }
