@@ -18,3 +18,4 @@ ftui-runtime = { path = "../ftui-runtime", version = "0.1.1", default-features =
 [dev-dependencies]
 # Used only for small deterministic unit tests.
 pretty_assertions = "1.4.1"
+wasm-bindgen-test = "0.3.58"
