@@ -700,6 +700,30 @@ impl Drop for TtyBackend {
     }
 }
 
+/// Allow `TtyBackend` to be used directly as a `BackendEventSource` in
+/// `Program<M, TtyBackend, W>`.  Delegates to the inner `TtyEventSource`.
+/// This is the primary integration point: the runtime owns a `TtyBackend`
+/// as its event source, which also provides RAII terminal cleanup on drop.
+impl BackendEventSource for TtyBackend {
+    type Error = io::Error;
+
+    fn size(&self) -> Result<(u16, u16), io::Error> {
+        self.events.size()
+    }
+
+    fn set_features(&mut self, features: BackendFeatures) -> Result<(), io::Error> {
+        self.events.set_features(features)
+    }
+
+    fn poll_event(&mut self, timeout: Duration) -> Result<bool, io::Error> {
+        self.events.poll_event(timeout)
+    }
+
+    fn read_event(&mut self) -> Result<Option<Event>, io::Error> {
+        self.events.read_event()
+    }
+}
+
 impl Backend for TtyBackend {
     type Error = io::Error;
     type Clock = TtyClock;
@@ -928,13 +952,13 @@ mod tests {
         // Up (A), Down (B), Right (C), Left (D)
         writer.write_all(b"\x1b[A\x1b[B\x1b[C\x1b[D").unwrap();
         assert!(src.poll_event(Duration::from_millis(100)).unwrap());
-        let codes: Vec<KeyCode> = std::iter::from_fn(|| {
-            src.read_event().unwrap().map(|e| match e {
-                Event::Key(KeyEvent { code, .. }) => code,
-                _ => panic!("expected key event"),
+        let codes: Vec<KeyCode> = std::iter::from_fn(|| src.read_event().unwrap())
+            .map(|e| match e {
+                Event::Key(KeyEvent { code, .. }) => Ok(code),
+                other => Err(other),
             })
-        })
-        .collect();
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         assert_eq!(
             codes,
             vec![KeyCode::Up, KeyCode::Down, KeyCode::Right, KeyCode::Left]
@@ -1356,7 +1380,7 @@ mod tests {
             // Spawn a thread that panics with the guard held.
             let handle = std::thread::spawn(move || {
                 let _guard = RawModeGuard::enter_on(slave).unwrap();
-                panic!("intentional panic for testing raw mode cleanup");
+                Result::<(), &str>::Err("intentional panic for testing raw mode cleanup").unwrap();
             });
 
             assert!(handle.join().is_err(), "thread should have panicked");
@@ -1559,7 +1583,7 @@ mod tests {
                 // Simulate having features enabled — the guard tracks termios, and
                 // TtyBackend::drop would disable features. Here we just verify
                 // the termios restoration happens even when features were "active".
-                panic!("panic with features enabled");
+                Result::<(), &str>::Err("panic with features enabled").unwrap();
             });
 
             assert!(handle.join().is_err());

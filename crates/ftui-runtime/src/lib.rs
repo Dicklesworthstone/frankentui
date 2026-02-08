@@ -71,6 +71,8 @@ pub use evidence_telemetry::{
     diff_snapshot, resize_snapshot, set_budget_snapshot, set_diff_snapshot, set_resize_snapshot,
 };
 pub use ftui_backend::{BackendEventSource, BackendFeatures};
+#[cfg(feature = "native-backend")]
+pub use ftui_tty::TtyBackend;
 pub use input_macro::{
     EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayback, MacroPlayer, MacroRecorder,
     RecordingFilter, RecordingState, TimedEvent,

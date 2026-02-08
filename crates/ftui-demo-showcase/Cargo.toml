@@ -50,6 +50,8 @@ unicode-segmentation = "1.12.0"
 [features]
 debug-render = []
 caps-probe = ["ftui-core/caps-probe"]
+# Use the native ftui-tty backend instead of Crossterm.
+native-backend = ["ftui-runtime/native-backend"]
 default = ["caps-probe"]
 # Enable test-support to expose test infrastructure (locks, guards) to integration tests
 test-support = []

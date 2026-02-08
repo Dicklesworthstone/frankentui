@@ -68,17 +68,9 @@ fn main() {
             ..ProgramConfig::default()
         };
         let config = apply_evidence_config(config);
-        match Program::with_config(model, config) {
-            Ok(mut program) => {
-                if let Err(e) = program.run() {
-                    eprintln!("Runtime error: {e}");
-                    std::process::exit(1);
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to initialize: {e}");
-                std::process::exit(1);
-            }
+        if let Err(e) = run_program(model, config) {
+            eprintln!("Runtime error: {e}");
+            std::process::exit(1);
         }
         return;
     }
@@ -119,17 +111,9 @@ fn main() {
             ..ProgramConfig::default()
         };
         let config = apply_evidence_config(config);
-        match Program::with_config(model, config) {
-            Ok(mut program) => {
-                if let Err(e) = program.run() {
-                    eprintln!("Runtime error: {e}");
-                    std::process::exit(1);
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to initialize: {e}");
-                std::process::exit(1);
-            }
+        if let Err(e) = run_program(model, config) {
+            eprintln!("Runtime error: {e}");
+            std::process::exit(1);
         }
         return;
     }
@@ -178,17 +162,30 @@ fn main() {
         ..ProgramConfig::default()
     };
     let config = apply_evidence_config(config);
-    match Program::with_config(model, config) {
-        Ok(mut program) => {
-            if let Err(e) = program.run() {
-                eprintln!("Runtime error: {e}");
-                std::process::exit(1);
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to initialize: {e}");
-            std::process::exit(1);
-        }
+    if let Err(e) = run_program(model, config) {
+        eprintln!("Runtime error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Run a program using the best available backend.
+///
+/// When the `native-backend` feature is enabled, uses the ftui-tty native
+/// Unix backend (no Crossterm). Otherwise falls back to the crossterm-based
+/// event source.
+fn run_program<M: ftui_runtime::Model>(model: M, config: ProgramConfig) -> std::io::Result<()>
+where
+    M::Message: Send + 'static,
+{
+    #[cfg(feature = "native-backend")]
+    {
+        let mut program = Program::with_native_backend(model, config)?;
+        program.run()
+    }
+    #[cfg(not(feature = "native-backend"))]
+    {
+        let mut program = Program::with_config(model, config)?;
+        program.run()
     }
 }
 

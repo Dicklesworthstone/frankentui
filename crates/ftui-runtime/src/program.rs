@@ -1810,6 +1810,162 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
 }
 
 impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Program<M, E, W> {
+    /// Create a program with an externally-constructed event source and writer.
+    ///
+    /// This is the generic entry point for alternative backends (native tty,
+    /// WASM, headless testing). The caller is responsible for terminal
+    /// lifecycle (raw mode, cleanup) — the event source should handle that
+    /// via its `Drop` impl or an external RAII guard.
+    pub fn with_event_source(
+        model: M,
+        events: E,
+        backend_features: BackendFeatures,
+        writer: TerminalWriter<W>,
+        config: ProgramConfig,
+    ) -> io::Result<Self>
+    where
+        M::Message: Send + 'static,
+    {
+        let (width, height) = config
+            .forced_size
+            .unwrap_or_else(|| events.size().unwrap_or((80, 24)));
+        let width = width.max(1);
+        let height = height.max(1);
+
+        let mut writer = writer;
+        writer.set_size(width, height);
+
+        let evidence_sink = EvidenceSink::from_config(&config.evidence_sink)?;
+        if let Some(ref sink) = evidence_sink {
+            writer = writer.with_evidence_sink(sink.clone());
+        }
+
+        let render_trace = crate::RenderTraceRecorder::from_config(
+            &config.render_trace,
+            crate::RenderTraceContext {
+                capabilities: writer.capabilities(),
+                diff_config: config.diff_config.clone(),
+                resize_config: config.resize_coalescer.clone(),
+                conformal_config: config.conformal_config.clone(),
+            },
+        )?;
+        if let Some(recorder) = render_trace {
+            writer = writer.with_render_trace(recorder);
+        }
+
+        let frame_timing = config.frame_timing.clone();
+        writer.set_timing_enabled(frame_timing.is_some());
+
+        let budget = RenderBudget::from_config(&config.budget);
+        let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
+        let locale_context = config.locale_context.clone();
+        let locale_version = locale_context.version();
+        let mut resize_coalescer =
+            ResizeCoalescer::new(config.resize_coalescer.clone(), (width, height))
+                .with_screen_mode(config.screen_mode);
+        if let Some(ref sink) = evidence_sink {
+            resize_coalescer = resize_coalescer.with_evidence_sink(sink.clone());
+        }
+        let subscriptions = SubscriptionManager::new();
+        let (task_sender, task_receiver) = std::sync::mpsc::channel();
+        let inline_auto_remeasure = config
+            .inline_auto_remeasure
+            .clone()
+            .map(InlineAutoRemeasureState::new);
+        let effect_queue = if config.effect_queue.enabled {
+            Some(EffectQueue::start(
+                config.effect_queue.clone(),
+                task_sender.clone(),
+                evidence_sink.clone(),
+            ))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            model,
+            writer,
+            events,
+            backend_features,
+            running: true,
+            tick_rate: None,
+            last_tick: Instant::now(),
+            dirty: true,
+            frame_idx: 0,
+            widget_signals: Vec::new(),
+            widget_refresh_config: config.widget_refresh,
+            widget_refresh_plan: WidgetRefreshPlan::new(),
+            width,
+            height,
+            forced_size: config.forced_size,
+            poll_timeout: config.poll_timeout,
+            budget,
+            conformal_predictor,
+            last_frame_time_us: None,
+            last_update_us: None,
+            frame_timing,
+            locale_context,
+            locale_version,
+            resize_coalescer,
+            evidence_sink,
+            fairness_config_logged: false,
+            resize_behavior: config.resize_behavior,
+            fairness_guard: InputFairnessGuard::new(),
+            event_recorder: None,
+            subscriptions,
+            task_sender,
+            task_receiver,
+            task_handles: Vec::new(),
+            effect_queue,
+            state_registry: config.persistence.registry.clone(),
+            persistence_config: config.persistence,
+            last_checkpoint: Instant::now(),
+            inline_auto_remeasure,
+        })
+    }
+}
+
+// =============================================================================
+// Native TTY backend constructor (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "native-backend")]
+impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
+    /// Create a program backed by the native TTY backend (no Crossterm).
+    ///
+    /// This opens a live terminal session via `ftui-tty`, entering raw mode
+    /// and enabling the requested features. When the program exits (or panics),
+    /// `TtyBackend::drop()` restores the terminal to its original state.
+    pub fn with_native_backend(model: M, config: ProgramConfig) -> io::Result<Self>
+    where
+        M::Message: Send + 'static,
+    {
+        let features = BackendFeatures {
+            mouse_capture: config.mouse,
+            bracketed_paste: config.bracketed_paste,
+            focus_events: config.focus_reporting,
+            kitty_keyboard: config.kitty_keyboard,
+        };
+        let options = ftui_tty::TtySessionOptions {
+            alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
+            features,
+        };
+        let backend = ftui_tty::TtyBackend::open(0, 0, options)?;
+
+        let capabilities = ftui_core::terminal_capabilities::TerminalCapabilities::detect();
+        let writer = TerminalWriter::with_diff_config(
+            io::stdout(),
+            config.screen_mode,
+            config.ui_anchor,
+            capabilities,
+            config.diff_config.clone(),
+        );
+
+        Self::with_event_source(model, backend, features, writer, config)
+    }
+}
+
+impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Program<M, E, W> {
     /// Run the main event loop.
     ///
     /// This is the main entry point. It handles:
