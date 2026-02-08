@@ -31,6 +31,14 @@ Before merging PRs that touch critical paths:
 - [ ] `cargo fmt --check` passes
 - [ ] Coverage thresholds maintained (see [coverage-matrix.md](testing/coverage-matrix.md))
 
+### Performance Work (Extreme Optimization Loop)
+
+Any PR that claims performance improvements MUST follow the mandatory loop in:
+
+- `docs/profiling/extreme-optimization-loop.md`
+
+In particular: baseline + profile + one-lever change + isomorphism proof + trace replay/checksum gates.
+
 ### Why These Gates
 
 | Gate | Reason |
