@@ -68,6 +68,7 @@ use crate::subscription::SubscriptionManager;
 use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAnchor};
 use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor};
+use ftui_backend::{BackendEventSource, BackendFeatures};
 use ftui_core::event::Event;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_core::terminal_session::{SessionOptions, TerminalSession};
@@ -1533,14 +1534,75 @@ impl WidgetRefreshPlan {
     }
 }
 
+// =============================================================================
+// CrosstermEventSource: BackendEventSource adapter for TerminalSession
+// =============================================================================
+
+/// Adapter that wraps [`TerminalSession`] to implement [`BackendEventSource`].
+///
+/// This provides the bridge between the legacy crossterm-based terminal session
+/// and the new backend abstraction. Once the native `ftui-tty` backend fully
+/// replaces crossterm, this adapter will be removed.
+pub struct CrosstermEventSource {
+    session: TerminalSession,
+    features: BackendFeatures,
+}
+
+impl CrosstermEventSource {
+    /// Create a new crossterm event source from a terminal session.
+    pub fn new(session: TerminalSession, initial_features: BackendFeatures) -> Self {
+        Self {
+            session,
+            features: initial_features,
+        }
+    }
+}
+
+impl BackendEventSource for CrosstermEventSource {
+    type Error = io::Error;
+
+    fn size(&self) -> Result<(u16, u16), io::Error> {
+        self.session.size()
+    }
+
+    fn set_features(&mut self, features: BackendFeatures) -> Result<(), io::Error> {
+        if features.mouse_capture != self.features.mouse_capture {
+            self.session.set_mouse_capture(features.mouse_capture)?;
+        }
+        // bracketed_paste, focus_events, and kitty_keyboard are set at session
+        // construction and cleaned up in TerminalSession::Drop. Runtime toggling
+        // is not supported by the crossterm backend.
+        self.features = features;
+        Ok(())
+    }
+
+    fn poll_event(&mut self, timeout: Duration) -> Result<bool, io::Error> {
+        self.session.poll_event(timeout)
+    }
+
+    fn read_event(&mut self) -> Result<Option<Event>, io::Error> {
+        self.session.read_event()
+    }
+}
+
+// =============================================================================
+// Program
+// =============================================================================
+
 /// The program runtime that manages the update/view loop.
-pub struct Program<M: Model, W: Write + Send = Stdout> {
+pub struct Program<
+    M: Model,
+    E: BackendEventSource<Error = io::Error> = CrosstermEventSource,
+    W: Write + Send = Stdout,
+> {
     /// The application model.
     model: M,
     /// Terminal output coordinator.
     writer: TerminalWriter<W>,
-    /// Terminal lifecycle guard (raw mode, mouse, paste, focus).
-    session: TerminalSession,
+    /// Event source (terminal input, size queries, feature toggles).
+    events: E,
+    /// Currently active backend feature toggles.
+    backend_features: BackendFeatures,
     /// Whether the program is running.
     running: bool,
     /// Current tick rate (if any).
@@ -1611,7 +1673,7 @@ pub struct Program<M: Model, W: Write + Send = Stdout> {
     inline_auto_remeasure: Option<InlineAutoRemeasureState>,
 }
 
-impl<M: Model> Program<M, Stdout> {
+impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
     /// Create a new program with default configuration.
     pub fn new(model: M) -> io::Result<Self>
     where
@@ -1626,13 +1688,20 @@ impl<M: Model> Program<M, Stdout> {
         M::Message: Send + 'static,
     {
         let capabilities = TerminalCapabilities::with_overrides();
-        let session = TerminalSession::new(SessionOptions {
-            alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
+        let initial_features = BackendFeatures {
             mouse_capture: config.mouse,
             bracketed_paste: config.bracketed_paste,
             focus_events: config.focus_reporting,
             kitty_keyboard: config.kitty_keyboard,
+        };
+        let session = TerminalSession::new(SessionOptions {
+            alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
+            mouse_capture: initial_features.mouse_capture,
+            bracketed_paste: initial_features.bracketed_paste,
+            focus_events: initial_features.focus_events,
+            kitty_keyboard: initial_features.kitty_keyboard,
         })?;
+        let events = CrosstermEventSource::new(session, initial_features);
 
         let mut writer = TerminalWriter::with_diff_config(
             io::stdout(),
@@ -1666,7 +1735,7 @@ impl<M: Model> Program<M, Stdout> {
         // Get terminal size for initial frame (or forced size override).
         let (w, h) = config
             .forced_size
-            .unwrap_or_else(|| session.size().unwrap_or((80, 24)));
+            .unwrap_or_else(|| events.size().unwrap_or((80, 24)));
         let width = w.max(1);
         let height = h.max(1);
         writer.set_size(width, height);
@@ -1700,7 +1769,8 @@ impl<M: Model> Program<M, Stdout> {
         Ok(Self {
             model,
             writer,
-            session,
+            events,
+            backend_features: initial_features,
             running: true,
             tick_rate: None,
             last_tick: Instant::now(),
@@ -1739,7 +1809,7 @@ impl<M: Model> Program<M, Stdout> {
     }
 }
 
-impl<M: Model, W: Write + Send> Program<M, W> {
+impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Program<M, E, W> {
     /// Run the main event loop.
     ///
     /// This is the main entry point. It handles:
@@ -1790,14 +1860,14 @@ impl<M: Model, W: Write + Send> Program<M, W> {
             let timeout = self.effective_timeout();
 
             // Poll for events with timeout
-            if self.session.poll_event(timeout)? {
+            if self.events.poll_event(timeout)? {
                 // Drain all pending events
                 loop {
                     // read_event returns Option<Event> after converting from crossterm
-                    if let Some(event) = self.session.read_event()? {
+                    if let Some(event) = self.events.read_event()? {
                         self.handle_event(event)?;
                     }
-                    if !self.session.poll_event(Duration::from_millis(0))? {
+                    if !self.events.poll_event(Duration::from_millis(0))? {
                         break;
                     }
                 }
@@ -2189,7 +2259,8 @@ impl<M: Model, W: Write + Send> Program<M, W> {
                 self.load_state();
             }
             Cmd::SetMouseCapture(enabled) => {
-                self.session.set_mouse_capture(enabled)?;
+                self.backend_features.mouse_capture = enabled;
+                self.events.set_features(self.backend_features)?;
             }
         }
         Ok(())
@@ -4990,7 +5061,7 @@ mod tests {
     fn headless_program_with_config<M: Model>(
         model: M,
         config: ProgramConfig,
-    ) -> Program<M, Vec<u8>>
+    ) -> Program<M, CrosstermEventSource, Vec<u8>>
     where
         M::Message: Send + 'static,
     {
@@ -5010,14 +5081,21 @@ mod tests {
         let height = height.max(1);
         writer.set_size(width, height);
 
-        let session = TerminalSession::new_for_tests(SessionOptions {
-            alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
+        let initial_features = BackendFeatures {
             mouse_capture: config.mouse,
             bracketed_paste: config.bracketed_paste,
             focus_events: config.focus_reporting,
             kitty_keyboard: config.kitty_keyboard,
+        };
+        let session = TerminalSession::new_for_tests(SessionOptions {
+            alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
+            mouse_capture: initial_features.mouse_capture,
+            bracketed_paste: initial_features.bracketed_paste,
+            focus_events: initial_features.focus_events,
+            kitty_keyboard: initial_features.kitty_keyboard,
         })
         .expect("headless test session");
+        let events = CrosstermEventSource::new(session, initial_features);
 
         let budget = RenderBudget::from_config(&config.budget);
         let conformal_predictor = config.conformal_config.clone().map(ConformalPredictor::new);
@@ -5035,7 +5113,8 @@ mod tests {
         Program {
             model,
             writer,
-            session,
+            events,
+            backend_features: initial_features,
             running: true,
             tick_rate: None,
             last_tick: Instant::now(),

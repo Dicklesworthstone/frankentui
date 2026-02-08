@@ -36,6 +36,7 @@ telemetry = [
 ]
 
 [dependencies]
+ftui-backend = { path = "../ftui-backend", version = "0.1.0" }
 ftui-core = { path = "../ftui-core", version = "0.1.1" }
 ftui-layout = { path = "../ftui-layout", version = "0.1.1" }
 ftui-i18n = { path = "../ftui-i18n", version = "0.1.1" }

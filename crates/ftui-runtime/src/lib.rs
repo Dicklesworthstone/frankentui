@@ -70,6 +70,7 @@ pub use evidence_telemetry::{
     budget_snapshot, clear_budget_snapshot, clear_diff_snapshot, clear_resize_snapshot,
     diff_snapshot, resize_snapshot, set_budget_snapshot, set_diff_snapshot, set_resize_snapshot,
 };
+pub use ftui_backend::{BackendEventSource, BackendFeatures};
 pub use input_macro::{
     EventRecorder, FilteredEventRecorder, InputMacro, MacroPlayback, MacroPlayer, MacroRecorder,
     RecordingFilter, RecordingState, TimedEvent,
@@ -79,9 +80,9 @@ pub use locale::{
 };
 pub use log_sink::LogSink;
 pub use program::{
-    App, AppBuilder, BatchController, Cmd, EffectQueueConfig, FrameTiming, FrameTimingConfig,
-    FrameTimingSink, InlineAutoRemeasureConfig, Model, PersistenceConfig, Program, ProgramConfig,
-    ResizeBehavior, TaskSpec, WidgetRefreshConfig,
+    App, AppBuilder, BatchController, Cmd, CrosstermEventSource, EffectQueueConfig, FrameTiming,
+    FrameTimingConfig, FrameTimingSink, InlineAutoRemeasureConfig, Model, PersistenceConfig,
+    Program, ProgramConfig, ResizeBehavior, TaskSpec, WidgetRefreshConfig,
 };
 pub use render_trace::{
     RenderTraceConfig, RenderTraceContext, RenderTraceFrame, RenderTraceRecorder,
