@@ -644,7 +644,7 @@ pub struct TtyBackend {
     // Fields are ordered for correct drop sequence:
     // 1. clock (no cleanup needed)
     // 2. events (feature state tracking)
-    // 3. presenter (no cleanup needed)
+    // 3. presenter (BufWriter flush on drop; benign — present() always flushes)
     // 4. alt_screen_active (tracked for cleanup)
     // 5. raw_mode — MUST be last: termios is restored after escape sequences
     clock: TtyClock,
