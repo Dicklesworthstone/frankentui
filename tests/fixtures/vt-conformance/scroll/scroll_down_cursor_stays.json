@@ -1,0 +1,33 @@
+{
+  "name": "scroll_down_cursor_stays",
+  "description": "SD scrolls content down; cursor position unchanged",
+  "initial_size": [
+    5,
+    3
+  ],
+  "input_bytes_hex": "411b5b323b3148421b5b333b3148431b5b3154",
+  "comment": "Print A at (0,0); CUP(2,1) B at (1,0); CUP(3,1) C at (2,0); SD(1): row 0=blank, row 1=old A, row 2=old B; cursor stays at (2,1)",
+  "expected": {
+    "cursor": {
+      "row": 2,
+      "col": 1
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": " "
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "char": "A"
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "char": "B"
+      }
+    ]
+  }
+}

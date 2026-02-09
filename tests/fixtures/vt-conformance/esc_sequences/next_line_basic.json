@@ -1,0 +1,16 @@
+{
+  "name": "next_line_basic",
+  "description": "NEL (ESC E) moves cursor to start of next line",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "4142431b4558",
+  "comment": "Print ABC at (0,0)-(0,2), cursor (0,3); NEL: col=0, move down to (1,0); print X; cursor (1,1)",
+  "expected": {
+    "cursor": { "row": 1, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 1, "col": 0, "char": "X" }
+    ]
+  }
+}

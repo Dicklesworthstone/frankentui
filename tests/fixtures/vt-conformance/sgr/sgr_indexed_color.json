@@ -1,0 +1,14 @@
+{
+  "name": "sgr_indexed_color",
+  "description": "SGR 38;5;N sets 256-color indexed foreground; SGR 0 resets",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b33383b353b3139366d411b5b306d42",
+  "comment": "SGR 38;5;196 (indexed fg 196) + print A; SGR 0 (reset) + print B; A has indexed fg, B has default",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "fg_color": { "indexed": 196 } } },
+      { "row": 0, "col": 1, "char": "B" }
+    ]
+  }
+}

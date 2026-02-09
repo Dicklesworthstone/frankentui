@@ -1,0 +1,14 @@
+{
+  "name": "sgr_rgb_color",
+  "description": "SGR 38;2;R;G;B sets 24-bit RGB foreground; SGR 0 resets",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b33383b323b3235353b3132383b306d411b5b306d42",
+  "comment": "SGR 38;2;255;128;0 (RGB orange fg) + print A; SGR 0 (reset) + print B; A has RGB fg, B has default",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "fg_color": { "rgb": [255, 128, 0] } } },
+      { "row": 0, "col": 1, "char": "B" }
+    ]
+  }
+}

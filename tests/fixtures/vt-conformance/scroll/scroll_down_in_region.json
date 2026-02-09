@@ -1,0 +1,21 @@
+{
+  "name": "scroll_down_in_region",
+  "description": "SD within scroll region shifts only region rows; outside untouched",
+  "initial_size": [6, 5],
+  "input_bytes_hex": "5a5a1b5b323b314841411b5b333b314842421b5b343b314843431b5b353b314857571b5b323b34721b5b3154",
+  "comment": "Print ZZ row 0; CUP rows 2-5: AA BB CC WW; DECSTBM(2,4) sets region [1,4); cursor homes (0,0); SD(1): row 1=blank, row 2=AA, row 3=BB; rows 0,4 untouched",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "Z" },
+      { "row": 0, "col": 1, "char": "Z" },
+      { "row": 1, "col": 0, "char": " " },
+      { "row": 2, "col": 0, "char": "A" },
+      { "row": 2, "col": 1, "char": "A" },
+      { "row": 3, "col": 0, "char": "B" },
+      { "row": 3, "col": 1, "char": "B" },
+      { "row": 4, "col": 0, "char": "W" },
+      { "row": 4, "col": 1, "char": "W" }
+    ]
+  }
+}

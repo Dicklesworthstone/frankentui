@@ -1,0 +1,14 @@
+{
+  "name": "sgr_named_fg_reset",
+  "description": "SGR 32 sets green fg; SGR 39 resets to default fg",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b33326d581b5b33396d59",
+  "comment": "SGR 32 (green fg = named 2) + print X; SGR 39 (default fg) + print Y; X has named(2) fg, Y has default",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X", "attrs": { "fg_color": { "named": 2 } } },
+      { "row": 0, "col": 1, "char": "Y" }
+    ]
+  }
+}

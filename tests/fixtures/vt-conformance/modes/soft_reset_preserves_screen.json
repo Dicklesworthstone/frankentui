@@ -1,0 +1,22 @@
+{
+  "name": "soft_reset_preserves_screen",
+  "description": "DECSTR preserves screen content; only resets modes/attrs/scroll region",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "41424344451b5b323b3148464748494a1b5b2170",
+  "comment": "Print ABCDE row 0 (pending_wrap); CUP(2,1) to (1,0); print FGHIJ row 1 (pending_wrap); soft reset: clears pending_wrap/modes/attrs; screen unchanged; cursor stays (1,4)",
+  "expected": {
+    "cursor": { "row": 1, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 0, "col": 3, "char": "D" },
+      { "row": 0, "col": 4, "char": "E" },
+      { "row": 1, "col": 0, "char": "F" },
+      { "row": 1, "col": 1, "char": "G" },
+      { "row": 1, "col": 2, "char": "H" },
+      { "row": 1, "col": 3, "char": "I" },
+      { "row": 1, "col": 4, "char": "J" }
+    ]
+  }
+}

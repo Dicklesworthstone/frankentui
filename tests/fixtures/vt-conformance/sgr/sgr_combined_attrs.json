@@ -1,0 +1,14 @@
+{
+  "name": "sgr_combined_attrs",
+  "description": "Multiple SGR params in one sequence: bold + italic + named fg color",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b313b333b33316d411b5b306d42",
+  "comment": "SGR 1;3;31 (bold+italic+red fg) + print A; SGR 0 (reset) + print B; A has bold+italic+named(1) fg",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bold": true, "italic": true, "fg_color": { "named": 1 } } },
+      { "row": 0, "col": 1, "char": "B" }
+    ]
+  }
+}

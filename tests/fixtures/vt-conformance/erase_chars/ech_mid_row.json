@@ -1,0 +1,43 @@
+{
+  "name": "ech_mid_row",
+  "description": "ECH erases N characters at cursor position without moving cursor",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "41424344451b5b313b32481b5b3258",
+  "comment": "Print ABCDE at (0,0)-(0,4); CUP(1,2) to (0,1); ECH(2) erases (0,1) and (0,2) to blanks; cursor stays at (0,1)",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 1
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": " "
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": " "
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "D"
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": "E"
+      }
+    ]
+  }
+}

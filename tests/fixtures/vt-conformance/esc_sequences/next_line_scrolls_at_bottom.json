@@ -1,0 +1,17 @@
+{
+  "name": "next_line_scrolls_at_bottom",
+  "description": "NEL at bottom row triggers scroll up then moves to col 0",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "41421b5b323b314843441b5b333b314845461b4558",
+  "comment": "Print AB row 0; CUP(2,1) print CD row 1; CUP(3,1) print EF row 2; NEL scrolls: row 0=CD, row 1=EF, row 2=blank; cursor (2,0); print X; cursor (2,1)",
+  "expected": {
+    "cursor": { "row": 2, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "C" },
+      { "row": 0, "col": 1, "char": "D" },
+      { "row": 1, "col": 0, "char": "E" },
+      { "row": 1, "col": 1, "char": "F" },
+      { "row": 2, "col": 0, "char": "X" }
+    ]
+  }
+}

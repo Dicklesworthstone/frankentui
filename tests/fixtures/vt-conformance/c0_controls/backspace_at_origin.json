@@ -1,0 +1,13 @@
+{
+  "name": "backspace_at_origin",
+  "description": "BS at column 0 stays at column 0",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "0841",
+  "comment": "BS from (0,0) stays at (0,0); print A at (0,0); cursor at (0,1)",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" }
+    ]
+  }
+}

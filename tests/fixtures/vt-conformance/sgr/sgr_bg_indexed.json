@@ -1,0 +1,14 @@
+{
+  "name": "sgr_bg_indexed",
+  "description": "SGR 48;5;N sets 256-color indexed background; SGR 0 resets",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b34383b353b32316d411b5b306d42",
+  "comment": "SGR 48;5;21 (indexed bg 21) + print A; SGR 0 (reset) + print B; A has indexed bg, B has default",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bg_color": { "indexed": 21 } } },
+      { "row": 0, "col": 1, "char": "B" }
+    ]
+  }
+}

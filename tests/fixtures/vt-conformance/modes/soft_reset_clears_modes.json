@@ -1,0 +1,16 @@
+{
+  "name": "soft_reset_clears_modes",
+  "description": "DECSTR (CSI ! p) clears IRM so subsequent print overwrites instead of inserting",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "414141411b5b34681b5b21701b5b313b324858",
+  "comment": "Print AAAA at (0,0)-(0,3); set IRM (CSI 4 h); soft reset (CSI ! p) clears IRM; CUP(1,2) to (0,1); print X overwrites (0,1); cursor (0,2)",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "X" },
+      { "row": 0, "col": 2, "char": "A" },
+      { "row": 0, "col": 3, "char": "A" }
+    ]
+  }
+}
