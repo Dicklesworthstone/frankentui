@@ -2,7 +2,7 @@
   "name": "index_at_scroll_region_bottom",
   "description": "IND (ESC D) at the bottom of a scroll region triggers scroll-up within the region",
   "initial_size": [5, 5],
-  "input_bytes_hex": "41414141410d0a42424242420d0a434343434343431b5b313b3372 1b5b333b3148 1b44",
+  "input_bytes_hex": "41414141410d0a42424242420d0a43434343431b5b313b33721b5b333b31481b44",
   "comment": "Fill rows 0-2: AAAAA / BBBBB / CCCCC. Set scroll region 1;3 (rows 0-2). CUP to (2,0). IND scrolls region up: row 0=BBBBB, row 1=CCCCC, row 2=blank. Cursor stays at (2,0).",
   "expected": {
     "cursor": { "row": 2, "col": 0 },

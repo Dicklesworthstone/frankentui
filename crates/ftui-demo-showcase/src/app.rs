@@ -909,8 +909,8 @@ impl<T> LazyScreen<T> {
 pub struct ScreenStates {
     /// Dashboard screen state.
     pub dashboard: screens::dashboard::Dashboard,
-    /// Shakespeare library screen state.
-    pub shakespeare: screens::shakespeare::Shakespeare,
+    /// Shakespeare library screen state (lazy init).
+    shakespeare: LazyScreen<screens::shakespeare::Shakespeare>,
     /// Code explorer screen state (lazy init).
     code_explorer: LazyScreen<screens::code_explorer::CodeExplorer>,
     /// Widget gallery screen state.
@@ -1002,7 +1002,7 @@ impl Default for ScreenStates {
     fn default() -> Self {
         Self {
             dashboard: Default::default(),
-            shakespeare: Default::default(),
+            shakespeare: LazyScreen::new(),
             code_explorer: LazyScreen::new(),
             widget_gallery: Default::default(),
             layout_lab: Default::default(),
@@ -1050,6 +1050,20 @@ impl Default for ScreenStates {
 }
 
 impl ScreenStates {
+    fn shakespeare_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut screens::shakespeare::Shakespeare) -> R,
+    {
+        self.shakespeare.with_mut(
+            screens::shakespeare::Shakespeare::default,
+            |screen, init_ms| {
+                let memory_estimate = Some(std::mem::size_of_val(screen) as u64);
+                emit_screen_init_log(ScreenId::Shakespeare, init_ms, 0, memory_estimate);
+            },
+            f,
+        )
+    }
+
     fn code_explorer_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut screens::code_explorer::CodeExplorer) -> R,
@@ -1129,6 +1143,7 @@ impl ScreenStates {
     #[cfg(test)]
     fn is_lazy_initialized(&self, id: ScreenId) -> bool {
         match id {
+            ScreenId::Shakespeare => self.shakespeare.is_initialized(),
             ScreenId::CodeExplorer => self.code_explorer.is_initialized(),
             ScreenId::FileBrowser => self.file_browser.is_initialized(),
             ScreenId::VisualEffects => self.visual_effects.is_initialized(),
@@ -1146,7 +1161,7 @@ impl ScreenStates {
                 self.dashboard.update(event);
             }
             ScreenId::Shakespeare => {
-                self.shakespeare.update(event);
+                self.shakespeare_mut(|screen| screen.update(event));
             }
             ScreenId::CodeExplorer => {
                 self.code_explorer_mut(|screen| screen.update(event));
@@ -1307,7 +1322,7 @@ impl ScreenStates {
         match active {
             ScreenId::GuidedTour => {}
             ScreenId::Dashboard => self.dashboard.tick(tick_count),
-            ScreenId::Shakespeare => self.shakespeare.tick(tick_count),
+            ScreenId::Shakespeare => self.shakespeare_mut(|screen| screen.tick(tick_count)),
             ScreenId::CodeExplorer => self.code_explorer_mut(|screen| screen.tick(tick_count)),
             ScreenId::WidgetGallery => self.widget_gallery.tick(tick_count),
             ScreenId::LayoutLab => self.layout_lab.tick(tick_count),
@@ -1360,7 +1375,9 @@ impl ScreenStates {
             .code_explorer
             .with_existing_mut(|screen| screen.apply_theme());
         self.forms_input.apply_theme();
-        self.shakespeare.apply_theme();
+        let _ = self
+            .shakespeare
+            .with_existing_mut(|screen| screen.apply_theme());
         self.markdown_rich_text.apply_theme();
         self.advanced_text_editor.apply_theme();
         self.markdown_live_editor.apply_theme();
@@ -1385,7 +1402,7 @@ impl ScreenStates {
             match id {
                 ScreenId::GuidedTour => {}
                 ScreenId::Dashboard => self.dashboard.view(frame, area),
-                ScreenId::Shakespeare => self.shakespeare.view(frame, area),
+                ScreenId::Shakespeare => self.shakespeare_mut(|screen| screen.view(frame, area)),
                 ScreenId::CodeExplorer => self.code_explorer_mut(|screen| screen.view(frame, area)),
                 ScreenId::WidgetGallery => self.widget_gallery.view(frame, area),
                 ScreenId::LayoutLab => self.layout_lab.view(frame, area),
@@ -3970,7 +3987,7 @@ impl AppModel {
                 },
             ],
             ScreenId::Dashboard => self.screens.dashboard.keybindings(),
-            ScreenId::Shakespeare => self.screens.shakespeare.keybindings(),
+            ScreenId::Shakespeare => self.screens.shakespeare_mut(|screen| screen.keybindings()),
             ScreenId::CodeExplorer => self
                 .screens
                 .code_explorer_mut(|screen| screen.keybindings()),
@@ -6118,6 +6135,10 @@ mod tests {
             kind: KeyEventKind::Press,
         });
 
+        assert!(!states.is_lazy_initialized(ScreenId::Shakespeare));
+        states.update(ScreenId::Shakespeare, &event);
+        assert!(states.is_lazy_initialized(ScreenId::Shakespeare));
+
         assert!(!states.is_lazy_initialized(ScreenId::CodeExplorer));
         states.update(ScreenId::CodeExplorer, &event);
         assert!(states.is_lazy_initialized(ScreenId::CodeExplorer));
@@ -6127,9 +6148,13 @@ mod tests {
         assert!(states.is_lazy_initialized(ScreenId::VisualEffects));
 
         let events = guard.take_events();
+        let mut shakespeare_events = 0;
         let mut code_explorer_events = 0;
         let mut visual_effects_events = 0;
         for entry in events {
+            if entry.screen == ScreenId::Shakespeare {
+                shakespeare_events += 1;
+            }
             if entry.screen == ScreenId::CodeExplorer {
                 code_explorer_events += 1;
             }
@@ -6137,6 +6162,10 @@ mod tests {
                 visual_effects_events += 1;
             }
         }
+        assert_eq!(
+            shakespeare_events, 1,
+            "expected one init log for Shakespeare"
+        );
         assert_eq!(
             code_explorer_events, 1,
             "expected one init log for CodeExplorer"
@@ -6155,6 +6184,7 @@ mod tests {
         let mut app = AppModel::new();
 
         let screens = [
+            ScreenId::Shakespeare,
             ScreenId::CodeExplorer,
             ScreenId::FileBrowser,
             ScreenId::VisualEffects,

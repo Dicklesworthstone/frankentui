@@ -1,0 +1,19 @@
+{
+  "name": "ech_indexed_bg",
+  "description": "ECH 3 with SGR 48;5;82 (indexed bg 82) — erased chars inherit cursor indexed bg, cursor does not move",
+  "initial_size": [10, 1],
+  "input_bytes_hex": "414141414141414141411b5b34383b353b38326d1b5b313b3448 1b5b3358",
+  "comment": "Print 10 A's, SGR 48;5;82 (indexed bg 82), CUP(1,4) → cursor (0,3), ECH 3 → cols 3-5 erased with indexed(82) bg, cursor stays",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 2, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 3, "char": " ", "attrs": { "bg_color": { "indexed": 82 } } },
+      { "row": 0, "col": 4, "char": " ", "attrs": { "bg_color": { "indexed": 82 } } },
+      { "row": 0, "col": 5, "char": " ", "attrs": { "bg_color": { "indexed": 82 } } },
+      { "row": 0, "col": 6, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 9, "char": "A", "attrs": { "bg_color": "default" } }
+    ]
+  }
+}

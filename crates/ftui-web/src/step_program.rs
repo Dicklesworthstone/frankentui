@@ -44,6 +44,9 @@ use ftui_runtime::program::{Cmd, Model};
 
 use crate::{WebBackend, WebBackendError, WebOutputs};
 
+/// Run grapheme-pool GC every N rendered frames in host-driven WASM mode.
+const POOL_GC_INTERVAL_FRAMES: u64 = 256;
+
 /// Result of a single [`StepProgram::step`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepResult {
@@ -322,6 +325,10 @@ impl<M: Model> StepProgram<M> {
         self.prev_buffer = Some(buf);
         self.dirty = false;
         self.frame_idx += 1;
+        if self.frame_idx.is_multiple_of(POOL_GC_INTERVAL_FRAMES) {
+            let buffers: Vec<&Buffer> = self.prev_buffer.iter().collect();
+            self.pool.gc(&buffers);
+        }
         Ok(())
     }
 
@@ -380,6 +387,7 @@ mod tests {
     use super::*;
     use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
     use ftui_render::cell::Cell;
+    use ftui_render::drawing::Draw;
     use pretty_assertions::assert_eq;
 
     // ---- Test model ----
@@ -455,6 +463,34 @@ mod tests {
         }
     }
 
+    /// Test model that emits a new combining-mark grapheme each frame.
+    ///
+    /// Used to verify periodic grapheme-pool GC in `StepProgram`.
+    struct GraphemeChurn {
+        value: u32,
+    }
+
+    impl Model for GraphemeChurn {
+        type Message = CounterMsg;
+
+        fn init(&mut self) -> Cmd<Self::Message> {
+            Cmd::none()
+        }
+
+        fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
+            if let CounterMsg::Increment = msg {
+                self.value = self.value.wrapping_add(1);
+            }
+            Cmd::none()
+        }
+
+        fn view(&self, frame: &mut Frame) {
+            let base = char::from_u32(0x4e00 + (self.value % 2048)).unwrap_or('字');
+            let text = format!("{base}\u{0301}");
+            frame.print_text(0, 0, &text, Cell::default());
+        }
+    }
+
     fn key_event(c: char) -> Event {
         Event::Key(KeyEvent {
             code: KeyCode::Char(c),
@@ -468,6 +504,10 @@ mod tests {
             value,
             initialized: false,
         }
+    }
+
+    fn new_grapheme_churn() -> GraphemeChurn {
+        GraphemeChurn { value: 0 }
     }
 
     // ---- Construction and lifecycle ----
@@ -828,5 +868,29 @@ mod tests {
         // Frame indices are monotonic.
         assert!(r2.frame_idx > r1.frame_idx);
         assert_eq!(r3.frame_idx, r2.frame_idx); // No render, same index.
+    }
+
+    #[test]
+    fn periodic_pool_gc_bounds_grapheme_growth() {
+        let mut prog = StepProgram::new(new_grapheme_churn(), 8, 1);
+        prog.init().unwrap();
+        prog.execute_cmd(Cmd::tick(Duration::from_millis(1)));
+
+        let mut peak_pool_len = prog.pool().len();
+        for _ in 0..2000 {
+            prog.advance_time(Duration::from_millis(1));
+            let _ = prog.step().unwrap();
+            peak_pool_len = peak_pool_len.max(prog.pool().len());
+        }
+
+        let final_pool_len = prog.pool().len();
+        assert!(
+            peak_pool_len <= (POOL_GC_INTERVAL_FRAMES as usize).saturating_add(2),
+            "peak grapheme pool length should stay bounded by GC interval (peak={peak_pool_len})"
+        );
+        assert!(
+            final_pool_len <= (POOL_GC_INTERVAL_FRAMES as usize).saturating_add(2),
+            "final grapheme pool length should stay bounded by GC interval (final={final_pool_len})"
+        );
     }
 }

@@ -3314,6 +3314,48 @@ fn mermaid_showcase_requirement_basic_200x60() {
     );
 }
 
+#[test]
+fn mermaid_showcase_er_multi_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
+    mermaid_showcase_goto_sample(&mut screen, "er-multi");
+    mermaid_showcase_snapshot(&mut screen, 120, 40, "mermaid_showcase_er_multi_120x40");
+}
+
+#[test]
+fn mermaid_showcase_gantt_deps_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
+    mermaid_showcase_goto_sample(&mut screen, "gantt-deps");
+    mermaid_showcase_snapshot(&mut screen, 120, 40, "mermaid_showcase_gantt_deps_120x40");
+}
+
+#[test]
+fn mermaid_showcase_class_hierarchy_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
+    mermaid_showcase_goto_sample(&mut screen, "class-hierarchy");
+    mermaid_showcase_snapshot(
+        &mut screen,
+        120,
+        40,
+        "mermaid_showcase_class_hierarchy_120x40",
+    );
+}
+
+#[test]
+fn mermaid_showcase_state_concurrent_120x40() {
+    let _guard = ScopedThemeLock::new(ThemeId::CyberpunkAurora);
+    let mut screen = ftui_demo_showcase::screens::mermaid_showcase::MermaidShowcaseScreen::new();
+    mermaid_showcase_goto_sample(&mut screen, "state-concurrent");
+    mermaid_showcase_snapshot(
+        &mut screen,
+        120,
+        40,
+        "mermaid_showcase_state_concurrent_120x40",
+    );
+}
+
 // ============================================================================
 // Mermaid Showcase — block-beta
 // ============================================================================

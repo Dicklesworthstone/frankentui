@@ -1,0 +1,40 @@
+Mermaid Showcase | Class Hierarchy (28/29) | Layout: Auto | Score: 610.3 | Viewport: auto | OK                          
+╭───────────Samples───────────╮╭──────────────────────────Viewport──────────────────────────╮╭────────Controls────────╮ 
+│  Flow Basic [flow, S, branch││                                                            ││Layout: Auto (l)        │ 
+│  Flow Subgraphs [flow, M, su││                                                            ││Tier: auto (t)          │ 
+│  Flow Dense [flow, L, dense,││                                                            ││Guard: Default (x)      │ 
+│  Flow Long Labels [flow, M, ││                                                            ││Glyphs: unicode (g)     │ 
+│  Flow Unicode [flow, S, unic││                                                            ││Render: braille (b)     │ 
+│  Flow Styles [flow, M, class││                                                            ││Wrap: wordchar (w)      │ 
+│  Sequence Mini [sequence, S,││                                                            ││Styles: on (s)          │ 
+│  Sequence Checkout [sequence││                                                            ││Links: off (u)          │ 
+│  Sequence Dense [sequence, L││                                                            ││Init: off (I)           │ 
+│  Class Basic [class, S, inhe││                                                            ││Errors: panel (e)       │ 
+│  Class Members [class, M, fi││                                                            ││Viewport: auto (v)      │ 
+│  State Basic [state, S, star││                                                            ││Zoom: 100% (+/-)        │ 
+│  State Composite [state, M, ││                                                            ││Fit: f                  │ 
+│  ER Basic [er, M, cardinalit││                                                            ││Metrics: on (m)         │ 
+│  Gantt Basic [gantt, M, sect││                                                            ││                        │ 
+│  Mindmap Seed [mindmap, S, t││ ⠿⠿⠿⠿⠿⠿ ⠸⠿⠿⠿⠿⠇ ⠿⠿⠿⠿⠿ ⠸⠿⠿⠿⠿⠇ ⠿⠿⠿⠿⠿ ⠸⠿⠿⠿⠿⠇ ⠿⠿⠿⠿⠿ ⠸⠿⢿⡿⠿⠇ ⠿⠿⠿⠿⠿ ││                        │ 
+│  Mindmap Deep [mindmap, L, d││                                        ⣀⣀⣀⣠⣤⠔⠒⢊⣉⣁⣄⣀⡀       ││                        │ 
+│  Pie Basic [pie, S, title, s││                                        ⠛⠛⡻⠛⠛  ⠘⠛⠛⠛⠛⠃       ││                        │ 
+│  Pie Many [pie, M, many-slic││                                      ⣤⣤⣤⣮⣤⡄                ││                        │ 
+│  Gitgraph Basic [gitgraph, M││                                      ⠉⠉⢹⠉⠉⠁                │╰────────────────────────╯ 
+│  Journey Basic [journey, M, ││                                      ⣶⣶⣾⣶⣶                 │╭────────Metrics─────────╮ 
+│  Requirement Basic [requirem││                                                            ││Cache: hit 0  miss 1  la│ 
+│  Block Beta Basic [block-bet││                                                            ││Warnings: 1             │ 
+│  Block Beta Nested [block-be││                                                            ││Parse: 0.00 ms          │ 
+│  Flow Node Shapes [flow, S, ││                                                            ││Layout: 0.00 ms         │ 
+│  ER Multi-Entity [er, L, mul││                                                            ││Render: 0.00 ms         │ 
+│  Gantt Dependencies [gantt, ││                                                            ││Viewport: auto          │ 
+│> Class Hierarchy [class, L, ││                                                            ││Zoom: 100%              │ 
+│  State Concurrent [state, L,││                                                            ││Iters: 1                │ 
+│                             ││                                                            ││Score: 610.25           │ 
+│                             ││                                                            ││Cross: 0                │ 
+│                             ││                                                            ││Bends: 0                │ 
+│                             ││                                                            ││Sym: 0.69               │ 
+│                             ││                                                            ││Comp: 0.14              │ 
+│                             ││                                                            ││Edge var: 4.81          │ 
+│                             ││                                                            ││Label col: 0            │ 
+╰─────────────────────────────╯╰────────────────────────────────────────────────────────────╯╰────────────────────────╯ 
+j/k sample  Enter render  l layout  t tier  u links  I init  e errors  x guard  v view  +/- zoom  m metrics  ? help | pa

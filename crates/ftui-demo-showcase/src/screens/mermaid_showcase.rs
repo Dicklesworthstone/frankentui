@@ -430,10 +430,12 @@ impl SampleRegistry {
 // | Flowchart   | Graph       | Flow Basic, Subgraphs, Dense,        | Good     |
 // |             |             | Long Labels, Unicode, Styles         |          |
 // | Sequence    | Sequence    | Seq Mini, Seq Checkout, Seq Dense    | Good     |
-// | Class       | Class       | Class Basic, Class Members           | Moderate |
-// | State       | State       | State Basic, State Composite         | Moderate |
-// | ER          | Er          | ER Basic                             | Minimal  |
-// | Gantt       | Gantt       | Gantt Basic                          | Minimal  |
+// | Class       | Class       | Class Basic, Class Members,          | Good     |
+// |             |             | Class Hierarchy                      |          |
+// | State       | State       | State Basic, State Composite,        | Good     |
+// |             |             | State Concurrent                     |          |
+// | ER          | Er          | ER Basic, ER Multi-Entity            | Moderate |
+// | Gantt       | Gantt       | Gantt Basic, Gantt Dependencies      | Moderate |
 // | Mindmap     | Mindmap     | Mindmap Seed, Mindmap Deep           | Moderate |
 // | Pie         | Pie         | Pie Basic, Pie Many                  | Good     |
 // | Gitgraph    | (unsupported) | Gitgraph Basic (fallback test)     | N/A      |
@@ -467,12 +469,18 @@ impl SampleRegistry {
 // | click/link           | Flow Basic (links toggle)         | —                             |
 // | Unicode labels       | Flow Unicode                      | —                             |
 // | Long/wrap labels     | Flow Long Labels                  | —                             |
-// | ER cardinality       | ER Basic                          | —                             |
-// | Class members        | Class Members                     | —                             |
-// | State composites     | State Composite                   | —                             |
+// | ER cardinality       | ER Basic, ER Multi-Entity        | —                             |
+// | ER many entities     | ER Multi-Entity                  | —                             |
+// | Class members        | Class Members, Class Hierarchy   | —                             |
+// | Class inheritance    | Class Hierarchy                  | —                             |
+// | Class visibility     | Class Hierarchy                  | —                             |
+// | State composites     | State Composite, State Concurrent| —                             |
 // | State notes          | State Composite                   | —                             |
-// | Gantt sections       | Gantt Basic                       | —                             |
-// | Gantt tasks          | Gantt Basic                       | —                             |
+// | State fork/join      | State Concurrent                  | —                             |
+// | State choices        | State Concurrent                  | —                             |
+// | Gantt sections       | Gantt Basic, Gantt Dependencies  | —                             |
+// | Gantt tasks          | Gantt Basic, Gantt Dependencies  | —                             |
+// | Gantt deps/milestone | Gantt Dependencies                | —                             |
 // | Pie showData         | Pie Basic                         | —                             |
 // | Pie many slices      | Pie Many                          | —                             |
 // | Mindmap deep nesting | Mindmap Deep                      | —                             |
