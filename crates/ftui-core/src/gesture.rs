@@ -152,6 +152,7 @@ impl GestureRecognizer {
     ///
     /// Most events produce 0 or 1 semantic events. A mouse-up after a
     /// multi-click sequence may produce both a `Click` and a `DoubleClick`.
+    #[inline]
     pub fn process(&mut self, event: &Event, now: Instant) -> Vec<SemanticEvent> {
         let mut out = Vec::with_capacity(2);
 
@@ -245,6 +246,7 @@ impl GestureRecognizer {
     ///
     /// Returns `Some(LongPress { .. })` if the mouse has been held stationary
     /// beyond the configured threshold.
+    #[inline]
     pub fn check_long_press(&mut self, now: Instant) -> Option<SemanticEvent> {
         if self.long_press_fired {
             return None;

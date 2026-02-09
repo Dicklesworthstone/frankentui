@@ -145,18 +145,21 @@ impl AnimationGroup {
     }
 
     /// Number of animations in the group.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.members.len()
     }
 
     /// Whether the group is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
     }
 
     /// Whether every animation in the group has completed.
+    #[inline]
     #[must_use]
     pub fn all_complete(&self) -> bool {
         self.members.is_empty() || self.members.iter().all(|m| m.animation.is_complete())
@@ -165,6 +168,7 @@ impl AnimationGroup {
     /// Average progress across all animations (0.0–1.0).
     ///
     /// Returns 0.0 for an empty group.
+    #[inline]
     #[must_use]
     pub fn overall_progress(&self) -> f32 {
         if self.members.is_empty() {
@@ -175,6 +179,7 @@ impl AnimationGroup {
     }
 
     /// Get a reference to a named animation's value.
+    #[inline]
     #[must_use]
     pub fn get(&self, label: &str) -> Option<&dyn Animation> {
         self.members
@@ -194,6 +199,7 @@ impl AnimationGroup {
     }
 
     /// Get a reference to an animation by index.
+    #[inline]
     #[must_use]
     pub fn get_at(&self, index: usize) -> Option<&dyn Animation> {
         self.members.get(index).map(|m| &*m.animation)

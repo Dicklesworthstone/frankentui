@@ -136,6 +136,7 @@ impl Fade {
     }
 
     /// Raw linear progress (before easing), in [0.0, 1.0].
+    #[inline]
     pub fn raw_progress(&self) -> f32 {
         let t = self.elapsed.as_secs_f64() / self.duration.as_secs_f64();
         (t as f32).clamp(0.0, 1.0)
@@ -264,6 +265,7 @@ impl Pulse {
     }
 
     /// Current phase in radians.
+    #[inline]
     pub fn phase(&self) -> f32 {
         self.phase
     }
@@ -379,11 +381,13 @@ impl<A: Animation, B: Animation> Parallel<A, B> {
     }
 
     /// Access the first animation.
+    #[inline]
     pub fn first(&self) -> &A {
         &self.a
     }
 
     /// Access the second animation.
+    #[inline]
     pub fn second(&self) -> &B {
         &self.b
     }
@@ -438,11 +442,13 @@ impl<A: Animation> Delayed<A> {
     }
 
     /// Whether the delay period has elapsed and the inner animation has started.
+    #[inline]
     pub fn has_started(&self) -> bool {
         self.started
     }
 
     /// Access the inner animation.
+    #[inline]
     pub fn inner(&self) -> &A {
         &self.inner
     }

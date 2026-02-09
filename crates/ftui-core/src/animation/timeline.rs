@@ -313,6 +313,7 @@ impl Timeline {
     }
 
     /// Current progress as a value in [0.0, 1.0].
+    #[inline]
     #[must_use]
     pub fn progress(&self) -> f32 {
         if self.events.is_empty() {

@@ -153,12 +153,14 @@ impl<A: Animation> Callbacks<A> {
     }
 
     /// Access the inner animation.
+    #[inline]
     #[must_use]
     pub fn inner(&self) -> &A {
         &self.inner
     }
 
     /// Mutable access to the inner animation.
+    #[inline]
     pub fn inner_mut(&mut self) -> &mut A {
         &mut self.inner
     }
@@ -169,6 +171,7 @@ impl<A: Animation> Callbacks<A> {
     }
 
     /// Number of pending events.
+    #[inline]
     #[must_use]
     pub fn pending_event_count(&self) -> usize {
         self.events.len()
