@@ -42,7 +42,7 @@ pub use flow_control::{
 };
 pub use grid::Grid;
 pub use modes::{AnsiModes, DecModes, Modes};
-pub use parser::{Action, Parser};
+pub use parser::{Action, CsiParams, Parser};
 pub use patch::{CellUpdate, ChangeRun, DirtySpan, DirtyTracker, GridDiff, Patch};
 pub use reply::{
     ReplyContext, ReplyEngine, TerminalQuery, parse_terminal_query, reply_for_query,

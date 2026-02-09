@@ -263,6 +263,27 @@ impl WebPresenter {
     pub fn take_outputs(&mut self) -> WebOutputs {
         std::mem::take(&mut self.outputs)
     }
+
+    /// Present a frame, taking ownership of the buffer to avoid cloning.
+    ///
+    /// This is the zero-copy fast path for callers that can give up ownership
+    /// (e.g. `StepProgram::render_frame`). The buffer is moved directly into
+    /// `last_buffer` instead of being cloned.
+    pub fn present_ui_owned(
+        &mut self,
+        buf: Buffer,
+        diff: Option<&BufferDiff>,
+        full_repaint_hint: bool,
+    ) {
+        let patches = build_patch_runs(&buf, diff, full_repaint_hint);
+        let stats = patch_batch_stats(&patches);
+        let patch_hash = patch_batch_hash(&patches);
+        self.outputs.last_buffer = Some(buf);
+        self.outputs.last_patches = patches;
+        self.outputs.last_patch_stats = Some(stats);
+        self.outputs.last_patch_hash = Some(patch_hash);
+        self.outputs.last_full_repaint_hint = full_repaint_hint;
+    }
 }
 
 impl Default for WebPresenter {

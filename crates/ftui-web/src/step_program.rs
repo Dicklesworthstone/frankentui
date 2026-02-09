@@ -318,11 +318,13 @@ impl<M: Model> StepProgram<M> {
             .map(|prev| BufferDiff::compute(prev, &buf));
         let full_repaint = self.prev_buffer.is_none();
 
+        // Clone buf into prev_buffer for next frame's diff, then move the
+        // original into the presenter's owned path (avoids a second clone).
+        self.prev_buffer = Some(buf.clone());
         self.backend
             .presenter_mut()
-            .present_ui(&buf, diff.as_ref(), full_repaint)?;
+            .present_ui_owned(buf, diff.as_ref(), full_repaint);
 
-        self.prev_buffer = Some(buf);
         self.dirty = false;
         self.frame_idx += 1;
         if self.frame_idx.is_multiple_of(POOL_GC_INTERVAL_FRAMES) {
