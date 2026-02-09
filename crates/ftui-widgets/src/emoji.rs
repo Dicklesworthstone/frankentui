@@ -68,18 +68,21 @@ impl Emoji {
     }
 
     /// Get the emoji text.
+    #[inline]
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
     }
 
     /// Get the fallback text, if set.
+    #[inline]
     #[must_use]
     pub fn fallback(&self) -> Option<&str> {
         self.fallback.as_deref()
     }
 
     /// Compute the display width of the emoji.
+    #[inline]
     #[must_use]
     pub fn width(&self) -> usize {
         display_width(&self.text)

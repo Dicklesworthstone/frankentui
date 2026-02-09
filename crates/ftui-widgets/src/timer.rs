@@ -48,21 +48,25 @@ impl TimerState {
     }
 
     /// Returns the original countdown duration.
+    #[inline]
     pub fn duration(&self) -> std::time::Duration {
         self.duration
     }
 
     /// Returns the remaining time.
+    #[inline]
     pub fn remaining(&self) -> std::time::Duration {
         self.remaining
     }
 
     /// Returns whether the timer is currently running.
+    #[inline]
     pub fn running(&self) -> bool {
         self.running && !self.finished()
     }
 
     /// Returns whether the timer has reached zero.
+    #[inline]
     pub fn finished(&self) -> bool {
         self.remaining.is_zero()
     }
