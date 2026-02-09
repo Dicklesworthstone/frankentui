@@ -120,8 +120,14 @@ impl CoreTerminalHarness {
                 self.cursor.pending_wrap = false;
             }
             Action::CursorRow(row) => {
-                self.cursor
-                    .move_to(row, self.cursor.col, self.rows, self.cols);
+                if self.modes.origin_mode() {
+                    let abs_row = row.saturating_add(self.cursor.scroll_top());
+                    self.cursor.row = abs_row.min(self.cursor.scroll_bottom().saturating_sub(1));
+                    self.cursor.pending_wrap = false;
+                } else {
+                    self.cursor
+                        .move_to(row, self.cursor.col, self.rows, self.cols);
+                }
             }
             Action::CursorColumn(col) => {
                 self.cursor
@@ -134,7 +140,14 @@ impl CoreTerminalHarness {
                     bottom.min(self.rows)
                 };
                 self.cursor.set_scroll_region(top, bottom, self.rows);
-                self.cursor.move_to(0, 0, self.rows, self.cols);
+                // DECOM: cursor homes to top of scroll region; otherwise (0,0).
+                if self.modes.origin_mode() {
+                    self.cursor.row = self.cursor.scroll_top();
+                    self.cursor.col = 0;
+                    self.cursor.pending_wrap = false;
+                } else {
+                    self.cursor.move_to(0, 0, self.rows, self.cols);
+                }
             }
             Action::ScrollUp(count) => self.grid.scroll_up_into(
                 self.cursor.scroll_top(),
@@ -183,7 +196,14 @@ impl CoreTerminalHarness {
                 self.cursor.pending_wrap = false;
             }
             Action::CursorPosition { row, col } => {
-                self.cursor.move_to(row, col, self.rows, self.cols);
+                if self.modes.origin_mode() {
+                    let abs_row = row.saturating_add(self.cursor.scroll_top());
+                    self.cursor.row = abs_row.min(self.cursor.scroll_bottom().saturating_sub(1));
+                    self.cursor.col = col.min(self.cols.saturating_sub(1));
+                    self.cursor.pending_wrap = false;
+                } else {
+                    self.cursor.move_to(row, col, self.rows, self.cols);
+                }
             }
             Action::EraseInDisplay(mode) => {
                 let bg = self.cursor.attrs.bg;
@@ -228,7 +248,9 @@ impl CoreTerminalHarness {
                     self.modes.set_ansi_mode(p, false);
                 }
             }
-            Action::SaveCursor => self.saved_cursor = SavedCursor::save(&self.cursor, false),
+            Action::SaveCursor => {
+                self.saved_cursor = SavedCursor::save(&self.cursor, self.modes.origin_mode());
+            }
             Action::RestoreCursor => self.saved_cursor.restore(&mut self.cursor),
             Action::Index => {
                 if self.cursor.row + 1 >= self.cursor.scroll_bottom() {

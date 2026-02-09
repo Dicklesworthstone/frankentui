@@ -1,0 +1,17 @@
+{
+  "name": "irm_with_full_row",
+  "description": "IRM insert mode inserting at col 0 shifts existing content right, rightmost chars pushed off edge",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "1b5b34684142431b5b485859",
+  "comment": "CSI 4 h (IRM on), print ABC at cols 0-2, CUP home, insert X at col 0 (shifts ABC right -> XABC), insert Y at col 1 (shifts ABC right -> XYABC, C at col 4); cursor at (0,2)",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "Y" },
+      { "row": 0, "col": 2, "char": "A" },
+      { "row": 0, "col": 3, "char": "B" },
+      { "row": 0, "col": 4, "char": "C" }
+    ]
+  }
+}
