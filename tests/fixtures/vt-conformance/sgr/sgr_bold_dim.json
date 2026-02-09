@@ -1,0 +1,15 @@
+{
+  "name": "sgr_bold_dim",
+  "description": "SGR 1 enables bold, SGR 2 enables dim, SGR 0 resets all",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b316d411b5b306d1b5b326d421b5b306d43",
+  "comment": "SGR(1) bold, print A, SGR(0) reset, SGR(2) dim, print B, SGR(0) reset, print C. A is bold, B is dim, C has no attrs.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bold": true } },
+      { "row": 0, "col": 1, "char": "B", "attrs": { "dim": true } },
+      { "row": 0, "col": 2, "char": "C" }
+    ]
+  }
+}

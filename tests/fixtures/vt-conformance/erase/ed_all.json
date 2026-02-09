@@ -1,0 +1,13 @@
+{
+  "name": "ed_all",
+  "description": "CSI 2 J erases the entire display",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "4142431b5b32484445461b5b324a1b5b313b314858",
+  "comment": "Print ABC at (0,0)-(0,2), CUP(2) to (1,0), print DEF at (1,0)-(1,2), ED(2) erases all, CUP(1,1) to (0,0), print X. Only X remains.",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" }
+    ]
+  }
+}

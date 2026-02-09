@@ -1,0 +1,15 @@
+{
+  "name": "four_byte_char",
+  "description": "UTF-8 four-byte character (U+1F600 grinning face = F0 9F 98 80) prints correctly",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "41f09f988042",
+  "comment": "A + grinning face (4-byte UTF-8) + B. In this harness all chars are width 1, so cursor at col 3.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "\ud83d\ude00" },
+      { "row": 0, "col": 2, "char": "B" }
+    ]
+  }
+}

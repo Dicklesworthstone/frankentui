@@ -1,0 +1,14 @@
+{
+  "name": "delete_line",
+  "description": "CSI 1 M deletes a line at cursor row, shifting content up",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "411b5b3248421b5b3348431b5b313b31481b5b314d",
+  "comment": "A at (0,0), CUP(2) B at (1,0), CUP(3) C at (2,0), CUP(1,1) then DL(1). Row 0 deleted, B moves to row 0, C to row 1, row 2 blank.",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "B" },
+      { "row": 1, "col": 0, "char": "C" }
+    ]
+  }
+}

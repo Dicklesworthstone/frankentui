@@ -1,0 +1,18 @@
+{
+  "name": "insert_delete_chars",
+  "description": "CSI @ inserts blank chars, CSI P deletes chars shifting left",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "414243444546471b5b313b33481b5b32401b5b313b36481b5b315058",
+  "comment": "Print ABCDEFG at (0,0)-(0,6), CUP(1,3) then ICH(2) inserts 2 blanks at col 2 pushing CDEFG right, CUP(1,6) then DCH(1) deletes D at col 5 and pulls EFG left, print X over E.",
+  "expected": {
+    "cursor": { "row": 0, "col": 6 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 4, "char": "C" },
+      { "row": 0, "col": 5, "char": "X" },
+      { "row": 0, "col": 6, "char": "F" },
+      { "row": 0, "col": 7, "char": "G" }
+    ]
+  }
+}

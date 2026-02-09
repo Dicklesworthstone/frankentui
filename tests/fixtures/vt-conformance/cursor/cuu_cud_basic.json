@@ -1,0 +1,13 @@
+{
+  "name": "cuu_cud_basic",
+  "description": "CSI A (CUU) moves cursor up, CSI B (CUD) moves cursor down",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b333b31481b5b324158",
+  "comment": "CUP(3,1) to (2,0), CUU(2) up 2 to (0,0), print X at (0,0). Cursor at (0,1).",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" }
+    ]
+  }
+}

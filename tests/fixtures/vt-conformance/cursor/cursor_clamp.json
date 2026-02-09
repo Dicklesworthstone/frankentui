@@ -1,0 +1,14 @@
+{
+  "name": "cursor_clamp",
+  "description": "CUU past top and CUB past left clamp to (0,0)",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b333b354841421b5b3939411b5b393944",
+  "comment": "CUP(3,5) to (2,4), print AB at (2,4)-(2,5), CUU(99) clamps to row 0, CUB(99) clamps to col 0. Cursor at (0,0).",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 2, "col": 4, "char": "A" },
+      { "row": 2, "col": 5, "char": "B" }
+    ]
+  }
+}

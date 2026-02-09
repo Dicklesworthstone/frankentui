@@ -1,0 +1,16 @@
+{
+  "name": "sgr_italic_underline_strike",
+  "description": "SGR 3 italic, SGR 4 underline, SGR 9 strikethrough",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b336d411b5b306d1b5b346d421b5b306d1b5b396d431b5b306d44",
+  "comment": "SGR(3) italic A, reset, SGR(4) underline B, reset, SGR(9) strikethrough C, reset, D plain.",
+  "expected": {
+    "cursor": { "row": 0, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "italic": true } },
+      { "row": 0, "col": 1, "char": "B", "attrs": { "underline": true } },
+      { "row": 0, "col": 2, "char": "C", "attrs": { "strikethrough": true } },
+      { "row": 0, "col": 3, "char": "D" }
+    ]
+  }
+}

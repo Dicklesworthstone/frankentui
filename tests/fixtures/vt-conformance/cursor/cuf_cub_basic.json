@@ -1,0 +1,15 @@
+{
+  "name": "cuf_cub_basic",
+  "description": "CSI C (CUF) moves cursor right, CSI D (CUB) moves cursor left",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b354341421b5b334458",
+  "comment": "CUF(5) to col 5, print AB at (0,5)-(0,6), CUB(3) back 3 to col 4, print X at (0,4). Cursor at (0,5).",
+  "expected": {
+    "cursor": { "row": 0, "col": 5 },
+    "cells": [
+      { "row": 0, "col": 4, "char": "X" },
+      { "row": 0, "col": 5, "char": "A" },
+      { "row": 0, "col": 6, "char": "B" }
+    ]
+  }
+}
