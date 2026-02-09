@@ -1092,6 +1092,21 @@ mod tests {
     }
 
     #[test]
+    fn viewport_zero_rows_with_nonempty_scrollback() {
+        let mut state = ScrollState::with_defaults();
+        state.set_offset(10);
+        let snap = state.viewport(100, 0);
+        assert_eq!(snap.viewport_start, 100);
+        assert_eq!(snap.viewport_end, 100);
+        assert_eq!(snap.render_start, 100);
+        assert_eq!(snap.render_end, 100);
+        assert_eq!(snap.viewport_len(), 0);
+        assert_eq!(snap.max_scroll_offset, 100);
+        assert_eq!(snap.scroll_offset_from_bottom, 10);
+        assert!(!snap.is_at_bottom);
+    }
+
+    #[test]
     fn viewport_clamps_excess_offset() {
         let mut state = ScrollState::with_defaults();
         state.set_offset(999);
@@ -1135,6 +1150,22 @@ mod tests {
         // 120 px * (1/40) = 3.0 lines
         state.apply_wheel(120, 1000);
         assert_eq!(state.offset(), 3);
+    }
+
+    #[test]
+    fn pixel_mode_negative_delta_accumulates_before_scrolling() {
+        let mut state = ScrollState::with_defaults();
+        state.set_offset(10);
+
+        // First half-line worth of negative pixel delta: no full-line movement.
+        state.apply_wheel(-20, 1000); // -20 * (1/40) = -0.5
+        assert_eq!(state.offset(), 10);
+        assert!(!state.is_animating());
+
+        // Second half-line crosses -1.0 total and scrolls one line toward newer output.
+        state.apply_wheel(-20, 1000);
+        assert_eq!(state.offset(), 9);
+        assert!(state.is_animating());
     }
 
     // -- Integration: coalescer + state --
@@ -1235,6 +1266,19 @@ mod tests {
         let hard_break =
             SearchIndex::build_wrapped(lines.iter().copied(), "barbaz", SearchConfig::default());
         assert!(hard_break.is_empty());
+    }
+
+    #[test]
+    fn search_navigation_handles_out_of_range_current_index() {
+        let lines = [("alpha beta", false), ("beta", false)];
+        let idx =
+            SearchIndex::build_wrapped(lines.iter().copied(), "beta", SearchConfig::default());
+        assert_eq!(idx.len(), 2);
+
+        // next_index wraps by modulo, so very large index resolves deterministically.
+        assert_eq!(idx.next_index(Some(999)), Some(0));
+        // prev_index clamps out-of-range indexes to the final valid match.
+        assert_eq!(idx.prev_index(Some(999)), Some(1));
     }
 
     #[test]

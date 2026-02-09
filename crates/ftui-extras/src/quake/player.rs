@@ -368,4 +368,402 @@ mod tests {
         p.look(std::f32::consts::TAU + 0.5, 0.0);
         assert!(p.yaw >= 0.0 && p.yaw < std::f32::consts::TAU);
     }
+
+    #[test]
+    fn spawn_resets_velocity_and_state() {
+        let mut p = Player::default();
+        p.vel = [100.0, 200.0, 300.0];
+        p.pitch = 0.5;
+        p.on_ground = false;
+        p.bob_phase = 5.0;
+        p.bob_amount = 1.0;
+        p.spawn(10.0, 20.0, 30.0, 1.0);
+        assert_eq!(p.vel, [0.0, 0.0, 0.0]);
+        assert_eq!(p.pitch, 0.0);
+        assert!(p.on_ground);
+        assert_eq!(p.bob_phase, 0.0);
+        assert_eq!(p.bob_amount, 0.0);
+        assert!((p.yaw - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spawn_preserves_health_and_armor() {
+        let mut p = Player::default();
+        p.health = 50;
+        p.armor = 75;
+        p.spawn(0.0, 0.0, 0.0, 0.0);
+        // spawn doesn't reset health/armor
+        assert_eq!(p.health, 50);
+        assert_eq!(p.armor, 75);
+    }
+
+    #[test]
+    fn eye_pos_includes_view_height() {
+        let p = Player {
+            pos: [10.0, 20.0, 30.0],
+            ..Player::default()
+        };
+        let eye = p.eye_pos();
+        assert_eq!(eye[0], 10.0);
+        assert_eq!(eye[1], 20.0);
+        // eye_z = pos_z + PLAYER_VIEW_HEIGHT + bob_offset (bob is 0 for default)
+        assert!((eye[2] - (30.0 + PLAYER_VIEW_HEIGHT)).abs() < 0.01);
+    }
+
+    #[test]
+    fn forward_at_90_degrees_yaw_is_y_axis() {
+        let p = Player {
+            yaw: std::f32::consts::FRAC_PI_2,
+            ..Player::default()
+        };
+        let fwd = p.forward();
+        assert!(fwd[0].abs() < 0.01, "x should be ~0, got {}", fwd[0]);
+        assert!(
+            (fwd[1] - 1.0).abs() < 0.01,
+            "y should be ~1, got {}",
+            fwd[1]
+        );
+        assert!(fwd[2].abs() < 0.01);
+    }
+
+    #[test]
+    fn forward_with_pitch_tilts_z() {
+        let p = Player {
+            pitch: 0.5,
+            ..Player::default()
+        };
+        let fwd = p.forward();
+        // With positive pitch, z component = -sin(pitch) < 0
+        assert!(
+            fwd[2] < 0.0,
+            "looking up (positive pitch) should tilt z negative"
+        );
+        // Forward should still have a positive x component at yaw=0
+        assert!(fwd[0] > 0.0);
+    }
+
+    #[test]
+    fn forward_is_unit_length() {
+        for yaw in [0.0, 0.5, 1.0, 2.0, 4.0, 5.5] {
+            for pitch in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                let p = Player {
+                    yaw,
+                    pitch,
+                    ..Player::default()
+                };
+                let f = p.forward();
+                let len = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
+                assert!(
+                    (len - 1.0).abs() < 1e-4,
+                    "forward not unit at yaw={yaw}, pitch={pitch}: len={len}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn right_is_unit_length_and_horizontal() {
+        for yaw in [0.0, 1.0, 2.5, 4.0, 6.0] {
+            let p = Player {
+                yaw,
+                ..Player::default()
+            };
+            let r = p.right();
+            let len = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+            assert!(
+                (len - 1.0).abs() < 1e-4,
+                "right not unit at yaw={yaw}: len={len}"
+            );
+            assert!(r[2].abs() < 1e-6, "right should have z=0, got {}", r[2]);
+        }
+    }
+
+    #[test]
+    fn up_perpendicular_to_forward_and_right() {
+        let p = Player {
+            yaw: 0.7,
+            pitch: 0.3,
+            ..Player::default()
+        };
+        let fwd = p.forward();
+        let right = p.right();
+        let up = p.up();
+        let dot_fwd = fwd[0] * up[0] + fwd[1] * up[1] + fwd[2] * up[2];
+        let dot_right = right[0] * up[0] + right[1] * up[1] + right[2] * up[2];
+        assert!(
+            dot_fwd.abs() < 0.01,
+            "up should be perpendicular to forward, dot={dot_fwd}"
+        );
+        assert!(
+            dot_right.abs() < 0.01,
+            "up should be perpendicular to right, dot={dot_right}"
+        );
+    }
+
+    #[test]
+    fn up_at_zero_pitch_is_z_axis() {
+        let p = Player::default();
+        let up = p.up();
+        // At zero pitch, forward=[1,0,0], right=[0,-1,0], up = cross(right, fwd) = [0,0,1]
+        assert!(
+            up[2] > 0.5,
+            "up.z should be positive at zero pitch, got {:?}",
+            up
+        );
+    }
+
+    #[test]
+    fn tick_gravity_applies_when_airborne() {
+        // Use a map with a room so floor_at works, but place player high above it
+        let mut map = QuakeMap::new();
+        use crate::quake::map::Room;
+        map.rooms.push(Room {
+            x: -500.0,
+            y: -500.0,
+            width: 1000.0,
+            height: 1000.0,
+            floor_z: 0.0,
+            ceil_z: 500.0,
+            light: 200.0,
+        });
+        let mut p = Player::default();
+        p.on_ground = false;
+        p.pos[2] = 200.0; // well above the floor
+        p.vel[2] = 0.0;
+        p.tick(&map, 1.0 / 72.0);
+        // Gravity should have reduced vel[2] (made it negative)
+        assert!(
+            p.vel[2] < 0.0,
+            "gravity should make z velocity negative: got {}",
+            p.vel[2]
+        );
+    }
+
+    #[test]
+    fn tick_friction_slows_ground_player() {
+        let map = crate::quake::map::generate_e1m1();
+        let mut p = Player::default();
+        // Place player at map spawn point with some ground velocity
+        p.pos = [0.0, 0.0, 0.0];
+        p.on_ground = true;
+        p.vel = [200.0, 100.0, 0.0];
+        let initial_speed = (p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1]).sqrt();
+        p.tick(&map, 1.0 / 72.0);
+        let final_speed = (p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1]).sqrt();
+        assert!(
+            final_speed < initial_speed,
+            "friction should reduce speed: was {initial_speed}, now {final_speed}"
+        );
+    }
+
+    #[test]
+    fn tick_clamps_velocity_to_max() {
+        let map = QuakeMap::new();
+        let mut p = Player::default();
+        p.vel = [5000.0, -5000.0, 5000.0];
+        p.on_ground = false;
+        p.pos[2] = 500.0;
+        p.noclip = true; // noclip so we don't hit collision
+        p.tick(&map, 1.0 / 72.0);
+        for v in &p.vel {
+            assert!(
+                *v >= -SV_MAXVELOCITY && *v <= SV_MAXVELOCITY,
+                "velocity {v} exceeds max {SV_MAXVELOCITY}"
+            );
+        }
+    }
+
+    #[test]
+    fn tick_noclip_moves_freely() {
+        let map = QuakeMap::new();
+        let mut p = Player::default();
+        p.noclip = true;
+        p.on_ground = false;
+        p.pos = [0.0, 0.0, 100.0];
+        p.vel = [100.0, 50.0, 0.0];
+        let dt = 1.0 / 72.0;
+        p.tick(&map, dt);
+        // In noclip, position should change in the direction of velocity
+        // (the exact value depends on friction/gravity adjustments, but pos should move)
+        // Since on_ground=false, no friction. Gravity pulls z down but pos should change.
+        assert!(
+            p.pos[0] != 0.0 || p.pos[1] != 0.0,
+            "noclip player should move"
+        );
+    }
+
+    #[test]
+    fn tick_view_bob_increases_with_ground_speed() {
+        let map = crate::quake::map::generate_e1m1();
+        let mut p = Player::default();
+        p.pos = [0.0, 0.0, 0.0];
+        p.on_ground = true;
+        p.vel = [300.0, 0.0, 0.0]; // fast ground movement
+        let dt = 1.0 / 72.0;
+        p.tick(&map, dt);
+        // If ground speed > 10 and on_ground, bob_amount should increase
+        let ground_speed = (p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1]).sqrt();
+        if ground_speed > 10.0 && p.on_ground {
+            assert!(
+                p.bob_amount > 0.0,
+                "bob_amount should increase with fast ground movement"
+            );
+        }
+    }
+
+    #[test]
+    fn tick_view_bob_decays_when_stopped() {
+        let map = QuakeMap::new();
+        let mut p = Player::default();
+        p.bob_amount = 1.0;
+        p.on_ground = true;
+        p.vel = [0.0, 0.0, 0.0]; // stopped
+        let dt = 1.0 / 72.0;
+        p.tick(&map, dt);
+        assert!(
+            p.bob_amount < 1.0,
+            "bob_amount should decay when stopped, got {}",
+            p.bob_amount
+        );
+    }
+
+    #[test]
+    fn bob_offset_varies_with_phase() {
+        let p1 = Player {
+            bob_amount: 1.0,
+            bob_phase: 0.0,
+            ..Player::default()
+        };
+        let p2 = Player {
+            bob_amount: 1.0,
+            bob_phase: std::f32::consts::FRAC_PI_4,
+            ..Player::default()
+        };
+        // Different phases should produce different offsets
+        assert!(
+            (p1.bob_offset() - p2.bob_offset()).abs() > 0.001,
+            "different phases should produce different bob offsets"
+        );
+    }
+
+    #[test]
+    fn bob_offset_scales_with_amount() {
+        let low = Player {
+            bob_amount: 0.1,
+            bob_phase: 1.0,
+            ..Player::default()
+        };
+        let high = Player {
+            bob_amount: 1.0,
+            bob_phase: 1.0,
+            ..Player::default()
+        };
+        assert!(
+            high.bob_offset().abs() >= low.bob_offset().abs(),
+            "higher bob_amount should produce larger offset: low={}, high={}",
+            low.bob_offset(),
+            high.bob_offset()
+        );
+    }
+
+    #[test]
+    fn cross_product_orthogonality() {
+        let a = [1.0f32, 0.0, 0.0];
+        let b = [0.0f32, 1.0, 0.0];
+        let c = cross(a, b);
+        // cross(x, y) = z
+        assert!((c[0]).abs() < 1e-6);
+        assert!((c[1]).abs() < 1e-6);
+        assert!((c[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cross_product_anticommutative() {
+        let a = [1.0f32, 2.0, 3.0];
+        let b = [4.0f32, 5.0, 6.0];
+        let ab = cross(a, b);
+        let ba = cross(b, a);
+        for i in 0..3 {
+            assert!(
+                (ab[i] + ba[i]).abs() < 1e-6,
+                "cross product should be anticommutative at component {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn strafe_perpendicular_to_forward_movement() {
+        let mut p1 = Player::default();
+        let mut p2 = Player::default();
+        p1.move_forward(1.0);
+        p2.strafe(1.0);
+        // Velocity vectors should be roughly perpendicular
+        let dot = p1.vel[0] * p2.vel[0] + p1.vel[1] * p2.vel[1];
+        assert!(
+            dot.abs() < 0.01,
+            "forward and strafe should be perpendicular, dot={dot}"
+        );
+    }
+
+    #[test]
+    fn running_increases_strafe_speed() {
+        let mut p1 = Player::default();
+        let mut p2 = Player {
+            running: true,
+            ..Player::default()
+        };
+        p1.strafe(1.0);
+        p2.strafe(1.0);
+        let speed1 = p1.vel[0] * p1.vel[0] + p1.vel[1] * p1.vel[1];
+        let speed2 = p2.vel[0] * p2.vel[0] + p2.vel[1] * p2.vel[1];
+        assert!(speed2 > speed1, "running should increase strafe speed");
+    }
+
+    #[test]
+    fn look_negative_yaw_wraps_positive() {
+        let mut p = Player::default();
+        p.look(-0.5, 0.0);
+        assert!(p.yaw >= 0.0 && p.yaw < std::f32::consts::TAU);
+    }
+
+    #[test]
+    fn move_forward_backward_cancels() {
+        let mut p = Player::default();
+        p.move_forward(1.0);
+        p.move_forward(-1.0);
+        let speed = (p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1]).sqrt();
+        assert!(
+            speed < 0.01,
+            "forward+backward should cancel, speed={speed}"
+        );
+    }
+
+    #[test]
+    fn tick_ceiling_clamp() {
+        // Create a map with a low ceiling
+        let mut map = QuakeMap::new();
+        use crate::quake::map::Room;
+        map.rooms.push(Room {
+            x: -1000.0,
+            y: -1000.0,
+            width: 2000.0,
+            height: 2000.0,
+            floor_z: 0.0,
+            ceil_z: 50.0, // very low ceiling
+            light: 200.0,
+        });
+        let mut p = Player::default();
+        p.pos = [0.0, 0.0, 0.0];
+        p.vel = [0.0, 0.0, 1000.0]; // huge upward velocity
+        p.on_ground = false;
+        p.noclip = false;
+        p.tick(&map, 1.0 / 72.0);
+        // Player pos[2] + PLAYER_HEIGHT should not exceed ceil_z
+        assert!(
+            p.pos[2] + PLAYER_HEIGHT <= 50.0 + 0.1,
+            "player should be clamped by ceiling: pos_z={}, height={}",
+            p.pos[2],
+            PLAYER_HEIGHT
+        );
+    }
 }
