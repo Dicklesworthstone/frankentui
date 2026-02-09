@@ -85,12 +85,16 @@ impl DoomFramebuffer {
         if height == 0 {
             return;
         }
+        let inv_height = 1.0 / height as f32;
+        let light_delta = light_bottom - light_top;
+        let base_r_f = base_r as f32;
+        let base_g_f = base_g as f32;
+        let base_b_f = base_b as f32;
         for y in top..bottom {
-            let t = (y - top) as f32 / height as f32;
-            let light = light_top + (light_bottom - light_top) * t;
-            let r = (base_r as f32 * light) as u8;
-            let g = (base_g as f32 * light) as u8;
-            let b = (base_b as f32 * light) as u8;
+            let light = light_top + light_delta * ((y - top) as f32 * inv_height);
+            let r = (base_r_f * light) as u8;
+            let g = (base_g_f * light) as u8;
+            let b = (base_b_f * light) as u8;
             self.pixels[(y * self.width + x) as usize] = PackedRgba::rgb(r, g, b);
         }
     }
