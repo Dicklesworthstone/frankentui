@@ -34,6 +34,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -272,7 +273,7 @@ class SessionRecorder:
         self.seed = int(os.environ.get("E2E_SEED", "0"))
 
         if jsonl_path:
-            self.jsonl_file = open(jsonl_path, "a")
+            self.jsonl_file = open(jsonl_path, "w", encoding="utf-8")
 
     def emit(self, event_type: str, data: dict | None = None):
         """Emit a JSONL event."""
@@ -738,6 +739,19 @@ def run_self_tests() -> int:
             )
             frame = recorder.events[-1]
             self.assertEqual(frame["hash_key"], "explicit-key")
+
+        def test_jsonl_writer_truncates_existing_file(self) -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                path = Path(temp_dir) / "events.jsonl"
+                path.write_text('{"stale":true}\n', encoding="utf-8")
+                recorder = SessionRecorder("run-1", "scenario", str(path), 80, 24)
+                recorder.emit("run_start", {"scenario": "fresh"})
+                recorder.close()
+                lines = path.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(len(lines), 1)
+                event = json.loads(lines[0])
+                self.assertEqual(event["run_id"], "run-1")
+                self.assertEqual(event["type"], "run_start")
 
         def test_extract_frame_overrides_rejects_invalid_types(self) -> None:
             out = _extract_frame_overrides({
