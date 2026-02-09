@@ -218,6 +218,12 @@ impl CoreTerminalHarness {
             Action::EraseScrollback => {}
             Action::FocusIn | Action::FocusOut => {}
             Action::PasteStart | Action::PasteEnd => {}
+            Action::DeviceAttributes
+            | Action::DeviceAttributesSecondary
+            | Action::DeviceStatusReport
+            | Action::CursorPositionReport => {}
+            Action::DesignateCharset { .. } => {}
+            Action::SingleShift2 | Action::SingleShift3 => {}
             Action::Escape(_) => {
                 // Remaining escape actions are intentionally left unsupported in the
                 // baseline harness and tracked via known-mismatch fixtures.

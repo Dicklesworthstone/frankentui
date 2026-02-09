@@ -1,0 +1,14 @@
+{
+  "name": "da1_device_attributes",
+  "description": "DA1 (CSI c) is a device attribute query — no grid effect, cursor unchanged",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "41421b5b63",
+  "comment": "Print AB at (0,0)-(0,1), cursor at (0,2). CSI c (DA1) is a query with no grid side effect. Cursor stays at (0,2).",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" }
+    ]
+  }
+}

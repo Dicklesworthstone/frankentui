@@ -1,0 +1,14 @@
+{
+  "name": "dsr_device_status",
+  "description": "DSR (CSI 5 n) and CPR (CSI 6 n) are query-only — no grid effect",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "481b5b356e1b5b366e69",
+  "comment": "Print H at (0,0). CSI 5 n (DSR) and CSI 6 n (CPR) are query actions with no grid side effect. Print i at (0,1). Cursor at (0,2).",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "H" },
+      { "row": 0, "col": 1, "char": "i" }
+    ]
+  }
+}

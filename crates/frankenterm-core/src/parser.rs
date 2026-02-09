@@ -133,6 +133,23 @@ pub enum Action {
     PasteStart,
     /// Bracketed paste end (`CSI 201 ~`).
     PasteEnd,
+    /// DA1 (`CSI c` / `CSI 0 c`): request primary device attributes.
+    DeviceAttributes,
+    /// DA2 (`CSI > c` / `CSI > 0 c`): request secondary device attributes.
+    DeviceAttributesSecondary,
+    /// DSR (`CSI 5 n`): device status report — "are you OK?" query.
+    DeviceStatusReport,
+    /// CPR (`CSI 6 n`): cursor position report — request current cursor position.
+    CursorPositionReport,
+    /// Designate character set for slot G0..G3.
+    ///
+    /// `slot`: 0 = G0 (ESC (), 1 = G1 (ESC )), 2 = G2 (ESC *), 3 = G3 (ESC +).
+    /// `charset`: b'B' = ASCII (USASCII), b'0' = DEC Special Graphics, etc.
+    DesignateCharset { slot: u8, charset: u8 },
+    /// SS2 (`ESC N`): single shift to G2 for the next printed character only.
+    SingleShift2,
+    /// SS3 (`ESC O`): single shift to G3 for the next printed character only.
+    SingleShift3,
     /// A raw escape/CSI/OSC sequence captured verbatim (starts with ESC).
     Escape(Vec<u8>),
 }
@@ -143,6 +160,11 @@ enum State {
     Esc,
     /// ESC # intermediate — waiting for the final byte (e.g., '8' for DECALN).
     EscHash,
+    /// ESC ( / ESC ) / ESC * / ESC + — waiting for charset designator byte.
+    /// `slot`: 0 = G0, 1 = G1, 2 = G2, 3 = G3.
+    EscCharset {
+        slot: u8,
+    },
     Csi,
     Osc,
     OscEsc,
@@ -202,6 +224,7 @@ impl Parser {
             State::Ground => self.advance_ground(b),
             State::Esc => self.advance_esc(b),
             State::EscHash => self.advance_esc_hash(b),
+            State::EscCharset { slot } => self.advance_esc_charset(b, slot),
             State::Csi => self.advance_csi(b),
             State::Osc => self.advance_osc(b),
             State::OscEsc => self.advance_osc_esc(b),
@@ -354,6 +377,35 @@ impl Parser {
                 self.state = State::EscHash;
                 None
             }
+            // Character set designation: ESC ( / ESC ) / ESC * / ESC +
+            b'(' => {
+                self.state = State::EscCharset { slot: 0 };
+                None
+            }
+            b')' => {
+                self.state = State::EscCharset { slot: 1 };
+                None
+            }
+            b'*' => {
+                self.state = State::EscCharset { slot: 2 };
+                None
+            }
+            b'+' => {
+                self.state = State::EscCharset { slot: 3 };
+                None
+            }
+            // SS2: single shift to G2 (ESC N)
+            b'N' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::SingleShift2)
+            }
+            // SS3: single shift to G3 (ESC O)
+            b'O' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::SingleShift3)
+            }
             _ => {
                 self.state = State::Ground;
                 Some(Action::Escape(self.take_buf()))
@@ -372,6 +424,14 @@ impl Parser {
             }
             _ => Some(Action::Escape(self.take_buf())),
         }
+    }
+
+    fn advance_esc_charset(&mut self, b: u8, slot: u8) -> Option<Action> {
+        self.buf.push(b);
+        self.state = State::Ground;
+        // The final byte is the charset designator (e.g., 'B' for ASCII, '0' for DEC Special).
+        self.buf.clear();
+        Some(Action::DesignateCharset { slot, charset: b })
     }
 
     fn advance_csi(&mut self, b: u8) -> Option<Action> {
@@ -435,6 +495,15 @@ impl Parser {
             return match final_byte {
                 b'h' => Some(Action::DecSet(params)),
                 b'l' => Some(Action::DecRst(params)),
+                _ => None,
+            };
+        }
+
+        // Check for `>` prefix (secondary device attributes).
+        if param_bytes.first() == Some(&b'>') {
+            return match final_byte {
+                // DA2 (CSI > c / CSI > 0 c): secondary device attributes.
+                b'c' => Some(Action::DeviceAttributesSecondary),
                 _ => None,
             };
         }
@@ -589,6 +658,24 @@ impl Parser {
                 match param {
                     200 => Some(Action::PasteStart),
                     201 => Some(Action::PasteEnd),
+                    _ => None,
+                }
+            }
+            // DA1: primary device attributes (CSI c / CSI 0 c)
+            b'c' => {
+                let p = params.first().copied().unwrap_or(0);
+                if p == 0 {
+                    Some(Action::DeviceAttributes)
+                } else {
+                    None
+                }
+            }
+            // DSR / CPR: device status report (CSI Ps n)
+            b'n' => {
+                let p = params.first().copied().unwrap_or(0);
+                match p {
+                    5 => Some(Action::DeviceStatusReport),
+                    6 => Some(Action::CursorPositionReport),
                     _ => None,
                 }
             }
@@ -1338,5 +1425,139 @@ mod tests {
         // as Action::Escape(raw).
         let result = p.feed(b"\x1b[99~");
         assert_eq!(result, vec![Action::Escape(b"\x1b[99~".to_vec())]);
+    }
+
+    // ── DA1: primary device attributes (CSI c) ──────────────────
+
+    #[test]
+    fn csi_c_is_device_attributes() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[c"), vec![Action::DeviceAttributes]);
+    }
+
+    #[test]
+    fn csi_0_c_is_device_attributes() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[0c"), vec![Action::DeviceAttributes]);
+    }
+
+    #[test]
+    fn csi_1_c_is_not_device_attributes() {
+        let mut p = Parser::new();
+        // CSI 1 c has a non-zero param — not DA1.
+        let actions = p.feed(b"\x1b[1c");
+        assert!(!actions.contains(&Action::DeviceAttributes));
+    }
+
+    // ── DA2: secondary device attributes (CSI > c) ──────────────
+
+    #[test]
+    fn csi_gt_c_is_da2() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[>c"), vec![Action::DeviceAttributesSecondary]);
+    }
+
+    #[test]
+    fn csi_gt_0_c_is_da2() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[>0c"), vec![Action::DeviceAttributesSecondary]);
+    }
+
+    // ── DSR / CPR (CSI n) ────────────────────────────────────────
+
+    #[test]
+    fn csi_5n_is_device_status_report() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[5n"), vec![Action::DeviceStatusReport]);
+    }
+
+    #[test]
+    fn csi_6n_is_cursor_position_report() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[6n"), vec![Action::CursorPositionReport]);
+    }
+
+    #[test]
+    fn csi_0n_is_not_dsr() {
+        let mut p = Parser::new();
+        let actions = p.feed(b"\x1b[0n");
+        assert!(!actions.contains(&Action::DeviceStatusReport));
+        assert!(!actions.contains(&Action::CursorPositionReport));
+    }
+
+    // ── Character set designation (ESC ( / ESC )) ────────────────
+
+    #[test]
+    fn esc_paren_b_is_g0_ascii() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b(B"),
+            vec![Action::DesignateCharset {
+                slot: 0,
+                charset: b'B'
+            }]
+        );
+    }
+
+    #[test]
+    fn esc_paren_0_is_g0_dec_graphics() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b(0"),
+            vec![Action::DesignateCharset {
+                slot: 0,
+                charset: b'0'
+            }]
+        );
+    }
+
+    #[test]
+    fn esc_rparen_b_is_g1_ascii() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b)B"),
+            vec![Action::DesignateCharset {
+                slot: 1,
+                charset: b'B'
+            }]
+        );
+    }
+
+    #[test]
+    fn esc_star_0_is_g2_dec_graphics() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b*0"),
+            vec![Action::DesignateCharset {
+                slot: 2,
+                charset: b'0'
+            }]
+        );
+    }
+
+    #[test]
+    fn esc_plus_b_is_g3_ascii() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b+B"),
+            vec![Action::DesignateCharset {
+                slot: 3,
+                charset: b'B'
+            }]
+        );
+    }
+
+    // ── Single Shift (ESC N / ESC O) ─────────────────────────────
+
+    #[test]
+    fn esc_n_is_single_shift_2() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1bN"), vec![Action::SingleShift2]);
+    }
+
+    #[test]
+    fn esc_o_is_single_shift_3() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1bO"), vec![Action::SingleShift3]);
     }
 }

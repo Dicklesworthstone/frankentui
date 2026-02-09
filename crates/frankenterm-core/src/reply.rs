@@ -96,6 +96,10 @@ impl ReplyEngine {
     #[must_use]
     pub fn query_from_action(action: &Action) -> Option<TerminalQuery> {
         match action {
+            Action::DeviceAttributes => Some(TerminalQuery::PrimaryDeviceAttributes),
+            Action::DeviceAttributesSecondary => Some(TerminalQuery::SecondaryDeviceAttributes),
+            Action::DeviceStatusReport => Some(TerminalQuery::DeviceStatus),
+            Action::CursorPositionReport => Some(TerminalQuery::CursorPosition),
             Action::Escape(seq) => TerminalQuery::parse_escape(seq),
             _ => None,
         }

@@ -1,0 +1,15 @@
+{
+  "name": "charset_g0_dec_graphics",
+  "description": "ESC ( 0 designates G0 as DEC Special Graphics — no immediate grid effect, cursor unchanged",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "58591b28305a",
+  "comment": "Print XY at (0,0)-(0,1), cursor at (0,2). ESC ( 0 designates DEC graphics for G0 slot. Print Z at (0,2). Cursor at (0,3). Charset designation itself has no grid effect in the harness.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "Y" },
+      { "row": 0, "col": 2, "char": "Z" }
+    ]
+  }
+}

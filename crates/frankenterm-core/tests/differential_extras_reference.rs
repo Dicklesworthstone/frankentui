@@ -187,6 +187,12 @@ impl CoreTerminalHarness {
             Action::EraseScrollback => {}
             Action::FocusIn | Action::FocusOut => {}
             Action::PasteStart | Action::PasteEnd => {}
+            Action::DeviceAttributes
+            | Action::DeviceAttributesSecondary
+            | Action::DeviceStatusReport
+            | Action::CursorPositionReport => {}
+            Action::DesignateCharset { .. } => {}
+            Action::SingleShift2 | Action::SingleShift3 => {}
             Action::Escape(_) => {}
             Action::DecSet(_) | Action::DecRst(_) => {}
             Action::AnsiSet(_) | Action::AnsiRst(_) => {}
