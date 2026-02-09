@@ -62,6 +62,55 @@ use unicode_width::UnicodeWidthChar;
 /// Sentinel character used for the continuation (right) cell of a wide character.
 const WIDE_CONTINUATION: char = '\0';
 
+/// Translate a character through the DEC Special Graphics charset.
+///
+/// Maps ASCII 0x60–0x7E to Unicode line-drawing and symbol characters.
+/// Characters outside this range pass through unchanged.
+fn dec_graphics_char(ch: char) -> char {
+    match ch {
+        '`' => '\u{25C6}', // ◆ diamond
+        'a' => '\u{2592}', // ▒ checker board
+        'b' => '\u{2409}', // ␉ HT symbol
+        'c' => '\u{240C}', // ␌ FF symbol
+        'd' => '\u{240D}', // ␍ CR symbol
+        'e' => '\u{240A}', // ␊ LF symbol
+        'f' => '\u{00B0}', // ° degree sign
+        'g' => '\u{00B1}', // ± plus-minus
+        'h' => '\u{2424}', // ␤ NL symbol
+        'i' => '\u{240B}', // ␋ VT symbol
+        'j' => '\u{2518}', // ┘ lower-right corner
+        'k' => '\u{2510}', // ┐ upper-right corner
+        'l' => '\u{250C}', // ┌ upper-left corner
+        'm' => '\u{2514}', // └ lower-left corner
+        'n' => '\u{253C}', // ┼ crossing lines
+        'o' => '\u{23BA}', // ⎺ scan line 1
+        'p' => '\u{23BB}', // ⎻ scan line 3
+        'q' => '\u{2500}', // ─ horizontal line
+        'r' => '\u{23BC}', // ⎼ scan line 7
+        's' => '\u{23BD}', // ⎽ scan line 9
+        't' => '\u{251C}', // ├ left tee
+        'u' => '\u{2524}', // ┤ right tee
+        'v' => '\u{2534}', // ┴ bottom tee
+        'w' => '\u{252C}', // ┬ top tee
+        'x' => '\u{2502}', // │ vertical line
+        'y' => '\u{2264}', // ≤ less-than-or-equal
+        'z' => '\u{2265}', // ≥ greater-than-or-equal
+        '{' => '\u{03C0}', // π pi
+        '|' => '\u{2260}', // ≠ not-equal
+        '}' => '\u{00A3}', // £ pound sign
+        '~' => '\u{00B7}', // · centered dot
+        _ => ch,
+    }
+}
+
+/// Translate a character through the given charset designator.
+fn translate_charset(ch: char, designator: u8) -> char {
+    match designator {
+        b'0' => dec_graphics_char(ch),
+        _ => ch,
+    }
+}
+
 /// RGB color value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Color {
@@ -120,6 +169,7 @@ enum ParseState {
     Ground,
     Escape,
     EscapeHash,
+    EscapeCharset(u8),
     Csi,
     Osc,
 }
@@ -278,6 +328,12 @@ pub struct VirtualTerminal {
     /// DECAWM (Auto-Wrap Mode, DEC private mode 7): when true, printing
     /// past the right margin wraps to the next line. Default: true.
     autowrap: bool,
+    /// Charset designators for G0–G3 slots. b'B' = ASCII, b'0' = DEC Special Graphics.
+    charset_slots: [u8; 4],
+    /// Active charset slot index (0 = G0, 1 = G1).
+    active_charset: u8,
+    /// Single-shift override: if Some(n), next printed char uses G<n> then reverts.
+    single_shift: Option<u8>,
 }
 
 impl VirtualTerminal {
@@ -330,6 +386,9 @@ impl VirtualTerminal {
             tab_stops: Self::default_tab_stops(width),
             insert_mode: false,
             autowrap: true,
+            charset_slots: [b'B'; 4],
+            active_charset: 0,
+            single_shift: None,
         }
     }
 
@@ -504,6 +563,7 @@ impl VirtualTerminal {
             ParseState::Ground => self.ground(byte),
             ParseState::Escape => self.escape(byte),
             ParseState::EscapeHash => self.escape_hash(byte),
+            ParseState::EscapeCharset(slot) => self.escape_charset(slot, byte),
             ParseState::Csi => self.csi(byte),
             ParseState::Osc => self.osc(byte),
         }
@@ -538,6 +598,14 @@ impl VirtualTerminal {
             }
             b'\x07' => {
                 // Bell: ignored
+            }
+            b'\x0e' => {
+                // SO: Shift Out — activate G1 charset
+                self.active_charset = 1;
+            }
+            b'\x0f' => {
+                // SI: Shift In — activate G0 charset
+                self.active_charset = 0;
             }
             0x20..=0x7e => {
                 self.put_char(byte as char);
@@ -646,6 +714,30 @@ impl VirtualTerminal {
                 // ESC # — enter hash sub-state for DECALN etc.
                 self.parse_state = ParseState::EscapeHash;
             }
+            b'(' => self.parse_state = ParseState::EscapeCharset(0), // G0
+            b')' => self.parse_state = ParseState::EscapeCharset(1), // G1
+            b'*' => self.parse_state = ParseState::EscapeCharset(2), // G2
+            b'+' => self.parse_state = ParseState::EscapeCharset(3), // G3
+            b'N' => {
+                // Single Shift 2 (SS2): next char from G2
+                self.single_shift = Some(2);
+                self.parse_state = ParseState::Ground;
+            }
+            b'O' => {
+                // Single Shift 3 (SS3): next char from G3
+                self.single_shift = Some(3);
+                self.parse_state = ParseState::Ground;
+            }
+            b'n' => {
+                // Locking Shift 2 (LS2): invoke G2 into GL
+                self.active_charset = 2;
+                self.parse_state = ParseState::Ground;
+            }
+            b'o' => {
+                // Locking Shift 3 (LS3): invoke G3 into GL
+                self.active_charset = 3;
+                self.parse_state = ParseState::Ground;
+            }
             b'c' => {
                 // Full reset (RIS)
                 self.reset();
@@ -672,6 +764,13 @@ impl VirtualTerminal {
             self.cursor_x = 0;
             self.cursor_y = 0;
         }
+        self.parse_state = ParseState::Ground;
+    }
+
+    fn escape_charset(&mut self, slot: u8, byte: u8) {
+        // The designator byte selects the charset: b'B' = ASCII, b'0' = DEC Special Graphics, etc.
+        let idx = (slot as usize).min(3);
+        self.charset_slots[idx] = byte;
         self.parse_state = ParseState::Ground;
     }
 
@@ -976,6 +1075,9 @@ impl VirtualTerminal {
                 self.scroll_bottom = self.height.saturating_sub(1);
                 self.insert_mode = false;
                 self.autowrap = true;
+                self.charset_slots = [b'B'; 4];
+                self.active_charset = 0;
+                self.single_shift = None;
             }
             b'h' if has_question => {
                 // DEC Private Mode Set
@@ -1157,6 +1259,16 @@ impl VirtualTerminal {
     }
 
     fn put_char(&mut self, ch: char) {
+        // Charset translation: resolve effective charset and translate
+        let designator = if let Some(shift) = self.single_shift {
+            let slot = (shift as usize).min(3);
+            self.single_shift = None;
+            self.charset_slots[slot]
+        } else {
+            self.charset_slots[(self.active_charset as usize) & 3]
+        };
+        let ch = translate_charset(ch, designator);
+
         let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if char_width == 0 {
             return; // zero-width (combining marks, ZWJ): skip
@@ -1375,6 +1487,9 @@ impl VirtualTerminal {
         self.tab_stops = Self::default_tab_stops(self.width);
         self.insert_mode = false;
         self.autowrap = true;
+        self.charset_slots = [b'B'; 4];
+        self.active_charset = 0;
+        self.single_shift = None;
     }
 
     fn param(params: &[u16], idx: usize, default: u16) -> u16 {
@@ -2122,5 +2237,87 @@ mod tests {
         vt.feed(b"ABCDEF");
         assert_eq!(vt.row_text(0), "ABCDE");
         assert_eq!(vt.row_text(1), "F");
+    }
+
+    // ── Charset tests ───────────────────────────────────────────────
+
+    #[test]
+    fn dec_graphics_g0_designation() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // ESC ( 0 — designate G0 as DEC Special Graphics
+        // 'q' = ─ (U+2500), 'x' = │ (U+2502)
+        vt.feed(b"\x1b(0qqxx\x1b(B");
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{2500}'); // ─
+        assert_eq!(vt.char_at(1, 0).unwrap(), '\u{2500}'); // ─
+        assert_eq!(vt.char_at(2, 0).unwrap(), '\u{2502}'); // │
+        assert_eq!(vt.char_at(3, 0).unwrap(), '\u{2502}'); // │
+    }
+
+    #[test]
+    fn dec_graphics_g1_with_so_si() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // ESC ) 0 — designate G1 as DEC Special Graphics
+        // SO (0x0e) — activate G1, print 'l' = ┌ (U+250C)
+        // SI (0x0f) — back to G0 (ASCII), print 'l' = literal 'l'
+        vt.feed(b"\x1b)0\x0el\x0fl");
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{250C}'); // ┌
+        assert_eq!(vt.char_at(1, 0).unwrap(), 'l');
+    }
+
+    #[test]
+    fn dec_graphics_box_chars() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // Test all four corners + crossing
+        vt.feed(b"\x1b(0lkjmn\x1b(B");
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{250C}'); // l = ┌
+        assert_eq!(vt.char_at(1, 0).unwrap(), '\u{2510}'); // k = ┐
+        assert_eq!(vt.char_at(2, 0).unwrap(), '\u{2518}'); // j = ┘
+        assert_eq!(vt.char_at(3, 0).unwrap(), '\u{2514}'); // m = └
+        assert_eq!(vt.char_at(4, 0).unwrap(), '\u{253C}'); // n = ┼
+    }
+
+    #[test]
+    fn charset_reset_restores_ascii() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // Designate G0 as DEC graphics, then full reset
+        vt.feed(b"\x1b(0");
+        vt.feed(b"\x1bc"); // RIS (full reset)
+        vt.feed(b"q");
+        assert_eq!(vt.char_at(0, 0).unwrap(), 'q'); // Should be literal 'q', not ─
+    }
+
+    #[test]
+    fn charset_soft_reset_restores_ascii() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // Designate G0 as DEC graphics, then soft reset
+        vt.feed(b"\x1b(0");
+        vt.feed(b"\x1b[!p"); // DECSTR (soft reset)
+        vt.feed(b"q");
+        assert_eq!(vt.char_at(0, 0).unwrap(), 'q'); // Should be literal 'q', not ─
+    }
+
+    #[test]
+    fn so_si_toggle_charset() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // G1 = DEC graphics; toggle SO/SI multiple times
+        vt.feed(b"\x1b)0");
+        vt.feed(b"A"); // G0 ASCII: 'A'
+        vt.feed(b"\x0e"); // SO: switch to G1
+        vt.feed(b"q"); // DEC graphics: ─
+        vt.feed(b"\x0f"); // SI: back to G0
+        vt.feed(b"B"); // ASCII: 'B'
+        assert_eq!(vt.char_at(0, 0).unwrap(), 'A');
+        assert_eq!(vt.char_at(1, 0).unwrap(), '\u{2500}'); // ─
+        assert_eq!(vt.char_at(2, 0).unwrap(), 'B');
+    }
+
+    #[test]
+    fn ascii_passthrough_in_dec_graphics() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // Characters outside 0x60-0x7e should pass through unchanged even in DEC graphics
+        vt.feed(b"\x1b(0ABC\x1b(B");
+        assert_eq!(vt.char_at(0, 0).unwrap(), 'A');
+        assert_eq!(vt.char_at(1, 0).unwrap(), 'B');
+        assert_eq!(vt.char_at(2, 0).unwrap(), 'C');
     }
 }

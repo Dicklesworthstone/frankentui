@@ -1,0 +1,18 @@
+{
+  "name": "irm_wide_char_insert",
+  "description": "IRM insert mode with wide character shifts existing text right by 2 columns",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "41424344451b5b34681b5b313b3348e4b8ad",
+  "comment": "Print ABCDE, CSI 4 h (IRM on), CUP(1,3) → col 2, insert 中 (U+4E2D, 2-wide). Shifts CDE right by 2 → AB中CDE. Cursor at (0,4) after wide char.",
+  "expected": {
+    "cursor": { "row": 0, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "中" },
+      { "row": 0, "col": 4, "char": "C" },
+      { "row": 0, "col": 5, "char": "D" },
+      { "row": 0, "col": 6, "char": "E" }
+    ]
+  }
+}

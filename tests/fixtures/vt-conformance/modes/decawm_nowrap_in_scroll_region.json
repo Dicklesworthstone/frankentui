@@ -1,0 +1,22 @@
+{
+  "name": "decawm_nowrap_in_scroll_region",
+  "description": "DECAWM disabled within scroll region: cursor stays at right margin, no wrap or scroll",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b323b34721b5b3f376c1b5b323b31484142434445464748494a",
+  "comment": "DECSTBM(2,4), CSI ? 7 l (DECAWM off), CUP(2,1) → row 1 col 0, print ABCDEFGHIJ (10 chars in 10-col terminal). Without wrap, fills row 1 fully, J overwrites at col 9. Cursor stays at (1,9).",
+  "expected": {
+    "cursor": { "row": 1, "col": 9 },
+    "cells": [
+      { "row": 1, "col": 0, "char": "A" },
+      { "row": 1, "col": 1, "char": "B" },
+      { "row": 1, "col": 2, "char": "C" },
+      { "row": 1, "col": 3, "char": "D" },
+      { "row": 1, "col": 4, "char": "E" },
+      { "row": 1, "col": 5, "char": "F" },
+      { "row": 1, "col": 6, "char": "G" },
+      { "row": 1, "col": 7, "char": "H" },
+      { "row": 1, "col": 8, "char": "I" },
+      { "row": 1, "col": 9, "char": "J" }
+    ]
+  }
+}

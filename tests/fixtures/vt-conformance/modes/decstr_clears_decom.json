@@ -1,0 +1,13 @@
+{
+  "name": "decstr_clears_decom",
+  "description": "DECSTR soft reset clears DECOM and resets scroll region; cursor stays where it was",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b323b34721b5b3f36681b5b217041",
+  "comment": "DECSTBM(2,4), DECOM on homes cursor to (1,0), CSI ! p (soft reset: clears DECOM, resets region, cursor stays at (1,0)), print A at (1,0). Cursor at (1,1).",
+  "expected": {
+    "cursor": { "row": 1, "col": 1 },
+    "cells": [
+      { "row": 1, "col": 0, "char": "A" }
+    ]
+  }
+}
