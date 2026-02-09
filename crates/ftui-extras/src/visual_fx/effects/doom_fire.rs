@@ -98,10 +98,17 @@ fn xorshift32(state: &mut u32) -> u32 {
 pub struct DoomFireFx {
     /// Heat buffer, row-major. Values 0..=36.
     heat: Vec<u8>,
+    /// Precomputed clamped source-x lookup for spread offsets (-2..=3).
+    /// Layout: x * 6 + (offset + 2), where offset is in [-2, 3].
+    src_x_lut: Vec<usize>,
     /// Width of the heat buffer.
     last_width: u16,
     /// Height of the heat buffer.
     last_height: u16,
+    /// Width used to build `src_x_lut`.
+    lut_width: u16,
+    /// Wind value used to build `src_x_lut`.
+    lut_wind: i32,
     /// Wind direction: -1, 0, or 1 (shifts flame left/right).
     wind: i32,
     /// Whether the fire is active (bottom row hot).
@@ -113,8 +120,11 @@ impl DoomFireFx {
     pub fn new() -> Self {
         Self {
             heat: Vec::new(),
+            src_x_lut: Vec::new(),
             last_width: 0,
             last_height: 0,
+            lut_width: 0,
+            lut_wind: i32::MIN,
             wind: 0,
             active: true,
         }
@@ -128,6 +138,27 @@ impl DoomFireFx {
     /// Set whether the fire is active (bottom row emits heat).
     pub fn set_active(&mut self, active: bool) {
         self.active = active;
+    }
+
+    /// Ensure clamped source-x lookup is available for current width/wind.
+    fn ensure_src_x_lut(&mut self, width: usize) {
+        if self.lut_width as usize == width && self.lut_wind == self.wind {
+            return;
+        }
+
+        self.src_x_lut.resize(width.saturating_mul(6), 0);
+        let max_x = width.saturating_sub(1);
+
+        for x in 0..width {
+            let base = x * 6;
+            for offset in -2..=3 {
+                let clamped = (x as i32 + offset).clamp(0, max_x as i32) as usize;
+                self.src_x_lut[base + (offset + 2) as usize] = clamped;
+            }
+        }
+
+        self.lut_width = width as u16;
+        self.lut_wind = self.wind;
     }
 
     /// Initialize or resize the heat buffer.
@@ -170,6 +201,8 @@ impl DoomFireFx {
             return;
         }
 
+        self.ensure_src_x_lut(w);
+
         let mut rng = (frame.wrapping_mul(2654435761) as u32) | 1;
 
         let row_step = match quality {
@@ -189,7 +222,7 @@ impl DoomFireFx {
                 let x_offset = ((rand_val & 3) as i32) - 1 + self.wind; // -1, 0, 1, 2 + wind
                 let decay = (rand_val >> 2) & 1; // 0 or 1
 
-                let src_x = (x as i32 + x_offset).clamp(0, w as i32 - 1) as usize;
+                let src_x = self.src_x_lut[x * 6 + (x_offset + 2) as usize];
                 let src_idx = src_y * w + src_x;
                 let dst_idx = (src_y - 1) * w + x;
 

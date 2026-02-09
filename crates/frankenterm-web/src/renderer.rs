@@ -628,7 +628,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 // ---------------------------------------------------------------------------
-// WebGPU implementation (wasm32 only)
+// wasm32 renderer implementations
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -636,14 +636,24 @@ mod gpu {
     use super::*;
     use crate::glyph_atlas::{GlyphAtlasCache, GlyphKey};
     use std::collections::HashMap;
-    use web_sys::HtmlCanvasElement;
+    use wasm_bindgen::{JsCast, JsValue};
+    use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
     use wgpu;
+
+    const ATTR_BOLD: u32 = 1 << 0;
+    const ATTR_DIM: u32 = 1 << 1;
+    const ATTR_ITALIC: u32 = 1 << 2;
+    const ATTR_UNDERLINE: u32 = 1 << 3;
+    const ATTR_BLINK: u32 = 1 << 4;
+    const ATTR_REVERSE: u32 = 1 << 5;
+    const ATTR_STRIKETHROUGH: u32 = 1 << 6;
+    const ATTR_HIDDEN: u32 = 1 << 7;
 
     /// WebGPU renderer owning all GPU resources.
     ///
     /// Follows ADR-009: single pipeline, instanced cell quads, storage-buffer
     /// driven, patch-based updates.
-    pub struct WebGpuRenderer {
+    struct GpuRenderer {
         device: wgpu::Device,
         queue: wgpu::Queue,
         surface: wgpu::Surface<'static>,
@@ -685,7 +695,7 @@ mod gpu {
         selection_range: Option<(u32, u32)>,
     }
 
-    impl WebGpuRenderer {
+    impl GpuRenderer {
         /// Initialize the WebGPU renderer on the given canvas.
         pub async fn init(
             canvas: HtmlCanvasElement,

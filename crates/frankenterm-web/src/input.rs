@@ -263,6 +263,16 @@ pub struct AccessibilityInput {
     pub announce: Option<Box<str>>,
 }
 
+impl AccessibilityInput {
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.screen_reader.is_none()
+            && self.high_contrast.is_none()
+            && self.reduced_motion.is_none()
+            && self.announce.is_none()
+    }
+}
+
 /// Normalized, deterministic web input event.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InputEvent {
