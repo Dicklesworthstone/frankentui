@@ -425,6 +425,14 @@ impl Default for PlasmaCanvasAdapter {
 ///
 /// Uses the shared `MetaballFieldSampler` for all field computation, ensuring
 /// identical results to cell-space rendering at higher resolution.
+///
+/// ## Cache-Friendly Layout (SoA + Ball-Major dx²)
+///
+/// The inner loop uses Structure-of-Arrays (SoA) for ball data: `r2_cache` and
+/// `hue_cache` are contiguous `f64` slices instead of striding through 32-byte
+/// `BallState` structs.  The `dx2_cache` is ball-major — `dx2_cache[ball * w + col]`
+/// — so that consecutive-pixel dx² reads are contiguous, enabling prefetching and
+/// auto-vectorization when pixels are processed in 4-wide blocks.
 #[derive(Debug, Clone)]
 pub struct MetaballsCanvasAdapter {
     /// Parameters controlling metaball behavior.
@@ -438,10 +446,14 @@ pub struct MetaballsCanvasAdapter {
     x_coords: Vec<f64>,
     /// Normalized y coordinates per row.
     y_coords: Vec<f64>,
-    /// Per-frame scratch buffer for dx^2 per column/ball (column-major).
+    /// Per-frame scratch buffer for dx^2 in ball-major layout: `[ball * w + col]`.
     dx2_cache: Vec<f64>,
     /// Per-row scratch buffer for dy^2 per ball.
     dy2_cache: Vec<f64>,
+    /// SoA: contiguous r² values extracted from `ball_cache`.
+    r2_cache: Vec<f64>,
+    /// SoA: contiguous hue values extracted from `ball_cache`.
+    hue_cache: Vec<f64>,
     /// Cached indices of active balls for reduced/minimal quality.
     active_indices: Vec<usize>,
     active_step: usize,
@@ -460,6 +472,8 @@ impl MetaballsCanvasAdapter {
             y_coords: Vec::new(),
             dx2_cache: Vec::new(),
             dy2_cache: Vec::new(),
+            r2_cache: Vec::new(),
+            hue_cache: Vec::new(),
             active_indices: Vec::new(),
             active_step: 0,
             active_len: 0,
@@ -477,6 +491,8 @@ impl MetaballsCanvasAdapter {
             y_coords: Vec::new(),
             dx2_cache: Vec::new(),
             dy2_cache: Vec::new(),
+            r2_cache: Vec::new(),
+            hue_cache: Vec::new(),
             active_indices: Vec::new(),
             active_step: 0,
             active_len: 0,
@@ -557,6 +573,14 @@ impl MetaballsCanvasAdapter {
                 hue,
             };
         }
+
+        // Extract SoA: contiguous r² and hue arrays for cache-friendly inner loops.
+        self.r2_cache.resize(count, 0.0);
+        self.hue_cache.resize(count, 0.0);
+        for (i, ball) in self.ball_cache.iter().enumerate() {
+            self.r2_cache[i] = ball.r2;
+            self.hue_cache[i] = ball.hue;
+        }
     }
 
     /// Fill a painter with metaballs at sub-pixel resolution.
@@ -615,27 +639,28 @@ impl MetaballsCanvasAdapter {
         let x_coords = &self.x_coords;
         let y_coords = &self.y_coords;
         let balls = &self.ball_cache;
-        self.dx2_cache.resize(w.saturating_mul(balls_len), 0.0);
+
+        // --- Ball-major dx² layout: dx2_cache[ball * w + col] ---
+        // Consecutive-pixel dx² values for the same ball are contiguous, enabling
+        // hardware prefetching and compiler auto-vectorization in 4-pixel blocks.
+        self.dx2_cache.resize(balls_len.saturating_mul(w), 0.0);
         self.dy2_cache.resize(balls_len, 0.0);
 
-        // Precompute dx^2 for each (x, ball) pair in column-major layout so the
-        // inner loop can read contiguous data while preserving accumulation order.
-        let mut col_start = 0usize;
-        for &nx in x_coords.iter().take(w) {
-            let dx2_col = &mut self.dx2_cache[col_start..col_start + balls_len];
-            for (i, ball) in balls.iter().enumerate() {
+        for (i, ball) in balls.iter().enumerate() {
+            let base = i * w;
+            for (x, &nx) in x_coords.iter().enumerate().take(w) {
                 let dx = nx - ball.x;
-                dx2_col[i] = dx * dx;
+                self.dx2_cache[base + x] = dx * dx;
             }
-            col_start += balls_len;
         }
 
         let dx2_cache = &self.dx2_cache;
         let dy2_cache = &mut self.dy2_cache;
+        let r2_cache = &self.r2_cache;
+        let hue_cache = &self.hue_cache;
         const EPS: f64 = 1e-8;
 
-        // Hoist step==1 branching outside the hot pixel loop so we don't check
-        // it on every row and every pixel.
+        // Hoist step==1 branching outside the hot pixel loop.
         if step == 1 {
             for (y, &ny) in y_coords.iter().enumerate().take(h) {
                 for (i, ball) in balls.iter().enumerate() {
@@ -644,19 +669,97 @@ impl MetaballsCanvasAdapter {
                 }
 
                 let row_offset = y * w;
-                let mut dx_col_start = 0usize;
-                for x in 0..w {
+
+                // --- 4-pixel blocking: accumulate field for 4 columns per ball ---
+                // Per-pixel accumulation order is preserved (ball 0, 1, …, N for each
+                // pixel independently), so floating-point results are bit-identical.
+                let full_blocks = w / 4;
+                for block in 0..full_blocks {
+                    let x_base = block * 4;
+                    let mut sums = [0.0_f64; 4];
+                    let mut hues = [0.0_f64; 4];
+
+                    for i in 0..balls_len {
+                        let r2 = r2_cache[i];
+                        let hue_val = hue_cache[i];
+                        let dy2 = dy2_cache[i];
+                        let dx2_base = i * w + x_base;
+
+                        // 4 contiguous dx² reads from ball-major layout.
+                        let dx2_0 = dx2_cache[dx2_base];
+                        let dx2_1 = dx2_cache[dx2_base + 1];
+                        let dx2_2 = dx2_cache[dx2_base + 2];
+                        let dx2_3 = dx2_cache[dx2_base + 3];
+
+                        let d0 = dx2_0 + dy2;
+                        let d1 = dx2_1 + dy2;
+                        let d2 = dx2_2 + dy2;
+                        let d3 = dx2_3 + dy2;
+
+                        // Accumulate per-pixel field (branch almost always taken).
+                        if d0 > EPS {
+                            let c = r2 / d0;
+                            sums[0] += c;
+                            hues[0] += hue_val * c;
+                        } else {
+                            sums[0] += 100.0;
+                            hues[0] += hue_val * 100.0;
+                        }
+                        if d1 > EPS {
+                            let c = r2 / d1;
+                            sums[1] += c;
+                            hues[1] += hue_val * c;
+                        } else {
+                            sums[1] += 100.0;
+                            hues[1] += hue_val * 100.0;
+                        }
+                        if d2 > EPS {
+                            let c = r2 / d2;
+                            sums[2] += c;
+                            hues[2] += hue_val * c;
+                        } else {
+                            sums[2] += 100.0;
+                            hues[2] += hue_val * 100.0;
+                        }
+                        if d3 > EPS {
+                            let c = r2 / d3;
+                            sums[3] += c;
+                            hues[3] += hue_val * c;
+                        } else {
+                            sums[3] += 100.0;
+                            hues[3] += hue_val * 100.0;
+                        }
+                    }
+
+                    for j in 0..4 {
+                        let s = sums[j];
+                        if s > glow {
+                            let avg_hue = hues[j] / s;
+                            let intensity = if s > threshold {
+                                1.0
+                            } else {
+                                (s - glow) / (threshold - glow)
+                            };
+                            let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
+                            painter
+                                .point_colored_at_index_in_bounds(row_offset + x_base + j, color);
+                        }
+                    }
+                }
+
+                // Scalar tail for remaining columns (w % 4 != 0).
+                for x in (full_blocks * 4)..w {
                     let mut sum = 0.0;
                     let mut weighted_hue = 0.0;
-                    for (i, ball) in balls.iter().enumerate() {
-                        let dist_sq = dx2_cache[dx_col_start + i] + dy2_cache[i];
+                    for i in 0..balls_len {
+                        let dist_sq = dx2_cache[i * w + x] + dy2_cache[i];
                         if dist_sq > EPS {
-                            let contrib = ball.r2 / dist_sq;
+                            let contrib = r2_cache[i] / dist_sq;
                             sum += contrib;
-                            weighted_hue += ball.hue * contrib;
+                            weighted_hue += hue_cache[i] * contrib;
                         } else {
                             sum += 100.0;
-                            weighted_hue += ball.hue * 100.0;
+                            weighted_hue += hue_cache[i] * 100.0;
                         }
                     }
 
@@ -670,10 +773,10 @@ impl MetaballsCanvasAdapter {
                         let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
                         painter.point_colored_at_index_in_bounds(row_offset + x, color);
                     }
-                    dx_col_start += balls_len;
                 }
             }
         } else {
+            // step > 1: use active_indices for reduced/minimal quality.
             let active_indices = self.active_indices.as_slice();
             for (y, &ny) in y_coords.iter().enumerate().take(h) {
                 for &i in active_indices {
@@ -682,20 +785,86 @@ impl MetaballsCanvasAdapter {
                 }
 
                 let row_offset = y * w;
-                let mut dx_col_start = 0usize;
-                for x in 0..w {
+
+                let full_blocks = w / 4;
+                for block in 0..full_blocks {
+                    let x_base = block * 4;
+                    let mut sums = [0.0_f64; 4];
+                    let mut hues = [0.0_f64; 4];
+
+                    for &i in active_indices {
+                        let r2 = r2_cache[i];
+                        let hue_val = hue_cache[i];
+                        let dy2 = dy2_cache[i];
+                        let dx2_base = i * w + x_base;
+
+                        let d0 = dx2_cache[dx2_base] + dy2;
+                        let d1 = dx2_cache[dx2_base + 1] + dy2;
+                        let d2 = dx2_cache[dx2_base + 2] + dy2;
+                        let d3 = dx2_cache[dx2_base + 3] + dy2;
+
+                        if d0 > EPS {
+                            let c = r2 / d0;
+                            sums[0] += c;
+                            hues[0] += hue_val * c;
+                        } else {
+                            sums[0] += 100.0;
+                            hues[0] += hue_val * 100.0;
+                        }
+                        if d1 > EPS {
+                            let c = r2 / d1;
+                            sums[1] += c;
+                            hues[1] += hue_val * c;
+                        } else {
+                            sums[1] += 100.0;
+                            hues[1] += hue_val * 100.0;
+                        }
+                        if d2 > EPS {
+                            let c = r2 / d2;
+                            sums[2] += c;
+                            hues[2] += hue_val * c;
+                        } else {
+                            sums[2] += 100.0;
+                            hues[2] += hue_val * 100.0;
+                        }
+                        if d3 > EPS {
+                            let c = r2 / d3;
+                            sums[3] += c;
+                            hues[3] += hue_val * c;
+                        } else {
+                            sums[3] += 100.0;
+                            hues[3] += hue_val * 100.0;
+                        }
+                    }
+
+                    for j in 0..4 {
+                        let s = sums[j];
+                        if s > glow {
+                            let avg_hue = hues[j] / s;
+                            let intensity = if s > threshold {
+                                1.0
+                            } else {
+                                (s - glow) / (threshold - glow)
+                            };
+                            let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
+                            painter
+                                .point_colored_at_index_in_bounds(row_offset + x_base + j, color);
+                        }
+                    }
+                }
+
+                for x in (full_blocks * 4)..w {
                     let mut sum = 0.0;
                     let mut weighted_hue = 0.0;
                     for &i in active_indices {
-                        let ball = &balls[i];
-                        let dist_sq = dx2_cache[dx_col_start + i] + dy2_cache[i];
+                        let dist_sq = dx2_cache[i * w + x] + dy2_cache[i];
                         if dist_sq > EPS {
-                            let contrib = ball.r2 / dist_sq;
+                            let contrib = r2_cache[i] / dist_sq;
                             sum += contrib;
-                            weighted_hue += ball.hue * contrib;
+                            weighted_hue += hue_cache[i] * contrib;
                         } else {
                             sum += 100.0;
-                            weighted_hue += ball.hue * 100.0;
+                            weighted_hue += hue_cache[i] * 100.0;
                         }
                     }
 
@@ -709,7 +878,6 @@ impl MetaballsCanvasAdapter {
                         let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
                         painter.point_colored_at_index_in_bounds(row_offset + x, color);
                     }
-                    dx_col_start += balls_len;
                 }
             }
         }
