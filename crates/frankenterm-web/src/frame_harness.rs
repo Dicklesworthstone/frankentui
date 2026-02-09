@@ -308,6 +308,39 @@ struct ScrollbackVirtualizationJsonlRecord<'a> {
     render_cost_us: u64,
 }
 
+/// Deterministic link-click snapshot for E2E JSONL traces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkClickSnapshot {
+    pub x: u16,
+    pub y: u16,
+    pub button: Option<u8>,
+    pub link_id: u32,
+    pub url: Option<String>,
+    pub open_allowed: bool,
+    pub open_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LinkClickJsonlRecord<'a> {
+    schema_version: &'static str,
+    #[serde(rename = "type")]
+    record_type: &'static str,
+    timestamp: &'a str,
+    run_id: &'a str,
+    seed: u64,
+    event_idx: u64,
+    x: u16,
+    y: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button: Option<u8>,
+    link_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'a str>,
+    open_allowed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_reason: Option<&'a str>,
+}
+
 #[must_use]
 fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
     for &b in bytes {
@@ -678,6 +711,33 @@ pub fn scrollback_virtualization_frame_jsonl(
         overscan_before: window.viewport_start.saturating_sub(window.render_start),
         overscan_after: window.render_end.saturating_sub(window.viewport_end),
         render_cost_us: render_cost.as_micros() as u64,
+    };
+    serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Build one JSONL `link_click` record for host-side click/open policy traces.
+#[must_use]
+pub fn link_click_jsonl(
+    run_id: &str,
+    seed: u64,
+    timestamp: &str,
+    event_idx: u64,
+    click: &LinkClickSnapshot,
+) -> String {
+    let row = LinkClickJsonlRecord {
+        schema_version: E2E_JSONL_SCHEMA_VERSION,
+        record_type: "link_click",
+        timestamp,
+        run_id,
+        seed,
+        event_idx,
+        x: click.x,
+        y: click.y,
+        button: click.button,
+        link_id: click.link_id,
+        url: click.url.as_deref(),
+        open_allowed: click.open_allowed,
+        open_reason: click.open_reason.as_deref(),
     };
     serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string())
 }
@@ -1273,6 +1333,50 @@ mod tests {
         assert_eq!(parsed["overscan_before"], 8);
         assert_eq!(parsed["overscan_after"], 8);
         assert_eq!(parsed["render_cost_us"], 2314);
+    }
+
+    #[test]
+    fn link_click_jsonl_contains_policy_fields() {
+        let click = LinkClickSnapshot {
+            x: 12,
+            y: 3,
+            button: Some(0),
+            link_id: 0x00F0_0001,
+            url: Some("https://example.test/docs".to_string()),
+            open_allowed: true,
+            open_reason: None,
+        };
+        let line = link_click_jsonl("run-link", 7, "T000321", 4, &click);
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+
+        assert_eq!(parsed["schema_version"], "e2e-jsonl-v1");
+        assert_eq!(parsed["type"], "link_click");
+        assert_eq!(parsed["run_id"], "run-link");
+        assert_eq!(parsed["seed"], 7);
+        assert_eq!(parsed["event_idx"], 4);
+        assert_eq!(parsed["x"], 12);
+        assert_eq!(parsed["y"], 3);
+        assert_eq!(parsed["button"], 0);
+        assert_eq!(parsed["link_id"], 0x00F0_0001u64);
+        assert_eq!(parsed["url"], "https://example.test/docs");
+        assert_eq!(parsed["open_allowed"], true);
+        assert!(parsed.get("open_reason").is_none());
+    }
+
+    #[test]
+    fn link_click_jsonl_is_stable_for_identical_input() {
+        let click = LinkClickSnapshot {
+            x: 1,
+            y: 0,
+            button: None,
+            link_id: 77,
+            url: None,
+            open_allowed: false,
+            open_reason: Some("url_unavailable".to_string()),
+        };
+        let a = link_click_jsonl("run-a", 0, "T000010", 0, &click);
+        let b = link_click_jsonl("run-a", 0, "T000010", 0, &click);
+        assert_eq!(a, b);
     }
 
     #[test]

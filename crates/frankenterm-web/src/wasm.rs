@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 
 use crate::frame_harness::{
-    GeometrySnapshot, InteractionSnapshot, resize_storm_frame_jsonl_with_interaction,
+    GeometrySnapshot, InteractionSnapshot, LinkClickSnapshot, link_click_jsonl,
+    resize_storm_frame_jsonl_with_interaction,
 };
 use crate::input::{
     AccessibilityInput, CompositionInput, CompositionPhase, CompositionState, FocusInput,
@@ -50,6 +51,7 @@ pub struct FrankenTermWeb {
     link_clicks: Vec<LinkClickEvent>,
     auto_link_ids: Vec<u32>,
     auto_link_urls: HashMap<u32, String>,
+    link_open_policy: LinkOpenPolicy,
     hovered_link_id: u32,
     cursor_offset: Option<u32>,
     cursor_style: CursorStyle,
@@ -74,6 +76,86 @@ struct LinkClickEvent {
     y: u16,
     button: Option<MouseButton>,
     link_id: u32,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedLinkClick {
+    click: LinkClickEvent,
+    source: &'static str,
+    url: Option<String>,
+    open_decision: LinkOpenDecision,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinkOpenDecision {
+    allowed: bool,
+    reason: Option<&'static str>,
+}
+
+impl LinkOpenDecision {
+    const fn allow() -> Self {
+        Self {
+            allowed: true,
+            reason: None,
+        }
+    }
+
+    const fn deny(reason: &'static str) -> Self {
+        Self {
+            allowed: false,
+            reason: Some(reason),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LinkOpenPolicy {
+    allow_http: bool,
+    allow_https: bool,
+    allowed_hosts: Vec<String>,
+    blocked_hosts: Vec<String>,
+}
+
+impl Default for LinkOpenPolicy {
+    fn default() -> Self {
+        Self {
+            allow_http: true,
+            allow_https: true,
+            allowed_hosts: Vec::new(),
+            blocked_hosts: Vec::new(),
+        }
+    }
+}
+
+impl LinkOpenPolicy {
+    fn evaluate(&self, url: Option<&str>) -> LinkOpenDecision {
+        let Some(url) = url else {
+            return LinkOpenDecision::deny("url_unavailable");
+        };
+
+        let Some((scheme, host)) = parse_http_url_scheme_and_host(url) else {
+            return LinkOpenDecision::deny("invalid_url");
+        };
+
+        match scheme {
+            "http" if !self.allow_http => return LinkOpenDecision::deny("scheme_blocked"),
+            "https" if !self.allow_https => return LinkOpenDecision::deny("scheme_blocked"),
+            "http" | "https" => {}
+            _ => return LinkOpenDecision::deny("scheme_blocked"),
+        }
+
+        if self.blocked_hosts.iter().any(|blocked| blocked == &host) {
+            return LinkOpenDecision::deny("host_blocked");
+        }
+
+        if !self.allowed_hosts.is_empty()
+            && !self.allowed_hosts.iter().any(|allowed| allowed == &host)
+        {
+            return LinkOpenDecision::deny("host_not_allowlisted");
+        }
+
+        LinkOpenDecision::allow()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +231,7 @@ impl FrankenTermWeb {
             link_clicks: Vec::new(),
             auto_link_ids: Vec::new(),
             auto_link_urls: HashMap::new(),
+            link_open_policy: LinkOpenPolicy::default(),
             hovered_link_id: 0,
             cursor_offset: None,
             cursor_style: CursorStyle::None,
@@ -217,6 +300,7 @@ impl FrankenTermWeb {
             .or(parse_init_bool(&options, "reduced_motion"))
             .unwrap_or(false);
         self.focused = parse_init_bool(&options, "focused").unwrap_or(false);
+        self.link_open_policy = parse_link_open_policy(options.as_ref())?;
         self.initialized = true;
         Ok(())
     }
@@ -573,12 +657,13 @@ impl FrankenTermWeb {
 
     /// Drain queued hyperlink click events detected from normalized mouse input.
     ///
-    /// Each entry has `{x, y, button, linkId}`.
+    /// Each entry has:
+    /// `{x, y, button, linkId, source, url, openAllowed, openReason}`.
     #[wasm_bindgen(js_name = drainLinkClicks)]
     pub fn drain_link_clicks(&mut self) -> Array {
         let arr = Array::new();
-        let clicks: Vec<LinkClickEvent> = self.link_clicks.drain(..).collect();
-        for click in clicks {
+        for resolved in self.drain_resolved_link_clicks() {
+            let click = resolved.click;
             let obj = Object::new();
             let _ = Reflect::set(
                 &obj,
@@ -604,15 +689,80 @@ impl FrankenTermWeb {
             );
             let _ = Reflect::set(
                 &obj,
+                &JsValue::from_str("source"),
+                &JsValue::from_str(resolved.source),
+            );
+            let _ = Reflect::set(
+                &obj,
                 &JsValue::from_str("url"),
-                &self
-                    .auto_link_urls
-                    .get(&click.link_id)
+                &resolved
+                    .url
+                    .as_ref()
                     .map_or(JsValue::NULL, |url| JsValue::from_str(url)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("openAllowed"),
+                &JsValue::from_bool(resolved.open_decision.allowed),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("openReason"),
+                &resolved
+                    .open_decision
+                    .reason
+                    .map_or(JsValue::NULL, JsValue::from_str),
             );
             arr.push(&obj);
         }
         arr
+    }
+
+    /// Drain queued link clicks into JSONL lines for deterministic E2E logs.
+    ///
+    /// Host code can persist the returned lines directly into an E2E JSONL log.
+    #[wasm_bindgen(js_name = drainLinkClicksJsonl)]
+    pub fn drain_link_clicks_jsonl(
+        &mut self,
+        run_id: String,
+        seed: u64,
+        timestamp: String,
+    ) -> Array {
+        let out = Array::new();
+        for (event_idx, resolved) in self.drain_resolved_link_clicks().into_iter().enumerate() {
+            let click = &resolved.click;
+            let snapshot = LinkClickSnapshot {
+                x: click.x,
+                y: click.y,
+                button: click.button.map(MouseButton::to_u8),
+                link_id: click.link_id,
+                url: resolved.url,
+                open_allowed: resolved.open_decision.allowed,
+                open_reason: resolved.open_decision.reason.map(str::to_string),
+            };
+            let line = link_click_jsonl(&run_id, seed, &timestamp, event_idx as u64, &snapshot);
+            out.push(&JsValue::from_str(&line));
+        }
+        out
+    }
+
+    /// Configure host-side link open policy.
+    ///
+    /// Supported keys:
+    /// - `allowHttp` / `allow_http`: bool
+    /// - `allowHttps` / `allow_https`: bool
+    /// - `allowedHosts` / `allowed_hosts`: string[]
+    /// - `blockedHosts` / `blocked_hosts`: string[]
+    #[wasm_bindgen(js_name = setLinkOpenPolicy)]
+    pub fn set_link_open_policy(&mut self, options: JsValue) -> Result<(), JsValue> {
+        self.link_open_policy = parse_link_open_policy(Some(&options))?;
+        Ok(())
+    }
+
+    /// Return current link open policy snapshot.
+    #[wasm_bindgen(js_name = linkOpenPolicy)]
+    pub fn link_open_policy_snapshot(&self) -> JsValue {
+        link_open_policy_to_js(&self.link_open_policy)
     }
 
     /// Extract selected text from current shadow cells (for copy workflows).
@@ -994,6 +1144,26 @@ impl FrankenTermWeb {
             return None;
         }
         Some(usize::from(y) * usize::from(self.cols) + usize::from(x))
+    }
+
+    fn drain_resolved_link_clicks(&mut self) -> Vec<ResolvedLinkClick> {
+        let clicks: Vec<LinkClickEvent> = self.link_clicks.drain(..).collect();
+        clicks
+            .into_iter()
+            .map(|click| self.resolve_link_click(click))
+            .collect()
+    }
+
+    fn resolve_link_click(&self, click: LinkClickEvent) -> ResolvedLinkClick {
+        let url = self.auto_link_urls.get(&click.link_id).cloned();
+        let source = if url.is_some() { "auto" } else { "osc8" };
+        let open_decision = self.link_open_policy.evaluate(url.as_deref());
+        ResolvedLinkClick {
+            click,
+            source,
+            url,
+            open_decision,
+        }
     }
 
     fn link_id_at_xy(&self, x: u16, y: u16) -> u32 {
@@ -1726,6 +1896,131 @@ fn parse_search_config(options: Option<&JsValue>) -> Result<SearchConfig, JsValu
     Ok(config)
 }
 
+fn parse_link_open_policy(options: Option<&JsValue>) -> Result<LinkOpenPolicy, JsValue> {
+    let mut policy = LinkOpenPolicy::default();
+    let Some(options) = options else {
+        return Ok(policy);
+    };
+
+    if let Some(v) = get_bool(options, "allowHttp")?.or(get_bool(options, "allow_http")?) {
+        policy.allow_http = v;
+    }
+    if let Some(v) = get_bool(options, "allowHttps")?.or(get_bool(options, "allow_https")?) {
+        policy.allow_https = v;
+    }
+    if let Some(v) = get_host_list(options, &["allowedHosts", "allowed_hosts"])? {
+        policy.allowed_hosts = v;
+    }
+    if let Some(v) = get_host_list(options, &["blockedHosts", "blocked_hosts"])? {
+        policy.blocked_hosts = v;
+    }
+
+    Ok(policy)
+}
+
+fn get_host_list(obj: &JsValue, keys: &[&str]) -> Result<Option<Vec<String>>, JsValue> {
+    for key in keys {
+        let v = Reflect::get(obj, &JsValue::from_str(key))?;
+        if v.is_null() || v.is_undefined() {
+            continue;
+        }
+        if !Array::is_array(&v) {
+            return Err(JsValue::from_str(&format!(
+                "field {key} must be an array of strings"
+            )));
+        }
+        let arr = Array::from(&v);
+        let mut out = Vec::with_capacity(arr.length() as usize);
+        for entry in arr.iter() {
+            let Some(raw) = entry.as_string() else {
+                return Err(JsValue::from_str(&format!(
+                    "field {key} must contain only strings"
+                )));
+            };
+            let Some(host) = canonicalize_host(raw.trim()) else {
+                return Err(JsValue::from_str(&format!(
+                    "field {key} contains an invalid host: {raw}"
+                )));
+            };
+            if !out.iter().any(|existing| existing == &host) {
+                out.push(host);
+            }
+        }
+        return Ok(Some(out));
+    }
+    Ok(None)
+}
+
+fn parse_http_url_scheme_and_host(url: &str) -> Option<(&'static str, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let normalized_scheme = if scheme.eq_ignore_ascii_case("http") {
+        "http"
+    } else if scheme.eq_ignore_ascii_case("https") {
+        "https"
+    } else {
+        return None;
+    };
+    let authority = rest
+        .split(|ch| matches!(ch, '/' | '?' | '#'))
+        .next()
+        .unwrap_or_default();
+    let host = canonicalize_host(authority)?;
+    Some((normalized_scheme, host))
+}
+
+fn canonicalize_host(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+        return None;
+    }
+
+    let without_user = trimmed.rsplit('@').next().unwrap_or(trimmed).trim();
+    if without_user.is_empty() {
+        return None;
+    }
+
+    let host = if let Some(rest) = without_user.strip_prefix('[') {
+        let end = rest.find(']')?;
+        &rest[..end]
+    } else {
+        without_user.split(':').next().unwrap_or(without_user)
+    };
+
+    let host = host.trim().trim_end_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+fn link_open_policy_to_js(policy: &LinkOpenPolicy) -> JsValue {
+    let obj = Object::new();
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("allowHttp"),
+        &JsValue::from_bool(policy.allow_http),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("allowHttps"),
+        &JsValue::from_bool(policy.allow_https),
+    );
+
+    let allowed_hosts = Array::new();
+    for host in &policy.allowed_hosts {
+        allowed_hosts.push(&JsValue::from_str(host));
+    }
+    let _ = Reflect::set(&obj, &JsValue::from_str("allowedHosts"), &allowed_hosts);
+
+    let blocked_hosts = Array::new();
+    for host in &policy.blocked_hosts {
+        blocked_hosts.push(&JsValue::from_str(host));
+    }
+    let _ = Reflect::set(&obj, &JsValue::from_str("blockedHosts"), &blocked_hosts);
+
+    obj.into()
+}
+
 fn search_state_to_js(
     query: &str,
     config: SearchConfig,
@@ -2268,5 +2563,144 @@ mod tests {
         term.shadow_cells[0].attrs = (77u32 << 8) | 0x1;
         term.recompute_auto_links();
         assert_eq!(term.link_at(0, 0), 77);
+    }
+
+    #[test]
+    fn parse_http_url_scheme_and_host_normalizes_case_and_port() {
+        let (scheme, host) =
+            parse_http_url_scheme_and_host("HTTPS://Example.Test:443/path?q=1").unwrap();
+        assert_eq!(scheme, "https");
+        assert_eq!(host, "example.test");
+    }
+
+    #[test]
+    fn link_open_policy_blocks_http_when_disabled() {
+        let policy = LinkOpenPolicy {
+            allow_http: false,
+            allow_https: true,
+            allowed_hosts: Vec::new(),
+            blocked_hosts: Vec::new(),
+        };
+
+        let denied = policy.evaluate(Some("http://example.test/path"));
+        assert!(!denied.allowed);
+        assert_eq!(denied.reason, Some("scheme_blocked"));
+
+        let allowed = policy.evaluate(Some("https://example.test/path"));
+        assert!(allowed.allowed);
+        assert_eq!(allowed.reason, None);
+    }
+
+    #[test]
+    fn link_open_policy_enforces_allow_and_block_lists() {
+        let policy = LinkOpenPolicy {
+            allow_http: true,
+            allow_https: true,
+            allowed_hosts: vec!["allowed.test".to_string()],
+            blocked_hosts: vec!["blocked.test".to_string()],
+        };
+
+        let denied_missing = policy.evaluate(Some("https://other.test"));
+        assert!(!denied_missing.allowed);
+        assert_eq!(denied_missing.reason, Some("host_not_allowlisted"));
+
+        let denied_blocked = policy.evaluate(Some("https://blocked.test"));
+        assert!(!denied_blocked.allowed);
+        assert_eq!(denied_blocked.reason, Some("host_blocked"));
+
+        let allowed = policy.evaluate(Some("https://allowed.test/docs"));
+        assert!(allowed.allowed);
+        assert_eq!(allowed.reason, None);
+    }
+
+    #[test]
+    fn drain_link_clicks_reports_policy_decision() {
+        let text = "http://example.test docs";
+        let mut term = FrankenTermWeb::new();
+        term.cols = text.chars().count() as u16;
+        term.rows = 1;
+        term.shadow_cells = text_row_cells(text);
+        term.auto_link_ids = vec![0; term.shadow_cells.len()];
+        term.recompute_auto_links();
+        term.link_open_policy.allow_http = false;
+
+        let url_x = text.find("http://").unwrap() as u16;
+        assert!(
+            term.queue_input_event(InputEvent::Mouse(MouseInput {
+                phase: MousePhase::Down,
+                button: Some(MouseButton::Left),
+                x: url_x,
+                y: 0,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+
+        let events = term.drain_link_clicks();
+        assert_eq!(events.length(), 1);
+        let event = events.get(0);
+
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("source"))
+                .unwrap()
+                .as_string()
+                .as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("url"))
+                .unwrap()
+                .as_string()
+                .as_deref(),
+            Some("http://example.test")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("openAllowed"))
+                .unwrap()
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("openReason"))
+                .unwrap()
+                .as_string()
+                .as_deref(),
+            Some("scheme_blocked")
+        );
+    }
+
+    #[test]
+    fn drain_link_clicks_jsonl_emits_e2e_records() {
+        let text = "https://example.test docs";
+        let mut term = FrankenTermWeb::new();
+        term.cols = text.chars().count() as u16;
+        term.rows = 1;
+        term.shadow_cells = text_row_cells(text);
+        term.auto_link_ids = vec![0; term.shadow_cells.len()];
+        term.recompute_auto_links();
+
+        let url_x = text.find("https://").unwrap() as u16;
+        assert!(
+            term.queue_input_event(InputEvent::Mouse(MouseInput {
+                phase: MousePhase::Down,
+                button: Some(MouseButton::Left),
+                x: url_x,
+                y: 0,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+
+        let lines = term.drain_link_clicks_jsonl("run-link".to_string(), 5, "T000120".to_string());
+        assert_eq!(lines.length(), 1);
+
+        let line = lines.get(0).as_string().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["type"], "link_click");
+        assert_eq!(parsed["run_id"], "run-link");
+        assert_eq!(parsed["seed"], 5);
+        assert_eq!(parsed["event_idx"], 0);
+        assert_eq!(parsed["open_allowed"], true);
+        assert_eq!(parsed["url"], "https://example.test");
     }
 }
