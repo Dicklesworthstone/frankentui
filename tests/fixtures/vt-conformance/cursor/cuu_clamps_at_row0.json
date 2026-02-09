@@ -1,0 +1,22 @@
+{
+  "name": "cuu_clamps_at_row0",
+  "description": "CUU clamps at row 0 - does not scroll or go negative",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b5b323b33481b5b3130304158",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 3
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 2,
+        "char": "X"
+      }
+    ]
+  }
+}

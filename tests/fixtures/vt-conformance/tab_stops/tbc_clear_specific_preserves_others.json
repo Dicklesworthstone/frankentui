@@ -1,0 +1,22 @@
+{
+  "name": "tbc_clear_specific_preserves_others",
+  "description": "TBC 0 clears tab at current column only, other default stops remain",
+  "initial_size": [
+    20,
+    3
+  ],
+  "input_bytes_hex": "091b5b30671b5b313b31480958",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 17
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 16,
+        "char": "X"
+      }
+    ]
+  }
+}

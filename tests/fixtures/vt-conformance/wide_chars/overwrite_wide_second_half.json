@@ -1,0 +1,27 @@
+{
+  "name": "overwrite_wide_second_half",
+  "description": "Writing a narrow char over the second cell of a wide char clears both cells",
+  "initial_size": [
+    8,
+    3
+  ],
+  "input_bytes_hex": "e4b8961b5b313b324859",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 2
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": " "
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "Y"
+      }
+    ]
+  }
+}

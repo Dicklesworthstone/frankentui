@@ -1,0 +1,47 @@
+{
+  "name": "decawm_reenable_wraps_pending",
+  "description": "Re-enabling DECAWM with pending wrap causes next print to wrap to new line",
+  "initial_size": [
+    5,
+    3
+  ],
+  "input_bytes_hex": "1b5b3f376c41424344451b5b3f376858",
+  "expected": {
+    "cursor": {
+      "row": 1,
+      "col": 1
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "B"
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": "C"
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "D"
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": "E"
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "char": "X"
+      }
+    ]
+  }
+}

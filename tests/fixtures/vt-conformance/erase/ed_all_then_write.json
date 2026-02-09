@@ -1,0 +1,37 @@
+{
+  "name": "ed_all_then_write",
+  "description": "ED 2 clears entire screen; subsequent writes appear on clean grid",
+  "initial_size": [
+    8,
+    3
+  ],
+  "input_bytes_hex": "4f4c445f444154410a0d4d4f52451b5b324a1b5b313b314858",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 1
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "X"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": " "
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "char": " "
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "char": " "
+      }
+    ]
+  }
+}

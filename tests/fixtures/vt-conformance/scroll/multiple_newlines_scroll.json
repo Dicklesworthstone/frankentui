@@ -1,0 +1,37 @@
+{
+  "name": "multiple_newlines_scroll",
+  "description": "Multiple newlines at bottom of screen scroll content up multiple times",
+  "initial_size": [
+    6,
+    3
+  ],
+  "input_bytes_hex": "524f57300a0d524f57310a0d524f57320a0a",
+  "expected": {
+    "cursor": {
+      "row": 2,
+      "col": 4
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "R"
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "2"
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "char": " "
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "char": " "
+      }
+    ]
+  }
+}
