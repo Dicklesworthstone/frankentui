@@ -1,0 +1,19 @@
+{
+  "name": "decaln_with_scroll_region",
+  "description": "DECALN (ESC # 8) fills the entire screen with 'E' regardless of scroll region",
+  "initial_size": [5, 4],
+  "input_bytes_hex": "1b5b323b3372 1b2338",
+  "comment": "Set scroll region to rows 2-3 (CSI 2;3 r), then DECALN (ESC # 8). DECALN fills ALL rows with 'E', ignoring scroll region. Cursor moves to (0,0).",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "E" },
+      { "row": 0, "col": 4, "char": "E" },
+      { "row": 1, "col": 0, "char": "E" },
+      { "row": 1, "col": 4, "char": "E" },
+      { "row": 2, "col": 0, "char": "E" },
+      { "row": 3, "col": 0, "char": "E" },
+      { "row": 3, "col": 4, "char": "E" }
+    ]
+  }
+}

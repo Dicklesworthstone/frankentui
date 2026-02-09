@@ -1,0 +1,13 @@
+{
+  "name": "decstr_clears_single_shift",
+  "description": "DECSTR (CSI ! p) soft reset clears pending single shift state",
+  "initial_size": [10, 2],
+  "input_bytes_hex": "1b2a30 1b4e 1b5b2170 71",
+  "comment": "Designate G2=DEC Graphics. SS2 (ESC N) sets single_shift=G2. DECSTR (CSI ! p) clears single_shift. Print 'q' → via G0 ASCII (not DEC Graphics). Result: literal 'q' at (0,0).",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "q" }
+    ]
+  }
+}

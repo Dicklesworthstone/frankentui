@@ -1,0 +1,15 @@
+{
+  "name": "ss3_dec_graphics",
+  "description": "SS3 (ESC O) temporarily shifts to G3 charset for one character, then reverts",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b2b30 41 1b4f 6c 42",
+  "comment": "Designate G3=DEC Graphics (ESC + 0). Print 'A' (ASCII). SS3 (ESC O). Print 'l' → translated via G3 DEC Graphics to U+250C (┌). Print 'B' (back to G0 ASCII). Result: A┌B.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "\u250C" },
+      { "row": 0, "col": 2, "char": "B" }
+    ]
+  }
+}

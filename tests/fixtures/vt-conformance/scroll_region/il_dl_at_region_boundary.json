@@ -1,0 +1,17 @@
+{
+  "name": "il_dl_at_region_boundary",
+  "description": "IL/DL at scroll region boundaries: IL at bottom inserts blank, DL at top removes line",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "41414141410d0a42424242420d0a43434343430d0a44444444440d0a4545454545 1b5b323b3472 1b5b343b3148 1b5b314c",
+  "comment": "Fill 5 rows AAAAA..EEEEE. Set scroll region 2;4 (rows 1-3). CUP(4,1) → cursor (3,0). IL 1 at bottom of region. Row 3 becomes blank, old row 3 (DDDDD) shifts out. Rows outside region unchanged.",
+  "expected": {
+    "cursor": { "row": 3, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 1, "col": 0, "char": "B" },
+      { "row": 2, "col": 0, "char": "C" },
+      { "row": 3, "col": 0, "char": " " },
+      { "row": 4, "col": 0, "char": "E" }
+    ]
+  }
+}
