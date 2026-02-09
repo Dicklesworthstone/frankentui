@@ -1,0 +1,15 @@
+{
+  "name": "el_full_indexed_bg",
+  "description": "EL 2 (erase full line) with SGR 48;5 indexed background — entire line is cleared with current indexed bg",
+  "initial_size": [10, 1],
+  "input_bytes_hex": "414141414141414141411b5b34383b353b33336d1b5b313b3448 1b5b324b",
+  "comment": "Print 10 A's, set bg indexed(33), move cursor to col 3, EL 2 clears full line with indexed bg and keeps cursor at col 3.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": " ", "attrs": { "bg_color": { "indexed": 33 } } },
+      { "row": 0, "col": 3, "char": " ", "attrs": { "bg_color": { "indexed": 33 } } },
+      { "row": 0, "col": 9, "char": " ", "attrs": { "bg_color": { "indexed": 33 } } }
+    ]
+  }
+}
