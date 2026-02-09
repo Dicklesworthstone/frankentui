@@ -308,7 +308,13 @@ impl CoreTerminalHarness {
         self.last_printed = Some(ch);
 
         if self.cursor.pending_wrap {
-            self.wrap_to_next_line();
+            if self.modes.autowrap() {
+                self.wrap_to_next_line();
+            } else {
+                // No autowrap: stay at last column
+                self.cursor.col = self.cols.saturating_sub(1);
+                self.cursor.pending_wrap = false;
+            }
         }
 
         let width = Cell::display_width(ch);
@@ -316,8 +322,19 @@ impl CoreTerminalHarness {
             return;
         }
 
-        if width == 2 && self.cursor.col + 1 >= self.cols {
+        if width == 2 && self.cursor.col + 1 >= self.cols && self.modes.autowrap() {
             self.wrap_to_next_line();
+        }
+
+        // IRM: insert mode — shift existing chars right before writing
+        if self.modes.insert_mode() {
+            let shift = u16::from(width);
+            self.grid.insert_chars(
+                self.cursor.row,
+                self.cursor.col,
+                shift,
+                self.cursor.attrs.bg,
+            );
         }
 
         let written =
@@ -328,7 +345,13 @@ impl CoreTerminalHarness {
         }
 
         if self.cursor.col + u16::from(written) >= self.cols {
-            self.cursor.pending_wrap = true;
+            if self.modes.autowrap() {
+                self.cursor.pending_wrap = true;
+            } else {
+                // No autowrap: clamp to last column
+                self.cursor.col = self.cols.saturating_sub(1);
+                self.cursor.pending_wrap = false;
+            }
         } else {
             self.cursor.col += u16::from(written);
             self.cursor.pending_wrap = false;
@@ -1052,6 +1075,57 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             rows: 3,
             // Set stops at 3 and 6, clear all defaults, tab through custom stops
             bytes: b"\x1b[3g\x1b[1;4H\x1bH\x1b[1;7H\x1bH\x1b[1;1H\tA\tB",
+        },
+        // ── IRM (Insert/Replace Mode) ───────────────────────────────
+        SupportedFixture {
+            id: "irm_insert_shifts_right",
+            cols: 10,
+            rows: 3,
+            // Write "ABCDE", enable insert mode, CUP(1,3), type "XY"
+            bytes: b"ABCDE\x1b[4h\x1b[1;3HXY",
+        },
+        SupportedFixture {
+            id: "irm_insert_at_beginning",
+            cols: 10,
+            rows: 3,
+            // Write "ABCDE", insert mode, CUP(1,1), type "XY"
+            bytes: b"ABCDE\x1b[4h\x1b[1;1HXY",
+        },
+        SupportedFixture {
+            id: "irm_insert_pushes_off_edge",
+            cols: 5,
+            rows: 3,
+            // Write "ABCDE", insert mode, CUP(1,1), type "X"
+            bytes: b"ABCDE\x1b[4h\x1b[1;1HX",
+        },
+        SupportedFixture {
+            id: "irm_disable_returns_to_replace",
+            cols: 10,
+            rows: 3,
+            // Write "ABCDE", enable+disable insert, CUP(1,3), type "XY"
+            bytes: b"ABCDE\x1b[4h\x1b[4l\x1b[1;3HXY",
+        },
+        // ── DECAWM (Auto-Wrap Mode) ─────────────────────────────────
+        SupportedFixture {
+            id: "decawm_off_no_wrap",
+            cols: 5,
+            rows: 3,
+            // Disable autowrap, write 8 chars → last col overwritten repeatedly
+            bytes: b"\x1b[?7lABCDEFGH",
+        },
+        SupportedFixture {
+            id: "decawm_off_then_on_wraps",
+            cols: 5,
+            rows: 3,
+            // Disable, write 3, re-enable, write 4 more → wraps after col 4
+            bytes: b"\x1b[?7lABC\x1b[?7hDEFG",
+        },
+        SupportedFixture {
+            id: "decawm_off_cursor_stays_at_edge",
+            cols: 5,
+            rows: 3,
+            // Disable autowrap, CUP(1,5), write "XYZ" → col stays at 4
+            bytes: b"\x1b[?7l\x1b[1;5HXYZ\x1b[1;1HA",
         },
     ]
 }
