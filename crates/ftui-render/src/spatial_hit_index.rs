@@ -521,11 +521,13 @@ impl SpatialHitIndex {
     }
 
     /// Number of registered widgets.
+    #[inline]
     pub fn len(&self) -> usize {
         self.id_to_entry.len()
     }
 
     /// Check if empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.id_to_entry.is_empty()
     }

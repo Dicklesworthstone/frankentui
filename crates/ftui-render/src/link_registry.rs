@@ -107,11 +107,13 @@ impl LinkRegistry {
     }
 
     /// Check if the registry is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Check if the registry contains a link ID.
+    #[inline]
     pub fn contains(&self, id: u32) -> bool {
         self.get(id).is_some()
     }

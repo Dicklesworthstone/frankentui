@@ -93,16 +93,19 @@ impl GraphemePool {
     }
 
     /// Number of active (non-free) slots.
+    #[inline]
     pub fn len(&self) -> usize {
         self.slots.len().saturating_sub(self.free_list.len())
     }
 
     /// Check if the pool is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Total capacity (including free slots).
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.slots.capacity()
     }
