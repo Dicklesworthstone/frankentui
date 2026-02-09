@@ -73,7 +73,6 @@ const E2E_SCHEMA_VERSION: &str = "e2e-jsonl-v1";
 const HASH_ALGO: &str = "fnv1a64";
 const FNV64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV64_PRIME: u64 = 0x0000_0100_0000_01b3;
-const WEB_SWEEP_EXCLUDED: &[ScreenId] = &[ScreenId::MermaidShowcase, ScreenId::MermaidMegaShowcase];
 
 /// Record a session with the given script, then replay and assert determinism.
 fn record_and_verify(cols: u16, rows: u16, script: impl FnOnce(&mut SessionRecorder<AppModel>)) {
@@ -251,6 +250,25 @@ fn build_repro_trace(cols: u16, rows: u16, screen: ScreenId) -> String {
     recorder.finish().to_jsonl()
 }
 
+fn apply_web_sweep_deterministic_profile(program: &mut StepProgram<AppModel>, screen: ScreenId) {
+    match screen {
+        ScreenId::MermaidShowcase => {
+            program
+                .model_mut()
+                .screens
+                .mermaid_showcase
+                .stabilize_metrics_for_snapshot();
+            // Hide timing-heavy panel output for deterministic hash sweeps.
+            program.push_event(key(KeyCode::Char('m')));
+        }
+        ScreenId::MermaidMegaShowcase => {
+            // Hide timing-heavy metrics side panel for deterministic hash sweeps.
+            program.push_event(key(KeyCode::Char('m')));
+        }
+        _ => {}
+    }
+}
+
 fn run_web_sweep(cols: u16, rows: u16, dpr: f32) -> Vec<WebSweepRecord> {
     let mut program = StepProgram::new(AppModel::new(), cols, rows);
     program.init().unwrap();
@@ -258,12 +276,10 @@ fn run_web_sweep(cols: u16, rows: u16, dpr: f32) -> Vec<WebSweepRecord> {
     let mut records = Vec::new();
     let mut ts_ms = 0_u64;
 
-    for &screen in screens::screen_ids()
-        .iter()
-        .filter(|screen| !WEB_SWEEP_EXCLUDED.contains(screen))
-    {
+    for &screen in screens::screen_ids().iter() {
         ts_ms = ts_ms.saturating_add(TICK_MS);
         program.model_mut().current_screen = screen;
+        apply_web_sweep_deterministic_profile(&mut program, screen);
         program.push_event(tick_event());
         program.advance_time(Duration::from_millis(TICK_MS));
 

@@ -372,12 +372,13 @@ impl CoreTerminalHarness {
             // Cursor shape changes tracked but not applied in conformance harness.
             Action::SetCursorShape(_) => {}
             Action::SoftReset => {
-                // DECSTR: reset modes, SGR, scroll region, cursor visibility.
+                // DECSTR: reset modes, SGR, scroll region, cursor visibility, charset.
                 // Unlike RIS, soft reset does NOT clear the screen or scrollback.
                 self.modes = Modes::new();
                 self.cursor.attrs = Default::default();
                 self.cursor.set_scroll_region(0, self.rows, self.rows);
                 self.cursor.pending_wrap = false;
+                self.cursor.reset_charset();
             }
             // EraseScrollback clears scrollback buffer; no visible effect in grid.
             Action::EraseScrollback => {}
