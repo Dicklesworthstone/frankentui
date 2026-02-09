@@ -1,0 +1,14 @@
+{
+  "name": "sgr_blink",
+  "description": "SGR 5 enables blink, SGR 25 disables it",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b356d411b5b32356d42",
+  "comment": "SGR 5 (blink on), print A with blink. SGR 25 (blink off), print B without blink.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "blink": true } },
+      { "row": 0, "col": 1, "char": "B", "attrs": { "blink": false } }
+    ]
+  }
+}

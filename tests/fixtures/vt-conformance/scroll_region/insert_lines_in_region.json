@@ -1,0 +1,17 @@
+{
+  "name": "insert_lines_in_region",
+  "description": "CSI L (Insert Lines) within a scroll region pushes content down, bottom line lost",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "411b5b323b3148421b5b333b3148431b5b343b3148441b5b353b3148451b5b323b34721b5b323b31481b5b314c58",
+  "comment": "Print A-E on rows 0-4 at col 0. DECSTBM(2,4) sets scroll region rows 1-3 (0-indexed), cursor -> (0,0). CUP(2,1) to (1,0). IL(1) inserts blank at row 1, B->row2, C->row3, D lost. Print X at (1,0). Row 0=A, 1=X, 2=B, 3=C, 4=E.",
+  "expected": {
+    "cursor": { "row": 1, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 1, "col": 0, "char": "X" },
+      { "row": 2, "col": 0, "char": "B" },
+      { "row": 3, "col": 0, "char": "C" },
+      { "row": 4, "col": 0, "char": "E" }
+    ]
+  }
+}

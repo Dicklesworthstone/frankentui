@@ -1,0 +1,15 @@
+{
+  "name": "reverse_index_basic",
+  "description": "ESC M (Reverse Index) moves cursor up one line without scrolling",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "1b5b323b314841421b4d43",
+  "comment": "CUP(2,1) to 0-indexed (1,0), print AB, ESC M moves cursor up to (0,2), print C.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 1, "col": 0, "char": "A" },
+      { "row": 1, "col": 1, "char": "B" }
+    ]
+  }
+}

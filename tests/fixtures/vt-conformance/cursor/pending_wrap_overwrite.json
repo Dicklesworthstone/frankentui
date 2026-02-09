@@ -1,0 +1,15 @@
+{
+  "name": "pending_wrap_overwrite",
+  "description": "CUP while pending_wrap is set clears the wrap flag and positions cursor normally",
+  "initial_size": [3, 3],
+  "input_bytes_hex": "414243 1b5b313b3148 58",
+  "comment": "Print ABC on 3-col grid: A(0,0) B(0,1) C(0,2) with pending_wrap=true. CUP(1,1) -> (0,0) clears pending_wrap. Print X at (0,0) overwrites A.",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "C" }
+    ]
+  }
+}

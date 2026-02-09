@@ -1,0 +1,18 @@
+{
+  "name": "insert_chars_basic",
+  "description": "CSI Ps @ (Insert Characters) shifts existing content right at cursor position",
+  "initial_size": [8, 3],
+  "input_bytes_hex": "41424344451b5b313b32481b5b324058",
+  "comment": "Print ABCDE at (0,0)-(0,4). CUP(1,2) to (0,1). CSI 2 @ inserts 2 blanks at (0,1), shifting BCDE right. Grid becomes A__BCDE (within 8 cols). Print X at (0,1), cursor advances to (0,2).",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "X" },
+      { "row": 0, "col": 3, "char": "B" },
+      { "row": 0, "col": 4, "char": "C" },
+      { "row": 0, "col": 5, "char": "D" },
+      { "row": 0, "col": 6, "char": "E" }
+    ]
+  }
+}

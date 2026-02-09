@@ -1,0 +1,15 @@
+{
+  "name": "erase_chars_basic",
+  "description": "CSI Ps X (Erase Characters) blanks N characters from cursor position without moving it",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "4142434445461b5b313b33481b5b3358",
+  "comment": "Print ABCDEF at (0,0)-(0,5). CUP(1,3) to (0,2). CSI 3 X erases 3 chars at (0,2)-(0,4). Grid becomes AB___F. Cursor stays at (0,2).",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 5, "char": "F" }
+    ]
+  }
+}

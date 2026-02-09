@@ -1,0 +1,15 @@
+{
+  "name": "next_line",
+  "description": "ESC E (Next Line) is carriage return + index (moves to col 0 of next line)",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "41421b4543",
+  "comment": "Print AB at (0,0)-(0,1), ESC E moves cursor to (1,0), print C at (1,0).",
+  "expected": {
+    "cursor": { "row": 1, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 1, "col": 0, "char": "C" }
+    ]
+  }
+}

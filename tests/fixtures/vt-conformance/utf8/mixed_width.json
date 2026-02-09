@@ -1,0 +1,17 @@
+{
+  "name": "mixed_width",
+  "description": "ASCII and multi-byte UTF-8 characters coexist correctly",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "41c3a942c3bc43",
+  "comment": "Print A (ASCII), then é (U+00E9, 2 bytes: C3 A9), then B (ASCII), then ü (U+00FC, 2 bytes: C3 BC), then C (ASCII). All single-cell width.",
+  "expected": {
+    "cursor": { "row": 0, "col": 5 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "é" },
+      { "row": 0, "col": 2, "char": "B" },
+      { "row": 0, "col": 3, "char": "ü" },
+      { "row": 0, "col": 4, "char": "C" }
+    ]
+  }
+}

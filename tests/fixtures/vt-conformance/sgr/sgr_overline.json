@@ -1,0 +1,14 @@
+{
+  "name": "sgr_overline",
+  "description": "SGR 53 enables overline, SGR 55 disables it",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b35336d411b5b35356d42",
+  "comment": "SGR 53 (overline on), print A with overline. SGR 55 (overline off), print B without overline.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "overline": true } },
+      { "row": 0, "col": 1, "char": "B", "attrs": { "overline": false } }
+    ]
+  }
+}

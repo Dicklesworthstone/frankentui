@@ -654,6 +654,9 @@ Pass criteria:
 
 ## 5. Session Lifecycle
 
+Bridge implementation target: `crates/ftui-pty/src/ws_bridge.rs` (websocket
+accept loop + PTY forwarding + telemetry JSONL).
+
 ### 5.1 Connection Sequence
 
 ```

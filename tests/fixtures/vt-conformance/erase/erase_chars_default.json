@@ -1,0 +1,15 @@
+{
+  "name": "erase_chars_default",
+  "description": "CSI X with no parameter defaults to erasing 1 character",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "414243441b5b313b32481b5b58",
+  "comment": "Print ABCD at (0,0)-(0,3). CUP(1,2) to (0,1). CSI X erases 1 char at (0,1). Grid becomes A_CD. Cursor stays at (0,1).",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 0, "col": 3, "char": "D" }
+    ]
+  }
+}

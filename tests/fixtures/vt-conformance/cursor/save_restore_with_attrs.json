@@ -1,0 +1,16 @@
+{
+  "name": "save_restore_with_attrs",
+  "description": "ESC 7 / ESC 8 (DECSC/DECRC) saves and restores cursor position and SGR attributes",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b316d41 1b37 1b5b306d 1b5b333b31484243 1b38 44",
+  "comment": "SGR 1 (bold on), print A at (0,0). ESC 7 saves cursor at (0,1) with bold. SGR 0 resets. CUP(3,1) to (2,0), print BC. ESC 8 restores cursor to (0,1) with bold. Print D at (0,1) with bold.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bold": true } },
+      { "row": 0, "col": 1, "char": "D", "attrs": { "bold": true } },
+      { "row": 2, "col": 0, "char": "B" },
+      { "row": 2, "col": 1, "char": "C" }
+    ]
+  }
+}

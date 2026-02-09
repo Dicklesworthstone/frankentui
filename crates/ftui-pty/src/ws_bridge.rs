@@ -687,6 +687,12 @@ fn now_iso8601() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use tungstenite::stream::MaybeTlsStream;
+    use tungstenite::{Message, connect};
 
     fn request(uri: &str, origin: Option<&str>) -> Request {
         let mut builder = Request::builder().uri(uri);
@@ -762,5 +768,73 @@ mod tests {
         let error = parse_control_message(r#"{"type":"resize","cols":0,"rows":40}"#)
             .expect_err("invalid dims should fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bridge_smoke_echoes_bytes_through_pty() {
+        let listener =
+            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind ephemeral port");
+        let bind_addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        let config = WsPtyBridgeConfig {
+            bind_addr,
+            accept_once: true,
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "cat".to_string()],
+            idle_sleep: Duration::from_millis(1),
+            ..WsPtyBridgeConfig::default()
+        };
+
+        let handle = thread::spawn(move || run_ws_pty_bridge(config));
+        thread::sleep(Duration::from_millis(75));
+
+        let url = format!("ws://{bind_addr}/ws");
+        let (mut client, _response) = connect(url).expect("connect websocket");
+        if let MaybeTlsStream::Plain(stream) = client.get_mut() {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .expect("set read timeout");
+        }
+        client
+            .send(Message::Binary(b"hello-through-bridge\n".to_vec().into()))
+            .expect("send input");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut observed = Vec::new();
+        while Instant::now() < deadline {
+            match client.read() {
+                Ok(Message::Binary(bytes)) => {
+                    observed.extend_from_slice(bytes.as_ref());
+                    if observed
+                        .windows(b"hello-through-bridge".len())
+                        .any(|window| window == b"hello-through-bridge")
+                    {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(WsError::Io(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) => panic!("websocket read failed: {error}"),
+            }
+        }
+
+        assert!(
+            observed
+                .windows(b"hello-through-bridge".len())
+                .any(|window| window == b"hello-through-bridge"),
+            "expected PTY echo in websocket output"
+        );
+
+        client
+            .send(Message::Text(r#"{"type":"close"}"#.to_string().into()))
+            .expect("send close control");
+        let result = handle.join().expect("bridge thread join");
+        result.expect("bridge result");
     }
 }

@@ -1,0 +1,15 @@
+{
+  "name": "sgr_inverse_hidden",
+  "description": "SGR 7 enables inverse, SGR 8 enables hidden",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b376d411b5b386d421b5b306d43",
+  "comment": "SGR 7 (inverse on), print A with inverse. SGR 8 (hidden on), print B with inverse+hidden. SGR 0 (reset), print C plain.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "inverse": true } },
+      { "row": 0, "col": 1, "char": "B", "attrs": { "inverse": true, "hidden": true } },
+      { "row": 0, "col": 2, "char": "C" }
+    ]
+  }
+}

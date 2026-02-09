@@ -1,0 +1,15 @@
+{
+  "name": "delete_chars_basic",
+  "description": "CSI Ps P (Delete Characters) removes N characters at cursor, shifting remainder left",
+  "initial_size": [8, 3],
+  "input_bytes_hex": "41424344451b5b313b32481b5b325058",
+  "comment": "Print ABCDE at (0,0)-(0,4). CUP(1,2) to (0,1). CSI 2 P deletes 2 chars at (0,1)-(0,2), shifting DE left. Grid becomes ADE__, cursor at (0,1). Print X overwrites D. Result: AXE.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "X" },
+      { "row": 0, "col": 2, "char": "E" }
+    ]
+  }
+}

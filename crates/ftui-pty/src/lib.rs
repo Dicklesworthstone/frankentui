@@ -15,6 +15,7 @@
 //! - [`pty_process`] - Shell process management with `spawn()`, `kill()`, `is_alive()`.
 //! - [`virtual_terminal`] - In-memory terminal state machine for testing.
 //! - [`input_forwarding`] - Key-to-sequence conversion and paste handling.
+//! - [`ws_bridge`] - WebSocket-to-PTY bridge for remote FrankenTerm sessions.
 //!
 //! # Role in FrankenTUI
 //! `ftui-pty` underpins end-to-end and integration tests that need real PTYs.
@@ -34,6 +35,9 @@ pub mod pty_process;
 
 /// In-memory virtual terminal state machine for testing.
 pub mod virtual_terminal;
+
+/// WebSocket-to-PTY bridge for remote terminal sessions.
+pub mod ws_bridge;
 
 use std::fmt;
 use std::io::{self, Read, Write};

@@ -1,0 +1,20 @@
+{
+  "name": "save_restore_dec",
+  "description": "ESC 7 (DECSC) saves cursor, ESC 8 (DECRC) restores it",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "414243 1b37 1b5b333b314844454647 1b38 58",
+  "comment": "Print ABC at (0,0)-(0,2), cursor at (0,3). ESC 7 saves cursor at (0,3). CUP(3,1) to (2,0), print DEFG. ESC 8 restores to (0,3). Print X at (0,3).",
+  "expected": {
+    "cursor": { "row": 0, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 0, "col": 3, "char": "X" },
+      { "row": 2, "col": 0, "char": "D" },
+      { "row": 2, "col": 1, "char": "E" },
+      { "row": 2, "col": 2, "char": "F" },
+      { "row": 2, "col": 3, "char": "G" }
+    ]
+  }
+}
