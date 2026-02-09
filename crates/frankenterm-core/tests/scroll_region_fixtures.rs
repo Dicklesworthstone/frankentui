@@ -170,8 +170,14 @@ impl CoreHarness {
                 self.cursor.pending_wrap = false;
             }
             Action::CursorRow(row) => {
-                self.cursor
-                    .move_to(row, self.cursor.col, self.rows, self.cols);
+                if self.modes.origin_mode() {
+                    let abs_row = row.saturating_add(self.cursor.scroll_top());
+                    self.cursor.row = abs_row.min(self.cursor.scroll_bottom().saturating_sub(1));
+                    self.cursor.pending_wrap = false;
+                } else {
+                    self.cursor
+                        .move_to(row, self.cursor.col, self.rows, self.cols);
+                }
             }
             Action::CursorColumn(col) => {
                 self.cursor
@@ -184,7 +190,14 @@ impl CoreHarness {
                     bottom.min(self.rows)
                 };
                 self.cursor.set_scroll_region(top, bottom, self.rows);
-                self.cursor.move_to(0, 0, self.rows, self.cols);
+                // DECOM: cursor homes to top of scroll region; otherwise (0,0).
+                if self.modes.origin_mode() {
+                    self.cursor.row = self.cursor.scroll_top();
+                    self.cursor.col = 0;
+                    self.cursor.pending_wrap = false;
+                } else {
+                    self.cursor.move_to(0, 0, self.rows, self.cols);
+                }
             }
             Action::ScrollUp(count) => self.grid.scroll_up_into(
                 self.cursor.scroll_top(),
@@ -247,7 +260,14 @@ impl CoreHarness {
                 self.cursor.pending_wrap = false;
             }
             Action::CursorPosition { row, col } => {
-                self.cursor.move_to(row, col, self.rows, self.cols);
+                if self.modes.origin_mode() {
+                    let abs_row = row.saturating_add(self.cursor.scroll_top());
+                    self.cursor.row = abs_row.min(self.cursor.scroll_bottom().saturating_sub(1));
+                    self.cursor.col = col.min(self.cols.saturating_sub(1));
+                    self.cursor.pending_wrap = false;
+                } else {
+                    self.cursor.move_to(row, col, self.rows, self.cols);
+                }
             }
             Action::EraseInDisplay(mode) => {
                 let bg = self.cursor.attrs.bg;
@@ -606,10 +626,7 @@ fn validate_reference_against_expected(fixture: &Fixture, vt: &VirtualTerminal) 
 /// Fixtures that both engines fail because the underlying feature is not yet
 /// implemented. These are tracked here (not silently skipped) so that when the
 /// feature lands, the test will start passing and remind us to remove the entry.
-const KNOWN_FAILURES: &[(&str, &str)] = &[(
-    "cup_decom_clamp_beyond_region",
-    "DECOM (origin mode, DEC private mode 6) not yet implemented in either engine",
-)];
+const KNOWN_FAILURES: &[(&str, &str)] = &[];
 
 fn is_known_failure(name: &str) -> bool {
     KNOWN_FAILURES.iter().any(|(n, _)| *n == name)
