@@ -729,7 +729,8 @@ impl PlasmaFx {
         let (sin_t2, cos_t2) = (time * 0.8).sin_cos();
         let (sin_t3, cos_t3) = (time * 0.6).sin_cos();
         let (sin_t4, cos_t4) = (time * 1.2).sin_cos();
-        let (sin_time, cos_time) = time.sin_cos();
+        let sin_time = sin_t1;
+        let cos_time = cos_t1;
         let (sin_t6, cos_t6) = (time * 0.5).sin_cos();
         let breath = 0.85 + 0.15 * (time * 0.3).sin();
 
