@@ -206,12 +206,14 @@ impl HistoryPanel {
     }
 
     /// Check if there are any history items.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.undo_items.is_empty() && self.redo_items.is_empty()
     }
 
     /// Get the total number of items.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.undo_items.len() + self.redo_items.len()

@@ -88,6 +88,7 @@ impl TreeGuides {
     }
 
     /// Width in columns of each guide segment.
+    #[inline]
     #[must_use]
     pub fn width(&self) -> usize {
         4

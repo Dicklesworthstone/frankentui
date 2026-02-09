@@ -502,12 +502,14 @@ impl HelpIndex {
     }
 
     /// Number of indexed entries.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.all_ids.len()
     }
 
     /// Whether the index is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.all_ids.is_empty()
