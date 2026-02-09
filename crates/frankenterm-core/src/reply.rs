@@ -373,4 +373,438 @@ mod tests {
             Some(b"\x1b[?2026;1$y".to_vec())
         );
     }
+
+    // ---- parse_escape edge cases ----
+
+    #[test]
+    fn parse_escape_too_short() {
+        assert_eq!(TerminalQuery::parse_escape(b""), None);
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b"), None);
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b["), None);
+    }
+
+    #[test]
+    fn parse_escape_wrong_prefix() {
+        assert_eq!(TerminalQuery::parse_escape(b"AB5n"), None);
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b]5n"), None);
+    }
+
+    #[test]
+    fn parse_escape_unknown_final_byte() {
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[5z"), None);
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[0m"), None);
+    }
+
+    // ---- parse_u16_ascii (tested indirectly via DECRPM) ----
+
+    #[test]
+    fn decrpm_mode_zero() {
+        assert_eq!(
+            TerminalQuery::parse_escape(b"\x1b[?0$p"),
+            Some(TerminalQuery::DecModeReport { mode: 0 })
+        );
+    }
+
+    #[test]
+    fn decrpm_max_valid_mode() {
+        // u16::MAX = 65535
+        assert_eq!(
+            TerminalQuery::parse_escape(b"\x1b[?65535$p"),
+            Some(TerminalQuery::DecModeReport { mode: 65535 })
+        );
+    }
+
+    #[test]
+    fn decrpm_overflow_u16_returns_none() {
+        // 65536 > u16::MAX
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[?65536$p"), None);
+    }
+
+    #[test]
+    fn decrpm_non_digit_in_mode_returns_none() {
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[?abc$p"), None);
+    }
+
+    #[test]
+    fn decrpm_missing_question_mark_returns_none() {
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[2026$p"), None);
+    }
+
+    #[test]
+    fn decrpm_missing_dollar_returns_none() {
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[?2026p"), None);
+    }
+
+    #[test]
+    fn decrpm_empty_mode_number_returns_none() {
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[?$p"), None);
+    }
+
+    // ---- DA1/DA2 parse variants ----
+
+    #[test]
+    fn da2_with_explicit_zero() {
+        assert_eq!(
+            TerminalQuery::parse_escape(b"\x1b[>0c"),
+            Some(TerminalQuery::SecondaryDeviceAttributes)
+        );
+    }
+
+    #[test]
+    fn da_invalid_param_returns_none() {
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[1c"), None);
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[>1c"), None);
+    }
+
+    // ---- DSR parse variants ----
+
+    #[test]
+    fn dsr_unknown_param_returns_none() {
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[7n"), None);
+        assert_eq!(TerminalQuery::parse_escape(b"\x1b[0n"), None);
+    }
+
+    // ---- ReplyEngine identity ----
+
+    #[test]
+    fn xterm_like_da2_values() {
+        let engine = ReplyEngine::xterm_like();
+        assert_eq!(engine.da2_terminal_id, 1);
+        assert_eq!(engine.da2_version, 10);
+        assert_eq!(engine.da2_rom, 0);
+    }
+
+    #[test]
+    fn default_equals_xterm_like() {
+        assert_eq!(ReplyEngine::default(), ReplyEngine::xterm_like());
+    }
+
+    // ---- reply_for_query: cursor position edge cases ----
+
+    #[test]
+    fn cursor_position_at_origin() {
+        let engine = ReplyEngine::default();
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: None,
+        };
+        // 0-based (0,0) → 1-indexed (1,1)
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::CursorPosition, context),
+            b"\x1b[1;1R"
+        );
+    }
+
+    #[test]
+    fn cursor_position_at_large_values() {
+        let engine = ReplyEngine::default();
+        let context = ReplyContext {
+            cursor_row: 999,
+            cursor_col: 499,
+            modes: None,
+        };
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::CursorPosition, context),
+            b"\x1b[1000;500R"
+        );
+    }
+
+    #[test]
+    fn extended_cursor_position_reply() {
+        let engine = ReplyEngine::default();
+        let context = ReplyContext {
+            cursor_row: 3,
+            cursor_col: 7,
+            modes: None,
+        };
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::ExtendedCursorPosition, context),
+            b"\x1b[?4;8R"
+        );
+    }
+
+    #[test]
+    fn cursor_position_u16_max_saturates() {
+        let engine = ReplyEngine::default();
+        let context = ReplyContext {
+            cursor_row: u16::MAX,
+            cursor_col: u16::MAX,
+            modes: None,
+        };
+        // saturating_add(1) on u16::MAX = u16::MAX
+        let reply = engine.reply_for_query(TerminalQuery::CursorPosition, context);
+        let expected = format!("\x1b[{};{}R", u16::MAX, u16::MAX).into_bytes();
+        assert_eq!(reply, expected);
+    }
+
+    // ---- DA2 custom engine ----
+
+    #[test]
+    fn custom_da2_identity() {
+        let engine = ReplyEngine {
+            da2_terminal_id: 42,
+            da2_version: 100,
+            da2_rom: 5,
+        };
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: None,
+        };
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::SecondaryDeviceAttributes, context),
+            b"\x1b[>42;100;5c"
+        );
+    }
+
+    // ---- DECRPM with modes: all supported mode values ----
+
+    #[test]
+    fn decrpm_application_cursor_mode_1() {
+        let engine = ReplyEngine::default();
+        let mut modes = Modes::new();
+        modes.set_dec_mode(1, true);
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: Some(&modes),
+        };
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 1 }, context),
+            b"\x1b[?1;1$y"
+        );
+    }
+
+    #[test]
+    fn decrpm_origin_mode_6() {
+        let engine = ReplyEngine::default();
+        let mut modes = Modes::new();
+        modes.set_dec_mode(6, true);
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: Some(&modes),
+        };
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 6 }, context),
+            b"\x1b[?6;1$y"
+        );
+    }
+
+    #[test]
+    fn decrpm_autowrap_mode_7() {
+        let engine = ReplyEngine::default();
+        let modes = Modes::new();
+        // Autowrap default is typically on
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: Some(&modes),
+        };
+        let reply = engine.reply_for_query(TerminalQuery::DecModeReport { mode: 7 }, context);
+        // Should contain ;1$y (enabled) or ;2$y (disabled) — just check it's valid
+        assert!(reply.starts_with(b"\x1b[?7;"));
+        assert!(reply.ends_with(b"$y"));
+    }
+
+    #[test]
+    fn decrpm_mouse_modes() {
+        let engine = ReplyEngine::default();
+        let mut modes = Modes::new();
+        modes.set_dec_mode(1000, true); // MOUSE_BUTTON
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: Some(&modes),
+        };
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 1000 }, context),
+            b"\x1b[?1000;1$y"
+        );
+        // 1002 should be disabled
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 1002 }, context),
+            b"\x1b[?1002;2$y"
+        );
+    }
+
+    #[test]
+    fn decrpm_alt_screen_mode_1049() {
+        let engine = ReplyEngine::default();
+        let modes = Modes::new();
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: Some(&modes),
+        };
+        // Default: alt_screen off → status 2
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 1049 }, context),
+            b"\x1b[?1049;2$y"
+        );
+    }
+
+    #[test]
+    fn decrpm_bracketed_paste_mode_2004() {
+        let engine = ReplyEngine::default();
+        let mut modes = Modes::new();
+        modes.set_dec_mode(2004, true);
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: Some(&modes),
+        };
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 2004 }, context),
+            b"\x1b[?2004;1$y"
+        );
+    }
+
+    #[test]
+    fn decrpm_unknown_mode_returns_status_zero() {
+        let engine = ReplyEngine::default();
+        let modes = Modes::new();
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: Some(&modes),
+        };
+        // Mode 9999 is not recognized → status 0
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 9999 }, context),
+            b"\x1b[?9999;0$y"
+        );
+    }
+
+    #[test]
+    fn decrpm_without_modes_context_returns_status_zero() {
+        let engine = ReplyEngine::default();
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: None,
+        };
+        // No modes context → status 0
+        assert_eq!(
+            engine.reply_for_query(TerminalQuery::DecModeReport { mode: 2026 }, context),
+            b"\x1b[?2026;0$y"
+        );
+    }
+
+    // ---- query_from_action ----
+
+    #[test]
+    fn query_from_action_device_attributes() {
+        assert_eq!(
+            ReplyEngine::query_from_action(&Action::DeviceAttributes),
+            Some(TerminalQuery::PrimaryDeviceAttributes)
+        );
+    }
+
+    #[test]
+    fn query_from_action_device_attributes_secondary() {
+        assert_eq!(
+            ReplyEngine::query_from_action(&Action::DeviceAttributesSecondary),
+            Some(TerminalQuery::SecondaryDeviceAttributes)
+        );
+    }
+
+    #[test]
+    fn query_from_action_device_status_report() {
+        assert_eq!(
+            ReplyEngine::query_from_action(&Action::DeviceStatusReport),
+            Some(TerminalQuery::DeviceStatus)
+        );
+    }
+
+    #[test]
+    fn query_from_action_cursor_position_report() {
+        assert_eq!(
+            ReplyEngine::query_from_action(&Action::CursorPositionReport),
+            Some(TerminalQuery::CursorPosition)
+        );
+    }
+
+    #[test]
+    fn query_from_action_escape_with_query() {
+        let action = Action::Escape(b"\x1b[5n".to_vec());
+        assert_eq!(
+            ReplyEngine::query_from_action(&action),
+            Some(TerminalQuery::DeviceStatus)
+        );
+    }
+
+    #[test]
+    fn query_from_action_escape_without_query() {
+        let action = Action::Escape(b"\x1b[0m".to_vec());
+        assert_eq!(ReplyEngine::query_from_action(&action), None);
+    }
+
+    #[test]
+    fn query_from_action_non_query_returns_none() {
+        assert_eq!(ReplyEngine::query_from_action(&Action::Print('A')), None);
+    }
+
+    // ---- reply_for_action ----
+
+    #[test]
+    fn reply_for_action_returns_none_for_non_query() {
+        let engine = ReplyEngine::default();
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: None,
+        };
+        assert_eq!(engine.reply_for_action(&Action::Print('x'), context), None);
+    }
+
+    #[test]
+    fn reply_for_action_returns_reply_for_da1() {
+        let engine = ReplyEngine::default();
+        let context = ReplyContext {
+            cursor_row: 0,
+            cursor_col: 0,
+            modes: None,
+        };
+        let reply = engine.reply_for_action(&Action::DeviceAttributes, context);
+        assert_eq!(reply, Some(DA1_REPLY.to_vec()));
+    }
+
+    // ---- wrapper APIs ----
+
+    #[test]
+    fn parse_terminal_query_delegates_to_parse_escape() {
+        assert_eq!(
+            parse_terminal_query(b"\x1b[c"),
+            Some(TerminalQuery::PrimaryDeviceAttributes)
+        );
+        assert_eq!(parse_terminal_query(b"not an escape"), None);
+    }
+
+    #[test]
+    fn reply_for_query_bytes_returns_none_for_invalid() {
+        let cursor = Cursor::new(80, 24);
+        let modes = Modes::new();
+        assert_eq!(reply_for_query_bytes(b"garbage", &cursor, &modes), None);
+    }
+
+    #[test]
+    fn reply_for_query_uses_cursor_position() {
+        let mut cursor = Cursor::new(80, 24);
+        cursor.row = 5;
+        cursor.col = 10;
+        let modes = Modes::new();
+        // DSR cursor position: should use row=5, col=10 → "6;11R"
+        let reply = reply_for_query(TerminalQuery::CursorPosition, &cursor, &modes);
+        assert_eq!(reply, b"\x1b[6;11R");
+    }
+
+    // ---- DA1 constant ----
+
+    #[test]
+    fn da1_reply_starts_with_esc_bracket() {
+        assert!(DA1_REPLY.starts_with(b"\x1b[?"));
+        assert!(DA1_REPLY.ends_with(b"c"));
+    }
 }
