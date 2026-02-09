@@ -1,0 +1,15 @@
+{
+  "name": "scroll_up_multi",
+  "description": "CSI 2 S scrolls up by 2 lines",
+  "initial_size": [5, 4],
+  "input_bytes_hex": "411b5b323b314842 1b5b333b314843 1b5b343b314844 1b5b325358",
+  "comment": "Print A at (0,0), CUP(2,1) B at (1,0), CUP(3,1) C at (2,0), CUP(4,1) D at (3,0) cursor->(3,1). CSI 2 S scrolls up 2 lines. A and B scroll off. C->(0,0), D->(1,0). Cursor stays at (3,1). X printed at (3,1), cursor->(3,2).",
+  "expected": {
+    "cursor": { "row": 3, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "C" },
+      { "row": 1, "col": 0, "char": "D" },
+      { "row": 3, "col": 1, "char": "X" }
+    ]
+  }
+}

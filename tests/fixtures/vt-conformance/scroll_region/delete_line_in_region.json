@@ -1,0 +1,17 @@
+{
+  "name": "delete_line_in_region",
+  "description": "DL inside a scroll region removes cursor line and pulls content up within the region only",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "41414141414141414141424242424242424242424343434343434343434344444444444444444444454545454545454545451b5b323b34721b5b323b31481b5b4d",
+  "comment": "Fill 5 rows with A-E. Set scroll region rows 2-4 (CSI 2;4 r, top=1 bottom=4). CUP(2,1) to (1,0). DL(1) deletes row 1, pulls C->1, D->2, blank at row 3. Row 4 (E) unchanged.",
+  "expected": {
+    "cursor": { "row": 1, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 1, "col": 0, "char": "C" },
+      { "row": 2, "col": 0, "char": "D" },
+      { "row": 3, "col": 0, "char": " " },
+      { "row": 4, "col": 0, "char": "E" }
+    ]
+  }
+}

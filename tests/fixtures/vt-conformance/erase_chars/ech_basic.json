@@ -1,0 +1,17 @@
+{
+  "name": "ech_basic",
+  "description": "ECH (CSI 3X) erases 3 characters at cursor without moving it",
+  "initial_size": [80, 24],
+  "input_bytes_hex": "41424344451b5b32471b5b3358",
+  "comment": "Print ABCDE (cursor at col 5), CHA(2) to col 1, ECH(3) erases cols 1-3, cursor stays at col 1",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": " " },
+      { "row": 0, "col": 2, "char": " " },
+      { "row": 0, "col": 3, "char": " " },
+      { "row": 0, "col": 4, "char": "E" }
+    ]
+  }
+}

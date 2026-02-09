@@ -1,0 +1,15 @@
+{
+  "name": "overwrite_at_right_margin",
+  "description": "Printing at right margin overwrites the cell but does not advance to next line yet",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "4142434445464748494a1b5b3130475a",
+  "comment": "Fill 10 cols (pending wrap), CHA(10) to col 9 (clears pending wrap), print Z at col 9 sets pending wrap again; cursor stays at (0,9)",
+  "expected": {
+    "cursor": { "row": 0, "col": 9 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 8, "char": "I" },
+      { "row": 0, "col": 9, "char": "Z" }
+    ]
+  }
+}
