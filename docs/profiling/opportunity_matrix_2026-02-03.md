@@ -213,6 +213,33 @@ Trial comparison (`canvas.rs` branch-elision, current -> trial):
 
 Decision: revert branch-elision lever in `canvas.rs` because it regresses the two target-heavy effects (`plasma`, `metaballs`) despite improving `doom`/`quake`.
 
+#### Presenter hot-path trial (`bd-3e1t.5.3.3`) — reverted
+
+Surface explored: `crates/ftui-render/src/presenter.rs` (`emit_style_delta` color-only fast path).
+
+Two variants were tested against current head and both were reverted (no net source change retained):
+
+- V1 artifacts: `/tmp/vfx_bd3e1t53_post_presenterfast_{plasma,metaballs,doom,quake}_120x40.jsonl`
+- V2 artifacts: `/tmp/vfx_bd3e1t53_post_presenterfastv2_{plasma,metaballs}_120x40.jsonl`
+
+V1 (`current -> presenterfast`, p95 deltas):
+
+| Effect | total_ms_p95 | render_ms_p95 | present_ms_p95 |
+|---|---:|---:|---:|
+| plasma | +19.64% | +12.40% | +15.12% |
+| metaballs | +9.25% | -5.90% | +76.75% |
+| doom | -9.59% | -6.53% | -3.11% |
+| quake | -17.39% | -16.28% | +4.55% |
+
+V2 (`current -> presenterfastv2`, heavy effects):
+
+| Effect | total_ms_p95 | render_ms_p95 | present_ms_p95 |
+|---|---:|---:|---:|
+| plasma | +23.61% | +12.52% | +53.73% |
+| metaballs | +2.66% | +0.17% | +15.03% |
+
+Determinism remained identical for all runs (frame-hash stream SHA256 unchanged per effect), but heavy-effect performance regressed, so this lever is marked as a dead end for the current pass.
+
 #### Detached-worktree A/B (bd-3e1t.5.9 plasma commit pair)
 
 - Baseline commit: `0fcc6ce5ebdd7524a408b6f20b104dd4a97377ed`

@@ -346,13 +346,15 @@ impl PlasmaSampler {
         // Scale to wave-space
         let wx = x * 6.0;
         let wy = y * 6.0;
+        let wx3 = wx - 3.0;
+        let wy3 = wy - 3.0;
 
         // 6 wave components
         let v1 = (wx * 1.5 + time).sin();
         let v2 = (wy * 1.8 + time * 0.8).sin();
         let v3 = ((wx + wy) * 1.2 + time * 0.6).sin();
         let v4 = ((wx * wx + wy * wy).sqrt() * 2.0 - time * 1.2).sin();
-        let v5 = (((wx - 3.0).powi(2) + (wy - 3.0).powi(2)).sqrt() * 1.8 + time).cos();
+        let v5 = ((wx3 * wx3 + wy3 * wy3).sqrt() * 1.8 + time).cos();
         let v6 = ((wx * 2.0).sin() * (wy * 2.0).cos() + time * 0.5).sin();
 
         // Average and normalize [-1, 1] to [0, 1]
@@ -1019,6 +1021,34 @@ mod tests {
     fn test_plasma_sampler_name() {
         let sampler = PlasmaSampler;
         assert_eq!(sampler.name(), "plasma");
+    }
+
+    #[test]
+    fn test_plasma_v5_mul_form_matches_powi_form_bit_exact() {
+        let xs: [f64; 6] = [0.0, 0.1, 0.33, 0.5, 0.9, 1.0];
+        let ys: [f64; 5] = [0.0, 0.2, 0.5, 0.77, 1.0];
+        let ts: [f64; 5] = [0.0, 0.5, 1.0, std::f64::consts::PI, 10.0];
+
+        for x in xs {
+            for y in ys {
+                for t in ts {
+                    let wx = x * 6.0;
+                    let wy = y * 6.0;
+                    let powi_form =
+                        (((wx - 3.0).powi(2) + (wy - 3.0).powi(2)).sqrt() * 1.8 + t).cos();
+
+                    let wx3 = wx - 3.0;
+                    let wy3 = wy - 3.0;
+                    let mul_form = ((wx3 * wx3 + wy3 * wy3).sqrt() * 1.8 + t).cos();
+
+                    assert_eq!(
+                        powi_form.to_bits(),
+                        mul_form.to_bits(),
+                        "x={x}, y={y}, t={t}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

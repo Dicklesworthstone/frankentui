@@ -1597,12 +1597,100 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             // Print AB, CUP(1,1), print wide 中 → overwrites A and B
             bytes: b"AB\x1b[1;1H\xe4\xb8\xad",
         },
-        // NOTE: SGR + line editing interaction fixtures (ECH/EL/ED/ICH/DCH/IL/DL
-        // with bg color inheritance) are excluded from differential tests because
-        // the VirtualTerminal reference does not apply current SGR bg to
-        // erased/inserted cells (uses VCell::default instead). The core harness
-        // correctly applies bg per VT220 spec. This is a known reference gap,
-        // not a core bug. The text-only differential fixtures above remain valid.
+        // ── SGR bg color on erase/insert operations ────────────────
+        // VirtualTerminal now uses styled_blank() (current_style) for blanks in
+        // all erase/insert ops, matching core behavior per VT220 spec.
+        SupportedFixture {
+            id: "sgr_ech_with_bg",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, set bg green (42), CUP(1,3), ECH 2 → cols 2-3 get green bg
+            bytes: b"ABCDE\x1b[42m\x1b[1;3H\x1b[2X",
+        },
+        SupportedFixture {
+            id: "sgr_el_right_with_bg",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, set bg red (41), CUP(1,3), EL 0 (right) → cols 2+ get red bg
+            bytes: b"ABCDE\x1b[41m\x1b[1;3H\x1b[0K",
+        },
+        SupportedFixture {
+            id: "sgr_el_left_with_bg",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, set bg blue (44), CUP(1,4), EL 1 (left) → cols 0-3 get blue bg
+            bytes: b"ABCDE\x1b[44m\x1b[1;4H\x1b[1K",
+        },
+        SupportedFixture {
+            id: "sgr_el_full_with_bg",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, set bg magenta (45), CUP(1,3), EL 2 (full line)
+            bytes: b"ABCDE\x1b[45m\x1b[1;3H\x1b[2K",
+        },
+        SupportedFixture {
+            id: "sgr_ed_below_with_bg",
+            cols: 10,
+            rows: 3,
+            // Row 0: ABCDE, Row 1: FGHIJ, set bg green (42), CUP(1,3), ED 0 (below)
+            bytes: b"ABCDE\nFGHIJ\x1b[42m\x1b[1;3H\x1b[0J",
+        },
+        SupportedFixture {
+            id: "sgr_ed_above_with_bg",
+            cols: 10,
+            rows: 3,
+            // Row 0: ABCDE, Row 1: FGHIJ, set bg yellow (43), CUP(2,3), ED 1 (above)
+            bytes: b"ABCDE\nFGHIJ\x1b[43m\x1b[2;3H\x1b[1J",
+        },
+        SupportedFixture {
+            id: "sgr_ed_all_with_bg",
+            cols: 10,
+            rows: 3,
+            // Print content on two rows, set bg cyan (46), ED 2 (all)
+            bytes: b"ABCDE\nFGHIJ\x1b[46m\x1b[2J",
+        },
+        SupportedFixture {
+            id: "sgr_ich_with_bg",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, set bg green (42), CUP(1,3), ICH 2 → 2 blanks with green bg
+            bytes: b"ABCDE\x1b[42m\x1b[1;3H\x1b[2@",
+        },
+        SupportedFixture {
+            id: "sgr_dch_with_bg",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, set bg red (41), CUP(1,2), DCH 2 → trailing blanks get red bg
+            bytes: b"ABCDE\x1b[41m\x1b[1;2H\x1b[2P",
+        },
+        SupportedFixture {
+            id: "sgr_il_with_bg",
+            cols: 10,
+            rows: 4,
+            // Row 0: ABCDE, Row 1: FGHIJ, set bg blue (44), CUP(1,1), IL 1
+            bytes: b"ABCDE\nFGHIJ\x1b[44m\x1b[1;1H\x1b[1L",
+        },
+        SupportedFixture {
+            id: "sgr_dl_with_bg",
+            cols: 10,
+            rows: 4,
+            // Row 0: ABCDE, Row 1: FGHIJ, set bg magenta (45), CUP(1,1), DL 1
+            bytes: b"ABCDE\nFGHIJ\x1b[45m\x1b[1;1H\x1b[1M",
+        },
+        SupportedFixture {
+            id: "sgr_su_with_bg",
+            cols: 10,
+            rows: 3,
+            // Row 0: ABCDE, Row 1: FGHIJ, set bg yellow (43), SU 1 → bottom row gets yellow bg
+            bytes: b"ABCDE\nFGHIJ\x1b[43m\x1b[1S",
+        },
+        SupportedFixture {
+            id: "sgr_sd_with_bg",
+            cols: 10,
+            rows: 3,
+            // Row 0: ABCDE, Row 1: FGHIJ, set bg cyan (46), SD 1 → top row gets cyan bg
+            bytes: b"ABCDE\nFGHIJ\x1b[46m\x1b[1T",
+        },
         // ── Mixed editing edge cases ────────────────────────────────
         SupportedFixture {
             id: "dch_at_right_edge",
@@ -1776,10 +1864,21 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             // Wide char (世) + A, CUP(1,1), IRM on, print X
             bytes: b"\xe4\xb8\x96A\x1b[1;1H\x1b[4hX",
         },
-        // NOTE: insert_chars_uses_current_bg and delete_chars_uses_current_bg
-        // removed: reference VirtualTerminal uses VCell::default() for
-        // ICH blanks and DCH trailing blanks instead of applying current SGR bg.
-        // Core harness correctly applies bg per VT220 spec.
+        // SGR bg with ICH/DCH (restored — reference now uses styled_blank).
+        SupportedFixture {
+            id: "insert_chars_uses_current_bg",
+            cols: 8,
+            rows: 3,
+            // Set red fg (31), print ABCDEF, set green bg (42), CUP(1,3), ICH 2
+            bytes: b"\x1b[31mABCDEF\x1b[42m\x1b[1;3H\x1b[2@",
+        },
+        SupportedFixture {
+            id: "delete_chars_uses_current_bg",
+            cols: 8,
+            rows: 3,
+            // Set red fg (31), print ABCDEF, set green bg (42), CUP(1,3), DCH 2
+            bytes: b"\x1b[31mABCDEF\x1b[42m\x1b[1;3H\x1b[2P",
+        },
         // ── Wide char: basic and wrap ───────────────────────────────
         SupportedFixture {
             id: "wide_char_basic",
