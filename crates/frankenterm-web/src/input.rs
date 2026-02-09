@@ -12,7 +12,9 @@
 //! - JSON encoding suitable for record/replay.
 
 use bitflags::bitflags;
+use core::convert::Infallible;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 bitflags! {
     /// Modifier keys held during an input event.
@@ -249,6 +251,11 @@ pub struct CompositionInput {
     pub data: Option<Box<str>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PasteInput {
+    pub data: Box<str>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FocusInput {
     pub focused: bool,
@@ -281,6 +288,7 @@ pub enum InputEvent {
     Wheel(WheelInput),
     Touch(TouchInput),
     Composition(CompositionInput),
+    Paste(PasteInput),
     Focus(FocusInput),
     Accessibility(AccessibilityInput),
 }
@@ -543,6 +551,9 @@ pub enum InputEventJson {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         data: Option<String>,
     },
+    Paste {
+        data: String,
+    },
     Focus {
         focused: bool,
     },
@@ -560,20 +571,218 @@ pub enum InputEventJson {
 
 impl InputEvent {
     /// Encode this event as a stable JSON string.
-    ///
-    /// Errors can occur only if serialization fails (for example, due to an
-    /// internal `serde_json` formatting error).
-    pub fn to_json_string(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&InputEventJson::from(self))
+    pub fn to_json_string(&self) -> Result<String, Infallible> {
+        Ok(input_event_json_to_string(&InputEventJson::from(self)))
     }
 
     /// Decode a previously encoded event JSON string.
     ///
     /// Errors occur if the JSON does not match the expected schema.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_json_str(s: &str) -> Result<Self, serde_json::Error> {
         let json: InputEventJson = serde_json::from_str(s)?;
         Ok(Self::from(json))
     }
+}
+
+fn input_event_json_to_string(value: &InputEventJson) -> String {
+    let mut out = String::with_capacity(160);
+    out.push('{');
+    let mut first = true;
+
+    match value {
+        InputEventJson::Key {
+            phase,
+            code,
+            mods,
+            repeat,
+            raw_key,
+            raw_code,
+        } => {
+            push_json_str_field(&mut out, &mut first, "kind", "key");
+            push_json_str_field(&mut out, &mut first, "phase", key_phase_str(*phase));
+            push_json_str_field(&mut out, &mut first, "code", code);
+            push_json_u64_field(&mut out, &mut first, "mods", u64::from(*mods));
+            push_json_bool_field(&mut out, &mut first, "repeat", *repeat);
+            if let Some(raw_key) = raw_key.as_deref() {
+                push_json_str_field(&mut out, &mut first, "raw_key", raw_key);
+            }
+            if let Some(raw_code) = raw_code.as_deref() {
+                push_json_str_field(&mut out, &mut first, "raw_code", raw_code);
+            }
+        }
+        InputEventJson::Mouse {
+            phase,
+            button,
+            x,
+            y,
+            mods,
+        } => {
+            push_json_str_field(&mut out, &mut first, "kind", "mouse");
+            push_json_str_field(&mut out, &mut first, "phase", mouse_phase_str(*phase));
+            if let Some(button) = button {
+                push_json_u64_field(&mut out, &mut first, "button", u64::from(*button));
+            }
+            push_json_u64_field(&mut out, &mut first, "x", u64::from(*x));
+            push_json_u64_field(&mut out, &mut first, "y", u64::from(*y));
+            push_json_u64_field(&mut out, &mut first, "mods", u64::from(*mods));
+        }
+        InputEventJson::Wheel { x, y, dx, dy, mods } => {
+            push_json_str_field(&mut out, &mut first, "kind", "wheel");
+            push_json_u64_field(&mut out, &mut first, "x", u64::from(*x));
+            push_json_u64_field(&mut out, &mut first, "y", u64::from(*y));
+            push_json_i64_field(&mut out, &mut first, "dx", i64::from(*dx));
+            push_json_i64_field(&mut out, &mut first, "dy", i64::from(*dy));
+            push_json_u64_field(&mut out, &mut first, "mods", u64::from(*mods));
+        }
+        InputEventJson::Touch {
+            phase,
+            touches,
+            mods,
+        } => {
+            push_json_str_field(&mut out, &mut first, "kind", "touch");
+            push_json_str_field(&mut out, &mut first, "phase", touch_phase_str(*phase));
+            push_json_key(&mut out, &mut first, "touches");
+            out.push('[');
+            for (idx, touch) in touches.iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                out.push('{');
+                let mut touch_first = true;
+                push_json_u64_field(&mut out, &mut touch_first, "id", u64::from(touch.id));
+                push_json_u64_field(&mut out, &mut touch_first, "x", u64::from(touch.x));
+                push_json_u64_field(&mut out, &mut touch_first, "y", u64::from(touch.y));
+                out.push('}');
+            }
+            out.push(']');
+            push_json_u64_field(&mut out, &mut first, "mods", u64::from(*mods));
+        }
+        InputEventJson::Composition { phase, data } => {
+            push_json_str_field(&mut out, &mut first, "kind", "composition");
+            push_json_str_field(&mut out, &mut first, "phase", composition_phase_str(*phase));
+            if let Some(data) = data.as_deref() {
+                push_json_str_field(&mut out, &mut first, "data", data);
+            }
+        }
+        InputEventJson::Paste { data } => {
+            push_json_str_field(&mut out, &mut first, "kind", "paste");
+            push_json_str_field(&mut out, &mut first, "data", data);
+        }
+        InputEventJson::Focus { focused } => {
+            push_json_str_field(&mut out, &mut first, "kind", "focus");
+            push_json_bool_field(&mut out, &mut first, "focused", *focused);
+        }
+        InputEventJson::Accessibility {
+            screen_reader,
+            high_contrast,
+            reduced_motion,
+            announce,
+        } => {
+            push_json_str_field(&mut out, &mut first, "kind", "accessibility");
+            if let Some(v) = screen_reader {
+                push_json_bool_field(&mut out, &mut first, "screen_reader", *v);
+            }
+            if let Some(v) = high_contrast {
+                push_json_bool_field(&mut out, &mut first, "high_contrast", *v);
+            }
+            if let Some(v) = reduced_motion {
+                push_json_bool_field(&mut out, &mut first, "reduced_motion", *v);
+            }
+            if let Some(announce) = announce.as_deref() {
+                push_json_str_field(&mut out, &mut first, "announce", announce);
+            }
+        }
+    }
+    out.push('}');
+    out
+}
+
+const fn key_phase_str(phase: KeyPhase) -> &'static str {
+    match phase {
+        KeyPhase::Down => "down",
+        KeyPhase::Up => "up",
+    }
+}
+
+const fn mouse_phase_str(phase: MousePhase) -> &'static str {
+    match phase {
+        MousePhase::Down => "down",
+        MousePhase::Up => "up",
+        MousePhase::Move => "move",
+        MousePhase::Drag => "drag",
+    }
+}
+
+const fn touch_phase_str(phase: TouchPhase) -> &'static str {
+    match phase {
+        TouchPhase::Start => "start",
+        TouchPhase::Move => "move",
+        TouchPhase::End => "end",
+        TouchPhase::Cancel => "cancel",
+    }
+}
+
+const fn composition_phase_str(phase: CompositionPhase) -> &'static str {
+    match phase {
+        CompositionPhase::Start => "start",
+        CompositionPhase::Update => "update",
+        CompositionPhase::End => "end",
+        CompositionPhase::Cancel => "cancel",
+    }
+}
+
+fn push_json_key(out: &mut String, first: &mut bool, key: &str) {
+    if !*first {
+        out.push(',');
+    }
+    *first = false;
+    push_json_string(out, key);
+    out.push(':');
+}
+
+fn push_json_str_field(out: &mut String, first: &mut bool, key: &str, value: &str) {
+    push_json_key(out, first, key);
+    push_json_string(out, value);
+}
+
+fn push_json_bool_field(out: &mut String, first: &mut bool, key: &str, value: bool) {
+    push_json_key(out, first, key);
+    if value {
+        out.push_str("true");
+    } else {
+        out.push_str("false");
+    }
+}
+
+fn push_json_u64_field(out: &mut String, first: &mut bool, key: &str, value: u64) {
+    push_json_key(out, first, key);
+    let _ = write!(out, "{value}");
+}
+
+fn push_json_i64_field(out: &mut String, first: &mut bool, key: &str, value: i64) {
+    push_json_key(out, first, key);
+    let _ = write!(out, "{value}");
+}
+
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 impl From<&InputEvent> for InputEventJson {
@@ -619,6 +828,9 @@ impl From<&InputEvent> for InputEventJson {
             InputEvent::Composition(comp) => Self::Composition {
                 phase: comp.phase,
                 data: comp.data.as_deref().map(str::to_string),
+            },
+            InputEvent::Paste(paste) => Self::Paste {
+                data: paste.data.to_string(),
             },
             InputEvent::Focus(f) => Self::Focus { focused: f.focused },
             InputEvent::Accessibility(a11y) => Self::Accessibility {
@@ -680,6 +892,7 @@ impl From<InputEventJson> for InputEvent {
                 phase,
                 data: data.map(Into::into),
             }),
+            InputEventJson::Paste { data } => Self::Paste(PasteInput { data: data.into() }),
             InputEventJson::Focus { focused } => Self::Focus(FocusInput { focused }),
             InputEventJson::Accessibility {
                 screen_reader,
@@ -721,6 +934,9 @@ pub fn encode_vt_input_event(event: &InputEvent, features: VtInputEncoderFeature
         InputEvent::Wheel(wheel) => encode_wheel_input(wheel, features),
         InputEvent::Touch(_) => Vec::new(),
         InputEvent::Composition(comp) => encode_composition_input(comp, features),
+        InputEvent::Paste(paste) => {
+            encode_paste_text(paste.data.as_ref(), features.bracketed_paste)
+        }
         InputEvent::Focus(focus) => encode_focus_input(*focus, features),
         InputEvent::Accessibility(_) => Vec::new(),
     }
@@ -1232,6 +1448,31 @@ mod tests {
             encoded,
             b"\x1b[200~\xe4\xbd\xa0\xe5\xa5\xbd\x1b[201~".to_vec()
         );
+    }
+
+    #[test]
+    fn vt_encoder_paste_event_uses_bracketed_mode_when_enabled() {
+        let paste = InputEvent::Paste(PasteInput {
+            data: "hello\nworld".into(),
+        });
+        let encoded = encode_vt_input_event(
+            &paste,
+            VtInputEncoderFeatures {
+                bracketed_paste: true,
+                ..VtInputEncoderFeatures::default()
+            },
+        );
+        assert_eq!(encoded, b"\x1b[200~hello\nworld\x1b[201~".to_vec());
+    }
+
+    #[test]
+    fn paste_event_json_roundtrip_is_stable() {
+        let ev = InputEvent::Paste(PasteInput {
+            data: "clip me".into(),
+        });
+        let json = ev.to_json_string().expect("serialize");
+        let roundtrip = InputEvent::from_json_str(&json).expect("deserialize");
+        assert_eq!(ev, roundtrip);
     }
 
     #[test]

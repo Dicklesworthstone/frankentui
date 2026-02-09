@@ -13,6 +13,7 @@ use crate::renderer::{
     CellData, CellPatch, CursorStyle, GridGeometry, RendererConfig, WebGpuRenderer,
     cell_attr_link_id,
 };
+use crate::scroll::{SearchConfig, SearchIndex};
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
@@ -23,6 +24,10 @@ const AUTO_LINK_ID_BASE: u32 = 0x00F0_0001;
 const AUTO_LINK_ID_MAX: u32 = 0x00FF_FFFE;
 /// Max decoded clipboard paste payload (matches websocket-protocol limits).
 const MAX_PASTE_BYTES: usize = 768 * 1024;
+
+fn empty_search_index(config: SearchConfig) -> SearchIndex {
+    SearchIndex::build(std::iter::empty::<&str>(), "", config)
+}
 
 /// Web/WASM terminal surface.
 ///
@@ -49,6 +54,11 @@ pub struct FrankenTermWeb {
     cursor_offset: Option<u32>,
     cursor_style: CursorStyle,
     selection_range: Option<(u32, u32)>,
+    search_query: String,
+    search_config: SearchConfig,
+    search_index: SearchIndex,
+    search_active_match: Option<usize>,
+    search_highlight_range: Option<(u32, u32)>,
     screen_reader_enabled: bool,
     high_contrast_enabled: bool,
     reduced_motion_enabled: bool,
@@ -143,6 +153,11 @@ impl FrankenTermWeb {
             cursor_offset: None,
             cursor_style: CursorStyle::None,
             selection_range: None,
+            search_query: String::new(),
+            search_config: SearchConfig::default(),
+            search_index: empty_search_index(SearchConfig::default()),
+            search_active_match: None,
+            search_highlight_range: None,
             screen_reader_enabled: false,
             high_contrast_enabled: false,
             reduced_motion_enabled: false,
@@ -215,6 +230,7 @@ impl FrankenTermWeb {
         self.auto_link_ids
             .resize(usize::from(cols) * usize::from(rows), 0);
         self.auto_link_urls.clear();
+        self.refresh_search_after_buffer_change();
         if let Some(r) = self.renderer.as_mut() {
             r.resize(cols, rows);
         }
@@ -274,6 +290,7 @@ impl FrankenTermWeb {
         self.auto_link_ids
             .resize(usize::from(geometry.cols) * usize::from(geometry.rows), 0);
         self.auto_link_urls.clear();
+        self.refresh_search_after_buffer_change();
         Ok(geometry_to_js(geometry))
     }
 
@@ -410,6 +427,7 @@ impl FrankenTermWeb {
             self.shadow_cells[start + i] = *cell;
         }
         self.recompute_auto_links();
+        self.refresh_search_after_buffer_change();
         if self.hovered_link_id != 0 && !self.link_id_present(self.hovered_link_id) {
             self.hovered_link_id = 0;
             self.sync_renderer_interaction_state();
@@ -468,6 +486,75 @@ impl FrankenTermWeb {
     pub fn set_hovered_link_id(&mut self, link_id: u32) {
         self.hovered_link_id = link_id;
         self.sync_renderer_interaction_state();
+    }
+
+    /// Build or refresh search results over the current shadow grid.
+    ///
+    /// `options` keys:
+    /// - `caseSensitive` / `case_sensitive`: boolean (default false)
+    /// - `normalizeUnicode` / `normalize_unicode`: boolean (default true)
+    ///
+    /// Returns current search state:
+    /// `{query, normalizedQuery, caseSensitive, normalizeUnicode, matchCount,
+    ///   activeMatchIndex, activeLine, activeStart, activeEnd}`
+    #[wasm_bindgen(js_name = setSearchQuery)]
+    pub fn set_search_query(
+        &mut self,
+        query: &str,
+        options: Option<JsValue>,
+    ) -> Result<JsValue, JsValue> {
+        self.search_query.clear();
+        self.search_query.push_str(query);
+        self.search_config = parse_search_config(options.as_ref())?;
+        self.refresh_search_after_buffer_change();
+        Ok(self.search_state())
+    }
+
+    /// Jump to the next search match (wrap at end) and update highlight overlay.
+    ///
+    /// Returns current search state.
+    #[wasm_bindgen(js_name = searchNext)]
+    pub fn search_next(&mut self) -> JsValue {
+        self.search_active_match = self.search_index.next_index(self.search_active_match);
+        self.search_highlight_range = self.search_highlight_for_active_match();
+        self.sync_renderer_interaction_state();
+        self.search_state()
+    }
+
+    /// Jump to the previous search match (wrap at beginning) and update highlight overlay.
+    ///
+    /// Returns current search state.
+    #[wasm_bindgen(js_name = searchPrev)]
+    pub fn search_prev(&mut self) -> JsValue {
+        self.search_active_match = self.search_index.prev_index(self.search_active_match);
+        self.search_highlight_range = self.search_highlight_for_active_match();
+        self.sync_renderer_interaction_state();
+        self.search_state()
+    }
+
+    /// Clear search query/results and remove search highlight.
+    #[wasm_bindgen(js_name = clearSearch)]
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_index = empty_search_index(self.search_config);
+        self.search_active_match = None;
+        self.search_highlight_range = None;
+        self.sync_renderer_interaction_state();
+    }
+
+    /// Return search state snapshot as a JS object.
+    ///
+    /// Shape:
+    /// `{ query, normalizedQuery, caseSensitive, normalizeUnicode, matchCount,
+    ///    activeMatchIndex, activeLine, activeStart, activeEnd }`
+    #[wasm_bindgen(js_name = searchState)]
+    pub fn search_state(&self) -> JsValue {
+        search_state_to_js(
+            &self.search_query,
+            self.search_config,
+            &self.search_index,
+            self.search_active_match,
+        )
     }
 
     /// Return hyperlink ID at a given grid cell (0 if none / out of bounds).
@@ -693,6 +780,10 @@ impl FrankenTermWeb {
         self.cursor_offset = None;
         self.cursor_style = CursorStyle::None;
         self.selection_range = None;
+        self.search_query.clear();
+        self.search_index = empty_search_index(self.search_config);
+        self.search_active_match = None;
+        self.search_highlight_range = None;
         self.screen_reader_enabled = false;
         self.high_contrast_enabled = false;
         self.reduced_motion_enabled = false;
@@ -770,12 +861,12 @@ impl FrankenTermWeb {
     fn resize_storm_interaction_snapshot(&self) -> Option<InteractionSnapshot> {
         let has_overlay = self.hovered_link_id != 0
             || self.cursor_offset.is_some()
-            || self.selection_range.is_some();
+            || self.active_selection_range().is_some();
         if !has_overlay {
             return None;
         }
         let (selection_active, selection_start, selection_end) = self
-            .selection_range
+            .active_selection_range()
             .map_or((false, 0, 0), |(start, end)| (true, start, end));
         Some(InteractionSnapshot {
             hovered_link_id: self.hovered_link_id,
@@ -805,12 +896,97 @@ impl FrankenTermWeb {
         Some((start.min(end), start.max(end)))
     }
 
+    fn active_selection_range(&self) -> Option<(u32, u32)> {
+        self.selection_range.or(self.search_highlight_range)
+    }
+
     fn sync_renderer_interaction_state(&mut self) {
+        let selection = self.active_selection_range();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_hovered_link_id(self.hovered_link_id);
             renderer.set_cursor(self.cursor_offset, self.cursor_style);
-            renderer.set_selection_range(self.selection_range);
+            renderer.set_selection_range(selection);
         }
+    }
+
+    fn build_search_lines(&self) -> Vec<String> {
+        let cols = usize::from(self.cols.max(1));
+        let rows = usize::from(self.rows);
+        let mut lines = Vec::with_capacity(rows);
+
+        for y in 0..rows {
+            let row_start = y.saturating_mul(cols);
+            let row_end = row_start.saturating_add(cols).min(self.shadow_cells.len());
+            let mut line = String::with_capacity(cols);
+            let mut char_count = 0usize;
+            for idx in row_start..row_end {
+                let glyph_id = self.shadow_cells[idx].glyph_id;
+                let ch = if glyph_id == 0 {
+                    ' '
+                } else {
+                    char::from_u32(glyph_id).unwrap_or('□')
+                };
+                line.push(ch);
+                char_count = char_count.saturating_add(1);
+            }
+            while char_count < cols {
+                line.push(' ');
+                char_count = char_count.saturating_add(1);
+            }
+            lines.push(line);
+        }
+
+        lines
+    }
+
+    fn search_highlight_for_active_match(&self) -> Option<(u32, u32)> {
+        let idx = self.search_active_match?;
+        let search_match = *self.search_index.matches().get(idx)?;
+        let cols = usize::from(self.cols);
+        let rows = usize::from(self.rows);
+        if cols == 0 || rows == 0 || search_match.line_idx >= rows {
+            return None;
+        }
+
+        let start_col = search_match.start_char.min(cols);
+        let end_col = search_match.end_char.min(cols);
+        if end_col <= start_col {
+            return None;
+        }
+
+        let line_base = search_match.line_idx.saturating_mul(cols);
+        let start = line_base.saturating_add(start_col) as u32;
+        let end = line_base.saturating_add(end_col) as u32;
+        self.normalize_selection_range((start, end))
+    }
+
+    fn refresh_search_after_buffer_change(&mut self) {
+        if self.search_query.is_empty() {
+            self.search_index = empty_search_index(self.search_config);
+            self.search_active_match = None;
+            self.search_highlight_range = None;
+            self.sync_renderer_interaction_state();
+            return;
+        }
+
+        let prev_active = self.search_active_match;
+        let lines = self.build_search_lines();
+        self.search_index = SearchIndex::build(
+            lines.iter().map(String::as_str),
+            &self.search_query,
+            self.search_config,
+        );
+
+        self.search_active_match = if self.search_index.is_empty() {
+            None
+        } else {
+            prev_active
+                .filter(|idx| *idx < self.search_index.len())
+                .or_else(|| self.search_index.next_index(None))
+        };
+
+        self.search_highlight_range = self.search_highlight_for_active_match();
+        self.sync_renderer_interaction_state();
     }
 
     fn cell_offset_at_xy(&self, x: u16, y: u16) -> Option<usize> {
@@ -1531,6 +1707,91 @@ fn geometry_to_js(geometry: GridGeometry) -> JsValue {
     obj.into()
 }
 
+fn parse_search_config(options: Option<&JsValue>) -> Result<SearchConfig, JsValue> {
+    let mut config = SearchConfig::default();
+
+    let Some(options) = options else {
+        return Ok(config);
+    };
+
+    if let Some(v) = get_bool(options, "caseSensitive")?.or(get_bool(options, "case_sensitive")?) {
+        config.case_sensitive = v;
+    }
+    if let Some(v) =
+        get_bool(options, "normalizeUnicode")?.or(get_bool(options, "normalize_unicode")?)
+    {
+        config.normalize_unicode = v;
+    }
+
+    Ok(config)
+}
+
+fn search_state_to_js(
+    query: &str,
+    config: SearchConfig,
+    index: &SearchIndex,
+    active_match: Option<usize>,
+) -> JsValue {
+    let obj = Object::new();
+    let _ = Reflect::set(&obj, &JsValue::from_str("query"), &JsValue::from_str(query));
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("normalizedQuery"),
+        &JsValue::from_str(index.normalized_query()),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("caseSensitive"),
+        &JsValue::from_bool(config.case_sensitive),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("normalizeUnicode"),
+        &JsValue::from_bool(config.normalize_unicode),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("matchCount"),
+        &JsValue::from_f64(index.len() as f64),
+    );
+
+    if let Some(idx) = active_match {
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("activeMatchIndex"),
+            &JsValue::from_f64(idx as f64),
+        );
+        if let Some(m) = index.matches().get(idx) {
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("activeLine"),
+                &JsValue::from_f64(m.line_idx as f64),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("activeStart"),
+                &JsValue::from_f64(m.start_char as f64),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("activeEnd"),
+                &JsValue::from_f64(m.end_char as f64),
+            );
+        } else {
+            let _ = Reflect::set(&obj, &JsValue::from_str("activeLine"), &JsValue::NULL);
+            let _ = Reflect::set(&obj, &JsValue::from_str("activeStart"), &JsValue::NULL);
+            let _ = Reflect::set(&obj, &JsValue::from_str("activeEnd"), &JsValue::NULL);
+        }
+    } else {
+        let _ = Reflect::set(&obj, &JsValue::from_str("activeMatchIndex"), &JsValue::NULL);
+        let _ = Reflect::set(&obj, &JsValue::from_str("activeLine"), &JsValue::NULL);
+        let _ = Reflect::set(&obj, &JsValue::from_str("activeStart"), &JsValue::NULL);
+        let _ = Reflect::set(&obj, &JsValue::from_str("activeEnd"), &JsValue::NULL);
+    }
+
+    obj.into()
+}
+
 fn accessibility_dom_snapshot_to_js(snapshot: &AccessibilityDomSnapshot) -> JsValue {
     let obj = Object::new();
     let _ = Reflect::set(
@@ -1788,6 +2049,82 @@ mod tests {
         // Both clamp to the same bound, so range is cleared.
         assert!(term.set_selection_range(99, 99).is_ok());
         assert_eq!(term.selection_range, None);
+    }
+
+    #[test]
+    fn set_search_query_builds_index_and_highlight() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 5;
+        term.rows = 2;
+        term.shadow_cells = text_row_cells("abcdeabcde");
+
+        assert!(term.set_search_query("bc", None).is_ok());
+        assert_eq!(term.search_index.len(), 2);
+        assert_eq!(term.search_active_match, Some(0));
+        assert_eq!(term.search_highlight_range, Some((1, 3)));
+        assert_eq!(term.active_selection_range(), Some((1, 3)));
+    }
+
+    #[test]
+    fn search_next_prev_wrap_and_follow_match_ranges() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 5;
+        term.rows = 2;
+        term.shadow_cells = text_row_cells("abcdeabcde");
+        assert!(term.set_search_query("bc", None).is_ok());
+
+        let _ = term.search_next();
+        assert_eq!(term.search_active_match, Some(1));
+        assert_eq!(term.search_highlight_range, Some((6, 8)));
+
+        let _ = term.search_next();
+        assert_eq!(term.search_active_match, Some(0));
+        assert_eq!(term.search_highlight_range, Some((1, 3)));
+
+        let _ = term.search_prev();
+        assert_eq!(term.search_active_match, Some(1));
+        assert_eq!(term.search_highlight_range, Some((6, 8)));
+    }
+
+    #[test]
+    fn explicit_selection_overrides_search_highlight_until_cleared() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 5;
+        term.rows = 2;
+        term.shadow_cells = text_row_cells("abcdeabcde");
+        assert!(term.set_search_query("bc", None).is_ok());
+        assert_eq!(term.active_selection_range(), Some((1, 3)));
+
+        assert!(term.set_selection_range(8, 10).is_ok());
+        assert_eq!(term.selection_range, Some((8, 10)));
+        assert_eq!(term.active_selection_range(), Some((8, 10)));
+
+        let _ = term.search_next();
+        assert_eq!(term.search_highlight_range, Some((6, 8)));
+        assert_eq!(term.active_selection_range(), Some((8, 10)));
+
+        term.clear_selection();
+        assert_eq!(term.selection_range, None);
+        assert_eq!(term.active_selection_range(), Some((6, 8)));
+    }
+
+    #[test]
+    fn buffer_change_rebuilds_search_index_for_active_query() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 4;
+        term.rows = 1;
+        term.shadow_cells = text_row_cells("aaaa");
+
+        assert!(term.set_search_query("z", None).is_ok());
+        assert!(term.search_index.is_empty());
+        assert_eq!(term.search_active_match, None);
+
+        term.shadow_cells = text_row_cells("zzzz");
+        term.refresh_search_after_buffer_change();
+
+        assert_eq!(term.search_index.len(), 4);
+        assert_eq!(term.search_active_match, Some(0));
+        assert_eq!(term.search_highlight_range, Some((0, 1)));
     }
 
     #[test]

@@ -114,6 +114,10 @@ export function TerminalCanvas() {
 - Forward normalized DOM input with `term.input(...)`.
 - For ftui-driven rendering, call `term.applyPatch(patch)` followed by `term.render()`.
 - For ANSI-stream mode, call `term.feed(data)` followed by `term.render()`.
+- Clipboard integration (browser-safe flow):
+  - Copy: call `term.copySelection()` and write the returned text via `navigator.clipboard.writeText(...)` inside a trusted user gesture.
+  - Paste: read text from a DOM `paste` event (`event.clipboardData`) and call `term.pasteText(text)` (or `term.input({ kind: "paste", data: text })`).
+  - Chrome/Safari/Firefox all gate clipboard APIs behind user gesture/permission rules, so keep clipboard read/write in host JS.
 
 Minimal keyboard event forwarding example:
 

@@ -22,6 +22,7 @@
 //! overscan) to fetch.
 
 use crate::input::WheelInput;
+use unicode_normalization::UnicodeNormalization;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -252,6 +253,31 @@ impl ScrollState {
         self.set_offset(max);
     }
 
+    /// Jump the viewport to a specific scrollback line.
+    ///
+    /// The target line is clamped into valid bounds and placed near the center
+    /// of the viewport when possible.
+    pub fn jump_to_line(
+        &mut self,
+        total_scrollback_lines: usize,
+        viewport_rows: usize,
+        target_line: usize,
+    ) {
+        let viewport_len = viewport_rows.min(total_scrollback_lines);
+        if viewport_len == 0 || total_scrollback_lines == 0 {
+            self.set_offset(0);
+            return;
+        }
+
+        let max_start = total_scrollback_lines.saturating_sub(viewport_len);
+        let newest_start = max_start;
+        let clamped_target = target_line.min(total_scrollback_lines.saturating_sub(1));
+        let half = viewport_len / 2;
+        let target_start = clamped_target.saturating_sub(half).min(max_start);
+
+        self.set_offset(newest_start.saturating_sub(target_start));
+    }
+
     /// Scroll by a signed number of lines (positive = older, negative = newer).
     pub fn scroll_lines(&mut self, delta: isize) {
         if delta >= 0 {
@@ -442,6 +468,243 @@ impl ScrollFrameStats {
 }
 
 // ---------------------------------------------------------------------------
+// Scrollback search core
+// ---------------------------------------------------------------------------
+
+/// Search tuning for scrollback text queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchConfig {
+    /// Treat query and text as case-sensitive.
+    pub case_sensitive: bool,
+    /// Normalize both query and lines before matching.
+    ///
+    /// This uses Unicode NFKC and enables matching canonically equivalent text
+    /// (`é` vs `e\u{301}`), plus compatibility forms.
+    pub normalize_unicode: bool,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            case_sensitive: false,
+            normalize_unicode: true,
+        }
+    }
+}
+
+/// One search hit in scrollback space.
+///
+/// `start_char`/`end_char` are character offsets in the normalized line text.
+/// They are deterministic and stable for navigation. Highlight mapping back to
+/// renderer cells is intentionally deferred to the overlay layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub line_idx: usize,
+    pub start_char: usize,
+    pub end_char: usize,
+}
+
+/// Immutable search result index with next/prev navigation helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchIndex {
+    normalized_query: String,
+    matches: Vec<SearchMatch>,
+}
+
+impl SearchIndex {
+    /// Build a deterministic index of all non-overlapping matches.
+    ///
+    /// `lines` should be provided in scrollback order (`0 = oldest`).
+    #[must_use]
+    pub fn build<'a>(
+        lines: impl IntoIterator<Item = &'a str>,
+        query: &str,
+        config: SearchConfig,
+    ) -> Self {
+        let normalized_query = normalize_for_search(query, config);
+        if normalized_query.is_empty() {
+            return Self {
+                normalized_query,
+                matches: Vec::new(),
+            };
+        }
+
+        let mut matches = Vec::new();
+        for (line_idx, line) in lines.into_iter().enumerate() {
+            let normalized_line = normalize_for_search(line, config);
+            if normalized_line.len() < normalized_query.len() || normalized_line.is_empty() {
+                continue;
+            }
+
+            collect_line_matches(line_idx, &normalized_line, &normalized_query, &mut matches);
+        }
+
+        Self {
+            normalized_query,
+            matches,
+        }
+    }
+
+    /// Build a deterministic index over physical lines with soft-wrap metadata.
+    ///
+    /// `lines` are provided in scrollback order (`0 = oldest`), where
+    /// `wrapped = true` means this line is a soft-wrap continuation of the
+    /// previous physical line.
+    ///
+    /// Search is performed on logical joined lines, and each match is reported
+    /// against the first physical line index of that logical line.
+    #[must_use]
+    pub fn build_wrapped<'a>(
+        lines: impl IntoIterator<Item = (&'a str, bool)>,
+        query: &str,
+        config: SearchConfig,
+    ) -> Self {
+        let normalized_query = normalize_for_search(query, config);
+        if normalized_query.is_empty() {
+            return Self {
+                normalized_query,
+                matches: Vec::new(),
+            };
+        }
+
+        let mut matches = Vec::new();
+        let mut logical_line = String::new();
+        let mut logical_start_idx = 0usize;
+        let mut has_logical = false;
+
+        for (line_idx, (line, wrapped)) in lines.into_iter().enumerate() {
+            let normalized = normalize_for_search(line, config);
+
+            if !has_logical {
+                logical_start_idx = line_idx;
+                logical_line.clear();
+                logical_line.push_str(&normalized);
+                has_logical = true;
+                continue;
+            }
+
+            if wrapped {
+                logical_line.push_str(&normalized);
+            } else {
+                collect_line_matches(
+                    logical_start_idx,
+                    &logical_line,
+                    &normalized_query,
+                    &mut matches,
+                );
+                logical_start_idx = line_idx;
+                logical_line.clear();
+                logical_line.push_str(&normalized);
+            }
+        }
+
+        if has_logical {
+            collect_line_matches(
+                logical_start_idx,
+                &logical_line,
+                &normalized_query,
+                &mut matches,
+            );
+        }
+
+        Self {
+            normalized_query,
+            matches,
+        }
+    }
+
+    /// Normalized query used for matching.
+    #[must_use]
+    pub fn normalized_query(&self) -> &str {
+        &self.normalized_query
+    }
+
+    /// Total match count.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.matches.len()
+    }
+
+    /// Whether no matches were found.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.matches.is_empty()
+    }
+
+    /// All matches in deterministic order.
+    #[must_use]
+    pub fn matches(&self) -> &[SearchMatch] {
+        &self.matches
+    }
+
+    /// Index of the next match, wrapping at the end.
+    #[must_use]
+    pub fn next_index(&self, current: Option<usize>) -> Option<usize> {
+        let len = self.matches.len();
+        if len == 0 {
+            return None;
+        }
+        Some(match current {
+            Some(idx) => (idx + 1) % len,
+            None => 0,
+        })
+    }
+
+    /// Index of the previous match, wrapping at the beginning.
+    #[must_use]
+    pub fn prev_index(&self, current: Option<usize>) -> Option<usize> {
+        let len = self.matches.len();
+        if len == 0 {
+            return None;
+        }
+
+        Some(match current {
+            Some(0) | None => len - 1,
+            Some(idx) => idx.saturating_sub(1).min(len - 1),
+        })
+    }
+}
+
+fn normalize_for_search(input: &str, config: SearchConfig) -> String {
+    let normalized = if config.normalize_unicode {
+        input.nfkc().collect::<String>()
+    } else {
+        input.to_owned()
+    };
+
+    if config.case_sensitive {
+        normalized
+    } else {
+        normalized.to_lowercase()
+    }
+}
+
+fn collect_line_matches(
+    line_idx: usize,
+    normalized_line: &str,
+    normalized_query: &str,
+    out: &mut Vec<SearchMatch>,
+) {
+    let mut char_starts: Vec<usize> = normalized_line.char_indices().map(|(idx, _)| idx).collect();
+    char_starts.push(normalized_line.len());
+
+    for (start_byte, _) in normalized_line.match_indices(normalized_query) {
+        let end_byte = start_byte.saturating_add(normalized_query.len());
+        out.push(SearchMatch {
+            line_idx,
+            start_char: byte_offset_to_char_index(&char_starts, start_byte),
+            end_char: byte_offset_to_char_index(&char_starts, end_byte),
+        });
+    }
+}
+
+fn byte_offset_to_char_index(char_starts: &[usize], byte_offset: usize) -> usize {
+    match char_starts.binary_search(&byte_offset) {
+        Ok(idx) | Err(idx) => idx,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -526,6 +789,40 @@ mod tests {
         let mut state = ScrollState::with_defaults();
         state.snap_to_top(100, 24);
         assert_eq!(state.offset(), 76);
+    }
+
+    #[test]
+    fn jump_to_line_in_empty_buffer_is_noop() {
+        let mut state = ScrollState::with_defaults();
+        state.set_offset(42);
+        state.jump_to_line(0, 24, 0);
+        assert_eq!(state.offset(), 0);
+        assert!(!state.is_animating());
+    }
+
+    #[test]
+    fn jump_to_line_near_bottom_keeps_bottom() {
+        let mut state = ScrollState::with_defaults();
+        state.jump_to_line(100, 24, 99);
+        assert_eq!(state.offset(), 0);
+    }
+
+    #[test]
+    fn jump_to_line_places_target_inside_viewport() {
+        let mut state = ScrollState::with_defaults();
+        state.jump_to_line(100, 24, 40);
+        let snap = state.viewport(100, 24);
+        assert!(snap.viewport_start <= 40);
+        assert!(40 < snap.viewport_end);
+    }
+
+    #[test]
+    fn jump_to_line_near_top_clamps_to_oldest_window() {
+        let mut state = ScrollState::with_defaults();
+        state.jump_to_line(100, 24, 0);
+        let snap = state.viewport(100, 24);
+        assert_eq!(snap.viewport_start, 0);
+        assert_eq!(snap.viewport_end, 24);
     }
 
     #[test]
@@ -763,6 +1060,110 @@ mod tests {
         state.apply_wheel(dy, 100);
         // 2 discrete ticks * lines_per_tick(3) = 6
         assert_eq!(state.offset(), 6);
+    }
+
+    // -- Search core --
+
+    #[test]
+    fn search_empty_query_has_no_hits() {
+        let lines = ["alpha", "beta"];
+        let idx = SearchIndex::build(lines.iter().copied(), "", SearchConfig::default());
+        assert!(idx.is_empty());
+        assert_eq!(idx.len(), 0);
+        assert_eq!(idx.next_index(None), None);
+        assert_eq!(idx.prev_index(None), None);
+    }
+
+    #[test]
+    fn search_case_insensitive_by_default() {
+        let lines = ["Alpha beta", "gamma"];
+        let idx = SearchIndex::build(lines.iter().copied(), "ALPHA", SearchConfig::default());
+        assert_eq!(idx.len(), 1);
+        let hit = idx.matches()[0];
+        assert_eq!(hit.line_idx, 0);
+        assert_eq!((hit.start_char, hit.end_char), (0, 5));
+    }
+
+    #[test]
+    fn search_unicode_normalization_matches_composed_and_decomposed() {
+        let lines = ["Cafe\u{301} noir", "other"];
+        let idx = SearchIndex::build(lines.iter().copied(), "Café", SearchConfig::default());
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx.matches()[0].line_idx, 0);
+
+        let strict = SearchIndex::build(
+            lines.iter().copied(),
+            "Café",
+            SearchConfig {
+                normalize_unicode: false,
+                ..SearchConfig::default()
+            },
+        );
+        assert!(strict.is_empty());
+    }
+
+    #[test]
+    fn search_next_prev_wraps() {
+        let lines = ["abc abc", "abc"];
+        let idx = SearchIndex::build(lines.iter().copied(), "abc", SearchConfig::default());
+        assert_eq!(idx.len(), 3);
+
+        let i0 = idx.next_index(None).expect("first");
+        let i1 = idx.next_index(Some(i0)).expect("second");
+        let i2 = idx.next_index(Some(i1)).expect("third");
+        let i3 = idx.next_index(Some(i2)).expect("wrapped");
+        assert_eq!((i0, i1, i2, i3), (0, 1, 2, 0));
+
+        let p2 = idx.prev_index(None).expect("last");
+        let p1 = idx.prev_index(Some(p2)).expect("prev");
+        let p0 = idx.prev_index(Some(p1)).expect("prev");
+        let pw = idx.prev_index(Some(p0)).expect("wrapped");
+        assert_eq!((p2, p1, p0, pw), (2, 1, 0, 2));
+    }
+
+    #[test]
+    fn search_build_wrapped_matches_across_soft_wrap_boundary() {
+        let lines = [("hel", false), ("lo world", true), ("next", false)];
+        let idx =
+            SearchIndex::build_wrapped(lines.iter().copied(), "hello", SearchConfig::default());
+        assert_eq!(idx.len(), 1);
+        let hit = idx.matches()[0];
+        assert_eq!(hit.line_idx, 0);
+        assert_eq!((hit.start_char, hit.end_char), (0, 5));
+    }
+
+    #[test]
+    fn search_build_wrapped_does_not_cross_hard_line_breaks() {
+        let lines = [("foo", false), ("bar", true), ("baz", false)];
+
+        let joined =
+            SearchIndex::build_wrapped(lines.iter().copied(), "foobar", SearchConfig::default());
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined.matches()[0].line_idx, 0);
+
+        let hard_break =
+            SearchIndex::build_wrapped(lines.iter().copied(), "barbaz", SearchConfig::default());
+        assert!(hard_break.is_empty());
+    }
+
+    #[test]
+    fn stress_100k_scrollback_search_index_is_bounded() {
+        let mut lines = Vec::with_capacity(100_000);
+        for i in 0..100_000 {
+            if i % 1_000 == 0 {
+                lines.push(format!("[{i}] error: unicode Café path"));
+            } else {
+                lines.push(format!("line {i}: all systems nominal"));
+            }
+        }
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+
+        let started = std::time::Instant::now();
+        let idx = SearchIndex::build(refs.iter().copied(), "cafe\u{301}", SearchConfig::default());
+        let elapsed = started.elapsed();
+
+        assert_eq!(idx.len(), 100);
+        assert!(elapsed < std::time::Duration::from_secs(5));
     }
 
     // -- 100k-line stress test --
