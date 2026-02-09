@@ -2682,7 +2682,9 @@ mod tests {
         assert!(term.apply_patch(patch_value(0, &cells)).is_ok());
         assert_eq!(term.shadow_cells, cells);
 
-        let url_byte = text.find("https://").unwrap();
+        let url_byte = text
+            .find("https://")
+            .expect("fixture should contain https:// URL marker");
         let url_col = text[..url_byte].chars().count() as u16;
         let link_id = term.link_at(url_col, 0);
         assert!(link_id >= AUTO_LINK_ID_BASE);
@@ -2948,7 +2950,9 @@ mod tests {
         term.auto_link_ids = vec![0; term.shadow_cells.len()];
         term.recompute_auto_links();
 
-        let link_x = text.find("https://").unwrap() as u16;
+        let link_x = text
+            .find("https://")
+            .expect("fixture should contain https:// URL marker") as u16;
         let link_id = term.link_at(link_x, 0);
         assert!(link_id >= AUTO_LINK_ID_BASE);
         assert_eq!(
@@ -2974,8 +2978,8 @@ mod tests {
 
     #[test]
     fn parse_http_url_scheme_and_host_normalizes_case_and_port() {
-        let (scheme, host) =
-            parse_http_url_scheme_and_host("HTTPS://Example.Test:443/path?q=1").unwrap();
+        let (scheme, host) = parse_http_url_scheme_and_host("HTTPS://Example.Test:443/path?q=1")
+            .expect("valid HTTPS URL should parse into normalized scheme and host");
         assert_eq!(scheme, "https");
         assert_eq!(host, "example.test");
     }
@@ -3028,13 +3032,13 @@ mod tests {
         let state = term.text_shaping_state();
         assert_eq!(
             Reflect::get(&state, &JsValue::from_str("enabled"))
-                .unwrap()
+                .expect("text_shaping_state should contain enabled key")
                 .as_bool(),
             Some(false)
         );
         assert_eq!(
             Reflect::get(&state, &JsValue::from_str("engine"))
-                .unwrap()
+                .expect("text_shaping_state should contain engine key")
                 .as_string()
                 .as_deref(),
             Some("none")
@@ -3111,7 +3115,7 @@ mod tests {
         let state = term.text_shaping_state();
         assert_eq!(
             Reflect::get(&state, &JsValue::from_str("engine"))
-                .unwrap()
+                .expect("text_shaping_state should contain engine key")
                 .as_string()
                 .as_deref(),
             Some("harfbuzz")
@@ -3198,7 +3202,9 @@ mod tests {
         term.recompute_auto_links();
         term.link_open_policy.allow_http = false;
 
-        let url_x = text.find("http://").unwrap() as u16;
+        let url_x = text
+            .find("http://")
+            .expect("fixture should contain http:// URL marker") as u16;
         assert!(
             term.queue_input_event(InputEvent::Mouse(MouseInput {
                 phase: MousePhase::Down,
@@ -3216,27 +3222,27 @@ mod tests {
 
         assert_eq!(
             Reflect::get(&event, &JsValue::from_str("source"))
-                .unwrap()
+                .expect("link click event should expose source")
                 .as_string()
                 .as_deref(),
             Some("auto")
         );
         assert_eq!(
             Reflect::get(&event, &JsValue::from_str("url"))
-                .unwrap()
+                .expect("link click event should expose url")
                 .as_string()
                 .as_deref(),
             Some("http://example.test")
         );
         assert_eq!(
             Reflect::get(&event, &JsValue::from_str("openAllowed"))
-                .unwrap()
+                .expect("link click event should expose openAllowed")
                 .as_bool(),
             Some(false)
         );
         assert_eq!(
             Reflect::get(&event, &JsValue::from_str("openReason"))
-                .unwrap()
+                .expect("link click event should expose openReason")
                 .as_string()
                 .as_deref(),
             Some("scheme_blocked")
@@ -3253,7 +3259,9 @@ mod tests {
         term.auto_link_ids = vec![0; term.shadow_cells.len()];
         term.recompute_auto_links();
 
-        let url_x = text.find("https://").unwrap() as u16;
+        let url_x = text
+            .find("https://")
+            .expect("fixture should contain https:// URL marker") as u16;
         assert!(
             term.queue_input_event(InputEvent::Mouse(MouseInput {
                 phase: MousePhase::Down,
@@ -3268,8 +3276,12 @@ mod tests {
         let lines = term.drain_link_clicks_jsonl("run-link".to_string(), 5, "T000120".to_string());
         assert_eq!(lines.length(), 1);
 
-        let line = lines.get(0).as_string().unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let line = lines
+            .get(0)
+            .as_string()
+            .expect("drain_link_clicks_jsonl should emit string JSONL line");
+        let parsed: serde_json::Value = serde_json::from_str(&line)
+            .expect("drain_link_clicks_jsonl output should be parseable JSON");
         assert_eq!(parsed["type"], "link_click");
         assert_eq!(parsed["run_id"], "run-link");
         assert_eq!(parsed["seed"], 5);
