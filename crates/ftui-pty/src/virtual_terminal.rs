@@ -2389,4 +2389,556 @@ mod tests {
         assert_eq!(vt.char_at(1, 0).unwrap(), 'B');
         assert_eq!(vt.char_at(2, 0).unwrap(), 'C');
     }
+
+    // ── ICH (Insert Characters, CSI @) tests ──────────────────────────
+
+    #[test]
+    fn ich_basic_insert() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDE");
+        vt.feed(b"\x1b[1;3H"); // cursor at col 2
+        vt.feed(b"\x1b[2@"); // insert 2 blanks
+        assert_eq!(vt.row_text(0), "AB  CDE");
+        assert_eq!(vt.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn ich_pushes_off_right_edge() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        vt.feed(b"ABCDE");
+        vt.feed(b"\x1b[1;2H"); // cursor at col 1
+        vt.feed(b"\x1b[2@"); // insert 2
+        assert_eq!(vt.row_text(0), "A  BC");
+    }
+
+    #[test]
+    fn ich_at_wide_char_continuation() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed("A中B".as_bytes()); // A at 0, 中 at 1-2, B at 3
+        vt.feed(b"\x1b[1;3H"); // cursor at col 2 (continuation of 中)
+        vt.feed(b"\x1b[1@"); // insert 1 blank at continuation
+        // Wide char lead at col 1 should be blanked (orphaned)
+        assert_invariants(&vt);
+    }
+
+    // ── DCH (Delete Characters, CSI P) tests ──────────────────────────
+
+    #[test]
+    fn dch_basic_delete() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDE");
+        vt.feed(b"\x1b[1;2H"); // cursor at col 1
+        vt.feed(b"\x1b[2P"); // delete 2 chars
+        assert_eq!(vt.row_text(0), "ADE");
+        assert_eq!(vt.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn dch_fills_blanks_at_end() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        vt.feed(b"ABCDE");
+        vt.feed(b"\x1b[1;1H"); // cursor at col 0
+        vt.feed(b"\x1b[3P"); // delete 3
+        assert_eq!(vt.row_text(0), "DE");
+    }
+
+    #[test]
+    fn dch_at_wide_char_boundary() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed("A中B".as_bytes()); // A at 0, 中 at 1-2, B at 3
+        vt.feed(b"\x1b[1;2H"); // cursor at col 1 (lead of 中)
+        vt.feed(b"\x1b[1P"); // delete 1 char at wide lead
+        assert_invariants(&vt);
+    }
+
+    // ── ECH (Erase Characters, CSI X) tests ───────────────────────────
+
+    #[test]
+    fn ech_basic_erase() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDE");
+        vt.feed(b"\x1b[1;2H"); // cursor at col 1
+        vt.feed(b"\x1b[3X"); // erase 3 chars
+        assert_eq!(vt.row_text(0), "A   E");
+        assert_eq!(vt.cursor(), (1, 0)); // cursor doesn't move
+    }
+
+    #[test]
+    fn ech_does_not_move_cursor() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDE");
+        vt.feed(b"\x1b[1;3H"); // cursor at col 2
+        vt.feed(b"\x1b[1X");
+        assert_eq!(vt.cursor(), (2, 0));
+        assert_eq!(vt.char_at(2, 0), Some(' '));
+        assert_eq!(vt.char_at(3, 0), Some('D'));
+    }
+
+    #[test]
+    fn ech_at_wide_char_continuation() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed("X中Y".as_bytes()); // X at 0, 中 at 1-2, Y at 3
+        vt.feed(b"\x1b[1;3H"); // cursor at col 2 (continuation of 中)
+        vt.feed(b"\x1b[1X"); // erase 1 at continuation
+        // Lead at col 1 should be blanked (orphaned)
+        assert_invariants(&vt);
+        assert_eq!(vt.char_at(1, 0), Some(' ')); // orphaned lead blanked
+    }
+
+    #[test]
+    fn ech_clamped_to_line_end() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        vt.feed(b"ABCDE");
+        vt.feed(b"\x1b[1;4H"); // cursor at col 3
+        vt.feed(b"\x1b[99X"); // erase 99 (clamped to remaining 2)
+        assert_eq!(vt.row_text(0), "ABC");
+    }
+
+    // ── IL (Insert Lines, CSI L) tests ────────────────────────────────
+
+    #[test]
+    fn il_basic_insert_line() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;1H"); // cursor at row 1
+        vt.feed(b"\x1b[1L"); // insert 1 line
+        assert_eq!(vt.row_text(0), "AAAAA");
+        assert_eq!(vt.row_text(1), ""); // inserted blank
+        assert_eq!(vt.row_text(2), "BBBBB");
+        assert_eq!(vt.row_text(3), "CCCCC");
+        assert_eq!(vt.row_text(4), "DDDDD");
+        // EEEEE pushed off bottom
+    }
+
+    #[test]
+    fn il_within_scroll_region() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;4r"); // scroll region rows 2-4 (0-indexed: 1-3)
+        vt.feed(b"\x1b[2;1H"); // cursor at row 1 (within region)
+        vt.feed(b"\x1b[1L"); // insert 1 line
+        assert_eq!(vt.row_text(0), "AAAAA"); // outside region, untouched
+        assert_eq!(vt.row_text(1), ""); // inserted blank
+        assert_eq!(vt.row_text(2), "BBBBB"); // shifted down
+        assert_eq!(vt.row_text(3), "CCCCC"); // shifted down (DDDDD pushed off bottom of region)
+        assert_eq!(vt.row_text(4), "EEEEE"); // outside region, untouched
+    }
+
+    #[test]
+    fn il_outside_scroll_region_ignored() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;4r"); // scroll region rows 2-4
+        vt.feed(b"\x1b[1;1H"); // cursor at row 0 (outside region)
+        vt.feed(b"\x1b[1L"); // insert: cursor outside region → no-op
+        assert_eq!(vt.row_text(0), "AAAAA");
+        assert_eq!(vt.row_text(1), "BBBBB");
+    }
+
+    // ── DL (Delete Lines, CSI M) tests ────────────────────────────────
+
+    #[test]
+    fn dl_basic_delete_line() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;1H"); // cursor at row 1
+        vt.feed(b"\x1b[1M"); // delete 1 line
+        assert_eq!(vt.row_text(0), "AAAAA");
+        assert_eq!(vt.row_text(1), "CCCCC"); // pulled up
+        assert_eq!(vt.row_text(2), "DDDDD");
+        assert_eq!(vt.row_text(3), "EEEEE");
+        assert_eq!(vt.row_text(4), ""); // blank at bottom
+    }
+
+    #[test]
+    fn dl_within_scroll_region() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;4r"); // scroll region rows 2-4 (0-indexed: 1-3)
+        vt.feed(b"\x1b[2;1H"); // cursor at row 1 (within region)
+        vt.feed(b"\x1b[1M"); // delete 1 line
+        assert_eq!(vt.row_text(0), "AAAAA"); // outside region
+        assert_eq!(vt.row_text(1), "CCCCC"); // pulled up
+        assert_eq!(vt.row_text(2), "DDDDD"); // pulled up
+        assert_eq!(vt.row_text(3), ""); // blank at region bottom
+        assert_eq!(vt.row_text(4), "EEEEE"); // outside region
+    }
+
+    #[test]
+    fn dl_outside_scroll_region_ignored() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;4r"); // scroll region rows 2-4
+        vt.feed(b"\x1b[5;1H"); // cursor at row 4 (outside region bottom)
+        vt.feed(b"\x1b[1M"); // delete: cursor outside → no-op
+        assert_eq!(vt.row_text(4), "EEEEE");
+    }
+
+    // ── SU/SD (Scroll Up/Down, CSI S/T) tests ────────────────────────
+
+    #[test]
+    fn su_scroll_up_within_region() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;4r"); // scroll region rows 2-4 (0-indexed: 1-3)
+        vt.feed(b"\x1b[1S"); // scroll up 1 within region
+        assert_eq!(vt.row_text(0), "AAAAA"); // outside region, untouched
+        assert_eq!(vt.row_text(1), "CCCCC"); // shifted up from row 2
+        assert_eq!(vt.row_text(2), "DDDDD"); // shifted up from row 3
+        assert_eq!(vt.row_text(3), ""); // blank at region bottom
+        assert_eq!(vt.row_text(4), "EEEEE"); // outside region, untouched
+    }
+
+    #[test]
+    fn sd_scroll_down_within_region() {
+        let mut vt = VirtualTerminal::new(5, 5);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE");
+        vt.feed(b"\x1b[2;4r"); // scroll region rows 2-4 (0-indexed: 1-3)
+        vt.feed(b"\x1b[1T"); // scroll down 1 within region
+        assert_eq!(vt.row_text(0), "AAAAA"); // outside region, untouched
+        assert_eq!(vt.row_text(1), ""); // blank at region top
+        assert_eq!(vt.row_text(2), "BBBBB"); // shifted down from row 1
+        assert_eq!(vt.row_text(3), "CCCCC"); // shifted down from row 2 (DDDDD pushed off)
+        assert_eq!(vt.row_text(4), "EEEEE"); // outside region, untouched
+    }
+
+    #[test]
+    fn su_multiple_lines() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC");
+        vt.feed(b"\x1b[2S"); // scroll up 2
+        assert_eq!(vt.row_text(0), "CCCCC");
+        assert_eq!(vt.row_text(1), "");
+        assert_eq!(vt.row_text(2), "");
+        assert_eq!(vt.scrollback_len(), 2);
+    }
+
+    // ── REP (Repeat Character, CSI b) tests ───────────────────────────
+
+    #[test]
+    fn rep_basic_repeat() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"X\x1b[3b"); // print X, then repeat 3 times
+        assert_eq!(vt.row_text(0), "XXXX");
+        assert_eq!(vt.cursor(), (4, 0));
+    }
+
+    #[test]
+    fn rep_no_previous_char() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"\x1b[5b"); // repeat with no previous char → no-op
+        assert_eq!(vt.row_text(0), "");
+        assert_eq!(vt.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn rep_wraps_across_lines() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        vt.feed(b"A\x1b[6b"); // A + repeat 6 → 7 A's total → wraps
+        assert_eq!(vt.row_text(0), "AAAAA");
+        assert_eq!(vt.row_text(1), "AA");
+    }
+
+    // ── DECOM (Origin Mode, DEC mode 6) tests ────────────────────────
+
+    #[test]
+    fn decom_cup_relative_to_scroll_region() {
+        let mut vt = VirtualTerminal::new(10, 10);
+        vt.feed(b"\x1b[3;7r"); // scroll region rows 3-7 (0-indexed: 2-6)
+        vt.feed(b"\x1b[?6h"); // enable DECOM
+        // CUP(1,1) should go to (0, scroll_top=2) in absolute coords
+        vt.feed(b"\x1b[1;1H");
+        assert_eq!(vt.cursor(), (0, 2));
+        // CUP(3,5) should go to (4, scroll_top+2=4)
+        vt.feed(b"\x1b[3;5H");
+        assert_eq!(vt.cursor(), (4, 4));
+    }
+
+    #[test]
+    fn decom_clamps_to_scroll_region() {
+        let mut vt = VirtualTerminal::new(10, 10);
+        vt.feed(b"\x1b[3;7r"); // scroll region rows 3-7
+        vt.feed(b"\x1b[?6h"); // enable DECOM
+        // CUP with row beyond region should clamp to scroll_bottom
+        vt.feed(b"\x1b[99;1H");
+        assert_eq!(vt.cursor(), (0, 6)); // clamped to scroll_bottom=6
+    }
+
+    #[test]
+    fn decom_disable_homes_to_origin() {
+        let mut vt = VirtualTerminal::new(10, 10);
+        vt.feed(b"\x1b[3;7r");
+        vt.feed(b"\x1b[?6h"); // enable → cursor to scroll_top
+        assert_eq!(vt.cursor(), (0, 2));
+        vt.feed(b"\x1b[5;5H"); // move somewhere
+        vt.feed(b"\x1b[?6l"); // disable → cursor to (0,0)
+        assert_eq!(vt.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn decom_vpa_relative_to_scroll_region() {
+        let mut vt = VirtualTerminal::new(10, 10);
+        vt.feed(b"\x1b[3;7r"); // scroll region rows 3-7
+        vt.feed(b"\x1b[?6h"); // enable DECOM
+        vt.feed(b"\x1b[2d"); // VPA row 2 → absolute row = scroll_top + 1 = 3
+        assert_eq!(vt.cursor().1, 3);
+    }
+
+    #[test]
+    fn decom_decstbm_homes_cursor() {
+        let mut vt = VirtualTerminal::new(10, 10);
+        vt.feed(b"\x1b[?6h"); // enable DECOM
+        vt.feed(b"\x1b[5;5H"); // move somewhere
+        vt.feed(b"\x1b[3;7r"); // set new scroll region → homes cursor
+        assert_eq!(vt.cursor(), (0, 2)); // cursor at scroll_top
+    }
+
+    // ── Single-Shift SS2/SS3 tests ───────────────────────────────────
+
+    #[test]
+    fn ss2_translates_one_char_from_g2() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // Designate G2 as DEC Special Graphics
+        vt.feed(b"\x1b*0");
+        // SS2 (ESC N) → next char from G2, then revert to G0
+        vt.feed(b"\x1bNq"); // 'q' via G2 (DEC graphics) → ─
+        vt.feed(b"q"); // 'q' via G0 (ASCII) → 'q'
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{2500}'); // ─
+        assert_eq!(vt.char_at(1, 0).unwrap(), 'q');
+    }
+
+    #[test]
+    fn ss3_translates_one_char_from_g3() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // Designate G3 as DEC Special Graphics
+        vt.feed(b"\x1b+0");
+        // SS3 (ESC O) → next char from G3, then revert to G0
+        vt.feed(b"\x1bOx"); // 'x' via G3 (DEC graphics) → │
+        vt.feed(b"x"); // 'x' via G0 (ASCII) → 'x'
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{2502}'); // │
+        assert_eq!(vt.char_at(1, 0).unwrap(), 'x');
+    }
+
+    #[test]
+    fn ss2_only_affects_one_character() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"\x1b*0"); // G2 = DEC graphics
+        vt.feed(b"\x1bNlk"); // SS2 + 'l' + 'k' (only 'l' via G2)
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{250C}'); // ┌ (l via DEC graphics)
+        assert_eq!(vt.char_at(1, 0).unwrap(), 'k'); // literal k (back to G0)
+    }
+
+    // ── Locking Shift LS2/LS3 tests ─────────────────────────────────
+
+    #[test]
+    fn ls2_invokes_g2_into_gl() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"\x1b*0"); // G2 = DEC graphics
+        vt.feed(b"\x1bn"); // LS2: invoke G2 into GL
+        vt.feed(b"jm"); // should use DEC graphics
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{2518}'); // j = ┘
+        assert_eq!(vt.char_at(1, 0).unwrap(), '\u{2514}'); // m = └
+    }
+
+    #[test]
+    fn ls3_invokes_g3_into_gl() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"\x1b+0"); // G3 = DEC graphics
+        vt.feed(b"\x1bo"); // LS3: invoke G3 into GL
+        vt.feed(b"n"); // should use DEC graphics
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{253C}'); // n = ┼
+    }
+
+    #[test]
+    fn ls2_persists_across_characters() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"\x1b*0"); // G2 = DEC graphics
+        vt.feed(b"\x1bn"); // LS2
+        vt.feed(b"tuvw"); // all via G2 DEC graphics
+        assert_eq!(vt.char_at(0, 0).unwrap(), '\u{251C}'); // t = ├
+        assert_eq!(vt.char_at(1, 0).unwrap(), '\u{2524}'); // u = ┤
+        assert_eq!(vt.char_at(2, 0).unwrap(), '\u{2534}'); // v = ┴
+        assert_eq!(vt.char_at(3, 0).unwrap(), '\u{252C}'); // w = ┬
+    }
+
+    // ── Alternate Screen Mode 1047 (without cursor save/restore) ─────
+
+    #[test]
+    fn alt_screen_1047_no_cursor_save() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"Main");
+        vt.feed(b"\x1b[1;5H"); // cursor at col 4
+        let (_cx, _cy) = vt.cursor();
+        vt.feed(b"\x1b[?1047h"); // enter alt screen (no cursor save)
+        assert!(vt.is_alternate_screen());
+        assert_eq!(vt.row_text(0), ""); // blank alt screen
+
+        vt.feed(b"Alt");
+        vt.feed(b"\x1b[?1047l"); // exit alt screen (no cursor restore)
+        assert!(!vt.is_alternate_screen());
+        assert_eq!(vt.row_text(0), "Main"); // main grid restored
+        // Cursor position is NOT restored (unlike mode 1049)
+        // It keeps whatever position it had in alt screen
+        let (_, _) = vt.cursor();
+    }
+
+    #[test]
+    fn alt_screen_1047_double_enter_ignored() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"Main");
+        vt.feed(b"\x1b[?1047h"); // enter alt screen (cursor stays at col 4)
+        vt.feed(b"\x1b[1;1H"); // move to origin
+        vt.feed(b"First");
+        vt.feed(b"\x1b[?1047h"); // second enter → ignored
+        assert!(vt.is_alternate_screen());
+        assert_eq!(vt.row_text(0), "First"); // still in same alt screen
+    }
+
+    // ── Scroll region with DECSTBM edge cases ────────────────────────
+
+    #[test]
+    fn decstbm_invalid_range_ignored() {
+        let mut vt = VirtualTerminal::new(10, 5);
+        // top >= bottom → ignored
+        vt.feed(b"\x1b[4;2r");
+        assert_eq!(vt.scroll_top, 0);
+        assert_eq!(vt.scroll_bottom, 4);
+    }
+
+    #[test]
+    fn decstbm_bottom_at_screen_edge() {
+        let mut vt = VirtualTerminal::new(10, 5);
+        vt.feed(b"\x1b[2;5r"); // rows 2-5 (0-indexed: 1-4)
+        assert_eq!(vt.scroll_top, 1);
+        assert_eq!(vt.scroll_bottom, 4);
+    }
+
+    #[test]
+    fn decstbm_homes_cursor_without_decom() {
+        let mut vt = VirtualTerminal::new(10, 5);
+        vt.feed(b"\x1b[3;3H"); // cursor at (2,2)
+        vt.feed(b"\x1b[2;4r"); // set region → homes to (0,0)
+        assert_eq!(vt.cursor(), (0, 0));
+    }
+
+    // ── Erase Display edge cases ─────────────────────────────────────
+
+    #[test]
+    fn erase_display_mode1_from_start_to_cursor() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"AAAAAAAAAA");
+        vt.feed(b"BBBBBBBBBB");
+        vt.feed(b"CCCCCCCCCC");
+        vt.feed(b"\x1b[2;5H"); // row 1, col 4 (1-indexed)
+        vt.feed(b"\x1b[1J"); // erase from start to cursor (inclusive)
+        assert_eq!(vt.row_text(0), ""); // all of row 0 erased
+        assert_eq!(vt.row_text(1), "     BBBBB"); // first 5 cols of row 1 erased
+        assert_eq!(vt.row_text(2), "CCCCCCCCCC"); // untouched
+    }
+
+    #[test]
+    fn erase_display_mode3_clears_scrollback() {
+        let mut vt = VirtualTerminal::new(5, 2);
+        vt.feed(b"AAAAA\r\nBBBBB\r\nCCCCC"); // scroll one line into scrollback
+        assert!(vt.scrollback_len() > 0);
+        vt.feed(b"\x1b[3J"); // mode 3: erase display + clear scrollback
+        assert_eq!(vt.scrollback_len(), 0);
+    }
+
+    // ── Erase Line mode 1 (from start to cursor) ────────────────────
+
+    #[test]
+    fn erase_line_mode1() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDEFGHIJ");
+        vt.feed(b"\x1b[1;6H"); // cursor at col 5
+        vt.feed(b"\x1b[1K"); // erase from start to cursor (inclusive)
+        assert_eq!(vt.row_text(0), "      GHIJ");
+    }
+
+    // ── Soft reset (DECSTR) ─────────────────────────────────────────
+
+    #[test]
+    fn soft_reset_restores_defaults() {
+        let mut vt = VirtualTerminal::new(10, 5);
+        // Set various modes
+        vt.feed(b"\x1b[?7l"); // disable autowrap
+        vt.feed(b"\x1b[?25l"); // hide cursor
+        vt.feed(b"\x1b[4h"); // enable insert mode
+        vt.feed(b"\x1b[?6h"); // enable DECOM
+        vt.feed(b"\x1b[2;4r"); // set scroll region
+        // Soft reset
+        vt.feed(b"\x1b[!p");
+        assert!(vt.cursor_visible());
+        assert_eq!(vt.scroll_top, 0);
+        assert_eq!(vt.scroll_bottom, 4);
+        // Verify autowrap restored by testing wrap behavior
+        vt.feed(b"\x1b[1;1H");
+        vt.feed(b"ABCDEFGHIJK");
+        assert_eq!(vt.row_text(0), "ABCDEFGHIJ");
+        assert_eq!(vt.row_text(1), "K"); // wraps → autowrap is on
+    }
+
+    // ── Wide char erase edge cases ──────────────────────────────────
+
+    #[test]
+    fn erase_line_splits_wide_char_at_boundary() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed("AB中DE".as_bytes()); // A(0) B(1) 中(2-3) D(4) E(5)
+        vt.feed(b"\x1b[1;4H"); // cursor at col 3 (continuation of 中)
+        vt.feed(b"\x1b[K"); // erase from cursor to end of line
+        assert_invariants(&vt);
+        // The lead of 中 at col 2 should be blanked (orphaned)
+        assert_eq!(vt.char_at(2, 0), Some(' '));
+    }
+
+    #[test]
+    fn dch_wide_char_continuation_at_boundary() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed("AB中DE".as_bytes());
+        vt.feed(b"\x1b[1;3H"); // cursor at col 2 (lead of 中)
+        vt.feed(b"\x1b[2P"); // delete 2 chars (both cells of 中)
+        assert_eq!(vt.row_text(0), "ABDE");
+        assert_invariants(&vt);
+    }
+
+    // ── Invariant checks on complex sequences ───────────────────────
+
+    #[test]
+    fn invariants_after_insert_delete_scroll_sequence() {
+        let mut vt = VirtualTerminal::new(8, 4);
+        // Complex sequence: fill, set region, IL, DL, SU, SD, ICH, DCH
+        vt.feed(b"AABBCCDD");
+        vt.feed(b"EEFFGGHH");
+        vt.feed(b"IIJJKKLL");
+        vt.feed(b"MMNNOOPP");
+        vt.feed(b"\x1b[2;3r"); // scroll region rows 2-3
+        vt.feed(b"\x1b[2;1H"); // cursor in region
+        vt.feed(b"\x1b[1L"); // insert line
+        vt.feed(b"\x1b[1M"); // delete line
+        vt.feed(b"\x1b[1S"); // scroll up
+        vt.feed(b"\x1b[1T"); // scroll down
+        vt.feed(b"\x1b[2;4H\x1b[2@"); // ICH at col 3
+        vt.feed(b"\x1b[1P"); // DCH
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn invariants_after_wide_char_operations() {
+        let mut vt = VirtualTerminal::new(6, 3);
+        // Wide chars + editing operations
+        vt.feed("中文字".as_bytes()); // 3 wide chars = 6 cols
+        vt.feed(b"\x1b[1;1H\x1b[2@"); // ICH 2 at col 0
+        assert_invariants(&vt);
+
+        let mut vt2 = VirtualTerminal::new(6, 3);
+        vt2.feed("中文字".as_bytes());
+        vt2.feed(b"\x1b[1;1H\x1b[2P"); // DCH 2 at col 0
+        assert_invariants(&vt2);
+
+        let mut vt3 = VirtualTerminal::new(6, 3);
+        vt3.feed("中文字".as_bytes());
+        vt3.feed(b"\x1b[1;3H\x1b[2X"); // ECH 2 at col 2 (lead of 文)
+        assert_invariants(&vt3);
+    }
 }
