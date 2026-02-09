@@ -501,34 +501,44 @@ impl MetaballFieldSampler {
         const EPS: f64 = 1e-8;
         let mut sum = 0.0;
         let mut weighted_hue = 0.0;
-        let mut total_weight = 0.0;
 
-        for (i, ball) in balls.iter().enumerate() {
-            if step > 1 && i % step != 0 {
-                continue;
+        if step == 1 {
+            for ball in balls {
+                let dx = x - ball.x;
+                let dy = y - ball.y;
+                let dist_sq = dx * dx + dy * dy;
+
+                if dist_sq > EPS {
+                    let contrib = ball.r2 / dist_sq;
+                    sum += contrib;
+                    weighted_hue += ball.hue * contrib;
+                } else {
+                    sum += 100.0;
+                    weighted_hue += ball.hue * 100.0;
+                }
             }
+        } else {
+            for i in (0..balls.len()).step_by(step) {
+                let ball = &balls[i];
+                let dx = x - ball.x;
+                let dy = y - ball.y;
+                let dist_sq = dx * dx + dy * dy;
 
-            let dx = x - ball.x;
-            let dy = y - ball.y;
-            let dist_sq = dx * dx + dy * dy;
-
-            if dist_sq > EPS {
-                let contrib = ball.r2 / dist_sq;
-                sum += contrib;
-                weighted_hue += ball.hue * contrib;
-                total_weight += contrib;
-            } else {
-                sum += 100.0;
-                weighted_hue += ball.hue * 100.0;
-                total_weight += 100.0;
+                if dist_sq > EPS {
+                    let contrib = ball.r2 / dist_sq;
+                    sum += contrib;
+                    weighted_hue += ball.hue * contrib;
+                } else {
+                    sum += 100.0;
+                    weighted_hue += ball.hue * 100.0;
+                }
             }
         }
 
-        let avg_hue = if total_weight > EPS {
-            weighted_hue / total_weight
-        } else {
-            0.0
-        };
+        // `sum` and total hue weight are intentionally the same accumulation.
+        // Use `sum` directly to avoid redundant floating-point writes in this
+        // hot loop while preserving exact contribution order.
+        let avg_hue = if sum > EPS { weighted_hue / sum } else { 0.0 };
 
         (sum, avg_hue)
     }
