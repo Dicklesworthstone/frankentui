@@ -1,0 +1,17 @@
+{
+  "name": "decscusr_cursor_shape",
+  "description": "DECSCUSR (CSI Ps SP q) sets cursor shape without affecting position or content",
+  "initial_size": [80, 24],
+  "input_bytes_hex": "411b5b32207142431b5b352071441b5b302071451b5b362071",
+  "comment": "Print A, DECSCUSR(2 steady block), Print B C, DECSCUSR(5 blinking bar), Print D, DECSCUSR(0 default), Print E, DECSCUSR(6 steady bar) — cursor at (0,5)",
+  "expected": {
+    "cursor": { "row": 0, "col": 5 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 0, "col": 3, "char": "D" },
+      { "row": 0, "col": 4, "char": "E" }
+    ]
+  }
+}

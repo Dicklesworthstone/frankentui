@@ -1,0 +1,14 @@
+{
+  "name": "decstr_soft_reset",
+  "description": "DECSTR (CSI ! p) soft-resets SGR, modes, scroll region but not cursor position or screen content",
+  "initial_size": [80, 24],
+  "input_bytes_hex": "1b5b316d1b5b333b3648581b5b217059",
+  "comment": "SGR bold, CUP(3,6), Print X (bold at 2,5), DECSTR, Print Y (no bold at 2,6) — cursor at (2,7)",
+  "expected": {
+    "cursor": { "row": 2, "col": 7 },
+    "cells": [
+      { "row": 2, "col": 5, "char": "X", "attrs": { "bold": true } },
+      { "row": 2, "col": 6, "char": "Y", "attrs": { "bold": false } }
+    ]
+  }
+}
