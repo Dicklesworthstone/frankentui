@@ -1,0 +1,17 @@
+{
+  "name": "il_zero_count_defaults_to_one",
+  "description": "IL with Ps=0 defaults to one-line insert inside DECSTBM",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "41 1b5b3248 42 1b5b3348 43 1b5b3448 44 1b5b3548 45 1b5b323b3472 1b5b333b3148 1b5b304c",
+  "comment": "Fill rows 0..4 with A..E at col 0. Set DECSTBM(2,4) -> region rows 1..3. CUP(3,1) to row 2. CSI 0 L defaults to IL(1): row2 blank, row3<-row2 (C), D drops off region bottom; rows 0 and 4 unchanged.",
+  "expected": {
+    "cursor": { "row": 2, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 1, "col": 0, "char": "B" },
+      { "row": 2, "col": 0, "char": " " },
+      { "row": 3, "col": 0, "char": "C" },
+      { "row": 4, "col": 0, "char": "E" }
+    ]
+  }
+}
