@@ -999,4 +999,301 @@ mod tests {
         // Should not panic
         assert!(engine.frame > 0);
     }
+
+    // ---- DoomEngine::new() state ----
+
+    #[test]
+    fn new_engine_has_no_map() {
+        let engine = DoomEngine::new();
+        assert!(engine.map.is_none());
+        assert_eq!(engine.frame, 0);
+        assert_eq!(engine.time, 0.0);
+        assert_eq!(engine.fire_flash, 0.0);
+    }
+
+    #[test]
+    fn new_engine_default_flags() {
+        let engine = DoomEngine::new();
+        assert!(!engine.show_minimap);
+        assert!(!engine.show_perf);
+        assert!(engine.show_crosshair);
+        assert!(!engine.original_palette);
+        assert!(engine.vsync);
+        assert!(engine.show_hud);
+    }
+
+    // ---- load_test_map ----
+
+    #[test]
+    fn load_test_map_sets_map() {
+        let mut engine = DoomEngine::new();
+        assert!(engine.map.is_none());
+        engine.load_test_map();
+        assert!(engine.map.is_some());
+    }
+
+    #[test]
+    fn load_test_map_spawns_player_at_origin() {
+        let mut engine = DoomEngine::new();
+        engine.load_test_map();
+        // spawn(0.0, 0.0, 0.0) sets x=0, y=0
+        assert!((engine.player.x).abs() < 0.01);
+        assert!((engine.player.y).abs() < 0.01);
+    }
+
+    // ---- move_forward / strafe / look ----
+
+    #[test]
+    fn move_forward_changes_player_velocity() {
+        let mut engine = DoomEngine::default();
+        let old_x = engine.player.x;
+        engine.move_forward(1.0);
+        // After move_forward, player velocity should change (not position directly)
+        // We need a tick to apply velocity → position, but velocity should be set
+        let speed_sq =
+            engine.player.mom_x * engine.player.mom_x + engine.player.mom_y * engine.player.mom_y;
+        assert!(
+            speed_sq > 0.0 || engine.player.x != old_x,
+            "move_forward should affect player"
+        );
+    }
+
+    #[test]
+    fn strafe_changes_player_velocity() {
+        let mut engine = DoomEngine::default();
+        engine.strafe(1.0);
+        let speed_sq =
+            engine.player.mom_x * engine.player.mom_x + engine.player.mom_y * engine.player.mom_y;
+        assert!(speed_sq > 0.0, "strafe should add velocity");
+    }
+
+    #[test]
+    fn look_changes_player_angle() {
+        let mut engine = DoomEngine::default();
+        let original_angle = engine.player.angle;
+        engine.look(0.5, 0.0);
+        assert!(
+            (engine.player.angle - original_angle).abs() > 0.01,
+            "look should change angle"
+        );
+    }
+
+    // ---- toggle_god_mode / toggle_run ----
+
+    #[test]
+    fn toggle_god_mode_flips() {
+        let mut engine = DoomEngine::default();
+        assert!(!engine.player.god_mode);
+        engine.toggle_god_mode();
+        assert!(engine.player.god_mode);
+        engine.toggle_god_mode();
+        assert!(!engine.player.god_mode);
+    }
+
+    #[test]
+    fn toggle_run_flips() {
+        let mut engine = DoomEngine::default();
+        assert!(!engine.player.running);
+        engine.toggle_run();
+        assert!(engine.player.running);
+        engine.toggle_run();
+        assert!(!engine.player.running);
+    }
+
+    // ---- update / game tick ----
+
+    #[test]
+    fn update_accumulates_time() {
+        let mut engine = DoomEngine::default();
+        engine.update(0.01);
+        engine.update(0.02);
+        assert!((engine.time - 0.03).abs() < 1e-6);
+    }
+
+    #[test]
+    fn update_fires_game_tick_when_enough_time() {
+        let mut engine = DoomEngine::default();
+        engine.player.mom_x = 100.0;
+        // Update with enough time for at least one game tick (DOOM_TICK_SECS)
+        engine.update(DOOM_TICK_SECS + 0.001);
+        // After a tick, player movement should have been processed
+        // (velocity + friction + position update via the map)
+    }
+
+    #[test]
+    fn fire_flash_decays_over_time() {
+        let mut engine = DoomEngine::default();
+        engine.fire();
+        assert!((engine.fire_flash - 1.0).abs() < 0.01);
+        engine.update(0.5);
+        assert!(
+            engine.fire_flash < 1.0,
+            "flash should decay: {}",
+            engine.fire_flash
+        );
+    }
+
+    #[test]
+    fn fire_flash_reaches_zero_eventually() {
+        let mut engine = DoomEngine::default();
+        engine.fire();
+        for _ in 0..100 {
+            engine.update(0.05);
+        }
+        assert!(
+            engine.fire_flash.abs() < 0.01,
+            "flash should reach ~0 after 5s: {}",
+            engine.fire_flash
+        );
+    }
+
+    // ---- render with no map ----
+
+    #[test]
+    fn render_without_map_does_not_panic() {
+        let mut engine = DoomEngine::new();
+        // No map loaded — should call render_no_map
+        let mut painter = Painter::new(120, 80, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 60, 20, 1);
+        assert_eq!(engine.frame, 1);
+    }
+
+    // ---- render increments frame ----
+
+    #[test]
+    fn render_increments_frame_counter() {
+        let mut engine = DoomEngine::default();
+        let mut painter = Painter::new(120, 80, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 60, 20, 1);
+        assert_eq!(engine.frame, 1);
+        engine.render(&mut painter, 60, 20, 1);
+        assert_eq!(engine.frame, 2);
+    }
+
+    // ---- render with crosshair disabled ----
+
+    #[test]
+    fn render_with_crosshair_disabled() {
+        let mut engine = DoomEngine::default();
+        engine.show_crosshair = false;
+        let mut painter = Painter::new(120, 80, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 60, 20, 1);
+        assert_eq!(engine.frame, 1);
+    }
+
+    // ---- render with minimap enabled ----
+
+    #[test]
+    fn render_with_minimap_enabled() {
+        let mut engine = DoomEngine::default();
+        engine.show_minimap = true;
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 120, 40, 1);
+        assert_eq!(engine.frame, 1);
+    }
+
+    // ---- render with muzzle flash ----
+
+    #[test]
+    fn render_with_muzzle_flash() {
+        let mut engine = DoomEngine::default();
+        engine.fire();
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 120, 40, 1);
+        assert_eq!(engine.frame, 1);
+    }
+
+    // ---- draw_line_fb (Bresenham) ----
+
+    #[test]
+    fn draw_line_horizontal() {
+        let mut fb = DoomFramebuffer::new(20, 10);
+        let color = PackedRgba::rgb(255, 0, 0);
+        draw_line_fb(&mut fb, 2, 5, 8, 5, color);
+        // All pixels on the line should be set
+        for x in 2..=8 {
+            assert_eq!(fb.get_pixel(x, 5), color, "pixel at ({x}, 5) should be set");
+        }
+    }
+
+    #[test]
+    fn draw_line_vertical() {
+        let mut fb = DoomFramebuffer::new(10, 20);
+        let color = PackedRgba::rgb(0, 255, 0);
+        draw_line_fb(&mut fb, 5, 2, 5, 8, color);
+        for y in 2..=8 {
+            assert_eq!(fb.get_pixel(5, y), color, "pixel at (5, {y}) should be set");
+        }
+    }
+
+    #[test]
+    fn draw_line_single_point() {
+        let mut fb = DoomFramebuffer::new(10, 10);
+        let color = PackedRgba::rgb(0, 0, 255);
+        draw_line_fb(&mut fb, 5, 5, 5, 5, color);
+        assert_eq!(fb.get_pixel(5, 5), color);
+    }
+
+    #[test]
+    fn draw_line_diagonal() {
+        let mut fb = DoomFramebuffer::new(10, 10);
+        let color = PackedRgba::rgb(255, 255, 0);
+        draw_line_fb(&mut fb, 0, 0, 5, 5, color);
+        // Start and end should be set
+        assert_eq!(fb.get_pixel(0, 0), color);
+        assert_eq!(fb.get_pixel(5, 5), color);
+    }
+
+    // ---- generate_test_map structure ----
+
+    #[test]
+    fn test_map_has_sectors() {
+        let map = generate_test_map();
+        assert!(!map.sectors.is_empty());
+    }
+
+    #[test]
+    fn test_map_has_linedefs_and_sidedefs() {
+        let map = generate_test_map();
+        assert!(!map.linedefs.is_empty());
+        assert!(!map.sidedefs.is_empty());
+    }
+
+    #[test]
+    fn test_map_has_vertices() {
+        let map = generate_test_map();
+        assert!(!map.vertices.is_empty());
+    }
+
+    // ---- Default impl ----
+
+    #[test]
+    fn default_engine_has_test_map_loaded() {
+        let engine = DoomEngine::default();
+        assert!(engine.map.is_some());
+        let map = engine.map.as_ref().unwrap();
+        assert_eq!(map.name, "TEST");
+    }
+
+    // ---- multiple operations sequence ----
+
+    #[test]
+    fn full_gameplay_sequence() {
+        let mut engine = DoomEngine::default();
+        engine.move_forward(1.0);
+        engine.strafe(0.5);
+        engine.look(0.1, 0.0);
+        engine.update(DOOM_TICK_SECS * 3.0);
+        engine.fire();
+        engine.toggle_run();
+        engine.toggle_noclip();
+        engine.toggle_god_mode();
+        let mut painter = Painter::new(120, 80, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 60, 20, 1);
+        assert_eq!(engine.frame, 1);
+        assert!(engine.time > 0.0);
+        assert!(engine.player.running);
+        assert!(engine.player.noclip);
+        assert!(engine.player.god_mode);
+    }
 }
