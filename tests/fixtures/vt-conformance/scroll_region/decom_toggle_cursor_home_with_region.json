@@ -1,0 +1,14 @@
+{
+  "name": "decom_toggle_cursor_home_with_region",
+  "description": "DECOM toggles home cursor to absolute origin vs scroll-region origin when DECSTBM is active",
+  "initial_size": [6, 5],
+  "input_bytes_hex": "1b5b323b3472 1b5b3f3668 1b5b343b3548 1b5b3f366c 58 1b5b3f3668 59",
+  "comment": "DECSTBM(2,4) -> region rows 1..3. DECOM on homes cursor to (1,0). CUP(4,5) under DECOM clamps to region bottom at row 3. DECOM off homes to (0,0), print X. DECOM on homes to (1,0), print Y.",
+  "expected": {
+    "cursor": { "row": 1, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 1, "col": 0, "char": "Y" }
+    ]
+  }
+}
