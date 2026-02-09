@@ -28,6 +28,9 @@ const GRAPHEME_FALLBACK_CODEPOINT: u32 = '□' as u32;
 const ATTR_STYLE_MASK: u32 = 0xFF;
 const ATTR_LINK_ID_MAX: u32 = 0x00FF_FFFF;
 const WEB_PATCH_CELL_BYTES: u64 = 16;
+const PATCH_HASH_ALGO: &str = "fnv1a64";
+const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV64_PRIME: u64 = 0x100000001b3;
 
 /// Web backend error type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +158,8 @@ pub struct WebOutputs {
     pub last_patches: Vec<WebPatchRun>,
     /// Aggregate patch upload accounting for the last present.
     pub last_patch_stats: Option<WebPatchStats>,
+    /// Deterministic hash of the last patch batch (row-major run order).
+    pub last_patch_hash: Option<String>,
     /// Whether the last present requested a full repaint.
     pub last_full_repaint_hint: bool,
 }
@@ -244,12 +249,23 @@ impl BackendPresenter for WebPresenter {
     ) -> Result<(), Self::Error> {
         let patches = build_patch_runs(buf, diff, full_repaint_hint);
         let stats = patch_batch_stats(&patches);
+        let patch_hash = patch_batch_hash(&patches);
         self.outputs.last_buffer = Some(buf.clone());
         self.outputs.last_patches = patches;
         self.outputs.last_patch_stats = Some(stats);
+        self.outputs.last_patch_hash = Some(patch_hash);
         self.outputs.last_full_repaint_hint = full_repaint_hint;
         Ok(())
     }
+}
+
+#[must_use]
+fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV64_PRIME);
+    }
+    hash
 }
 
 #[must_use]
@@ -357,6 +373,27 @@ fn patch_batch_stats(patches: &[WebPatchRun]) -> WebPatchStats {
         patch_count,
         bytes_uploaded,
     }
+}
+
+#[must_use]
+fn patch_batch_hash(patches: &[WebPatchRun]) -> String {
+    let mut hash = FNV64_OFFSET_BASIS;
+    let patch_count = u64::try_from(patches.len()).unwrap_or(u64::MAX);
+    hash = fnv1a64_extend(hash, &patch_count.to_le_bytes());
+
+    for patch in patches {
+        let cell_count = u64::try_from(patch.cells.len()).unwrap_or(u64::MAX);
+        hash = fnv1a64_extend(hash, &patch.offset.to_le_bytes());
+        hash = fnv1a64_extend(hash, &cell_count.to_le_bytes());
+        for cell in &patch.cells {
+            hash = fnv1a64_extend(hash, &cell.bg.to_le_bytes());
+            hash = fnv1a64_extend(hash, &cell.fg.to_le_bytes());
+            hash = fnv1a64_extend(hash, &cell.glyph.to_le_bytes());
+            hash = fnv1a64_extend(hash, &cell.attrs.to_le_bytes());
+        }
+    }
+
+    format!("{PATCH_HASH_ALGO}:{hash:016x}")
 }
 
 /// A minimal, host-driven WASM backend.
@@ -485,6 +522,8 @@ mod tests {
         assert_eq!(stats.patch_count, 1);
         assert_eq!(stats.dirty_cells, 4);
         assert_eq!(stats.bytes_uploaded, 64);
+        let hash = outputs.last_patch_hash.expect("hash should be present");
+        assert!(hash.starts_with("fnv1a64:"));
     }
 
     #[test]
@@ -511,5 +550,68 @@ mod tests {
         assert_eq!(stats.patch_count, 2);
         assert_eq!(stats.dirty_cells, 3);
         assert_eq!(stats.bytes_uploaded, 48);
+        let hash = outputs.last_patch_hash.expect("hash should be present");
+        assert!(hash.starts_with("fnv1a64:"));
+    }
+
+    #[test]
+    fn patch_batch_hash_is_deterministic() {
+        let patches = vec![
+            WebPatchRun {
+                offset: 2,
+                cells: vec![
+                    WebPatchCell {
+                        bg: 0x1122_3344,
+                        fg: 0x5566_7788,
+                        glyph: 'A' as u32,
+                        attrs: 0x0000_0001,
+                    },
+                    WebPatchCell {
+                        bg: 0x1122_3344,
+                        fg: 0x5566_7788,
+                        glyph: 'B' as u32,
+                        attrs: 0x0000_0002,
+                    },
+                ],
+            },
+            WebPatchRun {
+                offset: 10,
+                cells: vec![WebPatchCell {
+                    bg: 0xAABB_CCDD,
+                    fg: 0xDDEE_FF00,
+                    glyph: '中' as u32,
+                    attrs: 0x0000_0010,
+                }],
+            },
+        ];
+
+        let hash_a = patch_batch_hash(&patches);
+        let hash_b = patch_batch_hash(&patches);
+        assert_eq!(hash_a, hash_b);
+        assert!(hash_a.starts_with("fnv1a64:"));
+    }
+
+    #[test]
+    fn patch_batch_hash_changes_with_patch_payload() {
+        let baseline = vec![WebPatchRun {
+            offset: 4,
+            cells: vec![WebPatchCell {
+                bg: 0x0000_00FF,
+                fg: 0xFFFF_FFFF,
+                glyph: 'x' as u32,
+                attrs: 0x0000_0001,
+            }],
+        }];
+        let mut changed = baseline.clone();
+        changed[0].offset = 5;
+
+        let base_hash = patch_batch_hash(&baseline);
+        let changed_hash = patch_batch_hash(&changed);
+        assert_ne!(base_hash, changed_hash);
+
+        changed[0].offset = 4;
+        changed[0].cells[0].glyph = 'y' as u32;
+        let changed_glyph_hash = patch_batch_hash(&changed);
+        assert_ne!(base_hash, changed_glyph_hash);
     }
 }
