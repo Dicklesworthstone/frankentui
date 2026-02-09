@@ -784,10 +784,25 @@ fn golden_web_demo_soak_pool_stability() {
     let cycle_simulated_ms = screens_per_cycle.saturating_mul(SOAK_TICK_MS);
     let soak_cycles_u64 = MIN_SOAK_SIMULATED_MS.div_ceil(cycle_simulated_ms).max(12);
     let soak_cycles = usize::try_from(soak_cycles_u64).expect("soak cycle count must fit usize");
+    let screens_per_cycle_usize =
+        usize::try_from(screens_per_cycle).expect("screen count must fit usize");
+    let expected_records = soak_cycles
+        .checked_mul(screens_per_cycle_usize)
+        .expect("soak record count overflow");
 
     let soak_a = run_web_sweep_soak(120, 40, 2.0, soak_cycles, SOAK_TICK_MS);
     let soak_b = run_web_sweep_soak(120, 40, 2.0, soak_cycles, SOAK_TICK_MS);
     assert_web_sweep_deterministic(&soak_a.records, &soak_b.records, 120, 40);
+    assert_eq!(
+        soak_a.records.len(),
+        expected_records,
+        "soak record count mismatch"
+    );
+    assert_eq!(
+        soak_b.records.len(),
+        expected_records,
+        "soak record count mismatch"
+    );
 
     assert_eq!(soak_a.cycle_pool_lens.len(), soak_cycles);
     assert_eq!(
@@ -804,6 +819,12 @@ fn golden_web_demo_soak_pool_stability() {
         soak_a.simulated_elapsed_ms,
         MIN_SOAK_SIMULATED_MS
     );
+    let soak_jsonl_lines: Vec<String> = soak_a
+        .records
+        .iter()
+        .map(|record| record.jsonl_line.clone())
+        .collect();
+    validate_frame_jsonl_schema(&soak_jsonl_lines);
 
     // Memory stability gate:
     // after two warmup cycles, the grapheme pool should not continue to grow materially.
