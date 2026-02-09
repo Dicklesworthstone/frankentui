@@ -322,24 +322,19 @@ fn vt_conformance_fixtures_replay() -> Result<(), String> {
 
 fn collect_fixture_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
-    let dirs = [
-        "c0_controls",
-        "cursor",
-        "erase",
-        "line_edit",
-        "scroll",
-        "scroll_region",
-        "sgr",
-        "utf8",
-    ];
-    for d in dirs {
-        let dir = root.join(d);
-        let rd = std::fs::read_dir(&dir)
-            .map_err(|e| format!("failed to read fixture dir {}: {e}", dir.display()))?;
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                out.push(path);
+    let rd = std::fs::read_dir(root)
+        .map_err(|e| format!("failed to read fixture root {}: {e}", root.display()))?;
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let sub_rd = std::fs::read_dir(&path)
+            .map_err(|e| format!("failed to read fixture dir {}: {e}", path.display()))?;
+        for sub_entry in sub_rd.flatten() {
+            let sub_path = sub_entry.path();
+            if sub_path.extension().and_then(|s| s.to_str()) == Some("json") {
+                out.push(sub_path);
             }
         }
     }
