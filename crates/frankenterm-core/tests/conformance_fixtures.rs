@@ -322,7 +322,15 @@ fn vt_conformance_fixtures_replay() -> Result<(), String> {
 
 fn collect_fixture_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
-    let dirs = ["c0_controls", "cursor", "erase", "sgr"];
+    let dirs = [
+        "c0_controls",
+        "cursor",
+        "erase",
+        "line_edit",
+        "scroll",
+        "sgr",
+        "utf8",
+    ];
     for d in dirs {
         let dir = root.join(d);
         let rd = std::fs::read_dir(&dir)

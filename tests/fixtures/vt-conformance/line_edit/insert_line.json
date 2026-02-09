@@ -1,0 +1,14 @@
+{
+  "name": "insert_line",
+  "description": "CSI 1 L inserts a blank line at cursor row, shifting content down",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "411b5b32484200001b5b33484300001b5b313b31481b5b314c",
+  "comment": "A at (0,0), CUP(2,0) B, CUP(3,0) C, CUP(1,1) then IL(1). Line 0 becomes blank, A moves to line 1, B to line 2. C falls off.",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 1, "col": 0, "char": "A" },
+      { "row": 2, "col": 0, "char": "B" }
+    ]
+  }
+}

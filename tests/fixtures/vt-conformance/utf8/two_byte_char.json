@@ -1,0 +1,15 @@
+{
+  "name": "two_byte_char",
+  "description": "UTF-8 two-byte character (é = U+00E9 = C3 A9) prints correctly",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "41c3a942",
+  "comment": "A + é (2-byte UTF-8) + B → 'Aé B' with cursor at col 3",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "\u00e9" },
+      { "row": 0, "col": 2, "char": "B" }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "three_byte_char",
+  "description": "UTF-8 three-byte character (你 = U+4F60 = E4 BD A0) prints correctly",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "58e4bda059",
+  "comment": "X + 你 (3-byte UTF-8) + Y → cursor at col 3",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "\u4f60" },
+      { "row": 0, "col": 2, "char": "Y" }
+    ]
+  }
+}
