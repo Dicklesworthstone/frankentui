@@ -903,6 +903,108 @@ mod tests {
         assert_eq!(parsed["run_id"], "bench\"alpha\nbeta");
     }
 
+    fn unicode_fixture_cells() -> Vec<CellData> {
+        vec![
+            CellData {
+                glyph_id: u32::from('界'),
+                ..CellData::EMPTY
+            },
+            CellData {
+                glyph_id: u32::from('\u{0301}'),
+                ..CellData::EMPTY
+            },
+            CellData {
+                glyph_id: u32::from('🧪'),
+                attrs: (5u32 << 8) | 0x1,
+                ..CellData::EMPTY
+            },
+            CellData {
+                glyph_id: u32::from('\u{200D}'),
+                ..CellData::EMPTY
+            },
+            CellData {
+                glyph_id: u32::from('\u{FE0F}'),
+                ..CellData::EMPTY
+            },
+        ]
+    }
+
+    #[test]
+    fn stable_frame_hash_unicode_fixture_is_deterministic_and_sensitive() {
+        let geometry = GeometrySnapshot {
+            cols: 5,
+            rows: 1,
+            pixel_width: 50,
+            pixel_height: 10,
+            cell_width_px: 10.0,
+            cell_height_px: 10.0,
+            dpr: 1.0,
+            zoom: 1.0,
+        };
+        let cells = unicode_fixture_cells();
+        let a = stable_frame_hash(&cells, geometry);
+        let b = stable_frame_hash(&cells, geometry);
+        assert_eq!(a, b);
+        assert!(a.starts_with("fnv1a64:"));
+
+        let mut changed = cells.clone();
+        changed[2].glyph_id = u32::from('A');
+        assert_ne!(a, stable_frame_hash(&changed, geometry));
+    }
+
+    #[test]
+    fn resize_storm_jsonl_unicode_fixture_has_stable_interaction_hash() {
+        let geometry = GeometrySnapshot {
+            cols: 5,
+            rows: 1,
+            pixel_width: 50,
+            pixel_height: 10,
+            cell_width_px: 10.0,
+            cell_height_px: 10.0,
+            dpr: 1.0,
+            zoom: 1.0,
+        };
+        let cells = unicode_fixture_cells();
+        let interaction = InteractionSnapshot {
+            hovered_link_id: 5,
+            cursor_offset: 2,
+            cursor_style: 1,
+            selection_active: true,
+            selection_start: 1,
+            selection_end: 4,
+        };
+
+        let line_a = resize_storm_frame_jsonl_with_interaction(
+            "unicode-run",
+            77,
+            "2026-02-09T09:52:00Z",
+            2,
+            geometry,
+            &cells,
+            Some(interaction),
+        );
+        let line_b = resize_storm_frame_jsonl_with_interaction(
+            "unicode-run",
+            77,
+            "2026-02-09T09:52:00Z",
+            2,
+            geometry,
+            &cells,
+            Some(interaction),
+        );
+        let parsed_a: serde_json::Value = serde_json::from_str(&line_a).unwrap();
+        let parsed_b: serde_json::Value = serde_json::from_str(&line_b).unwrap();
+
+        assert_eq!(parsed_a["frame_hash"], parsed_b["frame_hash"]);
+        assert_eq!(parsed_a["interaction_hash"], parsed_b["interaction_hash"]);
+        assert_ne!(parsed_a["frame_hash"], parsed_a["interaction_hash"]);
+        assert_eq!(parsed_a["hovered_link_id"], 5);
+        assert_eq!(parsed_a["cursor_offset"], 2);
+        assert_eq!(parsed_a["selection_active"], true);
+        assert_eq!(parsed_a["selection_start"], 1);
+        assert_eq!(parsed_a["selection_end"], 4);
+    }
+
     #[test]
     fn stable_frame_hash_is_deterministic() {
         let geometry = GeometrySnapshot {
