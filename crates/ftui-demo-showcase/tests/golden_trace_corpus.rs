@@ -130,6 +130,13 @@ struct WebSweepRecord {
     jsonl_line: String,
 }
 
+#[derive(Debug, Clone)]
+struct WebSweepSoak {
+    records: Vec<WebSweepRecord>,
+    cycle_pool_lens: Vec<usize>,
+    max_pool_len: usize,
+}
+
 fn screen_slug(screen: ScreenId) -> String {
     screen
         .title()
@@ -351,6 +358,103 @@ fn run_web_sweep(cols: u16, rows: u16, dpr: f32) -> Vec<WebSweepRecord> {
     }
 
     records
+}
+
+fn run_web_sweep_soak(cols: u16, rows: u16, dpr: f32, cycles: usize) -> WebSweepSoak {
+    let mut program = StepProgram::new(AppModel::new(), cols, rows);
+    program.init().unwrap();
+
+    let mut records = Vec::new();
+    let mut ts_ms = 0_u64;
+    let mut cycle_pool_lens = Vec::with_capacity(cycles);
+    let mut max_pool_len = program.pool().len();
+
+    for cycle in 0..cycles {
+        for &screen in screens::screen_ids().iter() {
+            ts_ms = ts_ms.saturating_add(TICK_MS);
+            program.model_mut().current_screen = screen;
+            if cycle == 0 {
+                apply_web_sweep_deterministic_profile(&mut program, screen);
+            }
+            program.push_event(tick_event());
+            program.advance_time(Duration::from_millis(TICK_MS));
+
+            let start = Instant::now();
+            let step = program.step().unwrap();
+            let render_ms = start.elapsed().as_secs_f64() * 1_000.0;
+            assert!(
+                step.rendered,
+                "screen soak step should render for {}",
+                screen.title()
+            );
+
+            let outputs = program.outputs();
+            let buffer = outputs
+                .last_buffer
+                .as_ref()
+                .expect("rendered step must capture last buffer");
+            let frame_hash = format!(
+                "{HASH_ALGO}:{:016x}",
+                checksum_buffer(buffer, program.pool())
+            );
+            let patch_hash = patch_hash(&outputs.last_patches);
+            let patch_stats = outputs
+                .last_patch_stats
+                .expect("rendered step must capture patch stats");
+            let screen_id = screen_slug(screen);
+            let hash_key = format!("web-{cols}x{rows}-seed{SEED}-cycle{cycle}-{screen_id}");
+
+            let jsonl_line = serde_json::to_string(&json!({
+                "schema_version": E2E_SCHEMA_VERSION,
+                "type": "frame",
+                "timestamp": format!("t+{ts_ms}ms"),
+                "run_id": format!("web_demo_soak_{cols}x{rows}_seed{SEED}"),
+                "seed": SEED,
+                "frame_idx": step.frame_idx,
+                "hash_algo": HASH_ALGO,
+                "frame_hash": frame_hash,
+                "patch_hash": patch_hash,
+                "patch_bytes": patch_stats.bytes_uploaded,
+                "patch_cells": patch_stats.dirty_cells,
+                "patch_runs": patch_stats.patch_count,
+                "render_ms": render_ms,
+                "present_ms": 0.0,
+                "present_bytes": patch_stats.bytes_uploaded,
+                "mode": "web",
+                "hash_key": hash_key,
+                "cols": cols,
+                "rows": rows,
+                "screen_id": screen_id,
+                "dpr": dpr,
+            }))
+            .unwrap();
+
+            records.push(WebSweepRecord {
+                screen,
+                frame_idx: step.frame_idx,
+                signature: WebSweepSignature {
+                    screen_id: screen_slug(screen),
+                    cols,
+                    rows,
+                    frame_hash,
+                    patch_hash,
+                    patch_cells: patch_stats.dirty_cells,
+                    patch_runs: patch_stats.patch_count,
+                    patch_bytes: patch_stats.bytes_uploaded,
+                },
+                jsonl_line,
+            });
+
+            max_pool_len = max_pool_len.max(program.pool().len());
+        }
+        cycle_pool_lens.push(program.pool().len());
+    }
+
+    WebSweepSoak {
+        records,
+        cycle_pool_lens,
+        max_pool_len,
+    }
 }
 
 fn assert_web_sweep_deterministic(
@@ -658,4 +762,56 @@ fn golden_web_demo_sweep_jsonl_deterministic() {
         .map(|record| record.jsonl_line.clone())
         .collect();
     validate_frame_jsonl_schema(&jsonl_lines);
+}
+
+/// Longer deterministic soak over repeated screen sweeps.
+///
+/// Verifies:
+/// - deterministic signatures across repeated soak runs,
+/// - grapheme-pool usage stabilizes after warmup (no runaway growth trend).
+#[test]
+fn golden_web_demo_soak_pool_stability() {
+    const SOAK_CYCLES: usize = 12;
+    let soak_a = run_web_sweep_soak(120, 40, 2.0, SOAK_CYCLES);
+    let soak_b = run_web_sweep_soak(120, 40, 2.0, SOAK_CYCLES);
+    let det_a: Vec<WebSweepRecord> = soak_a
+        .records
+        .iter()
+        .filter(|record| record.screen != ScreenId::MermaidMegaShowcase)
+        .cloned()
+        .collect();
+    let det_b: Vec<WebSweepRecord> = soak_b
+        .records
+        .iter()
+        .filter(|record| record.screen != ScreenId::MermaidMegaShowcase)
+        .cloned()
+        .collect();
+    assert_web_sweep_deterministic(&det_a, &det_b, 120, 40);
+
+    assert_eq!(soak_a.cycle_pool_lens.len(), SOAK_CYCLES);
+    assert_eq!(
+        soak_a.cycle_pool_lens, soak_b.cycle_pool_lens,
+        "soak pool profile must be deterministic"
+    );
+
+    // Memory stability gate:
+    // after two warmup cycles, the grapheme pool should not continue to grow materially.
+    let warmup_pool = soak_a.cycle_pool_lens[1];
+    let final_pool = *soak_a
+        .cycle_pool_lens
+        .last()
+        .expect("at least one pool sample");
+    assert!(
+        final_pool <= warmup_pool.saturating_add(128),
+        "pool drift too high after warmup: warmup={warmup_pool} final={final_pool} profile={:?}",
+        soak_a.cycle_pool_lens
+    );
+
+    assert!(
+        soak_a.max_pool_len <= final_pool.saturating_add(256),
+        "pool peak too far above steady-state: peak={} final={} profile={:?}",
+        soak_a.max_pool_len,
+        final_pool,
+        soak_a.cycle_pool_lens
+    );
 }
