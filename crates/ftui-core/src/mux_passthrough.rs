@@ -236,4 +236,113 @@ mod tests {
 
         assert!(result.starts_with(b"\x1bPtmux;"));
     }
+
+    // --- tmux_wrap: additional escape handling ---
+
+    #[test]
+    fn tmux_wrap_multiple_escapes() {
+        // Sequence with 3 ESC bytes
+        let seq = &[ESC, b'[', b'm', ESC, b']', b'0', ESC, b'\\'];
+        let wrapped = to_bytes(|w| tmux_wrap(w, seq));
+        let inner = &wrapped[7..wrapped.len() - 2];
+        // Each ESC should be doubled → 6 ESC bytes in inner
+        let esc_count = inner.iter().filter(|&&b| b == ESC).count();
+        assert_eq!(esc_count, 6, "3 ESC bytes should become 6 (doubled)");
+    }
+
+    #[test]
+    fn tmux_wrap_all_escape_bytes() {
+        // Every byte is ESC
+        let seq = &[ESC, ESC, ESC];
+        let wrapped = to_bytes(|w| tmux_wrap(w, seq));
+        let inner = &wrapped[7..wrapped.len() - 2];
+        // 3 ESCs → 6 ESC bytes
+        assert_eq!(inner.len(), 6);
+        assert!(inner.iter().all(|&b| b == ESC));
+    }
+
+    #[test]
+    fn tmux_wrap_preserves_non_escape_bytes() {
+        let seq = b"ABCDEF";
+        let wrapped = to_bytes(|w| tmux_wrap(w, seq));
+        assert_eq!(wrapped, b"\x1bPtmux;ABCDEF\x1b\\");
+    }
+
+    #[test]
+    fn tmux_wrap_binary_data() {
+        // Sequence with all byte values 0-255 except ESC
+        let seq: Vec<u8> = (0u8..=255).filter(|&b| b != ESC).collect();
+        let wrapped = to_bytes(|w| tmux_wrap(w, &seq));
+        // Should contain all those bytes in the inner portion
+        let inner = &wrapped[7..wrapped.len() - 2];
+        assert_eq!(inner.len(), seq.len());
+    }
+
+    // --- screen_wrap: additional tests ---
+
+    #[test]
+    fn screen_wrap_empty_sequence() {
+        let wrapped = to_bytes(|w| screen_wrap(w, b""));
+        assert_eq!(wrapped, b"\x1bP\x1b\\");
+    }
+
+    #[test]
+    fn screen_wrap_preserves_all_bytes() {
+        // Even ESC bytes pass through unmodified
+        let seq = &[ESC, ESC, 0x00, 0xFF];
+        let wrapped = to_bytes(|w| screen_wrap(w, seq));
+        let inner = &wrapped[2..wrapped.len() - 2];
+        assert_eq!(inner, seq);
+    }
+
+    // --- mux_wrap: priority and combination tests ---
+
+    #[test]
+    fn mux_wrap_tmux_priority_over_zellij() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.in_tmux = true;
+        caps.in_zellij = true;
+        let result = to_bytes(|w| mux_wrap(w, &caps, b"x"));
+        assert!(result.starts_with(b"\x1bPtmux;"));
+    }
+
+    #[test]
+    fn mux_wrap_screen_priority_over_zellij() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.in_screen = true;
+        caps.in_zellij = true;
+        let result = to_bytes(|w| mux_wrap(w, &caps, b"x"));
+        assert!(result.starts_with(b"\x1bP"));
+        assert!(!result.starts_with(b"\x1bPtmux;"));
+    }
+
+    // --- Constants ---
+
+    #[test]
+    fn esc_constant_value() {
+        assert_eq!(ESC, 0x1b);
+    }
+
+    #[test]
+    fn st_constant_value() {
+        assert_eq!(ST, b"\x1b\\");
+    }
+
+    // --- Large sequence ---
+
+    #[test]
+    fn tmux_wrap_large_sequence() {
+        let seq = vec![b'A'; 10_000];
+        let wrapped = to_bytes(|w| tmux_wrap(w, &seq));
+        // header (7) + data (10000) + ST (2) = 10009
+        assert_eq!(wrapped.len(), 10_009);
+    }
+
+    #[test]
+    fn screen_wrap_large_sequence() {
+        let seq = vec![b'B'; 10_000];
+        let wrapped = to_bytes(|w| screen_wrap(w, &seq));
+        // header (2) + data (10000) + ST (2) = 10004
+        assert_eq!(wrapped.len(), 10_004);
+    }
 }
