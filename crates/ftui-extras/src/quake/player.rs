@@ -371,12 +371,14 @@ mod tests {
 
     #[test]
     fn spawn_resets_velocity_and_state() {
-        let mut p = Player::default();
-        p.vel = [100.0, 200.0, 300.0];
-        p.pitch = 0.5;
-        p.on_ground = false;
-        p.bob_phase = 5.0;
-        p.bob_amount = 1.0;
+        let mut p = Player {
+            vel: [100.0, 200.0, 300.0],
+            pitch: 0.5,
+            on_ground: false,
+            bob_phase: 5.0,
+            bob_amount: 1.0,
+            ..Player::default()
+        };
         p.spawn(10.0, 20.0, 30.0, 1.0);
         assert_eq!(p.vel, [0.0, 0.0, 0.0]);
         assert_eq!(p.pitch, 0.0);
@@ -388,9 +390,11 @@ mod tests {
 
     #[test]
     fn spawn_preserves_health_and_armor() {
-        let mut p = Player::default();
-        p.health = 50;
-        p.armor = 75;
+        let mut p = Player {
+            health: 50,
+            armor: 75,
+            ..Player::default()
+        };
         p.spawn(0.0, 0.0, 0.0, 0.0);
         // spawn doesn't reset health/armor
         assert_eq!(p.health, 50);
@@ -526,10 +530,11 @@ mod tests {
             ceil_z: 500.0,
             light: 200.0,
         });
-        let mut p = Player::default();
-        p.on_ground = false;
-        p.pos[2] = 200.0; // well above the floor
-        p.vel[2] = 0.0;
+        let mut p = Player {
+            on_ground: false,
+            pos: [0.0, 0.0, 200.0], // well above the floor
+            ..Player::default()
+        };
         p.tick(&map, 1.0 / 72.0);
         // Gravity should have reduced vel[2] (made it negative)
         assert!(
@@ -542,11 +547,13 @@ mod tests {
     #[test]
     fn tick_friction_slows_ground_player() {
         let map = crate::quake::map::generate_e1m1();
-        let mut p = Player::default();
-        // Place player at map spawn point with some ground velocity
-        p.pos = [0.0, 0.0, 0.0];
-        p.on_ground = true;
-        p.vel = [200.0, 100.0, 0.0];
+        let mut p = Player {
+            // Place player at map spawn point with some ground velocity
+            pos: [0.0, 0.0, 0.0],
+            on_ground: true,
+            vel: [200.0, 100.0, 0.0],
+            ..Player::default()
+        };
         let initial_speed = (p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1]).sqrt();
         p.tick(&map, 1.0 / 72.0);
         let final_speed = (p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1]).sqrt();
@@ -559,11 +566,13 @@ mod tests {
     #[test]
     fn tick_clamps_velocity_to_max() {
         let map = QuakeMap::new();
-        let mut p = Player::default();
-        p.vel = [5000.0, -5000.0, 5000.0];
-        p.on_ground = false;
-        p.pos[2] = 500.0;
-        p.noclip = true; // noclip so we don't hit collision
+        let mut p = Player {
+            vel: [5000.0, -5000.0, 5000.0],
+            on_ground: false,
+            pos: [0.0, 0.0, 500.0],
+            noclip: true, // noclip so we don't hit collision
+            ..Player::default()
+        };
         p.tick(&map, 1.0 / 72.0);
         for v in &p.vel {
             assert!(
@@ -576,11 +585,13 @@ mod tests {
     #[test]
     fn tick_noclip_moves_freely() {
         let map = QuakeMap::new();
-        let mut p = Player::default();
-        p.noclip = true;
-        p.on_ground = false;
-        p.pos = [0.0, 0.0, 100.0];
-        p.vel = [100.0, 50.0, 0.0];
+        let mut p = Player {
+            noclip: true,
+            on_ground: false,
+            pos: [0.0, 0.0, 100.0],
+            vel: [100.0, 50.0, 0.0],
+            ..Player::default()
+        };
         let dt = 1.0 / 72.0;
         p.tick(&map, dt);
         // In noclip, position should change in the direction of velocity
@@ -595,10 +606,12 @@ mod tests {
     #[test]
     fn tick_view_bob_increases_with_ground_speed() {
         let map = crate::quake::map::generate_e1m1();
-        let mut p = Player::default();
-        p.pos = [0.0, 0.0, 0.0];
-        p.on_ground = true;
-        p.vel = [300.0, 0.0, 0.0]; // fast ground movement
+        let mut p = Player {
+            pos: [0.0, 0.0, 0.0],
+            on_ground: true,
+            vel: [300.0, 0.0, 0.0], // fast ground movement
+            ..Player::default()
+        };
         let dt = 1.0 / 72.0;
         p.tick(&map, dt);
         // If ground speed > 10 and on_ground, bob_amount should increase
@@ -614,10 +627,12 @@ mod tests {
     #[test]
     fn tick_view_bob_decays_when_stopped() {
         let map = QuakeMap::new();
-        let mut p = Player::default();
-        p.bob_amount = 1.0;
-        p.on_ground = true;
-        p.vel = [0.0, 0.0, 0.0]; // stopped
+        let mut p = Player {
+            bob_amount: 1.0,
+            on_ground: true,
+            vel: [0.0, 0.0, 0.0], // stopped
+            ..Player::default()
+        };
         let dt = 1.0 / 72.0;
         p.tick(&map, dt);
         assert!(
@@ -752,11 +767,13 @@ mod tests {
             ceil_z: 50.0, // very low ceiling
             light: 200.0,
         });
-        let mut p = Player::default();
-        p.pos = [0.0, 0.0, 0.0];
-        p.vel = [0.0, 0.0, 1000.0]; // huge upward velocity
-        p.on_ground = false;
-        p.noclip = false;
+        let mut p = Player {
+            pos: [0.0, 0.0, 0.0],
+            vel: [0.0, 0.0, 1000.0], // huge upward velocity
+            on_ground: false,
+            noclip: false,
+            ..Player::default()
+        };
         p.tick(&map, 1.0 / 72.0);
         // Player pos[2] + PLAYER_HEIGHT should not exceed ceil_z
         assert!(

@@ -1174,8 +1174,10 @@ mod tests {
 
     #[test]
     fn render_with_crosshair_disabled() {
-        let mut engine = DoomEngine::default();
-        engine.show_crosshair = false;
+        let mut engine = DoomEngine {
+            show_crosshair: false,
+            ..DoomEngine::default()
+        };
         let mut painter = Painter::new(120, 80, crate::canvas::Mode::Braille);
         engine.render(&mut painter, 60, 20, 1);
         assert_eq!(engine.frame, 1);
@@ -1185,8 +1187,10 @@ mod tests {
 
     #[test]
     fn render_with_minimap_enabled() {
-        let mut engine = DoomEngine::default();
-        engine.show_minimap = true;
+        let mut engine = DoomEngine {
+            show_minimap: true,
+            ..DoomEngine::default()
+        };
         let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
         engine.render(&mut painter, 120, 40, 1);
         assert_eq!(engine.frame, 1);
