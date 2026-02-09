@@ -131,6 +131,13 @@ impl TextShapingEngine {
             Self::Harfbuzz => "harfbuzz",
         }
     }
+
+    const fn as_u32(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Harfbuzz => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1056,9 +1063,11 @@ impl FrankenTermWeb {
     }
 
     fn resize_storm_interaction_snapshot(&self) -> Option<InteractionSnapshot> {
+        let has_shaping_state = self.text_shaping != TextShapingConfig::default();
         let has_overlay = self.hovered_link_id != 0
             || self.cursor_offset.is_some()
-            || self.active_selection_range().is_some();
+            || self.active_selection_range().is_some()
+            || has_shaping_state;
         if !has_overlay {
             return None;
         }
@@ -1072,6 +1081,8 @@ impl FrankenTermWeb {
             selection_active,
             selection_start,
             selection_end,
+            text_shaping_enabled: self.text_shaping.enabled,
+            text_shaping_engine: self.text_shaping.engine.as_u32(),
         })
     }
 
@@ -2395,6 +2406,8 @@ mod tests {
                 selection_active: true,
                 selection_start: 2,
                 selection_end: 9,
+                text_shaping_enabled: false,
+                text_shaping_engine: 0,
             })
         );
     }
@@ -2416,6 +2429,31 @@ mod tests {
                 selection_active: false,
                 selection_start: 0,
                 selection_end: 0,
+                text_shaping_enabled: false,
+                text_shaping_engine: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn resize_storm_interaction_snapshot_includes_shaping_state_without_other_overlays() {
+        let mut term = FrankenTermWeb::new();
+        term.text_shaping = TextShapingConfig {
+            enabled: true,
+            engine: TextShapingEngine::Harfbuzz,
+        };
+
+        assert_eq!(
+            term.resize_storm_interaction_snapshot(),
+            Some(InteractionSnapshot {
+                hovered_link_id: 0,
+                cursor_offset: 0,
+                cursor_style: CursorStyle::None.as_u32(),
+                selection_active: false,
+                selection_start: 0,
+                selection_end: 0,
+                text_shaping_enabled: true,
+                text_shaping_engine: 1,
             })
         );
     }

@@ -286,6 +286,10 @@ struct ResizeStormFrameJsonlRecord<'a> {
     selection_start: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     selection_end: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_shaping_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_shaping_engine: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -387,12 +391,19 @@ pub struct InteractionSnapshot {
     pub selection_active: bool,
     pub selection_start: u32,
     pub selection_end: u32,
+    pub text_shaping_enabled: bool,
+    pub text_shaping_engine: u32,
 }
 
 impl InteractionSnapshot {
     #[must_use]
     const fn selection_active_u32(self) -> u32 {
         if self.selection_active { 1 } else { 0 }
+    }
+
+    #[must_use]
+    const fn text_shaping_enabled_u32(self) -> u32 {
+        if self.text_shaping_enabled { 1 } else { 0 }
     }
 }
 
@@ -417,6 +428,8 @@ pub fn stable_frame_hash_with_interaction(
     hash = fnv1a64_extend(hash, &interaction.selection_active_u32().to_le_bytes());
     hash = fnv1a64_extend(hash, &interaction.selection_start.to_le_bytes());
     hash = fnv1a64_extend(hash, &interaction.selection_end.to_le_bytes());
+    hash = fnv1a64_extend(hash, &interaction.text_shaping_enabled_u32().to_le_bytes());
+    hash = fnv1a64_extend(hash, &interaction.text_shaping_engine.to_le_bytes());
     format!("{FRAME_HASH_ALGO}:{hash:016x}")
 }
 
@@ -623,7 +636,7 @@ pub fn resize_storm_frame_jsonl(
 ///
 /// When `interaction` is present, this additionally emits:
 /// - `interaction_hash` (geometry + cells + overlay state)
-/// - raw overlay fields (`hovered_link_id`, `cursor_*`, `selection_*`)
+/// - raw overlay fields (`hovered_link_id`, `cursor_*`, `selection_*`, `text_shaping_*`)
 #[must_use]
 pub fn resize_storm_frame_jsonl_with_interaction(
     run_id: &str,
@@ -643,6 +656,8 @@ pub fn resize_storm_frame_jsonl_with_interaction(
         selection_active,
         selection_start,
         selection_end,
+        text_shaping_enabled,
+        text_shaping_engine,
     ) = if let Some(state) = interaction {
         (
             Some(stable_frame_hash_with_interaction(cells, geometry, state)),
@@ -652,9 +667,11 @@ pub fn resize_storm_frame_jsonl_with_interaction(
             Some(state.selection_active),
             Some(state.selection_start),
             Some(state.selection_end),
+            Some(state.text_shaping_enabled),
+            Some(state.text_shaping_engine),
         )
     } else {
-        (None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None)
     };
 
     let row = ResizeStormFrameJsonlRecord {
@@ -676,6 +693,8 @@ pub fn resize_storm_frame_jsonl_with_interaction(
         selection_active,
         selection_start,
         selection_end,
+        text_shaping_enabled,
+        text_shaping_engine,
     };
     serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string())
 }
@@ -1032,6 +1051,8 @@ mod tests {
             selection_active: true,
             selection_start: 1,
             selection_end: 4,
+            text_shaping_enabled: false,
+            text_shaping_engine: 0,
         };
 
         let line_a = resize_storm_frame_jsonl_with_interaction(
@@ -1063,6 +1084,8 @@ mod tests {
         assert_eq!(parsed_a["selection_active"], true);
         assert_eq!(parsed_a["selection_start"], 1);
         assert_eq!(parsed_a["selection_end"], 4);
+        assert_eq!(parsed_a["text_shaping_enabled"], false);
+        assert_eq!(parsed_a["text_shaping_engine"], 0);
     }
 
     #[test]
@@ -1146,6 +1169,8 @@ mod tests {
             selection_active: true,
             selection_start: 0,
             selection_end: 2,
+            text_shaping_enabled: false,
+            text_shaping_engine: 0,
         };
         let a = stable_frame_hash_with_interaction(&cells, geometry, interaction);
         let b = stable_frame_hash_with_interaction(&cells, geometry, interaction);
@@ -1193,17 +1218,32 @@ mod tests {
             selection_end: 2,
             ..none
         };
+        let shaping_enabled = InteractionSnapshot {
+            text_shaping_enabled: true,
+            ..none
+        };
+        let shaping_harfbuzz = InteractionSnapshot {
+            text_shaping_enabled: true,
+            text_shaping_engine: 1,
+            ..none
+        };
 
         let none_hash = stable_frame_hash_with_interaction(&cells, geometry, none);
         let hover_hash = stable_frame_hash_with_interaction(&cells, geometry, hover);
         let block_hash = stable_frame_hash_with_interaction(&cells, geometry, cursor_block);
         let bar_hash = stable_frame_hash_with_interaction(&cells, geometry, cursor_bar);
         let selection_hash = stable_frame_hash_with_interaction(&cells, geometry, selection);
+        let shaping_enabled_hash =
+            stable_frame_hash_with_interaction(&cells, geometry, shaping_enabled);
+        let shaping_harfbuzz_hash =
+            stable_frame_hash_with_interaction(&cells, geometry, shaping_harfbuzz);
 
         assert_ne!(none_hash, hover_hash);
         assert_ne!(none_hash, block_hash);
         assert_ne!(block_hash, bar_hash);
         assert_ne!(none_hash, selection_hash);
+        assert_ne!(none_hash, shaping_enabled_hash);
+        assert_ne!(shaping_enabled_hash, shaping_harfbuzz_hash);
     }
 
     #[test]
@@ -1268,6 +1308,8 @@ mod tests {
             selection_active: true,
             selection_start: 1,
             selection_end: 3,
+            text_shaping_enabled: true,
+            text_shaping_engine: 1,
         };
 
         let base = resize_storm_frame_jsonl("run-2", 7, "T000002", 4, geometry, &cells);
@@ -1297,6 +1339,8 @@ mod tests {
         assert_eq!(with_parsed["selection_active"], true);
         assert_eq!(with_parsed["selection_start"], 1);
         assert_eq!(with_parsed["selection_end"], 3);
+        assert_eq!(with_parsed["text_shaping_enabled"], true);
+        assert_eq!(with_parsed["text_shaping_engine"], 1);
     }
 
     #[test]
