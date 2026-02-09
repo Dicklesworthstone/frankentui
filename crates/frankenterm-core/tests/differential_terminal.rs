@@ -512,6 +512,48 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             bytes:
                 b"\x1b[1;1HAAAA\x1b[2;1HBBBB\x1b[3;1HCCCC\x1b[4;1HDDDD\x1b[5;1HEEEE\x1b[2;4r\x1b[1S",
         },
+        SupportedFixture {
+            id: "csi_ich_insert_chars",
+            cols: 10,
+            rows: 3,
+            bytes: b"ABCDE\x1b[1G\x1b[2@Z",
+        },
+        SupportedFixture {
+            id: "csi_dch_delete_chars",
+            cols: 10,
+            rows: 3,
+            bytes: b"ABCDE\x1b[2G\x1b[2P",
+        },
+        SupportedFixture {
+            id: "csi_ech_erase_chars",
+            cols: 10,
+            rows: 3,
+            bytes: b"ABCDE\x1b[2G\x1b[2X",
+        },
+        SupportedFixture {
+            id: "csi_il_insert_lines",
+            cols: 5,
+            rows: 3,
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[2;1H\x1b[1L",
+        },
+        SupportedFixture {
+            id: "csi_dl_delete_lines",
+            cols: 5,
+            rows: 3,
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[2;1H\x1b[1M",
+        },
+        SupportedFixture {
+            id: "csi_rep_repeat_char",
+            cols: 10,
+            rows: 3,
+            bytes: b"A\x1b[3b",
+        },
+        SupportedFixture {
+            id: "csi_decstr_soft_reset",
+            cols: 10,
+            rows: 3,
+            bytes: b"\x1b[1mABC\x1b[!pD",
+        },
     ]
 }
 
@@ -603,10 +645,7 @@ fn differential_supported_subset_matches_virtual_terminal_reference() {
 #[test]
 fn differential_known_mismatches_are_tracked_with_root_cause_notes() {
     let fixtures = parse_known_mismatch_fixtures();
-    assert!(
-        !fixtures.is_empty(),
-        "known mismatch fixtures should not be empty"
-    );
+    // Empty is allowed: means reference model parity is complete for tracked cases.
 
     for fixture in fixtures {
         let core = run_core_snapshot(&fixture.bytes, fixture.cols, fixture.rows);

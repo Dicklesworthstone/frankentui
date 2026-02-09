@@ -254,6 +254,8 @@ pub struct VirtualTerminal {
     // Title
     title: String,
     quirks: QuirkSet,
+    /// Last printed character for REP (CSI b) support.
+    last_char: Option<char>,
 }
 
 impl VirtualTerminal {
@@ -298,6 +300,7 @@ impl VirtualTerminal {
             alternate_cursor: None,
             title: String::new(),
             quirks,
+            last_char: None,
         }
     }
 
@@ -663,14 +666,48 @@ impl VirtualTerminal {
                 self.erase_line(mode);
             }
             b'L' => {
-                // Insert Lines
-                let _n = Self::param(params, 0, 1);
-                // Simplified: no-op for now
+                // Insert Lines (IL) — insert blank lines at cursor row, pushing down
+                let n = Self::param(params, 0, 1);
+                if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
+                    for _ in 0..n {
+                        // Shift lines down from cursor_y to scroll_bottom
+                        for row in (self.cursor_y + 1..=self.scroll_bottom).rev() {
+                            let src_start = self.idx(0, row - 1);
+                            let dst_start = self.idx(0, row);
+                            let w = usize::from(self.width);
+                            if src_start < dst_start {
+                                let (left, right) = self.grid.split_at_mut(dst_start);
+                                right[..w].clone_from_slice(&left[src_start..src_start + w]);
+                            }
+                        }
+                        // Clear the line at cursor_y
+                        let row_start = self.idx(0, self.cursor_y);
+                        for i in 0..usize::from(self.width) {
+                            self.grid[row_start + i] = VCell::default();
+                        }
+                    }
+                }
             }
             b'M' => {
-                // Delete Lines
-                let _n = Self::param(params, 0, 1);
-                // Simplified: no-op for now
+                // Delete Lines (DL) — delete lines at cursor row, pulling up
+                let n = Self::param(params, 0, 1);
+                if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
+                    for _ in 0..n {
+                        // Shift lines up from cursor_y to scroll_bottom
+                        for row in self.cursor_y..self.scroll_bottom {
+                            let src_start = self.idx(0, row + 1);
+                            let dst_start = self.idx(0, row);
+                            let w = usize::from(self.width);
+                            let (left, right) = self.grid.split_at_mut(src_start);
+                            left[dst_start..dst_start + w].clone_from_slice(&right[..w]);
+                        }
+                        // Clear the bottom line of scroll region
+                        let bottom_start = self.idx(0, self.scroll_bottom);
+                        for i in 0..usize::from(self.width) {
+                            self.grid[bottom_start + i] = VCell::default();
+                        }
+                    }
+                }
             }
             b'S' => {
                 // Scroll Up
@@ -709,6 +746,63 @@ impl VirtualTerminal {
                 }
                 self.cursor_x = 0;
                 self.cursor_y = 0;
+            }
+            b'@' => {
+                // Insert Characters (ICH) — shift chars right at cursor, insert blanks
+                let n = Self::param(params, 0, 1);
+                let n = n.min(self.width.saturating_sub(self.cursor_x));
+                let row_start = self.idx(0, self.cursor_y);
+                let w = usize::from(self.width);
+                let cx = usize::from(self.cursor_x);
+                let count = usize::from(n);
+                // Shift characters right within the row
+                let row = &mut self.grid[row_start..row_start + w];
+                row[cx..].rotate_right(count.min(w - cx));
+                // Clear the inserted positions
+                for cell in row.iter_mut().skip(cx).take(count.min(w - cx)) {
+                    *cell = VCell::default();
+                }
+            }
+            b'P' => {
+                // Delete Characters (DCH) — shift chars left at cursor, fill blanks at end
+                let n = Self::param(params, 0, 1);
+                let n = n.min(self.width.saturating_sub(self.cursor_x));
+                let row_start = self.idx(0, self.cursor_y);
+                let w = usize::from(self.width);
+                let cx = usize::from(self.cursor_x);
+                let count = usize::from(n);
+                // Shift characters left within the row
+                let row = &mut self.grid[row_start..row_start + w];
+                row[cx..].rotate_left(count.min(w - cx));
+                // Clear the vacated positions at end
+                for cell in row.iter_mut().skip(w - count.min(w - cx)) {
+                    *cell = VCell::default();
+                }
+            }
+            b'X' => {
+                // Erase Characters (ECH) — erase N chars from cursor without moving cursor
+                let n = Self::param(params, 0, 1);
+                let n = n.min(self.width.saturating_sub(self.cursor_x));
+                let start = self.idx(self.cursor_x, self.cursor_y);
+                for i in 0..usize::from(n) {
+                    self.grid[start + i] = VCell::default();
+                }
+            }
+            b'b' => {
+                // Repeat Character (REP) — repeat last printed character N times
+                let n = Self::param(params, 0, 1);
+                if let Some(ch) = self.last_char {
+                    for _ in 0..n {
+                        self.put_char(ch);
+                    }
+                }
+            }
+            b'p' if self.csi_intermediate.contains(&b'!') => {
+                // Soft Reset (DECSTR) — CSI ! p
+                self.current_style = CellStyle::default();
+                self.cursor_visible = true;
+                self.scroll_top = 0;
+                self.scroll_bottom = self.height.saturating_sub(1);
             }
             b'h' if has_question => {
                 // DEC Private Mode Set
@@ -868,6 +962,7 @@ impl VirtualTerminal {
             ch,
             style: self.current_style.clone(),
         };
+        self.last_char = Some(ch);
         if immediate_wrap {
             self.cursor_x = 0;
             self.linefeed();
@@ -1003,6 +1098,7 @@ impl VirtualTerminal {
         self.alternate_screen = false;
         self.alternate_grid = None;
         self.alternate_cursor = None;
+        self.last_char = None;
     }
 
     fn param(params: &[u16], idx: usize, default: u16) -> u16 {

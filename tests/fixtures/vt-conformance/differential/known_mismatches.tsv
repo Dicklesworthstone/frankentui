@@ -1,2 +1,1 @@
 # id|cols|rows|input_hex|root_cause
-csi_ich_insert_chars|10|3|41424344451b5b31471b5b32405a|ICH (CSI @) is implemented by frankenterm-core but not by the current VirtualTerminal reference model; tracked here until the reference catches up.
