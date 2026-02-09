@@ -57,6 +57,10 @@
 //!   - Diff cost: avoid extra passes over the grid in quirk branches.
 
 use std::collections::VecDeque;
+use unicode_width::UnicodeWidthChar;
+
+/// Sentinel character used for the continuation (right) cell of a wide character.
+const WIDE_CONTINUATION: char = '\0';
 
 /// RGB color value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -257,6 +261,12 @@ pub struct VirtualTerminal {
     quirks: QuirkSet,
     /// Last printed character for REP (CSI b) support.
     last_char: Option<char>,
+    /// UTF-8 accumulator for multi-byte character decoding.
+    utf8_buf: [u8; 4],
+    /// Number of bytes accumulated in `utf8_buf`.
+    utf8_len: u8,
+    /// Expected total bytes for current UTF-8 sequence.
+    utf8_expected: u8,
 }
 
 impl VirtualTerminal {
@@ -302,6 +312,9 @@ impl VirtualTerminal {
             title: String::new(),
             quirks,
             last_char: None,
+            utf8_buf: [0; 4],
+            utf8_len: 0,
+            utf8_expected: 0,
         }
     }
 
@@ -400,7 +413,11 @@ impl VirtualTerminal {
         }
         let start = self.idx(0, y);
         let end = start + usize::from(self.width);
-        let s: String = self.grid[start..end].iter().map(|c| c.ch).collect();
+        let s: String = self.grid[start..end]
+            .iter()
+            .filter(|c| c.ch != WIDE_CONTINUATION)
+            .map(|c| c.ch)
+            .collect();
         s.trim_end().to_string()
     }
 
@@ -417,7 +434,11 @@ impl VirtualTerminal {
     #[must_use]
     pub fn scrollback_line(&self, idx: usize) -> Option<String> {
         self.scrollback.get(idx).map(|cells| {
-            let s: String = cells.iter().map(|c| c.ch).collect();
+            let s: String = cells
+                .iter()
+                .filter(|c| c.ch != WIDE_CONTINUATION)
+                .map(|c| c.ch)
+                .collect();
             s.trim_end().to_string()
         })
     }
@@ -494,13 +515,46 @@ impl VirtualTerminal {
             0x20..=0x7e => {
                 self.put_char(byte as char);
             }
-            0xc0..=0xff => {
-                // UTF-8 lead byte: simplified handling — treat as single char placeholder
-                // A full implementation would accumulate multi-byte sequences.
-                self.put_char('\u{FFFD}');
+            0xc2..=0xdf => {
+                // UTF-8 2-byte lead
+                self.utf8_buf[0] = byte;
+                self.utf8_len = 1;
+                self.utf8_expected = 2;
+            }
+            0xe0..=0xef => {
+                // UTF-8 3-byte lead
+                self.utf8_buf[0] = byte;
+                self.utf8_len = 1;
+                self.utf8_expected = 3;
+            }
+            0xf0..=0xf4 => {
+                // UTF-8 4-byte lead
+                self.utf8_buf[0] = byte;
+                self.utf8_len = 1;
+                self.utf8_expected = 4;
+            }
+            0x80..=0xbf if self.utf8_len > 0 => {
+                // UTF-8 continuation byte
+                let idx = usize::from(self.utf8_len);
+                self.utf8_buf[idx] = byte;
+                self.utf8_len += 1;
+                if self.utf8_len == self.utf8_expected {
+                    let len = usize::from(self.utf8_len);
+                    let mut buf = [0u8; 4];
+                    buf[..len].copy_from_slice(&self.utf8_buf[..len]);
+                    self.utf8_len = 0;
+                    self.utf8_expected = 0;
+                    if let Ok(decoded) = std::str::from_utf8(&buf[..len]) {
+                        for ch in decoded.chars() {
+                            self.put_char(ch);
+                        }
+                    }
+                }
             }
             _ => {
-                // Other control chars: ignored
+                // Invalid sequence or control char: reset UTF-8 accumulator
+                self.utf8_len = 0;
+                self.utf8_expected = 0;
             }
         }
     }
@@ -979,24 +1033,62 @@ impl VirtualTerminal {
     }
 
     fn put_char(&mut self, ch: char) {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if char_width == 0 {
+            return; // zero-width (combining marks, ZWJ): skip
+        }
+
         if self.cursor_x >= self.width {
-            // Auto-wrap
             self.cursor_x = 0;
             self.linefeed();
         }
+
+        // Wide char at last column → wrap first
+        if char_width == 2 && self.cursor_x + 1 >= self.width {
+            let idx = self.idx(self.cursor_x, self.cursor_y);
+            self.grid[idx] = VCell::default();
+            self.cursor_x = 0;
+            self.linefeed();
+        }
+
         let last_col = self.width.saturating_sub(1);
         let immediate_wrap = self.quirks.screen_immediate_wrap && self.cursor_x == last_col;
         let idx = self.idx(self.cursor_x, self.cursor_y);
+
+        // Fixup: overwriting a continuation → blank the lead
+        if self.grid[idx].ch == WIDE_CONTINUATION && self.cursor_x > 0 {
+            let lead_idx = self.idx(self.cursor_x - 1, self.cursor_y);
+            self.grid[lead_idx] = VCell::default();
+        }
+        // Fixup: narrow char overwrites a wide lead → blank its continuation
+        if char_width == 1 && self.cursor_x + 1 < self.width {
+            let next_idx = idx + 1;
+            if self.grid[next_idx].ch == WIDE_CONTINUATION {
+                self.grid[next_idx] = VCell::default();
+            }
+        }
+
         self.grid[idx] = VCell {
             ch,
             style: self.current_style.clone(),
         };
+
+        // Wide char: place continuation in next cell
+        if char_width == 2 && self.cursor_x + 1 < self.width {
+            let cont_idx = idx + 1;
+            self.grid[cont_idx] = VCell {
+                ch: WIDE_CONTINUATION,
+                style: self.current_style.clone(),
+            };
+        }
+
         self.last_char = Some(ch);
+        let advance = u16::try_from(char_width).unwrap_or(1);
         if immediate_wrap {
             self.cursor_x = 0;
             self.linefeed();
         } else {
-            self.cursor_x += 1;
+            self.cursor_x += advance;
         }
     }
 
@@ -1128,6 +1220,8 @@ impl VirtualTerminal {
         self.alternate_grid = None;
         self.alternate_cursor = None;
         self.last_char = None;
+        self.utf8_len = 0;
+        self.utf8_expected = 0;
     }
 
     fn param(params: &[u16], idx: usize, default: u16) -> u16 {

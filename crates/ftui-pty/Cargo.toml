@@ -15,3 +15,4 @@ portable-pty = "0.9.0"
 serde_json = "1.0.145"
 time = { version = "0.3.44", features = ["formatting"] }
 tungstenite = "0.28.0"
+unicode-width = "0.2"
