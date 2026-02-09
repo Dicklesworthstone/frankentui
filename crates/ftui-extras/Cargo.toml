@@ -165,5 +165,9 @@ name = "proptest_mermaid_render_invariants"
 required-features = ["diagram"]
 
 [[test]]
+name = "proptest_sampling_invariants"
+required-features = ["visual-fx"]
+
+[[test]]
 name = "backdrop_composition_tests"
 required-features = ["visual-fx"]
