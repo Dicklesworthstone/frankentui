@@ -15,6 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::env;
 use std::f64::consts::TAU;
+use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -135,6 +136,8 @@ pub struct VisualEffectsScreen {
     text_effects: TextEffectsDemo,
     /// Markdown panel rendered over backdrop effects.
     markdown_panel: Paragraph<'static>,
+    /// Reused header string buffer to avoid per-frame allocations.
+    header_text_buf: RefCell<String>,
     /// Active FPS movement input state (WASD).
     fps_input: FpsInputState,
     /// Last mouse position for FPS-style mouse look.
@@ -3335,6 +3338,7 @@ impl Default for VisualEffectsScreen {
             demo_mode: DemoMode::Canvas,
             text_effects: TextEffectsDemo::default(),
             markdown_panel,
+            header_text_buf: RefCell::new(String::with_capacity(196)),
             fps_input: FpsInputState::default(),
             fps_last_mouse: None,
             fps_mouse_sensitivity: 0.014,
@@ -4122,29 +4126,30 @@ impl Screen for VisualEffectsScreen {
             EffectType::Plasma => " │ Space: Palette",
             _ => "",
         };
-        // Build FPS stats string
-        let fps_stats = format!(
+        let mut header_text = self.header_text_buf.borrow_mut();
+        header_text.clear();
+        header_text.push(' ');
+        header_text.push_str(self.effect.name());
+
+        if self.is_fps_effect() {
+            header_text.push_str(
+                " │ WASD move/strafe │ Mouse look │ Space jump │ Click fire │ [r] Render mode │ ←/→ Switch │ [t] Text FX",
+            );
+        } else {
+            header_text.push_str(" │ ←/→ Switch │ [t] Text FX");
+            header_text.push_str(space_hint);
+        }
+
+        let _ = write!(
+            &mut *header_text,
             " │ {:.1} FPS │ {:.1}ms avg │ {:.1}/{:.1}ms",
             self.fps,
             self.avg_frame_time_us / 1000.0,
             self.min_frame_time_us / 1000.0,
             self.max_frame_time_us / 1000.0
         );
-        let header_text = if self.is_fps_effect() {
-            format!(
-                " {} │ WASD move/strafe │ Mouse look │ Space jump │ Click fire │ [r] Render mode │ ←/→ Switch │ [t] Text FX{}",
-                self.effect.name(),
-                fps_stats
-            )
-        } else {
-            format!(
-                " {} │ ←/→ Switch │ [t] Text FX{}{}",
-                self.effect.name(),
-                space_hint,
-                fps_stats
-            )
-        };
-        let header = Paragraph::new(header_text)
+
+        let header = Paragraph::new(header_text.as_str())
             .style(Style::new().bold().fg(PackedRgba::rgb(200, 200, 255)));
         header.render(header_area, frame);
 
