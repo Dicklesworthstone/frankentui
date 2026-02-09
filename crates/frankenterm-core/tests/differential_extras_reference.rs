@@ -154,6 +154,48 @@ impl CoreTerminalHarness {
             Action::Sgr(params) => self.cursor.attrs.apply_sgr_params(&params),
             Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
             Action::Escape(_) => {}
+            Action::DecSet(_) | Action::DecRst(_) => {}
+            Action::AnsiSet(_) | Action::AnsiRst(_) => {}
+            Action::SaveCursor | Action::RestoreCursor => {}
+            Action::Index => {
+                if self.cursor.row + 1 >= self.cursor.scroll_bottom() {
+                    self.grid.scroll_up_into(
+                        self.cursor.scroll_top(),
+                        self.cursor.scroll_bottom(),
+                        1,
+                        &mut self.scrollback,
+                    );
+                } else if self.cursor.row + 1 < self.rows {
+                    self.cursor.row += 1;
+                }
+            }
+            Action::ReverseIndex => {
+                if self.cursor.row == self.cursor.scroll_top() {
+                    self.grid
+                        .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), 1);
+                } else if self.cursor.row > 0 {
+                    self.cursor.row -= 1;
+                }
+            }
+            Action::NextLine => {
+                self.cursor.col = 0;
+                self.cursor.pending_wrap = false;
+                if self.cursor.row + 1 >= self.cursor.scroll_bottom() {
+                    self.grid.scroll_up_into(
+                        self.cursor.scroll_top(),
+                        self.cursor.scroll_bottom(),
+                        1,
+                        &mut self.scrollback,
+                    );
+                } else if self.cursor.row + 1 < self.rows {
+                    self.cursor.row += 1;
+                }
+            }
+            Action::FullReset => {
+                self.grid = Grid::new(self.cols, self.rows);
+                self.cursor = Cursor::new(self.cols, self.rows);
+                self.scrollback = Scrollback::new(512);
+            }
         }
     }
 

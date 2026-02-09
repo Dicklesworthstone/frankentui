@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use frankenterm_core::{Action, Cursor, Grid, Parser, Scrollback, SgrFlags};
+use frankenterm_core::{Action, Cursor, Grid, Parser, SavedCursor, Scrollback, SgrFlags};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +62,7 @@ struct CoreTerminalHarness {
     parser: Parser,
     grid: Grid,
     cursor: Cursor,
+    saved_cursor: SavedCursor,
     scrollback: Scrollback,
     cols: u16,
     rows: u16,
@@ -75,6 +76,7 @@ impl CoreTerminalHarness {
             parser: Parser::new(),
             grid: Grid::new(cols, rows),
             cursor: Cursor::new(cols, rows),
+            saved_cursor: SavedCursor::default(),
             scrollback: Scrollback::new(512),
             cols,
             rows,
@@ -201,6 +203,43 @@ impl CoreTerminalHarness {
                 }
             }
             Action::Sgr(params) => self.cursor.attrs.apply_sgr_params(&params),
+            // Mode toggles are currently not modeled in this conformance harness.
+            Action::DecSet(_) | Action::DecRst(_) | Action::AnsiSet(_) | Action::AnsiRst(_) => {}
+            Action::SaveCursor => self.saved_cursor = SavedCursor::save(&self.cursor, false),
+            Action::RestoreCursor => self.saved_cursor.restore(&mut self.cursor),
+            Action::Index => {
+                if self.cursor.row + 1 >= self.cursor.scroll_bottom() {
+                    self.grid.scroll_up_into(
+                        self.cursor.scroll_top(),
+                        self.cursor.scroll_bottom(),
+                        1,
+                        &mut self.scrollback,
+                    );
+                } else if self.cursor.row + 1 < self.rows {
+                    self.cursor.row += 1;
+                }
+                self.cursor.pending_wrap = false;
+            }
+            Action::ReverseIndex => {
+                if self.cursor.row == self.cursor.scroll_top() {
+                    self.grid
+                        .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), 1);
+                } else {
+                    self.cursor.move_up(1);
+                }
+                self.cursor.pending_wrap = false;
+            }
+            Action::NextLine => {
+                self.cursor.col = 0;
+                self.cursor.pending_wrap = false;
+                self.apply_action(Action::Index);
+            }
+            Action::FullReset => {
+                self.grid = Grid::new(self.cols, self.rows);
+                self.cursor = Cursor::new(self.cols, self.rows);
+                self.saved_cursor = SavedCursor::default();
+                self.scrollback = Scrollback::new(512);
+            }
             Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
             Action::Escape(_) => {}
         }

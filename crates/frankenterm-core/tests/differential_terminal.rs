@@ -155,6 +155,34 @@ impl CoreTerminalHarness {
                 }
             }
             Action::Sgr(params) => self.cursor.attrs.apply_sgr_params(&params),
+            Action::DecSet(_) | Action::DecRst(_) => {
+                // Mode changes are tracked but not applied in the baseline harness.
+            }
+            Action::AnsiSet(_) | Action::AnsiRst(_) => {}
+            Action::SaveCursor | Action::RestoreCursor => {
+                // Cursor save/restore not applied in the baseline harness.
+            }
+            Action::Index => {
+                // ESC D: same as LF
+                self.apply_newline();
+            }
+            Action::ReverseIndex => {
+                if self.cursor.row <= self.cursor.scroll_top() {
+                    self.grid
+                        .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), 1);
+                } else {
+                    self.cursor.move_up(1);
+                }
+            }
+            Action::NextLine => {
+                self.cursor.carriage_return();
+                self.apply_newline();
+            }
+            Action::FullReset => {
+                self.grid = Grid::new(self.cols, self.rows);
+                self.cursor = Cursor::new(self.cols, self.rows);
+                self.scrollback = Scrollback::new(512);
+            }
             Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
             Action::Escape(_) => {
                 // Remaining escape actions are intentionally left unsupported in the

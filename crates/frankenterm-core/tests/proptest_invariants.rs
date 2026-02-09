@@ -143,6 +143,41 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
             }
         }
         Action::Sgr(params) => cursor.attrs.apply_sgr_params(&params),
+        Action::DecSet(_) | Action::DecRst(_) => {
+            // Mode changes tracked but not applied in proptest harness.
+        }
+        Action::AnsiSet(_) | Action::AnsiRst(_) => {}
+        Action::SaveCursor | Action::RestoreCursor => {}
+        Action::Index => {
+            // ESC D: same as newline
+            if cursor.row + 1 >= cursor.scroll_bottom() {
+                grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+            } else if cursor.row + 1 < rows {
+                cursor.row += 1;
+            }
+            cursor.pending_wrap = false;
+        }
+        Action::ReverseIndex => {
+            if cursor.row <= cursor.scroll_top() {
+                grid.scroll_down(cursor.scroll_top(), cursor.scroll_bottom(), 1);
+            } else {
+                cursor.move_up(1);
+            }
+        }
+        Action::NextLine => {
+            cursor.carriage_return();
+            if cursor.row + 1 >= cursor.scroll_bottom() {
+                grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+            } else if cursor.row + 1 < rows {
+                cursor.row += 1;
+            }
+            cursor.pending_wrap = false;
+        }
+        Action::FullReset => {
+            *grid = Grid::new(cols, rows);
+            *cursor = Cursor::new(cols, rows);
+            *scrollback = Scrollback::new(512);
+        }
         Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
         Action::Escape(_) => {
             // Unsupported sequences are ignored.
@@ -213,10 +248,12 @@ proptest! {
         for action in &actions {
             match action {
                 Action::Print(ch) => {
-                    // Printable characters are in 0x20..=0x7E range.
+                    // Printable characters: ASCII 0x20..=0x7E or valid Unicode (>= U+0080).
                     let code = *ch as u32;
-                    prop_assert!((0x20..=0x7E).contains(&code),
-                        "Print action with non-printable char: {:?} (0x{:X})", ch, code);
+                    prop_assert!(
+                        (0x20..=0x7E).contains(&code) || code >= 0x80,
+                        "Print action with non-printable char: {:?} (U+{:04X})", ch, code
+                    );
                 }
                 Action::Escape(seq) => {
                     prop_assert!(!seq.is_empty(), "Empty escape sequence");
@@ -532,9 +569,10 @@ proptest! {
         for r in 0..rows {
             for c in 0..cols {
                 let cell = grid.cell(r, c).unwrap();
-                let ch = cell.content();
-                prop_assert!(ch.is_ascii() || ch == ' ',
-                    "Cell ({}, {}) has non-ASCII content: {:?}", r, c, ch);
+                // With UTF-8 support, cells may contain any Unicode character.
+                // Just verify accessibility (the unwrap above) and that width is sane.
+                prop_assert!(cell.width() <= 2,
+                    "Cell ({}, {}) has invalid width: {}", r, c, cell.width());
             }
         }
 

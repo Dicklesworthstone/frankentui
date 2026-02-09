@@ -1,20 +1,19 @@
-//! VT/ANSI parser (API skeleton).
+//! VT/ANSI parser.
 //!
-//! This parser is a minimal, deterministic state machine that converts an
-//! output byte stream into a sequence of actions for the terminal engine.
+//! This parser is a deterministic state machine that converts an output byte
+//! stream into a sequence of actions for the terminal engine. It covers:
 //!
-//! In the full implementation, this will cover CSI/OSC/DCS/APC and a VT support
-//! matrix. For the crate skeleton, we focus on:
-//!
-//! - printable ASCII -> `Action::Print`
-//! - a small set of C0 controls -> dedicated actions
-//! - decode of selected CSI controls (CUP/ED/EL)
-//! - capture of unsupported escape sequences as `Action::Escape` for later decoding
+//! - printable characters (ASCII + full UTF-8) -> `Action::Print`
+//! - C0 controls -> dedicated actions
+//! - CSI sequences (cursor, erase, scroll, SGR, mode set/reset)
+//! - OSC sequences (title, hyperlinks)
+//! - ESC-level sequences (cursor save/restore, index, reset)
+//! - capture of unsupported sequences as `Action::Escape` for later decoding
 
 /// Parser output actions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Print a single character.
+    /// Print a single character (ASCII or multi-byte UTF-8).
     Print(char),
     /// Line feed / newline (`\n`).
     Newline,
@@ -70,6 +69,26 @@ pub enum Action {
     /// Parameters are returned as parsed numeric values; interpretation is
     /// performed by the terminal engine (they are stateful/delta-based).
     Sgr(Vec<u16>),
+    /// DECSET (`CSI ? Pm h`): enable DEC private mode(s).
+    DecSet(Vec<u16>),
+    /// DECRST (`CSI ? Pm l`): disable DEC private mode(s).
+    DecRst(Vec<u16>),
+    /// SM (`CSI Pm h`): enable ANSI standard mode(s).
+    AnsiSet(Vec<u16>),
+    /// RM (`CSI Pm l`): disable ANSI standard mode(s).
+    AnsiRst(Vec<u16>),
+    /// DECSC (`ESC 7`): save cursor state.
+    SaveCursor,
+    /// DECRC (`ESC 8`): restore cursor state.
+    RestoreCursor,
+    /// IND (`ESC D`): index — move cursor down one line, scrolling if at bottom.
+    Index,
+    /// RI (`ESC M`): reverse index — move cursor up one line, scrolling if at top.
+    ReverseIndex,
+    /// NEL (`ESC E`): next line — move cursor to start of next line.
+    NextLine,
+    /// RIS (`ESC c`): full reset to initial state.
+    FullReset,
     /// OSC 0/2: set terminal title.
     SetTitle(String),
     /// OSC 8: start a hyperlink with the given URI.
@@ -87,6 +106,11 @@ enum State {
     Csi,
     Osc,
     OscEsc,
+    /// Accumulating a multi-byte UTF-8 character.
+    /// `bytes_remaining` counts how many continuation bytes are still expected.
+    Utf8 {
+        bytes_remaining: u8,
+    },
 }
 
 /// VT/ANSI parser state.
@@ -94,6 +118,10 @@ enum State {
 pub struct Parser {
     state: State,
     buf: Vec<u8>,
+    /// Accumulator for multi-byte UTF-8 character assembly.
+    utf8_buf: [u8; 4],
+    /// Number of bytes accumulated so far in `utf8_buf`.
+    utf8_len: u8,
 }
 
 impl Default for Parser {
@@ -109,6 +137,8 @@ impl Parser {
         Self {
             state: State::Ground,
             buf: Vec::new(),
+            utf8_buf: [0; 4],
+            utf8_len: 0,
         }
     }
 
@@ -134,12 +164,13 @@ impl Parser {
             State::Csi => self.advance_csi(b),
             State::Osc => self.advance_osc(b),
             State::OscEsc => self.advance_osc_esc(b),
+            State::Utf8 { bytes_remaining } => self.advance_utf8(b, bytes_remaining),
         }
     }
 
     fn advance_ground(&mut self, b: u8) -> Option<Action> {
         match b {
-            b'\n' => Some(Action::Newline),
+            b'\n' | 0x0B | 0x0C => Some(Action::Newline), // LF, VT, FF all treated as newline
             b'\r' => Some(Action::CarriageReturn),
             b'\t' => Some(Action::Tab),
             0x08 => Some(Action::Backspace),
@@ -151,7 +182,64 @@ impl Parser {
                 None
             }
             0x20..=0x7E => Some(Action::Print(b as char)),
-            _ => None, // ignore other control bytes in the skeleton
+            // UTF-8 multi-byte sequence leading bytes:
+            0xC2..=0xDF => {
+                // 2-byte sequence (0xC0-0xC1 are overlong, rejected)
+                self.utf8_buf[0] = b;
+                self.utf8_len = 1;
+                self.state = State::Utf8 { bytes_remaining: 1 };
+                None
+            }
+            0xE0..=0xEF => {
+                // 3-byte sequence
+                self.utf8_buf[0] = b;
+                self.utf8_len = 1;
+                self.state = State::Utf8 { bytes_remaining: 2 };
+                None
+            }
+            0xF0..=0xF4 => {
+                // 4-byte sequence (0xF5-0xF7 are outside valid Unicode range)
+                self.utf8_buf[0] = b;
+                self.utf8_len = 1;
+                self.state = State::Utf8 { bytes_remaining: 3 };
+                None
+            }
+            _ => None, // ignore C0 controls (0x00-0x06, 0x0E-0x1A, 0x1C-0x1F)
+                       // and invalid UTF-8 leading bytes (0x80-0xBF, 0xC0-0xC1, 0xF5-0xFF)
+        }
+    }
+
+    /// Accumulate continuation bytes for a multi-byte UTF-8 character.
+    fn advance_utf8(&mut self, b: u8, bytes_remaining: u8) -> Option<Action> {
+        // Continuation bytes must be in 0x80..=0xBF.
+        if (0x80..=0xBF).contains(&b) {
+            let idx = self.utf8_len as usize;
+            if idx < 4 {
+                self.utf8_buf[idx] = b;
+                self.utf8_len += 1;
+            }
+            if bytes_remaining == 1 {
+                // Sequence complete — try to decode.
+                self.state = State::Ground;
+                let len = self.utf8_len as usize;
+                let ch = core::str::from_utf8(&self.utf8_buf[..len])
+                    .ok()
+                    .and_then(|s| s.chars().next());
+                self.utf8_len = 0;
+                ch.map(Action::Print)
+            } else {
+                self.state = State::Utf8 {
+                    bytes_remaining: bytes_remaining - 1,
+                };
+                None
+            }
+        } else {
+            // Invalid continuation byte — abort UTF-8, reprocess this byte
+            // in ground state (replacement character is omitted per VT semantics;
+            // terminal emulators typically drop malformed sequences).
+            self.state = State::Ground;
+            self.utf8_len = 0;
+            self.advance_ground(b)
         }
     }
 
@@ -165,6 +253,42 @@ impl Parser {
             b']' => {
                 self.state = State::Osc;
                 None
+            }
+            // DECSC: save cursor (ESC 7)
+            b'7' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::SaveCursor)
+            }
+            // DECRC: restore cursor (ESC 8)
+            b'8' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::RestoreCursor)
+            }
+            // IND: index — cursor down, scroll if at bottom margin (ESC D)
+            b'D' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::Index)
+            }
+            // RI: reverse index — cursor up, scroll if at top margin (ESC M)
+            b'M' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::ReverseIndex)
+            }
+            // NEL: next line — CR + LF (ESC E)
+            b'E' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::NextLine)
+            }
+            // RIS: full reset to initial state (ESC c)
+            b'c' => {
+                self.state = State::Ground;
+                self.buf.clear();
+                Some(Action::FullReset)
             }
             _ => {
                 self.state = State::Ground;
@@ -226,7 +350,19 @@ impl Parser {
             return None;
         }
         let final_byte = *seq.last()?;
-        let params = Self::parse_csi_params(&seq[2..seq.len().saturating_sub(1)])?;
+        let param_bytes = &seq[2..seq.len().saturating_sub(1)];
+
+        // Check for DEC private mode indicator `?` prefix.
+        if param_bytes.first() == Some(&b'?') {
+            let params = Self::parse_csi_params(&param_bytes[1..])?;
+            return match final_byte {
+                b'h' => Some(Action::DecSet(params)),
+                b'l' => Some(Action::DecRst(params)),
+                _ => None,
+            };
+        }
+
+        let params = Self::parse_csi_params(param_bytes)?;
 
         match final_byte {
             b'A' => Some(Action::CursorUp(Self::csi_count_or_one(
@@ -309,6 +445,10 @@ impl Parser {
                 Some(Action::SetScrollRegion { top, bottom })
             }
             b'm' => Some(Action::Sgr(params)),
+            // SM: set ANSI mode(s)
+            b'h' => Some(Action::AnsiSet(params)),
+            // RM: reset ANSI mode(s)
+            b'l' => Some(Action::AnsiRst(params)),
             _ => None,
         }
     }
@@ -379,6 +519,8 @@ impl Parser {
 mod tests {
     use super::*;
 
+    // ── ASCII / Ground ─────────────────────────────────────────────
+
     #[test]
     fn printable_ascii_emits_print() {
         let mut p = Parser::new();
@@ -397,15 +539,242 @@ mod tests {
     }
 
     #[test]
-    fn csi_sequence_is_captured_as_escape() {
+    fn vt_and_ff_treated_as_newline() {
+        let mut p = Parser::new();
+        // VT (0x0B) and FF (0x0C) both produce Newline
+        assert_eq!(p.feed(b"\x0b"), vec![Action::Newline]);
+        assert_eq!(p.feed(b"\x0c"), vec![Action::Newline]);
+    }
+
+    // ── UTF-8 multi-byte characters ────────────────────────────────
+
+    #[test]
+    fn utf8_two_byte_character() {
+        let mut p = Parser::new();
+        // é = U+00E9 = 0xC3 0xA9
+        let actions = p.feed("é".as_bytes());
+        assert_eq!(actions, vec![Action::Print('é')]);
+    }
+
+    #[test]
+    fn utf8_three_byte_character() {
+        let mut p = Parser::new();
+        // 中 = U+4E2D = 0xE4 0xB8 0xAD
+        let actions = p.feed("中".as_bytes());
+        assert_eq!(actions, vec![Action::Print('中')]);
+    }
+
+    #[test]
+    fn utf8_four_byte_character() {
+        let mut p = Parser::new();
+        // 🎉 = U+1F389 = 0xF0 0x9F 0x8E 0x89
+        let actions = p.feed("🎉".as_bytes());
+        assert_eq!(actions, vec![Action::Print('🎉')]);
+    }
+
+    #[test]
+    fn utf8_mixed_with_ascii() {
+        let mut p = Parser::new();
+        let actions = p.feed("aé中🎉b".as_bytes());
+        assert_eq!(
+            actions,
+            vec![
+                Action::Print('a'),
+                Action::Print('é'),
+                Action::Print('中'),
+                Action::Print('🎉'),
+                Action::Print('b'),
+            ]
+        );
+    }
+
+    #[test]
+    fn utf8_split_across_feeds() {
+        let mut p = Parser::new();
+        // Feed é (0xC3 0xA9) byte by byte
+        assert_eq!(p.feed(&[0xC3]), Vec::<Action>::new());
+        assert_eq!(p.feed(&[0xA9]), vec![Action::Print('é')]);
+    }
+
+    #[test]
+    fn utf8_split_four_byte_across_feeds() {
+        let mut p = Parser::new();
+        // 🎉 = 0xF0 0x9F 0x8E 0x89
+        assert!(p.feed(&[0xF0]).is_empty());
+        assert!(p.feed(&[0x9F]).is_empty());
+        assert!(p.feed(&[0x8E]).is_empty());
+        assert_eq!(p.feed(&[0x89]), vec![Action::Print('🎉')]);
+    }
+
+    #[test]
+    fn utf8_invalid_continuation_aborts_and_reprocesses() {
+        let mut p = Parser::new();
+        // Start a 2-byte sequence (0xC3) then send ASCII 'a' instead of continuation
+        let actions = p.feed(&[0xC3, b'a']);
+        // The invalid sequence is dropped, 'a' is reprocessed as ASCII
+        assert_eq!(actions, vec![Action::Print('a')]);
+    }
+
+    #[test]
+    fn utf8_overlong_leading_bytes_are_ignored() {
+        let mut p = Parser::new();
+        // 0xC0 and 0xC1 are overlong leading bytes — should be ignored
+        assert!(p.feed(&[0xC0]).is_empty());
+        assert!(p.feed(&[0xC1]).is_empty());
+    }
+
+    #[test]
+    fn utf8_invalid_leading_bytes_above_f4_ignored() {
+        let mut p = Parser::new();
+        // 0xF5-0xFF are above valid Unicode range
+        assert!(p.feed(&[0xF5]).is_empty());
+        assert!(p.feed(&[0xFF]).is_empty());
+    }
+
+    #[test]
+    fn utf8_interrupted_by_escape() {
+        let mut p = Parser::new();
+        // Start UTF-8, then get ESC — should abort UTF-8 and process ESC
+        let actions = p.feed(&[0xC3, 0x1b, b'c']);
+        // 0xC3 starts UTF-8, 0x1b is not a valid continuation so abort,
+        // reprocess 0x1b as ESC, then 'c' completes ESC c -> FullReset
+        assert_eq!(actions, vec![Action::FullReset]);
+    }
+
+    #[test]
+    fn utf8_japanese_text() {
+        let mut p = Parser::new();
+        let actions = p.feed("こんにちは".as_bytes());
+        assert_eq!(
+            actions,
+            vec![
+                Action::Print('こ'),
+                Action::Print('ん'),
+                Action::Print('に'),
+                Action::Print('ち'),
+                Action::Print('は'),
+            ]
+        );
+    }
+
+    // ── DECSET / DECRST ────────────────────────────────────────────
+
+    #[test]
+    fn decset_cursor_hide() {
         let mut p = Parser::new();
         let actions = p.feed(b"\x1b[?25l");
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(
-            &actions[0],
-            Action::Escape(seq) if seq.as_slice() == b"\x1b[?25l"
-        ));
+        assert_eq!(actions, vec![Action::DecRst(vec![25])]);
     }
+
+    #[test]
+    fn decset_cursor_show() {
+        let mut p = Parser::new();
+        let actions = p.feed(b"\x1b[?25h");
+        assert_eq!(actions, vec![Action::DecSet(vec![25])]);
+    }
+
+    #[test]
+    fn decset_multiple_modes() {
+        let mut p = Parser::new();
+        // Enable alt screen + bracketed paste + mouse SGR in one sequence
+        let actions = p.feed(b"\x1b[?1049;2004;1006h");
+        assert_eq!(actions, vec![Action::DecSet(vec![1049, 2004, 1006])]);
+    }
+
+    #[test]
+    fn decrst_multiple_modes() {
+        let mut p = Parser::new();
+        let actions = p.feed(b"\x1b[?1049;2004l");
+        assert_eq!(actions, vec![Action::DecRst(vec![1049, 2004])]);
+    }
+
+    #[test]
+    fn decset_sync_output() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[?2026h"), vec![Action::DecSet(vec![2026])]);
+        assert_eq!(p.feed(b"\x1b[?2026l"), vec![Action::DecRst(vec![2026])]);
+    }
+
+    #[test]
+    fn decset_autowrap() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[?7h"), vec![Action::DecSet(vec![7])]);
+        assert_eq!(p.feed(b"\x1b[?7l"), vec![Action::DecRst(vec![7])]);
+    }
+
+    // ── ANSI SM / RM ──────────────────────────────────────────────
+
+    #[test]
+    fn ansi_set_insert_mode() {
+        let mut p = Parser::new();
+        // SM (CSI 4 h) — set insert mode
+        assert_eq!(p.feed(b"\x1b[4h"), vec![Action::AnsiSet(vec![4])]);
+        // RM (CSI 4 l) — reset insert mode
+        assert_eq!(p.feed(b"\x1b[4l"), vec![Action::AnsiRst(vec![4])]);
+    }
+
+    #[test]
+    fn ansi_set_newline_mode() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b[20h"), vec![Action::AnsiSet(vec![20])]);
+        assert_eq!(p.feed(b"\x1b[20l"), vec![Action::AnsiRst(vec![20])]);
+    }
+
+    // ── Cursor save/restore (DECSC/DECRC) ──────────────────────────
+
+    #[test]
+    fn esc_7_saves_cursor() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b7"), vec![Action::SaveCursor]);
+    }
+
+    #[test]
+    fn esc_8_restores_cursor() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1b8"), vec![Action::RestoreCursor]);
+    }
+
+    #[test]
+    fn save_restore_roundtrip_sequence() {
+        let mut p = Parser::new();
+        let actions = p.feed(b"\x1b7\x1b[5;10H\x1b8");
+        assert_eq!(
+            actions,
+            vec![
+                Action::SaveCursor,
+                Action::CursorPosition { row: 4, col: 9 },
+                Action::RestoreCursor,
+            ]
+        );
+    }
+
+    // ── ESC-level sequences (IND, RI, NEL, RIS) ───────────────────
+
+    #[test]
+    fn esc_d_is_index() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1bD"), vec![Action::Index]);
+    }
+
+    #[test]
+    fn esc_m_is_reverse_index() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1bM"), vec![Action::ReverseIndex]);
+    }
+
+    #[test]
+    fn esc_e_is_next_line() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1bE"), vec![Action::NextLine]);
+    }
+
+    #[test]
+    fn esc_c_is_full_reset() {
+        let mut p = Parser::new();
+        assert_eq!(p.feed(b"\x1bc"), vec![Action::FullReset]);
+    }
+
+    // ── Original CSI tests (preserved) ────────────────────────────
 
     #[test]
     fn csi_sgr_is_decoded() {
@@ -519,5 +888,60 @@ mod tests {
             vec![Action::HyperlinkStart("https://a.test".to_string())]
         );
         assert_eq!(p.feed(b"\x1b]8;;\x1b\\"), vec![Action::HyperlinkEnd]);
+    }
+
+    // ── Integration: mixed sequences ───────────────────────────────
+
+    #[test]
+    fn mixed_utf8_csi_osc_sequence() {
+        let mut p = Parser::new();
+        // "Hello" in Japanese, then set red, then move cursor
+        let mut input = Vec::new();
+        input.extend_from_slice("日本語".as_bytes());
+        input.extend_from_slice(b"\x1b[31m");
+        input.extend_from_slice(b"\x1b[5;1H");
+        let actions = p.feed(&input);
+        assert_eq!(
+            actions,
+            vec![
+                Action::Print('日'),
+                Action::Print('本'),
+                Action::Print('語'),
+                Action::Sgr(vec![31]),
+                Action::CursorPosition { row: 4, col: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn typical_terminal_setup_sequence() {
+        let mut p = Parser::new();
+        // Typical terminal init: alt screen + bracketed paste + mouse + hide cursor
+        let actions = p.feed(b"\x1b[?1049h\x1b[?2004h\x1b[?1006h\x1b[?25l");
+        assert_eq!(
+            actions,
+            vec![
+                Action::DecSet(vec![1049]),
+                Action::DecSet(vec![2004]),
+                Action::DecSet(vec![1006]),
+                Action::DecRst(vec![25]),
+            ]
+        );
+    }
+
+    #[test]
+    fn typical_terminal_teardown_sequence() {
+        let mut p = Parser::new();
+        // Typical terminal cleanup: show cursor + disable mouse + disable bracketed paste + exit alt screen
+        let actions = p.feed(b"\x1b[?25h\x1b[?1006l\x1b[?2004l\x1b[?1049l");
+        assert_eq!(
+            actions,
+            vec![
+                Action::DecSet(vec![25]),
+                Action::DecRst(vec![1006]),
+                Action::DecRst(vec![2004]),
+                Action::DecRst(vec![1049]),
+            ]
+        );
     }
 }
