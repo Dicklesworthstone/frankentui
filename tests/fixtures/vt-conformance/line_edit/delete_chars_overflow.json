@@ -1,0 +1,17 @@
+{
+  "name": "delete_chars_overflow",
+  "description": "DCH count larger than remaining characters effectively clears to end of line",
+  "initial_size": [8, 3],
+  "input_bytes_hex": "41424344451b5b313b33481b5b313050",
+  "comment": "Print ABCDE. CUP(1,3) to (0,2). DCH(10) deletes from col 2, but only 6 cols remain. Result: AB followed by blanks.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": " " },
+      { "row": 0, "col": 3, "char": " " },
+      { "row": 0, "col": 4, "char": " " }
+    ]
+  }
+}

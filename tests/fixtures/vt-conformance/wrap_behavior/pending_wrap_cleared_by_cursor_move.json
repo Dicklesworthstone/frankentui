@@ -1,0 +1,15 @@
+{
+  "name": "pending_wrap_cleared_by_cursor_move",
+  "description": "Cursor movement (CUB) clears pending wrap without wrapping to next line",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "4142434445464748494a1b5b4458",
+  "comment": "Print ABCDEFGHIJ (fills 10 cols, pending wrap), CUB(1) clears wrap and moves to col 8, print X overwrites col 8",
+  "expected": {
+    "cursor": { "row": 0, "col": 9 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 8, "char": "X" },
+      { "row": 0, "col": 9, "char": "J" }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "insert_chars_at_margin",
+  "description": "ICH near right margin pushes content off screen; excess is lost",
+  "initial_size": [8, 3],
+  "input_bytes_hex": "41424344454647481b5b313b37481b5b334058",
+  "comment": "Fill 8 cols ABCDEFGH. CUP(1,7) to (0,6). ICH(3) inserts 3 blanks at col 6, GH pushed off right. Print X at col 6.",
+  "expected": {
+    "cursor": { "row": 0, "col": 7 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 5, "char": "F" },
+      { "row": 0, "col": 6, "char": "X" },
+      { "row": 0, "col": 7, "char": " " }
+    ]
+  }
+}

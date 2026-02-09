@@ -1,0 +1,17 @@
+{
+  "name": "wrap_scrolls_at_bottom",
+  "description": "Wrapping at the bottom row triggers scroll up; top row content is lost",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "4142434445464748494a4b4c4d4e4f505152535455565758595a3031323321",
+  "comment": "Fill 3x10 grid (30 chars ABCDEFGHIJ..0123), print '!' wraps+scrolls. After scroll: row0=KLMNOPQRST, row1=UVWXYZ0123, row2=!",
+  "expected": {
+    "cursor": { "row": 2, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "K" },
+      { "row": 0, "col": 9, "char": "T" },
+      { "row": 1, "col": 0, "char": "U" },
+      { "row": 1, "col": 9, "char": "3" },
+      { "row": 2, "col": 0, "char": "!" }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "scroll_down_multi",
+  "description": "CSI 2 T scrolls down by 2 lines",
+  "initial_size": [5, 4],
+  "input_bytes_hex": "411b5b323b314842 1b5b333b314843 1b5b343b314844 1b5b325458",
+  "comment": "Print A at (0,0), B at (1,0), C at (2,0), D at (3,0) cursor->(3,1). CSI 2 T scrolls down 2 lines. C and D scroll off bottom. A->(2,0), B->(3,0). Cursor stays at (3,1). X printed at (3,1) overwriting B's col 1, cursor->(3,2).",
+  "expected": {
+    "cursor": { "row": 3, "col": 2 },
+    "cells": [
+      { "row": 2, "col": 0, "char": "A" },
+      { "row": 3, "col": 0, "char": "B" },
+      { "row": 3, "col": 1, "char": "X" }
+    ]
+  }
+}

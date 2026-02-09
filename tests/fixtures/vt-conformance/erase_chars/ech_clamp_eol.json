@@ -1,0 +1,16 @@
+{
+  "name": "ech_clamp_eol",
+  "description": "ECH count larger than remaining columns is clamped to line width",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "414243441b5b33471b5b323058",
+  "comment": "Print ABCD (cursor at col 4), CHA(3) to col 2, ECH(20) erases cols 2-9 (clamped), cursor stays at col 2",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": " " },
+      { "row": 0, "col": 3, "char": " " }
+    ]
+  }
+}
