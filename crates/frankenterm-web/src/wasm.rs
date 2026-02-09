@@ -1,12 +1,16 @@
 #![forbid(unsafe_code)]
 
+use crate::frame_harness::{GeometrySnapshot, resize_storm_frame_jsonl};
 use crate::input::{
     CompositionInput, CompositionPhase, CompositionState, FocusInput, InputEvent, KeyInput,
     KeyPhase, ModifierTracker, Modifiers, MouseButton, MouseInput, MousePhase, TouchInput,
     TouchPhase, TouchPoint, VtInputEncoderFeatures, WheelInput, encode_vt_input_event,
     normalize_dom_key_code,
 };
-use crate::renderer::{CellData, CellPatch, GridGeometry, RendererConfig, WebGpuRenderer};
+use crate::renderer::{
+    CellData, CellPatch, CursorStyle, GridGeometry, RendererConfig, WebGpuRenderer,
+    cell_attr_link_id,
+};
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -29,7 +33,21 @@ pub struct FrankenTermWeb {
     encoder_features: VtInputEncoderFeatures,
     encoded_inputs: Vec<String>,
     encoded_input_bytes: Vec<Vec<u8>>,
+    link_clicks: Vec<LinkClickEvent>,
+    hovered_link_id: u32,
+    cursor_offset: Option<u32>,
+    cursor_style: CursorStyle,
+    selection_range: Option<(u32, u32)>,
+    shadow_cells: Vec<CellData>,
     renderer: Option<WebGpuRenderer>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinkClickEvent {
+    x: u16,
+    y: u16,
+    button: Option<MouseButton>,
+    link_id: u32,
 }
 
 impl Default for FrankenTermWeb {
@@ -52,6 +70,12 @@ impl FrankenTermWeb {
             encoder_features: VtInputEncoderFeatures::default(),
             encoded_inputs: Vec::new(),
             encoded_input_bytes: Vec::new(),
+            link_clicks: Vec::new(),
+            hovered_link_id: 0,
+            cursor_offset: None,
+            cursor_style: CursorStyle::None,
+            selection_range: None,
+            shadow_cells: Vec::new(),
             renderer: None,
         }
     }
@@ -89,6 +113,7 @@ impl FrankenTermWeb {
 
         self.cols = cols;
         self.rows = rows;
+        self.shadow_cells = vec![CellData::EMPTY; usize::from(cols) * usize::from(rows)];
         self.canvas = Some(canvas);
         self.renderer = Some(renderer);
         self.encoder_features = parse_encoder_features(&options);
@@ -100,9 +125,12 @@ impl FrankenTermWeb {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
+        self.shadow_cells
+            .resize(usize::from(cols) * usize::from(rows), CellData::EMPTY);
         if let Some(r) = self.renderer.as_mut() {
             r.resize(cols, rows);
         }
+        self.sync_renderer_interaction_state();
     }
 
     /// Update DPR + zoom scaling while preserving current grid size.
@@ -151,7 +179,45 @@ impl FrankenTermWeb {
         let geometry = renderer.fit_to_container(container_width_css, container_height_css);
         self.cols = geometry.cols;
         self.rows = geometry.rows;
+        self.shadow_cells.resize(
+            usize::from(geometry.cols) * usize::from(geometry.rows),
+            CellData::EMPTY,
+        );
         Ok(geometry_to_js(geometry))
+    }
+
+    /// Emit one JSONL `frame` trace record for browser resize-storm E2E logs.
+    ///
+    /// The line includes both a deterministic frame hash and the current
+    /// geometry snapshot so test runners can diagnose resize/zoom/DPR mismatches.
+    #[wasm_bindgen(js_name = snapshotResizeStormFrameJsonl)]
+    pub fn snapshot_resize_storm_frame_jsonl(
+        &self,
+        run_id: &str,
+        seed: u32,
+        timestamp: &str,
+        frame_idx: u32,
+    ) -> Result<String, JsValue> {
+        if run_id.is_empty() {
+            return Err(JsValue::from_str("run_id must not be empty"));
+        }
+        if timestamp.is_empty() {
+            return Err(JsValue::from_str("timestamp must not be empty"));
+        }
+
+        let Some(renderer) = self.renderer.as_ref() else {
+            return Err(JsValue::from_str("renderer not initialized"));
+        };
+
+        let geometry = GeometrySnapshot::from(renderer.current_geometry());
+        Ok(resize_storm_frame_jsonl(
+            run_id,
+            u64::from(seed),
+            timestamp,
+            u64::from(frame_idx),
+            geometry,
+            &self.shadow_cells,
+        ))
     }
 
     /// Accepts DOM-derived keyboard/mouse/touch events.
@@ -173,6 +239,8 @@ impl FrankenTermWeb {
             } else {
                 self.mods.reconcile(event_mods(&ev));
             }
+
+            self.handle_interaction_event(&ev);
 
             let json = ev
                 .to_json_string()
@@ -242,8 +310,136 @@ impl FrankenTermWeb {
             });
         }
 
+        let max = usize::from(self.cols) * usize::from(self.rows);
+        self.shadow_cells.resize(max, CellData::EMPTY);
+        let start = usize::try_from(offset).unwrap_or(max).min(max);
+        let count = cells.len().min(max.saturating_sub(start));
+        for (i, cell) in cells.iter().take(count).enumerate() {
+            self.shadow_cells[start + i] = *cell;
+        }
+
         renderer.apply_patches(&[CellPatch { offset, cells }]);
         Ok(())
+    }
+
+    /// Configure cursor overlay.
+    ///
+    /// - `offset`: linear cell offset (`row * cols + col`), or `< 0` to clear.
+    /// - `style`: `0=none`, `1=block`, `2=bar`, `3=underline`.
+    #[wasm_bindgen(js_name = setCursor)]
+    pub fn set_cursor(&mut self, offset: i32, style: u32) -> Result<(), JsValue> {
+        self.cursor_offset = if offset < 0 {
+            None
+        } else {
+            let value = u32::try_from(offset).map_err(|_| JsValue::from_str("invalid cursor"))?;
+            self.clamp_offset(value)
+        };
+        self.cursor_style = if self.cursor_offset.is_some() {
+            CursorStyle::from_u32(style)
+        } else {
+            CursorStyle::None
+        };
+        self.sync_renderer_interaction_state();
+        Ok(())
+    }
+
+    /// Configure selection overlay using a `[start, end)` cell-offset range.
+    ///
+    /// Pass negative values to clear selection.
+    #[wasm_bindgen(js_name = setSelectionRange)]
+    pub fn set_selection_range(&mut self, start: i32, end: i32) -> Result<(), JsValue> {
+        self.selection_range = if start < 0 || end < 0 {
+            None
+        } else {
+            let start_u32 = u32::try_from(start).map_err(|_| JsValue::from_str("invalid start"))?;
+            let end_u32 = u32::try_from(end).map_err(|_| JsValue::from_str("invalid end"))?;
+            self.normalize_selection_range((start_u32, end_u32))
+        };
+        self.sync_renderer_interaction_state();
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = clearSelection)]
+    pub fn clear_selection(&mut self) {
+        self.selection_range = None;
+        self.sync_renderer_interaction_state();
+    }
+
+    #[wasm_bindgen(js_name = setHoveredLinkId)]
+    pub fn set_hovered_link_id(&mut self, link_id: u32) {
+        self.hovered_link_id = link_id;
+        self.sync_renderer_interaction_state();
+    }
+
+    /// Return hyperlink ID at a given grid cell (0 if none / out of bounds).
+    #[wasm_bindgen(js_name = linkAt)]
+    pub fn link_at(&self, x: u16, y: u16) -> u32 {
+        self.link_id_at_xy(x, y)
+    }
+
+    /// Drain queued hyperlink click events detected from normalized mouse input.
+    ///
+    /// Each entry has `{x, y, button, linkId}`.
+    #[wasm_bindgen(js_name = drainLinkClicks)]
+    pub fn drain_link_clicks(&mut self) -> Array {
+        let arr = Array::new();
+        for click in self.link_clicks.drain(..) {
+            let obj = Object::new();
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("x"),
+                &JsValue::from_f64(f64::from(click.x)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("y"),
+                &JsValue::from_f64(f64::from(click.y)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("button"),
+                &click.button.map_or(JsValue::NULL, |button| {
+                    JsValue::from_f64(f64::from(button.to_u8()))
+                }),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("linkId"),
+                &JsValue::from_f64(f64::from(click.link_id)),
+            );
+            arr.push(&obj);
+        }
+        arr
+    }
+
+    /// Extract selected text from current shadow cells (for copy workflows).
+    #[wasm_bindgen(js_name = extractSelectionText)]
+    pub fn extract_selection_text(&self) -> String {
+        let Some((start, end)) = self.selection_range else {
+            return String::new();
+        };
+        let cols = usize::from(self.cols.max(1));
+        let total = self.shadow_cells.len() as u32;
+        let mut out = String::new();
+        let start = start.min(total);
+        let end = end.min(total);
+        for offset in start..end {
+            let idx = usize::try_from(offset).unwrap_or(usize::MAX);
+            if idx >= self.shadow_cells.len() {
+                break;
+            }
+            if offset > start && idx % cols == 0 {
+                out.push('\n');
+            }
+            let glyph_id = self.shadow_cells[idx].glyph_id;
+            let ch = if glyph_id == 0 {
+                ' '
+            } else {
+                char::from_u32(glyph_id).unwrap_or('□')
+            };
+            out.push(ch);
+        }
+        out
     }
 
     /// Request a frame render. Encodes and submits a WebGPU draw pass.
@@ -265,6 +461,91 @@ impl FrankenTermWeb {
         self.canvas = None;
         self.encoded_inputs.clear();
         self.encoded_input_bytes.clear();
+        self.link_clicks.clear();
+        self.hovered_link_id = 0;
+        self.cursor_offset = None;
+        self.cursor_style = CursorStyle::None;
+        self.selection_range = None;
+        self.shadow_cells.clear();
+    }
+}
+
+impl FrankenTermWeb {
+    fn grid_capacity(&self) -> u32 {
+        u32::from(self.cols).saturating_mul(u32::from(self.rows))
+    }
+
+    fn clamp_offset(&self, offset: u32) -> Option<u32> {
+        (offset < self.grid_capacity()).then_some(offset)
+    }
+
+    fn normalize_selection_range(&self, range: (u32, u32)) -> Option<(u32, u32)> {
+        let max = self.grid_capacity();
+        let start = range.0.min(max);
+        let end = range.1.min(max);
+        if start == end {
+            return None;
+        }
+        Some((start.min(end), start.max(end)))
+    }
+
+    fn sync_renderer_interaction_state(&mut self) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_hovered_link_id(self.hovered_link_id);
+            renderer.set_cursor(self.cursor_offset, self.cursor_style);
+            renderer.set_selection_range(self.selection_range);
+        }
+    }
+
+    fn cell_offset_at_xy(&self, x: u16, y: u16) -> Option<usize> {
+        if x >= self.cols || y >= self.rows {
+            return None;
+        }
+        Some(usize::from(y) * usize::from(self.cols) + usize::from(x))
+    }
+
+    fn link_id_at_xy(&self, x: u16, y: u16) -> u32 {
+        let Some(offset) = self.cell_offset_at_xy(x, y) else {
+            return 0;
+        };
+        self.shadow_cells
+            .get(offset)
+            .map_or(0, |cell| cell_attr_link_id(cell.attrs))
+    }
+
+    fn set_hover_from_xy(&mut self, x: u16, y: u16) {
+        let link_id = self.link_id_at_xy(x, y);
+        if self.hovered_link_id != link_id {
+            self.hovered_link_id = link_id;
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.set_hovered_link_id(link_id);
+            }
+        }
+    }
+
+    fn handle_interaction_event(&mut self, ev: &InputEvent) {
+        let InputEvent::Mouse(mouse) = ev else {
+            return;
+        };
+
+        match mouse.phase {
+            MousePhase::Move | MousePhase::Drag | MousePhase::Down => {
+                self.set_hover_from_xy(mouse.x, mouse.y);
+            }
+            MousePhase::Up => {}
+        }
+
+        if mouse.phase == MousePhase::Down {
+            let link_id = self.link_id_at_xy(mouse.x, mouse.y);
+            if link_id != 0 {
+                self.link_clicks.push(LinkClickEvent {
+                    x: mouse.x,
+                    y: mouse.y,
+                    button: mouse.button,
+                    link_id,
+                });
+            }
+        }
     }
 }
 

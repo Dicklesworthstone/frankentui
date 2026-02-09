@@ -27,8 +27,14 @@
 //! println!("{}", report.to_json());
 //! ```
 
+use crate::renderer::{CellData, GridGeometry};
 use serde::Serialize;
 use std::time::Duration;
+
+const E2E_JSONL_SCHEMA_VERSION: &str = "e2e-jsonl-v1";
+const FRAME_HASH_ALGO: &str = "fnv1a64";
+const FNV64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV64_PRIME: u64 = 0x0000_0100_0000_01B3;
 
 /// A single frame's measurements.
 #[derive(Debug, Clone, Copy)]
@@ -221,6 +227,114 @@ impl SessionReport {
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
     }
+}
+
+/// Deterministic geometry snapshot used by browser resize-storm traces.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+pub struct GeometrySnapshot {
+    pub cols: u16,
+    pub rows: u16,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub cell_width_px: f32,
+    pub cell_height_px: f32,
+    pub dpr: f32,
+    pub zoom: f32,
+}
+
+impl From<GridGeometry> for GeometrySnapshot {
+    fn from(value: GridGeometry) -> Self {
+        Self {
+            cols: value.cols,
+            rows: value.rows,
+            pixel_width: value.pixel_width,
+            pixel_height: value.pixel_height,
+            cell_width_px: value.cell_width_px,
+            cell_height_px: value.cell_height_px,
+            dpr: value.dpr,
+            zoom: value.zoom,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ResizeStormFrameJsonlRecord<'a> {
+    schema_version: &'static str,
+    #[serde(rename = "type")]
+    record_type: &'static str,
+    timestamp: &'a str,
+    run_id: &'a str,
+    seed: u64,
+    frame_idx: u64,
+    hash_algo: &'static str,
+    frame_hash: String,
+    cols: u16,
+    rows: u16,
+    geometry: GeometrySnapshot,
+}
+
+#[must_use]
+fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(FNV64_PRIME);
+    }
+    hash
+}
+
+#[must_use]
+fn hash_geometry(mut hash: u64, geometry: GeometrySnapshot) -> u64 {
+    hash = fnv1a64_extend(hash, &geometry.cols.to_le_bytes());
+    hash = fnv1a64_extend(hash, &geometry.rows.to_le_bytes());
+    hash = fnv1a64_extend(hash, &geometry.pixel_width.to_le_bytes());
+    hash = fnv1a64_extend(hash, &geometry.pixel_height.to_le_bytes());
+    hash = fnv1a64_extend(hash, &geometry.cell_width_px.to_bits().to_le_bytes());
+    hash = fnv1a64_extend(hash, &geometry.cell_height_px.to_bits().to_le_bytes());
+    hash = fnv1a64_extend(hash, &geometry.dpr.to_bits().to_le_bytes());
+    fnv1a64_extend(hash, &geometry.zoom.to_bits().to_le_bytes())
+}
+
+/// Compute a deterministic frame hash over geometry + cell payload.
+///
+/// The hash is stable across runs and platforms for identical inputs.
+#[must_use]
+pub fn stable_frame_hash(cells: &[CellData], geometry: GeometrySnapshot) -> String {
+    let mut hash = FNV64_OFFSET_BASIS;
+    hash = hash_geometry(hash, geometry);
+    for cell in cells {
+        hash = fnv1a64_extend(hash, &cell.to_bytes());
+    }
+    format!("{FRAME_HASH_ALGO}:{hash:016x}")
+}
+
+/// Build one JSONL `frame` record for browser resize-storm traces.
+///
+/// The output conforms to the shared E2E schema fields and includes a
+/// geometry snapshot payload for post-run diagnosis.
+#[must_use]
+pub fn resize_storm_frame_jsonl(
+    run_id: &str,
+    seed: u64,
+    timestamp: &str,
+    frame_idx: u64,
+    geometry: GeometrySnapshot,
+    cells: &[CellData],
+) -> String {
+    let frame_hash = stable_frame_hash(cells, geometry);
+    let row = ResizeStormFrameJsonlRecord {
+        schema_version: E2E_JSONL_SCHEMA_VERSION,
+        record_type: "frame",
+        timestamp,
+        run_id,
+        seed,
+        frame_idx,
+        hash_algo: FRAME_HASH_ALGO,
+        frame_hash,
+        cols: geometry.cols,
+        rows: geometry.rows,
+        geometry,
+    };
+    serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
@@ -442,5 +556,91 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(parsed["run_id"], "bench\"alpha\nbeta");
+    }
+
+    #[test]
+    fn stable_frame_hash_is_deterministic() {
+        let geometry = GeometrySnapshot {
+            cols: 80,
+            rows: 24,
+            pixel_width: 640,
+            pixel_height: 384,
+            cell_width_px: 8.0,
+            cell_height_px: 16.0,
+            dpr: 1.0,
+            zoom: 1.0,
+        };
+        let cells = vec![
+            CellData::EMPTY,
+            CellData {
+                bg_rgba: 0x1122_33FF,
+                fg_rgba: 0xAABB_CCFF,
+                glyph_id: 42,
+                attrs: 3,
+            },
+        ];
+        let a = stable_frame_hash(&cells, geometry);
+        let b = stable_frame_hash(&cells, geometry);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn stable_frame_hash_changes_when_inputs_change() {
+        let geometry = GeometrySnapshot {
+            cols: 80,
+            rows: 24,
+            pixel_width: 640,
+            pixel_height: 384,
+            cell_width_px: 8.0,
+            cell_height_px: 16.0,
+            dpr: 1.0,
+            zoom: 1.0,
+        };
+        let mut cells = vec![CellData::EMPTY; 2];
+        cells[1].glyph_id = 7;
+        let base = stable_frame_hash(&cells, geometry);
+
+        let mut changed_cells = cells.clone();
+        changed_cells[1].glyph_id = 8;
+        let changed = stable_frame_hash(&changed_cells, geometry);
+        assert_ne!(base, changed);
+
+        let mut changed_geometry = geometry;
+        changed_geometry.zoom = 1.25;
+        let changed_geom_hash = stable_frame_hash(&cells, changed_geometry);
+        assert_ne!(base, changed_geom_hash);
+    }
+
+    #[test]
+    fn resize_storm_frame_jsonl_contains_geometry_and_hash() {
+        let geometry = GeometrySnapshot {
+            cols: 120,
+            rows: 40,
+            pixel_width: 1200,
+            pixel_height: 800,
+            cell_width_px: 10.0,
+            cell_height_px: 20.0,
+            dpr: 2.0,
+            zoom: 1.0,
+        };
+        let cells = vec![CellData::EMPTY; 4];
+        let line = resize_storm_frame_jsonl("run-1", 42, "T000001", 3, geometry, &cells);
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["schema_version"], "e2e-jsonl-v1");
+        assert_eq!(parsed["type"], "frame");
+        assert_eq!(parsed["run_id"], "run-1");
+        assert_eq!(parsed["seed"], 42);
+        assert_eq!(parsed["frame_idx"], 3);
+        assert_eq!(parsed["cols"], 120);
+        assert_eq!(parsed["rows"], 40);
+        assert_eq!(parsed["hash_algo"], "fnv1a64");
+        assert!(
+            parsed["frame_hash"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("fnv1a64:")
+        );
+        assert_eq!(parsed["geometry"]["pixel_width"], 1200);
+        assert_eq!(parsed["geometry"]["pixel_height"], 800);
     }
 }

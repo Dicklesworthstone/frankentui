@@ -9,8 +9,8 @@ set -euo pipefail
 # JSONL Schema:
 # {"event":"env","run_id":"...","timestamp":"...","seed":N,"storm_pattern":"...","env":{...}}
 # {"event":"storm_config","run_id":"...","pattern":"...","event_count":N,"initial_size":"WxH"}
-# {"event":"resize","run_id":"...","seq":N,"from":"WxH","to":"WxH","delay_ms":N,"timestamp":"..."}
-# {"event":"frame_capture","run_id":"...","seq":N,"width":N,"height":N,"checksum":"sha256:...","bytes":N}
+# {"event":"resize","run_id":"...","seq":N,"from":"WxH","to":"WxH","delay_ms":N,"timestamp":"...","geometry":{...}}
+# {"event":"frame_capture","run_id":"...","seq":N,"width":N,"height":N,"hash_algo":"sha256","frame_hash":"sha256:...","checksum":"sha256:...","bytes":N,"geometry":{...}}
 # {"event":"artifact_check","run_id":"...","check":"...","result":"pass|fail","details":"..."}
 # {"event":"flicker_analysis","run_id":"...","flicker_free":true,"jsonl":"path","exit_code":0}
 # {"event":"complete","run_id":"...","outcome":"pass|fail","total_resizes":N,"total_ms":N,"checksums":[...]}
@@ -43,6 +43,10 @@ STORM_PATTERN="${STORM_PATTERN:-all}"
 STORM_COUNT="${STORM_COUNT:-20}"
 STORM_LOG_DIR="${STORM_LOG_DIR:-$E2E_LOG_DIR/resize_storm}"
 STORM_INTERVAL_MS="${STORM_INTERVAL_MS:-50}"
+STORM_DPR="${STORM_DPR:-1.0}"
+STORM_ZOOM="${STORM_ZOOM:-1.0}"
+STORM_CELL_WIDTH_CSS="${STORM_CELL_WIDTH_CSS:-8.0}"
+STORM_CELL_HEIGHT_CSS="${STORM_CELL_HEIGHT_CSS:-16.0}"
 
 mkdir -p "$STORM_LOG_DIR"
 
@@ -65,6 +69,22 @@ storm_timestamp() {
 # Artifact detection thresholds
 MAX_GHOSTING_ROWS=0
 MAX_TEAR_ARTIFACTS=0
+
+geometry_json() {
+    local cols="$1"
+    local rows="$2"
+
+    local cell_width_px
+    cell_width_px="$(awk -v cw="$STORM_CELL_WIDTH_CSS" -v dpr="$STORM_DPR" -v zoom="$STORM_ZOOM" 'BEGIN { v = cw * dpr * zoom; if (v < 1) v = 1; printf "%d", int(v + 0.5) }')"
+    local cell_height_px
+    cell_height_px="$(awk -v ch="$STORM_CELL_HEIGHT_CSS" -v dpr="$STORM_DPR" -v zoom="$STORM_ZOOM" 'BEGIN { v = ch * dpr * zoom; if (v < 1) v = 1; printf "%d", int(v + 0.5) }')"
+    local pixel_width=$((cols * cell_width_px))
+    local pixel_height=$((rows * cell_height_px))
+
+    printf '{"cols":%s,"rows":%s,"dpr":%s,"zoom":%s,"cell_width_css":%s,"cell_height_css":%s,"cell_width_px":%s,"cell_height_px":%s,"pixel_width":%s,"pixel_height":%s}' \
+        "$cols" "$rows" "$STORM_DPR" "$STORM_ZOOM" "$STORM_CELL_WIDTH_CSS" "$STORM_CELL_HEIGHT_CSS" \
+        "$cell_width_px" "$cell_height_px" "$pixel_width" "$pixel_height"
+}
 
 # Log environment
 log_storm_env() {
@@ -97,8 +117,10 @@ log_resize() {
     local to_w="$5"
     local to_h="$6"
     local delay_ms="$7"
+    local geometry
+    geometry="$(geometry_json "$to_w" "$to_h")"
     cat >> "$STORM_JSONL" <<EOF
-{"event":"resize","run_id":"$run_id","seq":$seq,"from":"${from_w}x${from_h}","to":"${to_w}x${to_h}","delay_ms":$delay_ms,"timestamp":"$(storm_timestamp)"}
+{"event":"resize","run_id":"$run_id","seq":$seq,"from":"${from_w}x${from_h}","to":"${to_w}x${to_h}","delay_ms":$delay_ms,"timestamp":"$(storm_timestamp)","geometry":$geometry}
 EOF
 }
 
@@ -110,8 +132,10 @@ log_frame_capture() {
     local height="$4"
     local checksum="$5"
     local bytes="$6"
+    local geometry
+    geometry="$(geometry_json "$width" "$height")"
     cat >> "$STORM_JSONL" <<EOF
-{"event":"frame_capture","run_id":"$run_id","seq":$seq,"width":$width,"height":$height,"checksum":"sha256:$checksum","bytes":$bytes}
+{"event":"frame_capture","run_id":"$run_id","seq":$seq,"width":$width,"height":$height,"hash_algo":"sha256","frame_hash":"sha256:$checksum","checksum":"sha256:$checksum","bytes":$bytes,"geometry":$geometry}
 EOF
 }
 
@@ -321,6 +345,7 @@ run_storm_scenario() {
     LOG_FILE="$STORM_LOG_DIR/storm_${pattern}.log"
     local output_file="$STORM_LOG_DIR/storm_${pattern}.pty"
     local resize_schedule="$STORM_LOG_DIR/storm_${pattern}_schedule.txt"
+    local frame_snapshots="$STORM_LOG_DIR/storm_${pattern}_frames.csv"
 
     log_test_start "storm_$pattern"
     log_storm_env "$run_id" "$pattern"
@@ -369,10 +394,16 @@ run_storm_scenario() {
         PTY_JSONL="$STORM_LOG_DIR/storm_pty.jsonl"
         PTY_RESIZE_SCHEDULE="$resize_events"
         PTY_RESIZE_INTERVAL_MS="$interval_ms"
+        PTY_STORM_SNAPSHOT_FILE="$frame_snapshots"
     )
 
-    # Use extended PTY runner with storm support
-    if ! env "${pty_env[@]}" run_storm_pty "$output_file" "$E2E_HARNESS_BIN"; then
+    # Use extended PTY runner with storm support.
+    # `run_storm_pty` is a shell function, so export env vars in a subshell
+    # rather than invoking it through `env` (which only runs external commands).
+    if ! (
+        export "${pty_env[@]}"
+        run_storm_pty "$output_file" "$E2E_HARNESS_BIN"
+    ); then
         log_error "PTY execution failed for storm_$pattern"
     fi
 
@@ -380,15 +411,34 @@ run_storm_scenario() {
     end_ms="$(date +%s%3N)"
     local duration_ms=$((end_ms - start_ms))
 
-    # Compute final checksum
+    # Log frame hashes (per-resize snapshots + final fallback).
     local final_checksum
     final_checksum="$(compute_checksum "$output_file")"
     local file_size=0
     if [[ -f "$output_file" ]]; then
         file_size=$(wc -c < "$output_file" | tr -d ' ')
     fi
-    log_frame_capture "$run_id" "$seq" "$prev_w" "$prev_h" "$final_checksum" "$file_size"
-    checksums="\"sha256:$final_checksum\""
+
+    checksums=""
+    if [[ -s "$frame_snapshots" ]]; then
+        while IFS=',' read -r snap_seq snap_w snap_h snap_checksum snap_bytes; do
+            if [[ -z "${snap_seq:-}" || -z "${snap_w:-}" || -z "${snap_h:-}" || -z "${snap_checksum:-}" ]]; then
+                continue
+            fi
+            local snap_bytes_safe="${snap_bytes:-0}"
+            log_frame_capture "$run_id" "$snap_seq" "$snap_w" "$snap_h" "$snap_checksum" "$snap_bytes_safe"
+            if [[ -n "$checksums" ]]; then
+                checksums="$checksums,\"sha256:$snap_checksum\""
+            else
+                checksums="\"sha256:$snap_checksum\""
+            fi
+        done < "$frame_snapshots"
+    fi
+
+    if [[ -z "$checksums" ]]; then
+        log_frame_capture "$run_id" "$seq" "$prev_w" "$prev_h" "$final_checksum" "$file_size"
+        checksums="\"sha256:$final_checksum\""
+    fi
 
     # Artifact checks
     local outcome="pass"
@@ -461,8 +511,9 @@ run_storm_pty() {
         return 1
     fi
 
-    "$E2E_PYTHON" - "$@" <<'STORM_PY'
+    PTY_OUTPUT="$output_file" "$E2E_PYTHON" - "$@" <<'STORM_PY'
 import codecs
+import hashlib
 import os
 import pty
 import select
@@ -536,8 +587,14 @@ stop_at = None
 resize_idx = 0
 next_resize_at = start + 0.3  # Start resizes after 300ms warmup
 resize_interval = base_interval_ms / 1000.0
+snapshot_file = os.environ.get("PTY_STORM_SNAPSHOT_FILE", "")
 
 try:
+    frame_snapshots = []
+    pending_snapshots = []
+    current_cols = cols
+    current_rows = rows
+
     while True:
         now = time.monotonic()
 
@@ -565,6 +622,9 @@ try:
             except Exception as e:
                 print(f"Resize failed: {e}", file=sys.stderr)
 
+            current_cols = new_cols
+            current_rows = new_rows
+            pending_snapshots.append((resize_idx + 1, current_cols, current_rows))
             resize_idx += 1
             next_resize_at = now + (delay_ms / 1000.0)
 
@@ -601,6 +661,12 @@ try:
                 break
             captured.extend(chunk)
             last_data = now
+            if pending_snapshots:
+                digest = hashlib.sha256(captured).hexdigest()[:16]
+                bytes_len = len(captured)
+                while pending_snapshots:
+                    seq_num, snap_cols, snap_rows = pending_snapshots.pop(0)
+                    frame_snapshots.append((seq_num, snap_cols, snap_rows, digest, bytes_len))
 
         exit_code = proc.poll()
         if exit_code is not None:
@@ -619,6 +685,40 @@ finally:
             os.close(slave_fd_open)
         except Exception:
             pass
+
+if pending_snapshots:
+    digest = hashlib.sha256(captured).hexdigest()[:16]
+    bytes_len = len(captured)
+    while pending_snapshots:
+        seq_num, snap_cols, snap_rows = pending_snapshots.pop(0)
+        frame_snapshots.append((seq_num, snap_cols, snap_rows, digest, bytes_len))
+
+final_digest = hashlib.sha256(captured).hexdigest()[:16]
+final_len = len(captured)
+max_seq = 0
+for seq_num, _, _, _, _ in frame_snapshots:
+    if seq_num > max_seq:
+        max_seq = seq_num
+final_seq = max_seq + 1
+if not frame_snapshots:
+    frame_snapshots.append((final_seq, current_cols, current_rows, final_digest, final_len))
+else:
+    _, last_cols, last_rows, last_hash, last_bytes = frame_snapshots[-1]
+    if (
+        last_cols != current_cols
+        or last_rows != current_rows
+        or last_hash != final_digest
+        or last_bytes != final_len
+    ):
+        frame_snapshots.append((final_seq, current_cols, current_rows, final_digest, final_len))
+
+if snapshot_file:
+    try:
+        with open(snapshot_file, "w", encoding="utf-8") as handle:
+            for seq_num, snap_cols, snap_rows, digest, bytes_len in frame_snapshots:
+                handle.write(f"{seq_num},{snap_cols},{snap_rows},{digest},{bytes_len}\n")
+    except Exception as exc:
+        print(f"Failed to write PTY_STORM_SNAPSHOT_FILE: {exc}", file=sys.stderr)
 
 exit_code = proc.poll()
 if exit_code is None:
