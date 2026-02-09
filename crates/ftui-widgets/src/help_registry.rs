@@ -258,12 +258,14 @@ impl HelpRegistry {
     }
 
     /// Number of registered entries (loaded + lazy).
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Whether the registry is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

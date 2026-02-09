@@ -251,6 +251,7 @@ impl ValidationErrorState {
     }
 
     /// Check if the error is currently visible.
+    #[inline]
     #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible

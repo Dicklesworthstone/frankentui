@@ -55,11 +55,13 @@ impl<'a> Group<'a> {
     }
 
     /// Number of children in the group.
+    #[inline]
     pub fn len(&self) -> usize {
         self.children.len()
     }
 
     /// Whether the group has no children.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }

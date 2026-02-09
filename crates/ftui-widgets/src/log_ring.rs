@@ -126,12 +126,14 @@ impl<T> LogRing<T> {
     }
 
     /// Number of items currently in memory.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.ring.len()
     }
 
     /// Check if the ring is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ring.is_empty()
