@@ -536,4 +536,336 @@ mod tests {
         engine.render(&mut painter, 120, 40, 1);
         // Should not panic with fire flash active
     }
+
+    #[test]
+    fn draw_line_fb_horizontal_is_inclusive() {
+        let mut fb = QuakeFramebuffer::new(8, 6);
+        let color = PackedRgba::GREEN;
+        draw_line_fb(&mut fb, 1, 3, 5, 3, color);
+
+        for x in 1..=5 {
+            assert_eq!(fb.get_pixel(x, 3), color);
+        }
+        assert_eq!(fb.get_pixel(0, 3), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(6, 3), PackedRgba::BLACK);
+    }
+
+    #[test]
+    fn draw_line_fb_reverse_diagonal_draws_expected_pixels() {
+        let mut fb = QuakeFramebuffer::new(7, 7);
+        let color = PackedRgba::RED;
+        draw_line_fb(&mut fb, 5, 5, 1, 1, color);
+
+        for i in 1..=5 {
+            assert_eq!(fb.get_pixel(i, i), color);
+        }
+        assert_eq!(fb.get_pixel(0, 0), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(6, 6), PackedRgba::BLACK);
+    }
+
+    #[test]
+    fn draw_line_fb_clips_via_framebuffer_bounds() {
+        let mut fb = QuakeFramebuffer::new(5, 3);
+        let color = PackedRgba::BLUE;
+        draw_line_fb(&mut fb, 0, 1, 10, 1, color);
+
+        for x in 0..5 {
+            assert_eq!(fb.get_pixel(x, 1), color);
+        }
+    }
+
+    #[test]
+    fn draw_crosshair_sets_arm_pixels() {
+        let mut engine = QuakeEngine::new();
+        engine.framebuffer.clear();
+        engine.draw_crosshair();
+
+        let cx = engine.framebuffer.width / 2;
+        let cy = engine.framebuffer.height / 2;
+        for i in 1..=3 {
+            assert_eq!(engine.framebuffer.get_pixel(cx + i, cy), PackedRgba::WHITE);
+            assert_eq!(engine.framebuffer.get_pixel(cx - i, cy), PackedRgba::WHITE);
+            assert_eq!(engine.framebuffer.get_pixel(cx, cy + i), PackedRgba::WHITE);
+            assert_eq!(engine.framebuffer.get_pixel(cx, cy - i), PackedRgba::WHITE);
+        }
+        assert_eq!(engine.framebuffer.get_pixel(cx, cy), PackedRgba::BLACK);
+    }
+
+    #[test]
+    fn draw_muzzle_flash_tints_bottom_center() {
+        let mut engine = QuakeEngine::new();
+        engine.framebuffer.clear();
+        engine.fire_flash = 1.0;
+        engine.draw_muzzle_flash();
+
+        let cx = engine.framebuffer.width / 2;
+        let cy = engine.framebuffer.height - engine.framebuffer.height / 6;
+        let flash = engine.framebuffer.get_pixel(cx, cy);
+        assert!(flash.r() > 0 && flash.g() > 0 && flash.b() > 0);
+        assert!(flash.r() >= flash.g() && flash.g() >= flash.b());
+        assert_eq!(engine.framebuffer.get_pixel(0, 0), PackedRgba::BLACK);
+    }
+
+    #[test]
+    fn draw_minimap_without_map_is_noop() {
+        let mut engine = QuakeEngine::new();
+        engine.framebuffer.clear();
+        let before = engine.framebuffer.pixels.clone();
+
+        engine.draw_minimap();
+
+        assert_eq!(engine.framebuffer.pixels, before);
+    }
+
+    #[test]
+    fn draw_minimap_with_map_draws_overlay_background() {
+        let mut engine = QuakeEngine::default();
+        engine.framebuffer.clear();
+        engine.draw_minimap();
+
+        let map_size = 80u32;
+        let margin = 4u32;
+        let ox = engine.framebuffer.width.saturating_sub(map_size + margin);
+        let oy = margin;
+        let bg = engine.framebuffer.get_pixel(ox + 1, oy + 1);
+        assert_eq!(bg.a(), 180);
+    }
+
+    #[test]
+    fn engine_lifecycle_load_render_update_keeps_map_consistent() {
+        let mut engine = QuakeEngine::new();
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+
+        engine.render(&mut painter, 120, 40, 1);
+        assert_eq!(engine.frame, 1);
+        assert!(engine.map.is_none());
+
+        engine.load_test_map();
+        assert!(engine.map.is_some());
+
+        let time_before = engine.time;
+        engine.update(TICK_SECS * 3.5);
+        assert!(engine.time > time_before);
+        assert!(engine.tick_accumulator < TICK_SECS);
+
+        engine.render(&mut painter, 120, 40, 1);
+        assert_eq!(engine.frame, 2);
+        assert!(engine.map.is_some());
+    }
+
+    #[test]
+    fn engine_render_resizes_framebuffer_to_configured_dimensions() {
+        let mut engine = QuakeEngine::new();
+        engine.fb_width = 64;
+        engine.fb_height = 40;
+
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 120, 40, 1);
+
+        assert_eq!(engine.framebuffer.width, 64);
+        assert_eq!(engine.framebuffer.height, 40);
+    }
+
+    // ---- draw_line_fb: additional Bresenham edge cases ----
+
+    #[test]
+    fn draw_line_fb_vertical_is_inclusive() {
+        let mut fb = QuakeFramebuffer::new(6, 10);
+        let color = PackedRgba::rgb(0, 255, 0);
+        draw_line_fb(&mut fb, 3, 1, 3, 7, color);
+        for y in 1..=7 {
+            assert_eq!(fb.get_pixel(3, y), color, "pixel at (3, {y}) should be set");
+        }
+        assert_eq!(fb.get_pixel(3, 0), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(3, 8), PackedRgba::BLACK);
+    }
+
+    #[test]
+    fn draw_line_fb_single_point() {
+        let mut fb = QuakeFramebuffer::new(10, 10);
+        let color = PackedRgba::rgb(0, 0, 255);
+        draw_line_fb(&mut fb, 4, 4, 4, 4, color);
+        assert_eq!(fb.get_pixel(4, 4), color);
+    }
+
+    #[test]
+    fn draw_line_fb_steep_slope() {
+        let mut fb = QuakeFramebuffer::new(10, 20);
+        let color = PackedRgba::rgb(200, 100, 50);
+        // Steep: 1 pixel wide, 8 pixels tall
+        draw_line_fb(&mut fb, 3, 1, 4, 9, color);
+        assert_eq!(fb.get_pixel(3, 1), color);
+        assert_eq!(fb.get_pixel(4, 9), color);
+    }
+
+    #[test]
+    fn draw_line_fb_reverse_vertical() {
+        let mut fb = QuakeFramebuffer::new(6, 10);
+        let color = PackedRgba::rgb(128, 0, 128);
+        draw_line_fb(&mut fb, 2, 7, 2, 2, color);
+        for y in 2..=7 {
+            assert_eq!(
+                fb.get_pixel(2, y),
+                color,
+                "reverse vertical: pixel at (2, {y}) should be set"
+            );
+        }
+    }
+
+    #[test]
+    fn draw_line_fb_at_origin() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        let color = PackedRgba::rgb(255, 0, 255);
+        draw_line_fb(&mut fb, 0, 0, 0, 0, color);
+        assert_eq!(fb.get_pixel(0, 0), color);
+    }
+
+    #[test]
+    fn draw_line_fb_gentle_slope() {
+        let mut fb = QuakeFramebuffer::new(20, 10);
+        let color = PackedRgba::rgb(100, 200, 100);
+        // Gentle: 8 pixels wide, 2 pixels tall
+        draw_line_fb(&mut fb, 2, 3, 10, 5, color);
+        assert_eq!(fb.get_pixel(2, 3), color);
+        assert_eq!(fb.get_pixel(10, 5), color);
+        // Intermediate pixels should be set (at least some in between)
+        let mut count = 0u32;
+        for x in 2..=10 {
+            for y in 3..=5 {
+                if fb.get_pixel(x, y) == color {
+                    count += 1;
+                }
+            }
+        }
+        // Bresenham should set at least as many pixels as the longer dimension
+        assert!(
+            count >= 9,
+            "gentle slope should set at least 9 pixels, got {count}"
+        );
+    }
+
+    // ---- Overlay: additional edge cases ----
+
+    #[test]
+    fn draw_muzzle_flash_zero_intensity_is_noop() {
+        let mut engine = QuakeEngine::new();
+        engine.framebuffer.clear();
+        engine.fire_flash = 0.0;
+        let before = engine.framebuffer.pixels.clone();
+        // fire_flash = 0.0 means draw_muzzle_flash won't be called by render,
+        // but we can call it directly — radius will be 0
+        engine.draw_muzzle_flash();
+        assert_eq!(engine.framebuffer.pixels, before);
+    }
+
+    #[test]
+    fn draw_crosshair_center_pixel_untouched() {
+        // Crosshair draws arms from i=1..=3, center pixel (cx,cy) should be unchanged
+        let mut engine = QuakeEngine::new();
+        engine.framebuffer.clear();
+        let cx = engine.framebuffer.width / 2;
+        let cy = engine.framebuffer.height / 2;
+        let before_center = engine.framebuffer.get_pixel(cx, cy);
+        engine.draw_crosshair();
+        assert_eq!(engine.framebuffer.get_pixel(cx, cy), before_center);
+    }
+
+    // ---- Engine lifecycle: additional edge cases ----
+
+    #[test]
+    fn lifecycle_multiple_renders_increment_frame() {
+        let mut engine = QuakeEngine::default();
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+        for i in 1..=5 {
+            engine.render(&mut painter, 120, 40, 1);
+            assert_eq!(engine.frame, i);
+        }
+    }
+
+    #[test]
+    fn lifecycle_render_without_update() {
+        let mut engine = QuakeEngine::default();
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 120, 40, 1);
+        assert_eq!(engine.frame, 1);
+        assert_eq!(engine.time, 0.0);
+    }
+
+    #[test]
+    fn lifecycle_update_without_render() {
+        let mut engine = QuakeEngine::default();
+        engine.move_forward(1.0);
+        engine.strafe(-0.5);
+        engine.look(0.1, 0.0);
+        for _ in 0..10 {
+            engine.update(0.016);
+        }
+        assert!(engine.time > 0.1);
+        assert_eq!(engine.frame, 0);
+    }
+
+    #[test]
+    fn lifecycle_zero_dt_update() {
+        let mut engine = QuakeEngine::default();
+        engine.update(0.0);
+        assert_eq!(engine.time, 0.0);
+    }
+
+    #[test]
+    fn lifecycle_very_small_dt_no_tick() {
+        let mut engine = QuakeEngine::default();
+        let start_pos = engine.player.pos;
+        // dt smaller than one tick (1/72 ≈ 0.0139s) should not trigger game_tick
+        engine.update(0.001);
+        assert!((engine.time - 0.001).abs() < f64::EPSILON);
+        assert_eq!(engine.player.pos, start_pos);
+    }
+
+    #[test]
+    fn lifecycle_fire_flash_fully_decays() {
+        let mut engine = QuakeEngine::default();
+        engine.fire();
+        // Flash decays at rate 8.0/s, starting from 1.0 → zero after 0.125s
+        engine.update(0.2);
+        assert_eq!(engine.fire_flash, 0.0, "flash should be fully decayed");
+    }
+
+    #[test]
+    fn lifecycle_all_controls_in_sequence() {
+        let mut engine = QuakeEngine::default();
+        engine.move_forward(1.0);
+        engine.strafe(0.5);
+        engine.look(0.2, -0.1);
+        engine.fire();
+        engine.jump();
+        engine.toggle_noclip();
+        engine.toggle_run();
+        engine.update(0.016);
+
+        assert!(!engine.player.on_ground);
+        assert!(engine.player.noclip);
+        assert!(engine.player.running);
+        assert!(engine.fire_flash > 0.0);
+    }
+
+    #[test]
+    fn lifecycle_default_spawns_player_at_map_start() {
+        let engine = QuakeEngine::default();
+        assert!(engine.map.is_some());
+        let pos = engine.player.pos;
+        let dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+        assert!(dist > 0.0, "player should be spawned away from origin");
+    }
+
+    #[test]
+    fn lifecycle_render_various_strides() {
+        let mut engine = QuakeEngine::default();
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 120, 40, 1);
+        assert_eq!(engine.frame, 1);
+        engine.render(&mut painter, 120, 40, 2);
+        assert_eq!(engine.frame, 2);
+        engine.render(&mut painter, 120, 40, 4);
+        assert_eq!(engine.frame, 3);
+    }
 }
