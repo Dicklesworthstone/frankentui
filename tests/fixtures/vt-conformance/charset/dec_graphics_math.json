@@ -1,0 +1,47 @@
+{
+  "name": "dec_graphics_math",
+  "description": "DEC Special Graphics math symbols: \u2264\u2265\u03c0\u2260\u00a3\u00b7",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b2830797a7b7c7d7e",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 6
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "\u2264"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "\u2265"
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": "\u03c0"
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "\u2260"
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": "\u00a3"
+      },
+      {
+        "row": 0,
+        "col": 5,
+        "char": "\u00b7"
+      }
+    ]
+  }
+}

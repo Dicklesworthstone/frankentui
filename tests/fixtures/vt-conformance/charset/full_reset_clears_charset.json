@@ -1,0 +1,22 @@
+{
+  "name": "full_reset_clears_charset",
+  "description": "RIS (ESC c) resets charset back to ASCII",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b28306c1b636c",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 1
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "l"
+      }
+    ]
+  }
+}

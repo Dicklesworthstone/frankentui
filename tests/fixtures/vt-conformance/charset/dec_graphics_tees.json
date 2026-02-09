@@ -1,0 +1,32 @@
+{
+  "name": "dec_graphics_tees",
+  "description": "DEC Special Graphics tee characters: tun -> \u251c\u2524\u253c",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b283074756e",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 3
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "\u251c"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "\u2524"
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": "\u253c"
+      }
+    ]
+  }
+}

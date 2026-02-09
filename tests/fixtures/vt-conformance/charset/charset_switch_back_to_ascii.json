@@ -1,0 +1,37 @@
+{
+  "name": "charset_switch_back_to_ascii",
+  "description": "ESC ( B switches back to ASCII after DEC Special Graphics",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b28306c711b28426c71",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 4
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "\u250c"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "\u2500"
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": "l"
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "q"
+      }
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "dec_graphics_box_bottom",
+  "description": "DEC Special Graphics charset draws box-drawing bottom: mqqqj -> \u2514\u2500\u2500\u2500\u2518",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b28306d7171716a",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 5
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "\u2514"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "\u2500"
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": "\u2500"
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "\u2500"
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": "\u2518"
+      }
+    ]
+  }
+}

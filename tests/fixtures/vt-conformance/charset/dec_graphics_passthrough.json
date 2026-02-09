@@ -1,0 +1,47 @@
+{
+  "name": "dec_graphics_passthrough",
+  "description": "Characters outside DEC Graphics range (A-Z, 0-9) pass through unchanged",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b2830414243313233",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 6
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "B"
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "char": "C"
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "1"
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": "2"
+      },
+      {
+        "row": 0,
+        "col": 5,
+        "char": "3"
+      }
+    ]
+  }
+}

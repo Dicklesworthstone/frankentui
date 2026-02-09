@@ -1,0 +1,33 @@
+{
+  "name": "dec_graphics_with_attrs",
+  "description": "DEC Special Graphics combined with bold SGR attribute",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b28301b5b316d7871",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 2
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "\u2502",
+        "attrs": {
+          "bold": true
+        }
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "\u2500",
+        "attrs": {
+          "bold": true
+        }
+      }
+    ]
+  }
+}
