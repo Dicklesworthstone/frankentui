@@ -1,9 +1,11 @@
 use std::hint::black_box;
+use std::mem::size_of;
 use std::process::Command;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use frankenterm_core::{
-    Action, Cell, Color, DirtyTracker, Grid, GridDiff, Parser, Patch, SgrAttrs,
+    Action, Cell, Color, DirtyTracker, Grid, GridDiff, Parser, Patch, Scrollback, ScrollbackLine,
+    SgrAttrs,
 };
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -111,6 +113,153 @@ fn large_corpora() -> Vec<(&'static str, Vec<u8>)> {
         ("utf8_64k_v1", utf8_stream),
         ("ascii_64k_v1", ascii_stream),
     ]
+}
+
+fn make_row(cols: u16, seed: u32) -> Vec<Cell> {
+    (0..cols)
+        .map(|col| {
+            let mut cell = Cell::new((b'a' + ((seed + u32::from(col)) % 26) as u8) as char);
+            cell.attrs = SgrAttrs {
+                fg: Color::Named(((seed + u32::from(col)) % 16) as u8),
+                bg: Color::Default,
+                ..SgrAttrs::default()
+            };
+            cell
+        })
+        .collect()
+}
+
+fn build_scrollback(lines: usize, cols: u16) -> Scrollback {
+    let mut scrollback = Scrollback::new(lines);
+    for i in 0..lines {
+        let row = make_row(cols, i as u32);
+        let _ = scrollback.push_row(&row, i % 3 == 0);
+    }
+    scrollback
+}
+
+/// Lower-bound estimate of scrollback heap footprint.
+///
+/// This excludes VecDeque spare capacity overhead and allocator metadata,
+/// but it is deterministic and useful for CI regression tracking.
+fn estimate_scrollback_heap_bytes(scrollback: &Scrollback) -> usize {
+    let line_headers = scrollback.len() * size_of::<ScrollbackLine>();
+    let cell_storage: usize = scrollback
+        .iter()
+        .map(|line| line.cells.capacity() * size_of::<Cell>())
+        .sum();
+    line_headers + cell_storage
+}
+
+fn scrollback_memory_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scrollback_memory");
+    let line_count = 1_000usize;
+
+    for cols in [80u16, 120u16, 200u16] {
+        let scrollback = build_scrollback(line_count, cols);
+        let bytes = estimate_scrollback_heap_bytes(&scrollback);
+        eprintln!(
+            "{{\"event\":\"scrollback_memory\",\"lines\":{},\"cols\":{},\"heap_bytes\":{},\"bytes_per_line\":{}}}",
+            line_count,
+            cols,
+            bytes,
+            bytes / line_count
+        );
+
+        let id = format!("estimate_bytes_1k_{}cols", cols);
+        group.bench_function(BenchmarkId::from_parameter(id), |b| {
+            b.iter(|| {
+                let est = estimate_scrollback_heap_bytes(black_box(&scrollback));
+                black_box(est);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn seed_grid(grid: &mut Grid) {
+    for row in 0..grid.rows() {
+        for col in 0..grid.cols() {
+            if (u32::from(row) + u32::from(col)) % 11 == 0
+                && let Some(cell) = grid.cell_mut(row, col)
+            {
+                let mut seeded = Cell::new((b'A' + ((row + col) % 26) as u8) as char);
+                seeded.attrs = SgrAttrs {
+                    fg: Color::Named(((row + col) % 16) as u8),
+                    bg: Color::Default,
+                    ..SgrAttrs::default()
+                };
+                *cell = seeded;
+            }
+        }
+    }
+}
+
+fn run_resize_storm(
+    start_cols: u16,
+    start_rows: u16,
+    pattern: &[(u16, u16)],
+    cycles: usize,
+) -> (u16, usize, usize) {
+    let mut grid = Grid::new(start_cols, start_rows);
+    seed_grid(&mut grid);
+    let mut scrollback = build_scrollback(1_000, start_cols);
+    let mut cursor_row = (start_rows / 2).min(start_rows.saturating_sub(1));
+
+    for _ in 0..cycles {
+        for &(cols, rows) in pattern {
+            let max_row = grid.rows().saturating_sub(1);
+            cursor_row = cursor_row.min(max_row);
+            cursor_row = grid.resize_with_scrollback(cols, rows, cursor_row, &mut scrollback);
+        }
+    }
+
+    (
+        cursor_row,
+        scrollback.len(),
+        estimate_scrollback_heap_bytes(&scrollback),
+    )
+}
+
+type ResizeScenario = (&'static str, u16, u16, &'static [(u16, u16)], usize);
+
+fn resize_storm_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("resize_storm");
+
+    let scenarios: [ResizeScenario; 2] = [
+        (
+            "120x40_120x52",
+            120,
+            40,
+            &[(120, 52), (120, 40), (120, 56), (120, 40)],
+            25,
+        ),
+        (
+            "80x24_200x60",
+            80,
+            24,
+            &[(120, 40), (160, 50), (200, 60), (80, 24)],
+            20,
+        ),
+    ];
+
+    for (id, start_cols, start_rows, pattern, cycles) in scenarios {
+        let events = pattern.len() * cycles;
+        eprintln!(
+            "{{\"event\":\"resize_storm\",\"id\":\"{}\",\"start_cols\":{},\"start_rows\":{},\"events\":{}}}",
+            id, start_cols, start_rows, events
+        );
+        group.throughput(Throughput::Elements(events as u64));
+        group.bench_function(BenchmarkId::new("resize_with_scrollback", id), |b| {
+            b.iter(|| {
+                let result = run_resize_storm(start_cols, start_rows, pattern, cycles);
+                black_box(result);
+            });
+        });
+    }
+
+    group.finish();
 }
 
 fn parser_throughput_bench(c: &mut Criterion) {
@@ -306,7 +455,7 @@ fn parser_throughput_large_bench(c: &mut Criterion) {
 }
 
 fn full_pipeline_bench(c: &mut Criterion) {
-    use frankenterm_core::{Cursor, Scrollback};
+    use frankenterm_core::Cursor;
 
     let mut group = c.benchmark_group("full_pipeline");
     for (id, bytes) in large_corpora() {
@@ -444,6 +593,8 @@ fn parser_action_mix_bench(c: &mut Criterion) {
 criterion_group!(
     benches,
     parser_throughput_bench,
+    scrollback_memory_bench,
+    resize_storm_bench,
     parser_throughput_large_bench,
     full_pipeline_bench,
     parser_action_mix_bench,

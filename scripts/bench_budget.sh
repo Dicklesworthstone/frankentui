@@ -102,6 +102,27 @@ declare -A BUDGETS=(
     ["parser_throughput/feed_vec/markdownish_v1"]=1500
     ["parser_throughput/feed_vec/unicode_heavy_v1"]=1000
 
+    # Larger parser corpora (64 KiB streams)
+    ["parser_throughput_large/feed_vec/sgr_64k_v1"]=1200000
+    ["parser_throughput_large/feed_vec/cursor_64k_v1"]=1400000
+    ["parser_throughput_large/feed_vec/utf8_64k_v1"]=1000000
+    ["parser_throughput_large/feed_vec/ascii_64k_v1"]=1200000
+
+    # Patch generation/apply costs
+    ["patch_diff_apply/diff_dirty/2000_cells"]=2500
+    ["patch_diff_apply/apply_forward_and_back/2000_cells"]=1000
+
+    # End-to-end parser + apply path
+    ["full_pipeline/parse_and_apply/sgr_64k_v1"]=4000000
+    ["full_pipeline/parse_and_apply/cursor_64k_v1"]=5000000
+    ["full_pipeline/parse_and_apply/utf8_64k_v1"]=3000000
+    ["full_pipeline/parse_and_apply/ascii_64k_v1"]=3500000
+
+    # Resize storm and scrollback footprint probes
+    ["resize_storm/resize_with_scrollback/120x40_120x52"]=30000000
+    ["resize_storm/resize_with_scrollback/80x24_200x60"]=30000000
+    ["scrollback_memory/estimate_bytes_1k_120cols"]=100000
+
     # ---------------------------------------------------------------------
     # FrankenTerm web CPU-side frame-time harness (bd-lff4p.5.5)
     # ---------------------------------------------------------------------
@@ -248,9 +269,7 @@ run_benchmarks() {
             # CI-friendly: keep perf gates fast and stable.
             bench_args=(-- --noplot --warm-up-time 0.1 --measurement-time 0.1 --sample-size 10)
         fi
-        if [[ "$pkg" == "frankenterm-core" && "$bench" == "parser_patch_bench" ]]; then
-            bench_args+=(parser_throughput)
-        elif [[ "$pkg" == "frankenterm-web" && "$bench" == "renderer_bench" ]]; then
+        if [[ "$pkg" == "frankenterm-web" && "$bench" == "renderer_bench" ]]; then
             bench_args+=(frame_harness_stats)
         fi
 
@@ -469,7 +488,7 @@ check_budgets() {
             present/*|pipeline/*) result_file="${RESULTS_DIR}/presenter_bench.txt" ;;
             widget/*) result_file="${RESULTS_DIR}/widget_bench.txt" ;;
             telemetry/*) result_file="${RESULTS_DIR}/telemetry_bench.txt" ;;
-            parser_throughput/*|patch_diff_apply/*|parser_action_mix/*) result_file="${RESULTS_DIR}/parser_patch_bench.txt" ;;
+            parser_throughput/*|parser_throughput_large/*|patch_diff_apply/*|parser_action_mix/*|full_pipeline/*|resize_storm/*|scrollback_memory/*) result_file="${RESULTS_DIR}/parser_patch_bench.txt" ;;
             web/*) result_file="${RESULTS_DIR}/renderer_bench.txt" ;;
             *) result_file="" ;;
         esac
