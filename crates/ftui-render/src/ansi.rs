@@ -957,4 +957,459 @@ mod tests {
             "hyperlink_start_with_id not terminated with ST"
         );
     }
+
+    // ---- sgr_flags_off tests ----
+
+    #[test]
+    fn sgr_flags_off_empty_is_noop() {
+        let bytes = to_bytes(|w| {
+            sgr_flags_off(w, StyleFlags::empty(), StyleFlags::empty()).unwrap();
+            Ok(())
+        });
+        assert!(bytes.is_empty(), "disabling no flags should emit nothing");
+    }
+
+    #[test]
+    fn sgr_flags_off_single_bold() {
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::BOLD, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[22m");
+        assert!(collateral.is_empty(), "no collateral when DIM is not kept");
+    }
+
+    #[test]
+    fn sgr_flags_off_single_dim() {
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::DIM, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[22m");
+        assert!(collateral.is_empty(), "no collateral when BOLD is not kept");
+    }
+
+    #[test]
+    fn sgr_flags_off_bold_collateral_dim() {
+        // Disabling BOLD while DIM should stay → collateral = DIM
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::BOLD, StyleFlags::DIM).unwrap();
+        assert_eq!(buf, b"\x1b[22m");
+        assert_eq!(collateral, StyleFlags::DIM);
+    }
+
+    #[test]
+    fn sgr_flags_off_dim_collateral_bold() {
+        // Disabling DIM while BOLD should stay → collateral = BOLD
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::DIM, StyleFlags::BOLD).unwrap();
+        assert_eq!(buf, b"\x1b[22m");
+        assert_eq!(collateral, StyleFlags::BOLD);
+    }
+
+    #[test]
+    fn sgr_flags_off_italic() {
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::ITALIC, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[23m");
+        assert!(collateral.is_empty());
+    }
+
+    #[test]
+    fn sgr_flags_off_underline() {
+        let mut buf = Vec::new();
+        let collateral =
+            sgr_flags_off(&mut buf, StyleFlags::UNDERLINE, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[24m");
+        assert!(collateral.is_empty());
+    }
+
+    #[test]
+    fn sgr_flags_off_blink() {
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::BLINK, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[25m");
+        assert!(collateral.is_empty());
+    }
+
+    #[test]
+    fn sgr_flags_off_reverse() {
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::REVERSE, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[27m");
+        assert!(collateral.is_empty());
+    }
+
+    #[test]
+    fn sgr_flags_off_hidden() {
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(&mut buf, StyleFlags::HIDDEN, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[28m");
+        assert!(collateral.is_empty());
+    }
+
+    #[test]
+    fn sgr_flags_off_strikethrough() {
+        let mut buf = Vec::new();
+        let collateral =
+            sgr_flags_off(&mut buf, StyleFlags::STRIKETHROUGH, StyleFlags::empty()).unwrap();
+        assert_eq!(buf, b"\x1b[29m");
+        assert!(collateral.is_empty());
+    }
+
+    #[test]
+    fn sgr_flags_off_multi_no_bold_dim_overlap() {
+        // Disable ITALIC + UNDERLINE (no shared off codes)
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(
+            &mut buf,
+            StyleFlags::ITALIC | StyleFlags::UNDERLINE,
+            StyleFlags::empty(),
+        )
+        .unwrap();
+        // Multi-flag path emits individual off codes
+        let bytes = String::from_utf8(buf).unwrap();
+        assert!(bytes.contains("\x1b[23m"), "should contain italic off");
+        assert!(bytes.contains("\x1b[24m"), "should contain underline off");
+        assert!(collateral.is_empty());
+    }
+
+    #[test]
+    fn sgr_flags_off_bold_and_dim_together() {
+        // Disabling both BOLD and DIM: off=22 emitted for each, but no collateral
+        // since both are being disabled (neither needs to stay)
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(
+            &mut buf,
+            StyleFlags::BOLD | StyleFlags::DIM,
+            StyleFlags::empty(),
+        )
+        .unwrap();
+        assert!(
+            collateral.is_empty(),
+            "no collateral when both are disabled"
+        );
+    }
+
+    #[test]
+    fn sgr_flags_off_bold_dim_with_dim_kept() {
+        // Disabling BOLD + ITALIC while DIM should stay
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(
+            &mut buf,
+            StyleFlags::BOLD | StyleFlags::ITALIC,
+            StyleFlags::DIM,
+        )
+        .unwrap();
+        assert_eq!(
+            collateral,
+            StyleFlags::DIM,
+            "DIM should be collateral damage from BOLD off (code 22)"
+        );
+    }
+
+    // ---- sgr_codes_for_flag tests ----
+
+    #[test]
+    fn sgr_codes_for_all_single_flags() {
+        let cases = [
+            (StyleFlags::BOLD, 1, 22),
+            (StyleFlags::DIM, 2, 22),
+            (StyleFlags::ITALIC, 3, 23),
+            (StyleFlags::UNDERLINE, 4, 24),
+            (StyleFlags::BLINK, 5, 25),
+            (StyleFlags::REVERSE, 7, 27),
+            (StyleFlags::HIDDEN, 8, 28),
+            (StyleFlags::STRIKETHROUGH, 9, 29),
+        ];
+        for (flag, expected_on, expected_off) in cases {
+            let codes = sgr_codes_for_flag(flag)
+                .unwrap_or_else(|| panic!("should return codes for {flag:?}"));
+            assert_eq!(codes.on, expected_on, "on code for {flag:?}");
+            assert_eq!(codes.off, expected_off, "off code for {flag:?}");
+        }
+    }
+
+    #[test]
+    fn sgr_codes_for_composite_flag_returns_none() {
+        let composite = StyleFlags::BOLD | StyleFlags::ITALIC;
+        assert!(
+            sgr_codes_for_flag(composite).is_none(),
+            "composite flags should return None"
+        );
+    }
+
+    #[test]
+    fn sgr_codes_for_empty_flag_returns_none() {
+        assert!(
+            sgr_codes_for_flag(StyleFlags::empty()).is_none(),
+            "empty flags should return None"
+        );
+    }
+
+    // ---- cr / lf tests ----
+
+    #[test]
+    fn cr_emits_carriage_return() {
+        assert_eq!(to_bytes(cr), b"\r");
+    }
+
+    #[test]
+    fn lf_emits_line_feed() {
+        assert_eq!(to_bytes(lf), b"\n");
+    }
+
+    // ---- sgr_flags individual fast-path verification ----
+
+    #[test]
+    fn sgr_flags_each_single_flag_fast_path() {
+        let cases: &[(StyleFlags, &[u8])] = &[
+            (StyleFlags::BOLD, b"\x1b[1m"),
+            (StyleFlags::DIM, b"\x1b[2m"),
+            (StyleFlags::ITALIC, b"\x1b[3m"),
+            (StyleFlags::UNDERLINE, b"\x1b[4m"),
+            (StyleFlags::BLINK, b"\x1b[5m"),
+            (StyleFlags::REVERSE, b"\x1b[7m"),
+            (StyleFlags::STRIKETHROUGH, b"\x1b[9m"),
+            (StyleFlags::HIDDEN, b"\x1b[8m"),
+        ];
+        for &(flag, expected) in cases {
+            assert_eq!(
+                to_bytes(|w| sgr_flags(w, flag)),
+                expected,
+                "single-flag fast path for {flag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sgr_flags_all_eight() {
+        let all = StyleFlags::BOLD
+            | StyleFlags::DIM
+            | StyleFlags::ITALIC
+            | StyleFlags::UNDERLINE
+            | StyleFlags::BLINK
+            | StyleFlags::REVERSE
+            | StyleFlags::HIDDEN
+            | StyleFlags::STRIKETHROUGH;
+        let bytes = to_bytes(|w| sgr_flags(w, all));
+        // Should emit CSI with codes in FLAG_TABLE order: 1;2;3;4;5;7;8;9
+        assert_eq!(bytes, b"\x1b[1;2;3;4;5;7;8;9m");
+    }
+
+    // ---- write_u8_dec boundary verification (via sgr_code) ----
+
+    #[test]
+    fn sgr_code_single_digit() {
+        // code=1 → "\x1b[1m" (1 digit)
+        let mut buf = Vec::new();
+        write_sgr_code(&mut buf, 1).unwrap();
+        assert_eq!(buf, b"\x1b[1m");
+    }
+
+    #[test]
+    fn sgr_code_two_digits() {
+        // code=22 → "\x1b[22m" (2 digits)
+        let mut buf = Vec::new();
+        write_sgr_code(&mut buf, 22).unwrap();
+        assert_eq!(buf, b"\x1b[22m");
+    }
+
+    #[test]
+    fn sgr_code_three_digits() {
+        // code=100 → "\x1b[100m" (3 digits)
+        let mut buf = Vec::new();
+        write_sgr_code(&mut buf, 100).unwrap();
+        assert_eq!(buf, b"\x1b[100m");
+    }
+
+    #[test]
+    fn sgr_code_max_u8() {
+        // code=255 → "\x1b[255m"
+        let mut buf = Vec::new();
+        write_sgr_code(&mut buf, 255).unwrap();
+        assert_eq!(buf, b"\x1b[255m");
+    }
+
+    #[test]
+    fn sgr_code_zero() {
+        let mut buf = Vec::new();
+        write_sgr_code(&mut buf, 0).unwrap();
+        assert_eq!(buf, b"\x1b[0m");
+    }
+
+    // ---- 16-color boundary tests ----
+
+    #[test]
+    fn sgr_fg_16_boundary_7_to_8() {
+        // Index 7 is the last normal color, 8 is first bright
+        assert_eq!(to_bytes(|w| sgr_fg_16(w, 7)), b"\x1b[37m");
+        assert_eq!(to_bytes(|w| sgr_fg_16(w, 8)), b"\x1b[90m");
+    }
+
+    #[test]
+    fn sgr_bg_16_boundary_7_to_8() {
+        assert_eq!(to_bytes(|w| sgr_bg_16(w, 7)), b"\x1b[47m");
+        assert_eq!(to_bytes(|w| sgr_bg_16(w, 8)), b"\x1b[100m");
+    }
+
+    #[test]
+    fn sgr_fg_16_first_color() {
+        assert_eq!(to_bytes(|w| sgr_fg_16(w, 0)), b"\x1b[30m"); // Black
+    }
+
+    #[test]
+    fn sgr_bg_16_last_bright() {
+        assert_eq!(to_bytes(|w| sgr_bg_16(w, 15)), b"\x1b[107m"); // Bright white
+    }
+
+    // ---- 256-color boundary tests ----
+
+    #[test]
+    fn sgr_fg_256_zero() {
+        assert_eq!(to_bytes(|w| sgr_fg_256(w, 0)), b"\x1b[38;5;0m");
+    }
+
+    #[test]
+    fn sgr_fg_256_max() {
+        assert_eq!(to_bytes(|w| sgr_fg_256(w, 255)), b"\x1b[38;5;255m");
+    }
+
+    #[test]
+    fn sgr_bg_256_zero() {
+        assert_eq!(to_bytes(|w| sgr_bg_256(w, 0)), b"\x1b[48;5;0m");
+    }
+
+    #[test]
+    fn sgr_bg_256_max() {
+        assert_eq!(to_bytes(|w| sgr_bg_256(w, 255)), b"\x1b[48;5;255m");
+    }
+
+    // ---- cursor positioning edge cases ----
+
+    #[test]
+    fn cup_max_u16() {
+        // u16::MAX saturating_add(1) wraps correctly
+        let bytes = to_bytes(|w| cup(w, u16::MAX, u16::MAX));
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.starts_with("\x1b["));
+        assert!(s.ends_with("H"));
+    }
+
+    #[test]
+    fn cha_max_u16() {
+        let bytes = to_bytes(|w| cha(w, u16::MAX));
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.starts_with("\x1b["));
+        assert!(s.ends_with("G"));
+    }
+
+    #[test]
+    fn cursor_up_max() {
+        let bytes = to_bytes(|w| cuu(w, u16::MAX));
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("65535"));
+        assert!(s.ends_with("A"));
+    }
+
+    // ---- scroll region edge cases ----
+
+    #[test]
+    fn scroll_region_same_top_bottom() {
+        assert_eq!(to_bytes(|w| set_scroll_region(w, 5, 5)), b"\x1b[6;6r");
+    }
+
+    // ---- sgr_flags_off single-flag off-seq fast path (all 8 flags) ----
+
+    #[test]
+    fn sgr_flags_off_each_single_flag_fast_path() {
+        let cases: &[(StyleFlags, &[u8])] = &[
+            (StyleFlags::BOLD, b"\x1b[22m"),
+            (StyleFlags::DIM, b"\x1b[22m"),
+            (StyleFlags::ITALIC, b"\x1b[23m"),
+            (StyleFlags::UNDERLINE, b"\x1b[24m"),
+            (StyleFlags::BLINK, b"\x1b[25m"),
+            (StyleFlags::REVERSE, b"\x1b[27m"),
+            (StyleFlags::STRIKETHROUGH, b"\x1b[29m"),
+            (StyleFlags::HIDDEN, b"\x1b[28m"),
+        ];
+        for &(flag, expected) in cases {
+            let mut buf = Vec::new();
+            let collateral = sgr_flags_off(&mut buf, flag, StyleFlags::empty()).unwrap();
+            assert_eq!(buf, expected, "off sequence for {flag:?}");
+            assert!(collateral.is_empty(), "no collateral for {flag:?}");
+        }
+    }
+
+    // ---- sgr_packed with non-zero alpha ----
+
+    #[test]
+    fn sgr_bg_packed_opaque() {
+        let color = PackedRgba::rgb(100, 200, 50);
+        assert_eq!(
+            to_bytes(|w| sgr_bg_packed(w, color)),
+            b"\x1b[48;2;100;200;50m"
+        );
+    }
+
+    // ---- hyperlink with empty url/id ----
+
+    #[test]
+    fn hyperlink_empty_url() {
+        assert_eq!(to_bytes(|w| hyperlink_start(w, "")), b"\x1b]8;;\x1b\\");
+    }
+
+    #[test]
+    fn hyperlink_with_empty_id() {
+        assert_eq!(
+            to_bytes(|w| hyperlink_start_with_id(w, "", "https://x.com")),
+            b"\x1b]8;id=;https://x.com\x1b\\"
+        );
+    }
+
+    // ---- all dynamic sequences start with ESC ----
+
+    #[test]
+    fn all_dynamic_sequences_start_with_esc() {
+        let sequences: Vec<Vec<u8>> = vec![
+            to_bytes(sgr_reset),
+            to_bytes(|w| sgr_flags(w, StyleFlags::BOLD)),
+            to_bytes(|w| sgr_fg_rgb(w, 1, 2, 3)),
+            to_bytes(|w| sgr_bg_rgb(w, 1, 2, 3)),
+            to_bytes(|w| sgr_fg_256(w, 42)),
+            to_bytes(|w| sgr_bg_256(w, 42)),
+            to_bytes(|w| sgr_fg_16(w, 5)),
+            to_bytes(|w| sgr_bg_16(w, 5)),
+            to_bytes(sgr_fg_default),
+            to_bytes(sgr_bg_default),
+            to_bytes(|w| cup(w, 0, 0)),
+            to_bytes(|w| cha(w, 0)),
+            to_bytes(|w| cuu(w, 1)),
+            to_bytes(|w| cud(w, 1)),
+            to_bytes(|w| cuf(w, 1)),
+            to_bytes(|w| cub(w, 1)),
+            to_bytes(cursor_save),
+            to_bytes(cursor_restore),
+            to_bytes(cursor_hide),
+            to_bytes(cursor_show),
+            to_bytes(|w| erase_line(w, EraseLineMode::All)),
+            to_bytes(|w| erase_display(w, EraseDisplayMode::All)),
+            to_bytes(|w| set_scroll_region(w, 0, 23)),
+            to_bytes(reset_scroll_region),
+            to_bytes(sync_begin),
+            to_bytes(sync_end),
+            to_bytes(|w| hyperlink_start(w, "test")),
+            to_bytes(hyperlink_end),
+            to_bytes(alt_screen_enter),
+            to_bytes(alt_screen_leave),
+            to_bytes(bracketed_paste_enable),
+            to_bytes(bracketed_paste_disable),
+            to_bytes(mouse_enable),
+            to_bytes(mouse_disable),
+            to_bytes(focus_enable),
+            to_bytes(focus_disable),
+        ];
+        for (i, seq) in sequences.iter().enumerate() {
+            assert!(
+                seq.starts_with(b"\x1b"),
+                "sequence {i} should start with ESC, got {seq:?}"
+            );
+        }
+    }
 }

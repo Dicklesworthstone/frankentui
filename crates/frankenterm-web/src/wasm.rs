@@ -12,10 +12,10 @@ use crate::input::{
 };
 use crate::renderer::{
     CellData, CellPatch, CursorStyle, GridGeometry, RendererConfig, WebGpuRenderer,
-    cell_attr_link_id,
+    cell_attr_link_id, cell_patches_from_flat_u32,
 };
 use crate::scroll::{SearchConfig, SearchIndex};
-use js_sys::{Array, Object, Reflect, Uint8Array};
+use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -538,6 +538,25 @@ impl FrankenTermWeb {
         for patch in patches_arr.iter() {
             parsed.push(parse_cell_patch(&patch)?);
         }
+        self.apply_cell_patches(&parsed);
+        Ok(())
+    }
+
+    /// Apply multiple cell patches from flat payload arrays (ftui-web fast path).
+    ///
+    /// - `spans`: `Uint32Array` in `[offset, len, offset, len, ...]` order
+    /// - `cells`: `Uint32Array` in `[bg, fg, glyph, attrs, ...]` order
+    ///
+    /// `len` is measured in cells (not `u32` words).
+    #[wasm_bindgen(js_name = applyPatchBatchFlat)]
+    pub fn apply_patch_batch_flat(
+        &mut self,
+        spans: Uint32Array,
+        cells: Uint32Array,
+    ) -> Result<(), JsValue> {
+        let spans = spans.to_vec();
+        let cells = cells.to_vec();
+        let parsed = cell_patches_from_flat_u32(&spans, &cells).map_err(JsValue::from_str)?;
         self.apply_cell_patches(&parsed);
         Ok(())
     }
@@ -2597,6 +2616,29 @@ mod tests {
         arr.into()
     }
 
+    fn patch_batch_flat_arrays(patches: &[(u32, &[CellData])]) -> (Uint32Array, Uint32Array) {
+        let mut spans = Vec::with_capacity(patches.len() * 2);
+        let total_cells = patches.iter().map(|(_, cells)| cells.len()).sum::<usize>();
+        let mut flat_cells = Vec::with_capacity(total_cells * 4);
+
+        for (offset, cells) in patches {
+            spans.push(*offset);
+            let len = cells.len().min(u32::MAX as usize) as u32;
+            spans.push(len);
+            for cell in *cells {
+                flat_cells.push(cell.bg_rgba);
+                flat_cells.push(cell.fg_rgba);
+                flat_cells.push(cell.glyph_id);
+                flat_cells.push(cell.attrs);
+            }
+        }
+
+        (
+            Uint32Array::from(spans.as_slice()),
+            Uint32Array::from(flat_cells.as_slice()),
+        )
+    }
+
     #[test]
     fn set_selection_range_normalizes_reverse_and_out_of_bounds() {
         let mut term = FrankenTermWeb::new();
@@ -2780,6 +2822,80 @@ mod tests {
             batched.search_highlight_range,
             sequential.search_highlight_range
         );
+    }
+
+    #[test]
+    fn apply_patch_batch_flat_without_renderer_respects_multiple_offsets() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 7;
+        term.rows = 2;
+        term.shadow_cells = vec![CellData::EMPTY; 14];
+
+        let alpha = text_row_cells("αβ");
+        let wide = text_row_cells("界🙂");
+        let (spans, cells) = patch_batch_flat_arrays(&[(0, &alpha), (9, &wide)]);
+        assert!(term.apply_patch_batch_flat(spans, cells).is_ok());
+
+        assert_eq!(term.shadow_cells[0].glyph_id, u32::from('α'));
+        assert_eq!(term.shadow_cells[1].glyph_id, u32::from('β'));
+        assert_eq!(term.shadow_cells[9].glyph_id, u32::from('界'));
+        assert_eq!(term.shadow_cells[10].glyph_id, u32::from('🙂'));
+        assert_eq!(term.shadow_cells[8], CellData::EMPTY);
+        assert_eq!(term.shadow_cells[11], CellData::EMPTY);
+    }
+
+    #[test]
+    fn apply_patch_batch_flat_matches_object_batch_side_effects() {
+        let left = text_row_cells("α https://one.test ");
+        let right = text_row_cells("β https://two.test");
+        let right_offset = 1 + left.len() as u32;
+
+        let mut object_path = FrankenTermWeb::new();
+        object_path.cols = 40;
+        object_path.rows = 1;
+        assert!(object_path.set_search_query("https", None).is_ok());
+        let patches = patch_batch_value(&[(1, &left), (right_offset, &right)]);
+        assert!(object_path.apply_patch_batch(patches).is_ok());
+
+        let mut flat_path = FrankenTermWeb::new();
+        flat_path.cols = 40;
+        flat_path.rows = 1;
+        assert!(flat_path.set_search_query("https", None).is_ok());
+        let (spans, cells) = patch_batch_flat_arrays(&[(1, &left), (right_offset, &right)]);
+        assert!(flat_path.apply_patch_batch_flat(spans, cells).is_ok());
+
+        assert_eq!(flat_path.shadow_cells, object_path.shadow_cells);
+        assert_eq!(flat_path.auto_link_ids, object_path.auto_link_ids);
+        assert_eq!(flat_path.auto_link_urls, object_path.auto_link_urls);
+        assert_eq!(flat_path.search_index.len(), object_path.search_index.len());
+        assert_eq!(
+            flat_path.search_active_match,
+            object_path.search_active_match
+        );
+        assert_eq!(
+            flat_path.search_highlight_range,
+            object_path.search_highlight_range
+        );
+    }
+
+    #[test]
+    fn apply_patch_batch_flat_rejects_invalid_payload_without_mutation() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 4;
+        term.rows = 1;
+        term.shadow_cells = text_row_cells("base");
+        term.auto_link_ids = vec![7, 7, 7, 7];
+        let baseline_cells = term.shadow_cells.clone();
+        let baseline_link_ids = term.auto_link_ids.clone();
+        let baseline_urls = term.auto_link_urls.clone();
+
+        let spans = Uint32Array::from([0, 2].as_slice());
+        let cells = Uint32Array::from([1, 2, 3, 4].as_slice());
+        assert!(term.apply_patch_batch_flat(spans, cells).is_err());
+
+        assert_eq!(term.shadow_cells, baseline_cells);
+        assert_eq!(term.auto_link_ids, baseline_link_ids);
+        assert_eq!(term.auto_link_urls, baseline_urls);
     }
 
     #[test]

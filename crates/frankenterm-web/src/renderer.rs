@@ -428,6 +428,73 @@ pub struct CellPatch {
     pub cells: Vec<CellData>,
 }
 
+/// Number of `u32` words in one flat patch cell payload (`bg`, `fg`, `glyph`, `attrs`).
+pub const FLAT_PATCH_CELL_WORDS: usize = 4;
+/// Number of `u32` words in one flat patch span payload (`offset`, `len`).
+pub const FLAT_PATCH_SPAN_WORDS: usize = 2;
+
+/// Decode one flat `u32` span into a [`CellPatch`].
+///
+/// The `flat_cells` payload must be in `[bg, fg, glyph, attrs]` order.
+pub fn cell_patch_from_flat_u32(
+    offset: u32,
+    flat_cells: &[u32],
+) -> Result<CellPatch, &'static str> {
+    if !flat_cells.len().is_multiple_of(FLAT_PATCH_CELL_WORDS) {
+        return Err("flat cell payload length must be a multiple of 4");
+    }
+    let mut cells = Vec::with_capacity(flat_cells.len() / FLAT_PATCH_CELL_WORDS);
+    for chunk in flat_cells.chunks_exact(FLAT_PATCH_CELL_WORDS) {
+        cells.push(CellData {
+            bg_rgba: chunk[0],
+            fg_rgba: chunk[1],
+            glyph_id: chunk[2],
+            attrs: chunk[3],
+        });
+    }
+    Ok(CellPatch { offset, cells })
+}
+
+/// Decode a full flat patch batch into [`CellPatch`] runs.
+///
+/// - `spans`: `[offset, len, offset, len, ...]`, where `len` is in cells
+/// - `flat_cells`: `[bg, fg, glyph, attrs, ...]`
+pub fn cell_patches_from_flat_u32(
+    spans: &[u32],
+    flat_cells: &[u32],
+) -> Result<Vec<CellPatch>, &'static str> {
+    if !spans.len().is_multiple_of(FLAT_PATCH_SPAN_WORDS) {
+        return Err("flat span payload length must be even");
+    }
+    if !flat_cells.len().is_multiple_of(FLAT_PATCH_CELL_WORDS) {
+        return Err("flat cell payload length must be a multiple of 4");
+    }
+
+    let mut patches = Vec::with_capacity(spans.len() / FLAT_PATCH_SPAN_WORDS);
+    let mut cursor = 0usize;
+    for span in spans.chunks_exact(FLAT_PATCH_SPAN_WORDS) {
+        let offset = span[0];
+        let len_cells = span[1] as usize;
+        let words = len_cells
+            .checked_mul(FLAT_PATCH_CELL_WORDS)
+            .ok_or("flat span length overflow")?;
+        let end = cursor
+            .checked_add(words)
+            .ok_or("flat span cursor overflow")?;
+        if end > flat_cells.len() {
+            return Err("flat spans exceed provided cell payload");
+        }
+        patches.push(cell_patch_from_flat_u32(offset, &flat_cells[cursor..end])?);
+        cursor = end;
+    }
+
+    if cursor != flat_cells.len() {
+        return Err("flat spans do not consume entire cell payload");
+    }
+
+    Ok(patches)
+}
+
 // ---------------------------------------------------------------------------
 // WGSL shader (inline)
 // ---------------------------------------------------------------------------
@@ -1263,10 +1330,14 @@ mod gpu {
             let pixels = self.glyph_cache.atlas_pixels();
 
             for rect in dirty_rects {
-                // Extract the sub-region rows into the scratch buffer.
-                self.patch_upload_scratch.clear();
                 let rw = rect.w as usize;
                 let rh = rect.h as usize;
+                // Guard: wgpu requires extent > 0 in each dimension.
+                if rw == 0 || rh == 0 {
+                    continue;
+                }
+                // Extract the sub-region rows into the scratch buffer.
+                self.patch_upload_scratch.clear();
                 self.patch_upload_scratch.reserve(rw * rh);
                 for row in 0..rh {
                     let src_start = (rect.y as usize + row) * atlas_w + rect.x as usize;
@@ -2522,6 +2593,92 @@ mod tests {
         };
         let bytes = cells_to_bytes(&patch.cells);
         assert_eq!(bytes.len(), 5 * CELL_DATA_BYTES);
+    }
+
+    #[test]
+    fn cell_patch_from_flat_u32_decodes_cell_words() {
+        let patch = cell_patch_from_flat_u32(
+            7,
+            &[
+                0x0102_0304,
+                0xA0B0_C0D0,
+                0x0000_03B1,
+                0x0012_3401,
+                0xDEAD_BEEF,
+                0x1234_5678,
+                0x0001_F642,
+                0x00AB_CDFF,
+            ],
+        )
+        .expect("flat payload should decode");
+
+        assert_eq!(patch.offset, 7);
+        assert_eq!(patch.cells.len(), 2);
+        assert_eq!(
+            patch.cells[0],
+            CellData {
+                bg_rgba: 0x0102_0304,
+                fg_rgba: 0xA0B0_C0D0,
+                glyph_id: 0x0000_03B1,
+                attrs: 0x0012_3401,
+            }
+        );
+        assert_eq!(
+            patch.cells[1],
+            CellData {
+                bg_rgba: 0xDEAD_BEEF,
+                fg_rgba: 0x1234_5678,
+                glyph_id: 0x0001_F642,
+                attrs: 0x00AB_CDFF,
+            }
+        );
+    }
+
+    #[test]
+    fn cell_patch_from_flat_u32_rejects_incomplete_tuple() {
+        let err = cell_patch_from_flat_u32(0, &[1, 2, 3]).expect_err("invalid length must fail");
+        assert_eq!(err, "flat cell payload length must be a multiple of 4");
+    }
+
+    #[test]
+    fn cell_patches_from_flat_u32_decodes_multiple_spans() {
+        let patches = cell_patches_from_flat_u32(
+            &[2, 1, 8, 2],
+            &[
+                1, 2, 3, 4, //
+                5, 6, 7, 8, //
+                9, 10, 11, 12,
+            ],
+        )
+        .expect("valid flat batch should decode");
+
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].offset, 2);
+        assert_eq!(patches[0].cells.len(), 1);
+        assert_eq!(patches[1].offset, 8);
+        assert_eq!(patches[1].cells.len(), 2);
+        assert_eq!(patches[1].cells[1].glyph_id, 11);
+    }
+
+    #[test]
+    fn cell_patches_from_flat_u32_rejects_mismatched_span_lengths() {
+        let err = cell_patches_from_flat_u32(
+            &[0, 2],
+            &[
+                1, 2, 3, 4, //
+                5, 6, 7, 8, //
+                9, 10, 11, 12,
+            ],
+        )
+        .expect_err("extra payload words must fail");
+        assert_eq!(err, "flat spans do not consume entire cell payload");
+    }
+
+    #[test]
+    fn cell_patches_from_flat_u32_rejects_odd_span_payload() {
+        let err = cell_patches_from_flat_u32(&[0, 1, 2], &[1, 2, 3, 4])
+            .expect_err("odd spans length must fail");
+        assert_eq!(err, "flat span payload length must be even");
     }
 
     // ── CursorStyle exhaustive ─────────────────────────────────────────

@@ -508,11 +508,11 @@ impl Parser {
     }
 
     fn take_buf(&mut self) -> Vec<u8> {
-        // Clone+clear instead of swap-with-empty so that `self.buf` retains
-        // its heap capacity for the next escape sequence (avoids re-alloc).
-        let out = self.buf.clone();
-        self.buf.clear();
-        out
+        // Replace with a same-capacity Vec so `self.buf` retains its heap
+        // allocation for the next escape sequence (avoids repeated growth
+        // from zero).  The original swap-with-empty lost all capacity.
+        let cap = self.buf.capacity();
+        core::mem::replace(&mut self.buf, Vec::with_capacity(cap))
     }
 
     fn decode_csi(seq: &[u8]) -> Option<Action> {

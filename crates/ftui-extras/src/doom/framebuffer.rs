@@ -606,7 +606,11 @@ mod tests {
         for x in 0..3u16 {
             let left = buf_stride_zero.get(x, 0).expect("stride=0 cell");
             let right = buf_stride_one.get(x, 0).expect("stride=1 cell");
-            assert_eq!(left.content.as_char(), right.content.as_char(), "x={x} char");
+            assert_eq!(
+                left.content.as_char(),
+                right.content.as_char(),
+                "x={x} char"
+            );
             assert_eq!(left.fg, right.fg, "x={x} fg");
             assert_eq!(left.bg, right.bg, "x={x} bg");
         }
