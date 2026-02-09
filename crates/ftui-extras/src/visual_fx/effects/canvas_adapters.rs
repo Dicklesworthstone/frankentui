@@ -274,137 +274,83 @@ impl PlasmaCanvasAdapter {
             *wave = self.y_wave_sin_base[y] * cos_t2 + self.y_wave_cos_base[y] * sin_t2;
         }
 
-        // Hoist both quality and palette branching outside the hot pixel loop.
-        if use_sunset_fast_path {
-            match quality {
-                FxQuality::Full => {
-                    for y in 0..h {
-                        let v2 = self.y_wave[y];
-                        let y_sin = self.y_diag_sin[y];
-                        let y_cos = self.y_diag_cos[y];
-                        let row_offset = y * w;
-                        for x in 0..w {
-                            let v1 = self.x_wave[x];
-                            let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
-                            let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
-                            let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
-                            let idx = row_offset + x;
-                            let v4 = self.radial_center_sin_base[idx] * cos_t4
-                                - self.radial_center_cos_base[idx] * sin_t4;
-                            let v5 = self.radial_offset_cos_base[idx] * cos_time
-                                - self.radial_offset_sin_base[idx] * sin_time;
-                            let v6 = self.interference_sin_base[idx] * cos_t6
-                                + self.interference_cos_base[idx] * sin_t6;
-                            let t = ((v1 + v2 + v3 + v4 + v5 + v6) / 6.0 + 1.0) * 0.5;
-                            let color = plasma_sunset_color_at(t);
-                            painter.set_color_at_index_in_bounds(idx, color);
-                        }
+        // Hoist quality branching outside the hot pixel loop so we avoid
+        // a branch check per pixel on every frame.
+        match quality {
+            FxQuality::Full => {
+                for y in 0..h {
+                    let v2 = self.y_wave[y];
+                    let y_sin = self.y_diag_sin[y];
+                    let y_cos = self.y_diag_cos[y];
+                    let row_offset = y * w;
+                    for x in 0..w {
+                        let v1 = self.x_wave[x];
+                        let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
+                        let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
+                        let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
+                        let idx = row_offset + x;
+                        let v4 = self.radial_center_sin_base[idx] * cos_t4
+                            - self.radial_center_cos_base[idx] * sin_t4;
+                        let v5 = self.radial_offset_cos_base[idx] * cos_time
+                            - self.radial_offset_sin_base[idx] * sin_time;
+                        let v6 = self.interference_sin_base[idx] * cos_t6
+                            + self.interference_cos_base[idx] * sin_t6;
+                        let t = ((v1 + v2 + v3 + v4 + v5 + v6) / 6.0 + 1.0) * 0.5;
+                        let color = if use_sunset_fast_path {
+                            plasma_sunset_color_at(t)
+                        } else {
+                            self.palette.color_at(t, theme)
+                        };
+                        painter.set_color_at_index_in_bounds(idx, color);
                     }
                 }
-                FxQuality::Reduced => {
-                    for y in 0..h {
-                        let v2 = self.y_wave[y];
-                        let y_sin = self.y_diag_sin[y];
-                        let y_cos = self.y_diag_cos[y];
-                        let row_offset = y * w;
-                        for x in 0..w {
-                            let v1 = self.x_wave[x];
-                            let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
-                            let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
-                            let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
-                            let idx = row_offset + x;
-                            let v4 = self.radial_center_sin_base[idx] * cos_t4
-                                - self.radial_center_cos_base[idx] * sin_t4;
-                            let t = ((v1 + v2 + v3 + v4) / 4.0 + 1.0) * 0.5;
-                            let color = plasma_sunset_color_at(t);
-                            painter.set_color_at_index_in_bounds(idx, color);
-                        }
-                    }
-                }
-                FxQuality::Minimal => {
-                    for y in 0..h {
-                        let v2 = self.y_wave[y];
-                        let y_sin = self.y_diag_sin[y];
-                        let y_cos = self.y_diag_cos[y];
-                        let row_offset = y * w;
-                        for x in 0..w {
-                            let v1 = self.x_wave[x];
-                            let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
-                            let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
-                            let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
-                            let t = ((v1 + v2 + v3) / 3.0 + 1.0) * 0.5;
-                            let color = plasma_sunset_color_at(t);
-                            painter.set_color_at_index_in_bounds(row_offset + x, color);
-                        }
-                    }
-                }
-                FxQuality::Off => {}
             }
-        } else {
-            match quality {
-                FxQuality::Full => {
-                    for y in 0..h {
-                        let v2 = self.y_wave[y];
-                        let y_sin = self.y_diag_sin[y];
-                        let y_cos = self.y_diag_cos[y];
-                        let row_offset = y * w;
-                        for x in 0..w {
-                            let v1 = self.x_wave[x];
-                            let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
-                            let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
-                            let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
-                            let idx = row_offset + x;
-                            let v4 = self.radial_center_sin_base[idx] * cos_t4
-                                - self.radial_center_cos_base[idx] * sin_t4;
-                            let v5 = self.radial_offset_cos_base[idx] * cos_time
-                                - self.radial_offset_sin_base[idx] * sin_time;
-                            let v6 = self.interference_sin_base[idx] * cos_t6
-                                + self.interference_cos_base[idx] * sin_t6;
-                            let t = ((v1 + v2 + v3 + v4 + v5 + v6) / 6.0 + 1.0) * 0.5;
-                            let color = self.palette.color_at(t, theme);
-                            painter.set_color_at_index_in_bounds(idx, color);
-                        }
+            FxQuality::Reduced => {
+                for y in 0..h {
+                    let v2 = self.y_wave[y];
+                    let y_sin = self.y_diag_sin[y];
+                    let y_cos = self.y_diag_cos[y];
+                    let row_offset = y * w;
+                    for x in 0..w {
+                        let v1 = self.x_wave[x];
+                        let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
+                        let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
+                        let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
+                        let idx = row_offset + x;
+                        let v4 = self.radial_center_sin_base[idx] * cos_t4
+                            - self.radial_center_cos_base[idx] * sin_t4;
+                        let t = ((v1 + v2 + v3 + v4) / 4.0 + 1.0) * 0.5;
+                        let color = if use_sunset_fast_path {
+                            plasma_sunset_color_at(t)
+                        } else {
+                            self.palette.color_at(t, theme)
+                        };
+                        painter.set_color_at_index_in_bounds(idx, color);
                     }
                 }
-                FxQuality::Reduced => {
-                    for y in 0..h {
-                        let v2 = self.y_wave[y];
-                        let y_sin = self.y_diag_sin[y];
-                        let y_cos = self.y_diag_cos[y];
-                        let row_offset = y * w;
-                        for x in 0..w {
-                            let v1 = self.x_wave[x];
-                            let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
-                            let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
-                            let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
-                            let idx = row_offset + x;
-                            let v4 = self.radial_center_sin_base[idx] * cos_t4
-                                - self.radial_center_cos_base[idx] * sin_t4;
-                            let t = ((v1 + v2 + v3 + v4) / 4.0 + 1.0) * 0.5;
-                            let color = self.palette.color_at(t, theme);
-                            painter.set_color_at_index_in_bounds(idx, color);
-                        }
-                    }
-                }
-                FxQuality::Minimal => {
-                    for y in 0..h {
-                        let v2 = self.y_wave[y];
-                        let y_sin = self.y_diag_sin[y];
-                        let y_cos = self.y_diag_cos[y];
-                        let row_offset = y * w;
-                        for x in 0..w {
-                            let v1 = self.x_wave[x];
-                            let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
-                            let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
-                            let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
-                            let t = ((v1 + v2 + v3) / 3.0 + 1.0) * 0.5;
-                            let color = self.palette.color_at(t, theme);
-                            painter.set_color_at_index_in_bounds(row_offset + x, color);
-                        }
-                    }
-                }
-                FxQuality::Off => {}
             }
+            FxQuality::Minimal => {
+                for y in 0..h {
+                    let v2 = self.y_wave[y];
+                    let y_sin = self.y_diag_sin[y];
+                    let y_cos = self.y_diag_cos[y];
+                    let row_offset = y * w;
+                    for x in 0..w {
+                        let v1 = self.x_wave[x];
+                        let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
+                        let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
+                        let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
+                        let t = ((v1 + v2 + v3) / 3.0 + 1.0) * 0.5;
+                        let color = if use_sunset_fast_path {
+                            plasma_sunset_color_at(t)
+                        } else {
+                            self.palette.color_at(t, theme)
+                        };
+                        painter.set_color_at_index_in_bounds(row_offset + x, color);
+                    }
+                }
+            }
+            FxQuality::Off => {}
         }
     }
 }
