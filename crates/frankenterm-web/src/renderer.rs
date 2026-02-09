@@ -634,7 +634,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(target_arch = "wasm32")]
 mod gpu {
     use super::*;
-    use crate::glyph_atlas::{GlyphAtlasCache, GlyphKey};
+    use crate::glyph_atlas::{AtlasRect, GlyphAtlasCache, GlyphKey};
     use std::collections::HashMap;
     use wasm_bindgen::JsCast;
     use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
@@ -1228,6 +1228,10 @@ mod gpu {
             )
         }
 
+        /// Upload the full atlas texture to the GPU.
+        ///
+        /// Used as a fallback when partial uploads are not possible (e.g. after
+        /// atlas eviction/rebuild).
         fn upload_full_atlas(&mut self) {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -1248,6 +1252,52 @@ mod gpu {
                     depth_or_array_layers: 1,
                 },
             );
+        }
+
+        /// Upload only the dirty atlas rectangles to the GPU.
+        ///
+        /// Each dirty rect is uploaded as an independent sub-region write,
+        /// avoiding the 4 MB full-atlas upload when only a few glyphs changed.
+        fn upload_dirty_atlas_rects(&mut self, dirty_rects: &[AtlasRect]) {
+            let atlas_w = self.atlas_width as usize;
+            let pixels = self.glyph_cache.atlas_pixels();
+
+            for rect in dirty_rects {
+                // Extract the sub-region rows into the scratch buffer.
+                self.patch_upload_scratch.clear();
+                let rw = rect.w as usize;
+                let rh = rect.h as usize;
+                self.patch_upload_scratch.reserve(rw * rh);
+                for row in 0..rh {
+                    let src_start = (rect.y as usize + row) * atlas_w + rect.x as usize;
+                    self.patch_upload_scratch
+                        .extend_from_slice(&pixels[src_start..src_start + rw]);
+                }
+
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self._atlas_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: u32::from(rect.x),
+                            y: u32::from(rect.y),
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &self.patch_upload_scratch,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(rw as u32),
+                        rows_per_image: Some(rh as u32),
+                    },
+                    wgpu::Extent3d {
+                        width: rw as u32,
+                        height: rh as u32,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
         }
 
         fn ensure_glyph_slot(&mut self, codepoint: u32) -> u32 {
@@ -1338,10 +1388,12 @@ mod gpu {
                 dirty += count as u32;
             }
 
-            // Upload the atlas at most once per patch batch to avoid N× full
-            // uploads when many new glyphs are encountered in a single frame.
-            if !self.glyph_cache.take_dirty_rects().is_empty() {
-                self.upload_full_atlas();
+            // Upload only the dirty atlas sub-regions instead of the full 4 MB
+            // texture. Typically only a handful of small glyph rects change per
+            // frame, reducing GPU transfer from O(atlas_size) to O(dirty_area).
+            let dirty_rects = self.glyph_cache.take_dirty_rects();
+            if !dirty_rects.is_empty() {
+                self.upload_dirty_atlas_rects(&dirty_rects);
             }
 
             self.last_dirty_cells = dirty;

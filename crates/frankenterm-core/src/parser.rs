@@ -10,6 +10,15 @@
 //! - ESC-level sequences (cursor save/restore, index, reset)
 //! - capture of unsupported sequences as `Action::Escape` for later decoding
 
+use smallvec::SmallVec;
+
+/// Inline capacity for CSI parameter lists.
+///
+/// Most SGR/DECSET sequences carry ≤ 4 parameters; this avoids a heap
+/// allocation for the common case while remaining transparent to consumers
+/// via `Deref<Target = [u16]>`.
+pub type CsiParams = SmallVec<[u16; 4]>;
+
 /// Parser output actions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -68,15 +77,15 @@ pub enum Action {
     ///
     /// Parameters are returned as parsed numeric values; interpretation is
     /// performed by the terminal engine (they are stateful/delta-based).
-    Sgr(Vec<u16>),
+    Sgr(CsiParams),
     /// DECSET (`CSI ? Pm h`): enable DEC private mode(s).
-    DecSet(Vec<u16>),
+    DecSet(CsiParams),
     /// DECRST (`CSI ? Pm l`): disable DEC private mode(s).
-    DecRst(Vec<u16>),
+    DecRst(CsiParams),
     /// SM (`CSI Pm h`): enable ANSI standard mode(s).
-    AnsiSet(Vec<u16>),
+    AnsiSet(CsiParams),
     /// RM (`CSI Pm l`): disable ANSI standard mode(s).
-    AnsiRst(Vec<u16>),
+    AnsiRst(CsiParams),
     /// DECSC (`ESC 7`): save cursor state.
     SaveCursor,
     /// DECRC (`ESC 8`): restore cursor state.
@@ -221,12 +230,21 @@ impl Parser {
     #[must_use]
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Action> {
         let mut out = Vec::new();
+        self.feed_into(bytes, &mut out);
+        out
+    }
+
+    /// Feed a chunk of bytes, appending parsed actions to `out`.
+    ///
+    /// This avoids allocating a new Vec per call — callers on hot paths can
+    /// reuse the same output buffer across frames by calling `out.clear()`
+    /// before each invocation while retaining the underlying capacity.
+    pub fn feed_into(&mut self, bytes: &[u8], out: &mut Vec<Action>) {
         for &b in bytes {
             if let Some(action) = self.advance(b) {
                 out.push(action);
             }
         }
-        out
     }
 
     /// Advance the parser by one byte.
@@ -762,12 +780,12 @@ impl Parser {
         }
     }
 
-    fn parse_csi_params(params: &[u8]) -> Option<Vec<u16>> {
+    fn parse_csi_params(params: &[u8]) -> Option<CsiParams> {
         if params.is_empty() {
-            return Some(Vec::new());
+            return Some(CsiParams::new());
         }
         let s = core::str::from_utf8(params).ok()?;
-        let mut out = Vec::new();
+        let mut out = CsiParams::new();
         for part in s.split(';') {
             if part.is_empty() {
                 out.push(0);
@@ -787,6 +805,7 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::smallvec;
 
     // ── ASCII / Ground ─────────────────────────────────────────────
 
@@ -932,14 +951,14 @@ mod tests {
     fn decset_cursor_hide() {
         let mut p = Parser::new();
         let actions = p.feed(b"\x1b[?25l");
-        assert_eq!(actions, vec![Action::DecRst(vec![25])]);
+        assert_eq!(actions, vec![Action::DecRst(smallvec![25])]);
     }
 
     #[test]
     fn decset_cursor_show() {
         let mut p = Parser::new();
         let actions = p.feed(b"\x1b[?25h");
-        assert_eq!(actions, vec![Action::DecSet(vec![25])]);
+        assert_eq!(actions, vec![Action::DecSet(smallvec![25])]);
     }
 
     #[test]
@@ -947,28 +966,28 @@ mod tests {
         let mut p = Parser::new();
         // Enable alt screen + bracketed paste + mouse SGR in one sequence
         let actions = p.feed(b"\x1b[?1049;2004;1006h");
-        assert_eq!(actions, vec![Action::DecSet(vec![1049, 2004, 1006])]);
+        assert_eq!(actions, vec![Action::DecSet(smallvec![1049, 2004, 1006])]);
     }
 
     #[test]
     fn decrst_multiple_modes() {
         let mut p = Parser::new();
         let actions = p.feed(b"\x1b[?1049;2004l");
-        assert_eq!(actions, vec![Action::DecRst(vec![1049, 2004])]);
+        assert_eq!(actions, vec![Action::DecRst(smallvec![1049, 2004])]);
     }
 
     #[test]
     fn decset_sync_output() {
         let mut p = Parser::new();
-        assert_eq!(p.feed(b"\x1b[?2026h"), vec![Action::DecSet(vec![2026])]);
-        assert_eq!(p.feed(b"\x1b[?2026l"), vec![Action::DecRst(vec![2026])]);
+        assert_eq!(p.feed(b"\x1b[?2026h"), vec![Action::DecSet(smallvec![2026])]);
+        assert_eq!(p.feed(b"\x1b[?2026l"), vec![Action::DecRst(smallvec![2026])]);
     }
 
     #[test]
     fn decset_autowrap() {
         let mut p = Parser::new();
-        assert_eq!(p.feed(b"\x1b[?7h"), vec![Action::DecSet(vec![7])]);
-        assert_eq!(p.feed(b"\x1b[?7l"), vec![Action::DecRst(vec![7])]);
+        assert_eq!(p.feed(b"\x1b[?7h"), vec![Action::DecSet(smallvec![7])]);
+        assert_eq!(p.feed(b"\x1b[?7l"), vec![Action::DecRst(smallvec![7])]);
     }
 
     // ── ANSI SM / RM ──────────────────────────────────────────────
@@ -977,16 +996,16 @@ mod tests {
     fn ansi_set_insert_mode() {
         let mut p = Parser::new();
         // SM (CSI 4 h) — set insert mode
-        assert_eq!(p.feed(b"\x1b[4h"), vec![Action::AnsiSet(vec![4])]);
+        assert_eq!(p.feed(b"\x1b[4h"), vec![Action::AnsiSet(smallvec![4])]);
         // RM (CSI 4 l) — reset insert mode
-        assert_eq!(p.feed(b"\x1b[4l"), vec![Action::AnsiRst(vec![4])]);
+        assert_eq!(p.feed(b"\x1b[4l"), vec![Action::AnsiRst(smallvec![4])]);
     }
 
     #[test]
     fn ansi_set_newline_mode() {
         let mut p = Parser::new();
-        assert_eq!(p.feed(b"\x1b[20h"), vec![Action::AnsiSet(vec![20])]);
-        assert_eq!(p.feed(b"\x1b[20l"), vec![Action::AnsiRst(vec![20])]);
+        assert_eq!(p.feed(b"\x1b[20h"), vec![Action::AnsiSet(smallvec![20])]);
+        assert_eq!(p.feed(b"\x1b[20l"), vec![Action::AnsiRst(smallvec![20])]);
     }
 
     // ── Cursor save/restore (DECSC/DECRC) ──────────────────────────
@@ -1048,8 +1067,8 @@ mod tests {
     #[test]
     fn csi_sgr_is_decoded() {
         let mut p = Parser::new();
-        assert_eq!(p.feed(b"\x1b[31m"), vec![Action::Sgr(vec![31])]);
-        assert_eq!(p.feed(b"\x1b[m"), vec![Action::Sgr(vec![])]);
+        assert_eq!(p.feed(b"\x1b[31m"), vec![Action::Sgr(smallvec![31])]);
+        assert_eq!(p.feed(b"\x1b[m"), vec![Action::Sgr(smallvec![])]);
     }
 
     #[test]
@@ -1176,7 +1195,7 @@ mod tests {
                 Action::Print('日'),
                 Action::Print('本'),
                 Action::Print('語'),
-                Action::Sgr(vec![31]),
+                Action::Sgr(smallvec![31]),
                 Action::CursorPosition { row: 4, col: 0 },
             ]
         );
@@ -1190,10 +1209,10 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                Action::DecSet(vec![1049]),
-                Action::DecSet(vec![2004]),
-                Action::DecSet(vec![1006]),
-                Action::DecRst(vec![25]),
+                Action::DecSet(smallvec![1049]),
+                Action::DecSet(smallvec![2004]),
+                Action::DecSet(smallvec![1006]),
+                Action::DecRst(smallvec![25]),
             ]
         );
     }
@@ -1206,10 +1225,10 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                Action::DecSet(vec![25]),
-                Action::DecRst(vec![1006]),
-                Action::DecRst(vec![2004]),
-                Action::DecRst(vec![1049]),
+                Action::DecSet(smallvec![25]),
+                Action::DecRst(smallvec![1006]),
+                Action::DecRst(smallvec![2004]),
+                Action::DecRst(smallvec![1049]),
             ]
         );
     }
@@ -1380,8 +1399,8 @@ mod tests {
             actions,
             vec![
                 Action::SoftReset,
-                Action::DecSet(vec![7]),  // enable autowrap
-                Action::DecSet(vec![25]), // show cursor
+                Action::DecSet(smallvec![7]),  // enable autowrap
+                Action::DecSet(smallvec![25]), // show cursor
             ]
         );
     }

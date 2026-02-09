@@ -164,6 +164,39 @@ pub struct WebOutputs {
     pub last_full_repaint_hint: bool,
 }
 
+impl WebOutputs {
+    /// Flatten patch runs for low-overhead JS/WASM bridge transport.
+    ///
+    /// Cells are emitted as a contiguous `u32` payload in:
+    /// `[bg, fg, glyph, attrs]` order. Spans are emitted as `u32` pairs:
+    /// `[offset, len, offset, len, ...]`.
+    #[must_use]
+    pub fn flatten_patches_u32(&self) -> WebFlatPatchBatch {
+        let total_cells = self
+            .last_patches
+            .iter()
+            .map(|patch| patch.cells.len())
+            .sum::<usize>();
+        let mut cells = Vec::with_capacity(total_cells.saturating_mul(4));
+        let mut spans = Vec::with_capacity(self.last_patches.len().saturating_mul(2));
+
+        for patch in &self.last_patches {
+            spans.push(patch.offset);
+            let len = patch.cells.len().min(u32::MAX as usize) as u32;
+            spans.push(len);
+
+            for cell in &patch.cells {
+                cells.push(cell.bg);
+                cells.push(cell.fg);
+                cells.push(cell.glyph);
+                cells.push(cell.attrs);
+            }
+        }
+
+        WebFlatPatchBatch { cells, spans }
+    }
+}
+
 /// One GPU patch cell payload (`bg`, `fg`, `glyph`, `attrs`) matching the
 /// `frankenterm-web` `applyPatch` schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +212,15 @@ pub struct WebPatchCell {
 pub struct WebPatchRun {
     pub offset: u32,
     pub cells: Vec<WebPatchCell>,
+}
+
+/// Compact, flat patch payload for JS/WASM transport.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WebFlatPatchBatch {
+    /// Cell payload in `[bg, fg, glyph, attrs]` order.
+    pub cells: Vec<u32>,
+    /// Span payload in `[offset, len, offset, len, ...]` order.
+    pub spans: Vec<u32>,
 }
 
 /// Aggregate patch-upload stats for host instrumentation and JSONL reporting.
@@ -613,5 +655,59 @@ mod tests {
         changed[0].cells[0].glyph = 'y' as u32;
         let changed_glyph_hash = patch_batch_hash(&changed);
         assert_ne!(base_hash, changed_glyph_hash);
+    }
+
+    #[test]
+    fn flatten_patches_u32_emits_row_major_cells_and_spans() {
+        let outputs = WebOutputs {
+            last_patches: vec![
+                WebPatchRun {
+                    offset: 2,
+                    cells: vec![
+                        WebPatchCell {
+                            bg: 10,
+                            fg: 11,
+                            glyph: 12,
+                            attrs: 13,
+                        },
+                        WebPatchCell {
+                            bg: 20,
+                            fg: 21,
+                            glyph: 22,
+                            attrs: 23,
+                        },
+                    ],
+                },
+                WebPatchRun {
+                    offset: 9,
+                    cells: vec![WebPatchCell {
+                        bg: 30,
+                        fg: 31,
+                        glyph: 32,
+                        attrs: 33,
+                    }],
+                },
+            ],
+            ..WebOutputs::default()
+        };
+
+        let flat = outputs.flatten_patches_u32();
+        assert_eq!(flat.spans, vec![2, 2, 9, 1]);
+        assert_eq!(
+            flat.cells,
+            vec![
+                10, 11, 12, 13, //
+                20, 21, 22, 23, //
+                30, 31, 32, 33
+            ]
+        );
+    }
+
+    #[test]
+    fn flatten_patches_u32_handles_empty_payload() {
+        let outputs = WebOutputs::default();
+        let flat = outputs.flatten_patches_u32();
+        assert!(flat.cells.is_empty());
+        assert!(flat.spans.is_empty());
     }
 }
