@@ -1,0 +1,16 @@
+{
+  "name": "el_left_indexed_bg",
+  "description": "EL 1 (erase left) with SGR 48;5 indexed background — erased cells inherit cursor indexed bg",
+  "initial_size": [10, 1],
+  "input_bytes_hex": "414141414141414141411b5b34383b353b3139366d1b5b313b3648 1b5b314b",
+  "comment": "Print 10 A's, set bg to indexed(196), CUP(1,6) -> col 5, EL 1 erases cols 0-5 with indexed bg and keeps cursor in place.",
+  "expected": {
+    "cursor": { "row": 0, "col": 5 },
+    "cells": [
+      { "row": 0, "col": 0, "char": " ", "attrs": { "bg_color": { "indexed": 196 } } },
+      { "row": 0, "col": 5, "char": " ", "attrs": { "bg_color": { "indexed": 196 } } },
+      { "row": 0, "col": 6, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 9, "char": "A", "attrs": { "bg_color": "default" } }
+    ]
+  }
+}

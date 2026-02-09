@@ -1,0 +1,20 @@
+{
+  "name": "ed_above_rgb_bg",
+  "description": "ED 1 (erase above) with SGR 48;2 RGB background — erased cells inherit cursor truecolor bg",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "4141414141414141414142424242424242424242434343434343434343431b5b34383b323b31303b32303b33306d1b5b323b3648 1b5b314a",
+  "comment": "Fill 10x3 with A/B/C rows. Set bg to RGB(10,20,30). CUP(2,6) -> (1,5). ED 1 erases from start through cursor inclusive with that RGB bg.",
+  "expected": {
+    "cursor": { "row": 1, "col": 5 },
+    "cells": [
+      { "row": 0, "col": 0, "char": " ", "attrs": { "bg_color": { "rgb": [10, 20, 30] } } },
+      { "row": 0, "col": 9, "char": " ", "attrs": { "bg_color": { "rgb": [10, 20, 30] } } },
+      { "row": 1, "col": 0, "char": " ", "attrs": { "bg_color": { "rgb": [10, 20, 30] } } },
+      { "row": 1, "col": 5, "char": " ", "attrs": { "bg_color": { "rgb": [10, 20, 30] } } },
+      { "row": 1, "col": 6, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 9, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 9, "char": "C", "attrs": { "bg_color": "default" } }
+    ]
+  }
+}

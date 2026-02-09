@@ -1,0 +1,17 @@
+{
+  "name": "decstbm_omitted_top_defaults_to_one_alt",
+  "description": "DECSTBM omitted-top variant: IND at bottom of region scrolls only within region",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "41 1b5b3248 42 1b5b3348 43 1b5b3448 44 1b5b3548 45 1b5b3b3472 1b5b343b3148 1b44 57",
+  "comment": "Fill rows A-E at col 0. DECSTBM(;4) sets region rows 1-4. IND at row 4 scrolls within region, then print W at row 4 col 1.",
+  "expected": {
+    "cursor": { "row": 3, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "B" },
+      { "row": 1, "col": 0, "char": "C" },
+      { "row": 2, "col": 0, "char": "D" },
+      { "row": 3, "col": 0, "char": "W" },
+      { "row": 4, "col": 0, "char": "E" }
+    ]
+  }
+}
