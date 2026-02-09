@@ -6,8 +6,8 @@ use crate::input::{
     TouchPhase, TouchPoint, VtInputEncoderFeatures, WheelInput, encode_vt_input_event,
     normalize_dom_key_code,
 };
-use crate::renderer::{CellData, CellPatch, RendererConfig, WebGpuRenderer};
-use js_sys::{Array, Reflect, Uint8Array};
+use crate::renderer::{CellData, CellPatch, GridGeometry, RendererConfig, WebGpuRenderer};
+use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -74,11 +74,13 @@ impl FrankenTermWeb {
             .and_then(|o| Reflect::get(o, &JsValue::from_str("dpr")).ok())
             .and_then(|v| v.as_f64())
             .unwrap_or(1.0) as f32;
+        let zoom = parse_init_f32(&options, "zoom").unwrap_or(1.0);
 
         let config = RendererConfig {
             cell_width,
             cell_height,
             dpr,
+            zoom,
         };
 
         let renderer = WebGpuRenderer::init(canvas.clone(), cols, rows, &config)
@@ -101,6 +103,55 @@ impl FrankenTermWeb {
         if let Some(r) = self.renderer.as_mut() {
             r.resize(cols, rows);
         }
+    }
+
+    /// Update DPR + zoom scaling while preserving current grid size.
+    ///
+    /// Returns deterministic geometry snapshot:
+    /// `{ cols, rows, pixelWidth, pixelHeight, cellWidthPx, cellHeightPx, dpr, zoom }`.
+    #[wasm_bindgen(js_name = setScale)]
+    pub fn set_scale(&mut self, dpr: f32, zoom: f32) -> Result<JsValue, JsValue> {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return Err(JsValue::from_str("renderer not initialized"));
+        };
+        renderer.set_scale(dpr, zoom);
+        let geometry = renderer.current_geometry();
+        Ok(geometry_to_js(geometry))
+    }
+
+    /// Convenience wrapper for user-controlled zoom updates.
+    #[wasm_bindgen(js_name = setZoom)]
+    pub fn set_zoom(&mut self, zoom: f32) -> Result<JsValue, JsValue> {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return Err(JsValue::from_str("renderer not initialized"));
+        };
+        let dpr = renderer.dpr();
+        renderer.set_scale(dpr, zoom);
+        let geometry = renderer.current_geometry();
+        Ok(geometry_to_js(geometry))
+    }
+
+    /// Fit the grid to a CSS-pixel container using current font metrics.
+    ///
+    /// `container_width_css` and `container_height_css` are CSS pixels.
+    /// `dpr` lets callers pass the latest `window.devicePixelRatio`.
+    #[wasm_bindgen(js_name = fitToContainer)]
+    pub fn fit_to_container(
+        &mut self,
+        container_width_css: u32,
+        container_height_css: u32,
+        dpr: f32,
+    ) -> Result<JsValue, JsValue> {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return Err(JsValue::from_str("renderer not initialized"));
+        };
+
+        let zoom = renderer.zoom();
+        renderer.set_scale(dpr, zoom);
+        let geometry = renderer.fit_to_container(container_width_css, container_height_css);
+        self.cols = geometry.cols;
+        self.rows = geometry.rows;
+        Ok(geometry_to_js(geometry))
     }
 
     /// Accepts DOM-derived keyboard/mouse/touch events.
@@ -495,6 +546,13 @@ fn parse_init_u16(options: &Option<JsValue>, key: &str) -> Option<u16> {
     u16::try_from(n as i64).ok()
 }
 
+fn parse_init_f32(options: &Option<JsValue>, key: &str) -> Option<f32> {
+    let obj = options.as_ref()?;
+    let v = Reflect::get(obj, &JsValue::from_str(key)).ok()?;
+    let n = v.as_f64()? as f32;
+    if n.is_finite() { Some(n) } else { None }
+}
+
 fn parse_init_bool(options: &Option<JsValue>, key: &str) -> Option<bool> {
     let obj = options.as_ref()?;
     let v = Reflect::get(obj, &JsValue::from_str(key)).ok()?;
@@ -535,4 +593,49 @@ fn number_to_i64_exact(n: f64, key: &str) -> Result<i64, JsValue> {
     }
     // After the integral check, `as i64` is safe and deterministic for our expected ranges.
     Ok(n as i64)
+}
+
+fn geometry_to_js(geometry: GridGeometry) -> JsValue {
+    let obj = Object::new();
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("cols"),
+        &JsValue::from_f64(f64::from(geometry.cols)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("rows"),
+        &JsValue::from_f64(f64::from(geometry.rows)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("pixelWidth"),
+        &JsValue::from_f64(f64::from(geometry.pixel_width)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("pixelHeight"),
+        &JsValue::from_f64(f64::from(geometry.pixel_height)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("cellWidthPx"),
+        &JsValue::from_f64(f64::from(geometry.cell_width_px)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("cellHeightPx"),
+        &JsValue::from_f64(f64::from(geometry.cell_height_px)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("dpr"),
+        &JsValue::from_f64(f64::from(geometry.dpr)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("zoom"),
+        &JsValue::from_f64(f64::from(geometry.zoom)),
+    );
+    obj.into()
 }

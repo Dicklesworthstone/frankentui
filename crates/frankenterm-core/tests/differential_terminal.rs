@@ -1,4 +1,4 @@
-use frankenterm_core::{Action, Cursor, Grid, Parser, Scrollback};
+use frankenterm_core::{Action, Cell, Cursor, Grid, Parser, Scrollback};
 use ftui_pty::virtual_terminal::VirtualTerminal;
 
 const KNOWN_MISMATCHES_FIXTURE: &str =
@@ -225,14 +225,27 @@ impl CoreTerminalHarness {
         if self.cursor.pending_wrap {
             self.wrap_to_next_line();
         }
-        if let Some(cell) = self.grid.cell_mut(self.cursor.row, self.cursor.col) {
-            cell.set_content(ch, 1);
-            cell.attrs = self.cursor.attrs;
+
+        let width = Cell::display_width(ch);
+        if width == 0 {
+            return;
         }
-        if self.cursor.col + 1 >= self.cols {
+
+        if width == 2 && self.cursor.col + 1 >= self.cols {
+            self.wrap_to_next_line();
+        }
+
+        let written =
+            self.grid
+                .write_printable(self.cursor.row, self.cursor.col, ch, self.cursor.attrs);
+        if written == 0 {
+            return;
+        }
+
+        if self.cursor.col + u16::from(written) >= self.cols {
             self.cursor.pending_wrap = true;
         } else {
-            self.cursor.col += 1;
+            self.cursor.col += u16::from(written);
             self.cursor.pending_wrap = false;
         }
     }

@@ -7,7 +7,7 @@
 //! 3. Grid operations maintain valid state.
 //! 4. Action sequences are deterministic (same input → same output).
 
-use frankenterm_core::{Action, Cursor, Grid, Parser, Scrollback};
+use frankenterm_core::{Action, Cell, Cursor, Grid, Parser, Scrollback};
 use proptest::prelude::*;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -32,14 +32,30 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
                 }
                 cursor.pending_wrap = false;
             }
-            if let Some(cell) = grid.cell_mut(cursor.row, cursor.col) {
-                cell.set_content(ch, 1);
-                cell.attrs = cursor.attrs;
+
+            let width = Cell::display_width(ch);
+            if width == 0 {
+                return;
             }
-            if cursor.col + 1 >= cols {
+
+            if width == 2 && cursor.col + 1 >= cols {
+                cursor.col = 0;
+                if cursor.row + 1 >= cursor.scroll_bottom() {
+                    grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+                } else if cursor.row + 1 < rows {
+                    cursor.row += 1;
+                }
+            }
+
+            let written = grid.write_printable(cursor.row, cursor.col, ch, cursor.attrs);
+            if written == 0 {
+                return;
+            }
+
+            if cursor.col + u16::from(written) >= cols {
                 cursor.pending_wrap = true;
             } else {
-                cursor.col += 1;
+                cursor.col += u16::from(written);
                 cursor.pending_wrap = false;
             }
         }

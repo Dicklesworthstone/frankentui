@@ -94,6 +94,11 @@ pub struct Painter {
     pixels: Vec<u32>,
     /// Current clear generation for O(1) clears.
     generation: u32,
+    /// Generation marker for full-canvas coverage.
+    ///
+    /// When this equals `generation`, all in-bounds pixels are treated as "on"
+    /// without consulting per-pixel marks.
+    full_coverage_generation: u32,
     /// Color per pixel (only stored when set; default = foreground).
     colors: Vec<Option<PackedRgba>>,
 }
@@ -111,6 +116,7 @@ impl Painter {
             mode,
             pixels: vec![0; len],
             generation: 1,
+            full_coverage_generation: 0,
             colors: vec![None; len],
         }
     }
@@ -152,15 +158,27 @@ impl Painter {
             // Rare wraparound path: reset marks to zero and restart generations.
             self.pixels.fill(0);
             self.generation = 1;
+            self.full_coverage_generation = 0;
         } else {
             self.generation += 1;
         }
     }
 
+    /// Mark the current frame as fully covered (every in-bounds pixel is "on").
+    ///
+    /// This is a rendering optimization for dense effects (for example plasma)
+    /// that write every sub-pixel each frame.
+    #[inline]
+    pub fn mark_full_coverage(&mut self) {
+        self.full_coverage_generation = self.generation;
+    }
+
     /// Set a single pixel.
     pub fn point(&mut self, x: i32, y: i32) {
         if let Some(idx) = self.index(x, y) {
-            self.pixels[idx] = self.generation;
+            if !self.is_full_coverage_current() {
+                self.pixels[idx] = self.generation;
+            }
             // Uncolored points must not inherit stale color from older generations.
             self.colors[idx] = None;
         }
@@ -169,7 +187,9 @@ impl Painter {
     /// Set a single pixel with color.
     pub fn point_colored(&mut self, x: i32, y: i32, color: PackedRgba) {
         if let Some(idx) = self.index(x, y) {
-            self.pixels[idx] = self.generation;
+            if !self.is_full_coverage_current() {
+                self.pixels[idx] = self.generation;
+            }
             self.colors[idx] = Some(color);
         }
     }
@@ -182,7 +202,28 @@ impl Painter {
         debug_assert!(x < self.width_usize);
         debug_assert!(y < self.height as usize);
         let idx = y * self.width_usize + x;
-        self.pixels[idx] = self.generation;
+        self.point_colored_at_index_in_bounds(idx, color);
+    }
+
+    /// Set a single pixel with color by precomputed in-bounds index.
+    ///
+    /// This avoids repeated coordinate-to-index math in hot loops.
+    #[inline]
+    pub fn point_colored_at_index_in_bounds(&mut self, idx: usize, color: PackedRgba) {
+        debug_assert!(idx < self.pixels.len());
+        if !self.is_full_coverage_current() {
+            self.pixels[idx] = self.generation;
+        }
+        self.colors[idx] = Some(color);
+    }
+
+    /// Set color by precomputed in-bounds index for full-coverage frames.
+    ///
+    /// Callers must ensure full coverage is active for the current generation.
+    #[inline]
+    pub fn set_color_at_index_in_bounds(&mut self, idx: usize, color: PackedRgba) {
+        debug_assert!(idx < self.colors.len());
+        debug_assert!(self.is_full_coverage_current());
         self.colors[idx] = Some(color);
     }
 
@@ -426,9 +467,22 @@ impl Painter {
 
     /// Check if a pixel is set.
     pub fn get(&self, x: i32, y: i32) -> bool {
+        if self.is_full_coverage_current() {
+            return x >= 0 && y >= 0 && x < self.width_i32 && y < self.height_i32;
+        }
         self.index(x, y)
             .map(|i| self.pixels[i] == self.generation)
             .unwrap_or(false)
+    }
+
+    #[inline]
+    fn is_full_coverage_current(&self) -> bool {
+        self.full_coverage_generation == self.generation
+    }
+
+    #[inline]
+    fn pixel_on_at_idx(&self, idx: usize) -> bool {
+        self.is_full_coverage_current() || self.pixels[idx] == self.generation
     }
 
     #[inline]
@@ -505,6 +559,26 @@ impl Painter {
         let mut bits: u8 = 0;
         let mut first_color: Option<PackedRgba> = None;
 
+        if self.is_full_coverage_current()
+            && px_x >= 0
+            && px_y >= 0
+            && px_x + 1 < self.width_i32
+            && px_y + 3 < self.height_i32
+        {
+            let width = self.width_usize;
+            let base = px_y as usize * width + px_x as usize;
+            'scan_colors: for col in 0..2 {
+                for row in 0..4 {
+                    let idx = base + row * width + col;
+                    if let Some(c) = self.colors[idx] {
+                        first_color = Some(c);
+                        break 'scan_colors;
+                    }
+                }
+            }
+            return ('\u{28FF}', first_color, None);
+        }
+
         // Fast path: avoid per-subpixel bounds checks when the full 2x4 block is in-bounds.
         // This matters for dense canvases (e.g., VFX plasma) where we sample every subpixel.
         if px_x >= 0 && px_y >= 0 && px_x + 1 < self.width_i32 && px_y + 3 < self.height_i32 {
@@ -513,7 +587,7 @@ impl Painter {
             for (col, col_bits) in DOT_BITS.iter().enumerate() {
                 for (row, bit) in col_bits.iter().enumerate() {
                     let idx = base + row * width + col;
-                    if self.pixels[idx] == self.generation {
+                    if self.pixel_on_at_idx(idx) {
                         bits |= 1 << *bit;
                         if first_color.is_none() {
                             first_color = self.colors[idx];
@@ -528,7 +602,7 @@ impl Painter {
                     let x = px_x + col as i32;
                     let y = px_y + row as i32;
                     if let Some(idx) = self.index(x, y)
-                        && self.pixels[idx] == self.generation
+                        && self.pixel_on_at_idx(idx)
                     {
                         bits |= 1 << *bit;
                         if first_color.is_none() {
@@ -881,6 +955,28 @@ mod tests {
     }
 
     #[test]
+    fn full_coverage_marks_pixels_on() {
+        let mut p = Painter::new(2, 4, Mode::Braille);
+        p.mark_full_coverage();
+
+        let (ch, _, _) = p.braille_cell(0, 0);
+        assert_eq!(ch, '\u{28FF}');
+        assert!(p.get(0, 0));
+        assert!(p.get(1, 3));
+        assert!(!p.get(2, 0));
+    }
+
+    #[test]
+    fn full_coverage_partial_braille_cell_respects_bounds() {
+        let mut p = Painter::new(1, 1, Mode::Braille);
+        p.mark_full_coverage();
+
+        let (ch, _, _) = p.braille_cell(0, 0);
+        // Only (0,0) exists in-bounds, so only dot 1 should be set.
+        assert_eq!(ch, '\u{2801}');
+    }
+
+    #[test]
     fn block_quadrants() {
         let mut p = Painter::new(2, 2, Mode::Block);
         p.point(0, 0);
@@ -990,6 +1086,19 @@ mod tests {
                 assert!(!p.get(x, y));
             }
         }
+    }
+
+    #[test]
+    fn clear_resets_full_coverage() {
+        let mut p = Painter::new(2, 4, Mode::Braille);
+        p.mark_full_coverage();
+        assert!(p.get(1, 3));
+
+        p.clear();
+
+        assert!(!p.get(0, 0));
+        let (ch, _, _) = p.braille_cell(0, 0);
+        assert_eq!(ch, ' ');
     }
 
     #[test]

@@ -130,6 +130,11 @@ declare -A BUDGETS=(
     ["web/frame_harness_stats/heavy_50pct/80x24"]=30000
     ["web/frame_harness_stats/sparse_5pct/120x40"]=40000
     ["web/frame_harness_stats/heavy_50pct/120x40"]=40000
+
+    # Glyph atlas cache (bd-lff4p.2.4)
+    ["web/glyph_atlas_cache/miss_insert_single"]=5000
+    ["web/glyph_atlas_cache/hit_hot_path"]=250
+    ["web/glyph_atlas_cache/eviction_cycle_3keys_budget2"]=1500
 )
 
 # PANIC threshold multiplier (2x budget = hard failure)
@@ -269,28 +274,46 @@ run_benchmarks() {
             # CI-friendly: keep perf gates fast and stable.
             bench_args=(-- --noplot --warm-up-time 0.1 --measurement-time 0.1 --sample-size 10)
         fi
-        if [[ "$pkg" == "frankenterm-web" && "$bench" == "renderer_bench" ]]; then
-            bench_args+=(frame_harness_stats)
+        local bench_filters=("")
+        if [[ "$pkg" == "frankenterm-web" && "$bench" == "renderer_bench" && "$QUICK_MODE" == "true" ]]; then
+            # Quick-mode still validates web frame-time harness and glyph-atlas cache gates.
+            bench_filters=("frame_harness_stats" "glyph_atlas_cache")
         fi
 
-        local stderr_file="${RESULTS_DIR}/${bench}.stderr.txt"
-        if [[ -n "${features:-}" ]]; then
-            if ! cargo bench -p "$pkg" --bench "$bench" --features "$features" "${bench_args[@]}" \
-                2>"$stderr_file" | tee "${RESULTS_DIR}/${bench}.txt"; then
-                log "${RED}Benchmark failed:${NC} $pkg/$bench"
-                log "  stderr: $stderr_file"
-                tail -n 200 "$stderr_file" || true
-                return 1
+        local append_mode=false
+        for bench_filter in "${bench_filters[@]}"; do
+            local run_args=("${bench_args[@]}")
+            if [[ -n "$bench_filter" ]]; then
+                run_args+=("$bench_filter")
+                log "    Filter: $bench_filter"
             fi
-        else
-            if ! cargo bench -p "$pkg" --bench "$bench" "${bench_args[@]}" \
-                2>"$stderr_file" | tee "${RESULTS_DIR}/${bench}.txt"; then
-                log "${RED}Benchmark failed:${NC} $pkg/$bench"
-                log "  stderr: $stderr_file"
-                tail -n 200 "$stderr_file" || true
-                return 1
+
+            local stderr_file="${RESULTS_DIR}/${bench}${bench_filter:+.${bench_filter}}.stderr.txt"
+            local tee_args=()
+            if [[ "$append_mode" == "true" ]]; then
+                tee_args=(-a)
             fi
-        fi
+
+            if [[ -n "${features:-}" ]]; then
+                if ! cargo bench -p "$pkg" --bench "$bench" --features "$features" "${run_args[@]}" \
+                    2>"$stderr_file" | tee "${tee_args[@]}" "${RESULTS_DIR}/${bench}.txt"; then
+                    log "${RED}Benchmark failed:${NC} $pkg/$bench"
+                    log "  stderr: $stderr_file"
+                    tail -n 200 "$stderr_file" || true
+                    return 1
+                fi
+            else
+                if ! cargo bench -p "$pkg" --bench "$bench" "${run_args[@]}" \
+                    2>"$stderr_file" | tee "${tee_args[@]}" "${RESULTS_DIR}/${bench}.txt"; then
+                    log "${RED}Benchmark failed:${NC} $pkg/$bench"
+                    log "  stderr: $stderr_file"
+                    tail -n 200 "$stderr_file" || true
+                    return 1
+                fi
+            fi
+
+            append_mode=true
+        done
     done
 }
 

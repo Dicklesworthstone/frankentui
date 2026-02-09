@@ -488,13 +488,35 @@ fn full_pipeline_bench(c: &mut Criterion) {
                                     }
                                     cursor.pending_wrap = false;
                                 }
-                                if let Some(cell) = grid.cell_mut(cursor.row, cursor.col) {
-                                    cell.set_content(ch, 1);
+
+                                let width = Cell::display_width(ch);
+                                if width == 0 {
+                                    continue;
                                 }
-                                if cursor.col + 1 >= 120 {
+                                if width == 2 && cursor.col + 1 >= 120 {
+                                    cursor.col = 0;
+                                    if cursor.row + 1 >= cursor.scroll_bottom() {
+                                        grid.scroll_up_into(
+                                            cursor.scroll_top(),
+                                            cursor.scroll_bottom(),
+                                            1,
+                                            &mut scrollback,
+                                        );
+                                    } else if cursor.row + 1 < 40 {
+                                        cursor.row += 1;
+                                    }
+                                }
+
+                                let written =
+                                    grid.write_printable(cursor.row, cursor.col, ch, cursor.attrs);
+                                if written == 0 {
+                                    continue;
+                                }
+
+                                if cursor.col + u16::from(written) >= 120 {
                                     cursor.pending_wrap = true;
                                 } else {
-                                    cursor.col += 1;
+                                    cursor.col += u16::from(written);
                                 }
                             }
                             Action::Newline => {

@@ -6,6 +6,7 @@
 
 use bitflags::bitflags;
 use std::collections::HashMap;
+use unicode_width::UnicodeWidthChar;
 
 bitflags! {
     /// SGR text attribute flags.
@@ -466,6 +467,19 @@ impl Cell {
     pub fn clear(&mut self) {
         *self = Self::default();
     }
+
+    /// Compute terminal display width for a single Unicode scalar.
+    ///
+    /// Returns:
+    /// - `0` for non-spacing marks/format controls (combining marks, ZWJ, VS16, etc.)
+    /// - `1` for narrow characters
+    /// - `2` for wide characters (CJK, emoji presentation)
+    ///
+    /// Widths above 2 are clamped to 2 for terminal cell semantics.
+    pub fn display_width(ch: char) -> u8 {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        width.min(2) as u8
+    }
 }
 
 #[cfg(test)]
@@ -547,6 +561,16 @@ mod tests {
         let (mut lead, _) = Cell::wide('中', SgrAttrs::default());
         lead.erase(Color::Default);
         assert!(!lead.is_wide());
+    }
+
+    #[test]
+    fn display_width_unicode_cases() {
+        assert_eq!(Cell::display_width('a'), 1);
+        assert_eq!(Cell::display_width('中'), 2);
+        assert_eq!(Cell::display_width('\u{1F680}'), 2); // 🚀
+        assert_eq!(Cell::display_width('\u{0301}'), 0); // combining acute accent
+        assert_eq!(Cell::display_width('\u{200D}'), 0); // ZWJ
+        assert_eq!(Cell::display_width('\u{FE0F}'), 0); // VS16
     }
 
     #[test]

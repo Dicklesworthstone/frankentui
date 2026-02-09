@@ -199,6 +199,8 @@ pub struct RendererConfig {
     pub cell_height: u16,
     /// Device pixel ratio (e.g. 2.0 for Retina).
     pub dpr: f32,
+    /// User-controlled zoom multiplier (1.0 = default size).
+    pub zoom: f32,
 }
 
 impl Default for RendererConfig {
@@ -207,8 +209,107 @@ impl Default for RendererConfig {
             cell_width: 8,
             cell_height: 16,
             dpr: 1.0,
+            zoom: 1.0,
         }
     }
+}
+
+const MIN_DPR: f32 = 0.25;
+const MAX_DPR: f32 = 8.0;
+const MIN_ZOOM: f32 = 0.25;
+const MAX_ZOOM: f32 = 4.0;
+
+/// Deterministic grid/cell geometry derived from CSS metrics + DPR + zoom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridGeometry {
+    pub cols: u16,
+    pub rows: u16,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub cell_width_px: f32,
+    pub cell_height_px: f32,
+    pub dpr: f32,
+    pub zoom: f32,
+}
+
+fn normalized_scale(value: f32, fallback: f32, min: f32, max: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value.clamp(min, max)
+    } else {
+        fallback
+    }
+}
+
+/// Compute deterministic pixel geometry for an existing grid size.
+#[must_use]
+pub fn grid_geometry(
+    cols: u16,
+    rows: u16,
+    cell_width_css: u16,
+    cell_height_css: u16,
+    dpr: f32,
+    zoom: f32,
+) -> GridGeometry {
+    let dpr = normalized_scale(dpr, 1.0, MIN_DPR, MAX_DPR);
+    let zoom = normalized_scale(zoom, 1.0, MIN_ZOOM, MAX_ZOOM);
+    let cell_width_px = (f32::from(cell_width_css.max(1)) * dpr * zoom)
+        .round()
+        .max(1.0);
+    let cell_height_px = (f32::from(cell_height_css.max(1)) * dpr * zoom)
+        .round()
+        .max(1.0);
+    let pixel_width = (f32::from(cols) * cell_width_px).round() as u32;
+    let pixel_height = (f32::from(rows) * cell_height_px).round() as u32;
+
+    GridGeometry {
+        cols,
+        rows,
+        pixel_width,
+        pixel_height,
+        cell_width_px,
+        cell_height_px,
+        dpr,
+        zoom,
+    }
+}
+
+/// Compute fit-to-container geometry (xterm-fit style) in a deterministic way.
+///
+/// Uses floor division in device pixels so the computed grid never exceeds the
+/// available pixel container.
+#[must_use]
+pub fn fit_grid_to_container(
+    container_width_css: u32,
+    container_height_css: u32,
+    cell_width_css: u16,
+    cell_height_css: u16,
+    dpr: f32,
+    zoom: f32,
+) -> GridGeometry {
+    let dpr = normalized_scale(dpr, 1.0, MIN_DPR, MAX_DPR);
+    let zoom = normalized_scale(zoom, 1.0, MIN_ZOOM, MAX_ZOOM);
+    let cell_width_px = (f32::from(cell_width_css.max(1)) * dpr * zoom)
+        .round()
+        .max(1.0);
+    let cell_height_px = (f32::from(cell_height_css.max(1)) * dpr * zoom)
+        .round()
+        .max(1.0);
+
+    let container_width_px = ((container_width_css as f32) * dpr)
+        .round()
+        .max(cell_width_px);
+    let container_height_px = ((container_height_css as f32) * dpr)
+        .round()
+        .max(cell_height_px);
+
+    let cols = (container_width_px / cell_width_px)
+        .floor()
+        .clamp(1.0, f32::from(u16::MAX)) as u16;
+    let rows = (container_height_px / cell_height_px)
+        .floor()
+        .clamp(1.0, f32::from(u16::MAX)) as u16;
+
+    grid_geometry(cols, rows, cell_width_css, cell_height_css, dpr, zoom)
 }
 
 /// Frame statistics returned after each render pass.
@@ -433,6 +534,7 @@ mod gpu {
         cell_width: u16,
         cell_height: u16,
         dpr: f32,
+        zoom: f32,
         atlas_width: u16,
         atlas_height: u16,
         glyph_cache: GlyphAtlasCache,
@@ -483,13 +585,20 @@ mod gpu {
                 .await
                 .map_err(|e| RendererError::DeviceError(e.to_string()))?;
 
-            let dpr = config.dpr;
-            // Use rounded pixel sizes to keep the grid perfectly aligned with
-            // the surface even on fractional device pixel ratios.
-            let cell_w_px = (config.cell_width as f32 * dpr).round().max(1.0);
-            let cell_h_px = (config.cell_height as f32 * dpr).round().max(1.0);
-            let pixel_width = (cols as f32 * cell_w_px).round() as u32;
-            let pixel_height = (rows as f32 * cell_h_px).round() as u32;
+            let geometry = grid_geometry(
+                cols,
+                rows,
+                config.cell_width,
+                config.cell_height,
+                config.dpr,
+                config.zoom,
+            );
+            let dpr = geometry.dpr;
+            let zoom = geometry.zoom;
+            let cell_w_px = geometry.cell_width_px;
+            let cell_h_px = geometry.cell_height_px;
+            let pixel_width = geometry.pixel_width;
+            let pixel_height = geometry.pixel_height;
 
             let surface_caps = surface.get_capabilities(&adapter);
             let format = surface_caps
@@ -730,6 +839,7 @@ mod gpu {
                 cell_width: config.cell_width,
                 cell_height: config.cell_height,
                 dpr,
+                zoom,
                 atlas_width,
                 atlas_height,
                 glyph_cache,
@@ -750,10 +860,18 @@ mod gpu {
             self.cols = cols;
             self.rows = rows;
 
-            let cell_w_px = (self.cell_width as f32 * self.dpr).round().max(1.0);
-            let cell_h_px = (self.cell_height as f32 * self.dpr).round().max(1.0);
-            let pixel_w = (cols as f32 * cell_w_px).round() as u32;
-            let pixel_h = (rows as f32 * cell_h_px).round() as u32;
+            let geometry = grid_geometry(
+                cols,
+                rows,
+                self.cell_width,
+                self.cell_height,
+                self.dpr,
+                self.zoom,
+            );
+            let cell_w_px = geometry.cell_width_px;
+            let cell_h_px = geometry.cell_height_px;
+            let pixel_w = geometry.pixel_width;
+            let pixel_h = geometry.pixel_height;
 
             self.surface_config.width = pixel_w.max(1);
             self.surface_config.height = pixel_h.max(1);
@@ -814,9 +932,77 @@ mod gpu {
             });
         }
 
+        #[must_use]
+        pub fn dpr(&self) -> f32 {
+            self.dpr
+        }
+
+        #[must_use]
+        pub fn zoom(&self) -> f32 {
+            self.zoom
+        }
+
+        /// Update DPR/zoom while keeping the current grid dimensions.
+        pub fn set_scale(&mut self, dpr: f32, zoom: f32) {
+            self.dpr = normalized_scale(dpr, 1.0, MIN_DPR, MAX_DPR);
+            self.zoom = normalized_scale(zoom, 1.0, MIN_ZOOM, MAX_ZOOM);
+
+            let geometry = grid_geometry(
+                self.cols,
+                self.rows,
+                self.cell_width,
+                self.cell_height,
+                self.dpr,
+                self.zoom,
+            );
+            self.surface_config.width = geometry.pixel_width.max(1);
+            self.surface_config.height = geometry.pixel_height.max(1);
+            self.surface.configure(&self.device, &self.surface_config);
+
+            let ub = uniforms_bytes(
+                geometry.pixel_width as f32,
+                geometry.pixel_height as f32,
+                geometry.cell_width_px,
+                geometry.cell_height_px,
+                self.cols as u32,
+                self.rows as u32,
+            );
+            self.queue.write_buffer(&self.uniform_buffer, 0, &ub);
+        }
+
+        #[must_use]
+        pub fn current_geometry(&self) -> GridGeometry {
+            grid_geometry(
+                self.cols,
+                self.rows,
+                self.cell_width,
+                self.cell_height,
+                self.dpr,
+                self.zoom,
+            )
+        }
+
+        /// Fit the grid to a CSS-pixel container and resize the renderer.
+        pub fn fit_to_container(
+            &mut self,
+            container_width_css: u32,
+            container_height_css: u32,
+        ) -> GridGeometry {
+            let fit = fit_grid_to_container(
+                container_width_css,
+                container_height_css,
+                self.cell_width,
+                self.cell_height,
+                self.dpr,
+                self.zoom,
+            );
+            self.resize(fit.cols, fit.rows);
+            fit
+        }
+
         fn glyph_pixel_size(&self) -> (u16, u16) {
-            let w = (f32::from(self.cell_width) * self.dpr).round();
-            let h = (f32::from(self.cell_height) * self.dpr).round();
+            let w = (f32::from(self.cell_width) * self.dpr * self.zoom).round();
+            let h = (f32::from(self.cell_height) * self.dpr * self.zoom).round();
             (
                 w.clamp(1.0, f32::from(u16::MAX)) as u16,
                 h.clamp(1.0, f32::from(u16::MAX)) as u16,
@@ -1094,5 +1280,40 @@ mod tests {
         assert_eq!(d, CellData::EMPTY);
         assert_eq!(d.bg_rgba, 0x000000FF);
         assert_eq!(d.fg_rgba, 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn grid_geometry_is_deterministic_for_fractional_dpr() {
+        let a = grid_geometry(80, 24, 8, 16, 1.25, 1.0);
+        let b = grid_geometry(80, 24, 8, 16, 1.25, 1.0);
+        assert_eq!(a, b);
+        assert_eq!(a.pixel_width, 800);
+        assert_eq!(a.pixel_height, 480);
+        assert_eq!(a.cell_width_px, 10.0);
+        assert_eq!(a.cell_height_px, 20.0);
+    }
+
+    #[test]
+    fn fit_grid_to_container_never_exceeds_pixel_container() {
+        let g = fit_grid_to_container(803, 611, 8, 16, 1.0, 1.0);
+        assert!(g.pixel_width <= 803);
+        assert!(g.pixel_height <= 611);
+        assert!(g.cols >= 1);
+        assert!(g.rows >= 1);
+    }
+
+    #[test]
+    fn fit_grid_to_container_zoom_reduces_capacity() {
+        let base = fit_grid_to_container(800, 600, 8, 16, 1.0, 1.0);
+        let zoomed = fit_grid_to_container(800, 600, 8, 16, 1.0, 1.75);
+        assert!(zoomed.cols < base.cols);
+        assert!(zoomed.rows < base.rows);
+    }
+
+    #[test]
+    fn geometry_normalizes_invalid_scales() {
+        let g = grid_geometry(80, 24, 8, 16, f32::NAN, -2.0);
+        assert_eq!(g.dpr, 1.0);
+        assert_eq!(g.zoom, 1.0);
     }
 }

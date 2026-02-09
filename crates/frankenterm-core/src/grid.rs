@@ -4,7 +4,7 @@
 //! of cells indexed by `(row, col)` and provides methods for the operations
 //! that the VT parser dispatches (print, erase, scroll, resize).
 
-use crate::cell::{Cell, Color, HyperlinkRegistry};
+use crate::cell::{Cell, Color, HyperlinkRegistry, SgrAttrs};
 use crate::scrollback::Scrollback;
 
 /// 2D terminal cell grid.
@@ -426,7 +426,7 @@ impl Grid {
     /// If `col+1` is past the right margin, no write occurs.
     /// Also clears any existing wide char that this write would partially
     /// overwrite (the "wide char fixup").
-    pub fn write_wide_char(&mut self, row: u16, col: u16, ch: char, attrs: crate::cell::SgrAttrs) {
+    pub fn write_wide_char(&mut self, row: u16, col: u16, ch: char, attrs: SgrAttrs) {
         if row >= self.rows || col + 1 >= self.cols {
             return;
         }
@@ -450,6 +450,56 @@ impl Grid {
         let lead_idx = self.index(row, col);
         self.cells[lead_idx] = lead;
         self.cells[next_idx] = cont;
+    }
+
+    /// Write one printable Unicode scalar with terminal-width semantics.
+    ///
+    /// Returns the written display width:
+    /// - `0` for non-spacing marks/format controls (fallback: ignored)
+    /// - `1` for narrow cells
+    /// - `2` for wide cells
+    ///
+    /// If a wide character does not fit at `col` (i.e. `col+1 >= cols`), this
+    /// method returns `0` and leaves the grid unchanged. Callers are responsible
+    /// for wrap policy decisions.
+    pub fn write_printable(&mut self, row: u16, col: u16, ch: char, attrs: SgrAttrs) -> u8 {
+        if row >= self.rows || col >= self.cols {
+            return 0;
+        }
+
+        let width = Cell::display_width(ch);
+        match width {
+            0 => 0,
+            1 => {
+                // If we overwrite the continuation of a wide char, clear its head.
+                if col > 0 {
+                    let prev_idx = self.index(row, col - 1);
+                    if self.cells[prev_idx].is_wide() {
+                        self.cells[prev_idx].clear();
+                    }
+                }
+
+                // If the current cell is a wide head, clear its continuation.
+                let idx = self.index(row, col);
+                if self.cells[idx].is_wide() && col + 1 < self.cols {
+                    let cont_idx = self.index(row, col + 1);
+                    self.cells[cont_idx].clear();
+                }
+
+                if let Some(cell) = self.cell_mut(row, col) {
+                    cell.set_content(ch, 1);
+                    cell.attrs = attrs;
+                }
+                1
+            }
+            _ => {
+                if col + 1 >= self.cols {
+                    return 0;
+                }
+                self.write_wide_char(row, col, ch, attrs);
+                2
+            }
+        }
     }
 
     // ── Resize ──────────────────────────────────────────────────────
@@ -892,6 +942,39 @@ mod tests {
         // New wide char at 3-4.
         assert!(g.cell(0, 3).unwrap().is_wide());
         assert!(g.cell(0, 4).unwrap().is_wide_continuation());
+    }
+
+    #[test]
+    fn write_printable_handles_single_wide_and_zero_width_scalars() {
+        let attrs = SgrAttrs::default();
+        let mut g = Grid::new(8, 1);
+
+        // single-width
+        assert_eq!(g.write_printable(0, 0, 'A', attrs), 1);
+        assert_eq!(g.cell(0, 0).unwrap().content(), 'A');
+        assert_eq!(g.cell(0, 0).unwrap().width(), 1);
+
+        // wide-width
+        assert_eq!(g.write_printable(0, 1, '中', attrs), 2);
+        assert_eq!(g.cell(0, 1).unwrap().content(), '中');
+        assert!(g.cell(0, 1).unwrap().is_wide());
+        assert!(g.cell(0, 2).unwrap().is_wide_continuation());
+
+        // zero-width mark fallback: ignored (no write, no advance)
+        assert_eq!(g.write_printable(0, 3, '\u{0301}', attrs), 0);
+        assert_eq!(g.cell(0, 3).unwrap().content(), ' ');
+    }
+
+    #[test]
+    fn write_printable_single_overwrites_wide_fixes_continuation() {
+        let attrs = SgrAttrs::default();
+        let mut g = Grid::new(6, 1);
+        g.write_wide_char(0, 1, '中', attrs);
+
+        assert_eq!(g.write_printable(0, 1, 'X', attrs), 1);
+        assert_eq!(g.cell(0, 1).unwrap().content(), 'X');
+        assert_eq!(g.cell(0, 2).unwrap().content(), ' ');
+        assert!(!g.cell(0, 2).unwrap().is_wide_continuation());
     }
 
     // ── Resize ──────────────────────────────────────────────────────

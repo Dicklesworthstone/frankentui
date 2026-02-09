@@ -246,6 +246,7 @@ impl PlasmaCanvasAdapter {
         }
 
         self.ensure_cache(width, height);
+        painter.mark_full_coverage();
 
         let w = width as usize;
         let h = height as usize;
@@ -255,6 +256,7 @@ impl PlasmaCanvasAdapter {
         let t3 = time * 0.6;
         let t4 = time * 1.2;
         let t6 = time * 0.5;
+        let use_sunset_fast_path = matches!(self.palette, PlasmaPalette::Sunset);
         let (sin_t1, cos_t1) = t1.sin_cos();
         let (sin_t2, cos_t2) = t2.sin_cos();
         let (sin_t3, cos_t3) = t3.sin_cos();
@@ -293,9 +295,13 @@ impl PlasmaCanvasAdapter {
                             - self.radial_offset_sin_base[idx] * sin_time;
                         let v6 = self.interference_sin_base[idx] * cos_t6
                             + self.interference_cos_base[idx] * sin_t6;
-                        let wave = (v1 + v2 + v3 + v4 + v5 + v6) / 6.0;
-                        let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
-                        painter.point_colored_in_bounds(x, y, color);
+                        let t = ((v1 + v2 + v3 + v4 + v5 + v6) / 6.0 + 1.0) * 0.5;
+                        let color = if use_sunset_fast_path {
+                            plasma_sunset_color_at(t)
+                        } else {
+                            self.palette.color_at(t, theme)
+                        };
+                        painter.set_color_at_index_in_bounds(idx, color);
                     }
                 }
             }
@@ -313,9 +319,13 @@ impl PlasmaCanvasAdapter {
                         let idx = row_offset + x;
                         let v4 = self.radial_center_sin_base[idx] * cos_t4
                             - self.radial_center_cos_base[idx] * sin_t4;
-                        let wave = (v1 + v2 + v3 + v4) / 4.0;
-                        let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
-                        painter.point_colored_in_bounds(x, y, color);
+                        let t = ((v1 + v2 + v3 + v4) / 4.0 + 1.0) * 0.5;
+                        let color = if use_sunset_fast_path {
+                            plasma_sunset_color_at(t)
+                        } else {
+                            self.palette.color_at(t, theme)
+                        };
+                        painter.set_color_at_index_in_bounds(idx, color);
                     }
                 }
             }
@@ -324,14 +334,19 @@ impl PlasmaCanvasAdapter {
                     let v2 = self.y_wave[y];
                     let y_sin = self.y_diag_sin[y];
                     let y_cos = self.y_diag_cos[y];
+                    let row_offset = y * w;
                     for x in 0..w {
                         let v1 = self.x_wave[x];
                         let sin_xy = self.x_diag_sin[x] * y_cos + self.x_diag_cos[x] * y_sin;
                         let cos_xy = self.x_diag_cos[x] * y_cos - self.x_diag_sin[x] * y_sin;
                         let v3 = sin_xy * cos_t3 + cos_xy * sin_t3;
-                        let wave = (v1 + v2 + v3) / 3.0;
-                        let color = self.palette.color_at((wave + 1.0) * 0.5, theme);
-                        painter.point_colored_in_bounds(x, y, color);
+                        let t = ((v1 + v2 + v3) / 3.0 + 1.0) * 0.5;
+                        let color = if use_sunset_fast_path {
+                            plasma_sunset_color_at(t)
+                        } else {
+                            self.palette.color_at(t, theme)
+                        };
+                        painter.set_color_at_index_in_bounds(row_offset + x, color);
                     }
                 }
             }
@@ -535,19 +550,19 @@ impl MetaballsCanvasAdapter {
             self.ensure_active_indices(step, balls_len);
         }
 
+        let w = width as usize;
+        let h = height as usize;
         self.dy2_cache.resize(balls_len, 0.0);
         let balls = &self.ball_cache;
         let dy2_cache = &mut self.dy2_cache;
         let x_coords = &self.x_coords;
         let y_coords = &self.y_coords;
-        let w = width as usize;
-        let h = height as usize;
         const EPS: f64 = 1e-8;
 
         // Macro for the inner pixel accumulation + paint to avoid duplicating
         // the glow/threshold/color logic across both branches.
         macro_rules! paint_pixel {
-            ($x:expr, $y:expr, $sum:expr, $weighted_hue:expr, $total_weight:expr) => {
+            ($idx:expr, $sum:expr, $weighted_hue:expr, $total_weight:expr) => {
                 if $sum > glow {
                     let avg_hue = if $total_weight > EPS {
                         $weighted_hue / $total_weight
@@ -560,7 +575,7 @@ impl MetaballsCanvasAdapter {
                         ($sum - glow) / (threshold - glow)
                     };
                     let color = color_at_with_stops(&stops, avg_hue, intensity, theme);
-                    painter.point_colored_in_bounds($x, $y, color);
+                    painter.point_colored_at_index_in_bounds($idx, color);
                 }
             };
         }
@@ -574,6 +589,7 @@ impl MetaballsCanvasAdapter {
                     dy2_cache[i] = dy * dy;
                 }
                 let dy2_ref = &dy2_cache[..];
+                let row_offset = y * w;
                 for (x, &nx) in x_coords.iter().enumerate().take(w) {
                     let mut sum = 0.0;
                     let mut weighted_hue = 0.0;
@@ -592,7 +608,7 @@ impl MetaballsCanvasAdapter {
                             total_weight += 100.0;
                         }
                     }
-                    paint_pixel!(x, y, sum, weighted_hue, total_weight);
+                    paint_pixel!(row_offset + x, sum, weighted_hue, total_weight);
                 }
             }
         } else {
@@ -603,6 +619,7 @@ impl MetaballsCanvasAdapter {
                     dy2_cache[i] = dy * dy;
                 }
                 let dy2_ref = &dy2_cache[..];
+                let row_offset = y * w;
                 for (x, &nx) in x_coords.iter().enumerate().take(w) {
                     let mut sum = 0.0;
                     let mut weighted_hue = 0.0;
@@ -622,7 +639,7 @@ impl MetaballsCanvasAdapter {
                             total_weight += 100.0;
                         }
                     }
-                    paint_pixel!(x, y, sum, weighted_hue, total_weight);
+                    paint_pixel!(row_offset + x, sum, weighted_hue, total_weight);
                 }
             }
         }
@@ -666,6 +683,28 @@ impl Default for MetaballsCanvasAdapter {
 // =============================================================================
 // Internal Helpers (mirror sampling.rs to avoid changing its API)
 // =============================================================================
+
+#[inline]
+fn plasma_lerp_rgb_fixed(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> PackedRgba {
+    let t256 = (t.clamp(0.0, 1.0) * 256.0) as u32;
+    let inv = 256 - t256;
+    let r = ((a.0 as u32 * inv + b.0 as u32 * t256) >> 8) as u8;
+    let g = ((a.1 as u32 * inv + b.1 as u32 * t256) >> 8) as u8;
+    let b = ((a.2 as u32 * inv + b.2 as u32 * t256) >> 8) as u8;
+    PackedRgba::rgb(r, g, b)
+}
+
+#[inline]
+fn plasma_sunset_color_at(t: f64) -> PackedRgba {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.33 {
+        plasma_lerp_rgb_fixed((80, 20, 120), (255, 50, 120), t / 0.33)
+    } else if t < 0.66 {
+        plasma_lerp_rgb_fixed((255, 50, 120), (255, 150, 50), (t - 0.33) / 0.33)
+    } else {
+        plasma_lerp_rgb_fixed((255, 150, 50), (255, 255, 150), (t - 0.66) / 0.34)
+    }
+}
 
 fn ball_count_for_quality(params: &MetaballsParams, quality: FxQuality) -> usize {
     let total = params.balls.len();

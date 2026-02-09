@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use frankenterm_core::{Action, Cursor, Grid, Modes, Parser, SavedCursor, Scrollback, SgrFlags};
+use frankenterm_core::{
+    Action, Cell, Color, Cursor, Grid, Modes, Parser, SavedCursor, Scrollback, SgrFlags,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -343,19 +345,44 @@ impl CoreTerminalHarness {
                 self.cursor.pending_wrap = false;
             }
         }
+
+        let width = Cell::display_width(ch);
+        if width == 0 {
+            // Fallback strategy for non-spacing scalars (combining marks/ZWJ/VS):
+            // keep deterministic cursor state and leave the grid unchanged.
+            return;
+        }
+
+        if width == 2 && self.cursor.col + 1 >= self.cols {
+            if self.modes.autowrap() {
+                self.wrap_to_next_line();
+            } else {
+                self.cursor.pending_wrap = false;
+                return;
+            }
+        }
+
         // IRM: insert mode shifts chars right before writing
         if self.modes.insert_mode() {
+            self.grid.insert_chars(
+                self.cursor.row,
+                self.cursor.col,
+                u16::from(width),
+                self.cursor.attrs.bg,
+            );
+        }
+
+        let written =
             self.grid
-                .insert_chars(self.cursor.row, self.cursor.col, 1, self.cursor.attrs.bg);
+                .write_printable(self.cursor.row, self.cursor.col, ch, self.cursor.attrs);
+        if written == 0 {
+            return;
         }
-        if let Some(cell) = self.grid.cell_mut(self.cursor.row, self.cursor.col) {
-            cell.set_content(ch, 1);
-            cell.attrs = self.cursor.attrs;
-        }
-        if self.cursor.col + 1 >= self.cols {
+
+        if self.cursor.col + u16::from(written) >= self.cols {
             self.cursor.pending_wrap = true;
         } else {
-            self.cursor.col += 1;
+            self.cursor.col += u16::from(written);
             self.cursor.pending_wrap = false;
         }
     }
