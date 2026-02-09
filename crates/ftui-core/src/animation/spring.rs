@@ -150,30 +150,35 @@ impl Spring {
     }
 
     /// Current position (unclamped).
+    #[inline]
     #[must_use]
     pub fn position(&self) -> f64 {
         self.position
     }
 
     /// Current velocity.
+    #[inline]
     #[must_use]
     pub fn velocity(&self) -> f64 {
         self.velocity
     }
 
     /// Current target.
+    #[inline]
     #[must_use]
     pub fn target(&self) -> f64 {
         self.target
     }
 
     /// Stiffness parameter.
+    #[inline]
     #[must_use]
     pub fn stiffness(&self) -> f64 {
         self.stiffness
     }
 
     /// Damping parameter.
+    #[inline]
     #[must_use]
     pub fn damping(&self) -> f64 {
         self.damping
@@ -194,6 +199,7 @@ impl Spring {
     }
 
     /// Whether the spring has settled at the target.
+    #[inline]
     #[must_use]
     pub fn is_at_rest(&self) -> bool {
         self.at_rest

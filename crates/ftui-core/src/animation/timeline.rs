@@ -323,24 +323,28 @@ impl Timeline {
     }
 
     /// Current playback state.
+    #[inline]
     #[must_use]
     pub fn state(&self) -> PlaybackState {
         self.state
     }
 
     /// Current time position.
+    #[inline]
     #[must_use]
     pub fn current_time(&self) -> Duration {
         self.current_time
     }
 
     /// Total duration.
+    #[inline]
     #[must_use]
     pub fn duration(&self) -> Duration {
         self.total_duration
     }
 
     /// Number of events in the timeline.
+    #[inline]
     #[must_use]
     pub fn event_count(&self) -> usize {
         self.events.len()

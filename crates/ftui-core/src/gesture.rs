@@ -263,6 +263,7 @@ impl GestureRecognizer {
     }
 
     /// Whether a drag is currently in progress.
+    #[inline]
     #[must_use]
     pub fn is_dragging(&self) -> bool {
         self.drag.as_ref().is_some_and(|d| d.started)
@@ -280,6 +281,7 @@ impl GestureRecognizer {
     }
 
     /// Get a reference to the current configuration.
+    #[inline]
     #[must_use]
     pub fn config(&self) -> &GestureConfig {
         &self.config
