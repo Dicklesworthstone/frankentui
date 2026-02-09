@@ -1,4 +1,4 @@
-use frankenterm_core::{Action, Cell, Cursor, Grid, Parser, Scrollback};
+use frankenterm_core::{Action, Cell, Cursor, Grid, Modes, Parser, Scrollback, translate_charset};
 use ftui_pty::virtual_terminal::VirtualTerminal;
 
 const KNOWN_MISMATCHES_FIXTURE: &str =
@@ -17,6 +17,8 @@ struct CoreTerminalHarness {
     grid: Grid,
     cursor: Cursor,
     scrollback: Scrollback,
+    modes: Modes,
+    last_printed: Option<char>,
     cols: u16,
     rows: u16,
 }
@@ -30,6 +32,8 @@ impl CoreTerminalHarness {
             grid: Grid::new(cols, rows),
             cursor: Cursor::new(cols, rows),
             scrollback: Scrollback::new(512),
+            modes: Modes::new(),
+            last_printed: None,
             cols,
             rows,
         }
@@ -164,10 +168,18 @@ impl CoreTerminalHarness {
                 }
             }
             Action::Sgr(params) => self.cursor.attrs.apply_sgr_params(&params),
-            Action::DecSet(_) | Action::DecRst(_) => {
-                // Mode changes are tracked but not applied in the baseline harness.
+            Action::DecSet(mode) => {
+                self.modes.set_dec_mode(mode, true);
             }
-            Action::AnsiSet(_) | Action::AnsiRst(_) => {}
+            Action::DecRst(mode) => {
+                self.modes.set_dec_mode(mode, false);
+            }
+            Action::AnsiSet(mode) => {
+                self.modes.set_ansi_mode(mode, true);
+            }
+            Action::AnsiRst(mode) => {
+                self.modes.set_ansi_mode(mode, false);
+            }
             Action::SaveCursor | Action::RestoreCursor => {
                 // Cursor save/restore not applied in the baseline harness.
             }
@@ -191,6 +203,8 @@ impl CoreTerminalHarness {
                 self.grid = Grid::new(self.cols, self.rows);
                 self.cursor = Cursor::new(self.cols, self.rows);
                 self.scrollback = Scrollback::new(512);
+                self.modes = Modes::new();
+                self.last_printed = None;
             }
             Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
             Action::SetTabStop => {
@@ -213,8 +227,30 @@ impl CoreTerminalHarness {
             }
             // Keypad mode toggles do not affect baseline grid snapshot output.
             Action::ApplicationKeypad | Action::NormalKeypad => {}
-            Action::ScreenAlignment | Action::RepeatChar(_) => {}
-            Action::SetCursorShape(_) | Action::SoftReset => {}
+            Action::ScreenAlignment => {
+                // DECALN: fill screen with 'E', reset margins, cursor to origin.
+                self.grid.fill_all('E');
+                self.cursor.reset_scroll_region(self.rows);
+                self.cursor.move_to(0, 0, self.rows, self.cols);
+            }
+            Action::RepeatChar(count) => {
+                // REP: repeat the last printed character `count` times.
+                if let Some(ch) = self.last_printed {
+                    for _ in 0..count {
+                        self.apply_print(ch);
+                    }
+                }
+            }
+            Action::SetCursorShape(_) => {}
+            Action::SoftReset => {
+                // DECSTR: reset modes, attrs, charset, cursor visibility.
+                self.modes.reset();
+                self.cursor.attrs = frankenterm_core::SgrAttrs::default();
+                self.cursor.reset_charset();
+                self.cursor.visible = true;
+                self.cursor.pending_wrap = false;
+                self.cursor.reset_scroll_region(self.rows);
+            }
             Action::EraseScrollback => {}
             Action::FocusIn | Action::FocusOut => {}
             Action::PasteStart | Action::PasteEnd => {}
@@ -222,8 +258,15 @@ impl CoreTerminalHarness {
             | Action::DeviceAttributesSecondary
             | Action::DeviceStatusReport
             | Action::CursorPositionReport => {}
-            Action::DesignateCharset { .. } => {}
-            Action::SingleShift2 | Action::SingleShift3 => {}
+            Action::DesignateCharset { slot, charset } => {
+                self.cursor.designate_charset(slot, charset);
+            }
+            Action::SingleShift2 => {
+                self.cursor.single_shift = Some(2);
+            }
+            Action::SingleShift3 => {
+                self.cursor.single_shift = Some(3);
+            }
             Action::MouseEvent { .. } => {}
             Action::Escape(_) => {
                 // Remaining escape actions are intentionally left unsupported in the
@@ -233,6 +276,12 @@ impl CoreTerminalHarness {
     }
 
     fn apply_print(&mut self, ch: char) {
+        // Apply charset translation (DEC Graphics, etc.).
+        let charset = self.cursor.effective_charset();
+        let ch = translate_charset(ch, charset);
+        self.cursor.consume_single_shift();
+        self.last_printed = Some(ch);
+
         if self.cursor.pending_wrap {
             self.wrap_to_next_line();
         }
