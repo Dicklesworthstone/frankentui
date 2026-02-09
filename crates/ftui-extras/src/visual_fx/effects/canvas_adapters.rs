@@ -590,10 +590,12 @@ impl MetaballsCanvasAdapter {
                 let row_offset = y * w;
                 for x in 0..w {
                     let dx_col_start = x * balls_len;
+                    let dx_col_end = dx_col_start + balls_len;
+                    let dx2_col = &dx2_cache[dx_col_start..dx_col_end];
                     let mut sum = 0.0;
                     let mut weighted_hue = 0.0;
                     for (i, ball) in balls.iter().enumerate() {
-                        let dist_sq = dx2_cache[dx_col_start + i] + dy2_cache[i];
+                        let dist_sq = dx2_col[i] + dy2_cache[i];
                         if dist_sq > EPS {
                             let contrib = ball.r2 / dist_sq;
                             sum += contrib;
@@ -834,11 +836,7 @@ fn gradient_color(stops: &[PackedRgba; 4], t: f64) -> PackedRgba {
 
 #[inline]
 fn ordered_pair(a: f64, b: f64) -> (f64, f64) {
-    if a <= b {
-        (a, b)
-    } else {
-        (b, a)
-    }
+    if a <= b { (a, b) } else { (b, a) }
 }
 
 // =============================================================================
