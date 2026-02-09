@@ -272,6 +272,12 @@ pub struct VirtualTerminal {
     utf8_expected: u8,
     /// Tab stops — `tab_stops[col]` is true if col is a tab stop.
     tab_stops: Vec<bool>,
+    /// IRM (Insert/Replace Mode, ANSI mode 4): when true, printed chars
+    /// insert (shift existing text right) instead of overwriting.
+    insert_mode: bool,
+    /// DECAWM (Auto-Wrap Mode, DEC private mode 7): when true, printing
+    /// past the right margin wraps to the next line. Default: true.
+    autowrap: bool,
 }
 
 impl VirtualTerminal {
@@ -322,6 +328,8 @@ impl VirtualTerminal {
             utf8_len: 0,
             utf8_expected: 0,
             tab_stops: Self::default_tab_stops(width),
+            insert_mode: false,
+            autowrap: true,
         }
     }
 
@@ -966,6 +974,8 @@ impl VirtualTerminal {
                 self.origin_mode = false;
                 self.scroll_top = 0;
                 self.scroll_bottom = self.height.saturating_sub(1);
+                self.insert_mode = false;
+                self.autowrap = true;
             }
             b'h' if has_question => {
                 // DEC Private Mode Set
@@ -979,6 +989,20 @@ impl VirtualTerminal {
                 let modes: Vec<u16> = self.csi_params.clone();
                 for p in modes {
                     self.set_dec_mode(p, false);
+                }
+            }
+            b'h' if !has_question => {
+                // ANSI Mode Set
+                let modes: Vec<u16> = self.csi_params.clone();
+                for p in modes {
+                    self.set_ansi_mode(p, true);
+                }
+            }
+            b'l' if !has_question => {
+                // ANSI Mode Reset
+                let modes: Vec<u16> = self.csi_params.clone();
+                for p in modes {
+                    self.set_ansi_mode(p, false);
                 }
             }
             _ => {
@@ -1075,6 +1099,7 @@ impl VirtualTerminal {
                     self.cursor_y = 0;
                 }
             }
+            7 => self.autowrap = enable,
             25 => self.cursor_visible = enable,
             1049 => {
                 // Alternate screen buffer
@@ -1125,28 +1150,57 @@ impl VirtualTerminal {
         }
     }
 
+    fn set_ansi_mode(&mut self, mode: u16, enable: bool) {
+        if mode == 4 {
+            self.insert_mode = enable;
+        }
+    }
+
     fn put_char(&mut self, ch: char) {
         let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if char_width == 0 {
             return; // zero-width (combining marks, ZWJ): skip
         }
 
+        // Auto-wrap: if cursor is past right margin and autowrap is on, wrap
         if self.cursor_x >= self.width {
-            self.cursor_x = 0;
-            self.linefeed();
+            if self.autowrap {
+                self.cursor_x = 0;
+                self.linefeed();
+            } else {
+                // No auto-wrap: clamp to last column, overwrite in place
+                self.cursor_x = self.width.saturating_sub(1);
+            }
         }
 
-        // Wide char at last column → wrap first
+        // Wide char at last column → wrap first (only if autowrap)
         if char_width == 2 && self.cursor_x + 1 >= self.width {
-            let idx = self.idx(self.cursor_x, self.cursor_y);
-            self.grid[idx] = VCell::default();
-            self.cursor_x = 0;
-            self.linefeed();
+            if self.autowrap {
+                let idx = self.idx(self.cursor_x, self.cursor_y);
+                self.grid[idx] = VCell::default();
+                self.cursor_x = 0;
+                self.linefeed();
+            } else {
+                // No wrap: clamp to last column
+                self.cursor_x = self.width.saturating_sub(1);
+            }
         }
 
         let last_col = self.width.saturating_sub(1);
         let immediate_wrap = self.quirks.screen_immediate_wrap && self.cursor_x == last_col;
         let idx = self.idx(self.cursor_x, self.cursor_y);
+
+        // IRM: insert mode — shift existing chars right before placing
+        if self.insert_mode {
+            let row_start = self.idx(0, self.cursor_y);
+            let w = usize::from(self.width);
+            let cx = usize::from(self.cursor_x);
+            let shift = usize::from(u16::try_from(char_width).unwrap_or(1));
+            let row = &mut self.grid[row_start..row_start + w];
+            if cx + shift <= w {
+                row[cx..].rotate_right(shift.min(w - cx));
+            }
+        }
 
         // Fixup: overwriting a continuation → blank the lead
         if self.grid[idx].ch == WIDE_CONTINUATION && self.cursor_x > 0 {
@@ -1180,8 +1234,11 @@ impl VirtualTerminal {
         if immediate_wrap {
             self.cursor_x = 0;
             self.linefeed();
-        } else {
+        } else if self.autowrap {
             self.cursor_x += advance;
+        } else {
+            // No auto-wrap: clamp to last column
+            self.cursor_x = (self.cursor_x + advance).min(self.width.saturating_sub(1));
         }
     }
 
@@ -1316,6 +1373,8 @@ impl VirtualTerminal {
         self.utf8_len = 0;
         self.utf8_expected = 0;
         self.tab_stops = Self::default_tab_stops(self.width);
+        self.insert_mode = false;
+        self.autowrap = true;
     }
 
     fn param(params: &[u16], idx: usize, default: u16) -> u16 {
@@ -1989,5 +2048,79 @@ mod tests {
         assert!(!vt.tab_stops[8]);
         vt.feed(b"\x1bc"); // RIS (full reset)
         assert!(vt.tab_stops[8]);
+    }
+
+    // ── IRM (Insert/Replace Mode) tests ────────────────────────────
+
+    #[test]
+    fn irm_insert_mode_shifts_right() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDE");
+        // Enable insert mode (CSI 4 h), move to col 2, type "XY"
+        vt.feed(b"\x1b[4h\x1b[1;3HXY");
+        // "AB" + inserted "XY" + shifted "CDE" → "ABXYCDE"
+        assert_eq!(vt.row_text(0), "ABXYCDE");
+    }
+
+    #[test]
+    fn irm_replace_mode_default() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDE");
+        // Replace mode (default), move to col 2, type "XY"
+        vt.feed(b"\x1b[1;3HXY");
+        assert_eq!(vt.row_text(0), "ABXYE");
+    }
+
+    #[test]
+    fn irm_disable_returns_to_replace() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed(b"ABCDE");
+        // Enable insert, then disable
+        vt.feed(b"\x1b[4h\x1b[4l\x1b[1;3HXY");
+        // Should overwrite, not insert
+        assert_eq!(vt.row_text(0), "ABXYE");
+    }
+
+    #[test]
+    fn irm_insert_pushes_off_right_edge() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        vt.feed(b"ABCDE");
+        // Insert mode, move to col 0, type "X"
+        vt.feed(b"\x1b[4h\x1b[1;1HX");
+        // "X" inserted at col 0, "ABCD" shifted right, "E" falls off
+        assert_eq!(vt.row_text(0), "XABCD");
+    }
+
+    // ── DECAWM (Auto-Wrap Mode) tests ──────────────────────────────
+
+    #[test]
+    fn decawm_enabled_wraps_at_edge() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        // Auto-wrap is on by default
+        vt.feed(b"ABCDEF");
+        assert_eq!(vt.row_text(0), "ABCDE");
+        assert_eq!(vt.row_text(1), "F");
+    }
+
+    #[test]
+    fn decawm_disabled_no_wrap() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        // Disable auto-wrap
+        vt.feed(b"\x1b[?7l");
+        vt.feed(b"ABCDEFGH");
+        // All chars overwrite at last column, no wrap
+        assert_eq!(vt.row_text(0), "ABCDH");
+        assert_eq!(vt.row_text(1), "");
+        assert_eq!(vt.cursor(), (4, 0));
+    }
+
+    #[test]
+    fn decawm_reenable_wraps_again() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        // Disable, then re-enable
+        vt.feed(b"\x1b[?7l\x1b[?7h");
+        vt.feed(b"ABCDEF");
+        assert_eq!(vt.row_text(0), "ABCDE");
+        assert_eq!(vt.row_text(1), "F");
     }
 }
