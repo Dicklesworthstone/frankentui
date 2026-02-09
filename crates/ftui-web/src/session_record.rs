@@ -906,6 +906,22 @@ fn extract_u64(json: &str, key: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
+fn extract_i64(json: &str, key: &str) -> Option<i64> {
+    let pattern = format!("\"{}\":", key);
+    let start = json.find(&pattern)? + pattern.len();
+    let rest = json[start..].trim_start();
+    let signed = rest.strip_prefix('-').is_some();
+    let digits = if signed { &rest[1..] } else { rest };
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    if end == 0 {
+        return None;
+    }
+    let parsed: i64 = digits[..end].parse().ok()?;
+    Some(if signed { -parsed } else { parsed })
+}
+
 fn extract_u16(json: &str, key: &str) -> Option<u16> {
     extract_u64(json, key).and_then(|v| u16::try_from(v).ok())
 }
@@ -1065,14 +1081,21 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
         "key" => {
             let code_str = extract_str(data, "code").ok_or("missing key code")?;
             let code = parse_key_code(code_str)?;
-            let mods_bits = extract_u64(data, "modifiers").unwrap_or(0) as u8;
+            let mods_bits = extract_u64(data, "modifiers")
+                .or(extract_u64(data, "mods"))
+                .unwrap_or(0) as u8;
             let modifiers = Modifiers::from_bits(mods_bits).unwrap_or_else(Modifiers::empty);
-            let event_kind_str = extract_str(data, "event_kind").unwrap_or("press");
-            let event_kind = match event_kind_str {
-                "press" => KeyEventKind::Press,
-                "repeat" => KeyEventKind::Repeat,
-                "release" => KeyEventKind::Release,
-                _ => KeyEventKind::Press,
+            let event_kind = if let Some(event_kind_str) = extract_str(data, "event_kind") {
+                match event_kind_str {
+                    "press" => KeyEventKind::Press,
+                    "repeat" => KeyEventKind::Repeat,
+                    "release" => KeyEventKind::Release,
+                    _ => KeyEventKind::Press,
+                }
+            } else {
+                let phase = extract_str(data, "phase").unwrap_or("down");
+                let repeat = extract_bool(data, "repeat").unwrap_or(false);
+                parse_key_event_kind(phase, repeat)
             };
             Ok(Event::Key(KeyEvent {
                 code,
@@ -1081,14 +1104,56 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
             }))
         }
         "mouse" => {
-            let mouse_kind_str = extract_str(data, "mouse_kind").ok_or("missing mouse_kind")?;
-            let mouse_kind = parse_mouse_event_kind(mouse_kind_str)?;
+            let mouse_kind = if let Some(mouse_kind_str) = extract_str(data, "mouse_kind") {
+                parse_mouse_event_kind(mouse_kind_str)?
+            } else {
+                let phase = extract_str(data, "phase").ok_or("missing phase for mouse event")?;
+                let button = extract_u64(data, "button")
+                    .map(|raw| {
+                        u8::try_from(raw).map_err(|_| "mouse button out of range".to_string())
+                    })
+                    .transpose()?;
+                parse_mouse_phase_and_button(phase, button)?
+            };
             let x = extract_u16(data, "x").unwrap_or(0);
             let y = extract_u16(data, "y").unwrap_or(0);
-            let mods_bits = extract_u64(data, "modifiers").unwrap_or(0) as u8;
+            let mods_bits = extract_u64(data, "modifiers")
+                .or(extract_u64(data, "mods"))
+                .unwrap_or(0) as u8;
             let modifiers = Modifiers::from_bits(mods_bits).unwrap_or_else(Modifiers::empty);
             Ok(Event::Mouse(MouseEvent {
                 kind: mouse_kind,
+                x,
+                y,
+                modifiers,
+            }))
+        }
+        "wheel" => {
+            let x = extract_u16(data, "x").unwrap_or(0);
+            let y = extract_u16(data, "y").unwrap_or(0);
+            let dx = extract_i64(data, "dx")
+                .and_then(|value| i16::try_from(value).ok())
+                .unwrap_or(0);
+            let dy = extract_i64(data, "dy")
+                .and_then(|value| i16::try_from(value).ok())
+                .unwrap_or(0);
+            let kind = if dy < 0 {
+                MouseEventKind::ScrollUp
+            } else if dy > 0 {
+                MouseEventKind::ScrollDown
+            } else if dx < 0 {
+                MouseEventKind::ScrollLeft
+            } else if dx > 0 {
+                MouseEventKind::ScrollRight
+            } else {
+                return Err("wheel event must include non-zero dx or dy".to_string());
+            };
+            let mods_bits = extract_u64(data, "modifiers")
+                .or(extract_u64(data, "mods"))
+                .unwrap_or(0) as u8;
+            let modifiers = Modifiers::from_bits(mods_bits).unwrap_or_else(Modifiers::empty);
+            Ok(Event::Mouse(MouseEvent {
+                kind,
                 x,
                 y,
                 modifiers,
@@ -1101,13 +1166,16 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
         }
         "paste" => {
             let text = extract_str(data, "text")
+                .or(extract_str(data, "data"))
                 .map(json_unescape)
                 .unwrap_or_default();
             let bracketed = extract_bool(data, "bracketed").unwrap_or(true);
             Ok(Event::Paste(PasteEvent::new(text, bracketed)))
         }
         "focus" => {
-            let gained = extract_bool(data, "gained").unwrap_or(true);
+            let gained = extract_bool(data, "gained")
+                .or(extract_bool(data, "focused"))
+                .unwrap_or(true);
             Ok(Event::Focus(gained))
         }
         "clipboard" => {
@@ -1135,9 +1203,21 @@ fn parse_key_code(s: &str) -> Result<KeyCode, String> {
         let n: u8 = rest.parse().map_err(|_| "invalid F-key number")?;
         return Ok(KeyCode::F(n));
     }
-    match s {
-        "enter" => Ok(KeyCode::Enter),
-        "escape" => Ok(KeyCode::Escape),
+    if let Some(n) = parse_function_key_token(s) {
+        return Ok(KeyCode::F(n));
+    }
+
+    let mut chars = s.chars();
+    if let Some(ch) = chars.next()
+        && chars.next().is_none()
+    {
+        return Ok(KeyCode::Char(ch));
+    }
+
+    let normalized = s.to_ascii_lowercase();
+    match normalized.as_str() {
+        "enter" | "return" => Ok(KeyCode::Enter),
+        "escape" | "esc" => Ok(KeyCode::Escape),
         "backspace" => Ok(KeyCode::Backspace),
         "tab" => Ok(KeyCode::Tab),
         "backtab" => Ok(KeyCode::BackTab),
@@ -1147,16 +1227,34 @@ fn parse_key_code(s: &str) -> Result<KeyCode, String> {
         "end" => Ok(KeyCode::End),
         "pageup" => Ok(KeyCode::PageUp),
         "pagedown" => Ok(KeyCode::PageDown),
-        "up" => Ok(KeyCode::Up),
-        "down" => Ok(KeyCode::Down),
-        "left" => Ok(KeyCode::Left),
-        "right" => Ok(KeyCode::Right),
-        "null" => Ok(KeyCode::Null),
+        "up" | "arrowup" => Ok(KeyCode::Up),
+        "down" | "arrowdown" => Ok(KeyCode::Down),
+        "left" | "arrowleft" => Ok(KeyCode::Left),
+        "right" | "arrowright" => Ok(KeyCode::Right),
+        "null" | "unidentified" => Ok(KeyCode::Null),
         "media_play_pause" => Ok(KeyCode::MediaPlayPause),
         "media_stop" => Ok(KeyCode::MediaStop),
         "media_next" => Ok(KeyCode::MediaNextTrack),
         "media_prev" => Ok(KeyCode::MediaPrevTrack),
         other => Err(format!("unknown key code: {other}")),
+    }
+}
+
+fn parse_function_key_token(s: &str) -> Option<u8> {
+    let rest = s.strip_prefix('F').or_else(|| s.strip_prefix('f'))?;
+    if rest.is_empty() || !rest.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse().ok()
+}
+
+fn parse_key_event_kind(phase: &str, repeat: bool) -> KeyEventKind {
+    if phase.eq_ignore_ascii_case("up") || phase.eq_ignore_ascii_case("release") {
+        KeyEventKind::Release
+    } else if repeat {
+        KeyEventKind::Repeat
+    } else {
+        KeyEventKind::Press
     }
 }
 
@@ -1177,6 +1275,31 @@ fn parse_mouse_event_kind(s: &str) -> Result<MouseEventKind, String> {
         "scroll_left" => Ok(MouseEventKind::ScrollLeft),
         "scroll_right" => Ok(MouseEventKind::ScrollRight),
         other => Err(format!("unknown mouse event kind: {other}")),
+    }
+}
+
+fn parse_mouse_phase_and_button(phase: &str, button: Option<u8>) -> Result<MouseEventKind, String> {
+    match phase {
+        "down" => Ok(MouseEventKind::Down(parse_mouse_button(
+            button.ok_or("mouse down requires button")?,
+        )?)),
+        "up" => Ok(MouseEventKind::Up(parse_mouse_button(
+            button.ok_or("mouse up requires button")?,
+        )?)),
+        "drag" => Ok(MouseEventKind::Drag(parse_mouse_button(
+            button.ok_or("mouse drag requires button")?,
+        )?)),
+        "move" => Ok(MouseEventKind::Moved),
+        other => Err(format!("unknown mouse phase: {other}")),
+    }
+}
+
+fn parse_mouse_button(raw: u8) -> Result<MouseButton, String> {
+    match raw {
+        0 => Ok(MouseButton::Left),
+        1 => Ok(MouseButton::Middle),
+        2 => Ok(MouseButton::Right),
+        other => Err(format!("unsupported mouse button: {other}")),
     }
 }
 
@@ -1385,6 +1508,18 @@ mod tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         })
+    }
+
+    fn parse_single_input_event(data_json: &str) -> Event {
+        let line = format!(
+            r#"{{"schema_version":"{}","event":"input","ts_ns":0,"data":{}}}"#,
+            SCHEMA_VERSION, data_json
+        );
+        let trace = SessionTrace::from_jsonl(&line).expect("input JSON should parse");
+        match trace.records.into_iter().next() {
+            Some(TraceRecord::Input { event, .. }) => event,
+            other => panic!("expected single input record, got {other:?}"),
+        }
     }
 
     fn new_counter(value: i32) -> Counter {
@@ -2212,6 +2347,13 @@ mod tests {
     }
 
     #[test]
+    fn extract_i64_basic() {
+        let json = r#"{"dx":-12,"dy":7}"#;
+        assert_eq!(extract_i64(json, "dx"), Some(-12));
+        assert_eq!(extract_i64(json, "dy"), Some(7));
+    }
+
+    #[test]
     fn extract_bool_basic() {
         let json = r#"{"enabled":true,"disabled":false}"#;
         assert_eq!(extract_bool(json, "enabled"), Some(true));
@@ -2222,6 +2364,82 @@ mod tests {
     fn extract_hex_u64_basic() {
         let json = r#"{"hash":"00000000deadbeef"}"#;
         assert_eq!(extract_hex_u64(json, "hash"), Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn from_jsonl_parses_frankenterm_key_schema() {
+        let down = parse_single_input_event(
+            r#"{"kind":"key","phase":"down","code":"F12","mods":5,"repeat":false}"#,
+        );
+        assert_eq!(
+            down,
+            Event::Key(KeyEvent {
+                code: KeyCode::F(12),
+                modifiers: Modifiers::SHIFT | Modifiers::CTRL,
+                kind: KeyEventKind::Press,
+            })
+        );
+
+        let repeat = parse_single_input_event(
+            r#"{"kind":"key","phase":"down","code":"a","mods":0,"repeat":true}"#,
+        );
+        assert_eq!(
+            repeat,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Repeat,
+            })
+        );
+
+        let release = parse_single_input_event(
+            r#"{"kind":"key","phase":"up","code":"Enter","mods":0,"repeat":false}"#,
+        );
+        assert_eq!(
+            release,
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Release,
+            })
+        );
+    }
+
+    #[test]
+    fn from_jsonl_parses_frankenterm_mouse_and_wheel_schema() {
+        let mouse = parse_single_input_event(
+            r#"{"kind":"mouse","phase":"drag","button":2,"x":7,"y":9,"mods":3}"#,
+        );
+        assert_eq!(
+            mouse,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Right),
+                x: 7,
+                y: 9,
+                modifiers: Modifiers::SHIFT | Modifiers::ALT,
+            })
+        );
+
+        let wheel =
+            parse_single_input_event(r#"{"kind":"wheel","x":4,"y":6,"dx":0,"dy":-2,"mods":4}"#);
+        assert_eq!(
+            wheel,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                x: 4,
+                y: 6,
+                modifiers: Modifiers::CTRL,
+            })
+        );
+    }
+
+    #[test]
+    fn from_jsonl_parses_frankenterm_paste_and_focus_aliases() {
+        let paste = parse_single_input_event(r#"{"kind":"paste","data":"hello\nworld"}"#);
+        assert_eq!(paste, Event::Paste(PasteEvent::new("hello\nworld", true)));
+
+        let focus = parse_single_input_event(r#"{"kind":"focus","focused":false}"#);
+        assert_eq!(focus, Event::Focus(false));
     }
 
     // ---- Golden Gate API ----
