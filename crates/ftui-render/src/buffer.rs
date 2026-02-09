@@ -312,6 +312,7 @@ impl Buffer {
     ///
     /// Rows are considered empty only if all cells are the default cell.
     /// Returns 0 if the buffer contains no content.
+    #[inline]
     pub fn content_height(&self) -> u16 {
         let default_cell = Cell::default();
         let width = self.width as usize;
@@ -660,6 +661,7 @@ impl Buffer {
     /// Helper to clean up overlapping multi-width cells before writing.
     ///
     /// Returns the half-open span of any cells cleared by this cleanup.
+    #[inline]
     fn cleanup_overlap(&mut self, x: u16, y: u16, new_cell: &Cell) -> Option<DirtySpan> {
         let idx = self.index(x, y)?;
         let current = self.cells[idx];
@@ -919,6 +921,7 @@ impl Buffer {
     /// Fill a rectangular region with the given cell.
     ///
     /// Respects scissor region and applies opacity.
+    #[inline]
     pub fn fill(&mut self, rect: Rect, cell: Cell) {
         let clipped = self.current_scissor().intersection(&rect);
         if clipped.is_empty() {
