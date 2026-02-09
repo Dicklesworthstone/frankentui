@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use frankenterm_core::{
     Action, Cell, Color, Cursor, Grid, Modes, Parser, SavedCursor, Scrollback, SgrFlags,
+    translate_charset,
 };
 use serde::Deserialize;
 
@@ -388,10 +389,15 @@ impl CoreTerminalHarness {
             | Action::DeviceAttributesSecondary
             | Action::DeviceStatusReport
             | Action::CursorPositionReport => {}
-            // Character set designation; no grid effect in conformance harness.
-            Action::DesignateCharset { .. } => {}
-            // Single-shift to G2/G3; no grid effect in conformance harness.
-            Action::SingleShift2 | Action::SingleShift3 => {}
+            Action::DesignateCharset { slot, charset } => {
+                self.cursor.designate_charset(slot, charset);
+            }
+            Action::SingleShift2 => {
+                self.cursor.single_shift = Some(2);
+            }
+            Action::SingleShift3 => {
+                self.cursor.single_shift = Some(3);
+            }
             // Mouse events are input-side; no grid effect.
             Action::MouseEvent { .. } => {}
             Action::Escape(_) => {}
@@ -399,6 +405,10 @@ impl CoreTerminalHarness {
     }
 
     fn apply_print(&mut self, ch: char) {
+        // Apply charset translation (DEC Graphics, etc.).
+        let charset = self.cursor.effective_charset();
+        let ch = translate_charset(ch, charset);
+        self.cursor.consume_single_shift();
         self.last_char = Some(ch);
         if self.cursor.pending_wrap {
             if self.modes.autowrap() {
