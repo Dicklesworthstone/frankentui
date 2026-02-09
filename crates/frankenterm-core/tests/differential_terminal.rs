@@ -1,4 +1,6 @@
-use frankenterm_core::{Action, Cell, Cursor, Grid, Modes, Parser, Scrollback, translate_charset};
+use frankenterm_core::{
+    Action, Cell, Cursor, Grid, Modes, Parser, SavedCursor, Scrollback, translate_charset,
+};
 use ftui_pty::virtual_terminal::VirtualTerminal;
 
 const KNOWN_MISMATCHES_FIXTURE: &str =
@@ -19,6 +21,7 @@ struct CoreTerminalHarness {
     scrollback: Scrollback,
     modes: Modes,
     last_printed: Option<char>,
+    saved_cursor: SavedCursor,
     cols: u16,
     rows: u16,
 }
@@ -34,6 +37,7 @@ impl CoreTerminalHarness {
             scrollback: Scrollback::new(512),
             modes: Modes::new(),
             last_printed: None,
+            saved_cursor: SavedCursor::default(),
             cols,
             rows,
         }
@@ -193,8 +197,11 @@ impl CoreTerminalHarness {
                     self.modes.set_ansi_mode(p, false);
                 }
             }
-            Action::SaveCursor | Action::RestoreCursor => {
-                // Cursor save/restore not applied in the baseline harness.
+            Action::SaveCursor => {
+                self.saved_cursor = SavedCursor::save(&self.cursor, self.modes.origin_mode());
+            }
+            Action::RestoreCursor => {
+                self.saved_cursor.restore(&mut self.cursor);
             }
             Action::Index => {
                 // ESC D: same as LF
@@ -222,6 +229,7 @@ impl CoreTerminalHarness {
                 self.scrollback = Scrollback::new(512);
                 self.modes = Modes::new();
                 self.last_printed = None;
+                self.saved_cursor = SavedCursor::default();
             }
             Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
             Action::SetTabStop => {
@@ -564,6 +572,162 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             cols: 10,
             rows: 3,
             bytes: b"\x1b[1mABC\x1b[!pD",
+        },
+        // ── Save / Restore Cursor ────────────────────────────────────
+        SupportedFixture {
+            id: "save_restore_basic",
+            cols: 10,
+            rows: 3,
+            // Write "AB", save cursor at (0,2), move to (1,0) write "CD", restore, write "E"
+            bytes: b"AB\x1b7\x1b[2;1HCD\x1b8E",
+        },
+        SupportedFixture {
+            id: "save_restore_after_scroll",
+            cols: 5,
+            rows: 3,
+            // Fill 3 rows, save cursor at (2,0), scroll up 1, restore → cursor clamped
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[1;1H\x1b7\x1b[1SX\x1b8Y",
+        },
+        SupportedFixture {
+            id: "save_restore_roundtrip_position",
+            cols: 10,
+            rows: 4,
+            // Move to (2,5), save, move to (0,0), write "Z", restore, write "W"
+            bytes: b"\x1b[3;6H\x1b7\x1b[1;1HZ\x1b8W",
+        },
+        // ── Scroll region content preservation ───────────────────────
+        SupportedFixture {
+            id: "scroll_region_su_preserves_above",
+            cols: 5,
+            rows: 5,
+            // Fill 5 rows (A-E), set region 2-4, scroll up 1 → row 0 unchanged
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE\x1b[2;4r\x1b[1S",
+        },
+        SupportedFixture {
+            id: "scroll_region_sd_preserves_below",
+            cols: 5,
+            rows: 5,
+            // Fill 5 rows (A-E), set region 2-4, scroll down 1 → row 4 unchanged
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE\x1b[2;4r\x1b[1T",
+        },
+        SupportedFixture {
+            id: "scroll_region_il_middle",
+            cols: 5,
+            rows: 5,
+            // Fill 5 rows, set region 2-4, cursor to row 2, insert 1 line
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE\x1b[2;4r\x1b[3;1H\x1b[1L",
+        },
+        SupportedFixture {
+            id: "scroll_region_dl_middle",
+            cols: 5,
+            rows: 5,
+            // Fill 5 rows, set region 2-4, cursor to row 2, delete 1 line
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE\x1b[2;4r\x1b[3;1H\x1b[1M",
+        },
+        // ── Erase operations ─────────────────────────────────────────
+        SupportedFixture {
+            id: "ed_below_preserves_above",
+            cols: 5,
+            rows: 3,
+            // Fill 3 rows, move to (1,2), ED 0 (erase below) → row 0 intact
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[2;3H\x1b[0J",
+        },
+        SupportedFixture {
+            id: "ed_above_preserves_below",
+            cols: 5,
+            rows: 3,
+            // Fill 3 rows, move to (1,2), ED 1 (erase above) → row 2 intact
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[2;3H\x1b[1J",
+        },
+        SupportedFixture {
+            id: "el_modes",
+            cols: 10,
+            rows: 3,
+            // Row 0: "ABCDE" + EL 0 at col 2 → "AB"
+            // Row 1: "FGHIJ" + EL 1 at col 2 → "   IJ"
+            // Row 2: "KLMNO" + EL 2 → blank
+            bytes: b"ABCDE\r\nFGHIJ\r\nKLMNO\x1b[1;3H\x1b[0K\x1b[2;3H\x1b[1K\x1b[3;1H\x1b[2K",
+        },
+        // ── Insert/Delete/Erase chars edge cases ─────────────────────
+        SupportedFixture {
+            id: "ich_pushes_off_edge",
+            cols: 5,
+            rows: 3,
+            // Write "ABCDE", CUP(1,1), insert 2 chars, write "XY"
+            bytes: b"ABCDE\x1b[1;1H\x1b[2@XY",
+        },
+        SupportedFixture {
+            id: "dch_pulls_from_right",
+            cols: 10,
+            rows: 3,
+            // Write "ABCDEFGH", CUP(1,3), delete 2 → "ABEFGH" + 2 blanks
+            bytes: b"ABCDEFGH\x1b[1;3H\x1b[2P",
+        },
+        SupportedFixture {
+            id: "ech_no_cursor_move",
+            cols: 10,
+            rows: 3,
+            // Write "ABCDE", CUP(1,2), erase 3, write "X" → cursor stayed at col 1
+            bytes: b"ABCDE\x1b[1;2H\x1b[3XX",
+        },
+        // ── Auto-wrap + scroll ───────────────────────────────────────
+        SupportedFixture {
+            id: "autowrap_at_right_edge",
+            cols: 5,
+            rows: 3,
+            // Write exactly 6 chars → first 5 on row 0, 6th wraps to row 1
+            bytes: b"ABCDEF",
+        },
+        SupportedFixture {
+            id: "autowrap_fills_and_scrolls",
+            cols: 5,
+            rows: 3,
+            // Write 16 chars → fills 3 rows, then scrolls, last char on row 2
+            bytes: b"AAAAABBBBBCCCCCX",
+        },
+        SupportedFixture {
+            id: "rep_wraps_across_lines",
+            cols: 5,
+            rows: 3,
+            // Write "A", move to col 3, write "B", REP 4 → wraps to next line
+            bytes: b"\x1b[1;4HB\x1b[4b",
+        },
+        // ── Index / Reverse Index / Next Line ────────────────────────
+        SupportedFixture {
+            id: "index_at_bottom_scrolls",
+            cols: 5,
+            rows: 3,
+            // Fill 3 rows, CUP to (2,0), ESC D → scroll up
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[3;1H\x1bD",
+        },
+        SupportedFixture {
+            id: "reverse_index_at_top_scrolls",
+            cols: 5,
+            rows: 3,
+            // Fill 3 rows, cursor to (0,0), ESC M → scroll down
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[1;1H\x1bM",
+        },
+        SupportedFixture {
+            id: "newline_at_bottom_scrolls",
+            cols: 5,
+            rows: 3,
+            // Fill 3 rows, CUP to (2,2), \r\n → CR + LF at bottom scrolls
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[3;3H\r\n",
+        },
+        // ── Boundary conditions ──────────────────────────────────────
+        SupportedFixture {
+            id: "cup_out_of_bounds_clamps",
+            cols: 10,
+            rows: 5,
+            // CUP(99,99) → clamps to bottom-right, write "Z" then CUP to known pos
+            bytes: b"\x1b[99;99HZ\x1b[1;1HX",
+        },
+        SupportedFixture {
+            id: "cursor_move_clamps_at_edges",
+            cols: 5,
+            rows: 3,
+            // CUU 999 from middle → row 0; CUB 999 → col 0
+            bytes: b"\x1b[2;3H\x1b[999A\x1b[999DX",
         },
     ]
 }
