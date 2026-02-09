@@ -1299,6 +1299,7 @@ mod gpu {
         ///
         /// Used as a fallback when partial uploads are not possible (e.g. after
         /// atlas eviction/rebuild).
+        #[allow(dead_code)]
         fn upload_full_atlas(&mut self) {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {

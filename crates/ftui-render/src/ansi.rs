@@ -245,7 +245,7 @@ pub fn sgr_flags_off<W: Write>(
             } else {
                 StyleFlags::BOLD
             };
-            if flags_to_keep.contains(other) {
+            if flags_to_keep.contains(other) && !flags_to_disable.contains(other) {
                 collateral |= other;
             }
         }
@@ -1063,10 +1063,8 @@ mod tests {
             StyleFlags::empty(),
         )
         .unwrap();
-        // Multi-flag path emits individual off codes
-        let bytes = String::from_utf8(buf).unwrap();
-        assert!(bytes.contains("\x1b[23m"), "should contain italic off");
-        assert!(bytes.contains("\x1b[24m"), "should contain underline off");
+        // Multi-flag path emits individual off codes in FLAG_TABLE order.
+        assert_eq!(buf, b"\x1b[23m\x1b[24m");
         assert!(collateral.is_empty());
     }
 
@@ -1081,9 +1079,27 @@ mod tests {
             StyleFlags::empty(),
         )
         .unwrap();
+        assert_eq!(buf, b"\x1b[22m\x1b[22m");
         assert!(
             collateral.is_empty(),
             "no collateral when both are disabled"
+        );
+    }
+
+    #[test]
+    fn sgr_flags_off_overlap_keep_and_disable_does_not_report_collateral() {
+        // Overlapping keep/disable can happen in defensive callers; disabling should win.
+        let mut buf = Vec::new();
+        let collateral = sgr_flags_off(
+            &mut buf,
+            StyleFlags::BOLD | StyleFlags::DIM,
+            StyleFlags::DIM,
+        )
+        .unwrap();
+        assert_eq!(buf, b"\x1b[22m\x1b[22m");
+        assert!(
+            collateral.is_empty(),
+            "DIM is explicitly disabled, so it must not be reported as collateral"
         );
     }
 
@@ -1141,6 +1157,15 @@ mod tests {
             sgr_codes_for_flag(StyleFlags::empty()).is_none(),
             "empty flags should return None"
         );
+    }
+
+    #[test]
+    fn sgr_codes_for_flag_matches_flag_table_entries() {
+        for (flag, expected) in FLAG_TABLE {
+            let actual = sgr_codes_for_flag(flag).expect("single-bit FLAG_TABLE entry");
+            assert_eq!(actual.on, expected.on, "{flag:?} on code");
+            assert_eq!(actual.off, expected.off, "{flag:?} off code");
+        }
     }
 
     // ---- cr / lf tests ----
