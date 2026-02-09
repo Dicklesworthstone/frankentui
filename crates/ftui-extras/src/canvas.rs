@@ -501,11 +501,6 @@ impl Painter {
     }
 
     #[inline]
-    fn pixel_on_at_idx(&self, idx: usize) -> bool {
-        self.is_full_coverage_current() || self.pixels[idx] == self.generation
-    }
-
-    #[inline]
     fn index(&self, x: i32, y: i32) -> Option<usize> {
         let xu = x as u32;
         let yu = y as u32;
@@ -580,8 +575,9 @@ impl Painter {
 
         let mut bits: u8 = 0;
         let mut first_color: Option<PackedRgba> = None;
+        let full_coverage = self.is_full_coverage_current();
 
-        if self.is_full_coverage_current()
+        if full_coverage
             && px_x >= 0
             && px_y >= 0
             && px_x + 1 < self.width_i32
@@ -601,15 +597,13 @@ impl Painter {
             return ('\u{28FF}', first_color, None);
         }
 
-        // Fast path: avoid per-subpixel bounds checks when the full 2x4 block is in-bounds.
-        // This matters for dense canvases (e.g., VFX plasma) where we sample every subpixel.
-        if px_x >= 0 && px_y >= 0 && px_x + 1 < self.width_i32 && px_y + 3 < self.height_i32 {
-            let width = self.width_usize;
-            let base = px_y as usize * width + px_x as usize;
+        if full_coverage {
+            // Full-coverage edge path: any in-bounds subpixel is on.
             for (col, col_bits) in DOT_BITS.iter().enumerate() {
                 for (row, bit) in col_bits.iter().enumerate() {
-                    let idx = base + row * width + col;
-                    if self.pixel_on_at_idx(idx) {
+                    let x = px_x + col as i32;
+                    let y = px_y + row as i32;
+                    if let Some(idx) = self.index(x, y) {
                         bits |= 1 << *bit;
                         if first_color.is_none() {
                             first_color = self.colors[idx];
@@ -618,17 +612,35 @@ impl Painter {
                 }
             }
         } else {
-            // Slow path: partial cells at edges and any out-of-bounds blocks.
-            for (col, col_bits) in DOT_BITS.iter().enumerate() {
-                for (row, bit) in col_bits.iter().enumerate() {
-                    let x = px_x + col as i32;
-                    let y = px_y + row as i32;
-                    if let Some(idx) = self.index(x, y)
-                        && self.pixel_on_at_idx(idx)
-                    {
-                        bits |= 1 << *bit;
-                        if first_color.is_none() {
-                            first_color = self.colors[idx];
+            // Fast path: avoid per-subpixel bounds checks when the full 2x4 block is in-bounds.
+            // This matters for dense canvases (e.g., VFX plasma) where we sample every subpixel.
+            if px_x >= 0 && px_y >= 0 && px_x + 1 < self.width_i32 && px_y + 3 < self.height_i32 {
+                let width = self.width_usize;
+                let base = px_y as usize * width + px_x as usize;
+                for (col, col_bits) in DOT_BITS.iter().enumerate() {
+                    for (row, bit) in col_bits.iter().enumerate() {
+                        let idx = base + row * width + col;
+                        if self.pixels[idx] == self.generation {
+                            bits |= 1 << *bit;
+                            if first_color.is_none() {
+                                first_color = self.colors[idx];
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Slow path: partial cells at edges and any out-of-bounds blocks.
+                for (col, col_bits) in DOT_BITS.iter().enumerate() {
+                    for (row, bit) in col_bits.iter().enumerate() {
+                        let x = px_x + col as i32;
+                        let y = px_y + row as i32;
+                        if let Some(idx) = self.index(x, y)
+                            && self.pixels[idx] == self.generation
+                        {
+                            bits |= 1 << *bit;
+                            if first_color.is_none() {
+                                first_color = self.colors[idx];
+                            }
                         }
                     }
                 }

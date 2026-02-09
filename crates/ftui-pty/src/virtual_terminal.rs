@@ -891,6 +891,7 @@ impl VirtualTerminal {
                 // Insert Lines (IL) — insert blank lines at cursor row, pushing down
                 let n = Self::param(params, 0, 1);
                 if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
+                    let blank = self.styled_blank();
                     for _ in 0..n {
                         // Shift lines down from cursor_y to scroll_bottom
                         for row in (self.cursor_y + 1..=self.scroll_bottom).rev() {
@@ -905,7 +906,7 @@ impl VirtualTerminal {
                         // Clear the line at cursor_y
                         let row_start = self.idx(0, self.cursor_y);
                         for i in 0..usize::from(self.width) {
-                            self.grid[row_start + i] = VCell::default();
+                            self.grid[row_start + i] = blank.clone();
                         }
                     }
                 }
@@ -914,6 +915,7 @@ impl VirtualTerminal {
                 // Delete Lines (DL) — delete lines at cursor row, pulling up
                 let n = Self::param(params, 0, 1);
                 if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
+                    let blank = self.styled_blank();
                     for _ in 0..n {
                         // Shift lines up from cursor_y to scroll_bottom
                         for row in self.cursor_y..self.scroll_bottom {
@@ -926,7 +928,7 @@ impl VirtualTerminal {
                         // Clear the bottom line of scroll region
                         let bottom_start = self.idx(0, self.scroll_bottom);
                         for i in 0..usize::from(self.width) {
-                            self.grid[bottom_start + i] = VCell::default();
+                            self.grid[bottom_start + i] = blank.clone();
                         }
                     }
                 }
@@ -1000,11 +1002,17 @@ impl VirtualTerminal {
                     }
                 }
                 // Shift characters right within the row
+                let blank = self.styled_blank();
                 let row = &mut self.grid[row_start..row_start + w];
                 row[cx..].rotate_right(count.min(w - cx));
                 // Clear the inserted positions
                 for cell in row.iter_mut().skip(cx).take(count.min(w - cx)) {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
+                }
+                // Post-shift fixup: if the cell right after the inserted blanks is
+                // an orphaned WIDE_CONTINUATION (shifted from cursor pos), blank it
+                if cx + count < w && row[cx + count].ch == WIDE_CONTINUATION {
+                    row[cx + count] = blank.clone();
                 }
             }
             b'P' => {
@@ -1013,6 +1021,7 @@ impl VirtualTerminal {
                 let n = n.min(self.width.saturating_sub(self.cursor_x));
                 // Wide char fixup at delete boundaries
                 self.fixup_wide_erase_row(self.cursor_y, self.cursor_x, n);
+                let blank = self.styled_blank();
                 let row_start = self.idx(0, self.cursor_y);
                 let w = usize::from(self.width);
                 let cx = usize::from(self.cursor_x);
@@ -1022,7 +1031,7 @@ impl VirtualTerminal {
                 row[cx..].rotate_left(count.min(w - cx));
                 // Clear the vacated positions at end
                 for cell in row.iter_mut().skip(w - count.min(w - cx)) {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
                 }
             }
             b'X' => {
@@ -1030,9 +1039,10 @@ impl VirtualTerminal {
                 let n = Self::param(params, 0, 1);
                 let n = n.min(self.width.saturating_sub(self.cursor_x));
                 self.fixup_wide_erase_row(self.cursor_y, self.cursor_x, n);
+                let blank = self.styled_blank();
                 let start = self.idx(self.cursor_x, self.cursor_y);
                 for i in 0..usize::from(n) {
-                    self.grid[start + i] = VCell::default();
+                    self.grid[start + i] = blank.clone();
                 }
             }
             b'b' => {
@@ -1399,9 +1409,10 @@ impl VirtualTerminal {
         }
 
         // Clear the bottom line of scroll region
+        let blank = self.styled_blank();
         let bottom_start = self.idx(0, self.scroll_bottom);
         for i in 0..usize::from(self.width) {
-            self.grid[bottom_start + i] = VCell::default();
+            self.grid[bottom_start + i] = blank.clone();
         }
     }
 
@@ -1418,9 +1429,19 @@ impl VirtualTerminal {
         }
 
         // Clear the top line of scroll region
+        let blank = self.styled_blank();
         let top_start = self.idx(0, self.scroll_top);
         for i in 0..usize::from(self.width) {
-            self.grid[top_start + i] = VCell::default();
+            self.grid[top_start + i] = blank.clone();
+        }
+    }
+
+    /// A blank cell carrying the current SGR attributes (bg color, etc.).
+    /// Per VT spec, erase/edit operations fill blanks with the current style.
+    fn styled_blank(&self) -> VCell {
+        VCell {
+            ch: ' ',
+            style: self.current_style.clone(),
         }
     }
 
@@ -1441,14 +1462,13 @@ impl VirtualTerminal {
         }
         // If the cell just after the erased range is a continuation, it's orphaned → blank it
         let end_col = sc.saturating_add(n);
-        if end_col < w
-            && self.grid[row_start + usize::from(end_col)].ch == WIDE_CONTINUATION
-        {
+        if end_col < w && self.grid[row_start + usize::from(end_col)].ch == WIDE_CONTINUATION {
             self.grid[row_start + usize::from(end_col)] = VCell::default();
         }
     }
 
     fn erase_display(&mut self, mode: u16) {
+        let blank = self.styled_blank();
         match mode {
             0 => {
                 // Erase from cursor to end
@@ -1456,7 +1476,7 @@ impl VirtualTerminal {
                 self.fixup_wide_erase_row(self.cursor_y, self.cursor_x, count);
                 let start = self.idx(self.cursor_x, self.cursor_y);
                 for cell in &mut self.grid[start..] {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
                 }
             }
             1 => {
@@ -1465,13 +1485,13 @@ impl VirtualTerminal {
                 self.fixup_wide_erase_row(self.cursor_y, 0, count);
                 let end = self.idx(self.cursor_x, self.cursor_y) + 1;
                 for cell in &mut self.grid[..end] {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
                 }
             }
             2 | 3 => {
                 // Erase entire display (3 also clears scrollback)
                 for cell in &mut self.grid {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
                 }
                 if mode == 3 {
                     self.scrollback.clear();
@@ -1483,6 +1503,7 @@ impl VirtualTerminal {
 
     fn erase_line(&mut self, mode: u16) {
         let y = self.cursor_y;
+        let blank = self.styled_blank();
         let row_start = self.idx(0, y);
         match mode {
             0 => {
@@ -1492,7 +1513,7 @@ impl VirtualTerminal {
                 let start = row_start + usize::from(self.cursor_x);
                 let end = row_start + usize::from(self.width);
                 for cell in &mut self.grid[start..end] {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
                 }
             }
             1 => {
@@ -1501,14 +1522,14 @@ impl VirtualTerminal {
                 self.fixup_wide_erase_row(y, 0, count);
                 let end = row_start + usize::from(count);
                 for cell in &mut self.grid[row_start..end] {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
                 }
             }
             2 => {
                 // Erase entire line (no boundary fixup needed — whole row)
                 let end = row_start + usize::from(self.width);
                 for cell in &mut self.grid[row_start..end] {
-                    *cell = VCell::default();
+                    *cell = blank.clone();
                 }
             }
             _ => {}

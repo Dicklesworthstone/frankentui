@@ -668,6 +668,18 @@ impl MetaballsCanvasAdapter {
                     dy2_cache[i] = dy * dy;
                 }
 
+                // Row-level spatial culling: compute conservative upper bound on
+                // the field sum for any pixel in this row.  Since dx² ≥ 0, we have
+                // dist² = dx² + dy² ≥ dy², hence r²/dist² ≤ r²/dy².  If the sum
+                // of those bounds is below `glow`, no pixel can be lit → skip row.
+                let mut max_row_sum = 0.0_f64;
+                for i in 0..balls_len {
+                    max_row_sum += r2_cache[i] / dy2_cache[i].max(EPS);
+                }
+                if max_row_sum <= glow {
+                    continue;
+                }
+
                 let row_offset = y * w;
 
                 // --- 4-pixel blocking: accumulate field for 4 columns per ball ---
@@ -782,6 +794,15 @@ impl MetaballsCanvasAdapter {
                 for &i in active_indices {
                     let dy = ny - balls[i].y;
                     dy2_cache[i] = dy * dy;
+                }
+
+                // Row-level spatial culling (same bound as step==1 path).
+                let mut max_row_sum = 0.0_f64;
+                for &i in active_indices {
+                    max_row_sum += r2_cache[i] / dy2_cache[i].max(EPS);
+                }
+                if max_row_sum <= glow {
+                    continue;
                 }
 
                 let row_offset = y * w;
