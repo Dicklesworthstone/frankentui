@@ -1886,8 +1886,10 @@ mod tests {
         let color_count = WALL_COLORS.len();
         assert_eq!(color_count, 8);
         // Index N and N+len should map to the same palette color.
-        assert_eq!(WALL_COLORS[0], WALL_COLORS[(0 + color_count) % color_count]);
-        assert_eq!(WALL_COLORS[3], WALL_COLORS[(3 + color_count) % color_count]);
+        for idx in [0usize, 3usize] {
+            let wrapped = (idx + color_count) % color_count;
+            assert_eq!(WALL_COLORS[idx], WALL_COLORS[wrapped]);
+        }
     }
 
     // --- lerp_u8 with extreme t values ---

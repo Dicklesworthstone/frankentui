@@ -293,6 +293,15 @@ mod tests {
     }
 
     fn make_ctx(width: u16, height: u16, frame: u64) -> FxContext<'static> {
+        make_ctx_with_quality(width, height, frame, FxQuality::Full)
+    }
+
+    fn make_ctx_with_quality(
+        width: u16,
+        height: u16,
+        frame: u64,
+        quality: FxQuality,
+    ) -> FxContext<'static> {
         // We need a &ThemeInputs, so leak a boxed one for testing
         let theme = Box::leak(Box::new(default_theme()));
         FxContext {
@@ -300,7 +309,7 @@ mod tests {
             height,
             frame,
             time_seconds: frame as f64 / 60.0,
-            quality: FxQuality::Full,
+            quality,
             theme,
         }
     }
@@ -563,6 +572,32 @@ mod tests {
         assert!(top_row_brightness > 0);
     }
 
+    #[test]
+    fn quality_minimal_propagates_slower_than_full() {
+        let mut full = DoomFireFx::new();
+        let mut minimal = DoomFireFx::new();
+        let mut full_buf = vec![PackedRgba::rgb(0, 0, 0); 200];
+        let mut minimal_buf = vec![PackedRgba::rgb(0, 0, 0); 200];
+
+        for frame in 0..24 {
+            full.render(
+                make_ctx_with_quality(10, 20, frame, FxQuality::Full),
+                &mut full_buf,
+            );
+            minimal.render(
+                make_ctx_with_quality(10, 20, frame, FxQuality::Minimal),
+                &mut minimal_buf,
+            );
+        }
+
+        let top_full: u32 = full.heat[..10].iter().map(|&h| h as u32).sum();
+        let top_minimal: u32 = minimal.heat[..10].iter().map(|&h| h as u32).sum();
+        assert!(
+            top_minimal <= top_full,
+            "minimal quality should propagate more slowly: full={top_full}, minimal={top_minimal}"
+        );
+    }
+
     // --- Edge cases ---
 
     #[test]
@@ -680,6 +715,55 @@ mod tests {
         // Bottom row should be hot again
         for c in &buf[90..100] {
             assert_eq!(*c, PackedRgba::rgb(255, 255, 255));
+        }
+    }
+
+    #[test]
+    fn inactive_bottom_row_monotonically_cools() {
+        let mut fx = DoomFireFx::new();
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 144];
+        fx.render(make_ctx(12, 12, 0), &mut buf);
+        fx.set_active(false);
+
+        let width = 12usize;
+        let height = 12usize;
+        let bottom_start = (height - 1) * width;
+        let mut prev_sum: u32 = fx.heat[bottom_start..bottom_start + width]
+            .iter()
+            .map(|&h| h as u32)
+            .sum();
+
+        for frame in 1..40 {
+            fx.render(make_ctx(12, 12, frame), &mut buf);
+            let next_sum: u32 = fx.heat[bottom_start..bottom_start + width]
+                .iter()
+                .map(|&h| h as u32)
+                .sum();
+            assert!(
+                next_sum <= prev_sum,
+                "inactive bottom row should not gain heat: prev={prev_sum}, next={next_sum}"
+            );
+            prev_sum = next_sum;
+        }
+    }
+
+    #[test]
+    fn heat_values_always_stay_within_palette_bounds() {
+        let mut fx = DoomFireFx::new();
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 256];
+
+        for frame in 0..200 {
+            if frame == 80 {
+                fx.set_active(false);
+            } else if frame == 140 {
+                fx.set_active(true);
+            }
+            fx.set_wind((frame as i32 % 3) - 1);
+            fx.render(make_ctx(16, 16, frame), &mut buf);
+            assert!(
+                fx.heat.iter().all(|&h| h <= 36),
+                "heat values must stay in palette range 0..=36"
+            );
         }
     }
 }
