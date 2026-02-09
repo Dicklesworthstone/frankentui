@@ -248,4 +248,247 @@ mod tests {
         assert_eq!(fb.get_pixel(3, 0), PackedRgba::BLACK);
         assert_eq!(fb.get_pixel(3, 5), PackedRgba::BLACK);
     }
+
+    // --- new() edge cases ---
+
+    #[test]
+    fn new_zero_width() {
+        let fb = DoomFramebuffer::new(0, 10);
+        assert_eq!(fb.pixels.len(), 0);
+        assert_eq!(fb.width, 0);
+        assert_eq!(fb.height, 10);
+    }
+
+    #[test]
+    fn new_zero_height() {
+        let fb = DoomFramebuffer::new(10, 0);
+        assert_eq!(fb.pixels.len(), 0);
+    }
+
+    #[test]
+    fn new_1x1() {
+        let fb = DoomFramebuffer::new(1, 1);
+        assert_eq!(fb.pixels.len(), 1);
+        assert_eq!(fb.get_pixel(0, 0), PackedRgba::BLACK);
+    }
+
+    // --- set_pixel/get_pixel boundary cases ---
+
+    #[test]
+    fn set_get_pixel_corners() {
+        let mut fb = DoomFramebuffer::new(8, 6);
+        let colors = [
+            PackedRgba::RED,
+            PackedRgba::GREEN,
+            PackedRgba::BLUE,
+            PackedRgba::WHITE,
+        ];
+        let corners = [(0, 0), (7, 0), (0, 5), (7, 5)];
+        for (i, &(x, y)) in corners.iter().enumerate() {
+            fb.set_pixel(x, y, colors[i]);
+        }
+        for (i, &(x, y)) in corners.iter().enumerate() {
+            assert_eq!(fb.get_pixel(x, y), colors[i], "corner ({x},{y})");
+        }
+    }
+
+    #[test]
+    fn set_pixel_overwrites_previous() {
+        let mut fb = DoomFramebuffer::new(4, 4);
+        fb.set_pixel(1, 1, PackedRgba::RED);
+        fb.set_pixel(1, 1, PackedRgba::GREEN);
+        assert_eq!(fb.get_pixel(1, 1), PackedRgba::GREEN);
+    }
+
+    #[test]
+    fn get_pixel_oob_returns_black_various() {
+        let fb = DoomFramebuffer::new(5, 5);
+        // Just past each edge
+        assert_eq!(fb.get_pixel(5, 0), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(0, 5), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(5, 5), PackedRgba::BLACK);
+        // Far OOB
+        assert_eq!(fb.get_pixel(u32::MAX, u32::MAX), PackedRgba::BLACK);
+    }
+
+    // --- draw_column edge cases ---
+
+    #[test]
+    fn draw_column_inverted_range_draws_nothing() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column(2, 4, 1, PackedRgba::RED);
+        // y_top > y_bottom → empty range, all should be black
+        for y in 0..5 {
+            assert_eq!(fb.get_pixel(2, y), PackedRgba::BLACK, "y={y}");
+        }
+    }
+
+    #[test]
+    fn draw_column_clamps_y_to_height() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column(0, 3, 100, PackedRgba::RED);
+        // Should draw rows 3..5 (clamped to height)
+        assert_eq!(fb.get_pixel(0, 2), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(0, 3), PackedRgba::RED);
+        assert_eq!(fb.get_pixel(0, 4), PackedRgba::RED);
+    }
+
+    #[test]
+    fn draw_column_full_height() {
+        let mut fb = DoomFramebuffer::new(3, 4);
+        fb.draw_column(1, 0, 4, PackedRgba::GREEN);
+        for y in 0..4 {
+            assert_eq!(fb.get_pixel(1, y), PackedRgba::GREEN, "y={y}");
+        }
+        // Adjacent columns untouched
+        for y in 0..4 {
+            assert_eq!(fb.get_pixel(0, y), PackedRgba::BLACK, "left col y={y}");
+            assert_eq!(fb.get_pixel(2, y), PackedRgba::BLACK, "right col y={y}");
+        }
+    }
+
+    #[test]
+    fn draw_column_at_last_x() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column(4, 0, 3, PackedRgba::BLUE);
+        assert_eq!(fb.get_pixel(4, 0), PackedRgba::BLUE);
+        assert_eq!(fb.get_pixel(4, 2), PackedRgba::BLUE);
+        assert_eq!(fb.get_pixel(4, 3), PackedRgba::BLACK);
+    }
+
+    // --- draw_column_shaded edge cases ---
+
+    #[test]
+    fn draw_column_shaded_inverted_gradient() {
+        let mut fb = DoomFramebuffer::new(10, 10);
+        // light goes from 0.0 (dark at top) to 1.0 (bright at bottom)
+        fb.draw_column_shaded(0, 0, 4, 200, 200, 200, 0.0, 1.0);
+        let top = fb.get_pixel(0, 0);
+        let bot = fb.get_pixel(0, 3);
+        assert!(
+            top.r() <= bot.r(),
+            "bottom should be brighter, top.r={} bot.r={}",
+            top.r(),
+            bot.r()
+        );
+    }
+
+    #[test]
+    fn draw_column_shaded_zero_light() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column_shaded(0, 0, 3, 255, 128, 64, 0.0, 0.0);
+        for y in 0..3 {
+            let p = fb.get_pixel(0, y);
+            assert_eq!(p.r(), 0, "zero light should produce black r at y={y}");
+            assert_eq!(p.g(), 0, "zero light should produce black g at y={y}");
+            assert_eq!(p.b(), 0, "zero light should produce black b at y={y}");
+        }
+    }
+
+    #[test]
+    fn draw_column_shaded_single_pixel() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column_shaded(2, 2, 3, 100, 100, 100, 0.8, 0.8);
+        let p = fb.get_pixel(2, 2);
+        assert_eq!(p.r(), 80);
+        assert_eq!(p.g(), 80);
+        assert_eq!(p.b(), 80);
+        // Adjacent rows untouched
+        assert_eq!(fb.get_pixel(2, 1), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(2, 3), PackedRgba::BLACK);
+    }
+
+    #[test]
+    fn draw_column_shaded_y_clamped_to_height() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        // y_bottom far exceeds height — should clamp to 5
+        fb.draw_column_shaded(0, 3, 100, 200, 200, 200, 1.0, 1.0);
+        assert_eq!(fb.get_pixel(0, 3), PackedRgba::rgb(200, 200, 200));
+        assert_eq!(fb.get_pixel(0, 4), PackedRgba::rgb(200, 200, 200));
+        // No panic from exceeding bounds
+    }
+
+    // --- resize edge cases ---
+
+    #[test]
+    fn resize_to_smaller() {
+        let mut fb = DoomFramebuffer::new(10, 10);
+        fb.set_pixel(9, 9, PackedRgba::RED);
+        fb.resize(3, 3);
+        assert_eq!(fb.width, 3);
+        assert_eq!(fb.height, 3);
+        assert_eq!(fb.pixels.len(), 9);
+    }
+
+    #[test]
+    fn resize_to_1x1() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.resize(1, 1);
+        assert_eq!(fb.pixels.len(), 1);
+    }
+
+    #[test]
+    fn resize_to_zero() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.resize(0, 0);
+        assert_eq!(fb.pixels.len(), 0);
+        assert_eq!(fb.width, 0);
+        assert_eq!(fb.height, 0);
+    }
+
+    #[test]
+    fn resize_grow_fills_black() {
+        let mut fb = DoomFramebuffer::new(2, 2);
+        fb.set_pixel(0, 0, PackedRgba::RED);
+        fb.resize(4, 4);
+        // New pixels should be black
+        assert_eq!(fb.get_pixel(3, 3), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(2, 2), PackedRgba::BLACK);
+    }
+
+    // --- clear after operations ---
+
+    #[test]
+    fn clear_after_draw_column() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column(0, 0, 5, PackedRgba::RED);
+        fb.draw_column_shaded(1, 0, 5, 255, 255, 255, 1.0, 1.0);
+        fb.clear();
+        for y in 0..5 {
+            for x in 0..5 {
+                assert_eq!(
+                    fb.get_pixel(x, y),
+                    PackedRgba::BLACK,
+                    "({x},{y}) should be black after clear"
+                );
+            }
+        }
+    }
+
+    // --- draw_column_shaded color channel independence ---
+
+    #[test]
+    fn draw_column_shaded_independent_channels() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        // Only red channel has non-zero base
+        fb.draw_column_shaded(0, 0, 1, 200, 0, 0, 1.0, 1.0);
+        let p = fb.get_pixel(0, 0);
+        assert_eq!(p.r(), 200);
+        assert_eq!(p.g(), 0);
+        assert_eq!(p.b(), 0);
+
+        // Only green channel
+        fb.draw_column_shaded(1, 0, 1, 0, 150, 0, 1.0, 1.0);
+        let p = fb.get_pixel(1, 0);
+        assert_eq!(p.r(), 0);
+        assert_eq!(p.g(), 150);
+        assert_eq!(p.b(), 0);
+
+        // Only blue channel
+        fb.draw_column_shaded(2, 0, 1, 0, 0, 100, 1.0, 1.0);
+        let p = fb.get_pixel(2, 0);
+        assert_eq!(p.r(), 0);
+        assert_eq!(p.g(), 0);
+        assert_eq!(p.b(), 100);
+    }
 }
