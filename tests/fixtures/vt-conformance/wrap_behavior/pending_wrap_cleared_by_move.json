@@ -1,0 +1,17 @@
+{
+  "name": "pending_wrap_cleared_by_move",
+  "description": "Cursor movement clears pending_wrap; next print overwrites last column",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "41424344451b5b4146",
+  "comment": "Print ABCDE fills 5-col row 0 (pending_wrap set), CUP Up(1) clears pending_wrap but row stays 0, print F overwrites col 4; cursor at (0,4) with pending_wrap",
+  "expected": {
+    "cursor": { "row": 0, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 0, "col": 3, "char": "D" },
+      { "row": 0, "col": 4, "char": "F" }
+    ]
+  }
+}

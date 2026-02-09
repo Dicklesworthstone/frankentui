@@ -1,0 +1,17 @@
+{
+  "name": "pending_wrap_cleared_by_cup",
+  "description": "CUP clears pending_wrap and repositions cursor; next print at new position",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "41424344451b5b313b334858",
+  "comment": "Print ABCDE fills row 0 (pending_wrap), CUP(1,3) -> (0,2) clears pending_wrap, print X overwrites C at (0,2); cursor at (0,3)",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "X" },
+      { "row": 0, "col": 3, "char": "D" },
+      { "row": 0, "col": 4, "char": "E" }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "newline_scrolls_at_bottom",
+  "description": "Newline at bottom row scrolls the grid up, making room for new content",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "1b5b333b31484142430a44",
+  "comment": "CUP(3,1) -> (2,0), print ABC at (2,0-2) cursor at (2,3), LF at bottom row scrolls grid up: old row 0 evicted, ABC now at (1,0-2), cursor at (2,3) (LF has no CR without LNM), print D at (2,3); cursor at (2,4)",
+  "expected": {
+    "cursor": { "row": 2, "col": 4 },
+    "cells": [
+      { "row": 1, "col": 0, "char": "A" },
+      { "row": 1, "col": 1, "char": "B" },
+      { "row": 1, "col": 2, "char": "C" },
+      { "row": 2, "col": 3, "char": "D" }
+    ]
+  }
+}

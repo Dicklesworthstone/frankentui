@@ -1,0 +1,14 @@
+{
+  "name": "save_restore_with_scroll_region",
+  "description": "Save cursor, set scroll region (which moves cursor to home), restore to saved position",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "1b5b333b33481b371b5b323b34721b5b48411b3842",
+  "comment": "CUP(3,3) -> (2,2), ESC 7 save cursor, CSI 2;4 r set scroll region (cursor goes home), CUP(1,1) -> (0,0), print A at (0,0), ESC 8 restore -> (2,2), print B at (2,2); cursor at (2,3)",
+  "expected": {
+    "cursor": { "row": 2, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 2, "col": 2, "char": "B" }
+    ]
+  }
+}

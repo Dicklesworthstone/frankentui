@@ -1,0 +1,14 @@
+{
+  "name": "cup_default_home",
+  "description": "CUP with no params defaults to (1,1) i.e. top-left (0,0 zero-indexed)",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "1b5b333b3348581b5b4859",
+  "comment": "CUP(3,3) to (2,2), print X, CUP with no params -> (0,0), print Y; cursor at (0,1)",
+  "expected": {
+    "cursor": { "row": 0, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "Y" },
+      { "row": 2, "col": 2, "char": "X" }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "decawm_off_in_scroll_region",
+  "description": "DECAWM off within a scroll region: chars overwrite at right margin without wrapping",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "1b5b3f376c1b5b313b33721b5b484142434445464748",
+  "comment": "CSI ? 7 l (DECAWM off), CSI 1;3 r (scroll region rows 1-3), CUP home, print ABCDE fills row 0 (5 cols), then F/G/H overwrite col 4; cursor at (0,4)",
+  "expected": {
+    "cursor": { "row": 0, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "B" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 0, "col": 3, "char": "D" },
+      { "row": 0, "col": 4, "char": "H" }
+    ]
+  }
+}

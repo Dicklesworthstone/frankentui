@@ -1,0 +1,13 @@
+{
+  "name": "cup_large_clamp",
+  "description": "CUP with very large coordinates clamps to grid boundaries",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "1b5b3939393b393939485a",
+  "comment": "CUP(999,999) clamps to (2,4) in 5x3 grid, print Z at bottom-right; cursor at (2,4) with pending_wrap",
+  "expected": {
+    "cursor": { "row": 2, "col": 4 },
+    "cells": [
+      { "row": 2, "col": 4, "char": "Z" }
+    ]
+  }
+}

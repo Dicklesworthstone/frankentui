@@ -1,0 +1,24 @@
+ 1: Tour │ 2: Dash │ 3: Shakes │ 4: Code │ 5: Widgets │ 6: Layout │ 7: Forms    
+╭─────────────────────────────Live Markdown Editor─────────────────────────────╮
+│╭────────────────────────────Live Markdown Editor────────────────────────────╮│
+││╭──────────────────────────────────Search──────────────────────────────────╮││
+│││Query:    Search in editor (Ctrl+F)                       0 matches       │││
+││╰──────────────────────────────────────────────────────────────────────────╯││
+││                                                                            ││
+││╭───────────────Editor───────────────╮ ╭──────────────Preview──────────────╮││
+│││ 1  # Live Markdown Editor          │ │Live Markdown Editor               │││
+│││ 2                                  │ │                                   │││
+│││ 3  Write Markdown on the left,     │ │Write Markdown on the left, preview│││
+│││    preview on the right.           │ │on the right.                      │││
+│││ 4                                  │ │                                   │││
+│││ 5  ## Goals                        │ │Goals                              │││
+│││ 6                                  │ │• Split view editor + preview      │││
+│││ 7  - Split view editor + preview   │ │• Live updates without flicker     │││
+│││ 8  - Live updates without flicker  │ │• Search with highlighted matches  │││
+│││ 9  - Search with highlighted       │ │• Diff mode: raw vs rendered width │││
+│││    matches                         │ │                                   │││
+│││10  - Diff mode: raw vs rendered    │ │Notes                              │││
+││╰────────────────────────────────────╯ ╰───────────────────────────────────╯││
+│╰────────────────────────────────────────────────────────────────────────────╯│
+╰──────────────────────────────────────────────────────────────────────────────╯
+ Live Markdown Editor [43/43]        Tab/Shift+Tab: next/prev         0x0 00:00 

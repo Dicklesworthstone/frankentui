@@ -1,0 +1,15 @@
+{
+  "name": "sgr_underline_strikethrough_verified",
+  "description": "SGR underline+strikethrough applied and verified on cells, then reset",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b343b396d58591b5b306d5a",
+  "comment": "CSI 4;9 m (underline+strikethrough), print XY, CSI 0 m reset, print Z; cursor at (0,3)",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X", "attrs": { "underline": true, "strikethrough": true } },
+      { "row": 0, "col": 1, "char": "Y", "attrs": { "underline": true, "strikethrough": true } },
+      { "row": 0, "col": 2, "char": "Z", "attrs": {} }
+    ]
+  }
+}

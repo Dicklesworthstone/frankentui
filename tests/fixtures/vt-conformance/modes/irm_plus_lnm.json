@@ -1,0 +1,19 @@
+{
+  "name": "irm_plus_lnm",
+  "description": "IRM and LNM enabled together: insert mode shifts chars, newline does CR+LF",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b34681b5b32306841424344451b5b48580a59",
+  "comment": "CSI 4 h (IRM on), CSI 20 h (LNM on), print ABCDE at row 0 cols 0-4, CUP home, insert X at col 0 (shifts ABCDE right -> XABCDE), LF with LNM does CR+LF to (1,0), insert Y at (1,0); cursor at (1,1)",
+  "expected": {
+    "cursor": { "row": 1, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "A" },
+      { "row": 0, "col": 2, "char": "B" },
+      { "row": 0, "col": 3, "char": "C" },
+      { "row": 0, "col": 4, "char": "D" },
+      { "row": 0, "col": 5, "char": "E" },
+      { "row": 1, "col": 0, "char": "Y" }
+    ]
+  }
+}

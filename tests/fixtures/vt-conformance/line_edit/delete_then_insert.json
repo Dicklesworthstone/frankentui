@@ -1,0 +1,17 @@
+{
+  "name": "delete_then_insert",
+  "description": "Delete chars then switch to insert mode and insert new chars",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "41424344451b5b481b5b32501b5b34685859",
+  "comment": "Print ABCDE at cols 0-4, CUP home, DCH(2) deletes AB shifting CDE left -> CDE at cols 0-2, CSI 4 h (IRM on), insert XY at col 0 -> XYCDE; cursor at (0,2)",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "Y" },
+      { "row": 0, "col": 2, "char": "C" },
+      { "row": 0, "col": 3, "char": "D" },
+      { "row": 0, "col": 4, "char": "E" }
+    ]
+  }
+}

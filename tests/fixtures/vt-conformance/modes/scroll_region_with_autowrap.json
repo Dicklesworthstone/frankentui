@@ -1,0 +1,16 @@
+{
+  "name": "scroll_region_with_autowrap",
+  "description": "Autowrap inside a scroll region wraps and scrolls within the region",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b323b34721b5b323b31484142434445464748494a4b4c",
+  "comment": "CSI 2;4 r (scroll region rows 2-4, 0-indexed 1-3), CUP(2,1) to (1,0), print ABCDEFGHIJ fills row 1 with pending_wrap, K wraps to (2,0), L at (2,1); cursor at (2,2)",
+  "expected": {
+    "cursor": { "row": 2, "col": 2 },
+    "cells": [
+      { "row": 1, "col": 0, "char": "A" },
+      { "row": 1, "col": 9, "char": "J" },
+      { "row": 2, "col": 0, "char": "K" },
+      { "row": 2, "col": 1, "char": "L" }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "sgr_bold_italic_verified",
+  "description": "SGR bold+italic applied to cells, then reset; verify attrs on individual cells",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b313b336d41421b5b306d4344",
+  "comment": "CSI 1;3 m (bold+italic), print AB (bold+italic), CSI 0 m (reset), print CD (no attrs); cursor at (0,4)",
+  "expected": {
+    "cursor": { "row": 0, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bold": true, "italic": true } },
+      { "row": 0, "col": 1, "char": "B", "attrs": { "bold": true, "italic": true } },
+      { "row": 0, "col": 2, "char": "C", "attrs": {} },
+      { "row": 0, "col": 3, "char": "D", "attrs": {} }
+    ]
+  }
+}
