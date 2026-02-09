@@ -180,11 +180,23 @@ impl CoreTerminalHarness {
             Action::DecSet(params) => {
                 for &p in &params {
                     self.modes.set_dec_mode(p, true);
+                    if p == 6 {
+                        // DECOM on: home cursor to top-left of scroll region.
+                        self.cursor.row = self.cursor.scroll_top();
+                        self.cursor.col = 0;
+                        self.cursor.pending_wrap = false;
+                    }
                 }
             }
             Action::DecRst(params) => {
                 for &p in &params {
                     self.modes.set_dec_mode(p, false);
+                    if p == 6 {
+                        // DECOM off: home cursor to absolute (0,0).
+                        self.cursor.row = 0;
+                        self.cursor.col = 0;
+                        self.cursor.pending_wrap = false;
+                    }
                 }
             }
             Action::AnsiSet(params) => {
@@ -1126,6 +1138,112 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             rows: 3,
             // Disable autowrap, CUP(1,5), write "XYZ" → col stays at 4
             bytes: b"\x1b[?7l\x1b[1;5HXYZ\x1b[1;1HA",
+        },
+        // ── Charset (DEC Special Graphics) ──────────────────────────
+        SupportedFixture {
+            id: "dec_graphics_box_top",
+            cols: 10,
+            rows: 3,
+            // ESC ( 0 → DEC Graphics; l=┌ q=─ k=┐
+            bytes: b"\x1b(0lqqqk",
+        },
+        SupportedFixture {
+            id: "dec_graphics_box_bottom",
+            cols: 10,
+            rows: 3,
+            // m=└ q=─ j=┘
+            bytes: b"\x1b(0mqqqj",
+        },
+        SupportedFixture {
+            id: "dec_graphics_tees",
+            cols: 10,
+            rows: 3,
+            // t=├ u=┤ n=┼
+            bytes: b"\x1b(0tun",
+        },
+        SupportedFixture {
+            id: "charset_switch_back_to_ascii",
+            cols: 10,
+            rows: 3,
+            // DEC Graphics l+q, switch back to ASCII, print l+q literally
+            bytes: b"\x1b(0lq\x1b(Blq",
+        },
+        SupportedFixture {
+            id: "dec_graphics_passthrough",
+            cols: 10,
+            rows: 3,
+            // A-Z and 0-9 pass through unchanged in DEC Graphics
+            bytes: b"\x1b(0ABC123",
+        },
+        SupportedFixture {
+            id: "full_reset_clears_charset",
+            cols: 10,
+            rows: 3,
+            // DEC Graphics 'l'=┌, then RIS clears charset, print 'l' literally
+            bytes: b"\x1b(0l\x1bcl",
+        },
+        SupportedFixture {
+            id: "soft_reset_clears_charset",
+            cols: 10,
+            rows: 3,
+            // DEC Graphics 'l'=┌, then DECSTR clears charset, print 'l' literally
+            bytes: b"\x1b(0l\x1b[!pl",
+        },
+        SupportedFixture {
+            id: "dec_graphics_symbols",
+            cols: 10,
+            rows: 3,
+            // `=◆ a=▒ f=° g=±
+            bytes: b"\x1b(0`afg",
+        },
+        SupportedFixture {
+            id: "dec_graphics_math",
+            cols: 10,
+            rows: 3,
+            // y=≤ z=≥ {=π |=≠ }=£ ~=·
+            bytes: b"\x1b(0yz{|}~",
+        },
+        SupportedFixture {
+            id: "dec_graphics_with_attrs",
+            cols: 10,
+            rows: 3,
+            // DEC Graphics + bold: x=│ q=─
+            bytes: b"\x1b(0\x1b[1mxq",
+        },
+        SupportedFixture {
+            id: "charset_dec_graphics_translation",
+            cols: 10,
+            rows: 3,
+            // DEC Graphics: j=┘ k=┐ l=┌ m=└ n=┼ q=─ x=│
+            bytes: b"\x1b(0jklmnqx",
+        },
+        SupportedFixture {
+            id: "charset_g0_dec_graphics",
+            cols: 10,
+            rows: 3,
+            // Print XY in ASCII, then designate G0=DEC Graphics, print Z
+            bytes: b"XY\x1b(0Z",
+        },
+        SupportedFixture {
+            id: "ss2_dec_graphics",
+            cols: 10,
+            rows: 3,
+            // G2=DEC Graphics, print A, SS2 + q → ─, then B (back to G0 ASCII)
+            bytes: b"\x1b*0A\x1bNqB",
+        },
+        SupportedFixture {
+            id: "ss3_dec_graphics",
+            cols: 10,
+            rows: 3,
+            // G3=DEC Graphics, print A, SS3 + l → ┌, then B (back to G0 ASCII)
+            bytes: b"\x1b+0A\x1bOlB",
+        },
+        SupportedFixture {
+            id: "ss2_only_one_char",
+            cols: 10,
+            rows: 3,
+            // G2=DEC Graphics, SS2 + j → ┘ (one char only), then j → literal j
+            bytes: b"\x1b*0\x1bNjj",
         },
     ]
 }
