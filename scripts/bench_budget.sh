@@ -146,6 +146,21 @@ PANIC_MULTIPLIER=2
 LOSS_FALSE_POSITIVE=1
 LOSS_FALSE_NEGATIVE=5
 
+# Host metadata for confidence ledger provenance.
+HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
+HOST_ARCH="$(uname -m 2>/dev/null || echo unknown)"
+HOST_CPU_MODEL="$(
+    awk -F: '/^model name[[:space:]]*:/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null ||
+        sysctl -n machdep.cpu.brand_string 2>/dev/null ||
+        echo unknown
+)"
+HOST_CORES_RAW="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo "")"
+if [[ "$HOST_CORES_RAW" =~ ^[0-9]+$ ]]; then
+    HOST_CPU_CORES="$HOST_CORES_RAW"
+else
+    HOST_CPU_CORES="null"
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -197,6 +212,10 @@ log() {
     fi
 }
 
+json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
 log_json() {
     local status="$1"
     local benchmark="$2"
@@ -223,8 +242,31 @@ log_confidence_json() {
     local loss_allow="${13}"
     local decision="${14}"
     local hint="${15}"
+    local ci_width_ns="${16}"
+    local relative_ci_width="${17}"
+    local variance_ns2="${18}"
+    local os_json arch_json cpu_json
+    os_json="$(json_escape "$HOST_OS")"
+    arch_json="$(json_escape "$HOST_ARCH")"
+    cpu_json="$(json_escape "$HOST_CPU_MODEL")"
 
-    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"benchmark\":\"$benchmark\",\"status\":\"$status\",\"actual_ns\":$actual_ns,\"budget_ns\":$budget_ns,\"ci_low_ns\":$ci_low_ns,\"ci_high_ns\":$ci_high_ns,\"sigma_ns\":$sigma_ns,\"z_score\":$z_score,\"posterior_prob_regression\":$p_regression,\"e_value\":$e_value,\"bayes_factor_10\":$bayes_factor,\"loss_block\":$loss_block,\"loss_allow\":$loss_allow,\"decision\":\"$decision\",\"confidence_hint\":\"$hint\",\"loss_matrix\":{\"false_positive\":$LOSS_FALSE_POSITIVE,\"false_negative\":$LOSS_FALSE_NEGATIVE}}" >> "$CONFIDENCE_LOG"
+    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"benchmark\":\"$benchmark\",\"status\":\"$status\",\"actual_ns\":$actual_ns,\"budget_ns\":$budget_ns,\"ci_low_ns\":$ci_low_ns,\"ci_high_ns\":$ci_high_ns,\"ci_width_ns\":$ci_width_ns,\"relative_ci_width\":$relative_ci_width,\"sigma_ns\":$sigma_ns,\"variance_ns2\":$variance_ns2,\"z_score\":$z_score,\"posterior_prob_regression\":$p_regression,\"e_value\":$e_value,\"bayes_factor_10\":$bayes_factor,\"loss_block\":$loss_block,\"loss_allow\":$loss_allow,\"decision\":\"$decision\",\"confidence_hint\":\"$hint\",\"loss_matrix\":{\"false_positive\":$LOSS_FALSE_POSITIVE,\"false_negative\":$LOSS_FALSE_NEGATIVE},\"hardware\":{\"os\":\"$os_json\",\"arch\":\"$arch_json\",\"cpu_model\":\"$cpu_json\",\"cpu_cores\":$HOST_CPU_CORES}}" >> "$CONFIDENCE_LOG"
+}
+
+log_confidence_summary() {
+    local passed="$1"
+    local failed="$2"
+    local panicked="$3"
+    local skipped="$4"
+    local likely_regression="$5"
+    local likely_noise="$6"
+    local uncertain="$7"
+    local os_json arch_json cpu_json
+    os_json="$(json_escape "$HOST_OS")"
+    arch_json="$(json_escape "$HOST_ARCH")"
+    cpu_json="$(json_escape "$HOST_CPU_MODEL")"
+
+    echo "{\"run_id\":\"$RUN_ID\",\"ts\":\"$(date -Iseconds)\",\"event\":\"summary\",\"totals\":{\"passed\":$passed,\"failed\":$failed,\"panicked\":$panicked,\"skipped\":$skipped},\"confidence_hints\":{\"likely_regression\":$likely_regression,\"likely_noise\":$likely_noise,\"uncertain\":$uncertain},\"loss_matrix\":{\"false_positive\":$LOSS_FALSE_POSITIVE,\"false_negative\":$LOSS_FALSE_NEGATIVE},\"hardware\":{\"os\":\"$os_json\",\"arch\":\"$arch_json\",\"cpu_model\":\"$cpu_json\",\"cpu_cores\":$HOST_CPU_CORES}}" >> "$CONFIDENCE_LOG"
 }
 
 run_benchmarks() {
@@ -430,10 +472,14 @@ compute_confidence_metrics() {
         }
         BEGIN {
             sigma = (high - low) / 3.92
+            ci_width = high - low
+            if (ci_width < 0) ci_width = 0
+            relative_ci_width = (budget > 0) ? (ci_width / budget) : 0
             # Guard against unrealistically tiny CI widths in short criterion runs.
             min_sigma = budget * 0.01
             if (min_sigma < 1.0) min_sigma = 1.0
             if (sigma < min_sigma) sigma = min_sigma
+            variance = sigma * sigma
 
             delta = actual - budget
             z = delta / sigma
@@ -476,8 +522,8 @@ compute_confidence_metrics() {
                 }
             }
 
-            printf "%.3f %.3f %.6f %.6f %.6f %.6f %.6f %s %s\n",
-                sigma, z, p_reg, e_value, bf10, loss_block, loss_allow, decision, hint
+            printf "%.3f %.3f %.6f %.6f %.6f %.6f %.6f %s %s %.3f %.6f %.3f\n",
+                sigma, z, p_reg, e_value, bf10, loss_block, loss_allow, decision, hint, ci_width, relative_ci_width, variance
         }
     '
 }
@@ -520,7 +566,7 @@ check_budgets() {
             printf "%-50s %15s %15s ${YELLOW}%10s${NC}\n" "$benchmark" "N/A" "${budget_ns}ns" "SKIP"
             ((skipped++))
             log_json "skip" "$benchmark" 0 "$budget_ns" "null"
-            log_confidence_json "$benchmark" "skip" 0 "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "allow" "insufficient_data"
+            log_confidence_json "$benchmark" "skip" 0 "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "allow" "insufficient_data" "null" "null" "null"
             continue
         fi
 
@@ -535,7 +581,7 @@ check_budgets() {
             printf "%-50s %15s %15s ${YELLOW}%10s${NC}\n" "$benchmark" "N/A" "${budget_ns}ns" "SKIP"
             ((skipped++))
             log_json "skip" "$benchmark" 0 "$budget_ns" "null"
-            log_confidence_json "$benchmark" "skip" 0 "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "allow" "insufficient_data"
+            log_confidence_json "$benchmark" "skip" 0 "$budget_ns" "null" "null" "null" "null" "null" "null" "null" "null" "null" "allow" "insufficient_data" "null" "null" "null"
             continue
         fi
 
@@ -578,8 +624,8 @@ check_budgets() {
         printf "%-50s %15s %15s ${status_color}%10s${NC}\n" \
             "$benchmark" "$actual_display" "$budget_display" "$status"
 
-        local sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint
-        read -r sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint <<< \
+        local sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint ci_width_ns relative_ci_width variance_ns2
+        read -r sigma_ns z_score p_regression e_value bayes_factor loss_block loss_allow decision hint ci_width_ns relative_ci_width variance_ns2 <<< \
             "$(compute_confidence_metrics "$status" "$actual_ns" "$budget_ns" "$ci_low_ns" "$ci_high_ns")"
 
         case "$hint" in
@@ -591,7 +637,8 @@ check_budgets() {
         log_json "$status" "$benchmark" "$actual_ns" "$budget_ns" "$pass_json"
         log_confidence_json "$benchmark" "$status" "$actual_ns" "$budget_ns" \
             "$ci_low_ns" "$ci_high_ns" "$sigma_ns" "$z_score" "$p_regression" \
-            "$e_value" "$bayes_factor" "$loss_block" "$loss_allow" "$decision" "$hint"
+            "$e_value" "$bayes_factor" "$loss_block" "$loss_allow" "$decision" "$hint" \
+            "$ci_width_ns" "$relative_ci_width" "$variance_ns2"
     done
 
     log ""
@@ -602,6 +649,7 @@ check_budgets() {
     log "  Skipped: $skipped"
     log "  Confidence hints: likely_regression=$likely_regression likely_noise=$likely_noise uncertain=$uncertain"
     log ""
+    log_confidence_summary "$passed" "$failed" "$panicked" "$skipped" "$likely_regression" "$likely_noise" "$uncertain"
 
     if [[ "$panicked" -gt 0 ]]; then
         log "${RED}PANIC: $panicked benchmark(s) exceeded 2x budget!${NC}"

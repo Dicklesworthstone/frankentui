@@ -126,7 +126,7 @@ To re-run benches (including `ftui-runtime:telemetry_bench` with
 This writes two machine-readable ledgers under `target/benchmark-results/`:
 
 - `perf_log.jsonl` — hard gate results (actual vs budget; pass/fail/skip)
-- `perf_confidence.jsonl` — confidence evidence per benchmark (CI width, one-step e-value, Bayes factor, expected-loss decision hint)
+- `perf_confidence.jsonl` — confidence evidence per benchmark (CI width, one-step e-value, Bayes factor, expected-loss decision hint) plus run-level summary + hardware provenance
 
 ### Confidence Ledger Entry (perf_confidence.jsonl)
 
@@ -139,12 +139,40 @@ This writes two machine-readable ledgers under `target/benchmark-results/`:
   "budget_ns": 30000,
   "ci_low_ns": 9900,
   "ci_high_ns": 10100,
+  "ci_width_ns": 200,
+  "relative_ci_width": 0.006667,
+  "sigma_ns": 150.0,
+  "variance_ns2": 22500.0,
   "posterior_prob_regression": 0.0,
   "e_value": 1.0,
   "bayes_factor_10": 0.196116,
   "decision": "allow",
   "confidence_hint": "pass",
-  "loss_matrix": { "false_positive": 1, "false_negative": 5 }
+  "loss_matrix": { "false_positive": 1, "false_negative": 5 },
+  "hardware": {
+    "os": "Linux",
+    "arch": "x86_64",
+    "cpu_model": "AMD EPYC 7B13",
+    "cpu_cores": 16
+  }
+}
+```
+
+At the end of each run, the same file includes a summary event:
+
+```json
+{
+  "run_id": "20260208T202350-2604979",
+  "event": "summary",
+  "totals": { "passed": 42, "failed": 1, "panicked": 0, "skipped": 3 },
+  "confidence_hints": { "likely_regression": 1, "likely_noise": 0, "uncertain": 0 },
+  "loss_matrix": { "false_positive": 1, "false_negative": 5 },
+  "hardware": {
+    "os": "Linux",
+    "arch": "x86_64",
+    "cpu_model": "AMD EPYC 7B13",
+    "cpu_cores": 16
+  }
 }
 ```
 
