@@ -508,4 +508,346 @@ mod tests {
         assert!(format!("{}", WadError::LumpNotFound("X".into())).contains("X"));
         assert!(format!("{}", WadError::BadLumpSize("Y".into())).contains("Y"));
     }
+
+    // --- Helper: build a WAD with a single lump of arbitrary data ---
+
+    fn make_wad_with_lump(lump_name: &[u8; 8], lump_data: &[u8]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&1i32.to_le_bytes()); // 1 lump
+        let dir_offset = 12 + lump_data.len() as i32;
+        data.extend_from_slice(&dir_offset.to_le_bytes()); // dir after header + lump data
+
+        // Lump data at offset 12
+        data.extend_from_slice(lump_data);
+
+        // Directory entry
+        data.extend_from_slice(&12i32.to_le_bytes()); // filepos
+        data.extend_from_slice(&(lump_data.len() as i32).to_le_bytes()); // size
+        data.extend_from_slice(lump_name); // name
+        data
+    }
+
+    // --- parse_linedefs ---
+
+    #[test]
+    fn parse_linedefs_single() {
+        // One linedef = 14 bytes
+        let mut lump = Vec::new();
+        lump.extend_from_slice(&1u16.to_le_bytes()); // v1
+        lump.extend_from_slice(&2u16.to_le_bytes()); // v2
+        lump.extend_from_slice(&0x0001u16.to_le_bytes()); // flags
+        lump.extend_from_slice(&0u16.to_le_bytes()); // special
+        lump.extend_from_slice(&0u16.to_le_bytes()); // tag
+        lump.extend_from_slice(&0u16.to_le_bytes()); // right_sidedef
+        lump.extend_from_slice(&0xFFFFu16.to_le_bytes()); // left_sidedef
+
+        let wad_data = make_wad_with_lump(b"LINEDEFS", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let linedefs = wad.parse_linedefs(0);
+        assert_eq!(linedefs.len(), 1);
+        assert_eq!(linedefs[0].v1, 1);
+        assert_eq!(linedefs[0].v2, 2);
+        assert_eq!(linedefs[0].flags, 1);
+        assert_eq!(linedefs[0].left_sidedef, 0xFFFF);
+    }
+
+    // --- parse_sidedefs ---
+
+    #[test]
+    fn parse_sidedefs_single() {
+        // One sidedef = 30 bytes
+        let mut lump = Vec::new();
+        lump.extend_from_slice(&10i16.to_le_bytes()); // x_offset
+        lump.extend_from_slice(&20i16.to_le_bytes()); // y_offset
+        lump.extend_from_slice(b"UPPER\0\0\0"); // upper_texture
+        lump.extend_from_slice(b"LOWER\0\0\0"); // lower_texture
+        lump.extend_from_slice(b"MIDDLE\0\0"); // middle_texture
+        lump.extend_from_slice(&3u16.to_le_bytes()); // sector
+
+        let wad_data = make_wad_with_lump(b"SIDEDEFS", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let sides = wad.parse_sidedefs(0);
+        assert_eq!(sides.len(), 1);
+        assert_eq!(sides[0].x_offset, 10);
+        assert_eq!(sides[0].y_offset, 20);
+        assert_eq!(sides[0].sector, 3);
+    }
+
+    // --- parse_sectors ---
+
+    #[test]
+    fn parse_sectors_single() {
+        // One sector = 26 bytes
+        let mut lump = Vec::new();
+        lump.extend_from_slice(&0i16.to_le_bytes()); // floor_height
+        lump.extend_from_slice(&128i16.to_le_bytes()); // ceiling_height
+        lump.extend_from_slice(b"FLOOR4_8"); // floor_texture
+        lump.extend_from_slice(b"CEIL3_5\0"); // ceiling_texture
+        lump.extend_from_slice(&200u16.to_le_bytes()); // light_level
+        lump.extend_from_slice(&0u16.to_le_bytes()); // special
+        lump.extend_from_slice(&0u16.to_le_bytes()); // tag
+
+        let wad_data = make_wad_with_lump(b"SECTORS\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let sectors = wad.parse_sectors(0);
+        assert_eq!(sectors.len(), 1);
+        assert_eq!(sectors[0].floor_height, 0);
+        assert_eq!(sectors[0].ceiling_height, 128);
+        assert_eq!(sectors[0].light_level, 200);
+    }
+
+    // --- parse_segs ---
+
+    #[test]
+    fn parse_segs_single() {
+        // One seg = 12 bytes
+        let mut lump = Vec::new();
+        lump.extend_from_slice(&0u16.to_le_bytes()); // v1
+        lump.extend_from_slice(&1u16.to_le_bytes()); // v2
+        lump.extend_from_slice(&(-16384i16).to_le_bytes()); // angle
+        lump.extend_from_slice(&5u16.to_le_bytes()); // linedef
+        lump.extend_from_slice(&0u16.to_le_bytes()); // direction
+        lump.extend_from_slice(&0i16.to_le_bytes()); // offset
+
+        let wad_data = make_wad_with_lump(b"SEGS\0\0\0\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let segs = wad.parse_segs(0);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].v1, 0);
+        assert_eq!(segs[0].v2, 1);
+        assert_eq!(segs[0].angle, -16384);
+        assert_eq!(segs[0].linedef, 5);
+    }
+
+    // --- parse_subsectors ---
+
+    #[test]
+    fn parse_subsectors_single() {
+        // One ssector = 4 bytes
+        let mut lump = Vec::new();
+        lump.extend_from_slice(&4u16.to_le_bytes()); // num_segs
+        lump.extend_from_slice(&0u16.to_le_bytes()); // first_seg
+
+        let wad_data = make_wad_with_lump(b"SSECTORS", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let ssectors = wad.parse_subsectors(0);
+        assert_eq!(ssectors.len(), 1);
+        assert_eq!(ssectors[0].num_segs, 4);
+        assert_eq!(ssectors[0].first_seg, 0);
+    }
+
+    // --- parse_nodes ---
+
+    #[test]
+    fn parse_nodes_single() {
+        // One node = 28 bytes
+        let mut lump = Vec::new();
+        lump.extend_from_slice(&100i16.to_le_bytes()); // x
+        lump.extend_from_slice(&200i16.to_le_bytes()); // y
+        lump.extend_from_slice(&0i16.to_le_bytes()); // dx
+        lump.extend_from_slice(&1i16.to_le_bytes()); // dy
+        for _ in 0..4 {
+            lump.extend_from_slice(&0i16.to_le_bytes()); // bbox_right
+        }
+        for _ in 0..4 {
+            lump.extend_from_slice(&0i16.to_le_bytes()); // bbox_left
+        }
+        lump.extend_from_slice(&0u16.to_le_bytes()); // right_child
+        lump.extend_from_slice(&(0x8000u16 | 1).to_le_bytes()); // left_child (subsector flag)
+
+        let wad_data = make_wad_with_lump(b"NODES\0\0\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let nodes = wad.parse_nodes(0);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].x, 100);
+        assert_eq!(nodes[0].y, 200);
+        assert_eq!(nodes[0].dx, 0);
+        assert_eq!(nodes[0].dy, 1);
+        assert_eq!(nodes[0].left_child, 0x8000 | 1);
+    }
+
+    // --- parse_things ---
+
+    #[test]
+    fn parse_things_single() {
+        // One thing = 10 bytes
+        let mut lump = Vec::new();
+        lump.extend_from_slice(&(-100i16).to_le_bytes()); // x
+        lump.extend_from_slice(&50i16.to_le_bytes()); // y
+        lump.extend_from_slice(&90u16.to_le_bytes()); // angle
+        lump.extend_from_slice(&1u16.to_le_bytes()); // thing_type (player 1)
+        lump.extend_from_slice(&0x0007u16.to_le_bytes()); // flags
+
+        let wad_data = make_wad_with_lump(b"THINGS\0\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let things = wad.parse_things(0);
+        assert_eq!(things.len(), 1);
+        assert_eq!(things[0].x, -100);
+        assert_eq!(things[0].y, 50);
+        assert_eq!(things[0].angle, 90);
+        assert_eq!(things[0].thing_type, 1);
+        assert_eq!(things[0].flags, 7);
+    }
+
+    // --- parse_playpal ---
+
+    #[test]
+    fn parse_playpal_valid() {
+        // Minimal PLAYPAL: 768 bytes (256 colors × 3 bytes)
+        let mut lump = vec![0u8; 768];
+        lump[0] = 255; // first color R
+        lump[1] = 128; // first color G
+        lump[2] = 64; // first color B
+        lump[765] = 10; // last color R
+        lump[766] = 20; // last color G
+        lump[767] = 30; // last color B
+
+        let wad_data = make_wad_with_lump(b"PLAYPAL\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let palette = wad.parse_playpal().unwrap();
+        assert_eq!(palette.len(), 256);
+        assert_eq!(palette[0], [255, 128, 64]);
+        assert_eq!(palette[255], [10, 20, 30]);
+    }
+
+    #[test]
+    fn parse_playpal_too_small() {
+        let lump = vec![0u8; 100]; // way too small
+        let wad_data = make_wad_with_lump(b"PLAYPAL\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        assert!(wad.parse_playpal().is_err());
+    }
+
+    #[test]
+    fn parse_playpal_missing_lump() {
+        let data = make_minimal_wad();
+        let wad = WadFile::parse(data).unwrap();
+        assert!(wad.parse_playpal().is_err());
+    }
+
+    // --- parse_colormap ---
+
+    #[test]
+    fn parse_colormap_valid() {
+        // 34 maps × 256 bytes = 8704 bytes
+        let mut lump = vec![0u8; 34 * 256];
+        lump[0] = 42; // first map, first entry
+        lump[256] = 99; // second map, first entry
+
+        let wad_data = make_wad_with_lump(b"COLORMAP", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let maps = wad.parse_colormap().unwrap();
+        assert_eq!(maps.len(), 34);
+        assert_eq!(maps[0].len(), 256);
+        assert_eq!(maps[0][0], 42);
+        assert_eq!(maps[1][0], 99);
+    }
+
+    #[test]
+    fn parse_colormap_too_small() {
+        let lump = vec![0u8; 100];
+        let wad_data = make_wad_with_lump(b"COLORMAP", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        assert!(wad.parse_colormap().is_err());
+    }
+
+    // --- Multiple lumps with same name ---
+
+    #[test]
+    fn duplicate_lump_names_uses_first() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&2i32.to_le_bytes()); // 2 lumps
+        let dir_offset = 12 + 8; // after 2 × 4 bytes of lump data
+        data.extend_from_slice(&(dir_offset as i32).to_le_bytes());
+
+        // Lump 0 data
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+        // Lump 1 data
+        data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+
+        // Dir entry 0
+        data.extend_from_slice(&12i32.to_le_bytes());
+        data.extend_from_slice(&4i32.to_le_bytes());
+        data.extend_from_slice(b"DUPE\0\0\0\0");
+
+        // Dir entry 1 (same name!)
+        data.extend_from_slice(&16i32.to_le_bytes());
+        data.extend_from_slice(&4i32.to_le_bytes());
+        data.extend_from_slice(b"DUPE\0\0\0\0");
+
+        let wad = WadFile::parse(data).unwrap();
+        assert_eq!(wad.find_lump("DUPE"), Some(0));
+        assert_eq!(wad.lump_data(0), &[0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    // --- Empty lump data ---
+
+    #[test]
+    fn parse_vertices_empty_lump() {
+        let wad_data = make_wad_with_lump(b"VERTEXES", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let verts = wad.parse_vertices(0);
+        assert!(verts.is_empty());
+    }
+
+    #[test]
+    fn parse_linedefs_empty_lump() {
+        let wad_data = make_wad_with_lump(b"LINEDEFS", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let linedefs = wad.parse_linedefs(0);
+        assert!(linedefs.is_empty());
+    }
+
+    #[test]
+    fn parse_things_empty_lump() {
+        let wad_data = make_wad_with_lump(b"THINGS\0\0", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let things = wad.parse_things(0);
+        assert!(things.is_empty());
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn exact_minimum_size_parses() {
+        // 12 bytes is the minimum (header only, 0 lumps)
+        let data = vec![
+            b'I', b'W', b'A', b'D', // identification
+            0, 0, 0, 0, // num_lumps = 0
+            12, 0, 0, 0, // info_table_ofs = 12
+        ];
+        let wad = WadFile::parse(data).unwrap();
+        assert!(wad.directory.is_empty());
+    }
+
+    #[test]
+    fn eleven_bytes_too_small() {
+        assert!(WadFile::parse(vec![0; 11]).is_err());
+    }
+
+    #[test]
+    fn parse_multiple_vertices() {
+        let mut lump = Vec::new();
+        for i in 0..10i16 {
+            lump.extend_from_slice(&(i * 10).to_le_bytes()); // x
+            lump.extend_from_slice(&(i * 20).to_le_bytes()); // y
+        }
+        let wad_data = make_wad_with_lump(b"VERTEXES", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let verts = wad.parse_vertices(0);
+        assert_eq!(verts.len(), 10);
+        assert_eq!(verts[5].x, 50);
+        assert_eq!(verts[5].y, 100);
+    }
+
+    #[test]
+    fn find_lump_after_from_start() {
+        let data = make_two_lump_wad();
+        let wad = WadFile::parse(data).unwrap();
+        // Search for MAP01 starting from 0 → not found (MAP01 is at index 0, search starts after 0)
+        let idx = wad.find_lump_after("MAP01", 0);
+        assert_eq!(idx, None);
+    }
 }
