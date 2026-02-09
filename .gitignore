@@ -50,3 +50,13 @@ crates/ftui-extras/src/seq_*.py
 
 # Local agent scratch
 .plan
+
+# MCP Agent Mail local archive
+.mail_repo/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Beads history snapshots (JSONL export is tracked, history is local)
+.beads/.br_history/
