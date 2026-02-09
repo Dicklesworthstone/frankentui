@@ -1,0 +1,15 @@
+{
+  "name": "rep_with_sgr",
+  "description": "REP repeats the last character with current SGR attributes (not the original char's attrs)",
+  "initial_size": [10, 2],
+  "input_bytes_hex": "41 1b5b316d 1b5b3262",
+  "comment": "Print 'A' (default attrs). Set bold (SGR 1). REP 2 (CSI 2 b): repeats 'A' with bold. Cell (0,0)='A' no bold. Cells (0,1)-(0,2)='A' with bold.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bold": false } },
+      { "row": 0, "col": 1, "char": "A", "attrs": { "bold": true } },
+      { "row": 0, "col": 2, "char": "A", "attrs": { "bold": true } }
+    ]
+  }
+}

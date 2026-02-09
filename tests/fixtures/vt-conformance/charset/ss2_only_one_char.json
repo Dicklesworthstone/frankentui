@@ -1,0 +1,14 @@
+{
+  "name": "ss2_only_one_char",
+  "description": "SS2 only affects the immediately next printed character; subsequent chars use active charset",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b2a30 1b4e 6a 6a",
+  "comment": "Designate G2=DEC Graphics. SS2. Print 'j' → via G2: U+2518 (┘). Print 'j' again → via G0 ASCII: literal 'j'. Verifies single-shift consumed after one char.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "\u2518" },
+      { "row": 0, "col": 1, "char": "j" }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "ss2_dec_graphics",
+  "description": "SS2 (ESC N) temporarily shifts to G2 charset for one character, then reverts",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b2a30 41 1b4e 71 42",
+  "comment": "Designate G2=DEC Graphics (ESC * 0). Print 'A' (ASCII, via G0). SS2 (ESC N). Print 'q' → translated via G2 DEC Graphics to U+2500 (─). Print 'B' (back to G0 ASCII). Result: A─B at (0,0)-(0,2).",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 0, "col": 1, "char": "\u2500" },
+      { "row": 0, "col": 2, "char": "B" }
+    ]
+  }
+}

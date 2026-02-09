@@ -1,0 +1,16 @@
+{
+  "name": "decaln_overwrites_content",
+  "description": "DECALN overwrites existing content and SGR attributes with plain 'E'",
+  "initial_size": [5, 2],
+  "input_bytes_hex": "1b5b316d 4142434445 1b2338",
+  "comment": "Set bold (SGR 1). Print ABCDE (fills row 0 with bold). DECALN (ESC # 8) fills all cells with 'E'. Row 0 should have plain 'E' (no bold). Cursor at (0,0).",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "E" },
+      { "row": 0, "col": 4, "char": "E" },
+      { "row": 1, "col": 0, "char": "E" },
+      { "row": 1, "col": 4, "char": "E" }
+    ]
+  }
+}
