@@ -60,11 +60,13 @@ pub enum ModalAnimationPhase {
 
 impl ModalAnimationPhase {
     /// Check if the modal should be rendered.
+    #[inline]
     pub fn is_visible(self) -> bool {
         !matches!(self, Self::Closed)
     }
 
     /// Check if animation is in progress.
+    #[inline]
     pub fn is_animating(self) -> bool {
         matches!(self, Self::Opening | Self::Closing)
     }
@@ -489,21 +491,25 @@ impl ModalAnimationState {
     }
 
     /// Check if the modal is visible (should be rendered).
+    #[inline]
     pub fn is_visible(&self) -> bool {
         self.phase.is_visible()
     }
 
     /// Check if animation is in progress.
+    #[inline]
     pub fn is_animating(&self) -> bool {
         self.phase.is_animating()
     }
 
     /// Check if the modal is fully open.
+    #[inline]
     pub fn is_open(&self) -> bool {
         matches!(self.phase, ModalAnimationPhase::Open)
     }
 
     /// Check if the modal is fully closed.
+    #[inline]
     pub fn is_closed(&self) -> bool {
         matches!(self.phase, ModalAnimationPhase::Closed)
     }

@@ -91,6 +91,7 @@ impl FocusManager {
     }
 
     /// Get currently focused widget.
+    #[inline]
     #[must_use]
     pub fn current(&self) -> Option<FocusId> {
         self.current

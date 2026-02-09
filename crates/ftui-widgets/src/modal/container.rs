@@ -255,6 +255,7 @@ impl Default for ModalState {
 }
 
 impl ModalState {
+    #[inline]
     pub fn is_open(&self) -> bool {
         self.open
     }

@@ -324,6 +324,7 @@ impl TextArea {
     }
 
     /// Current cursor position.
+    #[inline]
     #[must_use]
     pub fn cursor(&self) -> CursorPosition {
         self.editor.cursor()
@@ -336,6 +337,7 @@ impl TextArea {
     }
 
     /// Whether the textarea is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.editor.is_empty()

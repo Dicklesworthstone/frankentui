@@ -1027,6 +1027,7 @@ impl Toast {
     ///
     /// A toast is visible if it's not dismissed, not expired, and not in
     /// the Hidden animation phase.
+    #[inline]
     pub fn is_visible(&self) -> bool {
         !self.state.dismissed
             && !self.is_expired()
