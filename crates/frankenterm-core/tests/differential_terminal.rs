@@ -379,11 +379,14 @@ impl CoreTerminalHarness {
             .map(|row| {
                 let mut line = String::with_capacity(self.cols as usize);
                 for col in 0..self.cols {
-                    let ch = self
-                        .grid
-                        .cell(row, col)
-                        .map_or(' ', frankenterm_core::Cell::content);
-                    line.push(ch);
+                    if let Some(cell) = self.grid.cell(row, col) {
+                        if cell.is_wide_continuation() {
+                            continue; // skip continuation cells of wide chars
+                        }
+                        line.push(cell.content());
+                    } else {
+                        line.push(' ');
+                    }
                 }
                 line.trim_end().to_string()
             })
@@ -728,6 +731,66 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             rows: 3,
             // CUU 999 from middle → row 0; CUB 999 → col 0
             bytes: b"\x1b[2;3H\x1b[999A\x1b[999DX",
+        },
+        // ── NEL (Next Line) ─────────────────────────────────────────
+        SupportedFixture {
+            id: "nel_basic",
+            cols: 10,
+            rows: 3,
+            // Write "ABCDE", NEL → cursor goes to col 0, next row, write "X"
+            bytes: b"ABCDE\x1bEX",
+        },
+        SupportedFixture {
+            id: "nel_at_bottom_scrolls",
+            cols: 5,
+            rows: 3,
+            // Fill 3 rows, CUP to (2,2), NEL at bottom scrolls
+            bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\x1b[3;3H\x1bEX",
+        },
+        // ── DECALN (Screen Alignment) ────────────────────────────────
+        SupportedFixture {
+            id: "decaln_fills_screen",
+            cols: 5,
+            rows: 3,
+            // Write some text, then DECALN fills with 'E'
+            bytes: b"ABC\x1b#8",
+        },
+        SupportedFixture {
+            id: "decaln_then_overwrite",
+            cols: 5,
+            rows: 3,
+            // DECALN fills with 'E', then overwrite one cell
+            bytes: b"\x1b#8\x1b[2;3HX",
+        },
+        // ── UTF-8 multi-byte characters ──────────────────────────────
+        SupportedFixture {
+            id: "utf8_two_byte",
+            cols: 10,
+            rows: 3,
+            // "Aé B" — é is U+00E9 (2 bytes: 0xC3 0xA9)
+            bytes: "A\u{00E9} B".as_bytes(),
+        },
+        SupportedFixture {
+            id: "utf8_three_byte_cjk",
+            cols: 10,
+            rows: 3,
+            // "A中B" — 中 is U+4E2D (3 bytes), display width 2
+            bytes: "A\u{4E2D}B".as_bytes(),
+        },
+        // ── Wide character handling ───────────────────────────────────
+        SupportedFixture {
+            id: "wide_char_two_cells",
+            cols: 10,
+            rows: 3,
+            // Wide char takes 2 cells, then narrow char follows
+            bytes: "\u{4E2D}\u{6587}X".as_bytes(),
+        },
+        SupportedFixture {
+            id: "wide_char_wrap_at_last_col",
+            cols: 5,
+            rows: 3,
+            // 4 narrow chars + wide char wraps to next line
+            bytes: "ABCD\u{4E2D}".as_bytes(),
         },
     ]
 }

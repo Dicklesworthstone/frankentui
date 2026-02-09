@@ -1777,4 +1777,52 @@ mod tests {
         assert_eq!(vt.row_text(1), "ZZZZZ");
         assert_eq!(vt.row_text(2), "");
     }
+
+    #[test]
+    fn utf8_basic_multibyte() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // "é" is 2 bytes: 0xc3 0xa9
+        vt.feed("Aé B".as_bytes());
+        assert_eq!(vt.row_text(0), "Aé B");
+        assert_eq!(vt.cursor(), (4, 0));
+    }
+
+    #[test]
+    fn wide_char_basic() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // "中" (U+4E2D) = 3 bytes, display width 2
+        vt.feed("A中B".as_bytes());
+        assert_eq!(vt.row_text(0), "A中B");
+        assert_eq!(vt.cursor(), (4, 0)); // A(1) + 中(2) + B(1) = col 4
+    }
+
+    #[test]
+    fn wide_char_wraps_at_last_column() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        // 4 narrow chars + wide char: wide can't fit in col 4, wraps
+        vt.feed("ABCD中".as_bytes());
+        assert_eq!(vt.row_text(0), "ABCD");
+        assert_eq!(vt.row_text(1), "中");
+        assert_eq!(vt.cursor(), (2, 1));
+    }
+
+    #[test]
+    fn narrow_overwrites_wide_lead() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed("中".as_bytes()); // col 0-1
+        vt.feed(b"\x1b[1;1HX"); // CUP(1,1), write 'X' at col 0 (overwrites wide lead)
+        // Lead becomes 'X', continuation should be blanked
+        assert_eq!(vt.row_text(0), "X");
+        assert_eq!(vt.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn narrow_overwrites_wide_continuation() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.feed("中".as_bytes()); // col 0-1
+        vt.feed(b"\x1b[1;2HX"); // CUP(1,2), write 'X' at col 1 (overwrites continuation)
+        // Lead blanked to space, col 1 becomes 'X'
+        assert_eq!(vt.row_text(0), " X");
+        assert_eq!(vt.cursor(), (2, 0));
+    }
 }
