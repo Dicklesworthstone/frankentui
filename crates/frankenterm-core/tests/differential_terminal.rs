@@ -934,9 +934,21 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             // Fill, set region 1-5, cursor at row 4, DL 1
             bytes: b"AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE\x1b[1;5r\x1b[5;1H\x1b[1M",
         },
-        // NOTE: scroll_up_multiple / scroll_down_multiple removed —
-        // cursor_col diverges (4 vs 5) after filling a 5-col row;
-        // track under known_mismatches or fix cursor-after-fill first.
+        // ── Multiple scroll operations ──────────────────────────────
+        SupportedFixture {
+            id: "scroll_up_multiple",
+            cols: 8,
+            rows: 4,
+            // Fill 4 rows with short text + CUP, scroll up 2
+            bytes: b"AAA\x1b[2;1HBBB\x1b[3;1HCCC\x1b[4;1HDDD\x1b[1;1H\x1b[2S",
+        },
+        SupportedFixture {
+            id: "scroll_down_multiple",
+            cols: 8,
+            rows: 4,
+            // Fill 4 rows with short text + CUP, scroll down 2
+            bytes: b"AAA\x1b[2;1HBBB\x1b[3;1HCCC\x1b[4;1HDDD\x1b[1;1H\x1b[2T",
+        },
         // ── ICH/DCH/ECH additional cases ────────────────────────────
         SupportedFixture {
             id: "ich_at_beginning_of_line",
