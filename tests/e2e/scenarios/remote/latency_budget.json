@@ -1,0 +1,8 @@
+{
+  "p50_ms": 10.0,
+  "p95_ms": 50.0,
+  "p99_ms": 100.0,
+  "max_jitter_ms": 30.0,
+  "min_throughput_kbps": 50.0,
+  "_comment": "Latency budgets for remote terminal sessions over localhost WebSocket"
+}

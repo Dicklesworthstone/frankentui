@@ -1,0 +1,33 @@
+{
+  "name": "remote_latency_probe",
+  "description": "Keystroke-to-output latency measurement: sends individual keystrokes and measures response time",
+  "initial_cols": 80,
+  "initial_rows": 24,
+  "steps": [
+    {"type": "send", "data": "cat\n", "delay_ms": 500, "comment": "Start cat for echo"},
+    {"type": "drain"},
+    {"type": "send", "data": "a", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "b", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "c", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "d", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "e", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "f", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "g", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "h", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "i", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "j", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "k", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "l", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "m", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "n", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "o", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "p", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "q", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "r", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "s", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data": "t", "delay_ms": 200, "latency_probe": true},
+    {"type": "send", "data_hex": "04", "delay_ms": 100, "comment": "Ctrl-D to exit cat"},
+    {"type": "drain"}
+  ],
+  "timeout_s": 30
+}
