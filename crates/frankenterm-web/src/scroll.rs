@@ -147,8 +147,8 @@ impl WheelCoalescer {
 
     /// Feed a wheel event. Call this for every `InputEvent::Wheel` received.
     pub fn push(&mut self, wheel: &WheelInput) {
-        self.accumulated_dy += i32::from(wheel.dy);
-        self.event_count += 1;
+        self.accumulated_dy = self.accumulated_dy.saturating_add(i32::from(wheel.dy));
+        self.event_count = self.event_count.saturating_add(1);
     }
 
     /// Drain the accumulated delta and reset for the next frame.
@@ -231,7 +231,15 @@ impl ScrollState {
 
     /// Replace the scroll configuration.
     pub fn set_config(&mut self, config: ScrollConfig) {
+        let disabling_inertia = self.config.inertia_enabled && !config.inertia_enabled;
         self.config = config;
+        if disabling_inertia {
+            // If inertia is turned off at runtime, stop any in-flight momentum
+            // immediately so behavior matches the new configuration.
+            self.velocity = 0.0;
+            self.fractional = 0.0;
+            self.animating = false;
+        }
     }
 
     /// Jump to a specific offset from bottom (clamped on next viewport call).
@@ -299,6 +307,7 @@ impl ScrollState {
         if total_dy == 0 {
             return;
         }
+        let previous_offset = self.offset;
 
         // Determine whether the delta looks like discrete ticks (small absolute
         // values ≤ 3) or high-resolution pixel deltas (larger values).
@@ -326,10 +335,16 @@ impl ScrollState {
             self.offset = self.offset.saturating_sub((-line_delta) as usize);
         }
 
-        // Seed inertia velocity.
+        // Seed inertia velocity only when wheel input produced meaningful motion.
         if self.config.inertia_enabled {
-            self.velocity = line_delta as f64;
-            self.animating = true;
+            let moved = self.offset != previous_offset;
+            if moved && line_delta != 0 {
+                self.velocity = line_delta as f64;
+                self.animating = true;
+            } else {
+                self.velocity = 0.0;
+                self.animating = false;
+            }
         }
     }
 
@@ -765,6 +780,31 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    #[test]
+    fn coalescer_saturates_positive_overflow() {
+        let mut c = WheelCoalescer::new();
+        c.accumulated_dy = i32::MAX - 1;
+        c.event_count = u32::MAX;
+        c.push(&wheel(10));
+
+        let (dy, count) = c.drain();
+        assert_eq!(dy, i32::MAX);
+        assert_eq!(count, u32::MAX);
+    }
+
+    #[test]
+    fn coalescer_saturates_negative_overflow() {
+        let mut c = WheelCoalescer::new();
+        c.accumulated_dy = i32::MIN + 1;
+        c.event_count = u32::MAX - 1;
+        c.push(&wheel(-10));
+        c.push(&wheel(-10));
+
+        let (dy, count) = c.drain();
+        assert_eq!(dy, i32::MIN);
+        assert_eq!(count, u32::MAX);
+    }
+
     // -- ScrollState basic --
 
     #[test]
@@ -879,6 +919,25 @@ mod tests {
         assert_eq!(state.offset(), 0);
     }
 
+    #[test]
+    fn wheel_fractional_noop_does_not_start_inertia() {
+        let mut state = ScrollState::with_defaults();
+        // Pixel-mode path with a fractional delta smaller than one full line.
+        state.apply_wheel(4, 100);
+        assert!(!state.is_animating());
+        assert_eq!(state.offset(), 0);
+    }
+
+    #[test]
+    fn wheel_clamped_movement_does_not_start_inertia() {
+        let mut state = ScrollState::with_defaults();
+        state.set_offset(5);
+        // At max offset already, positive scroll cannot move further.
+        state.apply_wheel(1, 5);
+        assert!(!state.is_animating());
+        assert_eq!(state.offset(), 5);
+    }
+
     // -- Inertia --
 
     #[test]
@@ -888,14 +947,15 @@ mod tests {
         let initial = state.offset();
         assert!(state.is_animating());
 
-        // Tick until animation stops.
-        let mut ticks = 0;
-        while state.tick(10000) {
-            ticks += 1;
-            if ticks > 500 {
-                panic!("inertia did not stop");
+        // Tick until animation stops with an explicit deterministic upper bound.
+        let mut stopped = false;
+        for _ in 0..=500 {
+            if !state.tick(10000) {
+                stopped = true;
+                break;
             }
         }
+        assert!(stopped, "inertia did not stop within 500 ticks");
 
         assert!(!state.is_animating());
         assert!(
@@ -926,6 +986,37 @@ mod tests {
         // Should stop because offset reached 0.
         assert!(!still_going);
         assert_eq!(state.offset(), 0);
+    }
+
+    #[test]
+    fn disabling_inertia_while_animating_stops_immediately() {
+        let mut state = ScrollState::with_defaults();
+        state.apply_wheel(3, 10_000);
+        assert!(state.is_animating());
+
+        let cfg = ScrollConfig {
+            inertia_enabled: false,
+            ..ScrollConfig::default()
+        };
+        state.set_config(cfg);
+
+        assert!(!state.is_animating());
+        assert!(!state.tick(10_000));
+    }
+
+    #[test]
+    fn changing_config_with_inertia_enabled_keeps_animation() {
+        let mut state = ScrollState::with_defaults();
+        state.apply_wheel(3, 10_000);
+        assert!(state.is_animating());
+
+        let cfg = ScrollConfig {
+            inertia_friction: 0.90,
+            ..ScrollConfig::default()
+        };
+        state.set_config(cfg);
+
+        assert!(state.is_animating());
     }
 
     // -- Viewport --

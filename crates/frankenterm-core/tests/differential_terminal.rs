@@ -1245,6 +1245,327 @@ fn supported_fixtures() -> Vec<SupportedFixture> {
             // G2=DEC Graphics, SS2 + j → ┘ (one char only), then j → literal j
             bytes: b"\x1b*0\x1bNjj",
         },
+        // ── SGR attributes + text interaction ───────────────────────
+        SupportedFixture {
+            id: "sgr_bold_text",
+            cols: 10,
+            rows: 3,
+            // SGR 1 (bold), print AB, SGR 0 (reset), print CD
+            bytes: b"\x1b[1mAB\x1b[0mCD",
+        },
+        SupportedFixture {
+            id: "sgr_italic_underline_text",
+            cols: 10,
+            rows: 3,
+            // SGR 3 (italic) + SGR 4 (underline) combined, print XY
+            bytes: b"\x1b[3;4mXY",
+        },
+        SupportedFixture {
+            id: "sgr_stacked_attributes",
+            cols: 20,
+            rows: 3,
+            // Bold, dim, italic, underline, blink, inverse, hidden, strike — all at once
+            bytes: b"\x1b[1;2;3;4;5;7;8;9mABC\x1b[0mDEF",
+        },
+        SupportedFixture {
+            id: "sgr_selective_reset_bold_dim",
+            cols: 15,
+            rows: 3,
+            // SGR 1 (bold) + SGR 2 (dim), print A, SGR 22 (unbold+undim), print B
+            bytes: b"\x1b[1;2mA\x1b[22mB",
+        },
+        SupportedFixture {
+            id: "sgr_selective_reset_italic",
+            cols: 10,
+            rows: 3,
+            // SGR 3 (italic), print A, SGR 23 (no italic), print B
+            bytes: b"\x1b[3mA\x1b[23mB",
+        },
+        SupportedFixture {
+            id: "sgr_selective_reset_underline",
+            cols: 10,
+            rows: 3,
+            // SGR 4 (underline), print A, SGR 24 (no underline), print B
+            bytes: b"\x1b[4mA\x1b[24mB",
+        },
+        SupportedFixture {
+            id: "sgr_selective_reset_blink",
+            cols: 10,
+            rows: 3,
+            // SGR 5 (blink), print A, SGR 25 (no blink), print B
+            bytes: b"\x1b[5mA\x1b[25mB",
+        },
+        SupportedFixture {
+            id: "sgr_selective_reset_inverse",
+            cols: 10,
+            rows: 3,
+            // SGR 7 (inverse), print A, SGR 27 (no inverse), print B
+            bytes: b"\x1b[7mA\x1b[27mB",
+        },
+        SupportedFixture {
+            id: "sgr_selective_reset_hidden",
+            cols: 10,
+            rows: 3,
+            // SGR 8 (hidden), print A, SGR 28 (no hidden), print B
+            bytes: b"\x1b[8mA\x1b[28mB",
+        },
+        SupportedFixture {
+            id: "sgr_selective_reset_strikethrough",
+            cols: 10,
+            rows: 3,
+            // SGR 9 (strikethrough), print A, SGR 29 (no strike), print B
+            bytes: b"\x1b[9mA\x1b[29mB",
+        },
+        SupportedFixture {
+            id: "sgr_named_fg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 31 (red fg), print AB, SGR 39 (default fg), print CD
+            bytes: b"\x1b[31mAB\x1b[39mCD",
+        },
+        SupportedFixture {
+            id: "sgr_named_bg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 42 (green bg), print AB, SGR 49 (default bg), print CD
+            bytes: b"\x1b[42mAB\x1b[49mCD",
+        },
+        SupportedFixture {
+            id: "sgr_bright_fg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 91 (bright red fg), print AB, SGR 39 (default fg), print CD
+            bytes: b"\x1b[91mAB\x1b[39mCD",
+        },
+        SupportedFixture {
+            id: "sgr_bright_bg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 102 (bright green bg), print AB, SGR 49 (default bg), print CD
+            bytes: b"\x1b[102mAB\x1b[49mCD",
+        },
+        SupportedFixture {
+            id: "sgr_256_fg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 38;5;196 (256-color red fg), print XY
+            bytes: b"\x1b[38;5;196mXY",
+        },
+        SupportedFixture {
+            id: "sgr_256_bg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 48;5;46 (256-color green bg), print XY
+            bytes: b"\x1b[48;5;46mXY",
+        },
+        SupportedFixture {
+            id: "sgr_truecolor_fg",
+            cols: 10,
+            rows: 3,
+            // SGR 38;2;255;128;0 (truecolor orange fg), print AB
+            bytes: b"\x1b[38;2;255;128;0mAB",
+        },
+        SupportedFixture {
+            id: "sgr_truecolor_bg",
+            cols: 10,
+            rows: 3,
+            // SGR 48;2;0;128;255 (truecolor blue bg), print AB
+            bytes: b"\x1b[48;2;0;128;255mAB",
+        },
+        SupportedFixture {
+            id: "sgr_full_reset_clears_all",
+            cols: 15,
+            rows: 3,
+            // Stack bold+italic+fg+bg, print A, SGR 0, print B — text same, attrs differ
+            bytes: b"\x1b[1;3;31;42mA\x1b[0mB",
+        },
+        SupportedFixture {
+            id: "sgr_empty_param_is_reset",
+            cols: 10,
+            rows: 3,
+            // SGR 1 (bold), print A, SGR with no params (= reset), print B
+            bytes: b"\x1b[1mA\x1b[mB",
+        },
+        SupportedFixture {
+            id: "sgr_multiple_sgr_sequences",
+            cols: 15,
+            rows: 3,
+            // Two separate SGR sequences: bold then red fg, print ABC
+            bytes: b"\x1b[1m\x1b[31mABC",
+        },
+        SupportedFixture {
+            id: "sgr_color_with_bold_and_reset",
+            cols: 20,
+            rows: 3,
+            // Bold+red, print AB, reset, green+italic, print CD, reset, print EF
+            bytes: b"\x1b[1;31mAB\x1b[0m\x1b[32;3mCD\x1b[0mEF",
+        },
+        // ── SGR + cursor movement interaction ───────────────────────
+        SupportedFixture {
+            id: "sgr_persists_across_cup",
+            cols: 10,
+            rows: 5,
+            // SGR bold, print A, CUP(3,1), print B — bold should persist
+            bytes: b"\x1b[1mA\x1b[3;1HB",
+        },
+        SupportedFixture {
+            id: "sgr_persists_across_newline",
+            cols: 10,
+            rows: 3,
+            // SGR 31 (red), print A, newline, print B — red should persist
+            bytes: b"\x1b[31mA\nB",
+        },
+        SupportedFixture {
+            id: "sgr_persists_across_cr_lf",
+            cols: 10,
+            rows: 3,
+            // SGR bold, print A, CR LF, print B
+            bytes: b"\x1b[1mA\r\nB",
+        },
+        // ── Line editing + wide char interactions ───────────────────
+        SupportedFixture {
+            id: "il_with_wide_chars",
+            cols: 10,
+            rows: 4,
+            // Row 1: 中文, Row 2: AB, CUP(1,1), IL 1 — insert blank line
+            bytes: b"\xe4\xb8\xad\xe6\x96\x87\r\nAB\x1b[1;1H\x1b[1L",
+        },
+        SupportedFixture {
+            id: "dl_with_wide_chars",
+            cols: 10,
+            rows: 4,
+            // Row 1: 中文, Row 2: AB, CUP(1,1), DL 1 — delete first line
+            bytes: b"\xe4\xb8\xad\xe6\x96\x87\r\nAB\x1b[1;1H\x1b[1M",
+        },
+        SupportedFixture {
+            id: "overwrite_narrow_with_wide",
+            cols: 10,
+            rows: 3,
+            // Print AB, CUP(1,1), print wide 中 → overwrites A and B
+            bytes: b"AB\x1b[1;1H\xe4\xb8\xad",
+        },
+        // ── SGR + line editing interaction ──────────────────────────
+        SupportedFixture {
+            id: "sgr_erase_uses_bg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 42 (green bg), print AB, ECH 3 — erased cells get green bg
+            bytes: b"\x1b[42mAB\x1b[3X",
+        },
+        SupportedFixture {
+            id: "sgr_el_uses_bg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 41 (red bg), print AB, EL 0 — rest of line gets red bg
+            bytes: b"\x1b[41mAB\x1b[0K",
+        },
+        SupportedFixture {
+            id: "sgr_ed_uses_bg_color",
+            cols: 10,
+            rows: 3,
+            // SGR 44 (blue bg), CUP(2,1), ED 0 — below gets blue bg
+            bytes: b"\x1b[44m\x1b[2;1H\x1b[0J",
+        },
+        SupportedFixture {
+            id: "sgr_ich_blank_inherits_bg",
+            cols: 10,
+            rows: 3,
+            // Print ABC, CUP(1,2), SGR 43 (yellow bg), ICH 1 — inserted blank is yellow
+            bytes: b"ABC\x1b[1;2H\x1b[43m\x1b[1@",
+        },
+        SupportedFixture {
+            id: "sgr_dch_fills_blank_with_bg",
+            cols: 10,
+            rows: 3,
+            // SGR 45 (magenta bg), print ABCDE, CUP(1,2), DCH 1 — trailing blank magenta
+            bytes: b"\x1b[45mABCDE\x1b[1;2H\x1b[1P",
+        },
+        SupportedFixture {
+            id: "sgr_il_blank_line_bg",
+            cols: 10,
+            rows: 4,
+            // Row 1: AB, Row 2: CD, SGR 46 (cyan bg), CUP(1,1), IL 1 — blank line cyan
+            bytes: b"AB\r\nCD\x1b[46m\x1b[1;1H\x1b[1L",
+        },
+        SupportedFixture {
+            id: "sgr_dl_fills_blank_with_bg",
+            cols: 10,
+            rows: 4,
+            // Row 1: AB, Row 2: CD, SGR 46 (cyan bg), CUP(1,1), DL 1 — bottom line cyan
+            bytes: b"AB\r\nCD\x1b[46m\x1b[1;1H\x1b[1M",
+        },
+        // ── Mixed editing edge cases ────────────────────────────────
+        SupportedFixture {
+            id: "dch_at_right_edge",
+            cols: 5,
+            rows: 3,
+            // Print ABCDE (fills row), CUP(1,5), DCH 1 — at last col
+            bytes: b"ABCDE\x1b[1;5H\x1b[1P",
+        },
+        SupportedFixture {
+            id: "ich_at_right_edge",
+            cols: 5,
+            rows: 3,
+            // Print ABCDE, CUP(1,5), ICH 1 — insert at last col
+            bytes: b"ABCDE\x1b[1;5H\x1b[1@",
+        },
+        SupportedFixture {
+            id: "ech_beyond_line_width",
+            cols: 5,
+            rows: 3,
+            // Print ABC, ECH 10 — erase more than remaining cols
+            bytes: b"ABC\x1b[10X",
+        },
+        SupportedFixture {
+            id: "dch_more_than_remaining",
+            cols: 5,
+            rows: 3,
+            // Print ABCDE, CUP(1,3), DCH 10 — delete more than remaining
+            bytes: b"ABCDE\x1b[1;3H\x1b[10P",
+        },
+        SupportedFixture {
+            id: "ich_more_than_remaining",
+            cols: 5,
+            rows: 3,
+            // Print ABCDE, CUP(1,3), ICH 10 — insert more than remaining
+            bytes: b"ABCDE\x1b[1;3H\x1b[10@",
+        },
+        SupportedFixture {
+            id: "ed_mode1_above_cursor",
+            cols: 10,
+            rows: 4,
+            // Row 1: ABCD, Row 2: EFGH, CUP(2,3), ED 1 — erase above including cursor row
+            bytes: b"ABCD\r\nEFGH\x1b[2;3H\x1b[1J",
+        },
+        SupportedFixture {
+            id: "el_mode2_entire_line",
+            cols: 10,
+            rows: 3,
+            // Print ABCDEFGH, CUP(1,4), EL 2 — erase entire line
+            bytes: b"ABCDEFGH\x1b[1;4H\x1b[2K",
+        },
+        SupportedFixture {
+            id: "dch_then_print_fills_gap",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, CUP(1,2), DCH 2, print XY — fills the gap
+            bytes: b"ABCDE\x1b[1;2H\x1b[2PXY",
+        },
+        SupportedFixture {
+            id: "ich_then_print_in_gap",
+            cols: 10,
+            rows: 3,
+            // Print ABCDE, CUP(1,2), ICH 2, print XY — fills inserted blanks
+            bytes: b"ABCDE\x1b[1;2H\x1b[2@XY",
+        },
+        // ── Wide char multi-row layout ─────────────────────────────
+        SupportedFixture {
+            id: "wide_chars_across_rows",
+            cols: 10,
+            rows: 3,
+            // Row 1: 中文 (4 cells), Row 2: AB — no wrap ambiguity
+            bytes: b"\xe4\xb8\xad\xe6\x96\x87\r\nAB",
+        },
     ]
 }
 

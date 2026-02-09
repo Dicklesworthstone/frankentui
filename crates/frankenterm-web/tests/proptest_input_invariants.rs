@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 //! Property-based invariant tests for the web input subsystem.
 //!
 //! Verifies:
