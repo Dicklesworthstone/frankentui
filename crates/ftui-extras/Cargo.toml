@@ -154,6 +154,7 @@ required-features = ["diagram"]
 
 [[test]]
 name = "proptest_mermaid_layout_invariants"
+required-features = ["diagram"]
 
 [[test]]
 name = "backdrop_composition_tests"
