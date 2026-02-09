@@ -569,4 +569,76 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn blit_to_painter_stride_zero_matches_stride_one() {
+        let mut fb = DoomFramebuffer::new(3, 2);
+        let top = [PackedRgba::RED, PackedRgba::GREEN, PackedRgba::BLUE];
+        let bottom = [
+            PackedRgba::WHITE,
+            PackedRgba::rgb(10, 20, 30),
+            PackedRgba::rgb(200, 100, 50),
+        ];
+
+        for x in 0..3u32 {
+            fb.set_pixel(x, 0, top[x as usize]);
+            fb.set_pixel(x, 1, bottom[x as usize]);
+        }
+
+        let mut painter_stride_zero = Painter::new(3, 2, Mode::HalfBlock);
+        let mut painter_stride_one = Painter::new(3, 2, Mode::HalfBlock);
+        fb.blit_to_painter(&mut painter_stride_zero, 0);
+        fb.blit_to_painter(&mut painter_stride_one, 1);
+
+        let mut buf_stride_zero = Buffer::new(3, 1);
+        let mut buf_stride_one = Buffer::new(3, 1);
+        painter_stride_zero.render_to_buffer(
+            Rect::new(0, 0, 3, 1),
+            &mut buf_stride_zero,
+            Style::default(),
+        );
+        painter_stride_one.render_to_buffer(
+            Rect::new(0, 0, 3, 1),
+            &mut buf_stride_one,
+            Style::default(),
+        );
+
+        for x in 0..3u16 {
+            let left = buf_stride_zero.get(x, 0).expect("stride=0 cell");
+            let right = buf_stride_one.get(x, 0).expect("stride=1 cell");
+            assert_eq!(left.content.as_char(), right.content.as_char(), "x={x} char");
+            assert_eq!(left.fg, right.fg, "x={x} fg");
+            assert_eq!(left.bg, right.bg, "x={x} bg");
+        }
+    }
+
+    #[test]
+    fn blit_to_painter_scales_x_non_even_ratio() {
+        let mut fb = DoomFramebuffer::new(3, 2);
+        let top = [PackedRgba::RED, PackedRgba::GREEN, PackedRgba::BLUE];
+        let bottom = [
+            PackedRgba::WHITE,
+            PackedRgba::rgb(10, 20, 30),
+            PackedRgba::rgb(200, 100, 50),
+        ];
+        for x in 0..3u32 {
+            fb.set_pixel(x, 0, top[x as usize]);
+            fb.set_pixel(x, 1, bottom[x as usize]);
+        }
+
+        let mut painter = Painter::new(5, 2, Mode::HalfBlock);
+        fb.blit_to_painter(&mut painter, 1);
+
+        let mut buf = Buffer::new(5, 1);
+        painter.render_to_buffer(Rect::new(0, 0, 5, 1), &mut buf, Style::default());
+
+        // floor(px * 3 / 5) => [0, 0, 1, 1, 2]
+        let expected_source_column = [0usize, 0, 1, 1, 2];
+        for (x, source_col) in expected_source_column.iter().enumerate() {
+            let cell = buf.get(x as u16, 0).expect("rendered cell");
+            assert_eq!(cell.content.as_char(), Some('▀'), "x={x}");
+            assert_eq!(cell.fg, top[*source_col], "x={x} fg");
+            assert_eq!(cell.bg, bottom[*source_col], "x={x} bg");
+        }
+    }
 }
