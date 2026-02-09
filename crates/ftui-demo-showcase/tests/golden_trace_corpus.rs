@@ -135,6 +135,7 @@ struct WebSweepSoak {
     records: Vec<WebSweepRecord>,
     cycle_pool_lens: Vec<usize>,
     max_pool_len: usize,
+    simulated_elapsed_ms: u64,
 }
 
 fn screen_slug(screen: ScreenId) -> String {
@@ -269,8 +270,11 @@ fn apply_web_sweep_deterministic_profile(program: &mut StepProgram<AppModel>, sc
             program.push_event(key(KeyCode::Char('m')));
         }
         ScreenId::MermaidMegaShowcase => {
-            // Collapse volatile side panels for deterministic hash sweeps.
-            program.push_event(key(KeyCode::Escape));
+            program
+                .model_mut()
+                .screens
+                .mermaid_mega_showcase
+                .stabilize_for_snapshot();
         }
         _ => {}
     }
@@ -360,7 +364,7 @@ fn run_web_sweep(cols: u16, rows: u16, dpr: f32) -> Vec<WebSweepRecord> {
     records
 }
 
-fn run_web_sweep_soak(cols: u16, rows: u16, dpr: f32, cycles: usize) -> WebSweepSoak {
+fn run_web_sweep_soak(cols: u16, rows: u16, dpr: f32, cycles: usize, tick_ms: u64) -> WebSweepSoak {
     let mut program = StepProgram::new(AppModel::new(), cols, rows);
     program.init().unwrap();
 
@@ -371,13 +375,13 @@ fn run_web_sweep_soak(cols: u16, rows: u16, dpr: f32, cycles: usize) -> WebSweep
 
     for cycle in 0..cycles {
         for &screen in screens::screen_ids().iter() {
-            ts_ms = ts_ms.saturating_add(TICK_MS);
+            ts_ms = ts_ms.saturating_add(tick_ms);
             program.model_mut().current_screen = screen;
             if cycle == 0 {
                 apply_web_sweep_deterministic_profile(&mut program, screen);
             }
             program.push_event(tick_event());
-            program.advance_time(Duration::from_millis(TICK_MS));
+            program.advance_time(Duration::from_millis(tick_ms));
 
             let start = Instant::now();
             let step = program.step().unwrap();
@@ -454,6 +458,7 @@ fn run_web_sweep_soak(cols: u16, rows: u16, dpr: f32, cycles: usize) -> WebSweep
         records,
         cycle_pool_lens,
         max_pool_len,
+        simulated_elapsed_ms: ts_ms,
     }
 }
 
@@ -771,15 +776,33 @@ fn golden_web_demo_sweep_jsonl_deterministic() {
 /// - grapheme-pool usage stabilizes after warmup (no runaway growth trend).
 #[test]
 fn golden_web_demo_soak_pool_stability() {
-    const SOAK_CYCLES: usize = 12;
-    let soak_a = run_web_sweep_soak(120, 40, 2.0, SOAK_CYCLES);
-    let soak_b = run_web_sweep_soak(120, 40, 2.0, SOAK_CYCLES);
+    const MIN_SOAK_SIMULATED_MS: u64 = 10 * 60 * 1_000;
+    const SOAK_TICK_MS: u64 = 1_000;
+
+    let screens_per_cycle =
+        u64::try_from(screens::screen_ids().len()).expect("screen count must fit in u64");
+    let cycle_simulated_ms = screens_per_cycle.saturating_mul(SOAK_TICK_MS);
+    let soak_cycles_u64 = MIN_SOAK_SIMULATED_MS.div_ceil(cycle_simulated_ms).max(12);
+    let soak_cycles = usize::try_from(soak_cycles_u64).expect("soak cycle count must fit usize");
+
+    let soak_a = run_web_sweep_soak(120, 40, 2.0, soak_cycles, SOAK_TICK_MS);
+    let soak_b = run_web_sweep_soak(120, 40, 2.0, soak_cycles, SOAK_TICK_MS);
     assert_web_sweep_deterministic(&soak_a.records, &soak_b.records, 120, 40);
 
-    assert_eq!(soak_a.cycle_pool_lens.len(), SOAK_CYCLES);
+    assert_eq!(soak_a.cycle_pool_lens.len(), soak_cycles);
     assert_eq!(
         soak_a.cycle_pool_lens, soak_b.cycle_pool_lens,
         "soak pool profile must be deterministic"
+    );
+    assert_eq!(
+        soak_a.simulated_elapsed_ms, soak_b.simulated_elapsed_ms,
+        "simulated soak duration must be deterministic"
+    );
+    assert!(
+        soak_a.simulated_elapsed_ms >= MIN_SOAK_SIMULATED_MS,
+        "soak simulated duration too short: got={}ms target={}ms",
+        soak_a.simulated_elapsed_ms,
+        MIN_SOAK_SIMULATED_MS
     );
 
     // Memory stability gate:

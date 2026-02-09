@@ -2289,6 +2289,27 @@ impl MermaidMegaShowcaseScreen {
         true
     }
 
+    /// Stabilize UI state for deterministic snapshot/hash tests.
+    ///
+    /// Collapses volatile panels and clears transient interaction state.
+    #[doc(hidden)]
+    pub fn stabilize_for_snapshot(&mut self) {
+        self.state.mode = ShowcaseMode::Normal;
+        self.state.panels.controls = false;
+        self.state.panels.metrics = false;
+        self.state.panels.detail = false;
+        self.state.panels.status_log = false;
+        self.state.panels.help_overlay = false;
+        self.state.panels.diagnostics = false;
+        self.state.selected_node = None;
+        self.state.search_query = None;
+        self.state.search_matches.clear();
+        self.state.search_match_idx = 0;
+        self.state.sweep.running = false;
+        self.state.debug_overlays = DebugOverlays::default();
+        self.state.comparison_enabled = false;
+    }
+
     /// Map a key event to an action.
     fn handle_key(&self, event: &ftui_core::event::KeyEvent) -> Option<MegaAction> {
         use ftui_core::event::{KeyCode, KeyEventKind, Modifiers};
@@ -7727,6 +7748,42 @@ mod tests {
             fg_colors.len(),
             fg_colors
         );
+    }
+
+    #[test]
+    fn stabilize_for_snapshot_clears_transient_state() {
+        let mut screen = MermaidMegaShowcaseScreen::new();
+        screen.state.mode = ShowcaseMode::Search;
+        screen.state.panels.controls = true;
+        screen.state.panels.metrics = true;
+        screen.state.panels.detail = true;
+        screen.state.panels.status_log = true;
+        screen.state.panels.help_overlay = true;
+        screen.state.panels.diagnostics = true;
+        screen.state.selected_node = Some(1);
+        screen.state.search_query = Some("graph".to_string());
+        screen.state.search_matches = vec![1, 2, 3];
+        screen.state.search_match_idx = 2;
+        screen.state.sweep.running = true;
+        screen.state.debug_overlays.node_bounds = true;
+        screen.state.comparison_enabled = true;
+
+        screen.stabilize_for_snapshot();
+
+        assert_eq!(screen.state.mode, ShowcaseMode::Normal);
+        assert!(!screen.state.panels.controls);
+        assert!(!screen.state.panels.metrics);
+        assert!(!screen.state.panels.detail);
+        assert!(!screen.state.panels.status_log);
+        assert!(!screen.state.panels.help_overlay);
+        assert!(!screen.state.panels.diagnostics);
+        assert!(screen.state.selected_node.is_none());
+        assert!(screen.state.search_query.is_none());
+        assert!(screen.state.search_matches.is_empty());
+        assert_eq!(screen.state.search_match_idx, 0);
+        assert!(!screen.state.sweep.running);
+        assert!(!screen.state.debug_overlays.any_active());
+        assert!(!screen.state.comparison_enabled);
     }
 
     #[test]
