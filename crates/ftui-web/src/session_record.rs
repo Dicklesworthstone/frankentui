@@ -135,6 +135,108 @@ impl SessionTrace {
             _ => None,
         })
     }
+
+    /// Validate structural invariants for a recorded trace.
+    ///
+    /// This checks:
+    /// - header exists and is the first record
+    /// - summary exists and is the last record
+    /// - frame indices are contiguous and start at zero
+    /// - summary totals/chains match frame records
+    pub fn validate(&self) -> Result<(), TraceValidationError> {
+        if self.records.is_empty() {
+            return Err(TraceValidationError::EmptyTrace);
+        }
+
+        let mut header_count: usize = 0;
+        let mut summary: Option<(usize, u64, u64)> = None;
+        let mut expected_frame_idx: u64 = 0;
+        let mut frame_count: u64 = 0;
+        let mut last_checksum_chain: u64 = 0;
+
+        for (idx, record) in self.records.iter().enumerate() {
+            match record {
+                TraceRecord::Header { .. } => {
+                    if summary.is_some() {
+                        let summary_idx = summary.map(|(i, _, _)| i).unwrap_or_default();
+                        return Err(TraceValidationError::SummaryNotLast {
+                            summary_index: summary_idx,
+                        });
+                    }
+                    header_count += 1;
+                }
+                TraceRecord::Summary {
+                    total_frames,
+                    final_checksum_chain,
+                } => {
+                    if summary.is_some() {
+                        return Err(TraceValidationError::MultipleSummaries);
+                    }
+                    summary = Some((idx, *total_frames, *final_checksum_chain));
+                }
+                TraceRecord::Frame {
+                    frame_idx,
+                    checksum_chain,
+                    ..
+                } => {
+                    if summary.is_some() {
+                        let summary_idx = summary.map(|(i, _, _)| i).unwrap_or_default();
+                        return Err(TraceValidationError::SummaryNotLast {
+                            summary_index: summary_idx,
+                        });
+                    }
+                    if *frame_idx != expected_frame_idx {
+                        return Err(TraceValidationError::FrameIndexMismatch {
+                            expected: expected_frame_idx,
+                            actual: *frame_idx,
+                        });
+                    }
+                    expected_frame_idx = expected_frame_idx.saturating_add(1);
+                    frame_count = frame_count.saturating_add(1);
+                    last_checksum_chain = *checksum_chain;
+                }
+                TraceRecord::Input { .. } | TraceRecord::Resize { .. } | TraceRecord::Tick { .. } => {
+                    if summary.is_some() {
+                        let summary_idx = summary.map(|(i, _, _)| i).unwrap_or_default();
+                        return Err(TraceValidationError::SummaryNotLast {
+                            summary_index: summary_idx,
+                        });
+                    }
+                }
+            }
+        }
+
+        if header_count == 0 {
+            return Err(TraceValidationError::MissingHeader);
+        }
+        if header_count > 1 {
+            return Err(TraceValidationError::MultipleHeaders);
+        }
+        if !matches!(self.records.first(), Some(TraceRecord::Header { .. })) {
+            return Err(TraceValidationError::HeaderNotFirst);
+        }
+
+        let Some((summary_idx, summary_frames, summary_chain)) = summary else {
+            return Err(TraceValidationError::MissingSummary);
+        };
+        if summary_idx != self.records.len().saturating_sub(1) {
+            return Err(TraceValidationError::SummaryNotLast { summary_index: summary_idx });
+        }
+        if summary_frames != frame_count {
+            return Err(TraceValidationError::SummaryFrameCountMismatch {
+                expected: frame_count,
+                actual: summary_frames,
+            });
+        }
+        if summary_chain != last_checksum_chain {
+            return Err(TraceValidationError::SummaryChecksumChainMismatch {
+                expected: last_checksum_chain,
+                actual: summary_chain,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 /// Records a WASM session for deterministic replay.
@@ -289,6 +391,8 @@ pub struct ReplayMismatch {
 pub enum ReplayError {
     /// The trace is missing a header record.
     MissingHeader,
+    /// The trace violates structural invariants.
+    InvalidTrace(TraceValidationError),
     /// A backend error occurred during replay.
     Backend(WebBackendError),
 }
@@ -297,6 +401,7 @@ impl core::fmt::Display for ReplayError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::MissingHeader => write!(f, "trace missing header record"),
+            Self::InvalidTrace(e) => write!(f, "invalid trace: {e}"),
             Self::Backend(e) => write!(f, "backend error: {e}"),
         }
     }
@@ -331,6 +436,7 @@ pub fn replay<M: ftui_runtime::program::Model>(
             _ => None,
         })
         .ok_or(ReplayError::MissingHeader)?;
+    trace.validate().map_err(ReplayError::InvalidTrace)?;
 
     let mut program = StepProgram::new(model, cols, rows);
     program.init()?;
@@ -598,6 +704,13 @@ impl SessionTrace {
         }
         Ok(SessionTrace { records })
     }
+
+    /// Parse and validate a golden-trace-v1 JSONL payload.
+    pub fn from_jsonl_validated(input: &str) -> Result<Self, TraceLoadError> {
+        let trace = Self::from_jsonl(input)?;
+        trace.validate()?;
+        Ok(trace)
+    }
 }
 
 /// Error parsing a JSONL trace.
@@ -614,6 +727,88 @@ impl core::fmt::Display for TraceParseError {
 }
 
 impl std::error::Error for TraceParseError {}
+
+/// Typed validation failures for `SessionTrace`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceValidationError {
+    EmptyTrace,
+    MissingHeader,
+    HeaderNotFirst,
+    MultipleHeaders,
+    MissingSummary,
+    MultipleSummaries,
+    SummaryNotLast { summary_index: usize },
+    FrameIndexMismatch { expected: u64, actual: u64 },
+    SummaryFrameCountMismatch { expected: u64, actual: u64 },
+    SummaryChecksumChainMismatch { expected: u64, actual: u64 },
+}
+
+impl core::fmt::Display for TraceValidationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptyTrace => write!(f, "trace is empty"),
+            Self::MissingHeader => write!(f, "trace is missing header"),
+            Self::HeaderNotFirst => write!(f, "trace header is not the first record"),
+            Self::MultipleHeaders => write!(f, "trace contains multiple headers"),
+            Self::MissingSummary => write!(f, "trace is missing summary"),
+            Self::MultipleSummaries => write!(f, "trace contains multiple summaries"),
+            Self::SummaryNotLast { summary_index } => write!(
+                f,
+                "trace summary at index {} is not the final record",
+                summary_index
+            ),
+            Self::FrameIndexMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "frame index mismatch: expected {}, got {}",
+                    expected, actual
+                )
+            }
+            Self::SummaryFrameCountMismatch { expected, actual } => write!(
+                f,
+                "summary frame-count mismatch: expected {}, got {}",
+                expected, actual
+            ),
+            Self::SummaryChecksumChainMismatch { expected, actual } => write!(
+                f,
+                "summary checksum-chain mismatch: expected {:016x}, got {:016x}",
+                expected, actual
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TraceValidationError {}
+
+/// Combined load error for parse + validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceLoadError {
+    Parse(TraceParseError),
+    Validation(TraceValidationError),
+}
+
+impl core::fmt::Display for TraceLoadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Parse(e) => write!(f, "{e}"),
+            Self::Validation(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for TraceLoadError {}
+
+impl From<TraceParseError> for TraceLoadError {
+    fn from(value: TraceParseError) -> Self {
+        Self::Parse(value)
+    }
+}
+
+impl From<TraceValidationError> for TraceLoadError {
+    fn from(value: TraceValidationError) -> Self {
+        Self::Validation(value)
+    }
+}
 
 // ---- Minimal JSON field extraction (no serde dependency) ----
 
@@ -729,6 +924,12 @@ fn parse_trace_line(line: &str, line_num: usize) -> Result<TraceRecord, TracePar
         line: line_num,
         message: msg.to_string(),
     };
+
+    let schema_version = extract_str(line, "schema_version")
+        .ok_or_else(|| err("missing \"schema_version\" field"))?;
+    if schema_version != SCHEMA_VERSION {
+        return Err(err(&format!("unsupported schema_version: {schema_version}")));
+    }
 
     let event = extract_str(line, "event").ok_or_else(|| err("missing \"event\" field"))?;
 
