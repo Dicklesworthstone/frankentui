@@ -1,0 +1,42 @@
+{
+  "name": "cjk_mixed_with_ascii",
+  "description": "Mix of CJK wide chars and ASCII narrow chars on same line",
+  "initial_size": [
+    12,
+    3
+  ],
+  "input_bytes_hex": "41e4b8ad42e59bbd43",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 7
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "\u4e2d"
+      },
+      {
+        "row": 0,
+        "col": 3,
+        "char": "B"
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": "\u56fd"
+      },
+      {
+        "row": 0,
+        "col": 6,
+        "char": "C"
+      }
+    ]
+  }
+}

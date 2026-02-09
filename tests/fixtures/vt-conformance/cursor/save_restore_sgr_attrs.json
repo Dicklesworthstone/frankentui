@@ -1,0 +1,39 @@
+{
+  "name": "save_restore_sgr_attrs",
+  "description": "DECSC/DECRC preserves SGR attributes including colors - restore overwrites",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b5b313b33316d411b371b5b306d421b3843",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 2
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A",
+        "attrs": {
+          "bold": true,
+          "fg_color": {
+            "named": 1
+          }
+        }
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "C",
+        "attrs": {
+          "bold": true,
+          "fg_color": {
+            "named": 1
+          }
+        }
+      }
+    ]
+  }
+}

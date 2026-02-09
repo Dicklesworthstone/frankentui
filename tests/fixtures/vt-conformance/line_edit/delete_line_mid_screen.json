@@ -1,0 +1,52 @@
+{
+  "name": "delete_line_mid_screen",
+  "description": "DL deletes line at cursor row, pulling content up; bottom line becomes blank",
+  "initial_size": [
+    6,
+    4
+  ],
+  "input_bytes_hex": "4c494e45300a0d4c494e45310a0d4c494e45320a0d4c494e45331b5b323b31481b5b314d",
+  "expected": {
+    "cursor": {
+      "row": 1,
+      "col": 0
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "L"
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": "0"
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "char": "L"
+      },
+      {
+        "row": 1,
+        "col": 4,
+        "char": "2"
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "char": "L"
+      },
+      {
+        "row": 2,
+        "col": 4,
+        "char": "3"
+      },
+      {
+        "row": 3,
+        "col": 0,
+        "char": " "
+      }
+    ]
+  }
+}

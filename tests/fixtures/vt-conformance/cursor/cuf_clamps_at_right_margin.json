@@ -1,0 +1,27 @@
+{
+  "name": "cuf_clamps_at_right_margin",
+  "description": "CUF clamps at last column - does not wrap to next line",
+  "initial_size": [
+    6,
+    3
+  ],
+  "input_bytes_hex": "411b5b3130304358",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 5
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A"
+      },
+      {
+        "row": 0,
+        "col": 5,
+        "char": "X"
+      }
+    ]
+  }
+}
