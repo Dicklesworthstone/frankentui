@@ -1,0 +1,20 @@
+{
+  "name": "ed_above_indexed_bg",
+  "description": "ED 1 (erase above) with SGR 48;5 indexed background — erased cells inherit current indexed bg",
+  "initial_size": [8, 3],
+  "input_bytes_hex": "4141414141414141424242424242424243434343434343431b5b34383b353b3230326d1b5b323b3348 1b5b314a",
+  "comment": "Fill 8x3 with A/B/C rows. Set bg indexed(202). CUP(2,3) -> (1,2). ED 1 erases row 0 and row 1 cols 0-2 with indexed bg.",
+  "expected": {
+    "cursor": { "row": 1, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": " ", "attrs": { "bg_color": { "indexed": 202 } } },
+      { "row": 0, "col": 7, "char": " ", "attrs": { "bg_color": { "indexed": 202 } } },
+      { "row": 1, "col": 0, "char": " ", "attrs": { "bg_color": { "indexed": 202 } } },
+      { "row": 1, "col": 2, "char": " ", "attrs": { "bg_color": { "indexed": 202 } } },
+      { "row": 1, "col": 3, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 7, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 7, "char": "C", "attrs": { "bg_color": "default" } }
+    ]
+  }
+}

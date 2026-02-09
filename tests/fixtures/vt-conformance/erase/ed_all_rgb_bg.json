@@ -1,0 +1,16 @@
+{
+  "name": "ed_all_rgb_bg",
+  "description": "ED 2 (erase all) with SGR 48;2 RGB background — entire screen is cleared with current truecolor bg",
+  "initial_size": [8, 2],
+  "input_bytes_hex": "41424344454647481b5b3248 494a4b4c4d4e4f501b5b34383b323b313b323b336d1b5b313b3448 1b5b324a",
+  "comment": "Print two rows (A-H, I-P), set bg RGB(1,2,3), move cursor to (1,4), ED 2 clears whole display using that RGB bg and keeps cursor position.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": " ", "attrs": { "bg_color": { "rgb": [1, 2, 3] } } },
+      { "row": 0, "col": 7, "char": " ", "attrs": { "bg_color": { "rgb": [1, 2, 3] } } },
+      { "row": 1, "col": 0, "char": " ", "attrs": { "bg_color": { "rgb": [1, 2, 3] } } },
+      { "row": 1, "col": 7, "char": " ", "attrs": { "bg_color": { "rgb": [1, 2, 3] } } }
+    ]
+  }
+}
