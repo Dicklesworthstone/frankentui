@@ -508,8 +508,10 @@ impl Parser {
     }
 
     fn take_buf(&mut self) -> Vec<u8> {
-        let mut out = Vec::new();
-        core::mem::swap(&mut out, &mut self.buf);
+        // Clone+clear instead of swap-with-empty so that `self.buf` retains
+        // its heap capacity for the next escape sequence (avoids re-alloc).
+        let out = self.buf.clone();
+        self.buf.clear();
         out
     }
 
