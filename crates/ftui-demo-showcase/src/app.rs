@@ -6177,6 +6177,36 @@ mod tests {
     }
 
     #[test]
+    fn apply_theme_keeps_lazy_screens_uninitialized() {
+        let mut states = ScreenStates::default();
+        let lazy_screens = [
+            ScreenId::Shakespeare,
+            ScreenId::CodeExplorer,
+            ScreenId::FileBrowser,
+            ScreenId::VisualEffects,
+            ScreenId::SnapshotPlayer,
+        ];
+
+        for screen in lazy_screens {
+            assert!(
+                !states.is_lazy_initialized(screen),
+                "expected {:?} to start uninitialized",
+                screen
+            );
+        }
+
+        states.apply_theme();
+
+        for screen in lazy_screens {
+            assert!(
+                !states.is_lazy_initialized(screen),
+                "apply_theme should not force lazy init for {:?}",
+                screen
+            );
+        }
+    }
+
+    #[test]
     fn lazy_screen_init_logs_once_per_screen() {
         // Acquire exclusive access to screen init events for this test
         let guard = ScreenInitEventGuard::new();
