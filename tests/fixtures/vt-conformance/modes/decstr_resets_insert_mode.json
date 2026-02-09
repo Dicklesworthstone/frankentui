@@ -1,0 +1,15 @@
+{
+  "name": "decstr_resets_insert_mode",
+  "description": "DECSTR soft reset clears IRM back to replace mode",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b34684142431b5b21701b5b4858595a",
+  "comment": "CSI 4 h (IRM on), print ABC, CSI ! p (soft reset clears IRM), CUP(1,1) home, print XYZ; XYZ overwrites ABC → XYZ; cursor at (0,3)",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "Y" },
+      { "row": 0, "col": 2, "char": "Z" }
+    ]
+  }
+}

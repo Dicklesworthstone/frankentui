@@ -295,11 +295,23 @@ impl CoreHarness {
             Action::DecSet(params) => {
                 for &p in &params {
                     self.modes.set_dec_mode(p, true);
+                    if p == 6 {
+                        // DECOM on: home cursor to top-left of scroll region.
+                        self.cursor.row = self.cursor.scroll_top();
+                        self.cursor.col = 0;
+                        self.cursor.pending_wrap = false;
+                    }
                 }
             }
             Action::DecRst(params) => {
                 for &p in &params {
                     self.modes.set_dec_mode(p, false);
+                    if p == 6 {
+                        // DECOM off: home cursor to absolute (0,0).
+                        self.cursor.row = 0;
+                        self.cursor.col = 0;
+                        self.cursor.pending_wrap = false;
+                    }
                 }
             }
             Action::AnsiSet(params) => {

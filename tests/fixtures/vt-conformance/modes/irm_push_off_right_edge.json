@@ -1,0 +1,17 @@
+{
+  "name": "irm_push_off_right_edge",
+  "description": "IRM insert mode pushes rightmost characters off screen edge",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "41424344451b5b34681b5b485859",
+  "comment": "Print ABCDE (fills 5-col row), CSI 4 h (IRM on), CUP(1,1) home, print XY; inserts XY at col 0-1, shifting ABCDE right, D+E fall off → XYABC; cursor at (0,2)",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "Y" },
+      { "row": 0, "col": 2, "char": "A" },
+      { "row": 0, "col": 3, "char": "B" },
+      { "row": 0, "col": 4, "char": "C" }
+    ]
+  }
+}

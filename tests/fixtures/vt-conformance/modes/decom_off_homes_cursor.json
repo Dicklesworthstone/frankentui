@@ -1,0 +1,13 @@
+{
+  "name": "decom_off_homes_cursor",
+  "description": "Disabling DECOM homes cursor to absolute (0,0) regardless of scroll region",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b323b34721b5b3f36681b5b323b3348411b5b3f366c",
+  "comment": "DECSTBM(2,4), DECOM on, CUP(2,3) → abs row 2 col 2, print A at (2,2). DECOM off → homes to (0,0). Cursor at (0,0), A visible at (2,2).",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 2, "col": 2, "char": "A" }
+    ]
+  }
+}
