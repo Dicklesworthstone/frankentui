@@ -290,6 +290,14 @@ struct ResizeStormFrameJsonlRecord<'a> {
     text_shaping_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text_shaping_engine: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    screen_reader_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    high_contrast_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reduced_motion_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    focused: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -393,17 +401,46 @@ pub struct InteractionSnapshot {
     pub selection_end: u32,
     pub text_shaping_enabled: bool,
     pub text_shaping_engine: u32,
+    pub screen_reader_enabled: bool,
+    pub high_contrast_enabled: bool,
+    pub reduced_motion_enabled: bool,
+    pub focused: bool,
 }
 
 impl InteractionSnapshot {
     #[must_use]
+    const fn bool_u32(value: bool) -> u32 {
+        if value { 1 } else { 0 }
+    }
+
+    #[must_use]
     const fn selection_active_u32(self) -> u32 {
-        if self.selection_active { 1 } else { 0 }
+        Self::bool_u32(self.selection_active)
     }
 
     #[must_use]
     const fn text_shaping_enabled_u32(self) -> u32 {
-        if self.text_shaping_enabled { 1 } else { 0 }
+        Self::bool_u32(self.text_shaping_enabled)
+    }
+
+    #[must_use]
+    const fn screen_reader_enabled_u32(self) -> u32 {
+        Self::bool_u32(self.screen_reader_enabled)
+    }
+
+    #[must_use]
+    const fn high_contrast_enabled_u32(self) -> u32 {
+        Self::bool_u32(self.high_contrast_enabled)
+    }
+
+    #[must_use]
+    const fn reduced_motion_enabled_u32(self) -> u32 {
+        Self::bool_u32(self.reduced_motion_enabled)
+    }
+
+    #[must_use]
+    const fn focused_u32(self) -> u32 {
+        Self::bool_u32(self.focused)
     }
 }
 
@@ -430,6 +467,13 @@ pub fn stable_frame_hash_with_interaction(
     hash = fnv1a64_extend(hash, &interaction.selection_end.to_le_bytes());
     hash = fnv1a64_extend(hash, &interaction.text_shaping_enabled_u32().to_le_bytes());
     hash = fnv1a64_extend(hash, &interaction.text_shaping_engine.to_le_bytes());
+    hash = fnv1a64_extend(hash, &interaction.screen_reader_enabled_u32().to_le_bytes());
+    hash = fnv1a64_extend(hash, &interaction.high_contrast_enabled_u32().to_le_bytes());
+    hash = fnv1a64_extend(
+        hash,
+        &interaction.reduced_motion_enabled_u32().to_le_bytes(),
+    );
+    hash = fnv1a64_extend(hash, &interaction.focused_u32().to_le_bytes());
     format!("{FRAME_HASH_ALGO}:{hash:016x}")
 }
 
@@ -637,6 +681,8 @@ pub fn resize_storm_frame_jsonl(
 /// When `interaction` is present, this additionally emits:
 /// - `interaction_hash` (geometry + cells + overlay state)
 /// - raw overlay fields (`hovered_link_id`, `cursor_*`, `selection_*`, `text_shaping_*`)
+/// - accessibility state flags (`screen_reader_enabled`, `high_contrast_enabled`,
+///   `reduced_motion_enabled`, `focused`)
 #[must_use]
 pub fn resize_storm_frame_jsonl_with_interaction(
     run_id: &str,
@@ -658,6 +704,10 @@ pub fn resize_storm_frame_jsonl_with_interaction(
         selection_end,
         text_shaping_enabled,
         text_shaping_engine,
+        screen_reader_enabled,
+        high_contrast_enabled,
+        reduced_motion_enabled,
+        focused,
     ) = if let Some(state) = interaction {
         (
             Some(stable_frame_hash_with_interaction(cells, geometry, state)),
@@ -669,9 +719,15 @@ pub fn resize_storm_frame_jsonl_with_interaction(
             Some(state.selection_end),
             Some(state.text_shaping_enabled),
             Some(state.text_shaping_engine),
+            Some(state.screen_reader_enabled),
+            Some(state.high_contrast_enabled),
+            Some(state.reduced_motion_enabled),
+            Some(state.focused),
         )
     } else {
-        (None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
     };
 
     let row = ResizeStormFrameJsonlRecord {
@@ -695,6 +751,10 @@ pub fn resize_storm_frame_jsonl_with_interaction(
         selection_end,
         text_shaping_enabled,
         text_shaping_engine,
+        screen_reader_enabled,
+        high_contrast_enabled,
+        reduced_motion_enabled,
+        focused,
     };
     serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string())
 }
@@ -1053,6 +1113,10 @@ mod tests {
             selection_end: 4,
             text_shaping_enabled: false,
             text_shaping_engine: 0,
+            screen_reader_enabled: true,
+            high_contrast_enabled: false,
+            reduced_motion_enabled: true,
+            focused: true,
         };
 
         let line_a = resize_storm_frame_jsonl_with_interaction(
@@ -1086,6 +1150,10 @@ mod tests {
         assert_eq!(parsed_a["selection_end"], 4);
         assert_eq!(parsed_a["text_shaping_enabled"], false);
         assert_eq!(parsed_a["text_shaping_engine"], 0);
+        assert_eq!(parsed_a["screen_reader_enabled"], true);
+        assert_eq!(parsed_a["high_contrast_enabled"], false);
+        assert_eq!(parsed_a["reduced_motion_enabled"], true);
+        assert_eq!(parsed_a["focused"], true);
     }
 
     #[test]
@@ -1171,6 +1239,10 @@ mod tests {
             selection_end: 2,
             text_shaping_enabled: false,
             text_shaping_engine: 0,
+            screen_reader_enabled: false,
+            high_contrast_enabled: false,
+            reduced_motion_enabled: false,
+            focused: false,
         };
         let a = stable_frame_hash_with_interaction(&cells, geometry, interaction);
         let b = stable_frame_hash_with_interaction(&cells, geometry, interaction);
@@ -1227,6 +1299,10 @@ mod tests {
             text_shaping_engine: 1,
             ..none
         };
+        let high_contrast = InteractionSnapshot {
+            high_contrast_enabled: true,
+            ..none
+        };
 
         let none_hash = stable_frame_hash_with_interaction(&cells, geometry, none);
         let hover_hash = stable_frame_hash_with_interaction(&cells, geometry, hover);
@@ -1237,6 +1313,8 @@ mod tests {
             stable_frame_hash_with_interaction(&cells, geometry, shaping_enabled);
         let shaping_harfbuzz_hash =
             stable_frame_hash_with_interaction(&cells, geometry, shaping_harfbuzz);
+        let high_contrast_hash =
+            stable_frame_hash_with_interaction(&cells, geometry, high_contrast);
 
         assert_ne!(none_hash, hover_hash);
         assert_ne!(none_hash, block_hash);
@@ -1244,6 +1322,7 @@ mod tests {
         assert_ne!(none_hash, selection_hash);
         assert_ne!(none_hash, shaping_enabled_hash);
         assert_ne!(shaping_enabled_hash, shaping_harfbuzz_hash);
+        assert_ne!(none_hash, high_contrast_hash);
     }
 
     #[test]
@@ -1310,6 +1389,10 @@ mod tests {
             selection_end: 3,
             text_shaping_enabled: true,
             text_shaping_engine: 1,
+            screen_reader_enabled: true,
+            high_contrast_enabled: true,
+            reduced_motion_enabled: false,
+            focused: true,
         };
 
         let base = resize_storm_frame_jsonl("run-2", 7, "T000002", 4, geometry, &cells);
@@ -1341,6 +1424,10 @@ mod tests {
         assert_eq!(with_parsed["selection_end"], 3);
         assert_eq!(with_parsed["text_shaping_enabled"], true);
         assert_eq!(with_parsed["text_shaping_engine"], 1);
+        assert_eq!(with_parsed["screen_reader_enabled"], true);
+        assert_eq!(with_parsed["high_contrast_enabled"], true);
+        assert_eq!(with_parsed["reduced_motion_enabled"], false);
+        assert_eq!(with_parsed["focused"], true);
     }
 
     #[test]

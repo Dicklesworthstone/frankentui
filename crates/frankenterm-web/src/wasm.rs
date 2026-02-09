@@ -1064,10 +1064,15 @@ impl FrankenTermWeb {
 
     fn resize_storm_interaction_snapshot(&self) -> Option<InteractionSnapshot> {
         let has_shaping_state = self.text_shaping != TextShapingConfig::default();
+        let has_a11y_state = self.screen_reader_enabled
+            || self.high_contrast_enabled
+            || self.reduced_motion_enabled
+            || self.focused;
         let has_overlay = self.hovered_link_id != 0
             || self.cursor_offset.is_some()
             || self.active_selection_range().is_some()
-            || has_shaping_state;
+            || has_shaping_state
+            || has_a11y_state;
         if !has_overlay {
             return None;
         }
@@ -1083,6 +1088,10 @@ impl FrankenTermWeb {
             selection_end,
             text_shaping_enabled: self.text_shaping.enabled,
             text_shaping_engine: self.text_shaping.engine.as_u32(),
+            screen_reader_enabled: self.screen_reader_enabled,
+            high_contrast_enabled: self.high_contrast_enabled,
+            reduced_motion_enabled: self.reduced_motion_enabled,
+            focused: self.focused,
         })
     }
 
@@ -2408,6 +2417,10 @@ mod tests {
                 selection_end: 9,
                 text_shaping_enabled: false,
                 text_shaping_engine: 0,
+                screen_reader_enabled: false,
+                high_contrast_enabled: false,
+                reduced_motion_enabled: false,
+                focused: false,
             })
         );
     }
@@ -2431,6 +2444,10 @@ mod tests {
                 selection_end: 0,
                 text_shaping_enabled: false,
                 text_shaping_engine: 0,
+                screen_reader_enabled: false,
+                high_contrast_enabled: false,
+                reduced_motion_enabled: false,
+                focused: false,
             })
         );
     }
@@ -2454,6 +2471,37 @@ mod tests {
                 selection_end: 0,
                 text_shaping_enabled: true,
                 text_shaping_engine: 1,
+                screen_reader_enabled: false,
+                high_contrast_enabled: false,
+                reduced_motion_enabled: false,
+                focused: false,
+            })
+        );
+    }
+
+    #[test]
+    fn resize_storm_interaction_snapshot_includes_accessibility_state_without_other_overlays() {
+        let mut term = FrankenTermWeb::new();
+        term.screen_reader_enabled = true;
+        term.high_contrast_enabled = true;
+        term.reduced_motion_enabled = true;
+        term.focused = true;
+
+        assert_eq!(
+            term.resize_storm_interaction_snapshot(),
+            Some(InteractionSnapshot {
+                hovered_link_id: 0,
+                cursor_offset: 0,
+                cursor_style: CursorStyle::None.as_u32(),
+                selection_active: false,
+                selection_start: 0,
+                selection_end: 0,
+                text_shaping_enabled: false,
+                text_shaping_engine: 0,
+                screen_reader_enabled: true,
+                high_contrast_enabled: true,
+                reduced_motion_enabled: true,
+                focused: true,
             })
         );
     }
