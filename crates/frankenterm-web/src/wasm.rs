@@ -118,8 +118,25 @@ struct LinkOpenPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TextShapingEngine {
+    #[default]
+    None,
+    Harfbuzz,
+}
+
+impl TextShapingEngine {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Harfbuzz => "harfbuzz",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct TextShapingConfig {
     enabled: bool,
+    engine: TextShapingEngine,
 }
 
 impl Default for LinkOpenPolicy {
@@ -1965,6 +1982,22 @@ fn parse_text_shaping_config(
         config.enabled = v;
     }
 
+    if let Some(v) = get_string_opt(options, "engine")?
+        .or(get_string_opt(options, "shapingEngine")?)
+        .or(get_string_opt(options, "shaping_engine")?)
+    {
+        let engine_key = v.trim().to_ascii_lowercase();
+        config.engine = match engine_key.as_str() {
+            "none" => TextShapingEngine::None,
+            "harfbuzz" => TextShapingEngine::Harfbuzz,
+            _ => {
+                return Err(JsValue::from_str(
+                    "field engine must be one of: none, harfbuzz",
+                ));
+            }
+        };
+    }
+
     Ok(config)
 }
 
@@ -2078,7 +2111,7 @@ fn text_shaping_config_to_js(config: TextShapingConfig) -> JsValue {
     let _ = Reflect::set(
         &obj,
         &JsValue::from_str("engine"),
-        &JsValue::from_str("none"),
+        &JsValue::from_str(config.engine.as_str()),
     );
     let _ = Reflect::set(
         &obj,
@@ -2802,7 +2835,13 @@ mod tests {
             &JsValue::from_bool(true),
         );
         assert!(term.set_text_shaping(enable.into()).is_ok());
-        assert_eq!(term.text_shaping, TextShapingConfig { enabled: true });
+        assert_eq!(
+            term.text_shaping,
+            TextShapingConfig {
+                enabled: true,
+                engine: TextShapingEngine::None
+            }
+        );
 
         let disable = Object::new();
         let _ = Reflect::set(
@@ -2811,7 +2850,7 @@ mod tests {
             &JsValue::from_bool(false),
         );
         assert!(term.set_text_shaping(disable.into()).is_ok());
-        assert_eq!(term.text_shaping, TextShapingConfig { enabled: false });
+        assert_eq!(term.text_shaping, TextShapingConfig::default());
     }
 
     #[test]
@@ -2830,6 +2869,47 @@ mod tests {
     }
 
     #[test]
+    fn set_text_shaping_parses_engine_and_rejects_unknown_values() {
+        let mut term = FrankenTermWeb::new();
+
+        let cfg = Object::new();
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("enabled"),
+            &JsValue::from_bool(true),
+        );
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("engine"),
+            &JsValue::from_str("harfbuzz"),
+        );
+        assert!(term.set_text_shaping(cfg.into()).is_ok());
+        assert_eq!(
+            term.text_shaping,
+            TextShapingConfig {
+                enabled: true,
+                engine: TextShapingEngine::Harfbuzz
+            }
+        );
+        let state = term.text_shaping_state();
+        assert_eq!(
+            Reflect::get(&state, &JsValue::from_str("engine"))
+                .unwrap()
+                .as_string()
+                .as_deref(),
+            Some("harfbuzz")
+        );
+
+        let invalid = Object::new();
+        let _ = Reflect::set(
+            &invalid,
+            &JsValue::from_str("engine"),
+            &JsValue::from_str("icu"),
+        );
+        assert!(term.set_text_shaping(invalid.into()).is_err());
+    }
+
+    #[test]
     fn destroy_restores_text_shaping_default_state() {
         let mut term = FrankenTermWeb::new();
 
@@ -2840,7 +2920,13 @@ mod tests {
             &JsValue::from_bool(true),
         );
         assert!(term.set_text_shaping(enable.into()).is_ok());
-        assert_eq!(term.text_shaping, TextShapingConfig { enabled: true });
+        assert_eq!(
+            term.text_shaping,
+            TextShapingConfig {
+                enabled: true,
+                engine: TextShapingEngine::None
+            }
+        );
 
         term.destroy();
         assert_eq!(term.text_shaping, TextShapingConfig::default());
