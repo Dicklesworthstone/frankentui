@@ -2815,6 +2815,76 @@ mod tests {
     }
 
     #[test]
+    fn set_text_shaping_rejects_non_boolean_values() {
+        let mut term = FrankenTermWeb::new();
+
+        let invalid = Object::new();
+        let _ = Reflect::set(
+            &invalid,
+            &JsValue::from_str("enabled"),
+            &JsValue::from_str("yes"),
+        );
+
+        assert!(term.set_text_shaping(invalid.into()).is_err());
+        assert_eq!(term.text_shaping, TextShapingConfig::default());
+    }
+
+    #[test]
+    fn destroy_restores_text_shaping_default_state() {
+        let mut term = FrankenTermWeb::new();
+
+        let enable = Object::new();
+        let _ = Reflect::set(
+            &enable,
+            &JsValue::from_str("enabled"),
+            &JsValue::from_bool(true),
+        );
+        assert!(term.set_text_shaping(enable.into()).is_ok());
+        assert_eq!(term.text_shaping, TextShapingConfig { enabled: true });
+
+        term.destroy();
+        assert_eq!(term.text_shaping, TextShapingConfig::default());
+    }
+
+    #[test]
+    fn text_shaping_toggle_keeps_patch_projection_deterministic() {
+        let text = "ffi αβ https://shape.test/path";
+        let cells = text_row_cells(text);
+        let mut term = FrankenTermWeb::new();
+        term.cols = text.chars().count() as u16;
+        term.rows = 1;
+
+        assert!(term.apply_patch(patch_value(0, &cells)).is_ok());
+        let baseline_shadow = term.shadow_cells.clone();
+        let baseline_ids = term.auto_link_ids.clone();
+        let baseline_urls = term.auto_link_urls.clone();
+
+        let enable = Object::new();
+        let _ = Reflect::set(
+            &enable,
+            &JsValue::from_str("enabled"),
+            &JsValue::from_bool(true),
+        );
+        assert!(term.set_text_shaping(enable.into()).is_ok());
+        assert!(term.apply_patch(patch_value(0, &cells)).is_ok());
+        assert_eq!(term.shadow_cells, baseline_shadow);
+        assert_eq!(term.auto_link_ids, baseline_ids);
+        assert_eq!(term.auto_link_urls, baseline_urls);
+
+        let disable = Object::new();
+        let _ = Reflect::set(
+            &disable,
+            &JsValue::from_str("enabled"),
+            &JsValue::from_bool(false),
+        );
+        assert!(term.set_text_shaping(disable.into()).is_ok());
+        assert!(term.apply_patch(patch_value(0, &cells)).is_ok());
+        assert_eq!(term.shadow_cells, baseline_shadow);
+        assert_eq!(term.auto_link_ids, baseline_ids);
+        assert_eq!(term.auto_link_urls, baseline_urls);
+    }
+
+    #[test]
     fn drain_link_clicks_reports_policy_decision() {
         let text = "http://example.test docs";
         let mut term = FrankenTermWeb::new();
