@@ -313,6 +313,12 @@ impl Grid {
             cell.erase(bg);
         }
 
+        // Wide-char fixup: the continuation that was at col shifted to
+        // col+n; since its head was erased, clean it up.
+        if was_continuation && c + n < cols && row_slice[c + n].is_wide_continuation() {
+            row_slice[c + n].erase(bg);
+        }
+
         // Wide-char fixup: if a wide head shifted to the last column,
         // its continuation fell off the right margin.
         if row_slice[cols - 1].is_wide() {
