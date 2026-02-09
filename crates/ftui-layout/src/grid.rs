@@ -71,6 +71,7 @@ pub struct GridArea {
 
 impl GridArea {
     /// Create a single-cell area.
+    #[inline]
     pub fn cell(row: usize, col: usize) -> Self {
         Self {
             row,
@@ -81,6 +82,7 @@ impl GridArea {
     }
 
     /// Create a spanning area.
+    #[inline]
     pub fn span(row: usize, col: usize, rowspan: usize, colspan: usize) -> Self {
         Self {
             row,
@@ -112,6 +114,7 @@ pub struct GridLayout {
 
 impl Grid {
     /// Create a new empty grid.
+    #[inline]
     pub fn new() -> Self {
         Self::default()
     }
@@ -162,11 +165,13 @@ impl Grid {
     }
 
     /// Get the number of rows.
+    #[inline]
     pub fn num_rows(&self) -> usize {
         self.row_constraints.len()
     }
 
     /// Get the number of columns.
+    #[inline]
     pub fn num_cols(&self) -> usize {
         self.col_constraints.len()
     }
@@ -246,6 +251,7 @@ impl GridLayout {
     /// Get the rectangle for a specific cell.
     ///
     /// Returns an empty Rect if coordinates are out of bounds.
+    #[inline]
     pub fn cell(&self, row: usize, col: usize) -> Rect {
         self.span(row, col, 1, 1)
     }
@@ -303,21 +309,25 @@ impl GridLayout {
     }
 
     /// Get the number of rows in this layout.
+    #[inline]
     pub fn num_rows(&self) -> usize {
         self.row_heights.len()
     }
 
     /// Get the number of columns in this layout.
+    #[inline]
     pub fn num_cols(&self) -> usize {
         self.col_widths.len()
     }
 
     /// Get the height of a specific row.
+    #[inline]
     pub fn row_height(&self, row: usize) -> u16 {
         self.row_heights.get(row).copied().unwrap_or(0)
     }
 
     /// Get the width of a specific column.
+    #[inline]
     pub fn col_width(&self, col: usize) -> u16 {
         self.col_widths.get(col).copied().unwrap_or(0)
     }
