@@ -1,0 +1,17 @@
+{
+  "name": "decstbm_zero_bottom_defaults_to_rows",
+  "description": "DECSTBM bottom=0 defaults to terminal rows",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "41 1b5b3248 42 1b5b3348 43 1b5b3448 44 1b5b3548 45 1b5b323b3072 1b5b3154",
+  "comment": "Fill rows 0..4 with A..E at col 0. DECSTBM(2,0) should behave as DECSTBM(2,5): region rows 1..4. SD(1) scrolls region down, row 0 unchanged.",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 1, "col": 0, "char": " " },
+      { "row": 2, "col": 0, "char": "B" },
+      { "row": 3, "col": 0, "char": "C" },
+      { "row": 4, "col": 0, "char": "D" }
+    ]
+  }
+}

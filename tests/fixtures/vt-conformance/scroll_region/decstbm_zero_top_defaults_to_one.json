@@ -1,0 +1,17 @@
+{
+  "name": "decstbm_zero_top_defaults_to_one",
+  "description": "DECSTBM top=0 defaults to row 1",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "41 1b5b3248 42 1b5b3348 43 1b5b3448 44 1b5b3548 45 1b5b303b3472 1b5b3153",
+  "comment": "Fill rows 0..4 with A..E at col 0. DECSTBM(0,4) should behave as DECSTBM(1,4): region rows 0..3. SU(1) scrolls region up, leaving row 4 untouched.",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "B" },
+      { "row": 1, "col": 0, "char": "C" },
+      { "row": 2, "col": 0, "char": "D" },
+      { "row": 3, "col": 0, "char": " " },
+      { "row": 4, "col": 0, "char": "E" }
+    ]
+  }
+}
