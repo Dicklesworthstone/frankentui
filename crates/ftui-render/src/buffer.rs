@@ -1008,6 +1008,7 @@ impl Buffer {
     }
 
     /// Clear all cells to the default.
+    #[inline]
     pub fn clear(&mut self) {
         self.cells.fill(Cell::default());
         self.mark_all_dirty();
@@ -1037,6 +1038,7 @@ impl Buffer {
     }
 
     /// Clear all cells to the given cell.
+    #[inline]
     pub fn clear_with(&mut self, cell: Cell) {
         self.cells.fill(cell);
         self.mark_all_dirty();
