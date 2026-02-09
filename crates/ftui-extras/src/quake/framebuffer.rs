@@ -258,4 +258,272 @@ mod tests {
         fb.set_pixel_depth(10, 10, 1.0, PackedRgba::RED);
         // Should not panic
     }
+
+    // --- new() ---
+
+    #[test]
+    fn new_depth_buffer_is_max() {
+        let fb = QuakeFramebuffer::new(4, 3);
+        assert_eq!(fb.depth.len(), 12);
+        for &d in &fb.depth {
+            assert_eq!(d, f32::MAX);
+        }
+    }
+
+    #[test]
+    fn new_zero_dimensions() {
+        let fb = QuakeFramebuffer::new(0, 0);
+        assert_eq!(fb.pixels.len(), 0);
+        assert_eq!(fb.depth.len(), 0);
+        assert_eq!(fb.width, 0);
+        assert_eq!(fb.height, 0);
+    }
+
+    #[test]
+    fn new_single_pixel() {
+        let fb = QuakeFramebuffer::new(1, 1);
+        assert_eq!(fb.pixels.len(), 1);
+        assert_eq!(fb.get_pixel(0, 0), PackedRgba::BLACK);
+    }
+
+    // --- get_pixel boundary ---
+
+    #[test]
+    fn get_pixel_at_max_valid_coords() {
+        let mut fb = QuakeFramebuffer::new(3, 3);
+        fb.set_pixel(2, 2, PackedRgba::RED);
+        assert_eq!(fb.get_pixel(2, 2), PackedRgba::RED);
+    }
+
+    #[test]
+    fn get_pixel_out_of_bounds_returns_black() {
+        let fb = QuakeFramebuffer::new(5, 5);
+        assert_eq!(fb.get_pixel(5, 0), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(0, 5), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(u32::MAX, u32::MAX), PackedRgba::BLACK);
+    }
+
+    // --- set_pixel boundary ---
+
+    #[test]
+    fn set_pixel_at_origin() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel(0, 0, PackedRgba::GREEN);
+        assert_eq!(fb.get_pixel(0, 0), PackedRgba::GREEN);
+    }
+
+    #[test]
+    fn set_pixel_oob_does_not_modify() {
+        let mut fb = QuakeFramebuffer::new(3, 3);
+        fb.set_pixel(3, 0, PackedRgba::RED);
+        fb.set_pixel(0, 3, PackedRgba::RED);
+        // All pixels should still be black
+        for y in 0..3 {
+            for x in 0..3 {
+                assert_eq!(fb.get_pixel(x, y), PackedRgba::BLACK);
+            }
+        }
+    }
+
+    // --- set_pixel_depth ---
+
+    #[test]
+    fn set_pixel_depth_equal_z_does_not_overwrite() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel_depth(0, 0, 10.0, PackedRgba::RED);
+        fb.set_pixel_depth(0, 0, 10.0, PackedRgba::GREEN);
+        // Equal z is NOT less than current, so RED stays
+        assert_eq!(fb.get_pixel(0, 0), PackedRgba::RED);
+    }
+
+    #[test]
+    fn set_pixel_depth_negative_z() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel_depth(0, 0, 1.0, PackedRgba::RED);
+        fb.set_pixel_depth(0, 0, -1.0, PackedRgba::GREEN);
+        assert_eq!(fb.get_pixel(0, 0), PackedRgba::GREEN);
+    }
+
+    #[test]
+    fn set_pixel_depth_updates_depth_buffer() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.set_pixel_depth(1, 1, 50.0, PackedRgba::RED);
+        assert_eq!(fb.depth[(1 * 5 + 1) as usize], 50.0);
+    }
+
+    // --- draw_column ---
+
+    #[test]
+    fn draw_column_full_height() {
+        let mut fb = QuakeFramebuffer::new(3, 4);
+        fb.draw_column(1, 0, 4, PackedRgba::BLUE);
+        for y in 0..4 {
+            assert_eq!(fb.get_pixel(1, y), PackedRgba::BLUE);
+        }
+        // Other columns untouched
+        for y in 0..4 {
+            assert_eq!(fb.get_pixel(0, y), PackedRgba::BLACK);
+            assert_eq!(fb.get_pixel(2, y), PackedRgba::BLACK);
+        }
+    }
+
+    #[test]
+    fn draw_column_y_bottom_exceeds_height() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.draw_column(0, 3, 100, PackedRgba::RED);
+        assert_eq!(fb.get_pixel(0, 2), PackedRgba::BLACK);
+        assert_eq!(fb.get_pixel(0, 3), PackedRgba::RED);
+        assert_eq!(fb.get_pixel(0, 4), PackedRgba::RED);
+    }
+
+    #[test]
+    fn draw_column_inverted_range_no_effect() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.draw_column(0, 4, 2, PackedRgba::RED);
+        // y_top > y_bottom means empty range
+        for y in 0..5 {
+            assert_eq!(fb.get_pixel(0, y), PackedRgba::BLACK);
+        }
+    }
+
+    // --- draw_column_shaded ---
+
+    #[test]
+    fn draw_column_shaded_uniform_light() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.draw_column_shaded(2, 0, 3, 200, 100, 50, 1.0, 1.0);
+        // Uniform light=1.0 means all pixels should be (200, 100, 50)
+        for y in 0..3 {
+            let p = fb.get_pixel(2, y);
+            assert_eq!(p.r(), 200);
+            assert_eq!(p.g(), 100);
+            assert_eq!(p.b(), 50);
+        }
+    }
+
+    #[test]
+    fn draw_column_shaded_oob_x_is_safe() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.draw_column_shaded(10, 0, 5, 255, 255, 255, 1.0, 0.0);
+        // Should not panic
+    }
+
+    #[test]
+    fn draw_column_shaded_light_clamped_to_255() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        // Light=2.0 on base=200 → 400, should clamp to 255
+        fb.draw_column_shaded(0, 0, 1, 200, 200, 200, 2.0, 2.0);
+        let p = fb.get_pixel(0, 0);
+        assert_eq!(p.r(), 255);
+        assert_eq!(p.g(), 255);
+        assert_eq!(p.b(), 255);
+    }
+
+    #[test]
+    fn draw_column_shaded_zero_light() {
+        let mut fb = QuakeFramebuffer::new(5, 5);
+        fb.draw_column_shaded(0, 0, 1, 255, 255, 255, 0.0, 0.0);
+        let p = fb.get_pixel(0, 0);
+        assert_eq!(p.r(), 0);
+        assert_eq!(p.g(), 0);
+        assert_eq!(p.b(), 0);
+    }
+
+    // --- resize ---
+
+    #[test]
+    fn resize_to_zero() {
+        let mut fb = QuakeFramebuffer::new(10, 10);
+        fb.resize(0, 0);
+        assert_eq!(fb.width, 0);
+        assert_eq!(fb.height, 0);
+        assert_eq!(fb.pixels.len(), 0);
+    }
+
+    #[test]
+    fn resize_grows_with_black_pixels() {
+        let mut fb = QuakeFramebuffer::new(2, 2);
+        fb.set_pixel(0, 0, PackedRgba::RED);
+        fb.resize(4, 4);
+        // New pixels should be black (Vec::resize fills with default)
+        assert_eq!(fb.pixels.len(), 16);
+        assert_eq!(fb.depth.len(), 16);
+    }
+
+    #[test]
+    fn resize_shrinks() {
+        let mut fb = QuakeFramebuffer::new(10, 10);
+        fb.resize(3, 3);
+        assert_eq!(fb.pixels.len(), 9);
+        assert_eq!(fb.depth.len(), 9);
+    }
+
+    // --- blit_to_painter ---
+
+    #[test]
+    fn blit_to_painter_zero_painter_is_safe() {
+        let fb = QuakeFramebuffer::new(10, 10);
+        let mut painter = Painter::new(0, 0, crate::canvas::Mode::Braille);
+        fb.blit_to_painter(&mut painter, 1);
+        // Should not panic
+    }
+
+    #[test]
+    fn blit_to_painter_zero_framebuffer_is_safe() {
+        let fb = QuakeFramebuffer::new(0, 0);
+        let mut painter = Painter::new(10, 10, crate::canvas::Mode::Braille);
+        fb.blit_to_painter(&mut painter, 1);
+        // Should not panic
+    }
+
+    #[test]
+    fn blit_to_painter_stride_zero_treated_as_one() {
+        let mut fb = QuakeFramebuffer::new(4, 4);
+        fb.set_pixel(0, 0, PackedRgba::RED);
+        let mut painter = Painter::new(4, 4, crate::canvas::Mode::Braille);
+        fb.blit_to_painter(&mut painter, 0);
+        // stride=0 → clamped to 1, should not panic
+    }
+
+    #[test]
+    fn blit_to_painter_populates_colors() {
+        let mut fb = QuakeFramebuffer::new(2, 2);
+        fb.set_pixel(0, 0, PackedRgba::RED);
+        fb.set_pixel(1, 0, PackedRgba::GREEN);
+        fb.set_pixel(0, 1, PackedRgba::BLUE);
+        fb.set_pixel(1, 1, PackedRgba::WHITE);
+
+        // Use a painter same size as fb
+        let mut painter = Painter::new(2, 2, crate::canvas::Mode::Braille);
+        fb.blit_to_painter(&mut painter, 1);
+
+        // Verify colors were written (painter.colors has Some values)
+        let (pw, ph) = painter.size();
+        assert_eq!(pw, 2);
+        assert_eq!(ph, 2);
+    }
+
+    // --- clear after writes ---
+
+    #[test]
+    fn clear_after_depth_writes_allows_rewrite() {
+        let mut fb = QuakeFramebuffer::new(3, 3);
+        fb.set_pixel_depth(1, 1, 5.0, PackedRgba::RED);
+        fb.clear();
+        // After clear, depth is MAX again, so any z should write
+        fb.set_pixel_depth(1, 1, 1000.0, PackedRgba::GREEN);
+        assert_eq!(fb.get_pixel(1, 1), PackedRgba::GREEN);
+    }
+
+    // --- draw_column_shaded: gradient interpolation ---
+
+    #[test]
+    fn draw_column_shaded_gradient_interpolates() {
+        let mut fb = QuakeFramebuffer::new(1, 10);
+        fb.draw_column_shaded(0, 0, 10, 100, 100, 100, 1.0, 0.5);
+        // Top should be brighter (light=1.0), bottom should be dimmer (light~0.5)
+        let top = fb.get_pixel(0, 0);
+        let bottom = fb.get_pixel(0, 9);
+        assert!(top.r() > bottom.r());
+    }
 }
