@@ -328,6 +328,7 @@ fn collect_fixture_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
         "erase",
         "line_edit",
         "scroll",
+        "scroll_region",
         "sgr",
         "utf8",
     ];

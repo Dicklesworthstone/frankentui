@@ -1,0 +1,15 @@
+{
+  "name": "ed_above",
+  "description": "CSI 1 J erases from start of display to cursor",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "41424344451b5b3248464748494a1b5b323b33481b5b314a58",
+  "comment": "Print ABCDE at row 0, CUP(2) to row 1, print FGHIJ at row 1, CUP(2,3) to (1,2), ED(1) erases everything from start to cursor (row 0 all + row 1 cols 0-2). Print X at (1,2).",
+  "expected": {
+    "cursor": { "row": 1, "col": 3 },
+    "cells": [
+      { "row": 1, "col": 2, "char": "X" },
+      { "row": 1, "col": 3, "char": "I" },
+      { "row": 1, "col": 4, "char": "J" }
+    ]
+  }
+}

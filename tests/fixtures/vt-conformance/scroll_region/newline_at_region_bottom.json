@@ -1,0 +1,17 @@
+{
+  "name": "newline_at_region_bottom",
+  "description": "Newline at bottom of scroll region scrolls region up, preserving rows outside",
+  "initial_size": [5, 5],
+  "input_bytes_hex": "411b5b324842 1b5b334843 1b5b344844 1b5b354845 1b5b323b3472 1b5b343b31480d0a58",
+  "comment": "Row 0: A, Row 1: B, Row 2: C, Row 3: D, Row 4: E. Set scroll region 2;4 (rows 1-3 0-based). CUP(4,1) to (3,0) at bottom of region, CR+LF triggers scroll: C→row1, D→row2, row3 blank. Print X at (3,0).",
+  "expected": {
+    "cursor": { "row": 3, "col": 1 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A" },
+      { "row": 1, "col": 0, "char": "C" },
+      { "row": 2, "col": 0, "char": "D" },
+      { "row": 3, "col": 0, "char": "X" },
+      { "row": 4, "col": 0, "char": "E" }
+    ]
+  }
+}
