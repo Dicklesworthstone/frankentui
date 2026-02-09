@@ -150,6 +150,19 @@ pub enum Action {
     SingleShift2,
     /// SS3 (`ESC O`): single shift to G3 for the next printed character only.
     SingleShift3,
+    /// Mouse event from SGR mode 1006 (`CSI < Pb ; Px ; Py M/m`) or
+    /// legacy X10 mode 1000 (`CSI M Cb Cx Cy`).
+    ///
+    /// `button`: 0 = left, 1 = middle, 2 = right, 3 = release (legacy),
+    /// 64 = scroll up, 65 = scroll down. Modifier bits: 4 = shift, 8 = meta, 16 = ctrl.
+    /// `col`/`row`: 0-based cell coordinates.
+    /// `pressed`: true for press/motion, false for release.
+    MouseEvent {
+        button: u16,
+        col: u16,
+        row: u16,
+        pressed: bool,
+    },
     /// A raw escape/CSI/OSC sequence captured verbatim (starts with ESC).
     Escape(Vec<u8>),
 }
@@ -506,6 +519,28 @@ impl Parser {
                 b'c' => Some(Action::DeviceAttributesSecondary),
                 _ => None,
             };
+        }
+
+        // Check for `<` prefix (SGR mouse mode 1006).
+        // Format: CSI < Pb ; Px ; Py M (press) or CSI < Pb ; Px ; Py m (release).
+        if param_bytes.first() == Some(&b'<') {
+            if final_byte == b'M' || final_byte == b'm' {
+                let params = Self::parse_csi_params(&param_bytes[1..])?;
+                if params.len() == 3 {
+                    let button = params[0];
+                    // SGR mouse coords are 1-based; convert to 0-based.
+                    let col = params[1].saturating_sub(1);
+                    let row = params[2].saturating_sub(1);
+                    let pressed = final_byte == b'M';
+                    return Some(Action::MouseEvent {
+                        button,
+                        col,
+                        row,
+                        pressed,
+                    });
+                }
+            }
+            return None;
         }
 
         // Separate intermediate bytes (0x20..=0x2F per ECMA-48) from parameter
@@ -1559,5 +1594,152 @@ mod tests {
     fn esc_o_is_single_shift_3() {
         let mut p = Parser::new();
         assert_eq!(p.feed(b"\x1bO"), vec![Action::SingleShift3]);
+    }
+
+    // ── SGR Mouse (CSI < Pb ; Px ; Py M/m) ──────────────────────
+
+    #[test]
+    fn sgr_mouse_left_press() {
+        let mut p = Parser::new();
+        // CSI < 0 ; 10 ; 5 M → left button press at col 9, row 4 (0-based)
+        assert_eq!(
+            p.feed(b"\x1b[<0;10;5M"),
+            vec![Action::MouseEvent {
+                button: 0,
+                col: 9,
+                row: 4,
+                pressed: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_left_release() {
+        let mut p = Parser::new();
+        // CSI < 0 ; 10 ; 5 m → left button release at col 9, row 4
+        assert_eq!(
+            p.feed(b"\x1b[<0;10;5m"),
+            vec![Action::MouseEvent {
+                button: 0,
+                col: 9,
+                row: 4,
+                pressed: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_right_press() {
+        let mut p = Parser::new();
+        // CSI < 2 ; 1 ; 1 M → right button press at col 0, row 0
+        assert_eq!(
+            p.feed(b"\x1b[<2;1;1M"),
+            vec![Action::MouseEvent {
+                button: 2,
+                col: 0,
+                row: 0,
+                pressed: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_middle_press() {
+        let mut p = Parser::new();
+        assert_eq!(
+            p.feed(b"\x1b[<1;50;25M"),
+            vec![Action::MouseEvent {
+                button: 1,
+                col: 49,
+                row: 24,
+                pressed: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_scroll_up() {
+        let mut p = Parser::new();
+        // button 64 = scroll up
+        assert_eq!(
+            p.feed(b"\x1b[<64;5;3M"),
+            vec![Action::MouseEvent {
+                button: 64,
+                col: 4,
+                row: 2,
+                pressed: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_scroll_down() {
+        let mut p = Parser::new();
+        // button 65 = scroll down
+        assert_eq!(
+            p.feed(b"\x1b[<65;5;3M"),
+            vec![Action::MouseEvent {
+                button: 65,
+                col: 4,
+                row: 2,
+                pressed: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_ctrl_left_press() {
+        let mut p = Parser::new();
+        // button 16 = ctrl modifier + left button (0 + 16)
+        assert_eq!(
+            p.feed(b"\x1b[<16;1;1M"),
+            vec![Action::MouseEvent {
+                button: 16,
+                col: 0,
+                row: 0,
+                pressed: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_motion_while_pressed() {
+        let mut p = Parser::new();
+        // button 32 = motion with left button held (0 + 32)
+        assert_eq!(
+            p.feed(b"\x1b[<32;20;10M"),
+            vec![Action::MouseEvent {
+                button: 32,
+                col: 19,
+                row: 9,
+                pressed: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_incomplete_params_falls_through() {
+        let mut p = Parser::new();
+        // Only 2 params instead of 3
+        let actions = p.feed(b"\x1b[<0;10M");
+        assert!(
+            !matches!(actions.first(), Some(Action::MouseEvent { .. })),
+            "incomplete SGR mouse should not produce MouseEvent"
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_large_coords() {
+        let mut p = Parser::new();
+        // Large coordinates (wide terminal)
+        assert_eq!(
+            p.feed(b"\x1b[<0;300;100M"),
+            vec![Action::MouseEvent {
+                button: 0,
+                col: 299,
+                row: 99,
+                pressed: true,
+            }]
+        );
     }
 }

@@ -224,6 +224,7 @@ impl CoreTerminalHarness {
             | Action::CursorPositionReport => {}
             Action::DesignateCharset { .. } => {}
             Action::SingleShift2 | Action::SingleShift3 => {}
+            Action::MouseEvent { .. } => {}
             Action::Escape(_) => {
                 // Remaining escape actions are intentionally left unsupported in the
                 // baseline harness and tracked via known-mismatch fixtures.

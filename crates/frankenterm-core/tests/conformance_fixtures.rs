@@ -392,6 +392,8 @@ impl CoreTerminalHarness {
             Action::DesignateCharset { .. } => {}
             // Single-shift to G2/G3; no grid effect in conformance harness.
             Action::SingleShift2 | Action::SingleShift3 => {}
+            // Mouse events are input-side; no grid effect.
+            Action::MouseEvent { .. } => {}
             Action::Escape(_) => {}
         }
     }

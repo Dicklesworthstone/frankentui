@@ -1,0 +1,47 @@
+{
+  "name": "el_full_uses_current_bg",
+  "description": "EL 2 (erase entire line) uses current background color",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "48454c4c4f1b5b34336d1b5b313b33481b5b324b",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 2
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": " ",
+        "attrs": {
+          "bg_color": {
+            "named": 3
+          }
+        }
+      },
+      {
+        "row": 0,
+        "col": 4,
+        "char": " ",
+        "attrs": {
+          "bg_color": {
+            "named": 3
+          }
+        }
+      },
+      {
+        "row": 0,
+        "col": 9,
+        "char": " ",
+        "attrs": {
+          "bg_color": {
+            "named": 3
+          }
+        }
+      }
+    ]
+  }
+}

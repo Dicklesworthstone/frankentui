@@ -1,0 +1,42 @@
+{
+  "name": "delete_line_shifts_content",
+  "description": "DL within scroll region shifts lines up, blank at bottom of region",
+  "initial_size": [
+    10,
+    5
+  ],
+  "input_bytes_hex": "1b5b313b3148411b5b323b3148421b5b333b3148431b5b343b3148441b5b353b3148451b5b323b34721b5b333b31481b5b314d",
+  "expected": {
+    "cursor": {
+      "row": 2,
+      "col": 0
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "A"
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "char": "B"
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "char": "D"
+      },
+      {
+        "row": 3,
+        "col": 0,
+        "char": " "
+      },
+      {
+        "row": 4,
+        "col": 0,
+        "char": "E"
+      }
+    ]
+  }
+}

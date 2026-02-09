@@ -1,0 +1,37 @@
+{
+  "name": "cup_explicit_1_1",
+  "description": "CUP with explicit row=1 col=1 moves cursor to (0,0)",
+  "initial_size": [
+    10,
+    5
+  ],
+  "input_bytes_hex": "1b5b353b3548464f4f1b5b313b314858",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 1
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "X"
+      },
+      {
+        "row": 4,
+        "col": 4,
+        "char": "F"
+      },
+      {
+        "row": 4,
+        "col": 5,
+        "char": "O"
+      },
+      {
+        "row": 4,
+        "col": 6,
+        "char": "O"
+      }
+    ]
+  }
+}

@@ -19,10 +19,10 @@
 //! 16. CompositionState: double-start synthesizes cancel before second start
 
 use frankenterm_web::input::{
-    encode_paste_text, encode_vt_input_event, normalize_dom_key_code, CompositionInput,
-    CompositionPhase, CompositionState, FocusInput, InputEvent, KeyCode, KeyInput, KeyPhase,
-    Modifiers, MouseButton, MouseInput, MousePhase, TouchInput, TouchPhase, TouchPoint,
-    VtInputEncoderFeatures, WheelInput,
+    CompositionInput, CompositionPhase, CompositionState, FocusInput, InputEvent, KeyCode,
+    KeyInput, KeyPhase, Modifiers, MouseButton, MouseInput, MousePhase, TouchInput, TouchPhase,
+    TouchPoint, VtInputEncoderFeatures, WheelInput, encode_paste_text, encode_vt_input_event,
+    normalize_dom_key_code,
 };
 use proptest::prelude::*;
 
@@ -80,14 +80,18 @@ fn arb_known_key_code() -> impl Strategy<Value = KeyCode> {
 }
 
 fn arb_key_input() -> impl Strategy<Value = KeyInput> {
-    (arb_key_phase(), arb_known_key_code(), arb_modifiers(), any::<bool>()).prop_map(
-        |(phase, code, mods, repeat)| KeyInput {
+    (
+        arb_key_phase(),
+        arb_known_key_code(),
+        arb_modifiers(),
+        any::<bool>(),
+    )
+        .prop_map(|(phase, code, mods, repeat)| KeyInput {
             phase,
             code,
             mods,
             repeat,
-        },
-    )
+        })
 }
 
 fn arb_mouse_input() -> impl Strategy<Value = MouseInput> {
@@ -108,9 +112,14 @@ fn arb_mouse_input() -> impl Strategy<Value = MouseInput> {
 }
 
 fn arb_wheel_input() -> impl Strategy<Value = WheelInput> {
-    (0u16..=500, 0u16..=500, -16i16..=16, -16i16..=16, arb_modifiers()).prop_map(
-        |(x, y, dx, dy, mods)| WheelInput { x, y, dx, dy, mods },
+    (
+        0u16..=500,
+        0u16..=500,
+        -16i16..=16,
+        -16i16..=16,
+        arb_modifiers(),
     )
+        .prop_map(|(x, y, dx, dy, mods)| WheelInput { x, y, dx, dy, mods })
 }
 
 fn arb_composition_phase() -> impl Strategy<Value = CompositionPhase> {

@@ -1,0 +1,27 @@
+{
+  "name": "cbt_from_middle",
+  "description": "CBT moves cursor backward to previous tab stop",
+  "initial_size": [
+    20,
+    3
+  ],
+  "input_bytes_hex": "1b5b313243581b5b5a59",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 9
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 8,
+        "char": "Y"
+      },
+      {
+        "row": 0,
+        "col": 12,
+        "char": "X"
+      }
+    ]
+  }
+}

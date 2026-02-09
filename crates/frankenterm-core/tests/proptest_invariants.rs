@@ -245,6 +245,8 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
         Action::DesignateCharset { .. } => {}
         // Single-shift to G2/G3; no grid effect in proptest harness.
         Action::SingleShift2 | Action::SingleShift3 => {}
+        // Mouse events are input-side; no grid effect.
+        Action::MouseEvent { .. } => {}
         Action::Escape(_) => {
             // Unsupported sequences are ignored.
         }

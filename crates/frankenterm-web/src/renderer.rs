@@ -246,8 +246,8 @@ fn rasterize_procedural_glyph(codepoint: u32, width: u16, height: u16) -> GlyphR
                 let border = x == 0 || y == 0 || x + 1 == w || y + 1 == h;
                 let bit_index = (u32::from(x) + u32::from(y) * 7) & 31;
                 let hash_bit = ((seed >> bit_index) & 1) == 1;
-                let stripe = ((u32::from(x) * 3 + u32::from(y) + seed) % 11) == 0;
-                let dot = ((u32::from(x) + u32::from(y) * 5 + seed) % 17) == 0;
+                let stripe = (u32::from(x) * 3 + u32::from(y) + seed).is_multiple_of(11);
+                let dot = (u32::from(x) + u32::from(y) * 5 + seed).is_multiple_of(17);
                 if border || (hash_bit && stripe) || dot {
                     pixels[(y as usize) * (w as usize) + (x as usize)] = 0xFF;
                 }
@@ -636,7 +636,7 @@ mod gpu {
     use super::*;
     use crate::glyph_atlas::{GlyphAtlasCache, GlyphKey};
     use std::collections::HashMap;
-    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen::JsCast;
     use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
     use wgpu;
 
@@ -1407,6 +1407,562 @@ mod gpu {
         #[must_use]
         pub fn grid_size(&self) -> (u16, u16) {
             (self.cols, self.rows)
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct RgbaColor {
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
+    }
+
+    impl RgbaColor {
+        #[must_use]
+        fn from_packed(packed: u32) -> Self {
+            Self {
+                r: ((packed >> 24) & 0xFF) as u8,
+                g: ((packed >> 16) & 0xFF) as u8,
+                b: ((packed >> 8) & 0xFF) as u8,
+                a: (packed & 0xFF) as u8,
+            }
+        }
+
+        #[must_use]
+        fn scale_rgb(self, factor: f32) -> Self {
+            let scale = factor.max(0.0);
+            let mut next = self;
+            next.r = (f32::from(self.r) * scale).clamp(0.0, 255.0) as u8;
+            next.g = (f32::from(self.g) * scale).clamp(0.0, 255.0) as u8;
+            next.b = (f32::from(self.b) * scale).clamp(0.0, 255.0) as u8;
+            next
+        }
+
+        #[must_use]
+        fn scale_alpha(self, factor: f32) -> Self {
+            let alpha = (f32::from(self.a) * factor.max(0.0)).clamp(0.0, 255.0);
+            Self {
+                a: alpha as u8,
+                ..self
+            }
+        }
+
+        #[must_use]
+        fn with_alpha(self, alpha: f32) -> Self {
+            let value = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+            Self { a: value, ..self }
+        }
+
+        #[must_use]
+        fn to_css_rgba(self) -> String {
+            format!(
+                "rgba({}, {}, {}, {:.6})",
+                self.r,
+                self.g,
+                self.b,
+                f32::from(self.a) / 255.0
+            )
+        }
+    }
+
+    struct Canvas2dRenderer {
+        canvas: HtmlCanvasElement,
+        context: CanvasRenderingContext2d,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+        dpr: f32,
+        zoom: f32,
+        cells_cpu: Vec<CellData>,
+        last_dirty_cells: u32,
+        hovered_link_id: u32,
+        cursor_offset: Option<u32>,
+        cursor_style: CursorStyle,
+        selection_range: Option<(u32, u32)>,
+    }
+
+    impl Canvas2dRenderer {
+        fn init(
+            canvas: HtmlCanvasElement,
+            cols: u16,
+            rows: u16,
+            config: &RendererConfig,
+        ) -> Result<Self, RendererError> {
+            let context = canvas
+                .get_context("2d")
+                .map_err(|error| {
+                    RendererError::SurfaceError(format!(
+                        "canvas2d context request failed: {error:?}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    RendererError::SurfaceError(
+                        "canvas2d context unavailable on this browser".to_owned(),
+                    )
+                })?
+                .dyn_into::<CanvasRenderingContext2d>()
+                .map_err(|error| {
+                    RendererError::SurfaceError(format!("canvas2d context cast failed: {error:?}"))
+                })?;
+
+            let geometry = grid_geometry(
+                cols,
+                rows,
+                config.cell_width,
+                config.cell_height,
+                config.dpr,
+                config.zoom,
+            );
+            let mut renderer = Self {
+                canvas,
+                context,
+                cols,
+                rows,
+                cell_width: config.cell_width,
+                cell_height: config.cell_height,
+                dpr: geometry.dpr,
+                zoom: geometry.zoom,
+                cells_cpu: vec![CellData::EMPTY; usize::from(cols) * usize::from(rows)],
+                last_dirty_cells: 0,
+                hovered_link_id: 0,
+                cursor_offset: None,
+                cursor_style: CursorStyle::None,
+                selection_range: None,
+            };
+            renderer.sync_canvas_size(geometry);
+            renderer.apply_context_defaults();
+            Ok(renderer)
+        }
+
+        fn apply_context_defaults(&self) {
+            self.context.set_text_baseline("top");
+            self.context.set_text_align("left");
+            self.context.set_image_smoothing_enabled(false);
+        }
+
+        #[must_use]
+        fn grid_cell_capacity(&self) -> u32 {
+            u32::from(self.cols).saturating_mul(u32::from(self.rows))
+        }
+
+        #[must_use]
+        fn clamp_cursor_offset(&self, offset: Option<u32>) -> Option<u32> {
+            let max = self.grid_cell_capacity();
+            offset.filter(|value| *value < max)
+        }
+
+        #[must_use]
+        fn clamp_selection_range(&self, range: Option<(u32, u32)>) -> Option<(u32, u32)> {
+            let max = self.grid_cell_capacity();
+            let (a, b) = range?;
+            let start = a.min(max);
+            let end = b.min(max);
+            if start == end {
+                return None;
+            }
+            Some((start.min(end), start.max(end)))
+        }
+
+        fn sync_canvas_size(&mut self, geometry: GridGeometry) {
+            let width = geometry.pixel_width.max(1);
+            let height = geometry.pixel_height.max(1);
+            if self.canvas.width() != width {
+                self.canvas.set_width(width);
+            }
+            if self.canvas.height() != height {
+                self.canvas.set_height(height);
+            }
+        }
+
+        fn set_fill_style(&self, color: RgbaColor) {
+            self.context.set_fill_style_str(&color.to_css_rgba());
+        }
+
+        #[must_use]
+        fn dpr(&self) -> f32 {
+            self.dpr
+        }
+
+        #[must_use]
+        fn zoom(&self) -> f32 {
+            self.zoom
+        }
+
+        fn resize(&mut self, cols: u16, rows: u16) {
+            if cols == self.cols && rows == self.rows {
+                return;
+            }
+            self.cols = cols;
+            self.rows = rows;
+            self.cells_cpu
+                .resize(usize::from(cols) * usize::from(rows), CellData::EMPTY);
+            self.cursor_offset = self.clamp_cursor_offset(self.cursor_offset);
+            if self.cursor_offset.is_none() {
+                self.cursor_style = CursorStyle::None;
+            }
+            self.selection_range = self.clamp_selection_range(self.selection_range);
+            self.sync_canvas_size(self.current_geometry());
+            self.apply_context_defaults();
+        }
+
+        fn set_scale(&mut self, dpr: f32, zoom: f32) {
+            self.dpr = normalized_scale(dpr, 1.0, MIN_DPR, MAX_DPR);
+            self.zoom = normalized_scale(zoom, 1.0, MIN_ZOOM, MAX_ZOOM);
+            self.sync_canvas_size(self.current_geometry());
+            self.apply_context_defaults();
+        }
+
+        #[must_use]
+        fn current_geometry(&self) -> GridGeometry {
+            grid_geometry(
+                self.cols,
+                self.rows,
+                self.cell_width,
+                self.cell_height,
+                self.dpr,
+                self.zoom,
+            )
+        }
+
+        fn fit_to_container(
+            &mut self,
+            container_width_css: u32,
+            container_height_css: u32,
+        ) -> GridGeometry {
+            let fit = fit_grid_to_container(
+                container_width_css,
+                container_height_css,
+                self.cell_width,
+                self.cell_height,
+                self.dpr,
+                self.zoom,
+            );
+            self.resize(fit.cols, fit.rows);
+            fit
+        }
+
+        fn set_hovered_link_id(&mut self, link_id: u32) {
+            self.hovered_link_id = link_id;
+        }
+
+        fn set_cursor(&mut self, offset: Option<u32>, style: CursorStyle) {
+            self.cursor_offset = self.clamp_cursor_offset(offset);
+            self.cursor_style = if self.cursor_offset.is_some() {
+                style
+            } else {
+                CursorStyle::None
+            };
+        }
+
+        fn set_selection_range(&mut self, range: Option<(u32, u32)>) {
+            self.selection_range = self.clamp_selection_range(range);
+        }
+
+        fn apply_patches(&mut self, patches: &[CellPatch]) -> u32 {
+            let max = self.grid_cell_capacity();
+            let mut dirty = 0u32;
+
+            for patch in patches {
+                if patch.offset >= max {
+                    continue;
+                }
+                let start = patch.offset as usize;
+                let available = (max as usize).saturating_sub(start);
+                let count = patch.cells.len().min(available);
+                if count == 0 {
+                    continue;
+                }
+                let end = start.saturating_add(count).min(self.cells_cpu.len());
+                let actual_count = end.saturating_sub(start);
+                if actual_count == 0 {
+                    continue;
+                }
+                self.cells_cpu[start..end].copy_from_slice(&patch.cells[..actual_count]);
+                dirty = dirty.saturating_add(actual_count as u32);
+            }
+
+            self.last_dirty_cells = dirty;
+            dirty
+        }
+
+        fn render_frame(&mut self) -> Result<FrameStats, RendererError> {
+            let geometry = self.current_geometry();
+            self.sync_canvas_size(geometry);
+            self.apply_context_defaults();
+
+            let pixel_width = f64::from(geometry.pixel_width);
+            let pixel_height = f64::from(geometry.pixel_height);
+            self.context.set_fill_style_str("rgba(0, 0, 0, 1.0)");
+            self.context.fill_rect(0.0, 0.0, pixel_width, pixel_height);
+
+            let cols = u32::from(self.cols.max(1));
+            let cell_width = f64::from(geometry.cell_width_px);
+            let cell_height = f64::from(geometry.cell_height_px);
+            let underline_height = (cell_height * 0.08).max(1.0);
+            let strike_height = (cell_height * 0.08).max(1.0);
+            let cursor_bar_width = (cell_width * 0.12).max(1.0);
+            let selection = self.selection_range;
+            let hovered_link_id = self.hovered_link_id;
+
+            let font_px = (cell_height * 0.82).max(1.0);
+            let regular_font = format!("{font_px:.2}px monospace");
+            let bold_font = format!("bold {font_px:.2}px monospace");
+            let italic_font = format!("italic {font_px:.2}px monospace");
+            let bold_italic_font = format!("italic bold {font_px:.2}px monospace");
+
+            let mut glyph_buf = [0u8; 4];
+            for (index, cell) in self.cells_cpu.iter().enumerate() {
+                let offset = index as u32;
+                let col = offset % cols;
+                let row = offset / cols;
+                let x = f64::from(col) * cell_width;
+                let y = f64::from(row) * cell_height;
+
+                let style = cell_attr_style_bits(cell.attrs);
+                let link_id = cell_attr_link_id(cell.attrs);
+                let mut bg = RgbaColor::from_packed(cell.bg_rgba);
+                let mut fg = RgbaColor::from_packed(cell.fg_rgba);
+
+                if (style & ATTR_REVERSE) != 0 {
+                    std::mem::swap(&mut bg, &mut fg);
+                }
+                let selected = selection
+                    .map(|(start, end)| start < end && offset >= start && offset < end)
+                    .unwrap_or(false);
+                if selected {
+                    std::mem::swap(&mut bg, &mut fg);
+                }
+
+                let cursor_here = self.cursor_offset == Some(offset);
+                if cursor_here && self.cursor_style == CursorStyle::Block {
+                    std::mem::swap(&mut bg, &mut fg);
+                }
+
+                if (style & ATTR_DIM) != 0 {
+                    fg = fg.scale_rgb(0.6);
+                }
+                if (style & ATTR_BOLD) != 0 {
+                    fg = fg.scale_rgb(1.2);
+                }
+                if (style & ATTR_BLINK) != 0 {
+                    fg = fg.scale_alpha(0.85);
+                }
+                if (style & ATTR_HIDDEN) != 0 {
+                    fg = fg.with_alpha(0.0);
+                }
+
+                self.set_fill_style(bg);
+                self.context.fill_rect(x, y, cell_width, cell_height);
+
+                let italic = (style & ATTR_ITALIC) != 0;
+                let bold = (style & ATTR_BOLD) != 0;
+                if cell.glyph_id != 0 && fg.a > 0 {
+                    let glyph = char::from_u32(cell.glyph_id).unwrap_or('□');
+                    if !glyph.is_whitespace() {
+                        if bold && italic {
+                            self.context.set_font(&bold_italic_font);
+                        } else if bold {
+                            self.context.set_font(&bold_font);
+                        } else if italic {
+                            self.context.set_font(&italic_font);
+                        } else {
+                            self.context.set_font(&regular_font);
+                        }
+
+                        self.set_fill_style(fg);
+                        let glyph_text = glyph.encode_utf8(&mut glyph_buf);
+                        self.context.fill_text(glyph_text, x, y).map_err(|error| {
+                            RendererError::SurfaceError(format!(
+                                "canvas2d fill_text failed: {error:?}"
+                            ))
+                        })?;
+                    }
+                }
+
+                let underline = (style & ATTR_UNDERLINE) != 0;
+                let strike = (style & ATTR_STRIKETHROUGH) != 0;
+                let hover_underline = hovered_link_id != 0 && link_id == hovered_link_id;
+                let cursor_bar = cursor_here && self.cursor_style == CursorStyle::Bar;
+                let cursor_underline = cursor_here && self.cursor_style == CursorStyle::Underline;
+
+                if underline || hover_underline || cursor_underline {
+                    self.set_fill_style(fg);
+                    self.context.fill_rect(
+                        x,
+                        y + (cell_height - underline_height),
+                        cell_width,
+                        underline_height,
+                    );
+                }
+
+                if strike {
+                    self.set_fill_style(fg);
+                    self.context
+                        .fill_rect(x, y + (cell_height * 0.55), cell_width, strike_height);
+                }
+
+                if cursor_bar {
+                    self.set_fill_style(fg);
+                    self.context.fill_rect(x, y, cursor_bar_width, cell_height);
+                }
+            }
+
+            let dirty_cells = self.last_dirty_cells;
+            self.last_dirty_cells = 0;
+            Ok(FrameStats {
+                instance_count: self.grid_cell_capacity(),
+                dirty_cells,
+            })
+        }
+
+        #[must_use]
+        fn grid_size(&self) -> (u16, u16) {
+            (self.cols, self.rows)
+        }
+    }
+
+    enum RendererBackend {
+        WebGpu(Box<GpuRenderer>),
+        Canvas2d(Box<Canvas2dRenderer>),
+    }
+
+    /// Terminal renderer that prefers WebGPU and falls back to Canvas2D.
+    pub struct WebGpuRenderer {
+        backend: RendererBackend,
+    }
+
+    impl WebGpuRenderer {
+        /// Initialize the renderer on the given canvas.
+        ///
+        /// First tries WebGPU; if adapter/device/surface setup fails, falls
+        /// back to a Canvas2D implementation to keep demos functional.
+        pub async fn init(
+            canvas: HtmlCanvasElement,
+            cols: u16,
+            rows: u16,
+            config: &RendererConfig,
+        ) -> Result<Self, RendererError> {
+            match GpuRenderer::init(canvas.clone(), cols, rows, config).await {
+                Ok(renderer) => Ok(Self {
+                    backend: RendererBackend::WebGpu(Box::new(renderer)),
+                }),
+                Err(webgpu_error) => Canvas2dRenderer::init(canvas, cols, rows, config)
+                    .map(|renderer| Self {
+                        backend: RendererBackend::Canvas2d(Box::new(renderer)),
+                    })
+                    .map_err(|canvas_error| {
+                        RendererError::SurfaceError(format!(
+                            "WebGPU init failed ({webgpu_error}); Canvas2D fallback init failed ({canvas_error})"
+                        ))
+                    }),
+            }
+        }
+
+        /// Resize the grid.
+        pub fn resize(&mut self, cols: u16, rows: u16) {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.resize(cols, rows),
+                RendererBackend::Canvas2d(renderer) => renderer.resize(cols, rows),
+            }
+        }
+
+        #[must_use]
+        pub fn dpr(&self) -> f32 {
+            match &self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.dpr(),
+                RendererBackend::Canvas2d(renderer) => renderer.dpr(),
+            }
+        }
+
+        #[must_use]
+        pub fn zoom(&self) -> f32 {
+            match &self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.zoom(),
+                RendererBackend::Canvas2d(renderer) => renderer.zoom(),
+            }
+        }
+
+        /// Update DPR/zoom while preserving current grid dimensions.
+        pub fn set_scale(&mut self, dpr: f32, zoom: f32) {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.set_scale(dpr, zoom),
+                RendererBackend::Canvas2d(renderer) => renderer.set_scale(dpr, zoom),
+            }
+        }
+
+        #[must_use]
+        pub fn current_geometry(&self) -> GridGeometry {
+            match &self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.current_geometry(),
+                RendererBackend::Canvas2d(renderer) => renderer.current_geometry(),
+            }
+        }
+
+        /// Fit the grid to a CSS-pixel container and resize the renderer.
+        pub fn fit_to_container(
+            &mut self,
+            container_width_css: u32,
+            container_height_css: u32,
+        ) -> GridGeometry {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => {
+                    renderer.fit_to_container(container_width_css, container_height_css)
+                }
+                RendererBackend::Canvas2d(renderer) => {
+                    renderer.fit_to_container(container_width_css, container_height_css)
+                }
+            }
+        }
+
+        /// Set currently hovered hyperlink ID (0 clears hover underline).
+        pub fn set_hovered_link_id(&mut self, link_id: u32) {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.set_hovered_link_id(link_id),
+                RendererBackend::Canvas2d(renderer) => renderer.set_hovered_link_id(link_id),
+            }
+        }
+
+        /// Configure cursor overlay state.
+        pub fn set_cursor(&mut self, offset: Option<u32>, style: CursorStyle) {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.set_cursor(offset, style),
+                RendererBackend::Canvas2d(renderer) => renderer.set_cursor(offset, style),
+            }
+        }
+
+        /// Configure selection overlay as a `[start, end)` offset range.
+        pub fn set_selection_range(&mut self, range: Option<(u32, u32)>) {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.set_selection_range(range),
+                RendererBackend::Canvas2d(renderer) => renderer.set_selection_range(range),
+            }
+        }
+
+        /// Apply dirty-span cell patches.
+        pub fn apply_patches(&mut self, patches: &[CellPatch]) -> u32 {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.apply_patches(patches),
+                RendererBackend::Canvas2d(renderer) => renderer.apply_patches(patches),
+            }
+        }
+
+        /// Render one frame.
+        pub fn render_frame(&mut self) -> Result<FrameStats, RendererError> {
+            match &mut self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.render_frame(),
+                RendererBackend::Canvas2d(renderer) => renderer.render_frame(),
+            }
+        }
+
+        /// Current grid dimensions.
+        #[must_use]
+        pub fn grid_size(&self) -> (u16, u16) {
+            match &self.backend {
+                RendererBackend::WebGpu(renderer) => renderer.grid_size(),
+                RendererBackend::Canvas2d(renderer) => renderer.grid_size(),
+            }
         }
     }
 }

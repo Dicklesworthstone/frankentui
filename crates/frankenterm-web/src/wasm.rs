@@ -612,12 +612,24 @@ impl FrankenTermWeb {
 
     fn apply_accessibility_input(&mut self, input: &AccessibilityInput) {
         if let Some(v) = input.screen_reader {
+            if self.screen_reader_enabled != v {
+                let state = if v { "enabled" } else { "disabled" };
+                self.push_live_announcement(&format!("Screen reader mode {state}."));
+            }
             self.screen_reader_enabled = v;
         }
         if let Some(v) = input.high_contrast {
+            if self.high_contrast_enabled != v {
+                let state = if v { "enabled" } else { "disabled" };
+                self.push_live_announcement(&format!("High contrast mode {state}."));
+            }
             self.high_contrast_enabled = v;
         }
         if let Some(v) = input.reduced_motion {
+            if self.reduced_motion_enabled != v {
+                let state = if v { "enabled" } else { "disabled" };
+                self.push_live_announcement(&format!("Reduced motion {state}."));
+            }
             self.reduced_motion_enabled = v;
         }
         if let Some(text) = input.announce.as_deref() {
@@ -631,8 +643,10 @@ impl FrankenTermWeb {
             return;
         }
         // Keep the queue bounded so host-side consumers can poll lazily.
-        if self.live_announcements.len() >= 64 {
-            self.live_announcements.remove(0);
+        let limit = 64;
+        if self.live_announcements.len() >= limit {
+            let overflow = self.live_announcements.len() - limit + 1;
+            self.live_announcements.drain(..overflow);
         }
         self.live_announcements.push(trimmed.to_string());
     }
@@ -795,11 +809,7 @@ fn parse_focus_event(event: &JsValue) -> Result<InputEvent, JsValue> {
 
 fn parse_accessibility_event(event: &JsValue) -> Result<InputEvent, JsValue> {
     let input = parse_accessibility_input(event)?;
-    if input.screen_reader.is_none()
-        && input.high_contrast.is_none()
-        && input.reduced_motion.is_none()
-        && input.announce.is_none()
-    {
+    if input.is_noop() {
         return Err(JsValue::from_str(
             "accessibility event requires at least one of screenReader/highContrast/reducedMotion/announce",
         ));

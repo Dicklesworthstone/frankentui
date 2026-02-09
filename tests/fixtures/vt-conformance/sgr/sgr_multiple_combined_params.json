@@ -1,0 +1,41 @@
+{
+  "name": "sgr_multiple_combined_params",
+  "description": "Multiple SGR params in single sequence apply all attributes",
+  "initial_size": [
+    10,
+    3
+  ],
+  "input_bytes_hex": "1b5b313b333b343b33316d581b5b306d59",
+  "expected": {
+    "cursor": {
+      "row": 0,
+      "col": 2
+    },
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "char": "X",
+        "attrs": {
+          "bold": true,
+          "italic": true,
+          "underline": true,
+          "fg_color": {
+            "named": 1
+          }
+        }
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "char": "Y",
+        "attrs": {
+          "bold": false,
+          "italic": false,
+          "underline": false,
+          "fg_color": "default"
+        }
+      }
+    ]
+  }
+}
