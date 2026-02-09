@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! Doom screen melt (wipe) effect.
 //!
 //! Authentic port of `f_wipe.c` from the Doom GPL source: each column
@@ -390,5 +388,335 @@ mod tests {
         melt.reset();
         assert!(!melt.is_done());
         assert!(!melt.started);
+    }
+
+    // ── Xorshift RNG ───────────────────────────────────────────────
+
+    #[test]
+    fn xorshift_nonzero_output() {
+        let mut state = 1u32;
+        for _ in 0..100 {
+            let v = xorshift32(&mut state);
+            assert_ne!(v, 0, "xorshift32 should not produce zero");
+        }
+    }
+
+    #[test]
+    fn xorshift_deterministic() {
+        let mut s1 = 42u32;
+        let mut s2 = 42u32;
+        for _ in 0..50 {
+            assert_eq!(xorshift32(&mut s1), xorshift32(&mut s2));
+        }
+    }
+
+    #[test]
+    fn xorshift_different_seeds_diverge() {
+        let mut s1 = 1u32;
+        let mut s2 = 2u32;
+        let v1 = xorshift32(&mut s1);
+        let v2 = xorshift32(&mut s2);
+        assert_ne!(v1, v2, "different seeds should produce different output");
+    }
+
+    // ── Column offset initialization ───────────────────────────────
+
+    #[test]
+    fn init_offsets_range() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::with_seed(inner, 123);
+        melt.column_offsets.resize(80, 0);
+        melt.init_offsets(80);
+
+        for (i, &offset) in melt.column_offsets.iter().take(80).enumerate() {
+            assert!(
+                (-15..=0).contains(&offset),
+                "column {i} offset {offset} out of [-15, 0]"
+            );
+        }
+    }
+
+    #[test]
+    fn init_offsets_adjacent_differ_by_at_most_one() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::with_seed(inner, 99);
+        melt.column_offsets.resize(80, 0);
+        melt.init_offsets(80);
+
+        for x in 1..80 {
+            let diff = (melt.column_offsets[x] - melt.column_offsets[x - 1]).abs();
+            assert!(
+                diff <= 1,
+                "adjacent columns {}/{} differ by {diff}",
+                x - 1,
+                x
+            );
+        }
+    }
+
+    #[test]
+    fn init_offsets_deterministic_with_same_seed() {
+        let inner1 = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let inner2 = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut m1 = ScreenMeltFx::with_seed(inner1, 55);
+        let mut m2 = ScreenMeltFx::with_seed(inner2, 55);
+        m1.column_offsets.resize(40, 0);
+        m2.column_offsets.resize(40, 0);
+        m1.init_offsets(40);
+        m2.init_offsets(40);
+        assert_eq!(
+            &m1.column_offsets[..40],
+            &m2.column_offsets[..40],
+            "same seed should produce same offsets"
+        );
+    }
+
+    // ── Advance mechanics ──────────────────────────────────────────
+
+    #[test]
+    fn advance_negative_offsets_increment_by_one() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::with_seed(inner, 1);
+        melt.column_offsets = vec![-10];
+        melt.last_width = 1;
+        melt.last_height = 20;
+
+        melt.advance();
+        assert_eq!(melt.column_offsets[0], -9);
+    }
+
+    #[test]
+    fn advance_positive_offsets_accelerate() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::with_seed(inner, 1);
+        melt.last_width = 1;
+        melt.last_height = 100;
+
+        // Test acceleration: dy = min(y+1, 8)
+        melt.column_offsets = vec![0];
+        melt.advance();
+        assert_eq!(melt.column_offsets[0], 1); // dy = min(0+1, 8) = 1
+
+        melt.column_offsets = vec![3];
+        melt.advance();
+        assert_eq!(melt.column_offsets[0], 7); // dy = min(3+1, 8) = 4
+
+        melt.column_offsets = vec![10];
+        melt.advance();
+        assert_eq!(melt.column_offsets[0], 18); // dy = min(10+1, 8) = 8
+    }
+
+    #[test]
+    fn advance_marks_done_when_all_columns_past_bottom() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::with_seed(inner, 1);
+        melt.last_width = 3;
+        melt.last_height = 10;
+        melt.column_offsets = vec![10, 10, 10]; // all >= height
+
+        melt.advance();
+        assert!(melt.done);
+    }
+
+    #[test]
+    fn advance_not_done_if_any_column_active() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::with_seed(inner, 1);
+        melt.last_width = 3;
+        melt.last_height = 10;
+        melt.column_offsets = vec![10, 5, 10]; // middle column still active
+
+        melt.advance();
+        assert!(!melt.done);
+    }
+
+    #[test]
+    fn advance_noop_when_already_done() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::with_seed(inner, 1);
+        melt.done = true;
+        melt.last_width = 1;
+        melt.last_height = 10;
+        melt.column_offsets = vec![5];
+
+        melt.advance();
+        assert_eq!(melt.column_offsets[0], 5, "should not change when done");
+    }
+
+    // ── Rendering ──────────────────────────────────────────────────
+
+    #[test]
+    fn first_render_captures_frozen_frame() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(255, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::new(inner);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 255); 25]; // blue initial
+
+        let ctx = make_ctx(5, 5, 0);
+        melt.render(ctx, &mut buf);
+
+        assert!(melt.started);
+        // Frozen frame should contain the blue initial content
+        assert_eq!(melt.frozen_frame[0], PackedRgba::rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn completed_melt_shows_inner_effect() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 255, 0),
+        });
+        let mut melt = ScreenMeltFx::new(inner);
+        let mut buf = vec![PackedRgba::rgb(100, 100, 100); 25];
+
+        // Run to completion
+        for frame in 0..300 {
+            let ctx = make_ctx(5, 5, frame);
+            melt.render(ctx, &mut buf);
+            if melt.is_done() {
+                break;
+            }
+        }
+        assert!(melt.is_done());
+
+        // Render once more after completion
+        let ctx = make_ctx(5, 5, 300);
+        melt.render(ctx, &mut buf);
+
+        // All pixels should be inner green
+        for (i, &px) in buf.iter().enumerate() {
+            assert_eq!(px, PackedRgba::rgb(0, 255, 0), "pixel {i} should be green");
+        }
+    }
+
+    #[test]
+    fn different_seeds_produce_different_patterns() {
+        let inner1 = Box::new(SolidFx {
+            color: PackedRgba::rgb(255, 0, 0),
+        });
+        let inner2 = Box::new(SolidFx {
+            color: PackedRgba::rgb(255, 0, 0),
+        });
+        let mut m1 = ScreenMeltFx::with_seed(inner1, 1);
+        let mut m2 = ScreenMeltFx::with_seed(inner2, 999);
+
+        let mut buf1 = vec![PackedRgba::rgb(0, 0, 255); 200];
+        let mut buf2 = vec![PackedRgba::rgb(0, 0, 255); 200];
+
+        // Render a few frames
+        for frame in 0..5 {
+            let ctx = make_ctx(20, 10, frame);
+            m1.render(ctx, &mut buf1);
+            m2.render(ctx, &mut buf2);
+        }
+
+        // Should differ (different column offsets from different seeds)
+        assert_ne!(
+            buf1, buf2,
+            "different seeds should produce different patterns"
+        );
+    }
+
+    #[test]
+    fn name_returns_expected() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let melt = ScreenMeltFx::new(inner);
+        assert_eq!(melt.name(), "Screen Melt");
+    }
+
+    #[test]
+    fn debug_format_includes_fields() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let melt = ScreenMeltFx::new(inner);
+        let debug = format!("{melt:?}");
+        assert!(debug.contains("ScreenMeltFx"));
+        assert!(debug.contains("started"));
+        assert!(debug.contains("done"));
+    }
+
+    #[test]
+    fn inner_accessor() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let melt = ScreenMeltFx::new(inner);
+        assert_eq!(melt.inner().name(), "Solid");
+    }
+
+    #[test]
+    fn inner_mut_accessor() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(0, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::new(inner);
+        assert_eq!(melt.inner_mut().name(), "Solid");
+    }
+
+    #[test]
+    fn reset_allows_restart() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(255, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::new(inner);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 255); 100];
+
+        // Run to completion
+        for frame in 0..200 {
+            let ctx = make_ctx(10, 10, frame);
+            melt.render(ctx, &mut buf);
+        }
+        assert!(melt.is_done());
+
+        // Reset and run again
+        melt.reset();
+        let ctx = make_ctx(10, 10, 300);
+        melt.render(ctx, &mut buf);
+        assert!(melt.started);
+        assert!(!melt.is_done(), "should be animating again after reset");
+    }
+
+    #[test]
+    fn melt_completes_in_bounded_frames() {
+        let inner = Box::new(SolidFx {
+            color: PackedRgba::rgb(255, 0, 0),
+        });
+        let mut melt = ScreenMeltFx::new(inner);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 8000];
+
+        let mut frames = 0;
+        for frame in 0..500 {
+            let ctx = make_ctx(80, 100, frame);
+            melt.render(ctx, &mut buf);
+            frames = frame;
+            if melt.is_done() {
+                break;
+            }
+        }
+        assert!(
+            melt.is_done(),
+            "80x100 melt should complete within 500 frames (took {frames})"
+        );
     }
 }

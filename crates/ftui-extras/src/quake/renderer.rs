@@ -324,8 +324,10 @@ impl QuakeRenderer {
         let inv_area = 1.0 / area;
 
         // Scanline rasterization with barycentric interpolation
+        let fb_width = fb.width;
         for py in min_y..=max_y {
             let fy = py as f32 + 0.5;
+            let row_offset = py * fb_width;
             for px in min_x..=max_x {
                 let fx = px as f32 + 0.5;
                 let p = [fx, fy, 0.0];
@@ -350,6 +352,13 @@ impl QuakeRenderer {
                 }
                 let z = 1.0 / inv_z;
 
+                // Early-z: reject occluded pixels before expensive color math.
+                // Loop bounds guarantee px/py are in-bounds, so index directly.
+                let idx = (row_offset + px) as usize;
+                if z >= fb.depth[idx] {
+                    continue;
+                }
+
                 // Distance-based fog (Quake brown atmosphere)
                 let fog_t = ((z - FOG_START) / fog_range).clamp(0.0, 1.0);
 
@@ -366,8 +375,8 @@ impl QuakeRenderer {
                 let fg = lerp_u8(g, FOG_COLOR[1], fog_t);
                 let fbl = lerp_u8(b, FOG_COLOR[2], fog_t);
 
-                let color = PackedRgba::rgb(fr, fg, fbl);
-                fb.set_pixel_depth(px, py, z, color);
+                fb.pixels[idx] = PackedRgba::rgb(fr, fg, fbl);
+                fb.depth[idx] = z;
                 self.stats.pixels_written += 1;
             }
         }

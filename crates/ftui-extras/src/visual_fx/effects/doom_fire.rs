@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! PSX Doom fire spread effect.
 //!
 //! Authentic port of the classic PlayStation Doom fire algorithm:
