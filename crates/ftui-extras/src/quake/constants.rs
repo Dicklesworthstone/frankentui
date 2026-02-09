@@ -86,3 +86,193 @@ pub const CEILING_COLOR: [u8; 3] = [60, 55, 50];
 pub const FOG_START: f32 = 50.0;
 pub const FOG_END: f32 = 800.0;
 pub const FOG_COLOR: [u8; 3] = [40, 35, 30];
+
+#[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
+mod tests {
+    use super::*;
+
+    // ── BSP format ──────────────────────────────────────────────────
+
+    #[test]
+    fn bsp_version_quake1() {
+        assert_eq!(BSPVERSION, 29);
+    }
+
+    #[test]
+    fn bsp_lump_indices_contiguous() {
+        // Lumps must be sequential 0..HEADER_LUMPS
+        assert_eq!(LUMP_ENTITIES, 0);
+        assert_eq!(LUMP_PLANES, 1);
+        assert_eq!(LUMP_TEXTURES, 2);
+        assert_eq!(LUMP_VERTEXES, 3);
+        assert_eq!(LUMP_VISIBILITY, 4);
+        assert_eq!(LUMP_NODES, 5);
+        assert_eq!(LUMP_TEXINFO, 6);
+        assert_eq!(LUMP_FACES, 7);
+        assert_eq!(LUMP_LIGHTING, 8);
+        assert_eq!(LUMP_CLIPNODES, 9);
+        assert_eq!(LUMP_LEAFS, 10);
+        assert_eq!(LUMP_MARKSURFACES, 11);
+        assert_eq!(LUMP_EDGES, 12);
+        assert_eq!(LUMP_SURFEDGES, 13);
+        assert_eq!(LUMP_MODELS, 14);
+    }
+
+    #[test]
+    fn header_lumps_is_count_of_all_lumps() {
+        assert_eq!(HEADER_LUMPS, LUMP_MODELS + 1);
+        assert_eq!(HEADER_LUMPS, 15);
+    }
+
+    // ── BSP contents ────────────────────────────────────────────────
+
+    #[test]
+    fn bsp_contents_are_negative() {
+        // Quake BSP uses negative values for leaf contents
+        assert!(CONTENTS_EMPTY < 0);
+        assert!(CONTENTS_SOLID < 0);
+        assert!(CONTENTS_WATER < 0);
+        assert!(CONTENTS_SLIME < 0);
+        assert!(CONTENTS_LAVA < 0);
+        assert!(CONTENTS_SKY < 0);
+    }
+
+    #[test]
+    fn bsp_contents_all_distinct() {
+        let values = [
+            CONTENTS_EMPTY,
+            CONTENTS_SOLID,
+            CONTENTS_WATER,
+            CONTENTS_SLIME,
+            CONTENTS_LAVA,
+            CONTENTS_SKY,
+        ];
+        for i in 0..values.len() {
+            for j in (i + 1)..values.len() {
+                assert_ne!(values[i], values[j], "contents {i} and {j} collide");
+            }
+        }
+    }
+
+    // ── Renderer ────────────────────────────────────────────────────
+
+    #[test]
+    fn screen_dimensions_positive() {
+        assert!(SCREENWIDTH > 0);
+        assert!(SCREENHEIGHT > 0);
+    }
+
+    #[test]
+    fn fov_is_90_degrees() {
+        assert_eq!(FOV_DEGREES, 90.0);
+    }
+
+    #[test]
+    fn near_clip_positive() {
+        assert!(NEAR_CLIP > 0.0);
+    }
+
+    // ── Player constants ────────────────────────────────────────────
+
+    #[test]
+    fn player_view_below_full_height() {
+        assert!(PLAYER_VIEW_HEIGHT < PLAYER_HEIGHT);
+    }
+
+    #[test]
+    fn player_step_below_view_height() {
+        assert!(STEPSIZE < PLAYER_VIEW_HEIGHT);
+    }
+
+    #[test]
+    fn player_speeds_positive() {
+        assert!(PLAYER_MOVE_SPEED > 0.0);
+        assert!(PLAYER_STRAFE_SPEED > 0.0);
+        assert!(PLAYER_JUMP_VELOCITY > 0.0);
+    }
+
+    #[test]
+    fn player_run_multiplier_greater_than_one() {
+        assert!(PLAYER_RUN_MULT > 1.0);
+    }
+
+    #[test]
+    fn player_radius_positive() {
+        assert!(PLAYER_RADIUS > 0.0);
+    }
+
+    // ── Physics ─────────────────────────────────────────────────────
+
+    #[test]
+    fn gravity_positive() {
+        assert!(SV_GRAVITY > 0.0);
+    }
+
+    #[test]
+    fn friction_positive() {
+        assert!(SV_FRICTION > 0.0);
+    }
+
+    #[test]
+    fn max_velocity_exceeds_move_speed() {
+        assert!(SV_MAXVELOCITY > PLAYER_MOVE_SPEED);
+    }
+
+    #[test]
+    fn stop_speed_below_move_speed() {
+        assert!(SV_STOPSPEED < PLAYER_MOVE_SPEED);
+    }
+
+    #[test]
+    fn tick_rate_quake_72hz() {
+        assert_eq!(TICKRATE, 72);
+    }
+
+    #[test]
+    fn tick_duration_reciprocal() {
+        let expected = 1.0 / 72.0;
+        assert!((TICK_SECS - expected).abs() < 1e-10);
+    }
+
+    // ── Colors ──────────────────────────────────────────────────────
+
+    #[test]
+    fn wall_colors_has_eight_entries() {
+        assert_eq!(WALL_COLORS.len(), 8);
+    }
+
+    #[test]
+    fn color_arrays_are_rgb_triples() {
+        // Each entry must be [r, g, b] with 3 elements (enforced by type, but verify values are sane)
+        for (i, color) in WALL_COLORS.iter().enumerate() {
+            assert!(color.iter().any(|&c| c > 0), "wall color {i} is pure black");
+        }
+        assert!(SKY_TOP.iter().any(|&c| c > 0));
+        assert!(SKY_BOTTOM.iter().any(|&c| c > 0));
+        assert!(FLOOR_NEAR.iter().any(|&c| c > 0));
+        assert!(FLOOR_FAR.iter().any(|&c| c > 0));
+        assert!(CEILING_COLOR.iter().any(|&c| c > 0));
+        assert!(FOG_COLOR.iter().any(|&c| c > 0));
+    }
+
+    // ── Fog ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn fog_start_before_end() {
+        assert!(FOG_START < FOG_END);
+    }
+
+    #[test]
+    fn fog_distances_positive() {
+        assert!(FOG_START > 0.0);
+        assert!(FOG_END > 0.0);
+    }
+
+    // ── Lightmaps ───────────────────────────────────────────────────
+
+    #[test]
+    fn max_lightmaps_positive() {
+        assert!(MAXLIGHTMAPS > 0);
+    }
+}

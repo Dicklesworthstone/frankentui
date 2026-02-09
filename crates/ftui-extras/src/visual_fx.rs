@@ -3076,10 +3076,11 @@ mod tests {
     fn backdrop_builder_with_scrim() {
         let theme = ThemeInputs::default_dark();
         let backdrop = Backdrop::new(Box::new(SolidBg), theme).with_scrim(Scrim::vignette(0.5));
-        // Verify scrim is set (not Off)
-        if backdrop.scrim == Scrim::Off {
-            panic!("Scrim should be vignette, not Off");
-        }
+        assert_ne!(
+            backdrop.scrim,
+            Scrim::Off,
+            "Scrim should be vignette, not Off"
+        );
     }
 
     #[test]
@@ -3109,13 +3110,10 @@ mod tests {
         let backdrop = Backdrop::new(Box::new(SolidBg), theme).vibrant();
 
         assert!((backdrop.effect_opacity - 0.50).abs() < 0.001);
-        // Vibrant uses vignette scrim
-        match backdrop.scrim {
-            Scrim::Off | Scrim::Uniform { .. } | Scrim::VerticalFade { .. } => {
-                panic!("Vibrant preset should use vignette scrim")
-            }
-            Scrim::Vignette { .. } => {} // Correct
-        }
+        assert!(
+            matches!(backdrop.scrim, Scrim::Vignette { .. }),
+            "Vibrant preset should use vignette scrim"
+        );
     }
 
     #[test]

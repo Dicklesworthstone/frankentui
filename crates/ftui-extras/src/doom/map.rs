@@ -371,34 +371,34 @@ mod tests {
 
     #[test]
     fn parse_child_node() {
-        match parse_child(42) {
-            NodeChild::Node(n) => assert_eq!(n, 42),
-            _ => panic!("Expected Node"),
-        }
+        let NodeChild::Node(n) = parse_child(42) else {
+            unreachable!("Expected Node variant");
+        };
+        assert_eq!(n, 42);
     }
 
     #[test]
     fn parse_child_subsector() {
-        match parse_child(0x8005) {
-            NodeChild::SubSector(s) => assert_eq!(s, 5),
-            _ => panic!("Expected SubSector"),
-        }
+        let NodeChild::SubSector(s) = parse_child(0x8005) else {
+            unreachable!("Expected SubSector variant");
+        };
+        assert_eq!(s, 5);
     }
 
     #[test]
     fn parse_child_node_zero() {
-        match parse_child(0) {
-            NodeChild::Node(n) => assert_eq!(n, 0),
-            _ => panic!("Expected Node(0)"),
-        }
+        let NodeChild::Node(n) = parse_child(0) else {
+            unreachable!("Expected Node variant");
+        };
+        assert_eq!(n, 0);
     }
 
     #[test]
     fn parse_child_subsector_zero() {
-        match parse_child(NF_SUBSECTOR) {
-            NodeChild::SubSector(s) => assert_eq!(s, 0),
-            _ => panic!("Expected SubSector(0)"),
-        }
+        let NodeChild::SubSector(s) = parse_child(NF_SUBSECTOR) else {
+            unreachable!("Expected SubSector variant");
+        };
+        assert_eq!(s, 0);
     }
 
     #[test]
