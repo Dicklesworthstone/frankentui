@@ -23,7 +23,9 @@
 #![cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 
 use crossterm::event as cte;
-use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
+use ftui_core::event::{
+    ClipboardSource, Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind,
+};
 use ftui_core::input_parser::InputParser;
 
 /// Helper to create a crossterm key event.
@@ -1046,4 +1048,99 @@ fn document_alt_letter_handling() {
     };
     assert_eq!(crossterm_key.code, KeyCode::Char('x'));
     assert!(crossterm_key.modifiers.contains(Modifiers::ALT));
+}
+
+// ============================================================================
+// Parser State-Machine Coverage (partial/incomplete + recovery)
+// ============================================================================
+
+#[test]
+fn parser_partial_csi_buffers_until_final_byte() {
+    let mut parser = InputParser::new();
+
+    // Incomplete CSI sequence should produce no events yet.
+    assert!(parser.parse(b"\x1b[1;5").is_empty());
+
+    // Completing final byte emits Ctrl+Up.
+    let events = parser.parse(b"A");
+    assert_eq!(events.len(), 1);
+    let Event::Key(key) = &events[0] else {
+        panic!("Expected Key event");
+    };
+    assert_eq!(key.code, KeyCode::Up);
+    assert!(key.modifiers.contains(Modifiers::CTRL));
+}
+
+#[test]
+fn parser_partial_osc52_buffers_until_terminator() {
+    let mut parser = InputParser::new();
+
+    // Unterminated OSC 52 clipboard sequence should buffer.
+    assert!(parser.parse(b"\x1b]52;c;aGVs").is_empty());
+    assert!(parser.parse(b"bG8=").is_empty());
+
+    // BEL terminator should flush as a clipboard event.
+    let events = parser.parse(b"\x07");
+    assert_eq!(events.len(), 1);
+    let Event::Clipboard(clip) = &events[0] else {
+        panic!("Expected Clipboard event");
+    };
+    assert_eq!(clip.content, "hello");
+    assert_eq!(clip.source, ClipboardSource::Osc52);
+}
+
+#[test]
+fn parser_invalid_csi_is_ignored_and_recovers() {
+    let mut parser = InputParser::new();
+
+    // Unknown tilde code should be ignored.
+    assert!(parser.parse(b"\x1b[99~").is_empty());
+
+    // Parser should still parse normal printable bytes afterward.
+    let events = parser.parse(b"q");
+    assert_eq!(events.len(), 1);
+    let Event::Key(key) = &events[0] else {
+        panic!("Expected Key event");
+    };
+    assert_eq!(key.code, KeyCode::Char('q'));
+    assert_eq!(key.modifiers, Modifiers::NONE);
+}
+
+#[test]
+fn parser_mouse_sgr_sequence_across_chunks() {
+    let mut parser = InputParser::new();
+
+    // SGR mouse sequence split across parser calls.
+    assert!(parser.parse(b"\x1b[<0;10;").is_empty());
+    let events = parser.parse(b"5M");
+
+    assert_eq!(events.len(), 1);
+    let Event::Mouse(mouse) = &events[0] else {
+        panic!("Expected Mouse event");
+    };
+    assert!(matches!(
+        mouse.kind,
+        MouseEventKind::Down(MouseButton::Left)
+    ));
+    // Input parser converts SGR 1-indexed coords to 0-indexed.
+    assert_eq!(mouse.x, 9);
+    assert_eq!(mouse.y, 4);
+}
+
+#[test]
+fn parser_bracketed_paste_sequence_across_chunks() {
+    let mut parser = InputParser::new();
+
+    // Start bracketed paste and feed content without end marker.
+    assert!(parser.parse(b"\x1b[200~hello ").is_empty());
+    assert!(parser.parse(b"world").is_empty());
+
+    // End marker emits a single paste event with full content.
+    let events = parser.parse(b"\x1b[201~");
+    assert_eq!(events.len(), 1);
+    let Event::Paste(paste) = &events[0] else {
+        panic!("Expected Paste event");
+    };
+    assert_eq!(paste.text, "hello world");
+    assert!(paste.bracketed);
 }
