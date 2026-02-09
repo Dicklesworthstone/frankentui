@@ -121,6 +121,7 @@ impl DialogState {
     }
 
     /// Check if dialog is open.
+    #[inline]
     pub fn is_open(&self) -> bool {
         self.open
     }

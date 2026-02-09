@@ -189,6 +189,7 @@ impl FocusGraph {
     }
 
     /// Whether the graph is empty (no nodes).
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()

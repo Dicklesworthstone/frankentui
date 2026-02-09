@@ -552,6 +552,7 @@ impl CommandPalette {
     }
 
     /// Whether the palette is currently visible.
+    #[inline]
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -579,6 +580,7 @@ impl CommandPalette {
     }
 
     /// Currently selected index.
+    #[inline]
     pub fn selected_index(&self) -> usize {
         self.selected
     }
