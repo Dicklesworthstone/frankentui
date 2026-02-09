@@ -188,6 +188,22 @@ mod tests {
         }
     }
 
+    fn unicode_fixture_row() -> [Cell; 8] {
+        [
+            Cell::from_char('A').with_attrs(CellAttrs::new(StyleFlags::BOLD, 0x12)),
+            Cell::from_char('界'),
+            Cell::from_char('\u{0301}'), // combining acute accent
+            Cell::from_char('\u{FE0F}'), // VS16
+            Cell::from_char('\u{200D}'), // ZWJ
+            Cell::from_char('🧪'),
+            Cell {
+                content: CellContent::from_grapheme(GraphemeId::new(11, 2)),
+                ..Cell::default()
+            },
+            Cell::CONTINUATION,
+        ]
+    }
+
     #[test]
     fn cell_from_render_basic() {
         let cell = make_cell('A', 0xFFFFFFFF, 0x000000FF, StyleFlags::empty());
@@ -284,6 +300,65 @@ mod tests {
         };
         let gpu = cell_from_render(&cell);
         assert_eq!(gpu.glyph_id, GRAPHEME_FALLBACK_CODEPOINT);
+    }
+
+    #[test]
+    fn cell_from_render_unicode_fixture_has_expected_glyph_mapping() {
+        let fixture = unicode_fixture_row();
+        let glyphs: Vec<u32> = fixture
+            .iter()
+            .map(cell_from_render)
+            .map(|c| c.glyph_id)
+            .collect();
+        assert_eq!(
+            glyphs,
+            vec![
+                'A' as u32,
+                '界' as u32,
+                0x0301,
+                0xFE0F,
+                0x200D,
+                '🧪' as u32,
+                GRAPHEME_FALLBACK_CODEPOINT,
+                0,
+            ]
+        );
+        let first = cell_from_render(&fixture[0]);
+        assert_eq!(
+            first.attrs & ATTR_STYLE_MASK,
+            StyleFlags::BOLD.bits() as u32
+        );
+        assert_eq!(first.attrs >> 8, 0x12);
+    }
+
+    #[test]
+    fn diff_to_patches_unicode_fixture_stays_contiguous_and_ordered() {
+        let old = Buffer::new(8, 1);
+        let mut new = Buffer::new(8, 1);
+        let fixture = unicode_fixture_row();
+        for (x, cell) in fixture.iter().enumerate() {
+            new.set_raw(x as u16, 0, *cell);
+        }
+
+        let diff = BufferDiff::compute(&old, &new);
+        let patches = diff_to_patches(&new, &diff);
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].offset, 0);
+
+        let glyphs: Vec<u32> = patches[0].cells.iter().map(|c| c.glyph_id).collect();
+        assert_eq!(
+            glyphs,
+            vec![
+                'A' as u32,
+                '界' as u32,
+                0x0301,
+                0xFE0F,
+                0x200D,
+                '🧪' as u32,
+                GRAPHEME_FALLBACK_CODEPOINT,
+                0,
+            ]
+        );
     }
 
     #[test]
@@ -422,5 +497,562 @@ mod tests {
         let gpu = cell_from_render(&cell);
         assert_eq!(gpu.attrs & ATTR_STYLE_MASK, flags.bits() as u32);
         assert_eq!(gpu.attrs >> 8, ATTR_LINK_ID_MAX);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unicode wasm patch/hash parity fixtures (bd-lff4p.2.18.5)
+    //
+    // These tests verify that the full patch pipeline (Cell → CellData →
+    // patch → stats → frame hash) handles Unicode content correctly and
+    // produces deterministic, web-path-parity results.
+    // -----------------------------------------------------------------------
+
+    use crate::frame_harness::{GeometrySnapshot, stable_frame_hash};
+
+    /// Build a row of CJK characters (wide, 2-column each) with continuations.
+    fn cjk_fixture_row() -> Vec<Cell> {
+        // 中(U+4E2D) 文(U+6587) 字(U+5B57) — each takes 2 columns
+        vec![
+            Cell::from_char('中'),
+            Cell::CONTINUATION,
+            Cell::from_char('文'),
+            Cell::CONTINUATION,
+            Cell::from_char('字'),
+            Cell::CONTINUATION,
+        ]
+    }
+
+    /// Build a row of Korean Hangul characters.
+    fn hangul_fixture_row() -> Vec<Cell> {
+        // 한(U+D55C) 글(U+AE00) — each wide
+        vec![
+            Cell::from_char('한'),
+            Cell::CONTINUATION,
+            Cell::from_char('글'),
+            Cell::CONTINUATION,
+        ]
+    }
+
+    /// Build a row of Japanese Katakana (narrow, single-column).
+    fn katakana_fixture_row() -> Vec<Cell> {
+        // ア(U+30A2) イ(U+30A4) ウ(U+30A6) エ(U+30A8) オ(U+30AA)
+        vec![
+            Cell::from_char('ア'),
+            Cell::from_char('イ'),
+            Cell::from_char('ウ'),
+            Cell::from_char('エ'),
+            Cell::from_char('オ'),
+        ]
+    }
+
+    /// Build a mixed row: ASCII + wide CJK + emoji + combining + continuation.
+    fn mixed_unicode_fixture_row() -> Vec<Cell> {
+        vec![
+            Cell::from_char('H'),        // ASCII
+            Cell::from_char('界'),       // CJK wide
+            Cell::CONTINUATION,          // continuation for 界
+            Cell::from_char('\u{0301}'), // combining acute
+            Cell::from_char('🧪'),       // emoji
+            Cell::CONTINUATION,          // continuation for 🧪
+            Cell::from_char('\u{FE0F}'), // VS16
+            Cell::from_char('Z'),        // ASCII
+        ]
+    }
+
+    /// Build a row exercising Latin Extended characters (diacritics as scalars).
+    fn latin_extended_fixture_row() -> Vec<Cell> {
+        // é(U+00E9)  ñ(U+00F1)  ü(U+00FC)  ß(U+00DF)  ø(U+00F8)
+        vec![
+            Cell::from_char('é'),
+            Cell::from_char('ñ'),
+            Cell::from_char('ü'),
+            Cell::from_char('ß'),
+            Cell::from_char('ø'),
+        ]
+    }
+
+    // --- cell_from_render Unicode parity tests ---
+
+    #[test]
+    fn cell_from_render_cjk_passthrough() {
+        for &ch in &['中', '文', '字', '国', '人'] {
+            let cell = make_cell(ch, 0xFFFFFFFF, 0x000000FF, StyleFlags::empty());
+            let gpu = cell_from_render(&cell);
+            assert_eq!(gpu.glyph_id, ch as u32, "CJK char {ch} should pass through");
+        }
+    }
+
+    #[test]
+    fn cell_from_render_hangul_passthrough() {
+        for &ch in &['한', '글', '가', '나', '다'] {
+            let cell = make_cell(ch, 0xFFFFFFFF, 0x000000FF, StyleFlags::empty());
+            let gpu = cell_from_render(&cell);
+            assert_eq!(
+                gpu.glyph_id, ch as u32,
+                "Hangul char {ch} should pass through"
+            );
+        }
+    }
+
+    #[test]
+    fn cell_from_render_katakana_passthrough() {
+        for &ch in &['ア', 'イ', 'ウ', 'エ', 'オ'] {
+            let cell = make_cell(ch, 0xFFFFFFFF, 0x000000FF, StyleFlags::empty());
+            let gpu = cell_from_render(&cell);
+            assert_eq!(
+                gpu.glyph_id, ch as u32,
+                "Katakana char {ch} should pass through"
+            );
+        }
+    }
+
+    #[test]
+    fn cell_from_render_latin_extended_passthrough() {
+        for &ch in &['é', 'ñ', 'ü', 'ß', 'ø', 'à', 'ê', 'î'] {
+            let cell = make_cell(ch, 0xFFFFFFFF, 0x000000FF, StyleFlags::empty());
+            let gpu = cell_from_render(&cell);
+            assert_eq!(
+                gpu.glyph_id, ch as u32,
+                "Latin extended char {ch} should pass through"
+            );
+        }
+    }
+
+    #[test]
+    fn cell_from_render_emoji_codepoints_above_bmp() {
+        // Emoji above BMP (U+1xxxx) — verify u32 encoding is correct
+        for &ch in &['🎉', '🚀', '💡', '🔥', '🧪'] {
+            let cell = make_cell(ch, 0xFFFFFFFF, 0x000000FF, StyleFlags::empty());
+            let gpu = cell_from_render(&cell);
+            assert_eq!(gpu.glyph_id, ch as u32, "Emoji {ch} should pass through");
+            assert!(gpu.glyph_id > 0xFFFF, "Emoji should be above BMP");
+        }
+    }
+
+    #[test]
+    fn cell_from_render_cjk_with_styled_attrs_preserved() {
+        let flags = StyleFlags::BOLD | StyleFlags::ITALIC;
+        let link_id = 0x42u32;
+        let cell = Cell::from_char('界')
+            .with_fg(PackedRgba::rgb(255, 0, 0))
+            .with_bg(PackedRgba::rgb(0, 0, 128))
+            .with_attrs(CellAttrs::new(flags, link_id));
+        let gpu = cell_from_render(&cell);
+
+        assert_eq!(gpu.glyph_id, '界' as u32);
+        assert_eq!(gpu.fg_rgba, PackedRgba::rgb(255, 0, 0).0);
+        assert_eq!(gpu.bg_rgba, PackedRgba::rgb(0, 0, 128).0);
+        assert_eq!(gpu.attrs & ATTR_STYLE_MASK, flags.bits() as u32);
+        assert_eq!(gpu.attrs >> 8, link_id);
+    }
+
+    // --- full_buffer_patch Unicode parity tests ---
+
+    #[test]
+    fn full_buffer_patch_cjk_row_preserves_glyph_ids_and_continuations() {
+        let fixture = cjk_fixture_row();
+        let mut buf = Buffer::new(fixture.len() as u16, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            buf.set_raw(x as u16, 0, *cell);
+        }
+        let patch = full_buffer_patch(&buf);
+        assert_eq!(patch.offset, 0);
+        assert_eq!(patch.cells.len(), fixture.len());
+
+        let glyphs: Vec<u32> = patch.cells.iter().map(|c| c.glyph_id).collect();
+        assert_eq!(glyphs, vec!['中' as u32, 0, '文' as u32, 0, '字' as u32, 0]);
+    }
+
+    #[test]
+    fn full_buffer_patch_hangul_row() {
+        let fixture = hangul_fixture_row();
+        let mut buf = Buffer::new(fixture.len() as u16, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            buf.set_raw(x as u16, 0, *cell);
+        }
+        let patch = full_buffer_patch(&buf);
+        let glyphs: Vec<u32> = patch.cells.iter().map(|c| c.glyph_id).collect();
+        assert_eq!(glyphs, vec!['한' as u32, 0, '글' as u32, 0]);
+    }
+
+    #[test]
+    fn full_buffer_patch_katakana_row() {
+        let fixture = katakana_fixture_row();
+        let mut buf = Buffer::new(fixture.len() as u16, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            buf.set_raw(x as u16, 0, *cell);
+        }
+        let patch = full_buffer_patch(&buf);
+        let glyphs: Vec<u32> = patch.cells.iter().map(|c| c.glyph_id).collect();
+        assert_eq!(
+            glyphs,
+            vec![
+                'ア' as u32,
+                'イ' as u32,
+                'ウ' as u32,
+                'エ' as u32,
+                'オ' as u32
+            ]
+        );
+    }
+
+    #[test]
+    fn full_buffer_patch_mixed_unicode_row() {
+        let fixture = mixed_unicode_fixture_row();
+        let mut buf = Buffer::new(fixture.len() as u16, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            buf.set_raw(x as u16, 0, *cell);
+        }
+        let patch = full_buffer_patch(&buf);
+        let glyphs: Vec<u32> = patch.cells.iter().map(|c| c.glyph_id).collect();
+        assert_eq!(
+            glyphs,
+            vec![
+                'H' as u32,
+                '界' as u32,
+                0, // continuation
+                '\u{0301}' as u32,
+                '🧪' as u32,
+                0, // continuation
+                '\u{FE0F}' as u32,
+                'Z' as u32,
+            ]
+        );
+    }
+
+    #[test]
+    fn full_buffer_patch_latin_extended_row() {
+        let fixture = latin_extended_fixture_row();
+        let mut buf = Buffer::new(fixture.len() as u16, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            buf.set_raw(x as u16, 0, *cell);
+        }
+        let patch = full_buffer_patch(&buf);
+        let glyphs: Vec<u32> = patch.cells.iter().map(|c| c.glyph_id).collect();
+        assert_eq!(
+            glyphs,
+            vec!['é' as u32, 'ñ' as u32, 'ü' as u32, 'ß' as u32, 'ø' as u32]
+        );
+    }
+
+    // --- diff_to_patches Unicode parity tests ---
+
+    #[test]
+    fn diff_to_patches_cjk_insertion_coalesces() {
+        let cols = 6u16;
+        let old = Buffer::new(cols, 1);
+        let mut new = Buffer::new(cols, 1);
+        for (x, cell) in cjk_fixture_row().iter().enumerate() {
+            new.set_raw(x as u16, 0, *cell);
+        }
+
+        let diff = BufferDiff::compute(&old, &new);
+        let patches = diff_to_patches(&new, &diff);
+        // All 6 cells should coalesce into a single patch.
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].offset, 0);
+        assert_eq!(patches[0].cells.len(), 6);
+    }
+
+    #[test]
+    fn diff_to_patches_sparse_unicode_produces_separate_spans() {
+        let cols = 10u16;
+        let old = Buffer::new(cols, 1);
+        let mut new = Buffer::new(cols, 1);
+        // Place CJK at col 0-1 and emoji at col 8-9 (gap in between).
+        new.set_raw(0, 0, Cell::from_char('中'));
+        new.set_raw(1, 0, Cell::CONTINUATION);
+        new.set_raw(8, 0, Cell::from_char('🧪'));
+        new.set_raw(9, 0, Cell::CONTINUATION);
+
+        let diff = BufferDiff::compute(&old, &new);
+        let patches = diff_to_patches(&new, &diff);
+        assert_eq!(
+            patches.len(),
+            2,
+            "non-adjacent Unicode should produce 2 spans"
+        );
+        assert_eq!(patches[0].offset, 0);
+        assert_eq!(patches[0].cells.len(), 2);
+        assert_eq!(patches[0].cells[0].glyph_id, '中' as u32);
+        assert_eq!(patches[1].offset, 8);
+        assert_eq!(patches[1].cells.len(), 2);
+        assert_eq!(patches[1].cells[0].glyph_id, '🧪' as u32);
+    }
+
+    #[test]
+    fn diff_to_patches_mixed_unicode_patch_stats_correct() {
+        let fixture = mixed_unicode_fixture_row();
+        let cols = fixture.len() as u16;
+        let old = Buffer::new(cols, 1);
+        let mut new = Buffer::new(cols, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            new.set_raw(x as u16, 0, *cell);
+        }
+
+        let diff = BufferDiff::compute(&old, &new);
+        let patches = diff_to_patches(&new, &diff);
+        let stats = patch_batch_stats(&patches);
+
+        assert_eq!(stats.dirty_cells, cols as u32);
+        assert_eq!(stats.patch_count, 1);
+        assert_eq!(
+            stats.bytes_uploaded,
+            u64::from(cols) * std::mem::size_of::<CellData>() as u64
+        );
+    }
+
+    // --- CellData::to_bytes round-trip for Unicode ---
+
+    #[test]
+    fn cell_data_to_bytes_roundtrip_unicode_codepoints() {
+        // Verify that to_bytes correctly encodes glyph_id for non-ASCII codepoints
+        let test_cases: &[(char, u32)] = &[
+            ('界', 0x754C),
+            ('🧪', 0x1F9EA),
+            ('é', 0x00E9),
+            ('한', 0xD55C),
+            ('ア', 0x30A2),
+            ('\u{0301}', 0x0301),
+            ('\u{200D}', 0x200D),
+            ('\u{FE0F}', 0xFE0F),
+        ];
+        for &(ch, expected_codepoint) in test_cases {
+            let cell = make_cell(ch, 0xFFFFFFFF, 0x000000FF, StyleFlags::empty());
+            let gpu = cell_from_render(&cell);
+            assert_eq!(gpu.glyph_id, expected_codepoint);
+
+            let bytes = gpu.to_bytes();
+            // glyph_id is at bytes 8..12, little-endian
+            let glyph_from_bytes = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+            assert_eq!(
+                glyph_from_bytes, expected_codepoint,
+                "to_bytes round-trip for {ch} (U+{expected_codepoint:04X})"
+            );
+        }
+    }
+
+    // --- Frame hash parity for Unicode content ---
+
+    fn test_geometry(cols: u16, rows: u16) -> GeometrySnapshot {
+        GeometrySnapshot {
+            cols,
+            rows,
+            pixel_width: u32::from(cols) * 10,
+            pixel_height: u32::from(rows) * 20,
+            cell_width_px: 10.0,
+            cell_height_px: 20.0,
+            dpr: 1.0,
+            zoom: 1.0,
+        }
+    }
+
+    #[test]
+    fn frame_hash_cjk_buffer_is_deterministic() {
+        let fixture = cjk_fixture_row();
+        let cols = fixture.len() as u16;
+        let mut buf = Buffer::new(cols, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            buf.set_raw(x as u16, 0, *cell);
+        }
+
+        let patch = full_buffer_patch(&buf);
+        let geometry = test_geometry(cols, 1);
+        let hash_a = stable_frame_hash(&patch.cells, geometry);
+        let hash_b = stable_frame_hash(&patch.cells, geometry);
+        assert_eq!(hash_a, hash_b);
+        assert!(hash_a.starts_with("fnv1a64:"));
+    }
+
+    #[test]
+    fn frame_hash_differs_for_different_cjk_content() {
+        let geometry = test_geometry(6, 1);
+
+        // Row A: 中 文 字
+        let mut buf_a = Buffer::new(6, 1);
+        for (x, cell) in cjk_fixture_row().iter().enumerate() {
+            buf_a.set_raw(x as u16, 0, *cell);
+        }
+        let patch_a = full_buffer_patch(&buf_a);
+
+        // Row B: 国 人 大
+        let mut buf_b = Buffer::new(6, 1);
+        let row_b = [
+            Cell::from_char('国'),
+            Cell::CONTINUATION,
+            Cell::from_char('人'),
+            Cell::CONTINUATION,
+            Cell::from_char('大'),
+            Cell::CONTINUATION,
+        ];
+        for (x, cell) in row_b.iter().enumerate() {
+            buf_b.set_raw(x as u16, 0, *cell);
+        }
+        let patch_b = full_buffer_patch(&buf_b);
+
+        let hash_a = stable_frame_hash(&patch_a.cells, geometry);
+        let hash_b = stable_frame_hash(&patch_b.cells, geometry);
+        assert_ne!(
+            hash_a, hash_b,
+            "different CJK content should produce different hashes"
+        );
+    }
+
+    #[test]
+    fn frame_hash_mixed_unicode_row_is_deterministic() {
+        let fixture = mixed_unicode_fixture_row();
+        let cols = fixture.len() as u16;
+        let geometry = test_geometry(cols, 1);
+
+        let mut buf = Buffer::new(cols, 1);
+        for (x, cell) in fixture.iter().enumerate() {
+            buf.set_raw(x as u16, 0, *cell);
+        }
+
+        let patch = full_buffer_patch(&buf);
+        let hash_a = stable_frame_hash(&patch.cells, geometry);
+        let hash_b = stable_frame_hash(&patch.cells, geometry);
+        assert_eq!(hash_a, hash_b);
+    }
+
+    #[test]
+    fn frame_hash_hangul_vs_cjk_differ() {
+        // Verify that hangul and CJK rows with same geometry produce different hashes
+        let geometry = test_geometry(4, 1);
+
+        let mut buf_hangul = Buffer::new(4, 1);
+        for (x, cell) in hangul_fixture_row().iter().enumerate() {
+            buf_hangul.set_raw(x as u16, 0, *cell);
+        }
+
+        let mut buf_cjk = Buffer::new(4, 1);
+        let cjk_4 = [
+            Cell::from_char('中'),
+            Cell::CONTINUATION,
+            Cell::from_char('文'),
+            Cell::CONTINUATION,
+        ];
+        for (x, cell) in cjk_4.iter().enumerate() {
+            buf_cjk.set_raw(x as u16, 0, *cell);
+        }
+
+        let hash_hangul = stable_frame_hash(&full_buffer_patch(&buf_hangul).cells, geometry);
+        let hash_cjk = stable_frame_hash(&full_buffer_patch(&buf_cjk).cells, geometry);
+        assert_ne!(hash_hangul, hash_cjk);
+    }
+
+    #[test]
+    fn frame_hash_styled_emoji_differs_from_unstyled() {
+        let geometry = test_geometry(2, 1);
+
+        // Unstyled emoji
+        let mut buf_plain = Buffer::new(2, 1);
+        buf_plain.set_raw(0, 0, Cell::from_char('🧪'));
+        buf_plain.set_raw(1, 0, Cell::CONTINUATION);
+
+        // Bold + colored emoji
+        let mut buf_styled = Buffer::new(2, 1);
+        buf_styled.set_raw(
+            0,
+            0,
+            Cell::from_char('🧪')
+                .with_fg(PackedRgba::rgb(255, 0, 0))
+                .with_attrs(CellAttrs::new(StyleFlags::BOLD, 0)),
+        );
+        buf_styled.set_raw(1, 0, Cell::CONTINUATION);
+
+        let hash_plain = stable_frame_hash(&full_buffer_patch(&buf_plain).cells, geometry);
+        let hash_styled = stable_frame_hash(&full_buffer_patch(&buf_styled).cells, geometry);
+        assert_ne!(
+            hash_plain, hash_styled,
+            "styled emoji should produce a different hash"
+        );
+    }
+
+    #[test]
+    fn full_pipeline_unicode_multirow_grid() {
+        // Build a 10x3 grid with Unicode content across multiple rows,
+        // verify the complete pipeline: Buffer → patch → stats → hash.
+        let mut buf = Buffer::new(10, 3);
+
+        // Row 0: ASCII "Hello" + CJK 界
+        for (i, ch) in "Hello".chars().enumerate() {
+            buf.set_raw(i as u16, 0, Cell::from_char(ch));
+        }
+        buf.set_raw(5, 0, Cell::from_char('界'));
+        buf.set_raw(6, 0, Cell::CONTINUATION);
+
+        // Row 1: Korean 한글 + Latin ñé
+        buf.set_raw(0, 1, Cell::from_char('한'));
+        buf.set_raw(1, 1, Cell::CONTINUATION);
+        buf.set_raw(2, 1, Cell::from_char('글'));
+        buf.set_raw(3, 1, Cell::CONTINUATION);
+        buf.set_raw(4, 1, Cell::from_char('ñ'));
+        buf.set_raw(5, 1, Cell::from_char('é'));
+
+        // Row 2: Emoji row
+        buf.set_raw(0, 2, Cell::from_char('🎉'));
+        buf.set_raw(1, 2, Cell::CONTINUATION);
+        buf.set_raw(2, 2, Cell::from_char('🚀'));
+        buf.set_raw(3, 2, Cell::CONTINUATION);
+        buf.set_raw(4, 2, Cell::from_char('💡'));
+        buf.set_raw(5, 2, Cell::CONTINUATION);
+
+        let patch = full_buffer_patch(&buf);
+        assert_eq!(patch.cells.len(), 30); // 10 * 3
+
+        let stats = patch_batch_stats(std::slice::from_ref(&patch));
+        assert_eq!(stats.dirty_cells, 30);
+        assert_eq!(stats.bytes_uploaded, 30 * 16); // 30 cells * 16 bytes each
+
+        let geometry = test_geometry(10, 3);
+        let hash = stable_frame_hash(&patch.cells, geometry);
+        assert!(hash.starts_with("fnv1a64:"));
+
+        // Verify determinism
+        let hash2 = stable_frame_hash(&patch.cells, geometry);
+        assert_eq!(hash, hash2);
+
+        // Spot-check specific cells
+        assert_eq!(patch.cells[0].glyph_id, 'H' as u32); // row 0 col 0
+        assert_eq!(patch.cells[5].glyph_id, '界' as u32); // row 0 col 5
+        assert_eq!(patch.cells[6].glyph_id, 0); // continuation
+        assert_eq!(patch.cells[10].glyph_id, '한' as u32); // row 1 col 0
+        assert_eq!(patch.cells[14].glyph_id, 'ñ' as u32); // row 1 col 4
+        assert_eq!(patch.cells[20].glyph_id, '🎉' as u32); // row 2 col 0
+        assert_eq!(patch.cells[22].glyph_id, '🚀' as u32); // row 2 col 2
+    }
+
+    #[test]
+    fn diff_to_patches_unicode_incremental_update() {
+        // Start with ASCII buffer, then change some cells to Unicode.
+        // Verify diff-based patches are correct.
+        let cols = 8u16;
+        let mut old = Buffer::new(cols, 1);
+        for (i, ch) in "ABCDEFGH".chars().enumerate() {
+            old.set_raw(i as u16, 0, Cell::from_char(ch));
+        }
+
+        let mut new = old.clone();
+        // Replace cols 2-3 with CJK wide char
+        new.set_raw(2, 0, Cell::from_char('中'));
+        new.set_raw(3, 0, Cell::CONTINUATION);
+        // Replace col 6 with Latin extended
+        new.set_raw(6, 0, Cell::from_char('ñ'));
+
+        let diff = BufferDiff::compute(&old, &new);
+        let patches = diff_to_patches(&new, &diff);
+        assert_eq!(patches.len(), 2, "should produce 2 disjoint patches");
+
+        // First patch: cols 2-3 (CJK + continuation)
+        assert_eq!(patches[0].offset, 2);
+        assert_eq!(patches[0].cells.len(), 2);
+        assert_eq!(patches[0].cells[0].glyph_id, '中' as u32);
+        assert_eq!(patches[0].cells[1].glyph_id, 0); // continuation
+
+        // Second patch: col 6 (Latin extended)
+        assert_eq!(patches[1].offset, 6);
+        assert_eq!(patches[1].cells.len(), 1);
+        assert_eq!(patches[1].cells[0].glyph_id, 'ñ' as u32);
     }
 }
