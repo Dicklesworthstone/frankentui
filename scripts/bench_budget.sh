@@ -172,6 +172,16 @@ log_json() {
 run_benchmarks() {
     log "${BLUE}=== Running Performance Benchmarks ===${NC}"
     mkdir -p "$RESULTS_DIR"
+    # Avoid stale results from previous runs affecting budget checks.
+    : > "${RESULTS_DIR}/cell_bench.txt"
+    : > "${RESULTS_DIR}/buffer_bench.txt"
+    : > "${RESULTS_DIR}/diff_bench.txt"
+    : > "${RESULTS_DIR}/presenter_bench.txt"
+    : > "${RESULTS_DIR}/widget_bench.txt"
+    : > "${RESULTS_DIR}/telemetry_bench.txt"
+    : > "${RESULTS_DIR}/parser_patch_bench.txt"
+    : > "${RESULTS_DIR}/renderer_bench.txt"
+    : > "${PERF_LOG}"
 
     local benches=(
         "ftui-render:cell_bench"
@@ -211,12 +221,23 @@ run_benchmarks() {
             bench_args+=(frame_harness_stats)
         fi
 
+        local stderr_file="${RESULTS_DIR}/${bench}.stderr.txt"
         if [[ -n "${features:-}" ]]; then
-            cargo bench -p "$pkg" --bench "$bench" --features "$features" "${bench_args[@]}" \
-                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt"
+            if ! cargo bench -p "$pkg" --bench "$bench" --features "$features" "${bench_args[@]}" \
+                2>"$stderr_file" | tee "${RESULTS_DIR}/${bench}.txt"; then
+                log "${RED}Benchmark failed:${NC} $pkg/$bench"
+                log "  stderr: $stderr_file"
+                tail -n 200 "$stderr_file" || true
+                return 1
+            fi
         else
-            cargo bench -p "$pkg" --bench "$bench" "${bench_args[@]}" \
-                2>/dev/null | tee "${RESULTS_DIR}/${bench}.txt"
+            if ! cargo bench -p "$pkg" --bench "$bench" "${bench_args[@]}" \
+                2>"$stderr_file" | tee "${RESULTS_DIR}/${bench}.txt"; then
+                log "${RED}Benchmark failed:${NC} $pkg/$bench"
+                log "  stderr: $stderr_file"
+                tail -n 200 "$stderr_file" || true
+                return 1
+            fi
         fi
     done
 }

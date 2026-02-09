@@ -50,38 +50,46 @@ pub fn diff_to_patches(buffer: &Buffer, diff: &BufferDiff) -> Vec<CellPatch> {
         return Vec::new();
     }
 
-    let cols = buffer.width();
+    // BufferDiff changes are produced by a row-major scan and are therefore
+    // already sorted by (y, x) which is also linear-offset order.
+    let cols = u32::from(buffer.width());
 
-    // Sort changes by linear offset for coalescing.
-    let mut offsets: Vec<u32> = diff
-        .changes()
-        .iter()
-        .map(|&(x, y)| y as u32 * cols as u32 + x as u32)
-        .collect();
-    offsets.sort_unstable();
-    offsets.dedup();
-
-    // Coalesce into contiguous spans.
     let mut patches = Vec::new();
-    let mut span_start = offsets[0];
-    let mut span_cells = vec![cell_at_offset(buffer, cols, span_start)];
+    let mut span_start: u32 = 0;
+    let mut span_cells: Vec<CellData> = Vec::new();
+    let mut prev_offset: u32 = 0;
+    let mut has_span = false;
 
-    for &offset in &offsets[1..] {
-        if offset == span_start + span_cells.len() as u32 {
-            // Contiguous: extend current span.
-            span_cells.push(cell_at_offset(buffer, cols, offset));
+    for &(x, y) in diff.changes() {
+        let offset = u32::from(y) * cols + u32::from(x);
+
+        if !has_span {
+            span_start = offset;
+            prev_offset = offset;
+            has_span = true;
+            span_cells.push(cell_at_xy(buffer, x, y));
+            continue;
+        }
+
+        if offset == prev_offset {
+            // Defensive: ignore duplicates (shouldn't happen, but keep output stable).
+            continue;
+        }
+
+        if offset == prev_offset + 1 {
+            span_cells.push(cell_at_xy(buffer, x, y));
         } else {
-            // Gap: flush current span and start a new one.
             patches.push(CellPatch {
                 offset: span_start,
                 cells: std::mem::take(&mut span_cells),
             });
             span_start = offset;
-            span_cells.push(cell_at_offset(buffer, cols, offset));
+            span_cells.push(cell_at_xy(buffer, x, y));
         }
+
+        prev_offset = offset;
     }
 
-    // Flush last span.
     if !span_cells.is_empty() {
         patches.push(CellPatch {
             offset: span_start,
@@ -104,23 +112,18 @@ pub fn full_buffer_patch(buffer: &Buffer) -> CellPatch {
     let mut cells = Vec::with_capacity(total);
     for y in 0..rows {
         for x in 0..cols {
-            cells.push(match buffer.get(x, y) {
-                Some(cell) => cell_from_render(cell),
-                None => CellData::EMPTY,
-            });
+            // `x`,`y` are within bounds by construction (0..cols/rows).
+            cells.push(cell_from_render(buffer.get_unchecked(x, y)));
         }
     }
 
     CellPatch { offset: 0, cells }
 }
 
-fn cell_at_offset(buffer: &Buffer, cols: u16, offset: u32) -> CellData {
-    let x = (offset % cols as u32) as u16;
-    let y = (offset / cols as u32) as u16;
-    match buffer.get(x, y) {
-        Some(cell) => cell_from_render(cell),
-        None => CellData::EMPTY,
-    }
+fn cell_at_xy(buffer: &Buffer, x: u16, y: u16) -> CellData {
+    debug_assert!(x < buffer.width(), "diff x out of bounds");
+    debug_assert!(y < buffer.height(), "diff y out of bounds");
+    cell_from_render(buffer.get_unchecked(x, y))
 }
 
 #[cfg(test)]
