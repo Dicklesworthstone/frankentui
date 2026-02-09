@@ -1,0 +1,15 @@
+{
+  "name": "sgr_bright_colors",
+  "description": "SGR 90-97 sets bright foreground (named 8-15), SGR 100-107 sets bright background",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b39316d4a1b5b3130346d4b1b5b306d4c",
+  "comment": "SGR(91) bright red fg (named 9), print J. SGR(104) bright blue bg (named 12), print K. SGR(0) reset, print L.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "J", "attrs": { "fg_color": { "named": 9 } } },
+      { "row": 0, "col": 1, "char": "K", "attrs": { "fg_color": { "named": 9 }, "bg_color": { "named": 12 } } },
+      { "row": 0, "col": 2, "char": "L" }
+    ]
+  }
+}

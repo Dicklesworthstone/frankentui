@@ -1,0 +1,14 @@
+{
+  "name": "sgr_combined_attrs_colors",
+  "description": "Multiple SGR params in a single sequence: bold + indexed fg + RGB bg combined",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b313b33383b353b3230303b34383b323b31303b32303b33306d4d1b5b306d4e",
+  "comment": "SGR(1;38;5;200;48;2;10;20;30) bold + indexed fg 200 + RGB bg (10,20,30), print M. SGR(0) reset, print N.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "M", "attrs": { "bold": true, "fg_color": { "indexed": 200 }, "bg_color": { "rgb": [10, 20, 30] } } },
+      { "row": 0, "col": 1, "char": "N" }
+    ]
+  }
+}

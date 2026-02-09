@@ -1,0 +1,15 @@
+{
+  "name": "sgr_underline_color",
+  "description": "SGR 58;5;N sets underline color (indexed), SGR 58;2;R;G;B sets underline color (RGB), SGR 59 resets underline color",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b35383b353b3136306d1b5b346d471b5b35383b323b303b3235353b306d481b5b35396d49",
+  "comment": "SGR(58;5;160) indexed underline color + SGR(4) underline on, print G. SGR(58;2;0;255;0) RGB underline color, print H. SGR(59) reset underline color, print I.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "G", "attrs": { "underline": true } },
+      { "row": 0, "col": 1, "char": "H", "attrs": { "underline": true } },
+      { "row": 0, "col": 2, "char": "I", "attrs": { "underline": true } }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "sgr_named_color_sweep",
+  "description": "All 8 standard named foreground colors (SGR 30-37) applied in sequence, then reset",
+  "initial_size": [20, 3],
+  "input_bytes_hex": "1b5b33306d611b5b33316d621b5b33326d631b5b33336d641b5b33346d651b5b33356d661b5b33366d671b5b33376d681b5b306d5a",
+  "comment": "SGR(30) black fg print a, SGR(31) red print b, ..., SGR(37) white print h, SGR(0) reset print Z.",
+  "expected": {
+    "cursor": { "row": 0, "col": 9 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "a", "attrs": { "fg_color": { "named": 0 } } },
+      { "row": 0, "col": 1, "char": "b", "attrs": { "fg_color": { "named": 1 } } },
+      { "row": 0, "col": 2, "char": "c", "attrs": { "fg_color": { "named": 2 } } },
+      { "row": 0, "col": 3, "char": "d", "attrs": { "fg_color": { "named": 3 } } },
+      { "row": 0, "col": 4, "char": "e", "attrs": { "fg_color": { "named": 4 } } },
+      { "row": 0, "col": 5, "char": "f", "attrs": { "fg_color": { "named": 5 } } },
+      { "row": 0, "col": 6, "char": "g", "attrs": { "fg_color": { "named": 6 } } },
+      { "row": 0, "col": 7, "char": "h", "attrs": { "fg_color": { "named": 7 } } },
+      { "row": 0, "col": 8, "char": "Z" }
+    ]
+  }
+}

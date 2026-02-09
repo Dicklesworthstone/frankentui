@@ -1,0 +1,15 @@
+{
+  "name": "sgr_indexed_boundary",
+  "description": "SGR 38;5;0 (indexed black/min) and SGR 38;5;255 (indexed max) boundary test",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b33383b353b306d411b5b33383b353b3235356d421b5b306d43",
+  "comment": "SGR(38;5;0) indexed 0, print A. SGR(38;5;255) indexed 255, print B. SGR(0) reset, print C.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "fg_color": { "indexed": 0 } } },
+      { "row": 0, "col": 1, "char": "B", "attrs": { "fg_color": { "indexed": 255 } } },
+      { "row": 0, "col": 2, "char": "C" }
+    ]
+  }
+}

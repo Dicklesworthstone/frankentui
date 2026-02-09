@@ -1,0 +1,15 @@
+{
+  "name": "sgr_rgb_truecolor",
+  "description": "SGR 38;2;R;G;B sets RGB foreground, SGR 48;2;R;G;B sets RGB background, SGR 39;49 resets to default",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b33383b323b3235353b3132383b306d441b5b34383b323b303b36343b3132386d451b5b33393b34396d46",
+  "comment": "SGR(38;2;255;128;0) RGB fg, print D. SGR(48;2;0;64;128) RGB bg, print E. SGR(39;49) default fg+bg, print F.",
+  "expected": {
+    "cursor": { "row": 0, "col": 3 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "D", "attrs": { "fg_color": { "rgb": [255, 128, 0] } } },
+      { "row": 0, "col": 1, "char": "E", "attrs": { "fg_color": { "rgb": [255, 128, 0] }, "bg_color": { "rgb": [0, 64, 128] } } },
+      { "row": 0, "col": 2, "char": "F" }
+    ]
+  }
+}

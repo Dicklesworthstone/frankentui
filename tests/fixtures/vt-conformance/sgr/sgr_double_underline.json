@@ -1,0 +1,14 @@
+{
+  "name": "sgr_double_underline",
+  "description": "SGR 21 enables double underline, SGR 24 resets all underline styles",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b32316d581b5b32346d59",
+  "comment": "SGR(21) double underline, print X. SGR(24) reset underline, print Y. Y should have no underline.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "X" },
+      { "row": 0, "col": 1, "char": "Y" }
+    ]
+  }
+}
