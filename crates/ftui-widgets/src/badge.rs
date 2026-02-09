@@ -54,6 +54,7 @@ impl<'a> Badge<'a> {
     }
 
     /// Display width in terminal cells (label width + padding).
+    #[inline]
     #[must_use]
     pub fn width(&self) -> u16 {
         let label_width = display_width(self.label) as u16;

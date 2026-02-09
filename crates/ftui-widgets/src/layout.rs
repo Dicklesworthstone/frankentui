@@ -136,11 +136,13 @@ impl<'a> Layout<'a> {
     }
 
     /// Number of children.
+    #[inline]
     pub fn len(&self) -> usize {
         self.children.len()
     }
 
     /// Whether the layout has no children.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }

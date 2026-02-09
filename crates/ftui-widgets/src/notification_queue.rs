@@ -417,6 +417,7 @@ impl NotificationQueue {
     }
 
     /// Check if the queue is empty (no visible or pending notifications).
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.visible.is_empty() && self.queue.is_empty()
     }

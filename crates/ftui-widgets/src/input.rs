@@ -136,11 +136,13 @@ impl TextInput {
     }
 
     /// Get the cursor position (grapheme index).
+    #[inline]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
     /// Check if the input is focused.
+    #[inline]
     pub fn focused(&self) -> bool {
         self.focused
     }
