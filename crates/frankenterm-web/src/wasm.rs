@@ -1774,6 +1774,106 @@ mod tests {
     }
 
     #[test]
+    fn set_selection_range_normalizes_reverse_and_out_of_bounds() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 4;
+        term.rows = 2; // capacity = 8
+
+        assert!(term.set_selection_range(6, 2).is_ok());
+        assert_eq!(term.selection_range, Some((2, 6)));
+
+        assert!(term.set_selection_range(6, 99).is_ok());
+        assert_eq!(term.selection_range, Some((6, 8)));
+
+        // Both clamp to the same bound, so range is cleared.
+        assert!(term.set_selection_range(99, 99).is_ok());
+        assert_eq!(term.selection_range, None);
+    }
+
+    #[test]
+    fn extract_and_copy_selection_insert_row_breaks_at_grid_boundaries() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 4;
+        term.rows = 2;
+        term.shadow_cells = text_row_cells("ABCDEFGH");
+        term.selection_range = Some((1, 7));
+
+        assert_eq!(term.extract_selection_text(), "BCD\nEFG");
+        assert_eq!(term.copy_selection(), Some("BCD\nEFG".to_string()));
+    }
+
+    #[test]
+    fn mouse_link_click_queue_drains_in_order() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 2;
+        term.rows = 1;
+        term.shadow_cells = vec![CellData::EMPTY, CellData::EMPTY];
+
+        // Simulate an OSC8 link id in cell (1, 0).
+        term.shadow_cells[1].attrs = (55u32 << 8) | 0x1;
+
+        // Non-link cell down should not enqueue.
+        assert!(
+            term.queue_input_event(InputEvent::Mouse(MouseInput {
+                phase: MousePhase::Down,
+                button: Some(MouseButton::Left),
+                x: 0,
+                y: 0,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+        assert!(term.link_clicks.is_empty());
+
+        // Hover-only move should update hover but not enqueue.
+        assert!(
+            term.queue_input_event(InputEvent::Mouse(MouseInput {
+                phase: MousePhase::Move,
+                button: None,
+                x: 1,
+                y: 0,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+        assert_eq!(term.hovered_link_id, 55);
+        assert!(term.link_clicks.is_empty());
+
+        // Down on linked cell enqueues; Up does not.
+        assert!(
+            term.queue_input_event(InputEvent::Mouse(MouseInput {
+                phase: MousePhase::Down,
+                button: Some(MouseButton::Left),
+                x: 1,
+                y: 0,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+        assert!(
+            term.queue_input_event(InputEvent::Mouse(MouseInput {
+                phase: MousePhase::Up,
+                button: Some(MouseButton::Left),
+                x: 1,
+                y: 0,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+
+        assert_eq!(term.link_clicks.len(), 1);
+        assert_eq!(term.link_clicks[0].x, 1);
+        assert_eq!(term.link_clicks[0].y, 0);
+        assert_eq!(term.link_clicks[0].button, Some(MouseButton::Left));
+        assert_eq!(term.link_clicks[0].link_id, 55);
+
+        let drained = term.drain_link_clicks();
+        assert_eq!(drained.length(), 1);
+        assert!(term.link_clicks.is_empty());
+        assert_eq!(term.drain_link_clicks().length(), 0);
+    }
+
+    #[test]
     fn detect_auto_urls_in_row_finds_http_and_https() {
         let row: Vec<char> = "visit http://a.test and https://b.test/path"
             .chars()
