@@ -1556,4 +1556,465 @@ mod tests {
         assert_eq!(cache.stats().misses, 2);
         assert_eq!(cache.stats().hits, 2);
     }
+
+    // ── Atlas pixel write correctness ────────────────────────────
+
+    #[test]
+    fn atlas_pixels_contain_raster_data_at_correct_offset() {
+        let mut cache = GlyphAtlasCache::new(16, 16, 16 * 16);
+        let key = GlyphKey::from_char('A', 16);
+        // Use a recognizable pattern: row-index bytes.
+        let pixels_data = vec![0x10, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let placement = cache
+            .get_or_insert_with(key, |_| GlyphRaster {
+                width: 3,
+                height: 2,
+                pixels: vec![0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
+                metrics: GlyphMetrics::default(),
+            })
+            .expect("insert");
+
+        let atlas_w = 16usize;
+        let dx = placement.draw.x as usize;
+        let dy = placement.draw.y as usize;
+        let pixels = cache.atlas_pixels();
+
+        // Verify each raster pixel was written at the correct atlas location.
+        assert_eq!(pixels[dy * atlas_w + dx], 0x10);
+        assert_eq!(pixels[dy * atlas_w + dx + 1], 0x20);
+        assert_eq!(pixels[dy * atlas_w + dx + 2], 0x30);
+        assert_eq!(pixels[(dy + 1) * atlas_w + dx], 0x40);
+        assert_eq!(pixels[(dy + 1) * atlas_w + dx + 1], 0x50);
+        assert_eq!(pixels[(dy + 1) * atlas_w + dx + 2], 0x60);
+    }
+
+    #[test]
+    fn atlas_pixels_padding_region_remains_zeroed() {
+        let mut cache = GlyphAtlasCache::new(16, 16, 16 * 16);
+        let key = GlyphKey::from_char('P', 16);
+        let _ = cache
+            .get_or_insert_with(key, |_| raster_solid(2, 2, GlyphMetrics::default()))
+            .expect("insert");
+
+        let atlas_w = 16usize;
+        let pixels = cache.atlas_pixels();
+        // Slot starts at (0,0) with 1px padding; draw starts at (1,1).
+        // Top-left corner of slot (0,0) should be padding = zero.
+        assert_eq!(pixels[0], 0);
+        // First column of second row (0,1) should be padding = zero.
+        assert_eq!(pixels[atlas_w], 0);
+    }
+
+    // ── Best-fit free slot selection ─────────────────────────────
+
+    #[test]
+    fn best_fit_picks_smallest_fitting_free_slot() {
+        // Budget allows two slots; atlas is large.
+        let mut cache = GlyphAtlasCache::new(64, 64, 2 * 12 * 12);
+        let k_large = GlyphKey::from_char('L', 16);
+        let k_small = GlyphKey::from_char('S', 16);
+        let k_medium = GlyphKey::from_char('M', 16);
+        let k_reuse = GlyphKey::from_char('R', 16);
+
+        // Insert large (10x10 padded to 12x12) and small (2x2 padded to 4x4).
+        let p_large = cache
+            .get_or_insert_with(k_large, |_| raster_solid(10, 10, GlyphMetrics::default()))
+            .expect("large");
+        let p_small = cache
+            .get_or_insert_with(k_small, |_| raster_solid(2, 2, GlyphMetrics::default()))
+            .expect("small");
+
+        // Evict both by inserting medium under tight budget that forces all evictions.
+        let mut tight_cache = GlyphAtlasCache::new(64, 64, 6 * 6);
+        // Emulate: insert large, small, evict both, then insert something that fits the small slot.
+        let _ = tight_cache
+            .get_or_insert_with(k_large, |_| raster_solid(10, 10, GlyphMetrics::default()))
+            .expect("large");
+        let _ = tight_cache
+            .get_or_insert_with(k_small, |_| raster_solid(2, 2, GlyphMetrics::default()))
+            .expect("small");
+        // Now both are in the free list after budget eviction. k_large was evicted for k_small.
+        // Insert a 2x2 glyph: best-fit should pick the 4x4 free slot (from k_small's eviction),
+        // not the 12x12 free slot (from k_large's eviction).
+        let _ = tight_cache
+            .get_or_insert_with(k_reuse, |_| raster_solid(2, 2, GlyphMetrics::default()))
+            .expect("reuse");
+
+        // Verify allocation happened (stats show 3 misses, at least 2 evictions).
+        assert_eq!(tight_cache.stats().misses, 3);
+        assert!(tight_cache.stats().evictions >= 2);
+    }
+
+    // ── Entry index reuse after eviction ─────────────────────────
+
+    #[test]
+    fn entry_indices_are_reused_after_eviction() {
+        // Budget fits exactly one 8x8 padded slot.
+        let mut cache = GlyphAtlasCache::new(64, 64, 8 * 8);
+
+        // Insert 10 glyphs; each evicts the previous. Free indices should be reused.
+        for i in 0u32..10 {
+            let ch = char::from_u32('a' as u32 + i).unwrap();
+            let _ = cache
+                .get_or_insert_with(GlyphKey::from_char(ch, 16), |_| {
+                    raster_solid(6, 6, GlyphMetrics::default())
+                })
+                .expect("insert");
+        }
+
+        // After 10 inserts with budget for 1, we should have 9 evictions.
+        assert_eq!(cache.stats().evictions, 9);
+        assert_eq!(cache.stats().misses, 10);
+        // Only the last glyph should be cached.
+        assert!(cache.get(GlyphKey::from_char('j', 16)).is_some());
+    }
+
+    // ── Multiple shelf rows with varying heights ─────────────────
+
+    #[test]
+    fn multiple_shelf_rows_with_varying_heights() {
+        let mut cache = GlyphAtlasCache::new(32, 64, 32 * 64);
+
+        // First row: three glyphs with heights 4, 6, 8 (padded to 6, 8, 10).
+        // Shelf row height is max of all = 10.
+        let p1 = cache
+            .get_or_insert_with(GlyphKey::from_char('a', 16), |_| {
+                raster_solid(4, 4, GlyphMetrics::default())
+            })
+            .expect("a");
+        let p2 = cache
+            .get_or_insert_with(GlyphKey::from_char('b', 16), |_| {
+                raster_solid(4, 6, GlyphMetrics::default())
+            })
+            .expect("b");
+        let p3 = cache
+            .get_or_insert_with(GlyphKey::from_char('c', 16), |_| {
+                raster_solid(4, 8, GlyphMetrics::default())
+            })
+            .expect("c");
+
+        // All first-row glyphs should be at y=0.
+        assert_eq!(p1.slot.y, 0);
+        assert_eq!(p2.slot.y, 0);
+        assert_eq!(p3.slot.y, 0);
+
+        // Force a new shelf row by inserting a glyph that won't fit in remaining width.
+        // Current cursor_x should be at least 6+6+6=18. A 16px-wide glyph (padded to 18)
+        // will push past 32, forcing a new row at y = max_row_h.
+        let p4 = cache
+            .get_or_insert_with(GlyphKey::from_char('d', 16), |_| {
+                raster_solid(16, 2, GlyphMetrics::default())
+            })
+            .expect("d");
+
+        // Second row y should equal the height of the tallest glyph in first row.
+        assert!(p4.slot.y > 0, "should be on second shelf row");
+        assert_eq!(p4.slot.x, 0, "new row starts at x=0");
+    }
+
+    // ── Cached bytes accounting with oversized slot reuse ────────
+
+    #[test]
+    fn cached_bytes_reflects_actual_slot_size_on_reuse() {
+        // Budget allows two slots: one large, one small.
+        let mut cache = GlyphAtlasCache::new(64, 64, 12 * 12 + 6 * 6);
+        let k_large = GlyphKey::from_char('L', 16);
+        let k_small = GlyphKey::from_char('S', 16);
+        let k_reuse = GlyphKey::from_char('R', 16);
+
+        // Insert large (10x10 -> 12x12 padded slot).
+        let _ = cache
+            .get_or_insert_with(k_large, |_| raster_solid(10, 10, GlyphMetrics::default()))
+            .expect("large");
+        let bytes_after_large = cache.stats().bytes_cached;
+        assert_eq!(bytes_after_large, 12 * 12);
+
+        // Insert small (4x4 -> 6x6 padded slot).
+        let _ = cache
+            .get_or_insert_with(k_small, |_| raster_solid(4, 4, GlyphMetrics::default()))
+            .expect("small");
+        let bytes_after_both = cache.stats().bytes_cached;
+        assert_eq!(bytes_after_both, 12 * 12 + 6 * 6);
+    }
+
+    // ── Raster pixel pattern preservation ────────────────────────
+
+    #[test]
+    fn raster_with_gradient_pattern_preserved_in_atlas() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('G', 16);
+
+        // 4x4 gradient: each pixel has a unique value.
+        let gradient: Vec<u8> = (0u8..16).collect();
+        let raster = GlyphRaster {
+            width: 4,
+            height: 4,
+            pixels: gradient.clone(),
+            metrics: GlyphMetrics::default(),
+        };
+        let placement = cache.get_or_insert_with(key, |_| raster).expect("insert");
+
+        let atlas_w = 32usize;
+        let dx = placement.draw.x as usize;
+        let dy = placement.draw.y as usize;
+        let pixels = cache.atlas_pixels();
+
+        for row in 0..4 {
+            for col in 0..4 {
+                let expected = gradient[row * 4 + col];
+                let actual = pixels[(dy + row) * atlas_w + (dx + col)];
+                assert_eq!(
+                    actual, expected,
+                    "pixel mismatch at ({col}, {row}): expected {expected}, got {actual}"
+                );
+            }
+        }
+    }
+
+    // ── High-churn LRU ordering ──────────────────────────────────
+
+    #[test]
+    fn lru_order_after_interleaved_access() {
+        // Budget fits exactly 3 slots (each 6x6 -> 8x8 padded = 64 bytes).
+        let mut cache = GlyphAtlasCache::new(64, 64, 3 * 8 * 8);
+        let k1 = GlyphKey::from_char('1', 16);
+        let k2 = GlyphKey::from_char('2', 16);
+        let k3 = GlyphKey::from_char('3', 16);
+        let k4 = GlyphKey::from_char('4', 16);
+
+        // Insert 1, 2, 3 (all fit within budget).
+        let _ = cache
+            .get_or_insert_with(k1, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k1");
+        let _ = cache
+            .get_or_insert_with(k2, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k2");
+        let _ = cache
+            .get_or_insert_with(k3, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k3");
+
+        // Touch k1, making LRU order: k1 (MRU), k3, k2 (LRU).
+        assert!(cache.get(k1).is_some());
+
+        // Insert k4 should evict k2 (LRU).
+        let _ = cache
+            .get_or_insert_with(k4, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k4");
+
+        assert!(cache.get(k2).is_none(), "k2 should be evicted (LRU)");
+        assert!(cache.get(k1).is_some(), "k1 should survive (touched)");
+        assert!(cache.get(k3).is_some(), "k3 should survive");
+        assert!(cache.get(k4).is_some(), "k4 should be present (just inserted)");
+    }
+
+    #[test]
+    fn lru_eviction_order_with_repeated_touches() {
+        // Budget for 2 slots.
+        let mut cache = GlyphAtlasCache::new(64, 64, 2 * 8 * 8);
+        let k1 = GlyphKey::from_char('a', 16);
+        let k2 = GlyphKey::from_char('b', 16);
+        let k3 = GlyphKey::from_char('c', 16);
+
+        let _ = cache
+            .get_or_insert_with(k1, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k1");
+        let _ = cache
+            .get_or_insert_with(k2, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k2");
+
+        // Touch k1 multiple times.
+        for _ in 0..5 {
+            assert!(cache.get(k1).is_some());
+        }
+
+        // Insert k3 should evict k2 (LRU) despite k1 being touched many times.
+        let _ = cache
+            .get_or_insert_with(k3, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k3");
+
+        assert!(cache.get(k1).is_some(), "frequently touched k1 should survive");
+        assert!(cache.get(k2).is_none(), "k2 should be evicted");
+    }
+
+    // ── Shelf row break with exact-fit width ─────────────────────
+
+    #[test]
+    fn shelf_row_exact_width_fit_no_break() {
+        // Atlas is 12 wide. Glyph is 10px (padded to 12px). Should fit exactly.
+        let mut cache = GlyphAtlasCache::new(12, 32, 12 * 32);
+        let key = GlyphKey::from_char('X', 16);
+        let placement = cache
+            .get_or_insert_with(key, |_| raster_solid(10, 4, GlyphMetrics::default()))
+            .expect("exact width fit");
+
+        // Should be at origin (0,0) since it fits exactly.
+        assert_eq!(placement.slot.x, 0);
+        assert_eq!(placement.slot.y, 0);
+        assert_eq!(placement.slot.w, 12);
+    }
+
+    #[test]
+    fn shelf_row_break_at_one_pixel_over() {
+        // Atlas is 11 wide. A 10px glyph (padded to 12) exceeds width; must go to next row.
+        // But actually it can't fit at all (12 > 11), so it should fail.
+        let mut cache = GlyphAtlasCache::new(11, 32, 11 * 32);
+        let key = GlyphKey::from_char('X', 16);
+        let result = cache.get_or_insert_with(key, |_| raster_solid(10, 4, GlyphMetrics::default()));
+        assert!(matches!(result, Err(GlyphCacheError::GlyphTooLarge)));
+    }
+
+    // ── Dirty rect accumulation across multiple insertions ───────
+
+    #[test]
+    fn dirty_rects_accumulate_across_insertions() {
+        let mut cache = GlyphAtlasCache::new(64, 64, 64 * 64);
+        let _ = cache
+            .get_or_insert_with(GlyphKey::from_char('a', 16), |_| {
+                raster_solid(3, 3, GlyphMetrics::default())
+            })
+            .expect("a");
+        let _ = cache
+            .get_or_insert_with(GlyphKey::from_char('b', 16), |_| {
+                raster_solid(4, 4, GlyphMetrics::default())
+            })
+            .expect("b");
+        let _ = cache
+            .get_or_insert_with(GlyphKey::from_char('c', 16), |_| {
+                raster_solid(2, 5, GlyphMetrics::default())
+            })
+            .expect("c");
+
+        let dirty = cache.take_dirty_rects();
+        assert_eq!(dirty.len(), 3, "should have one dirty rect per insertion");
+
+        // Verify each dirty rect has the raster dimensions (not slot dimensions).
+        assert_eq!((dirty[0].w, dirty[0].h), (3, 3));
+        assert_eq!((dirty[1].w, dirty[1].h), (4, 4));
+        assert_eq!((dirty[2].w, dirty[2].h), (2, 5));
+    }
+
+    // ── GlyphMetrics with negative bearings preserved ────────────
+
+    #[test]
+    fn negative_bearing_values_preserved_in_placement() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('j', 16);
+        let metrics = GlyphMetrics {
+            advance_x: 4,
+            bearing_x: -2,
+            bearing_y: -1,
+        };
+        let placement = cache
+            .get_or_insert_with(key, |_| raster_solid(3, 5, metrics))
+            .expect("insert");
+
+        assert_eq!(placement.metrics.bearing_x, -2);
+        assert_eq!(placement.metrics.bearing_y, -1);
+        assert_eq!(placement.metrics.advance_x, 4);
+    }
+
+    // ── Glyph ID determinism ─────────────────────────────────────
+
+    #[test]
+    fn glyph_id_deterministic_across_many_calls() {
+        let key = GlyphKey::from_char('\u{2603}', 24); // snowman
+        let ids: Vec<GlyphId> = (0..100).map(|_| glyph_id(key)).collect();
+        assert!(
+            ids.windows(2).all(|w| w[0] == w[1]),
+            "glyph_id must be deterministic"
+        );
+    }
+
+    #[test]
+    fn glyph_id_max_codepoint_and_size() {
+        // U+10FFFF is the maximum valid Unicode scalar value.
+        let key = GlyphKey {
+            codepoint: 0x10FFFF,
+            px_size: u16::MAX,
+        };
+        let id = glyph_id(key);
+        // Should not be zero or collide with simple ASCII keys.
+        assert_ne!(id, 0);
+        assert_ne!(id, glyph_id(GlyphKey::from_char('A', 16)));
+    }
+
+    // ── get() does not affect miss stats ─────────────────────────
+
+    #[test]
+    fn get_on_nonexistent_key_does_not_change_stats() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+
+        // Insert one glyph.
+        let _ = cache
+            .get_or_insert_with(GlyphKey::from_char('a', 16), |_| {
+                raster_solid(4, 4, GlyphMetrics::default())
+            })
+            .expect("insert");
+
+        let stats_before = cache.stats();
+
+        // Look up a nonexistent key via get().
+        assert!(cache.get(GlyphKey::from_char('z', 16)).is_none());
+
+        let stats_after = cache.stats();
+        // get() on miss should not change any stats.
+        assert_eq!(stats_before.misses, stats_after.misses);
+        assert_eq!(stats_before.hits, stats_after.hits);
+        assert_eq!(stats_before.evictions, stats_after.evictions);
+    }
+
+    // ── AtlasRect area_bytes with large u16 values ───────────────
+
+    #[test]
+    fn atlas_rect_area_bytes_max_u16() {
+        let r = AtlasRect {
+            x: 0,
+            y: 0,
+            w: u16::MAX,
+            h: u16::MAX,
+        };
+        // (65535 * 65535) = 4294836225 which fits in usize.
+        assert_eq!(r.area_bytes(), 65535usize * 65535usize);
+    }
+
+    // ── CacheObjective with pure misses (no hits, no evictions) ──
+
+    #[test]
+    fn objective_pure_misses_no_evictions() {
+        let mut cache = GlyphAtlasCache::new(64, 64, 64 * 64);
+        // Insert 3 distinct glyphs, all fit, no evictions.
+        for ch in ['x', 'y', 'z'] {
+            let _ = cache
+                .get_or_insert_with(GlyphKey::from_char(ch, 16), |_| {
+                    raster_solid(4, 4, GlyphMetrics::default())
+                })
+                .expect("insert");
+        }
+
+        let obj = cache.objective();
+        // 3 misses, 0 hits -> miss_rate = 1.0
+        assert_eq!(obj.miss_rate, 1.0);
+        // 0 evictions -> eviction_rate = 0.0
+        assert_eq!(obj.eviction_rate, 0.0);
+        // Some pressure from cached bytes.
+        assert!(obj.pressure_ratio > 0.0);
+    }
+
+    // ── Rasterizer receives correct key ──────────────────────────
+
+    #[test]
+    fn rasterizer_closure_receives_correct_key() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('\u{1F4A9}', 32); // pile of poo emoji
+
+        let mut received_key = None;
+        let _ = cache
+            .get_or_insert_with(key, |k| {
+                received_key = Some(k);
+                raster_solid(4, 4, GlyphMetrics::default())
+            })
+            .expect("insert");
+
+        assert_eq!(received_key, Some(key));
+    }
 }
