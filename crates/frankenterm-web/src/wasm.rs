@@ -12,8 +12,13 @@ use crate::renderer::{
     cell_attr_link_id,
 };
 use js_sys::{Array, Object, Reflect, Uint8Array};
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
+
+/// Synthetic link-id range reserved for auto-detected plaintext URLs.
+const AUTO_LINK_ID_BASE: u32 = 0x00F0_0001;
+const AUTO_LINK_ID_MAX: u32 = 0x00FF_FFFE;
 
 /// Web/WASM terminal surface.
 ///
@@ -34,6 +39,8 @@ pub struct FrankenTermWeb {
     encoded_inputs: Vec<String>,
     encoded_input_bytes: Vec<Vec<u8>>,
     link_clicks: Vec<LinkClickEvent>,
+    auto_link_ids: Vec<u32>,
+    auto_link_urls: HashMap<u32, String>,
     hovered_link_id: u32,
     cursor_offset: Option<u32>,
     cursor_style: CursorStyle,
@@ -41,6 +48,7 @@ pub struct FrankenTermWeb {
     screen_reader_enabled: bool,
     high_contrast_enabled: bool,
     reduced_motion_enabled: bool,
+    focused: bool,
     live_announcements: Vec<String>,
     shadow_cells: Vec<CellData>,
     renderer: Option<WebGpuRenderer>,
@@ -52,6 +60,56 @@ struct LinkClickEvent {
     y: u16,
     button: Option<MouseButton>,
     link_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AccessibilityDomSnapshot {
+    role: &'static str,
+    aria_multiline: bool,
+    aria_live: &'static str,
+    aria_atomic: bool,
+    tab_index: i32,
+    focused: bool,
+    focus_visible: bool,
+    screen_reader: bool,
+    high_contrast: bool,
+    reduced_motion: bool,
+    value: String,
+    cursor_offset: Option<u32>,
+    selection_start: Option<u32>,
+    selection_end: Option<u32>,
+}
+
+impl AccessibilityDomSnapshot {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.role != "textbox" {
+            return Err("role must be textbox");
+        }
+        if self.tab_index < 0 {
+            return Err("tab_index must be non-negative");
+        }
+        if !self.aria_multiline {
+            return Err("aria_multiline must be true");
+        }
+        if self.aria_live != "off" && self.aria_live != "polite" {
+            return Err("aria_live must be off|polite");
+        }
+        if self.focus_visible && !self.focused {
+            return Err("focus_visible requires focused");
+        }
+        if self.selection_start.is_some() != self.selection_end.is_some() {
+            return Err("selection bounds must be paired");
+        }
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end)
+            && start > end
+        {
+            return Err("selection_start must be <= selection_end");
+        }
+        if !self.screen_reader && !self.value.is_empty() {
+            return Err("value must be empty when screen_reader is disabled");
+        }
+        Ok(())
+    }
 }
 
 impl Default for FrankenTermWeb {
@@ -75,6 +133,8 @@ impl FrankenTermWeb {
             encoded_inputs: Vec::new(),
             encoded_input_bytes: Vec::new(),
             link_clicks: Vec::new(),
+            auto_link_ids: Vec::new(),
+            auto_link_urls: HashMap::new(),
             hovered_link_id: 0,
             cursor_offset: None,
             cursor_style: CursorStyle::None,
@@ -82,6 +142,7 @@ impl FrankenTermWeb {
             screen_reader_enabled: false,
             high_contrast_enabled: false,
             reduced_motion_enabled: false,
+            focused: false,
             live_announcements: Vec::new(),
             shadow_cells: Vec::new(),
             renderer: None,
@@ -122,6 +183,8 @@ impl FrankenTermWeb {
         self.cols = cols;
         self.rows = rows;
         self.shadow_cells = vec![CellData::EMPTY; usize::from(cols) * usize::from(rows)];
+        self.auto_link_ids = vec![0; usize::from(cols) * usize::from(rows)];
+        self.auto_link_urls.clear();
         self.canvas = Some(canvas);
         self.renderer = Some(renderer);
         self.encoder_features = parse_encoder_features(&options);
@@ -134,6 +197,7 @@ impl FrankenTermWeb {
         self.reduced_motion_enabled = parse_init_bool(&options, "reducedMotion")
             .or(parse_init_bool(&options, "reduced_motion"))
             .unwrap_or(false);
+        self.focused = parse_init_bool(&options, "focused").unwrap_or(false);
         self.initialized = true;
         Ok(())
     }
@@ -144,6 +208,9 @@ impl FrankenTermWeb {
         self.rows = rows;
         self.shadow_cells
             .resize(usize::from(cols) * usize::from(rows), CellData::EMPTY);
+        self.auto_link_ids
+            .resize(usize::from(cols) * usize::from(rows), 0);
+        self.auto_link_urls.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.resize(cols, rows);
         }
@@ -200,6 +267,9 @@ impl FrankenTermWeb {
             usize::from(geometry.cols) * usize::from(geometry.rows),
             CellData::EMPTY,
         );
+        self.auto_link_ids
+            .resize(usize::from(geometry.cols) * usize::from(geometry.rows), 0);
+        self.auto_link_urls.clear();
         Ok(geometry_to_js(geometry))
     }
 
@@ -252,7 +322,7 @@ impl FrankenTermWeb {
             // Guarantee no "stuck modifiers" after focus loss by treating focus
             // loss as an explicit modifier reset point.
             if let InputEvent::Focus(focus) = &ev {
-                self.mods.handle_focus(focus.focused);
+                self.set_focus_internal(focus.focused);
             } else {
                 self.mods.reconcile(event_mods(&ev));
             }
@@ -305,9 +375,9 @@ impl FrankenTermWeb {
     /// Only the patched cells are uploaded to the GPU.
     #[wasm_bindgen(js_name = applyPatch)]
     pub fn apply_patch(&mut self, patch: JsValue) -> Result<(), JsValue> {
-        let Some(renderer) = self.renderer.as_mut() else {
+        if self.renderer.is_none() {
             return Err(JsValue::from_str("renderer not initialized"));
-        };
+        }
 
         let offset = get_u32(&patch, "offset")?;
         let cells_val = Reflect::get(&patch, &JsValue::from_str("cells"))?;
@@ -332,13 +402,21 @@ impl FrankenTermWeb {
 
         let max = usize::from(self.cols) * usize::from(self.rows);
         self.shadow_cells.resize(max, CellData::EMPTY);
+        self.auto_link_ids.resize(max, 0);
         let start = usize::try_from(offset).unwrap_or(max).min(max);
         let count = cells.len().min(max.saturating_sub(start));
         for (i, cell) in cells.iter().take(count).enumerate() {
             self.shadow_cells[start + i] = *cell;
         }
+        self.recompute_auto_links();
+        if self.hovered_link_id != 0 && !self.link_id_present(self.hovered_link_id) {
+            self.hovered_link_id = 0;
+            self.sync_renderer_interaction_state();
+        }
 
-        renderer.apply_patches(&[CellPatch { offset, cells }]);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.apply_patches(&[CellPatch { offset, cells }]);
+        }
         Ok(())
     }
 
@@ -397,13 +475,22 @@ impl FrankenTermWeb {
         self.link_id_at_xy(x, y)
     }
 
+    /// Return plaintext auto-detected URL at a given grid cell, if present.
+    #[wasm_bindgen(js_name = linkUrlAt)]
+    pub fn link_url_at(&self, x: u16, y: u16) -> Option<String> {
+        let offset = self.cell_offset_at_xy(x, y)?;
+        let id = self.auto_link_ids.get(offset).copied().unwrap_or(0);
+        self.auto_link_urls.get(&id).cloned()
+    }
+
     /// Drain queued hyperlink click events detected from normalized mouse input.
     ///
     /// Each entry has `{x, y, button, linkId}`.
     #[wasm_bindgen(js_name = drainLinkClicks)]
     pub fn drain_link_clicks(&mut self) -> Array {
         let arr = Array::new();
-        for click in self.link_clicks.drain(..) {
+        let clicks: Vec<LinkClickEvent> = self.link_clicks.drain(..).collect();
+        for click in clicks {
             let obj = Object::new();
             let _ = Reflect::set(
                 &obj,
@@ -426,6 +513,14 @@ impl FrankenTermWeb {
                 &obj,
                 &JsValue::from_str("linkId"),
                 &JsValue::from_f64(f64::from(click.link_id)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("url"),
+                &self
+                    .auto_link_urls
+                    .get(&click.link_id)
+                    .map_or(JsValue::NULL, |url| JsValue::from_str(url)),
             );
             arr.push(&obj);
         }
@@ -479,7 +574,7 @@ impl FrankenTermWeb {
     /// Return current accessibility preferences.
     ///
     /// Shape:
-    /// `{ screenReader, highContrast, reducedMotion, pendingAnnouncements }`
+    /// `{ screenReader, highContrast, reducedMotion, focused, pendingAnnouncements }`
     #[wasm_bindgen(js_name = accessibilityState)]
     pub fn accessibility_state(&self) -> JsValue {
         let obj = Object::new();
@@ -500,10 +595,47 @@ impl FrankenTermWeb {
         );
         let _ = Reflect::set(
             &obj,
+            &JsValue::from_str("focused"),
+            &JsValue::from_bool(self.focused),
+        );
+        let _ = Reflect::set(
+            &obj,
             &JsValue::from_str("pendingAnnouncements"),
             &JsValue::from_f64(self.live_announcements.len() as f64),
         );
         obj.into()
+    }
+
+    /// Expose a host-friendly DOM mirror snapshot for ARIA wiring.
+    ///
+    /// Shape:
+    /// `{ role, ariaMultiline, ariaLive, ariaAtomic, tabIndex, focused, focusVisible,
+    ///    screenReader, highContrast, reducedMotion, value, cursorOffset,
+    ///    selectionStart, selectionEnd }`
+    #[wasm_bindgen(js_name = accessibilityDomSnapshot)]
+    pub fn accessibility_dom_snapshot(&self) -> JsValue {
+        let snapshot = self.build_accessibility_dom_snapshot();
+        debug_assert!(snapshot.validate().is_ok());
+        accessibility_dom_snapshot_to_js(&snapshot)
+    }
+
+    /// Suggested host-side CSS classes for accessibility modes.
+    #[wasm_bindgen(js_name = accessibilityClassNames)]
+    pub fn accessibility_class_names(&self) -> Array {
+        let out = Array::new();
+        if self.screen_reader_enabled {
+            out.push(&JsValue::from_str("ftui-a11y-screen-reader"));
+        }
+        if self.high_contrast_enabled {
+            out.push(&JsValue::from_str("ftui-a11y-high-contrast"));
+        }
+        if self.reduced_motion_enabled {
+            out.push(&JsValue::from_str("ftui-a11y-reduced-motion"));
+        }
+        if self.focused {
+            out.push(&JsValue::from_str("ftui-a11y-focused"));
+        }
+        out
     }
 
     /// Drain queued live-region announcements for host-side screen-reader wiring.
@@ -545,6 +677,8 @@ impl FrankenTermWeb {
         self.encoded_inputs.clear();
         self.encoded_input_bytes.clear();
         self.link_clicks.clear();
+        self.auto_link_ids.clear();
+        self.auto_link_urls.clear();
         self.hovered_link_id = 0;
         self.cursor_offset = None;
         self.cursor_style = CursorStyle::None;
@@ -552,12 +686,51 @@ impl FrankenTermWeb {
         self.screen_reader_enabled = false;
         self.high_contrast_enabled = false;
         self.reduced_motion_enabled = false;
+        self.focused = false;
         self.live_announcements.clear();
         self.shadow_cells.clear();
     }
 }
 
 impl FrankenTermWeb {
+    fn set_focus_internal(&mut self, focused: bool) {
+        self.focused = focused;
+        self.mods.handle_focus(focused);
+        if !focused {
+            self.hovered_link_id = 0;
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.set_hovered_link_id(0);
+            }
+        }
+    }
+
+    fn build_accessibility_dom_snapshot(&self) -> AccessibilityDomSnapshot {
+        let (selection_start, selection_end) = self
+            .selection_range
+            .map(|(start, end)| (Some(start), Some(end)))
+            .unwrap_or((None, None));
+        AccessibilityDomSnapshot {
+            role: "textbox",
+            aria_multiline: true,
+            aria_live: if self.live_announcements.is_empty() {
+                "off"
+            } else {
+                "polite"
+            },
+            aria_atomic: false,
+            tab_index: 0,
+            focused: self.focused,
+            focus_visible: self.focused,
+            screen_reader: self.screen_reader_enabled,
+            high_contrast: self.high_contrast_enabled,
+            reduced_motion: self.reduced_motion_enabled,
+            value: self.screen_reader_mirror_text(),
+            cursor_offset: self.cursor_offset,
+            selection_start,
+            selection_end,
+        }
+    }
+
     fn grid_capacity(&self) -> u32 {
         u32::from(self.cols).saturating_mul(u32::from(self.rows))
     }
@@ -595,9 +768,26 @@ impl FrankenTermWeb {
         let Some(offset) = self.cell_offset_at_xy(x, y) else {
             return 0;
         };
-        self.shadow_cells
+        let explicit = self
+            .shadow_cells
             .get(offset)
-            .map_or(0, |cell| cell_attr_link_id(cell.attrs))
+            .map_or(0, |cell| cell_attr_link_id(cell.attrs));
+        if explicit != 0 {
+            return explicit;
+        }
+        self.auto_link_ids.get(offset).copied().unwrap_or(0)
+    }
+
+    fn link_id_present(&self, link_id: u32) -> bool {
+        if link_id == 0 {
+            return false;
+        }
+        if self.auto_link_urls.contains_key(&link_id) {
+            return true;
+        }
+        self.shadow_cells
+            .iter()
+            .any(|cell| cell_attr_link_id(cell.attrs) == link_id)
     }
 
     fn set_hover_from_xy(&mut self, x: u16, y: u16) {
@@ -606,6 +796,59 @@ impl FrankenTermWeb {
             self.hovered_link_id = link_id;
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.set_hovered_link_id(link_id);
+            }
+        }
+    }
+
+    fn recompute_auto_links(&mut self) {
+        let max = usize::from(self.cols) * usize::from(self.rows);
+        self.auto_link_ids.resize(max, 0);
+        self.auto_link_ids.fill(0);
+        self.auto_link_urls.clear();
+
+        if self.cols == 0 || self.rows == 0 {
+            return;
+        }
+
+        let cols = usize::from(self.cols);
+        let rows = usize::from(self.rows);
+        let mut next_id = AUTO_LINK_ID_BASE;
+
+        for row in 0..rows {
+            let row_start = row.saturating_mul(cols);
+            let row_end = row_start.saturating_add(cols).min(self.shadow_cells.len());
+            if row_start >= row_end {
+                break;
+            }
+
+            let mut row_chars = Vec::with_capacity(row_end - row_start);
+            for idx in row_start..row_end {
+                let glyph_id = self.shadow_cells[idx].glyph_id;
+                let ch = if glyph_id == 0 {
+                    ' '
+                } else {
+                    char::from_u32(glyph_id).unwrap_or(' ')
+                };
+                row_chars.push(ch);
+            }
+
+            for detected in detect_auto_urls_in_row(&row_chars) {
+                if next_id > AUTO_LINK_ID_MAX {
+                    return;
+                }
+                let link_id = next_id;
+                next_id = next_id.saturating_add(1);
+                self.auto_link_urls.insert(link_id, detected.url);
+
+                for col in detected.start_col..detected.end_col {
+                    let idx = row_start + col;
+                    if idx >= row_end {
+                        break;
+                    }
+                    if cell_attr_link_id(self.shadow_cells[idx].attrs) == 0 {
+                        self.auto_link_ids[idx] = link_id;
+                    }
+                }
             }
         }
     }
@@ -699,6 +942,119 @@ impl FrankenTermWeb {
                 });
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutoUrlMatch {
+    start_col: usize,
+    end_col: usize,
+    url: String,
+}
+
+fn detect_auto_urls_in_row(row: &[char]) -> Vec<AutoUrlMatch> {
+    let mut matches = Vec::new();
+    let mut idx = 0usize;
+    while idx < row.len() {
+        if let Some(url_match) = detect_auto_url_at(row, idx) {
+            idx = url_match.end_col;
+            matches.push(url_match);
+        } else {
+            idx = idx.saturating_add(1);
+        }
+    }
+    matches
+}
+
+fn detect_auto_url_at(row: &[char], start: usize) -> Option<AutoUrlMatch> {
+    const HTTP: &[char] = &['h', 't', 't', 'p', ':', '/', '/'];
+    const HTTPS: &[char] = &['h', 't', 't', 'p', 's', ':', '/', '/'];
+
+    let has_http = row.get(start..start + HTTP.len()) == Some(HTTP);
+    let has_https = row.get(start..start + HTTPS.len()) == Some(HTTPS);
+    let prefix_len = if has_https {
+        HTTPS.len()
+    } else if has_http {
+        HTTP.len()
+    } else {
+        return None;
+    };
+
+    if start > 0 {
+        let prev = row[start - 1];
+        if prev.is_ascii_alphanumeric() || prev == '_' {
+            return None;
+        }
+    }
+
+    let mut end = start;
+    while end < row.len() && is_url_char(row[end]) {
+        end += 1;
+    }
+    if end <= start + prefix_len {
+        return None;
+    }
+    while end > start && is_url_trailing_punctuation(row[end - 1]) {
+        end -= 1;
+    }
+    if end <= start + prefix_len {
+        return None;
+    }
+
+    let candidate: String = row[start..end].iter().collect();
+    let url = sanitize_auto_url(&candidate)?;
+    Some(AutoUrlMatch {
+        start_col: start,
+        end_col: end,
+        url,
+    })
+}
+
+fn is_url_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            '-' | '_'
+                | '.'
+                | '~'
+                | '/'
+                | ':'
+                | '?'
+                | '#'
+                | '['
+                | ']'
+                | '@'
+                | '!'
+                | '$'
+                | '&'
+                | '\''
+                | '('
+                | ')'
+                | '*'
+                | '+'
+                | ','
+                | ';'
+                | '='
+                | '%'
+        )
+}
+
+fn is_url_trailing_punctuation(ch: char) -> bool {
+    matches!(ch, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
+}
+
+fn sanitize_auto_url(candidate: &str) -> Option<String> {
+    if candidate.is_empty() || candidate.len() > 2048 {
+        return None;
+    }
+    if candidate.chars().any(char::is_control) {
+        return None;
+    }
+    let lower = candidate.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        Some(candidate.to_owned())
+    } else {
+        None
     }
 }
 
@@ -1105,4 +1461,259 @@ fn geometry_to_js(geometry: GridGeometry) -> JsValue {
         &JsValue::from_f64(f64::from(geometry.zoom)),
     );
     obj.into()
+}
+
+fn accessibility_dom_snapshot_to_js(snapshot: &AccessibilityDomSnapshot) -> JsValue {
+    let obj = Object::new();
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("role"),
+        &JsValue::from_str(snapshot.role),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("ariaMultiline"),
+        &JsValue::from_bool(snapshot.aria_multiline),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("ariaLive"),
+        &JsValue::from_str(snapshot.aria_live),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("ariaAtomic"),
+        &JsValue::from_bool(snapshot.aria_atomic),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("tabIndex"),
+        &JsValue::from_f64(f64::from(snapshot.tab_index)),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("focused"),
+        &JsValue::from_bool(snapshot.focused),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("focusVisible"),
+        &JsValue::from_bool(snapshot.focus_visible),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("screenReader"),
+        &JsValue::from_bool(snapshot.screen_reader),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("highContrast"),
+        &JsValue::from_bool(snapshot.high_contrast),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("reducedMotion"),
+        &JsValue::from_bool(snapshot.reduced_motion),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("value"),
+        &JsValue::from_str(&snapshot.value),
+    );
+    if let Some(offset) = snapshot.cursor_offset {
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("cursorOffset"),
+            &JsValue::from_f64(f64::from(offset)),
+        );
+    } else {
+        let _ = Reflect::set(&obj, &JsValue::from_str("cursorOffset"), &JsValue::NULL);
+    }
+    if let Some(start) = snapshot.selection_start {
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("selectionStart"),
+            &JsValue::from_f64(f64::from(start)),
+        );
+    } else {
+        let _ = Reflect::set(&obj, &JsValue::from_str("selectionStart"), &JsValue::NULL);
+    }
+    if let Some(end) = snapshot.selection_end {
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("selectionEnd"),
+            &JsValue::from_f64(f64::from(end)),
+        );
+    } else {
+        let _ = Reflect::set(&obj, &JsValue::from_str("selectionEnd"), &JsValue::NULL);
+    }
+    obj.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accessibility_toggle_announcements_emit_only_on_change() {
+        let mut term = FrankenTermWeb::new();
+        term.apply_accessibility_input(&AccessibilityInput {
+            screen_reader: Some(true),
+            high_contrast: Some(false),
+            reduced_motion: Some(true),
+            announce: None,
+        });
+        term.apply_accessibility_input(&AccessibilityInput {
+            screen_reader: Some(true),
+            high_contrast: Some(false),
+            reduced_motion: Some(true),
+            announce: None,
+        });
+        assert_eq!(
+            term.live_announcements,
+            vec![
+                "Screen reader mode enabled.".to_string(),
+                "Reduced motion enabled.".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn accessibility_announcement_queue_stays_bounded() {
+        let mut term = FrankenTermWeb::new();
+        for idx in 0..70 {
+            term.push_live_announcement(&format!("msg-{idx}"));
+        }
+        assert_eq!(term.live_announcements.len(), 64);
+        assert_eq!(
+            term.live_announcements.first().map(String::as_str),
+            Some("msg-6")
+        );
+        assert_eq!(
+            term.live_announcements.last().map(String::as_str),
+            Some("msg-69")
+        );
+    }
+
+    #[test]
+    fn blur_clears_hover_state_and_focus_flag() {
+        let mut term = FrankenTermWeb::new();
+        term.hovered_link_id = 42;
+        term.set_focus_internal(true);
+        assert!(term.focused);
+
+        term.set_focus_internal(false);
+        assert!(!term.focused);
+        assert_eq!(term.hovered_link_id, 0);
+    }
+
+    #[test]
+    fn accessibility_dom_snapshot_invariants_hold_for_valid_state() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 4;
+        term.rows = 1;
+        let mut cell = CellData::EMPTY;
+        cell.glyph_id = u32::from('A');
+        term.shadow_cells = vec![cell, CellData::EMPTY, CellData::EMPTY, CellData::EMPTY];
+        term.screen_reader_enabled = true;
+        term.high_contrast_enabled = true;
+        term.reduced_motion_enabled = false;
+        term.focused = true;
+        term.cursor_offset = Some(1);
+        term.selection_range = Some((1, 3));
+        term.live_announcements.push("ready".to_string());
+
+        let snapshot = term.build_accessibility_dom_snapshot();
+        assert!(snapshot.validate().is_ok());
+        assert_eq!(snapshot.role, "textbox");
+        assert_eq!(snapshot.aria_live, "polite");
+        assert_eq!(snapshot.selection_start, Some(1));
+        assert_eq!(snapshot.selection_end, Some(3));
+        assert!(!snapshot.value.is_empty());
+    }
+
+    #[test]
+    fn accessibility_dom_snapshot_hides_value_when_screen_reader_is_disabled() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 1;
+        term.rows = 1;
+        let mut cell = CellData::EMPTY;
+        cell.glyph_id = u32::from('Z');
+        term.shadow_cells = vec![cell];
+        term.screen_reader_enabled = false;
+
+        let snapshot = term.build_accessibility_dom_snapshot();
+        assert!(snapshot.validate().is_ok());
+        assert!(snapshot.value.is_empty());
+        assert_eq!(snapshot.aria_live, "off");
+    }
+
+    fn text_row_cells(text: &str) -> Vec<CellData> {
+        text.chars()
+            .map(|ch| CellData {
+                glyph_id: u32::from(ch),
+                ..CellData::EMPTY
+            })
+            .collect()
+    }
+
+    #[test]
+    fn detect_auto_urls_in_row_finds_http_and_https() {
+        let row: Vec<char> = "visit http://a.test and https://b.test/path"
+            .chars()
+            .collect();
+        let found = detect_auto_urls_in_row(&row);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].url, "http://a.test");
+        assert_eq!(found[1].url, "https://b.test/path");
+    }
+
+    #[test]
+    fn detect_auto_urls_in_row_trims_trailing_punctuation() {
+        let row: Vec<char> = "open https://example.test/docs, now".chars().collect();
+        let found = detect_auto_urls_in_row(&row);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].url, "https://example.test/docs");
+    }
+
+    #[test]
+    fn detect_auto_urls_requires_token_boundary() {
+        let row: Vec<char> = "foohttps://example.test should-not-link".chars().collect();
+        let found = detect_auto_urls_in_row(&row);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn recompute_auto_links_populates_link_at_and_url_lookup() {
+        let text = "go to https://example.test/path now";
+        let mut term = FrankenTermWeb::new();
+        term.cols = text.chars().count() as u16;
+        term.rows = 1;
+        term.shadow_cells = text_row_cells(text);
+        term.auto_link_ids = vec![0; term.shadow_cells.len()];
+        term.recompute_auto_links();
+
+        let link_x = text.find("https://").unwrap() as u16;
+        let link_id = term.link_at(link_x, 0);
+        assert!(link_id >= AUTO_LINK_ID_BASE);
+        assert_eq!(
+            term.link_url_at(link_x, 0),
+            Some("https://example.test/path".to_string())
+        );
+    }
+
+    #[test]
+    fn explicit_osc8_link_takes_precedence_over_auto_detected_link() {
+        let text = "https://example.test";
+        let mut term = FrankenTermWeb::new();
+        term.cols = text.chars().count() as u16;
+        term.rows = 1;
+        term.shadow_cells = text_row_cells(text);
+        term.auto_link_ids = vec![0; term.shadow_cells.len()];
+
+        // Simulate an OSC8-provided link id in the first URL cell.
+        term.shadow_cells[0].attrs = (77u32 << 8) | 0x1;
+        term.recompute_auto_links();
+        assert_eq!(term.link_at(0, 0), 77);
+    }
 }
