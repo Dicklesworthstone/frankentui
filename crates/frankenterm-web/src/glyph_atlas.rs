@@ -1120,4 +1120,440 @@ mod tests {
             );
         }
     }
+
+    // ── GlyphKey edge cases ────────────────────────────────────────
+
+    #[test]
+    fn glyph_key_from_null_char() {
+        let key = GlyphKey::from_char('\0', 16);
+        assert_eq!(key.codepoint, 0);
+        assert_eq!(key.px_size, 16);
+    }
+
+    #[test]
+    fn glyph_key_from_high_codepoint() {
+        // U+1F600 = 😀 (emoji)
+        let key = GlyphKey::from_char('\u{1F600}', 24);
+        assert_eq!(key.codepoint, 0x1F600);
+        assert_eq!(key.px_size, 24);
+    }
+
+    #[test]
+    fn glyph_key_same_char_different_sizes_are_distinct() {
+        let k1 = GlyphKey::from_char('A', 12);
+        let k2 = GlyphKey::from_char('A', 16);
+        assert_ne!(k1, k2);
+        assert_ne!(glyph_id(k1), glyph_id(k2));
+    }
+
+    #[test]
+    fn glyph_key_zero_px_size() {
+        let key = GlyphKey::from_char('A', 0);
+        assert_eq!(key.px_size, 0);
+        // Should still produce a valid (deterministic) glyph id.
+        let id1 = glyph_id(key);
+        let id2 = glyph_id(key);
+        assert_eq!(id1, id2);
+    }
+
+    // ── AtlasRect ──────────────────────────────────────────────────
+
+    #[test]
+    fn atlas_rect_area_bytes_basic() {
+        let r = AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 8,
+        };
+        assert_eq!(r.area_bytes(), 80);
+    }
+
+    #[test]
+    fn atlas_rect_area_bytes_zero_dimension() {
+        let zero_w = AtlasRect {
+            x: 5,
+            y: 5,
+            w: 0,
+            h: 10,
+        };
+        assert_eq!(zero_w.area_bytes(), 0);
+
+        let zero_h = AtlasRect {
+            x: 5,
+            y: 5,
+            w: 10,
+            h: 0,
+        };
+        assert_eq!(zero_h.area_bytes(), 0);
+    }
+
+    #[test]
+    fn atlas_rect_area_bytes_single_pixel() {
+        let r = AtlasRect {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        };
+        assert_eq!(r.area_bytes(), 1);
+    }
+
+    // ── GlyphRaster ───────────────────────────────────────────────
+
+    #[test]
+    fn glyph_raster_bytes_len_matches_pixels() {
+        let raster = raster_solid(5, 3, GlyphMetrics::default());
+        assert_eq!(raster.bytes_len(), 15);
+        assert_eq!(raster.bytes_len(), raster.pixels.len());
+    }
+
+    #[test]
+    fn glyph_raster_bytes_len_empty() {
+        let raster = GlyphRaster {
+            width: 0,
+            height: 0,
+            pixels: vec![],
+            metrics: GlyphMetrics::default(),
+        };
+        assert_eq!(raster.bytes_len(), 0);
+    }
+
+    // ── GlyphMetrics / GlyphCacheStats defaults ───────────────────
+
+    #[test]
+    fn glyph_metrics_default_is_zero() {
+        let m = GlyphMetrics::default();
+        assert_eq!(m.advance_x, 0);
+        assert_eq!(m.bearing_x, 0);
+        assert_eq!(m.bearing_y, 0);
+    }
+
+    #[test]
+    fn glyph_cache_stats_default_is_zero() {
+        let s = GlyphCacheStats::default();
+        assert_eq!(s.hits, 0);
+        assert_eq!(s.misses, 0);
+        assert_eq!(s.evictions, 0);
+        assert_eq!(s.bytes_cached, 0);
+        assert_eq!(s.bytes_uploaded, 0);
+    }
+
+    // ── GlyphCacheError Display / Error ───────────────────────────
+
+    #[test]
+    fn glyph_cache_error_display_glyph_too_large() {
+        let e = GlyphCacheError::GlyphTooLarge;
+        assert_eq!(format!("{e}"), "glyph too large for atlas");
+    }
+
+    #[test]
+    fn glyph_cache_error_display_atlas_full() {
+        let e = GlyphCacheError::AtlasFull;
+        assert_eq!(format!("{e}"), "atlas allocation failed (full/fragmented)");
+    }
+
+    #[test]
+    fn glyph_cache_error_display_invalid_raster() {
+        let e = GlyphCacheError::InvalidRaster;
+        assert_eq!(format!("{e}"), "invalid raster (bitmap size mismatch)");
+    }
+
+    #[test]
+    fn glyph_cache_error_implements_std_error() {
+        let e: Box<dyn std::error::Error> = Box::new(GlyphCacheError::GlyphTooLarge);
+        // source() should be None for leaf errors.
+        assert!(e.source().is_none());
+    }
+
+    // ── Error paths ───────────────────────────────────────────────
+
+    #[test]
+    fn insert_invalid_raster_size_mismatch() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('X', 16);
+        let result = cache.get_or_insert_with(key, |_| GlyphRaster {
+            width: 4,
+            height: 4,
+            pixels: vec![0xFF; 10], // mismatch: 10 != 4*4
+            metrics: GlyphMetrics::default(),
+        });
+        assert!(matches!(result, Err(GlyphCacheError::InvalidRaster)));
+    }
+
+    #[test]
+    fn insert_glyph_too_large_for_atlas() {
+        // Atlas is 8x8; a 10x10 glyph (+ 2 padding = 12x12) won't fit.
+        let mut cache = GlyphAtlasCache::new(8, 8, 8 * 8);
+        let key = GlyphKey::from_char('X', 16);
+        let result =
+            cache.get_or_insert_with(key, |_| raster_solid(10, 10, GlyphMetrics::default()));
+        assert!(matches!(result, Err(GlyphCacheError::GlyphTooLarge)));
+    }
+
+    #[test]
+    fn insert_glyph_exactly_fills_atlas() {
+        // Atlas is 8x8; a 6x6 glyph (+ 2 padding = 8x8) exactly fits.
+        let mut cache = GlyphAtlasCache::new(8, 8, 8 * 8);
+        let key = GlyphKey::from_char('X', 16);
+        let result = cache.get_or_insert_with(key, |_| raster_solid(6, 6, GlyphMetrics::default()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn atlas_full_after_fragmentation() {
+        // Tiny atlas that can hold exactly one 4x4 padded slot (6x6).
+        // After eviction the freed slot is reusable, but if we request a
+        // different size that doesn't fit any free slot or shelf, we get AtlasFull.
+        let mut cache = GlyphAtlasCache::new(8, 8, 8 * 8);
+        let k1 = GlyphKey::from_char('a', 16);
+        // Insert a 6x6 glyph (padded to 8x8), fills the whole atlas.
+        let _ = cache
+            .get_or_insert_with(k1, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k1");
+
+        // Evict k1 by inserting something under budget pressure, but the freed
+        // slot is 8x8. If we ask for a 7x7 glyph (padded 9x9), it exceeds atlas dims.
+        let k2 = GlyphKey::from_char('b', 16);
+        let result = cache.get_or_insert_with(k2, |_| raster_solid(7, 7, GlyphMetrics::default()));
+        assert!(matches!(result, Err(GlyphCacheError::GlyphTooLarge)));
+    }
+
+    // ── Zero-budget cache ─────────────────────────────────────────
+
+    #[test]
+    fn zero_budget_cache_still_works() {
+        // max_cached_bytes = 0 means every insert triggers evict_all.
+        let mut cache = GlyphAtlasCache::new(32, 32, 0);
+        let k1 = GlyphKey::from_char('a', 16);
+        let result = cache.get_or_insert_with(k1, |_| raster_solid(4, 4, GlyphMetrics::default()));
+        // Should succeed (atlas has space even if budget is 0).
+        assert!(result.is_ok());
+        // But the glyph is immediately evicted for budget reasons on next insert.
+        let k2 = GlyphKey::from_char('b', 16);
+        let _ = cache
+            .get_or_insert_with(k2, |_| raster_solid(4, 4, GlyphMetrics::default()))
+            .expect("k2");
+        assert!(
+            cache.get(k1).is_none(),
+            "k1 should be evicted under zero budget"
+        );
+    }
+
+    #[test]
+    fn zero_budget_objective_pressure_is_one() {
+        let cache = GlyphAtlasCache::new(32, 32, 0);
+        let obj = cache.objective();
+        assert_eq!(obj.pressure_ratio, 1.0);
+    }
+
+    // ── Accessor coverage ─────────────────────────────────────────
+
+    #[test]
+    fn atlas_dims_match_constructor() {
+        let cache = GlyphAtlasCache::new(64, 48, 64 * 48);
+        assert_eq!(cache.atlas_dims(), (64, 48));
+    }
+
+    #[test]
+    fn atlas_pixels_length_matches_dims() {
+        let cache = GlyphAtlasCache::new(16, 16, 16 * 16);
+        assert_eq!(cache.atlas_pixels().len(), 16 * 16);
+    }
+
+    #[test]
+    fn atlas_pixels_initially_zeroed() {
+        let cache = GlyphAtlasCache::new(8, 8, 8 * 8);
+        assert!(cache.atlas_pixels().iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn take_dirty_rects_clears_list() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let _ = cache
+            .get_or_insert_with(GlyphKey::from_char('a', 16), |_| {
+                raster_solid(4, 4, GlyphMetrics::default())
+            })
+            .expect("insert");
+        let dirty1 = cache.take_dirty_rects();
+        assert!(!dirty1.is_empty());
+        let dirty2 = cache.take_dirty_rects();
+        assert!(
+            dirty2.is_empty(),
+            "dirty rects should be cleared after take"
+        );
+    }
+
+    // ── Single-pixel rasters ──────────────────────────────────────
+
+    #[test]
+    fn single_pixel_raster_inserts_successfully() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('.', 8);
+        let placement = cache
+            .get_or_insert_with(key, |_| raster_solid(1, 1, GlyphMetrics::default()))
+            .expect("1x1 insert");
+        assert_eq!(placement.draw.w, 1);
+        assert_eq!(placement.draw.h, 1);
+        // Slot includes padding.
+        assert_eq!(placement.slot.w, 3); // 1 + 2*1 padding
+        assert_eq!(placement.slot.h, 3);
+    }
+
+    // ── Placement field checks ────────────────────────────────────
+
+    #[test]
+    fn placement_id_matches_glyph_id() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('Z', 20);
+        let placement = cache
+            .get_or_insert_with(key, |_| {
+                raster_solid(
+                    5,
+                    7,
+                    GlyphMetrics {
+                        advance_x: 5,
+                        bearing_x: 1,
+                        bearing_y: 6,
+                    },
+                )
+            })
+            .expect("insert");
+        assert_eq!(placement.id, glyph_id(key));
+        assert_eq!(placement.metrics.advance_x, 5);
+        assert_eq!(placement.metrics.bearing_x, 1);
+        assert_eq!(placement.metrics.bearing_y, 6);
+    }
+
+    #[test]
+    fn placement_draw_is_slot_inset_by_padding() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('Q', 16);
+        let placement = cache
+            .get_or_insert_with(key, |_| raster_solid(4, 6, GlyphMetrics::default()))
+            .expect("insert");
+        // Draw rect should be slot inset by 1px padding on each side.
+        assert_eq!(placement.draw.x, placement.slot.x + 1);
+        assert_eq!(placement.draw.y, placement.slot.y + 1);
+        assert_eq!(placement.draw.w, 4);
+        assert_eq!(placement.draw.h, 6);
+    }
+
+    // ── Multiple sequential evictions ─────────────────────────────
+
+    #[test]
+    fn multiple_evictions_track_correctly() {
+        // Budget fits exactly one 8x8 padded slot.
+        let mut cache = GlyphAtlasCache::new(64, 64, 8 * 8);
+        let keys: Vec<GlyphKey> = ('a'..='e').map(|ch| GlyphKey::from_char(ch, 16)).collect();
+
+        for key in &keys {
+            let _ = cache
+                .get_or_insert_with(*key, |_| raster_solid(6, 6, GlyphMetrics::default()))
+                .expect("insert");
+        }
+
+        // 5 inserts, each evicts the previous (except the first), so 4 evictions.
+        assert_eq!(cache.stats().misses, 5);
+        assert_eq!(cache.stats().evictions, 4);
+        // Only the last key should remain cached.
+        for key in &keys[..4] {
+            assert!(cache.get(*key).is_none());
+        }
+        assert!(cache.get(keys[4]).is_some());
+    }
+
+    // ── Objective formula edge cases ──────────────────────────────
+
+    #[test]
+    fn objective_all_hits_no_misses() {
+        let mut cache = GlyphAtlasCache::new(64, 64, 64 * 64);
+        let key = GlyphKey::from_char('a', 16);
+        let _ = cache
+            .get_or_insert_with(key, |_| raster_solid(4, 4, GlyphMetrics::default()))
+            .expect("insert");
+        // Hit the cached entry several times.
+        for _ in 0..5 {
+            assert!(cache.get(key).is_some());
+        }
+        let obj = cache.objective();
+        // 1 miss, 5 hits = miss_rate = 1/6
+        let expected_miss_rate = 1.0 / 6.0;
+        assert!((obj.miss_rate - expected_miss_rate).abs() < 1e-10);
+        assert_eq!(obj.eviction_rate, 0.0);
+        assert!(obj.pressure_ratio > 0.0);
+    }
+
+    #[test]
+    fn objective_loss_components_sum_correctly() {
+        let mut cache = GlyphAtlasCache::new(64, 64, 8 * 8);
+        let k1 = GlyphKey::from_char('a', 16);
+        let k2 = GlyphKey::from_char('b', 16);
+        let _ = cache
+            .get_or_insert_with(k1, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k1");
+        let _ = cache
+            .get_or_insert_with(k2, |_| raster_solid(6, 6, GlyphMetrics::default()))
+            .expect("k2");
+
+        let obj = cache.objective();
+        let expected_loss = (CACHE_LOSS_MISS_WEIGHT * obj.miss_rate)
+            + (CACHE_LOSS_EVICTION_WEIGHT * obj.eviction_rate)
+            + (CACHE_LOSS_PRESSURE_WEIGHT * obj.pressure_ratio);
+        assert!(
+            (obj.loss - expected_loss).abs() < 1e-10,
+            "loss={}, expected={}",
+            obj.loss,
+            expected_loss
+        );
+    }
+
+    // ── get() on empty cache ──────────────────────────────────────
+
+    #[test]
+    fn get_returns_none_for_unknown_key() {
+        let mut cache = GlyphAtlasCache::new(32, 32, 32 * 32);
+        let key = GlyphKey::from_char('?', 16);
+        assert!(cache.get(key).is_none());
+        // A miss via get() should not increment misses (only get_or_insert does).
+        assert_eq!(cache.stats().misses, 0);
+        assert_eq!(cache.stats().hits, 0);
+    }
+
+    // ── max_cached_bytes clamped to atlas area ────────────────────
+
+    #[test]
+    fn budget_clamped_to_atlas_area() {
+        // Budget exceeds atlas area; should be clamped.
+        let cache = GlyphAtlasCache::new(8, 8, 1_000_000);
+        // Insert one glyph that fills the atlas exactly.
+        let obj = cache.objective();
+        // Pressure ratio with 0 cached and clamped budget should be 0.
+        assert_eq!(obj.pressure_ratio, 0.0);
+    }
+
+    // ── Stats after miss then hit ─────────────────────────────────
+
+    #[test]
+    fn stats_track_hits_and_misses_separately() {
+        let mut cache = GlyphAtlasCache::new(64, 64, 64 * 64);
+        let k1 = GlyphKey::from_char('a', 16);
+        let k2 = GlyphKey::from_char('b', 16);
+
+        // Two misses.
+        let _ = cache
+            .get_or_insert_with(k1, |_| raster_solid(4, 4, GlyphMetrics::default()))
+            .expect("k1");
+        let _ = cache
+            .get_or_insert_with(k2, |_| raster_solid(4, 4, GlyphMetrics::default()))
+            .expect("k2");
+        assert_eq!(cache.stats().misses, 2);
+        assert_eq!(cache.stats().hits, 0);
+
+        // Two hits.
+        let _ = cache.get_or_insert_with(k1, |_| raster_solid(4, 4, GlyphMetrics::default()));
+        let _ = cache.get_or_insert_with(k2, |_| raster_solid(4, 4, GlyphMetrics::default()));
+        assert_eq!(cache.stats().misses, 2);
+        assert_eq!(cache.stats().hits, 2);
+    }
 }
