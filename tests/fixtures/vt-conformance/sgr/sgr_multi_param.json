@@ -1,0 +1,14 @@
+{
+  "name": "sgr_multi_param",
+  "description": "SGR with multiple params in one sequence (e.g. CSI 1;3;4 m for bold+italic+underline)",
+  "initial_size": [10, 3],
+  "input_bytes_hex": "1b5b313b333b346d411b5b306d42",
+  "comment": "SGR(1;3;4) sets bold+italic+underline, print A with those attrs, SGR(0) reset, print B plain.",
+  "expected": {
+    "cursor": { "row": 0, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bold": true, "italic": true, "underline": true } },
+      { "row": 0, "col": 1, "char": "B" }
+    ]
+  }
+}

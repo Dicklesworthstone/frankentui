@@ -1,0 +1,14 @@
+{
+  "name": "cha_vpa_basic",
+  "description": "CSI G (CHA) sets absolute column, CSI d (VPA) sets absolute row",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b354741 1b5b336442",
+  "comment": "CHA(5) sets col to 4 (0-based), print A at (0,4). VPA(3) sets row to 2 (0-based), print B at (2,5).",
+  "expected": {
+    "cursor": { "row": 2, "col": 6 },
+    "cells": [
+      { "row": 0, "col": 4, "char": "A" },
+      { "row": 2, "col": 5, "char": "B" }
+    ]
+  }
+}

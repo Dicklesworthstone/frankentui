@@ -1,0 +1,19 @@
+{
+  "name": "save_restore",
+  "description": "ESC 7 saves cursor, ESC 8 restores it",
+  "initial_size": [10, 5],
+  "input_bytes_hex": "1b5b333b354841421b371b5b313b3148434445461b3858",
+  "comment": "CUP(3,5) to (2,4), print AB, save cursor (ESC 7) at (2,6), CUP(1,1) to (0,0), print CDEF, restore cursor (ESC 8) back to (2,6), print X at (2,6).",
+  "expected": {
+    "cursor": { "row": 2, "col": 7 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "C" },
+      { "row": 0, "col": 1, "char": "D" },
+      { "row": 0, "col": 2, "char": "E" },
+      { "row": 0, "col": 3, "char": "F" },
+      { "row": 2, "col": 4, "char": "A" },
+      { "row": 2, "col": 5, "char": "B" },
+      { "row": 2, "col": 6, "char": "X" }
+    ]
+  }
+}
