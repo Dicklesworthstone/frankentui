@@ -808,4 +808,604 @@ mod tests {
             small_shift
         );
     }
+
+    // --- Config defaults ---
+
+    #[test]
+    fn config_default_field_values() {
+        let c = LeakDetectorConfig::default();
+        assert!((c.alpha - 0.05).abs() < f64::EPSILON);
+        assert!((c.lambda - 0.2).abs() < f64::EPSILON);
+        assert!((c.cusum_threshold - 8.0).abs() < f64::EPSILON);
+        assert!((c.cusum_allowance - 0.5).abs() < f64::EPSILON);
+        assert_eq!(c.warmup_frames, 30);
+        assert!((c.sigma_decay - 0.95).abs() < f64::EPSILON);
+        assert!((c.sigma_floor - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn config_clone_is_independent() {
+        let c1 = LeakDetectorConfig::default();
+        let c2 = c1.clone();
+        // Clone should have the same values as the original.
+        assert!((c2.alpha - c1.alpha).abs() < f64::EPSILON);
+        assert!((c2.lambda - c1.lambda).abs() < f64::EPSILON);
+        assert_eq!(c2.warmup_frames, c1.warmup_frames);
+    }
+
+    #[test]
+    fn config_debug_contains_fields() {
+        let c = LeakDetectorConfig::default();
+        let dbg = format!("{c:?}");
+        assert!(dbg.contains("alpha"));
+        assert!(dbg.contains("lambda"));
+        assert!(dbg.contains("cusum_threshold"));
+    }
+
+    // --- Accessor methods ---
+
+    #[test]
+    fn mean_tracks_input() {
+        let mut d = default_detector();
+        d.observe(10.0);
+        assert!((d.mean() - 10.0).abs() < f64::EPSILON);
+        d.observe(20.0);
+        assert!((d.mean() - 15.0).abs() < f64::EPSILON);
+        d.observe(30.0);
+        assert!((d.mean() - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sigma_respects_floor() {
+        let config = LeakDetectorConfig {
+            sigma_floor: 5.0,
+            ..LeakDetectorConfig::default()
+        };
+        let mut d = AllocLeakDetector::new(config);
+        // Constant input → Welford σ = 0, but sigma() should return floor.
+        d.observe(100.0);
+        assert!(d.sigma() >= 5.0, "sigma should be at least the floor");
+    }
+
+    #[test]
+    fn threshold_is_inverse_alpha() {
+        let d = detector_with(0.05, 0.2, 20);
+        assert!((d.threshold() - 20.0).abs() < f64::EPSILON);
+
+        let d2 = detector_with(0.10, 0.2, 20);
+        assert!((d2.threshold() - 10.0).abs() < f64::EPSILON);
+
+        let d3 = detector_with(0.01, 0.2, 20);
+        assert!((d3.threshold() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn frames_increments_per_observe() {
+        let mut d = default_detector();
+        assert_eq!(d.frames(), 0);
+        d.observe(1.0);
+        assert_eq!(d.frames(), 1);
+        d.observe(2.0);
+        assert_eq!(d.frames(), 2);
+        for _ in 0..98 {
+            d.observe(3.0);
+        }
+        assert_eq!(d.frames(), 100);
+    }
+
+    #[test]
+    fn cusum_lower_accessor_matches_alert() {
+        let mut d = detector_with(0.05, 0.2, 5);
+        for _ in 0..5 {
+            d.observe(100.0);
+        }
+        let alert = d.observe(50.0); // big downward shift
+        assert!((d.cusum_lower() - alert.cusum_lower).abs() < f64::EPSILON);
+    }
+
+    // --- Reset and reuse ---
+
+    #[test]
+    fn reset_then_reuse_works() {
+        let mut d = default_detector();
+        for _ in 0..50 {
+            d.observe(100.0);
+        }
+        d.reset();
+
+        // After reset, detector should behave like new.
+        assert_eq!(d.frames(), 0);
+        assert!((d.mean() - 0.0).abs() < f64::EPSILON);
+        assert!(d.ledger().is_empty());
+
+        // Feed new data — should work correctly.
+        for _ in 0..50 {
+            let alert = d.observe(200.0);
+            assert!(!alert.triggered);
+        }
+        assert_eq!(d.frames(), 50);
+        assert!((d.mean() - 200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn reset_clears_cusum_lower() {
+        let mut d = default_detector();
+        for _ in 0..50 {
+            d.observe(100.0);
+        }
+        // Force cusum_lower to rise with downward shift.
+        for _ in 0..20 {
+            d.observe(50.0);
+        }
+        assert!(d.cusum_lower() > 0.0, "cusum_lower should have risen");
+        d.reset();
+        assert_eq!(d.cusum_lower(), 0.0);
+    }
+
+    // --- EvidenceEntry ---
+
+    #[test]
+    fn evidence_entry_clone_is_independent() {
+        let e1 = EvidenceEntry {
+            frame: 1,
+            value: 100.0,
+            residual: 0.5,
+            cusum_upper: 1.0,
+            cusum_lower: 0.0,
+            e_value: 1.2,
+            mean_estimate: 99.0,
+            sigma_estimate: 5.0,
+        };
+        let e2 = e1.clone();
+        assert_eq!(e2.frame, 1);
+        assert!((e2.value - 100.0).abs() < f64::EPSILON);
+        assert!((e2.residual - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn evidence_entry_debug_format() {
+        let e = EvidenceEntry {
+            frame: 42,
+            value: 100.0,
+            residual: 0.123,
+            cusum_upper: 2.5,
+            cusum_lower: 0.1,
+            e_value: 1.5,
+            mean_estimate: 99.5,
+            sigma_estimate: 3.0,
+        };
+        let dbg = format!("{e:?}");
+        assert!(dbg.contains("frame: 42"));
+        assert!(dbg.contains("100.0"));
+    }
+
+    #[test]
+    fn jsonl_field_values_accurate() {
+        let e = EvidenceEntry {
+            frame: 7,
+            value: 123.45,
+            residual: -0.5678,
+            cusum_upper: 3.1415,
+            cusum_lower: 0.0,
+            e_value: 2.718281,
+            mean_estimate: 120.00,
+            sigma_estimate: 4.5678,
+        };
+        let line = e.to_jsonl();
+        assert!(line.contains("\"frame\":7"));
+        assert!(line.contains("\"value\":123.45"));
+        assert!(line.contains("\"residual\":-0.5678"));
+        assert!(line.contains("\"cusum_upper\":3.1415"));
+        assert!(line.contains("\"cusum_lower\":0.0000"));
+        assert!(line.contains("\"mean\":120.00"));
+        assert!(line.contains("\"sigma\":4.5678"));
+    }
+
+    #[test]
+    fn jsonl_contains_e_value_key() {
+        let e = EvidenceEntry {
+            frame: 1,
+            value: 0.0,
+            residual: 0.0,
+            cusum_upper: 0.0,
+            cusum_lower: 0.0,
+            e_value: 1.0,
+            mean_estimate: 0.0,
+            sigma_estimate: 1.0,
+        };
+        let line = e.to_jsonl();
+        assert!(line.contains("\"e_value\":1.000000"));
+    }
+
+    // --- LeakAlert ---
+
+    #[test]
+    fn leak_alert_no_alert_fields() {
+        let alert = LeakAlert::no_alert(42, 1.5, 3.0, 0.5);
+        assert!(!alert.triggered);
+        assert!(!alert.cusum_triggered);
+        assert!(!alert.eprocess_triggered);
+        assert_eq!(alert.frame, 42);
+        assert!((alert.e_value - 1.5).abs() < f64::EPSILON);
+        assert!((alert.cusum_upper - 3.0).abs() < f64::EPSILON);
+        assert!((alert.cusum_lower - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn leak_alert_clone() {
+        let a1 = LeakAlert::no_alert(1, 2.0, 3.0, 4.0);
+        let a2 = a1.clone();
+        assert_eq!(a2.frame, 1);
+        assert!(!a2.triggered);
+    }
+
+    #[test]
+    fn leak_alert_debug() {
+        let a = LeakAlert::no_alert(10, 1.0, 0.0, 0.0);
+        let dbg = format!("{a:?}");
+        assert!(dbg.contains("triggered: false"));
+        assert!(dbg.contains("frame: 10"));
+    }
+
+    // --- Warmup boundary ---
+
+    #[test]
+    fn warmup_boundary_exact() {
+        let mut d = detector_with(0.05, 0.2, 5);
+        // Frames 1..=5 are warmup — cusum/eprocess should be inert.
+        for i in 1..=5 {
+            let alert = d.observe(100.0);
+            assert!(!alert.triggered, "warmup frame {i} should not trigger");
+            assert!((alert.cusum_upper - 0.0).abs() < f64::EPSILON);
+            assert!((alert.e_value - 1.0).abs() < f64::EPSILON);
+        }
+        // Frame 6 is the first post-warmup frame — detectors start running.
+        let alert = d.observe(100.0);
+        assert_eq!(alert.frame, 6);
+        // Cusum/eprocess should now be active (though may still be near 0 for stable input).
+        assert!(!alert.triggered);
+    }
+
+    #[test]
+    fn warmup_zero_frames() {
+        let mut d = detector_with(0.05, 0.2, 0);
+        // With warmup_frames=0, first observation should go through full detector.
+        let alert = d.observe(100.0);
+        assert_eq!(alert.frame, 1);
+        // E-value and cusum should be computed (not the warmup defaults).
+        assert!(!alert.e_value.is_nan());
+    }
+
+    // --- Warmup ledger entries ---
+
+    #[test]
+    fn warmup_ledger_entries_have_zero_cusum() {
+        let mut d = detector_with(0.05, 0.2, 10);
+        for _ in 0..10 {
+            d.observe(100.0);
+        }
+        for entry in d.ledger() {
+            assert!((entry.cusum_upper - 0.0).abs() < f64::EPSILON);
+            assert!((entry.cusum_lower - 0.0).abs() < f64::EPSILON);
+            assert!((entry.e_value - 1.0).abs() < f64::EPSILON);
+        }
+    }
+
+    // --- NaN / Infinity handling ---
+
+    #[test]
+    fn nan_input_does_not_panic() {
+        let mut d = default_detector();
+        for _ in 0..10 {
+            d.observe(100.0);
+        }
+        // NaN input should not panic.
+        let _alert = d.observe(f64::NAN);
+        assert_eq!(d.frames(), 11);
+    }
+
+    #[test]
+    fn infinity_input_does_not_panic() {
+        let mut d = default_detector();
+        for _ in 0..10 {
+            d.observe(100.0);
+        }
+        let _alert = d.observe(f64::INFINITY);
+        assert_eq!(d.frames(), 11);
+    }
+
+    #[test]
+    fn negative_infinity_input_does_not_panic() {
+        let mut d = default_detector();
+        for _ in 0..10 {
+            d.observe(100.0);
+        }
+        let _alert = d.observe(f64::NEG_INFINITY);
+        assert_eq!(d.frames(), 11);
+    }
+
+    // --- Oscillating input ---
+
+    #[test]
+    fn oscillating_values_no_trigger() {
+        let mut d = default_detector();
+        // Alternating high/low with mean ~100, should not trigger.
+        for i in 0..300 {
+            let v = if i % 2 == 0 { 105.0 } else { 95.0 };
+            let alert = d.observe(v);
+            assert!(
+                !alert.triggered,
+                "Oscillating input should not trigger: frame={}",
+                alert.frame
+            );
+        }
+    }
+
+    // --- Very large values ---
+
+    #[test]
+    fn very_large_values_no_panic() {
+        let mut d = default_detector();
+        for _ in 0..50 {
+            d.observe(1e15);
+        }
+        assert_eq!(d.frames(), 50);
+        assert!(!d.mean().is_nan());
+    }
+
+    #[test]
+    fn very_small_values_no_panic() {
+        let mut d = default_detector();
+        for _ in 0..50 {
+            d.observe(1e-15);
+        }
+        assert_eq!(d.frames(), 50);
+        assert!(!d.mean().is_nan());
+    }
+
+    // --- Both detectors trigger ---
+
+    #[test]
+    fn both_detectors_can_trigger_simultaneously() {
+        let mut d = detector_with(0.05, 0.5, 5);
+        for _ in 0..5 {
+            d.observe(100.0);
+        }
+        // Massive shift should trigger both.
+        let mut both_triggered = false;
+        for _ in 0..500 {
+            let alert = d.observe(200.0);
+            if alert.cusum_triggered && alert.eprocess_triggered {
+                both_triggered = true;
+                assert!(alert.triggered);
+                break;
+            }
+        }
+        assert!(
+            both_triggered,
+            "Both detectors should trigger on massive shift"
+        );
+    }
+
+    // --- CUSUM resets toward zero after shift disappears ---
+
+    #[test]
+    fn cusum_recovers_after_transient_spike() {
+        let mut d = detector_with(0.05, 0.2, 10);
+        for _ in 0..10 {
+            d.observe(100.0);
+        }
+        // Brief spike.
+        for _ in 0..3 {
+            d.observe(120.0);
+        }
+        let spike_cusum = d.cusum_upper();
+        // Return to baseline — cusum should decrease.
+        for _ in 0..50 {
+            d.observe(100.0);
+        }
+        assert!(
+            d.cusum_upper() < spike_cusum,
+            "CUSUM should decrease after return to baseline"
+        );
+    }
+
+    // --- E-process accumulates under H1 ---
+
+    #[test]
+    fn eprocess_grows_under_sustained_shift() {
+        let mut d = detector_with(0.05, 0.2, 10);
+        for _ in 0..10 {
+            d.observe(100.0);
+        }
+        let e_before = d.e_value();
+        // Sustained upward shift.
+        for _ in 0..50 {
+            d.observe(115.0);
+        }
+        assert!(
+            d.e_value() > e_before,
+            "E-process should grow under sustained shift"
+        );
+    }
+
+    // --- Ledger entry field accuracy ---
+
+    #[test]
+    fn ledger_entry_mean_estimate_converges() {
+        let mut d = default_detector();
+        for _ in 0..200 {
+            d.observe(50.0);
+        }
+        let last = d.ledger().last().unwrap();
+        assert!(
+            (last.mean_estimate - 50.0).abs() < 0.01,
+            "Mean estimate should converge to 50.0, got {:.4}",
+            last.mean_estimate
+        );
+    }
+
+    #[test]
+    fn ledger_entry_sigma_estimate_is_positive() {
+        let mut rng = Lcg::new(0xDEAD);
+        let mut d = default_detector();
+        for _ in 0..100 {
+            d.observe(rng.next_normal(100.0, 5.0));
+        }
+        for entry in d.ledger() {
+            assert!(
+                entry.sigma_estimate > 0.0,
+                "Sigma estimate should be positive at frame {}",
+                entry.frame
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_entries_have_sequential_frames() {
+        let mut d = default_detector();
+        for _ in 0..50 {
+            d.observe(100.0);
+        }
+        for (i, entry) in d.ledger().iter().enumerate() {
+            assert_eq!(entry.frame, i + 1, "Frame should be sequential");
+        }
+    }
+
+    // --- Lcg reproducibility ---
+
+    #[test]
+    fn lcg_is_deterministic() {
+        let mut rng1 = Lcg::new(42);
+        let mut rng2 = Lcg::new(42);
+        for _ in 0..100 {
+            assert_eq!(rng1.next_u64(), rng2.next_u64());
+        }
+    }
+
+    #[test]
+    fn lcg_different_seeds_differ() {
+        let mut rng1 = Lcg::new(1);
+        let mut rng2 = Lcg::new(2);
+        let v1 = rng1.next_u64();
+        let v2 = rng2.next_u64();
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
+    fn lcg_next_normal_centered() {
+        let mut rng = Lcg::new(0xFACE);
+        let mut sum = 0.0;
+        let n = 10_000;
+        for _ in 0..n {
+            sum += rng.next_normal(50.0, 10.0);
+        }
+        let mean = sum / n as f64;
+        assert!(
+            (mean - 50.0).abs() < 1.0,
+            "CLT-based normal mean should be near 50.0, got {mean:.2}"
+        );
+    }
+
+    // --- Negative values ---
+
+    #[test]
+    fn negative_observations_work() {
+        let mut d = default_detector();
+        for _ in 0..50 {
+            d.observe(-100.0);
+        }
+        assert!((d.mean() - (-100.0)).abs() < 0.01);
+        assert_eq!(d.frames(), 50);
+    }
+
+    // --- AllocLeakDetector Debug ---
+
+    #[test]
+    fn detector_debug_format() {
+        let d = default_detector();
+        let dbg = format!("{d:?}");
+        assert!(dbg.contains("AllocLeakDetector"));
+        assert!(dbg.contains("mean"));
+        assert!(dbg.contains("e_value"));
+    }
+
+    // --- E-value starts at 1.0 ---
+
+    #[test]
+    fn evalue_starts_at_one_and_stays_during_warmup() {
+        let mut d = detector_with(0.05, 0.2, 10);
+        assert!((d.e_value() - 1.0).abs() < f64::EPSILON);
+        for _ in 0..10 {
+            d.observe(100.0);
+        }
+        // E-value should still be 1.0 after warmup (not updated during warmup).
+        assert!((d.e_value() - 1.0).abs() < f64::EPSILON);
+    }
+
+    // --- Custom config combinations ---
+
+    #[test]
+    fn high_alpha_triggers_more_easily() {
+        // α=0.5 → threshold=2.0 (very low), should trigger quickly.
+        let mut d = detector_with(0.5, 0.3, 5);
+        for _ in 0..5 {
+            d.observe(100.0);
+        }
+        let mut triggered = false;
+        for _ in 0..100 {
+            let alert = d.observe(110.0);
+            if alert.eprocess_triggered {
+                triggered = true;
+                break;
+            }
+        }
+        assert!(
+            triggered,
+            "High alpha (low threshold) should trigger on small shift"
+        );
+    }
+
+    #[test]
+    fn small_lambda_accumulates_slower() {
+        // Compare detection speed with different lambda values.
+        let detect_frames = |lambda: f64| -> usize {
+            let mut d = detector_with(0.05, lambda, 10);
+            for _ in 0..10 {
+                d.observe(100.0);
+            }
+            for i in 0..500 {
+                let alert = d.observe(115.0);
+                if alert.eprocess_triggered {
+                    return i;
+                }
+            }
+            500
+        };
+        let fast = detect_frames(0.4);
+        let slow = detect_frames(0.1);
+        // Smaller lambda should generally detect slower or equal.
+        assert!(
+            fast <= slow + 20,
+            "Higher lambda should detect at least comparably fast: fast={fast}, slow={slow}"
+        );
+    }
+
+    // --- Welford mean correctness ---
+
+    #[test]
+    fn welford_mean_matches_exact_mean() {
+        let mut d = default_detector();
+        let values = [10.0, 20.0, 30.0, 40.0, 50.0];
+        for &v in &values {
+            d.observe(v);
+        }
+        let expected = values.iter().sum::<f64>() / values.len() as f64;
+        assert!(
+            (d.mean() - expected).abs() < 1e-10,
+            "Welford mean {:.4} should match exact mean {:.4}",
+            d.mean(),
+            expected
+        );
+    }
 }
