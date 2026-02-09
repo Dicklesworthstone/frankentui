@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# Master runner for all remote terminal E2E tests (bd-lff4p.10.5)
+# Master runner for all remote terminal E2E tests (bd-lff4p.2.17)
 #
-# Runs all 5 remote session scenarios sequentially and reports results.
+# Runs all remote session scenarios sequentially and reports results.
 #
 # Usage:
 #   ./test_remote_all.sh
@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS=(
     test_remote_resize_storm
     test_remote_paste
+    test_remote_selection_copy
+    test_remote_search
     test_remote_unicode
     test_remote_osc8_links
     test_remote_scrollback
