@@ -558,38 +558,48 @@ impl Default for PlasmaFx {
 #[derive(Debug, Clone)]
 struct PlasmaScratch {
     width: u16,
+    height: u16,
     x: Vec<f64>,
     x_sq: Vec<f64>,
     x_center_sq: Vec<f64>,
+    y: Vec<f64>,
     sin_x2: Vec<f64>,
     v1: Vec<f64>,
+    radial_center_phase: Vec<f64>,
+    radial_offset_phase: Vec<f64>,
 }
 
 impl PlasmaScratch {
     const fn new() -> Self {
         Self {
             width: 0,
+            height: 0,
             x: Vec::new(),
             x_sq: Vec::new(),
             x_center_sq: Vec::new(),
+            y: Vec::new(),
             sin_x2: Vec::new(),
             v1: Vec::new(),
+            radial_center_phase: Vec::new(),
+            radial_offset_phase: Vec::new(),
         }
     }
 
-    fn ensure_width(&mut self, width: u16, w: f64) {
-        if self.width == width {
+    fn ensure_geometry(&mut self, width: u16, height: u16, w: f64, h: f64) {
+        if self.width == width && self.height == height {
             return;
         }
         self.width = width;
-        let len = width as usize;
-        self.x.resize(len, 0.0);
-        self.x_sq.resize(len, 0.0);
-        self.x_center_sq.resize(len, 0.0);
-        self.sin_x2.resize(len, 0.0);
-        self.v1.resize(len, 0.0);
+        self.height = height;
+        let w_len = width as usize;
+        let h_len = height as usize;
+        self.x.resize(w_len, 0.0);
+        self.x_sq.resize(w_len, 0.0);
+        self.x_center_sq.resize(w_len, 0.0);
+        self.sin_x2.resize(w_len, 0.0);
+        self.v1.resize(w_len, 0.0);
 
-        for dx in 0..len {
+        for dx in 0..w_len {
             let x = (dx as f64 / w) * 6.0;
             let x_sq = x * x;
             let x_center = x - 3.0;
@@ -597,6 +607,30 @@ impl PlasmaScratch {
             self.x_sq[dx] = x_sq;
             self.x_center_sq[dx] = x_center * x_center;
             self.sin_x2[dx] = (x * 2.0).sin();
+        }
+
+        self.y.resize(h_len, 0.0);
+        for dy in 0..h_len {
+            self.y[dy] = (dy as f64 / h) * 6.0;
+        }
+
+        let total = w_len.saturating_mul(h_len);
+        self.radial_center_phase.resize(total, 0.0);
+        self.radial_offset_phase.resize(total, 0.0);
+
+        // Cache geometry-only radial phases so full-quality rendering avoids
+        // two sqrt operations per pixel on every frame.
+        for (dy, y) in self.y.iter().copied().enumerate() {
+            let y_sq = y * y;
+            let y_center = y - 3.0;
+            let y_center_sq = y_center * y_center;
+            let row_offset = dy * w_len;
+
+            for dx in 0..w_len {
+                let idx = row_offset + dx;
+                self.radial_center_phase[idx] = (self.x_sq[dx] + y_sq).sqrt() * 2.0;
+                self.radial_offset_phase[idx] = (self.x_center_sq[dx] + y_center_sq).sqrt() * 1.8;
+            }
         }
     }
 
@@ -638,15 +672,11 @@ impl PlasmaFx {
 
         // Precompute x-dependent terms once per frame (no per-frame allocation).
         let scratch = &mut self.scratch;
-        scratch.ensure_width(ctx.width, w);
+        scratch.ensure_geometry(ctx.width, ctx.height, w, h);
         scratch.update_time(time);
 
         for dy in 0..ctx.height {
-            let ny = dy as f64 / h;
-            let y = ny * 6.0;
-            let y_sq = y * y;
-            let y_center = y - 3.0;
-            let y_center_sq = y_center * y_center;
+            let y = scratch.y[dy as usize];
             let v2 = (y * 1.8 + time_0_8).sin();
             let cos_y2 = (y * 2.0).cos();
 
@@ -665,9 +695,8 @@ impl PlasmaFx {
                     let value = (v1 + v2 + v3 + v6) / 4.0;
                     ((value * breath) + 1.0) / 2.0
                 } else {
-                    let v4 = ((scratch.x_sq[dx as usize] + y_sq).sqrt() * 2.0 - time_1_2).sin();
-                    let v5 = ((scratch.x_center_sq[dx as usize] + y_center_sq).sqrt() * 1.8 + time)
-                        .cos();
+                    let v4 = (scratch.radial_center_phase[idx] - time_1_2).sin();
+                    let v5 = (scratch.radial_offset_phase[idx] + time).cos();
                     let v6 = (scratch.sin_x2[dx as usize] * cos_y2 + time_0_5).sin();
                     let value = (v1 + v2 + v3 + v4 + v5 + v6) / 6.0;
                     ((value * breath) + 1.0) / 2.0
@@ -744,6 +773,39 @@ mod tests {
         fx.render(ctx, &mut out1);
         fx.render(ctx, &mut out2);
         assert_eq!(out1, out2);
+    }
+
+    #[test]
+    fn full_quality_matches_reference_wave_formula() {
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::new(PlasmaPalette::Sunset);
+        let ctx = FxContext {
+            width: 17,
+            height: 9,
+            frame: 7,
+            time_seconds: 1.2345,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+        let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+        fx.render(ctx, &mut out);
+
+        let w = ctx.width as f64;
+        let h = ctx.height as f64;
+        for dy in 0..ctx.height {
+            for dx in 0..ctx.width {
+                let idx = dy as usize * ctx.width as usize + dx as usize;
+                let nx = dx as f64 / w;
+                let ny = dy as f64 / h;
+                let expected =
+                    PlasmaPalette::sunset(plasma_wave(nx, ny, ctx.time_seconds).clamp(0.0, 1.0));
+                assert_eq!(
+                    out[idx], expected,
+                    "mismatch at ({dx}, {dy}) with t={}",
+                    ctx.time_seconds
+                );
+            }
+        }
     }
 
     #[test]
@@ -1169,9 +1231,9 @@ mod tests {
         assert_eq!(size1, size2, "PlasmaFx size should not vary with palette");
 
         // Size should be reasonable (palette enum + scratch buffers for pre-computation)
-        // On 64-bit: palette (1-2 bytes) + PlasmaScratch (5 Vecs at 24 bytes each + u16)
+        // On 64-bit: palette (1-2 bytes) + PlasmaScratch (8 Vecs at 24 bytes each + 2×u16)
         assert!(
-            size1 <= 200,
+            size1 <= 216,
             "PlasmaFx should be reasonably sized, got {} bytes",
             size1
         );
