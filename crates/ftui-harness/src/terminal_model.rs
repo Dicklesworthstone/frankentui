@@ -127,16 +127,19 @@ impl TerminalModel {
     }
 
     /// Terminal width.
+    #[inline]
     pub fn width(&self) -> u16 {
         self.width
     }
 
     /// Terminal height.
+    #[inline]
     pub fn height(&self) -> u16 {
         self.height
     }
 
     /// Current cursor position.
+    #[inline]
     pub fn cursor(&self) -> (u16, u16) {
         (self.cursor_x, self.cursor_y)
     }

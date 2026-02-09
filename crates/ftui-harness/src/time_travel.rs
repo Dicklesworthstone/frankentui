@@ -366,21 +366,25 @@ impl TimeTravel {
     }
 
     /// Number of recorded snapshots.
+    #[inline]
     pub fn len(&self) -> usize {
         self.snapshots.len()
     }
 
     /// Check if no frames have been recorded.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.snapshots.is_empty()
     }
 
     /// Maximum number of snapshots.
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Total frame counter (including evicted frames).
+    #[inline]
     pub fn frame_counter(&self) -> u64 {
         self.frame_counter
     }
