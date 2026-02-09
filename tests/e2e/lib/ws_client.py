@@ -35,6 +35,7 @@ import platform
 import subprocess
 import sys
 import time
+import unittest
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,98 @@ def frame_hash_key(mode: str, cols: int | None, rows: int | None, seed: int) -> 
     if cols is None or rows is None:
         return f"{mode}-unknown-seed{seed}"
     return f"{mode}-{cols}x{rows}-seed{seed}"
+
+
+def _as_non_negative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def _as_positive_int(value: Any) -> int | None:
+    out = _as_non_negative_int(value)
+    if out is None or out == 0:
+        return None
+    return out
+
+
+def _as_number(value: Any) -> float | int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
+def _extract_frame_overrides(raw: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if isinstance(raw.get("hash_algo"), str):
+        out["hash_algo"] = raw["hash_algo"]
+    if isinstance(raw.get("frame_hash"), str):
+        out["frame_hash"] = raw["frame_hash"]
+    if isinstance(raw.get("patch_hash"), str):
+        out["patch_hash"] = raw["patch_hash"]
+    if isinstance(raw.get("mode"), str):
+        out["mode"] = raw["mode"]
+    if isinstance(raw.get("hash_key"), str):
+        out["hash_key"] = raw["hash_key"]
+    if isinstance(raw.get("interaction_hash"), str):
+        out["interaction_hash"] = raw["interaction_hash"]
+    if isinstance(raw.get("selection_active"), bool):
+        out["selection_active"] = raw["selection_active"]
+
+    for key in ("frame_idx", "ts_ms", "cols", "rows", "patch_bytes", "patch_cells", "patch_runs",
+                "present_bytes", "hovered_link_id", "cursor_offset", "cursor_style",
+                "selection_start", "selection_end"):
+        value = raw.get(key)
+        if key in ("cols", "rows"):
+            parsed = _as_positive_int(value)
+        else:
+            parsed = _as_non_negative_int(value)
+        if parsed is not None:
+            out[key] = parsed
+
+    for key in ("render_ms", "present_ms"):
+        parsed = _as_number(raw.get(key))
+        if parsed is not None:
+            out[key] = parsed
+    return out
+
+
+def _decode_structured_frame_message(message: str) -> tuple[bytes, dict[str, Any]] | None:
+    try:
+        obj = json.loads(message)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    payload = obj.get("payload")
+    frame: dict[str, Any] = dict(obj)
+    if isinstance(payload, dict):
+        frame.update(payload)
+    if frame.get("type") != "frame":
+        return None
+
+    raw_b64 = frame.get("data_b64")
+    if isinstance(raw_b64, str):
+        try:
+            data = base64.b64decode(raw_b64, validate=True)
+        except Exception:
+            return None
+    elif isinstance(frame.get("bytes_b64"), str):
+        try:
+            data = base64.b64decode(frame["bytes_b64"], validate=True)
+        except Exception:
+            return None
+    elif isinstance(frame.get("data"), str):
+        data = frame["data"].encode("utf-8")
+    else:
+        return None
+
+    return data, _extract_frame_overrides(frame)
 
 
 def _percentile(sorted_values: list[float], q: float) -> float:
@@ -198,7 +291,7 @@ class SessionRecorder:
             self.jsonl_file.flush()
         self.event_idx += 1
 
-    def record_output(self, data: bytes):
+    def record_output(self, data: bytes, frame_meta: dict[str, Any] | None = None):
         """Record PTY output received over WebSocket."""
         now = time.perf_counter()
         gap_ms = (now - self.last_frame_monotonic) * 1000.0
@@ -215,7 +308,7 @@ class SessionRecorder:
         self.frame_idx += 1
         ts_ms = int((now - self.start_monotonic) * 1000.0)
         key = frame_hash_key("remote", self.current_cols, self.current_rows, self.seed)
-        self.emit("frame", {
+        event = {
             "frame_idx": self.frame_idx,
             "hash_algo": "sha256",
             "frame_hash": f"sha256:{chunk_hash}",
@@ -232,7 +325,15 @@ class SessionRecorder:
             "present_ms": round(gap_ms, 3),
             "present_bytes": len(data),
             "checksum_chain": f"sha256:{self.checksum_chain}",
-        })
+        }
+        if frame_meta:
+            event.update(frame_meta)
+            meta_cols = frame_meta.get("cols")
+            meta_rows = frame_meta.get("rows")
+            if isinstance(meta_cols, int) and isinstance(meta_rows, int) and meta_cols > 0 and meta_rows > 0:
+                self.current_cols = meta_cols
+                self.current_rows = meta_rows
+        self.emit("frame", event)
 
     def record_send(self, data: bytes):
         """Record data sent to PTY."""
@@ -504,7 +605,12 @@ async def _read_loop(ws, recorder: SessionRecorder):
             if isinstance(message, bytes):
                 recorder.record_output(message)
             elif isinstance(message, str):
-                recorder.record_output(message.encode("utf-8"))
+                structured = _decode_structured_frame_message(message)
+                if structured is None:
+                    recorder.record_output(message.encode("utf-8"))
+                else:
+                    data, frame_meta = structured
+                    recorder.record_output(data, frame_meta=frame_meta)
     except websockets.exceptions.ConnectionClosed:
         pass
 
@@ -526,15 +632,103 @@ def save_transcript(output: bytes, path: str):
         f.write(output)
 
 
+def run_self_tests() -> int:
+    class WsClientTests(unittest.TestCase):
+        def test_decode_structured_frame_message_top_level(self) -> None:
+            msg = json.dumps({
+                "type": "frame",
+                "data_b64": base64.b64encode(b"abc").decode("ascii"),
+                "frame_hash": "fnv1a64:deadbeef",
+                "interaction_hash": "fnv1a64:cafebabe",
+                "selection_active": True,
+                "selection_start": 1,
+                "selection_end": 3,
+            })
+            decoded = _decode_structured_frame_message(msg)
+            self.assertIsNotNone(decoded)
+            data, meta = decoded or (b"", {})
+            self.assertEqual(data, b"abc")
+            self.assertEqual(meta["frame_hash"], "fnv1a64:deadbeef")
+            self.assertEqual(meta["interaction_hash"], "fnv1a64:cafebabe")
+            self.assertTrue(meta["selection_active"])
+            self.assertEqual(meta["selection_start"], 1)
+            self.assertEqual(meta["selection_end"], 3)
+
+        def test_decode_structured_frame_message_nested_payload(self) -> None:
+            msg = json.dumps({
+                "type": "event",
+                "payload": {
+                    "type": "frame",
+                    "bytes_b64": base64.b64encode(b"xyz").decode("ascii"),
+                    "hovered_link_id": 9,
+                    "cursor_offset": 4,
+                    "cursor_style": 2,
+                },
+            })
+            decoded = _decode_structured_frame_message(msg)
+            self.assertIsNotNone(decoded)
+            data, meta = decoded or (b"", {})
+            self.assertEqual(data, b"xyz")
+            self.assertEqual(meta["hovered_link_id"], 9)
+            self.assertEqual(meta["cursor_offset"], 4)
+            self.assertEqual(meta["cursor_style"], 2)
+
+        def test_record_output_applies_frame_meta_overrides(self) -> None:
+            recorder = SessionRecorder("run-1", "scenario", None, 80, 24)
+            recorder.record_output(
+                b"abc",
+                frame_meta={
+                    "frame_hash": "sha256:override",
+                    "interaction_hash": "fnv1a64:1234",
+                    "selection_active": True,
+                    "selection_start": 1,
+                    "selection_end": 2,
+                    "cols": 100,
+                    "rows": 50,
+                },
+            )
+            frame = recorder.events[-1]
+            self.assertEqual(frame["frame_hash"], "sha256:override")
+            self.assertEqual(frame["interaction_hash"], "fnv1a64:1234")
+            self.assertTrue(frame["selection_active"])
+            self.assertEqual(frame["selection_start"], 1)
+            self.assertEqual(frame["selection_end"], 2)
+            self.assertEqual(frame["cols"], 100)
+            self.assertEqual(frame["rows"], 50)
+            self.assertEqual(recorder.current_cols, 100)
+            self.assertEqual(recorder.current_rows, 50)
+
+        def test_extract_frame_overrides_rejects_invalid_types(self) -> None:
+            out = _extract_frame_overrides({
+                "selection_active": "true",
+                "hovered_link_id": -1,
+                "frame_hash": 1,
+                "present_ms": "1.2",
+                "cols": 0,
+                "rows": True,
+            })
+            self.assertEqual(out, {})
+
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(WsClientTests)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return 0 if result.wasSuccessful() else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description="WebSocket remote terminal client")
     parser.add_argument("--url", default="ws://127.0.0.1:9231", help="Bridge URL")
-    parser.add_argument("--scenario", required=True, help="Scenario JSON file")
+    parser.add_argument("--scenario", required=False, help="Scenario JSON file")
     parser.add_argument("--golden", default=None, help="Golden transcript JSON")
     parser.add_argument("--jsonl", default=None, help="JSONL output file")
     parser.add_argument("--transcript", default=None, help="Save raw output transcript")
     parser.add_argument("--summary", action="store_true", help="Print summary JSON to stdout")
+    parser.add_argument("--self-test", action="store_true", help="Run ws_client unit tests and exit")
     args = parser.parse_args()
+
+    if args.self_test:
+        sys.exit(run_self_tests())
+    if not args.scenario:
+        parser.error("--scenario is required unless --self-test is set")
 
     with open(args.scenario, "r") as f:
         scenario = json.load(f)
