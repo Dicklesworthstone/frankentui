@@ -1095,7 +1095,7 @@ impl FrankenTermWeb {
     }
 
     fn resize_storm_interaction_snapshot(&self) -> Option<InteractionSnapshot> {
-        let has_shaping_state = self.text_shaping != TextShapingConfig::default();
+        let has_shaping_state = self.text_shaping.enabled;
         let has_a11y_state = self.screen_reader_enabled
             || self.high_contrast_enabled
             || self.reduced_motion_enabled
@@ -1111,6 +1111,11 @@ impl FrankenTermWeb {
         let (selection_active, selection_start, selection_end) = self
             .active_selection_range()
             .map_or((false, 0, 0), |(start, end)| (true, start, end));
+        let text_shaping_engine = if self.text_shaping.enabled {
+            self.text_shaping.engine.as_u32()
+        } else {
+            0
+        };
         Some(InteractionSnapshot {
             hovered_link_id: self.hovered_link_id,
             cursor_offset: self.cursor_offset.unwrap_or(0),
@@ -1119,7 +1124,7 @@ impl FrankenTermWeb {
             selection_start,
             selection_end,
             text_shaping_enabled: self.text_shaping.enabled,
-            text_shaping_engine: self.text_shaping.engine.as_u32(),
+            text_shaping_engine,
             screen_reader_enabled: self.screen_reader_enabled,
             high_contrast_enabled: self.high_contrast_enabled,
             reduced_motion_enabled: self.reduced_motion_enabled,
@@ -2528,6 +2533,45 @@ mod tests {
                 selection_end: 0,
                 text_shaping_enabled: true,
                 text_shaping_engine: 1,
+                screen_reader_enabled: false,
+                high_contrast_enabled: false,
+                reduced_motion_enabled: false,
+                focused: false,
+            })
+        );
+    }
+
+    #[test]
+    fn resize_storm_interaction_snapshot_ignores_disabled_shaping_engine_without_other_overlays() {
+        let mut term = FrankenTermWeb::new();
+        term.text_shaping = TextShapingConfig {
+            enabled: false,
+            engine: TextShapingEngine::Harfbuzz,
+        };
+
+        assert_eq!(term.resize_storm_interaction_snapshot(), None);
+    }
+
+    #[test]
+    fn resize_storm_interaction_snapshot_zeroes_disabled_shaping_engine_with_other_overlays() {
+        let mut term = FrankenTermWeb::new();
+        term.hovered_link_id = 7;
+        term.text_shaping = TextShapingConfig {
+            enabled: false,
+            engine: TextShapingEngine::Harfbuzz,
+        };
+
+        assert_eq!(
+            term.resize_storm_interaction_snapshot(),
+            Some(InteractionSnapshot {
+                hovered_link_id: 7,
+                cursor_offset: 0,
+                cursor_style: CursorStyle::None.as_u32(),
+                selection_active: false,
+                selection_start: 0,
+                selection_end: 0,
+                text_shaping_enabled: false,
+                text_shaping_engine: 0,
                 screen_reader_enabled: false,
                 high_contrast_enabled: false,
                 reduced_motion_enabled: false,

@@ -424,6 +424,15 @@ impl InteractionSnapshot {
     }
 
     #[must_use]
+    const fn effective_text_shaping_engine(self) -> u32 {
+        if self.text_shaping_enabled {
+            self.text_shaping_engine
+        } else {
+            0
+        }
+    }
+
+    #[must_use]
     const fn screen_reader_enabled_u32(self) -> u32 {
         Self::bool_u32(self.screen_reader_enabled)
     }
@@ -466,7 +475,10 @@ pub fn stable_frame_hash_with_interaction(
     hash = fnv1a64_extend(hash, &interaction.selection_start.to_le_bytes());
     hash = fnv1a64_extend(hash, &interaction.selection_end.to_le_bytes());
     hash = fnv1a64_extend(hash, &interaction.text_shaping_enabled_u32().to_le_bytes());
-    hash = fnv1a64_extend(hash, &interaction.text_shaping_engine.to_le_bytes());
+    hash = fnv1a64_extend(
+        hash,
+        &interaction.effective_text_shaping_engine().to_le_bytes(),
+    );
     hash = fnv1a64_extend(hash, &interaction.screen_reader_enabled_u32().to_le_bytes());
     hash = fnv1a64_extend(hash, &interaction.high_contrast_enabled_u32().to_le_bytes());
     hash = fnv1a64_extend(
@@ -1304,6 +1316,11 @@ mod tests {
             text_shaping_engine: 1,
             ..none
         };
+        let shaping_disabled_harfbuzz = InteractionSnapshot {
+            text_shaping_enabled: false,
+            text_shaping_engine: 1,
+            ..none
+        };
         let high_contrast = InteractionSnapshot {
             high_contrast_enabled: true,
             ..none
@@ -1318,6 +1335,8 @@ mod tests {
             stable_frame_hash_with_interaction(&cells, geometry, shaping_enabled);
         let shaping_harfbuzz_hash =
             stable_frame_hash_with_interaction(&cells, geometry, shaping_harfbuzz);
+        let shaping_disabled_harfbuzz_hash =
+            stable_frame_hash_with_interaction(&cells, geometry, shaping_disabled_harfbuzz);
         let high_contrast_hash =
             stable_frame_hash_with_interaction(&cells, geometry, high_contrast);
 
@@ -1327,6 +1346,7 @@ mod tests {
         assert_ne!(none_hash, selection_hash);
         assert_ne!(none_hash, shaping_enabled_hash);
         assert_ne!(shaping_enabled_hash, shaping_harfbuzz_hash);
+        assert_eq!(none_hash, shaping_disabled_harfbuzz_hash);
         assert_ne!(none_hash, high_contrast_hash);
     }
 
