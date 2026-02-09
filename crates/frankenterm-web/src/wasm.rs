@@ -474,13 +474,11 @@ impl FrankenTermWeb {
     /// Apply a cell patch (ftui-web mode).
     ///
     /// Accepts a JS object: `{ offset: number, cells: [{bg, fg, glyph, attrs}] }`.
-    /// Only the patched cells are uploaded to the GPU.
+    /// When a renderer is initialized, only the patched cells are uploaded to
+    /// the GPU. Without a renderer, patches still update the in-memory shadow
+    /// state so host-side logic (search/link lookup/evidence) remains usable.
     #[wasm_bindgen(js_name = applyPatch)]
     pub fn apply_patch(&mut self, patch: JsValue) -> Result<(), JsValue> {
-        if self.renderer.is_none() {
-            return Err(JsValue::from_str("renderer not initialized"));
-        }
-
         let offset = get_u32(&patch, "offset")?;
         let cells_val = Reflect::get(&patch, &JsValue::from_str("cells"))?;
         if cells_val.is_null() || cells_val.is_undefined() {
@@ -2329,6 +2327,42 @@ mod tests {
             .collect()
     }
 
+    fn patch_value(offset: u32, cells: &[CellData]) -> JsValue {
+        let patch = Object::new();
+        let _ = Reflect::set(
+            &patch,
+            &JsValue::from_str("offset"),
+            &JsValue::from_f64(f64::from(offset)),
+        );
+        let arr = Array::new();
+        for cell in cells {
+            let obj = Object::new();
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("bg"),
+                &JsValue::from_f64(f64::from(cell.bg_rgba)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("fg"),
+                &JsValue::from_f64(f64::from(cell.fg_rgba)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("glyph"),
+                &JsValue::from_f64(f64::from(cell.glyph_id)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("attrs"),
+                &JsValue::from_f64(f64::from(cell.attrs)),
+            );
+            arr.push(&obj);
+        }
+        let _ = Reflect::set(&patch, &JsValue::from_str("cells"), &arr);
+        patch.into()
+    }
+
     #[test]
     fn set_selection_range_normalizes_reverse_and_out_of_bounds() {
         let mut term = FrankenTermWeb::new();
@@ -2401,6 +2435,60 @@ mod tests {
         term.clear_selection();
         assert_eq!(term.selection_range, None);
         assert_eq!(term.active_selection_range(), Some((6, 8)));
+    }
+
+    #[test]
+    fn apply_patch_without_renderer_accepts_unicode_row_and_populates_autolinks() {
+        let text = "界e\u{301} 👩\u{200d}💻 https://example.test";
+        let cells = text_row_cells(text);
+        let mut term = FrankenTermWeb::new();
+        term.cols = text.chars().count() as u16;
+        term.rows = 1;
+
+        assert!(term.apply_patch(patch_value(0, &cells)).is_ok());
+        assert_eq!(term.shadow_cells, cells);
+
+        let url_byte = text.find("https://").unwrap();
+        let url_col = text[..url_byte].chars().count() as u16;
+        let link_id = term.link_at(url_col, 0);
+        assert!(link_id >= AUTO_LINK_ID_BASE);
+        assert_eq!(
+            term.link_url_at(url_col, 0),
+            Some("https://example.test".to_string())
+        );
+    }
+
+    #[test]
+    fn apply_patch_without_renderer_keeps_unicode_autolink_mapping_deterministic() {
+        let text = "αβγ https://deterministic.test/path";
+        let cells = text_row_cells(text);
+        let mut term = FrankenTermWeb::new();
+        term.cols = text.chars().count() as u16;
+        term.rows = 1;
+
+        assert!(term.apply_patch(patch_value(0, &cells)).is_ok());
+        let first_ids = term.auto_link_ids.clone();
+        let first_urls = term.auto_link_urls.clone();
+
+        assert!(term.apply_patch(patch_value(0, &cells)).is_ok());
+        assert_eq!(term.auto_link_ids, first_ids);
+        assert_eq!(term.auto_link_urls, first_urls);
+    }
+
+    #[test]
+    fn apply_patch_without_renderer_respects_offset_for_unicode_cells() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 6;
+        term.rows = 2;
+        term.shadow_cells = vec![CellData::EMPTY; 12];
+
+        let cells = text_row_cells("界🙂");
+        assert!(term.apply_patch(patch_value(7, &cells)).is_ok());
+
+        assert_eq!(term.shadow_cells[7].glyph_id, u32::from('界'));
+        assert_eq!(term.shadow_cells[8].glyph_id, u32::from('🙂'));
+        assert_eq!(term.shadow_cells[6], CellData::EMPTY);
+        assert_eq!(term.shadow_cells[9], CellData::EMPTY);
     }
 
     #[test]
