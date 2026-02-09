@@ -63,3 +63,168 @@ pub const LIGHT_MIN: u8 = 0;
 pub const LIGHT_MAX: u8 = 255;
 /// Number of light levels in COLORMAP.
 pub const COLORMAP_LEVELS: usize = 34;
+
+#[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
+mod tests {
+    use super::*;
+
+    // ── Angle system ────────────────────────────────────────────────
+
+    #[test]
+    fn fine_angles_is_power_of_two() {
+        assert!(FINEANGLES.is_power_of_two());
+        assert_eq!(FINEANGLES, 8192);
+    }
+
+    #[test]
+    fn finemask_masks_correctly() {
+        assert_eq!(FINEMASK, FINEANGLES - 1);
+        // Mask should wrap values back into range
+        assert_eq!(FINEANGLES & FINEMASK, 0);
+        assert_eq!((FINEANGLES + 1) & FINEMASK, 1);
+        assert_eq!((FINEANGLES - 1) & FINEMASK, FINEANGLES - 1);
+    }
+
+    #[test]
+    fn bam_angles_quarter_circle() {
+        // BAM (Binary Angle Measurement) uses full u32 range for 360 degrees
+        assert_eq!(ANG90, 0x4000_0000);
+        assert_eq!(ANG180, 0x8000_0000);
+        assert_eq!(ANG270, 0xC000_0000);
+        // Quadrant relationships
+        assert_eq!(ANG180, ANG90.wrapping_mul(2));
+        assert_eq!(ANG270, ANG90.wrapping_mul(3));
+        // Full circle wraps to 0
+        assert_eq!(ANG90.wrapping_mul(4), ANG_COUNT);
+    }
+
+    #[test]
+    fn ang_count_wraps_to_zero() {
+        // ANG_COUNT is 2^32 which wraps to 0 in u32
+        assert_eq!(ANG_COUNT, 0);
+    }
+
+    // ── Fixed-point system ──────────────────────────────────────────
+
+    #[test]
+    fn fixed_point_16_16() {
+        assert_eq!(FRACBITS, 16);
+        assert_eq!(FRACUNIT, 1 << 16);
+        assert_eq!(FRACUNIT, 65536);
+    }
+
+    #[test]
+    fn fracunit_represents_one() {
+        // FRACUNIT is 1.0 in fixed-point: shifting right by FRACBITS recovers integer
+        assert_eq!(FRACUNIT >> FRACBITS, 1);
+        assert_eq!((FRACUNIT * 3) >> FRACBITS, 3);
+    }
+
+    // ── Player constants ────────────────────────────────────────────
+
+    #[test]
+    fn player_view_below_full_height() {
+        // Eye level must be below full body height
+        assert!(PLAYER_VIEW_HEIGHT < PLAYER_HEIGHT);
+    }
+
+    #[test]
+    fn player_step_below_view_height() {
+        // Step height must be below eye level (can't step over your own eyes)
+        assert!(PLAYER_STEP_HEIGHT < PLAYER_VIEW_HEIGHT);
+    }
+
+    #[test]
+    fn player_speeds_positive() {
+        assert!(PLAYER_MOVE_SPEED > 0.0);
+        assert!(PLAYER_STRAFE_SPEED > 0.0);
+        assert!(PLAYER_TURN_SPEED > 0.0);
+        assert!(PLAYER_MAX_MOVE > 0.0);
+    }
+
+    #[test]
+    fn player_run_multiplier_greater_than_one() {
+        assert!(PLAYER_RUN_MULT > 1.0);
+    }
+
+    #[test]
+    fn player_friction_in_unit_range() {
+        // Friction should be in (0, 1) for deceleration
+        assert!(PLAYER_FRICTION > 0.0);
+        assert!(PLAYER_FRICTION < 1.0);
+    }
+
+    #[test]
+    fn player_radius_positive() {
+        assert!(PLAYER_RADIUS > 0.0);
+    }
+
+    // ── Physics ─────────────────────────────────────────────────────
+
+    #[test]
+    fn gravity_positive() {
+        assert!(GRAVITY > 0.0);
+    }
+
+    #[test]
+    fn tick_rate_matches_original_doom() {
+        assert_eq!(TICRATE, 35);
+    }
+
+    #[test]
+    fn doom_tick_duration_reciprocal() {
+        let expected = 1.0 / 35.0;
+        assert!((DOOM_TICK_SECS - expected).abs() < 1e-10);
+    }
+
+    // ── Renderer constants ──────────────────────────────────────────
+
+    #[test]
+    fn screen_dimensions_positive() {
+        assert!(SCREENWIDTH > 0);
+        assert!(SCREENHEIGHT > 0);
+    }
+
+    #[test]
+    fn fov_is_90_degrees() {
+        assert_eq!(FOV_DEGREES, 90.0);
+        assert!((FOV_RADIANS - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn maxopenings_proportional_to_screen() {
+        // MAXOPENINGS = SCREENWIDTH * 64
+        assert_eq!(MAXOPENINGS, SCREENWIDTH as usize * 64);
+    }
+
+    #[test]
+    fn renderer_limits_positive() {
+        assert!(MAXDRAWSEGS > 0);
+        assert!(MAXVISPLANES > 0);
+        assert!(MAXOPENINGS > 0);
+    }
+
+    // ── Texture / lighting ──────────────────────────────────────────
+
+    #[test]
+    fn wall_texture_height_positive() {
+        assert!(WALL_TEX_HEIGHT > 0.0);
+    }
+
+    #[test]
+    fn light_range_full_byte() {
+        assert_eq!(LIGHT_MIN, 0);
+        assert_eq!(LIGHT_MAX, 255);
+    }
+
+    #[test]
+    fn colormap_levels_positive() {
+        assert!(COLORMAP_LEVELS > 0);
+    }
+
+    #[test]
+    fn sky_flat_name_not_empty() {
+        assert!(!SKY_FLAT_NAME.is_empty());
+    }
+}
