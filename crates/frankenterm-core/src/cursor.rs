@@ -648,4 +648,96 @@ mod tests {
         assert!(c.tab_stops[32]);
         assert_eq!(c.tab_stops.len(), 40);
     }
+
+    // ── Charset ──────────────────────────────────────────────────────
+
+    #[test]
+    fn default_charset_is_ascii() {
+        let c = Cursor::new(80, 24);
+        assert_eq!(c.charset_slots, [b'B'; 4]);
+        assert_eq!(c.active_charset, 0);
+        assert!(c.single_shift.is_none());
+        assert_eq!(c.effective_charset(), b'B');
+    }
+
+    #[test]
+    fn designate_charset_sets_slot() {
+        let mut c = Cursor::new(80, 24);
+        c.designate_charset(0, b'0'); // G0 = DEC Graphics
+        assert_eq!(c.charset_slots[0], b'0');
+        assert_eq!(c.effective_charset(), b'0');
+        // G1 still ASCII
+        assert_eq!(c.charset_slots[1], b'B');
+    }
+
+    #[test]
+    fn single_shift_overrides_effective_charset() {
+        let mut c = Cursor::new(80, 24);
+        c.charset_slots[2] = b'0'; // G2 = DEC Graphics
+        c.single_shift = Some(2);
+        assert_eq!(c.effective_charset(), b'0');
+        c.consume_single_shift();
+        assert!(c.single_shift.is_none());
+        // Back to G0 ASCII
+        assert_eq!(c.effective_charset(), b'B');
+    }
+
+    #[test]
+    fn reset_charset_restores_defaults() {
+        let mut c = Cursor::new(80, 24);
+        c.charset_slots = [b'0'; 4];
+        c.active_charset = 2;
+        c.single_shift = Some(3);
+        c.reset_charset();
+        assert_eq!(c.charset_slots, [b'B'; 4]);
+        assert_eq!(c.active_charset, 0);
+        assert!(c.single_shift.is_none());
+    }
+
+    #[test]
+    fn dec_graphics_translation() {
+        use super::translate_charset;
+        // Line-drawing corners
+        assert_eq!(translate_charset('j', b'0'), '┘');
+        assert_eq!(translate_charset('k', b'0'), '┐');
+        assert_eq!(translate_charset('l', b'0'), '┌');
+        assert_eq!(translate_charset('m', b'0'), '└');
+        assert_eq!(translate_charset('q', b'0'), '─');
+        assert_eq!(translate_charset('x', b'0'), '│');
+        assert_eq!(translate_charset('n', b'0'), '┼');
+        // Tees
+        assert_eq!(translate_charset('t', b'0'), '├');
+        assert_eq!(translate_charset('u', b'0'), '┤');
+        assert_eq!(translate_charset('v', b'0'), '┴');
+        assert_eq!(translate_charset('w', b'0'), '┬');
+        // Symbols
+        assert_eq!(translate_charset('`', b'0'), '◆');
+        assert_eq!(translate_charset('a', b'0'), '▒');
+        assert_eq!(translate_charset('~', b'0'), '·');
+        assert_eq!(translate_charset('{', b'0'), 'π');
+        // Non-Graphics range passes through
+        assert_eq!(translate_charset('A', b'0'), 'A');
+        // ASCII charset is pass-through
+        assert_eq!(translate_charset('q', b'B'), 'q');
+    }
+
+    #[test]
+    fn save_restore_preserves_charset() {
+        let mut cursor = Cursor::new(80, 24);
+        cursor.designate_charset(0, b'0');
+        cursor.designate_charset(1, b'A');
+        cursor.active_charset = 1;
+
+        let saved = SavedCursor::save(&cursor, false);
+        assert_eq!(saved.charset_slots[0], b'0');
+        assert_eq!(saved.charset_slots[1], b'A');
+        assert_eq!(saved.active_charset, 1);
+
+        let mut new_cursor = Cursor::new(80, 24);
+        saved.restore(&mut new_cursor);
+        assert_eq!(new_cursor.charset_slots[0], b'0');
+        assert_eq!(new_cursor.charset_slots[1], b'A');
+        assert_eq!(new_cursor.active_charset, 1);
+        assert!(new_cursor.single_shift.is_none());
+    }
 }

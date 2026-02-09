@@ -1324,4 +1324,26 @@ mod tests {
         // Cursor should always be in bounds.
         assert!(cursor_row < g.rows());
     }
+
+    // ── fill_all (DECALN) ──────────────────────────────────────────────
+
+    #[test]
+    fn fill_all_fills_every_cell() {
+        let mut g = Grid::new(5, 3);
+        g.cell_mut(0, 0).unwrap().set_content('X', 1);
+        g.fill_all('E');
+        for r in 0..3u16 {
+            for c in 0..5u16 {
+                assert_eq!(g.cell(r, c).unwrap().content(), 'E');
+            }
+        }
+    }
+
+    #[test]
+    fn fill_all_on_empty_grid() {
+        let mut g = Grid::new(3, 2);
+        g.fill_all('Z');
+        assert_eq!(g.cell(0, 0).unwrap().content(), 'Z');
+        assert_eq!(g.cell(1, 2).unwrap().content(), 'Z');
+    }
 }

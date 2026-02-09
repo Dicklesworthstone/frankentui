@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use ftui_backend::{BackendEventSource, BackendFeatures};
+use ftui_backend::{Backend, BackendEventSource, BackendFeatures};
 use ftui_tty::{TtyBackend, TtyEventSource, write_cleanup_sequence};
 use proptest::prelude::*;
 
