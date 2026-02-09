@@ -1,0 +1,18 @@
+{
+  "name": "newline_scroll_bg_color",
+  "description": "Newline at bottom row with SGR 47 (bg white) triggers scroll — new blank line inherits cursor bg",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "41414141414242424242 1b5b333b3148 4343434343 1b5b34376d 0a",
+  "comment": "Fill rows 0-1 with A/B, CUP(3,1) → (2,0), fill row 2 with C, SGR 47 (bg white), newline → scroll up, row 2=blank with white bg",
+  "expected": {
+    "cursor": { "row": 2, "col": 4 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 4, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 0, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 4, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": " ", "attrs": { "bg_color": { "named": 7 } } },
+      { "row": 2, "col": 4, "char": " ", "attrs": { "bg_color": { "named": 7 } } }
+    ]
+  }
+}

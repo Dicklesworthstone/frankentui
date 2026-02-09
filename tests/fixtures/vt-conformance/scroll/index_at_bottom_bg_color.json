@@ -1,0 +1,18 @@
+{
+  "name": "index_at_bottom_bg_color",
+  "description": "IND (ESC D) at bottom row with SGR 44 (bg blue) — scroll-up blank line inherits cursor bg",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "414141414142424242424343434343 1b5b34346d 1b5b333b3148 1b44",
+  "comment": "Fill 5x3 with A/B/C rows, SGR 44 (bg blue), CUP(3,1) → cursor (2,0), IND → scroll up, row 2=blank with blue bg",
+  "expected": {
+    "cursor": { "row": 2, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 4, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 0, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 4, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": " ", "attrs": { "bg_color": { "named": 4 } } },
+      { "row": 2, "col": 4, "char": " ", "attrs": { "bg_color": { "named": 4 } } }
+    ]
+  }
+}

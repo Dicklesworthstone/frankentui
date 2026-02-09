@@ -82,6 +82,7 @@ impl TerminalState {
                             self.cursor.scroll_bottom(),
                             1,
                             &mut self.scrollback,
+                            self.cursor.attrs.bg,
                         );
                     } else if self.cursor.row + 1 < rows {
                         self.cursor.row += 1;
@@ -102,6 +103,7 @@ impl TerminalState {
                             self.cursor.scroll_bottom(),
                             1,
                             &mut self.scrollback,
+                            self.cursor.attrs.bg,
                         );
                     } else if self.cursor.row + 1 < rows {
                         self.cursor.row += 1;
@@ -132,6 +134,7 @@ impl TerminalState {
                         self.cursor.scroll_bottom(),
                         1,
                         &mut self.scrollback,
+                        self.cursor.attrs.bg,
                     );
                 } else if self.cursor.row + 1 < rows {
                     self.cursor.row += 1;
@@ -158,12 +161,17 @@ impl TerminalState {
                     self.cursor.scroll_bottom(),
                     count,
                     &mut self.scrollback,
+                    self.cursor.attrs.bg,
                 );
                 self.cursor.pending_wrap = false;
             }
             Action::ScrollDown(count) => {
-                self.grid
-                    .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), count);
+                self.grid.scroll_down(
+                    self.cursor.scroll_top(),
+                    self.cursor.scroll_bottom(),
+                    count,
+                    self.cursor.attrs.bg,
+                );
                 self.cursor.pending_wrap = false;
             }
             Action::InsertLines(count) => {
@@ -172,6 +180,7 @@ impl TerminalState {
                     count,
                     self.cursor.scroll_top(),
                     self.cursor.scroll_bottom(),
+                    self.cursor.attrs.bg,
                 );
                 self.cursor.pending_wrap = false;
             }
@@ -181,6 +190,7 @@ impl TerminalState {
                     count,
                     self.cursor.scroll_top(),
                     self.cursor.scroll_bottom(),
+                    self.cursor.attrs.bg,
                 );
                 self.cursor.pending_wrap = false;
             }
@@ -226,8 +236,12 @@ impl TerminalState {
             }
             Action::ReverseIndex => {
                 if self.cursor.row <= self.cursor.scroll_top() {
-                    self.grid
-                        .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), 1);
+                    self.grid.scroll_down(
+                        self.cursor.scroll_top(),
+                        self.cursor.scroll_bottom(),
+                        1,
+                        self.cursor.attrs.bg,
+                    );
                 } else {
                     self.cursor.move_up(1);
                 }
@@ -240,6 +254,7 @@ impl TerminalState {
                         self.cursor.scroll_bottom(),
                         1,
                         &mut self.scrollback,
+                        self.cursor.attrs.bg,
                     );
                 } else if self.cursor.row + 1 < rows {
                     self.cursor.row += 1;

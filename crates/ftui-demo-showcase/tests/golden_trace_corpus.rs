@@ -269,8 +269,8 @@ fn apply_web_sweep_deterministic_profile(program: &mut StepProgram<AppModel>, sc
             program.push_event(key(KeyCode::Char('m')));
         }
         ScreenId::MermaidMegaShowcase => {
-            // Hide timing-heavy metrics side panel for deterministic hash sweeps.
-            program.push_event(key(KeyCode::Char('m')));
+            // Collapse volatile side panels for deterministic hash sweeps.
+            program.push_event(key(KeyCode::Escape));
         }
         _ => {}
     }
@@ -774,19 +774,7 @@ fn golden_web_demo_soak_pool_stability() {
     const SOAK_CYCLES: usize = 12;
     let soak_a = run_web_sweep_soak(120, 40, 2.0, SOAK_CYCLES);
     let soak_b = run_web_sweep_soak(120, 40, 2.0, SOAK_CYCLES);
-    let det_a: Vec<WebSweepRecord> = soak_a
-        .records
-        .iter()
-        .filter(|record| record.screen != ScreenId::MermaidMegaShowcase)
-        .cloned()
-        .collect();
-    let det_b: Vec<WebSweepRecord> = soak_b
-        .records
-        .iter()
-        .filter(|record| record.screen != ScreenId::MermaidMegaShowcase)
-        .cloned()
-        .collect();
-    assert_web_sweep_deterministic(&det_a, &det_b, 120, 40);
+    assert_web_sweep_deterministic(&soak_a.records, &soak_b.records, 120, 40);
 
     assert_eq!(soak_a.cycle_pool_lens.len(), SOAK_CYCLES);
     assert_eq!(

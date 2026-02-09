@@ -7,7 +7,7 @@
 //! 3. Grid operations maintain valid state.
 //! 4. Action sequences are deterministic (same input → same output).
 
-use frankenterm_core::{Action, Cell, Cursor, Grid, Parser, Scrollback};
+use frankenterm_core::{Action, Cell, Color, Cursor, Grid, Parser, Scrollback};
 use proptest::prelude::*;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -26,7 +26,13 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
             if cursor.pending_wrap {
                 cursor.col = 0;
                 if cursor.row + 1 >= cursor.scroll_bottom() {
-                    grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+                    grid.scroll_up_into(
+                        cursor.scroll_top(),
+                        cursor.scroll_bottom(),
+                        1,
+                        scrollback,
+                        cursor.attrs.bg,
+                    );
                 } else if cursor.row + 1 < rows {
                     cursor.row += 1;
                 }
@@ -41,7 +47,13 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
             if width == 2 && cursor.col + 1 >= cols {
                 cursor.col = 0;
                 if cursor.row + 1 >= cursor.scroll_bottom() {
-                    grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+                    grid.scroll_up_into(
+                        cursor.scroll_top(),
+                        cursor.scroll_bottom(),
+                        1,
+                        scrollback,
+                        cursor.attrs.bg,
+                    );
                 } else if cursor.row + 1 < rows {
                     cursor.row += 1;
                 }
@@ -61,7 +73,13 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
         }
         Action::Newline => {
             if cursor.row + 1 >= cursor.scroll_bottom() {
-                grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+                grid.scroll_up_into(
+                    cursor.scroll_top(),
+                    cursor.scroll_bottom(),
+                    1,
+                    scrollback,
+                    cursor.attrs.bg,
+                );
             } else if cursor.row + 1 < rows {
                 cursor.row += 1;
             }
@@ -104,11 +122,17 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
                 cursor.scroll_bottom(),
                 count,
                 scrollback,
+                cursor.attrs.bg,
             );
             cursor.pending_wrap = false;
         }
         Action::ScrollDown(count) => {
-            grid.scroll_down(cursor.scroll_top(), cursor.scroll_bottom(), count);
+            grid.scroll_down(
+                cursor.scroll_top(),
+                cursor.scroll_bottom(),
+                count,
+                cursor.attrs.bg,
+            );
             cursor.pending_wrap = false;
         }
         Action::InsertLines(count) => {
@@ -117,6 +141,7 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
                 count,
                 cursor.scroll_top(),
                 cursor.scroll_bottom(),
+                cursor.attrs.bg,
             );
             cursor.pending_wrap = false;
         }
@@ -126,6 +151,7 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
                 count,
                 cursor.scroll_top(),
                 cursor.scroll_bottom(),
+                cursor.attrs.bg,
             );
             cursor.pending_wrap = false;
         }
@@ -171,7 +197,13 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
         Action::Index => {
             // ESC D: same as newline
             if cursor.row + 1 >= cursor.scroll_bottom() {
-                grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+                grid.scroll_up_into(
+                    cursor.scroll_top(),
+                    cursor.scroll_bottom(),
+                    1,
+                    scrollback,
+                    cursor.attrs.bg,
+                );
             } else if cursor.row + 1 < rows {
                 cursor.row += 1;
             }
@@ -179,7 +211,12 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
         }
         Action::ReverseIndex => {
             if cursor.row <= cursor.scroll_top() {
-                grid.scroll_down(cursor.scroll_top(), cursor.scroll_bottom(), 1);
+                grid.scroll_down(
+                    cursor.scroll_top(),
+                    cursor.scroll_bottom(),
+                    1,
+                    cursor.attrs.bg,
+                );
             } else {
                 cursor.move_up(1);
             }
@@ -187,7 +224,13 @@ fn apply_action(action: Action, grid: &mut Grid, cursor: &mut Cursor, scrollback
         Action::NextLine => {
             cursor.carriage_return();
             if cursor.row + 1 >= cursor.scroll_bottom() {
-                grid.scroll_up_into(cursor.scroll_top(), cursor.scroll_bottom(), 1, scrollback);
+                grid.scroll_up_into(
+                    cursor.scroll_top(),
+                    cursor.scroll_bottom(),
+                    1,
+                    scrollback,
+                    cursor.attrs.bg,
+                );
             } else if cursor.row + 1 < rows {
                 cursor.row += 1;
             }
@@ -435,7 +478,7 @@ proptest! {
             }
         }
 
-        grid.scroll_up(0, rows, count);
+        grid.scroll_up(0, rows, count, Color::Default);
 
         prop_assert_eq!(grid.cols(), cols);
         prop_assert_eq!(grid.rows(), rows);
@@ -466,7 +509,7 @@ proptest! {
             }
         }
 
-        grid.scroll_down(0, rows, count);
+        grid.scroll_down(0, rows, count, Color::Default);
 
         prop_assert_eq!(grid.cols(), cols);
         prop_assert_eq!(grid.rows(), rows);
@@ -528,13 +571,13 @@ proptest! {
 
         // Insert lines.
         let mut grid_ins = grid.clone();
-        grid_ins.insert_lines(row_pos, count, 0, rows);
+        grid_ins.insert_lines(row_pos, count, 0, rows, Color::Default);
         prop_assert_eq!(grid_ins.cols(), cols, "insert_lines changed cols");
         prop_assert_eq!(grid_ins.rows(), rows, "insert_lines changed rows");
 
         // Delete lines.
         let mut grid_del = grid.clone();
-        grid_del.delete_lines(row_pos, count, 0, rows);
+        grid_del.delete_lines(row_pos, count, 0, rows, Color::Default);
         prop_assert_eq!(grid_del.cols(), cols, "delete_lines changed cols");
         prop_assert_eq!(grid_del.rows(), rows, "delete_lines changed rows");
     }
@@ -721,7 +764,7 @@ proptest! {
 
         let mut sb = Scrollback::new(100);
         let effective = count.min(rows);
-        grid.scroll_up_into(0, rows, count, &mut sb);
+        grid.scroll_up_into(0, rows, count, &mut sb, Color::Default);
 
         // Scrollback should contain the evicted rows.
         prop_assert_eq!(sb.len(), effective as usize,

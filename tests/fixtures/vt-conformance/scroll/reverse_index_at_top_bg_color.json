@@ -1,0 +1,18 @@
+{
+  "name": "reverse_index_at_top_bg_color",
+  "description": "RI (ESC M) at top row with SGR 45 (bg magenta) — scroll-down blank line at top inherits cursor bg",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "414141414142424242424343434343 1b5b34356d 1b5b313b3148 1b4d",
+  "comment": "Fill 5x3 with A/B/C rows, SGR 45 (bg magenta), CUP(1,1) → cursor (0,0), RI → scroll down, row 0=blank with magenta bg",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": " ", "attrs": { "bg_color": { "named": 5 } } },
+      { "row": 0, "col": 4, "char": " ", "attrs": { "bg_color": { "named": 5 } } },
+      { "row": 1, "col": 0, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 4, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 4, "char": "B", "attrs": { "bg_color": "default" } }
+    ]
+  }
+}

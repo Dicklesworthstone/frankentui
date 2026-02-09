@@ -1,0 +1,18 @@
+{
+  "name": "delete_lines_bg_color",
+  "description": "DL 1 (CSI 1 M) with SGR 46 (bg cyan) — blank line at bottom after deletion inherits cursor bg",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "414141414142424242424343434343 1b5b34366d 1b5b323b3148 1b5b314d",
+  "comment": "Fill 5x3 with A/B/C rows, SGR 46 (bg cyan), CUP(2,1) → cursor (1,0), DL 1 → row 1=C, row 2=blank with cyan bg",
+  "expected": {
+    "cursor": { "row": 1, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 4, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 0, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 4, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": " ", "attrs": { "bg_color": { "named": 6 } } },
+      { "row": 2, "col": 4, "char": " ", "attrs": { "bg_color": { "named": 6 } } }
+    ]
+  }
+}

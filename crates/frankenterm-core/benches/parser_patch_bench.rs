@@ -551,6 +551,7 @@ fn full_pipeline_bench(c: &mut Criterion) {
                                             cursor.scroll_bottom(),
                                             1,
                                             &mut scrollback,
+                                            cursor.attrs.bg,
                                         );
                                     } else if cursor.row + 1 < 40 {
                                         cursor.row += 1;
@@ -570,6 +571,7 @@ fn full_pipeline_bench(c: &mut Criterion) {
                                             cursor.scroll_bottom(),
                                             1,
                                             &mut scrollback,
+                                            cursor.attrs.bg,
                                         );
                                     } else if cursor.row + 1 < 40 {
                                         cursor.row += 1;
@@ -595,6 +597,7 @@ fn full_pipeline_bench(c: &mut Criterion) {
                                         cursor.scroll_bottom(),
                                         1,
                                         &mut scrollback,
+                                        cursor.attrs.bg,
                                     );
                                 } else if cursor.row + 1 < 40 {
                                     cursor.row += 1;
@@ -627,10 +630,14 @@ fn full_pipeline_bench(c: &mut Criterion) {
                                 cursor.scroll_bottom(),
                                 n,
                                 &mut scrollback,
+                                cursor.attrs.bg,
                             ),
-                            Action::ScrollDown(n) => {
-                                grid.scroll_down(cursor.scroll_top(), cursor.scroll_bottom(), n)
-                            }
+                            Action::ScrollDown(n) => grid.scroll_down(
+                                cursor.scroll_top(),
+                                cursor.scroll_bottom(),
+                                n,
+                                cursor.attrs.bg,
+                            ),
                             Action::InsertChars(n) => {
                                 grid.insert_chars(cursor.row, cursor.col, n, Color::Default);
                             }

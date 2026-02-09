@@ -1,0 +1,18 @@
+{
+  "name": "scroll_up_bg_rgb",
+  "description": "CSI 1 S (scroll up) with SGR 48;2;0;192;255 (bg RGB) — new blank line inherits truecolor bg",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "414141414142424242424343434343 1b5b34383b323b303b3139323b3235356d 1b5b313b3148 1b5b3153",
+  "comment": "Fill 5x3 with A/B/C rows, SGR 48;2;0;192;255 (bg RGB cyan), CUP(1,1) → cursor (0,0), SU 1 → row 2=blank with rgb(0,192,255) bg",
+  "expected": {
+    "cursor": { "row": 0, "col": 0 },
+    "cells": [
+      { "row": 0, "col": 0, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 0, "col": 4, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 0, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 4, "char": "C", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": " ", "attrs": { "bg_color": { "rgb": [0, 192, 255] } } },
+      { "row": 2, "col": 4, "char": " ", "attrs": { "bg_color": { "rgb": [0, 192, 255] } } }
+    ]
+  }
+}

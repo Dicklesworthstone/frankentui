@@ -194,17 +194,21 @@ impl CoreTerminalHarness {
                 self.cursor.scroll_bottom(),
                 count,
                 &mut self.scrollback,
+                self.cursor.attrs.bg,
             ),
-            Action::ScrollDown(count) => {
-                self.grid
-                    .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), count)
-            }
+            Action::ScrollDown(count) => self.grid.scroll_down(
+                self.cursor.scroll_top(),
+                self.cursor.scroll_bottom(),
+                count,
+                self.cursor.attrs.bg,
+            ),
             Action::InsertLines(count) => {
                 self.grid.insert_lines(
                     self.cursor.row,
                     count,
                     self.cursor.scroll_top(),
                     self.cursor.scroll_bottom(),
+                    self.cursor.attrs.bg,
                 );
                 self.cursor.pending_wrap = false;
             }
@@ -214,6 +218,7 @@ impl CoreTerminalHarness {
                     count,
                     self.cursor.scroll_top(),
                     self.cursor.scroll_bottom(),
+                    self.cursor.attrs.bg,
                 );
                 self.cursor.pending_wrap = false;
             }
@@ -299,6 +304,7 @@ impl CoreTerminalHarness {
                         self.cursor.scroll_bottom(),
                         1,
                         &mut self.scrollback,
+                        self.cursor.attrs.bg,
                     );
                 } else if self.cursor.row + 1 < self.rows {
                     self.cursor.row += 1;
@@ -307,8 +313,12 @@ impl CoreTerminalHarness {
             }
             Action::ReverseIndex => {
                 if self.cursor.row == self.cursor.scroll_top() {
-                    self.grid
-                        .scroll_down(self.cursor.scroll_top(), self.cursor.scroll_bottom(), 1);
+                    self.grid.scroll_down(
+                        self.cursor.scroll_top(),
+                        self.cursor.scroll_bottom(),
+                        1,
+                        self.cursor.attrs.bg,
+                    );
                 } else {
                     self.cursor.move_up(1);
                 }
@@ -476,6 +486,7 @@ impl CoreTerminalHarness {
                 self.cursor.scroll_bottom(),
                 1,
                 &mut self.scrollback,
+                self.cursor.attrs.bg,
             );
         } else if self.cursor.row + 1 < self.rows {
             self.cursor.row += 1;
@@ -491,6 +502,7 @@ impl CoreTerminalHarness {
                 self.cursor.scroll_bottom(),
                 1,
                 &mut self.scrollback,
+                self.cursor.attrs.bg,
             );
         } else if self.cursor.row + 1 < self.rows {
             self.cursor.row += 1;

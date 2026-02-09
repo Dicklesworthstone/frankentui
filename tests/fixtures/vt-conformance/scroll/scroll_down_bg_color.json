@@ -1,0 +1,18 @@
+{
+  "name": "scroll_down_bg_color",
+  "description": "CSI 1 T (scroll down) with SGR 42 (bg green) — new blank line at top inherits cursor bg",
+  "initial_size": [5, 3],
+  "input_bytes_hex": "414141414142424242424343434343 1b5b34326d 1b5b323b3348 1b5b3154",
+  "comment": "Fill 5x3 with A/B/C rows, SGR 42 (bg green), CUP(2,3) → cursor (1,2), SD 1 → row 0=blank with green bg, row 1=A, row 2=B",
+  "expected": {
+    "cursor": { "row": 1, "col": 2 },
+    "cells": [
+      { "row": 0, "col": 0, "char": " ", "attrs": { "bg_color": { "named": 2 } } },
+      { "row": 0, "col": 4, "char": " ", "attrs": { "bg_color": { "named": 2 } } },
+      { "row": 1, "col": 0, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 1, "col": 4, "char": "A", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 0, "char": "B", "attrs": { "bg_color": "default" } },
+      { "row": 2, "col": 4, "char": "B", "attrs": { "bg_color": "default" } }
+    ]
+  }
+}
