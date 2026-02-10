@@ -424,6 +424,172 @@ mod tests {
         assert_eq!(rendered_area.width, 2);
     }
 
+    // ─── Edge-case tests (bd-2gp78) ────────────────────────────────────
+
+    #[test]
+    fn center_odd_remainder_floors_left() {
+        // width=6, child_width=3 → offset = (6-3)/2 = 1
+        let align = Align::new(Fill('X'))
+            .horizontal(Alignment::Center)
+            .child_width(3);
+        let area = Rect::new(0, 0, 6, 1);
+        let child = align.aligned_area(area);
+        assert_eq!(child.x, 1);
+        assert_eq!(child.width, 3);
+    }
+
+    #[test]
+    fn center_vertical_odd_remainder_floors_top() {
+        // height=6, child_height=3 → offset = (6-3)/2 = 1
+        let align = Align::new(Fill('X'))
+            .vertical(VerticalAlignment::Middle)
+            .child_height(3);
+        let area = Rect::new(0, 0, 1, 6);
+        let child = align.aligned_area(area);
+        assert_eq!(child.y, 1);
+        assert_eq!(child.height, 3);
+    }
+
+    #[test]
+    fn child_width_only_height_fills() {
+        let align = Align::new(Fill('X'))
+            .horizontal(Alignment::Center)
+            .child_width(2);
+        let area = Rect::new(0, 0, 8, 5);
+        let child = align.aligned_area(area);
+        assert_eq!(child.width, 2);
+        assert_eq!(child.height, 5, "height should be full parent height");
+    }
+
+    #[test]
+    fn child_height_only_width_fills() {
+        let align = Align::new(Fill('X'))
+            .vertical(VerticalAlignment::Bottom)
+            .child_height(2);
+        let area = Rect::new(0, 0, 8, 5);
+        let child = align.aligned_area(area);
+        assert_eq!(child.width, 8, "width should be full parent width");
+        assert_eq!(child.height, 2);
+        assert_eq!(child.y, 3);
+    }
+
+    #[test]
+    fn right_alignment_exact_fit() {
+        // child_width == area.width → x stays at area.x
+        let align = Align::new(Fill('X'))
+            .horizontal(Alignment::Right)
+            .child_width(10);
+        let area = Rect::new(5, 0, 10, 1);
+        let child = align.aligned_area(area);
+        assert_eq!(child.x, 5, "exact fit should not shift");
+        assert_eq!(child.width, 10);
+    }
+
+    #[test]
+    fn bottom_alignment_exact_fit() {
+        let align = Align::new(Fill('X'))
+            .vertical(VerticalAlignment::Bottom)
+            .child_height(5);
+        let area = Rect::new(0, 10, 1, 5);
+        let child = align.aligned_area(area);
+        assert_eq!(child.y, 10, "exact fit should not shift");
+    }
+
+    #[test]
+    fn center_1x1_in_large_area() {
+        let align = Align::new(Fill('O'))
+            .horizontal(Alignment::Center)
+            .vertical(VerticalAlignment::Middle)
+            .child_width(1)
+            .child_height(1);
+        let area = Rect::new(0, 0, 100, 100);
+        let child = align.aligned_area(area);
+        assert_eq!(child.x, 49); // (100-1)/2
+        assert_eq!(child.y, 49);
+        assert_eq!(child.width, 1);
+        assert_eq!(child.height, 1);
+    }
+
+    #[test]
+    fn vertical_alignment_copy_and_eq() {
+        let a = VerticalAlignment::Middle;
+        let b = a; // Copy
+        assert_eq!(a, b);
+        assert_ne!(a, VerticalAlignment::Top);
+        assert_ne!(a, VerticalAlignment::Bottom);
+    }
+
+    #[test]
+    fn align_clone_preserves_settings() {
+        let align = Align::new(Fill('X'))
+            .horizontal(Alignment::Right)
+            .vertical(VerticalAlignment::Bottom)
+            .child_width(5)
+            .child_height(3);
+        let cloned = align.clone();
+        let area = Rect::new(0, 0, 20, 20);
+        assert_eq!(align.aligned_area(area), cloned.aligned_area(area));
+    }
+
+    #[test]
+    fn debug_format() {
+        let align = Align::new(Fill('X'))
+            .horizontal(Alignment::Center)
+            .vertical(VerticalAlignment::Middle);
+        let dbg = format!("{align:?}");
+        assert!(dbg.contains("Align"));
+        assert!(dbg.contains("Center"));
+        assert!(dbg.contains("Middle"));
+    }
+
+    #[test]
+    fn stateful_zero_area_is_noop() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Debug, Clone)]
+        struct StatefulFill;
+        impl StatefulWidget for StatefulFill {
+            type State = Rc<RefCell<bool>>;
+            fn render(&self, _: Rect, _: &mut Frame, state: &mut Self::State) {
+                *state.borrow_mut() = true;
+            }
+        }
+
+        let align = Align::new(StatefulFill)
+            .horizontal(Alignment::Center)
+            .child_width(3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+        let mut rendered = Rc::new(RefCell::new(false));
+        StatefulWidget::render(&align, Rect::new(0, 0, 0, 0), &mut frame, &mut rendered);
+        assert!(!*rendered.borrow(), "should not render in zero area");
+    }
+
+    #[test]
+    fn stateful_zero_child_is_noop() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Debug, Clone)]
+        struct StatefulFill;
+        impl StatefulWidget for StatefulFill {
+            type State = Rc<RefCell<bool>>;
+            fn render(&self, _: Rect, _: &mut Frame, state: &mut Self::State) {
+                *state.borrow_mut() = true;
+            }
+        }
+
+        let align = Align::new(StatefulFill).child_width(0).child_height(0);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 10, &mut pool);
+        let mut rendered = Rc::new(RefCell::new(false));
+        StatefulWidget::render(&align, Rect::new(0, 0, 10, 10), &mut frame, &mut rendered);
+        assert!(!*rendered.borrow(), "should not render zero-size child");
+    }
+
+    // ─── End edge-case tests (bd-2gp78) ──────────────────────────────
+
     #[test]
     fn is_essential_delegates() {
         struct Essential;
