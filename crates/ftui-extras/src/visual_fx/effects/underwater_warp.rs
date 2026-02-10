@@ -956,13 +956,11 @@ mod tests {
     fn turbsin_matches_actual_sin() {
         // Each entry should match sin(i * 2*pi / 256) to high precision
         let table = build_turbsin();
-        for i in 0..256 {
+        for (i, &actual) in table.iter().enumerate() {
             let expected = (i as f64 * std::f64::consts::TAU / 256.0).sin();
             assert!(
-                (table[i] - expected).abs() < 1e-14,
-                "turbsin[{i}] = {}, expected {}",
-                table[i],
-                expected
+                (actual - expected).abs() < 1e-14,
+                "turbsin[{i}] = {actual}, expected {expected}"
             );
         }
     }

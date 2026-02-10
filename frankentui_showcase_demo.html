@@ -4,10 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>FrankenTUI — Showcase Demo</title>
+<link rel="preload" href="./fonts/pragmasevka-nf-subset.woff2" as="font" type="font/woff2" crossorigin>
 <style>
 	  @font-face {
 	    font-family: "Pragmasevka NF";
-	    src: url("./fonts/pragmasevka-nf-regular.ttf") format("truetype");
+	    src: url("./fonts/pragmasevka-nf-subset.woff2") format("woff2");
 	    font-weight: 400;
 	    font-style: normal;
 	    font-display: block;
@@ -55,7 +56,7 @@ const CELL_HEIGHT  = 16;
 const LOG_JSONL    = true;   // Emit JSONL evidence to console
 const LOG_PERF     = false;  // Per-frame timing in console
 // Bump when deploying to bypass Cloudflare/browser caches for JS/WASM artifacts.
-const ASSET_VERSION = "2026-02-10.2";
+const ASSET_VERSION = "2026-02-10.5";
 
 // ── DOM refs ───────────────────────────────────────────────────────────
 const canvas   = document.getElementById("terminal-canvas");
