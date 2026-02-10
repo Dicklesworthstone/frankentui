@@ -1528,4 +1528,598 @@ mod tests {
         assert_eq!(config.chord_timeout, Duration::from_millis(1000));
         assert_eq!(config.click_tolerance, 1);
     }
+
+    // --- Edge-case tests (bd-3kkqc) ---
+
+    fn mouse_moved(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn mouse_scroll_up(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn mouse_scroll_down(x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn drag_without_prior_mouse_down() {
+        // Drag event arrives with no prior mouse-down: creates tracker on-the-fly
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        let events = gr.process(&mouse_drag(10, 10, MouseButton::Left), t);
+        assert!(events.is_empty()); // First drag just creates tracker, no DragStart
+        assert!(!gr.is_dragging());
+
+        // Second drag — might cross threshold from (10,10) origin
+        let events = gr.process(&mouse_drag(20, 10, MouseButton::Left), t + MS_50);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SemanticEvent::DragStart { .. }))
+        );
+        assert!(gr.is_dragging());
+    }
+
+    #[test]
+    fn mouse_moved_cancels_long_press() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+
+        // Moved event (no button held in terminal terms) cancels long press
+        gr.process(&mouse_moved(6, 5), t + MS_100);
+
+        // Long press should NOT fire
+        assert!(gr.check_long_press(t + MS_600).is_none());
+    }
+
+    #[test]
+    fn mouse_moved_does_not_affect_drag_tracker() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+
+        // Moved event — should not start or cancel drag
+        let events = gr.process(&mouse_moved(20, 20), t + MS_50);
+        assert!(events.is_empty());
+
+        // Drag event should still work against the original mouse-down position
+        let events = gr.process(&mouse_drag(10, 5, MouseButton::Left), t + MS_100);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SemanticEvent::DragStart { .. }))
+        );
+    }
+
+    #[test]
+    fn escape_during_unstarted_drag_no_cancel() {
+        // Drag tracker exists but started=false → Escape should NOT emit DragCancel
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        // Small move — below threshold, drag not started
+        gr.process(&mouse_drag(6, 5, MouseButton::Left), t + MS_50);
+        assert!(!gr.is_dragging());
+
+        let events = gr.process(&esc(), t + MS_100);
+        assert!(events.is_empty()); // No DragCancel because drag wasn't started
+    }
+
+    #[test]
+    fn focus_loss_during_unstarted_drag_no_cancel() {
+        // Drag tracker exists but started=false → Focus(false) should NOT emit DragCancel
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        // Below threshold
+        gr.process(&mouse_drag(6, 5, MouseButton::Left), t + MS_50);
+        assert!(!gr.is_dragging());
+
+        let events = gr.process(&Event::Focus(false), t + MS_100);
+        assert!(events.is_empty()); // No DragCancel
+    }
+
+    #[test]
+    fn chord_with_super_modifier() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&key_press(KeyCode::Char('a'), Modifiers::SUPER), t);
+        let events = gr.process(&key_press(KeyCode::Char('b'), Modifiers::SUPER), t + MS_100);
+
+        assert_eq!(events.len(), 1);
+        if let SemanticEvent::Chord { sequence } = &events[0] {
+            assert_eq!(sequence.len(), 2);
+            assert!(sequence[0].modifiers.contains(Modifiers::SUPER));
+            assert!(sequence[1].modifiers.contains(Modifiers::SUPER));
+        } else {
+            panic!("Expected Chord event");
+        }
+    }
+
+    #[test]
+    fn long_press_exactly_at_threshold() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+
+        // Exactly at 500ms threshold (elapsed == threshold → should fire due to >=)
+        let lp = gr.check_long_press(t + Duration::from_millis(500));
+        assert!(lp.is_some());
+        if let Some(SemanticEvent::LongPress { duration, .. }) = lp {
+            assert_eq!(duration, Duration::from_millis(500));
+        }
+    }
+
+    #[test]
+    fn long_press_one_ms_before_threshold() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+
+        // 1ms before threshold
+        assert!(
+            gr.check_long_press(t + Duration::from_millis(499))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn drag_negative_direction() {
+        // Drag from right to left (negative x delta)
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(20, 10, MouseButton::Left), t);
+        let events = gr.process(&mouse_drag(15, 10, MouseButton::Left), t + MS_50);
+
+        let drag_move = events
+            .iter()
+            .find(|e| matches!(e, SemanticEvent::DragMove { .. }));
+        if let Some(SemanticEvent::DragMove { delta, .. }) = drag_move {
+            assert_eq!(delta.0, -5); // Negative x
+            assert_eq!(delta.1, 0);
+        } else {
+            panic!("Expected DragMove");
+        }
+    }
+
+    #[test]
+    fn drag_negative_y_direction() {
+        // Drag upward (negative y delta)
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 20, MouseButton::Left), t);
+        let events = gr.process(&mouse_drag(5, 15, MouseButton::Left), t + MS_50);
+
+        let drag_move = events
+            .iter()
+            .find(|e| matches!(e, SemanticEvent::DragMove { .. }));
+        if let Some(SemanticEvent::DragMove { delta, .. }) = drag_move {
+            assert_eq!(delta.0, 0);
+            assert_eq!(delta.1, -5); // Negative y
+        } else {
+            panic!("Expected DragMove");
+        }
+    }
+
+    #[test]
+    fn multiple_sequential_drags() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        // First drag
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        gr.process(&mouse_drag(10, 5, MouseButton::Left), t + MS_50);
+        gr.process(&mouse_up(10, 5, MouseButton::Left), t + MS_100);
+        assert!(!gr.is_dragging());
+
+        // Second drag immediately after
+        gr.process(&mouse_down(20, 20, MouseButton::Left), t + MS_200);
+        let events = gr.process(
+            &mouse_drag(30, 20, MouseButton::Left),
+            t + Duration::from_millis(250),
+        );
+
+        assert!(events.iter().any(|e| matches!(
+            e,
+            SemanticEvent::DragStart {
+                pos: Position { x: 20, y: 20 },
+                ..
+            }
+        )));
+        assert!(gr.is_dragging());
+
+        let events = gr.process(
+            &mouse_up(30, 20, MouseButton::Left),
+            t + Duration::from_millis(300),
+        );
+        assert!(matches!(
+            events[0],
+            SemanticEvent::DragEnd {
+                start: Position { x: 20, y: 20 },
+                end: Position { x: 30, y: 20 },
+            }
+        ));
+    }
+
+    #[test]
+    fn check_long_press_no_mouse_down() {
+        // check_long_press when no mouse-down has occurred
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        assert!(gr.check_long_press(t).is_none());
+        assert!(gr.check_long_press(t + Duration::from_secs(10)).is_none());
+    }
+
+    #[test]
+    fn zero_drag_threshold() {
+        // Any movement should trigger drag immediately
+        let config = GestureConfig {
+            drag_threshold: 0,
+            ..Default::default()
+        };
+        let mut gr = GestureRecognizer::new(config);
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        // Even a 0-distance drag should start (0 >= 0)
+        let events = gr.process(&mouse_drag(5, 5, MouseButton::Left), t + MS_50);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SemanticEvent::DragStart { .. }))
+        );
+        assert!(gr.is_dragging());
+    }
+
+    #[test]
+    fn zero_click_tolerance() {
+        // Only exact same position counts for multi-click
+        let config = GestureConfig {
+            click_tolerance: 0,
+            ..Default::default()
+        };
+        let mut gr = GestureRecognizer::new(config);
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_50);
+
+        // Second click 1 cell away — should NOT be double click with tolerance 0
+        gr.process(&mouse_down(6, 5, MouseButton::Left), t + MS_100);
+        let events = gr.process(&mouse_up(6, 5, MouseButton::Left), t + MS_200);
+        assert!(matches!(events[0], SemanticEvent::Click { .. }));
+
+        // But exact same position should double-click
+        gr.process(
+            &mouse_down(6, 5, MouseButton::Left),
+            t + Duration::from_millis(250),
+        );
+        let events = gr.process(
+            &mouse_up(6, 5, MouseButton::Left),
+            t + Duration::from_millis(280),
+        );
+        assert!(matches!(events[0], SemanticEvent::DoubleClick { .. }));
+    }
+
+    #[test]
+    fn scroll_events_ignored() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        let events = gr.process(&mouse_scroll_up(5, 5), t);
+        assert!(events.is_empty());
+
+        let events = gr.process(&mouse_scroll_down(5, 5), t + MS_50);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn key_repeat_ignored() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        let events = gr.process(
+            &Event::Key(KeyEvent {
+                code: KeyCode::Char('k'),
+                modifiers: Modifiers::CTRL,
+                kind: KeyEventKind::Repeat,
+            }),
+            t,
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn double_click_at_exact_timeout_boundary() {
+        // Multi-click timeout uses <=, so exactly at boundary should still count
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_50);
+
+        // Second click exactly at 300ms after first mouse-up (350ms total)
+        // The check is: now.duration_since(last.time) <= 300ms
+        // last.time = t + 50ms, now = t + 350ms → 300ms <= 300ms → true
+        gr.process(
+            &mouse_down(5, 5, MouseButton::Left),
+            t + Duration::from_millis(350),
+        );
+        let events = gr.process(
+            &mouse_up(5, 5, MouseButton::Left),
+            t + Duration::from_millis(350),
+        );
+        assert!(matches!(events[0], SemanticEvent::DoubleClick { .. }));
+    }
+
+    #[test]
+    fn mouse_up_position_becomes_click_position() {
+        // Click position comes from mouse-up, not mouse-down
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        // Mouse up at slightly different position (no drag because no Drag event)
+        let events = gr.process(&mouse_up(6, 6, MouseButton::Left), t + MS_50);
+
+        assert_eq!(events.len(), 1);
+        if let SemanticEvent::Click { pos, .. } = &events[0] {
+            assert_eq!(*pos, Position::new(6, 6)); // Uses up position, not down
+        } else {
+            panic!("Expected Click");
+        }
+    }
+
+    #[test]
+    fn multiple_mouse_downs_overwrite_state() {
+        // Two mouse-downs without mouse-up: second overwrites the first
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        gr.process(&mouse_down(20, 20, MouseButton::Right), t + MS_50);
+
+        // Drag should track from second position
+        let events = gr.process(&mouse_drag(30, 20, MouseButton::Right), t + MS_100);
+        if let Some(SemanticEvent::DragStart { pos, button }) = events
+            .iter()
+            .find(|e| matches!(e, SemanticEvent::DragStart { .. }))
+        {
+            assert_eq!(*pos, Position::new(20, 20));
+            assert_eq!(*button, MouseButton::Right);
+        } else {
+            panic!("Expected DragStart from second mouse-down position");
+        }
+    }
+
+    #[test]
+    fn triple_click_then_timeout_then_single() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        // Click 1, 2, 3
+        for i in 0..3u32 {
+            let offset = Duration::from_millis(i as u64 * 80);
+            gr.process(&mouse_down(5, 5, MouseButton::Left), t + offset);
+            gr.process(&mouse_up(5, 5, MouseButton::Left), t + offset + MS_50);
+        }
+
+        // Wait well past timeout, then click again
+        let late = t + Duration::from_secs(2);
+        gr.process(&mouse_down(5, 5, MouseButton::Left), late);
+        let events = gr.process(&mouse_up(5, 5, MouseButton::Left), late + MS_50);
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SemanticEvent::Click { .. }));
+    }
+
+    #[test]
+    fn chord_ctrl_alt_combined_modifier() {
+        // Single key with both CTRL+ALT should start chord accumulation
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        let mods = Modifiers::CTRL | Modifiers::ALT;
+        gr.process(&key_press(KeyCode::Char('a'), mods), t);
+        let events = gr.process(&key_press(KeyCode::Char('b'), Modifiers::CTRL), t + MS_100);
+
+        assert_eq!(events.len(), 1);
+        if let SemanticEvent::Chord { sequence } = &events[0] {
+            assert_eq!(sequence[0].modifiers, Modifiers::CTRL | Modifiers::ALT);
+            assert_eq!(sequence[1].modifiers, Modifiers::CTRL);
+        }
+    }
+
+    #[test]
+    fn chord_timeout_then_new_chord() {
+        // After chord timeout expires, a fresh chord can start
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        // Start chord
+        gr.process(&key_press(KeyCode::Char('k'), Modifiers::CTRL), t);
+
+        // Timeout expires (>1000ms)
+        // Second key after timeout — starts new chord buffer
+        gr.process(
+            &key_press(KeyCode::Char('a'), Modifiers::CTRL),
+            t + Duration::from_millis(1100),
+        );
+        // Third key completes the NEW chord
+        let events = gr.process(
+            &key_press(KeyCode::Char('b'), Modifiers::CTRL),
+            t + Duration::from_millis(1200),
+        );
+
+        assert_eq!(events.len(), 1);
+        if let SemanticEvent::Chord { sequence } = &events[0] {
+            assert_eq!(sequence.len(), 2);
+            assert_eq!(sequence[0].code, KeyCode::Char('a'));
+            assert_eq!(sequence[1].code, KeyCode::Char('b'));
+        }
+    }
+
+    #[test]
+    fn drag_start_and_move_emitted_together() {
+        // When drag threshold is first crossed, both DragStart and DragMove
+        // are emitted in the same process() call
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        let events = gr.process(&mouse_drag(10, 5, MouseButton::Left), t + MS_50);
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], SemanticEvent::DragStart { .. }));
+        assert!(matches!(events[1], SemanticEvent::DragMove { .. }));
+    }
+
+    #[test]
+    fn config_clone() {
+        let config = GestureConfig {
+            drag_threshold: 42,
+            click_tolerance: 7,
+            ..Default::default()
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.drag_threshold, 42);
+        assert_eq!(cloned.click_tolerance, 7);
+        assert_eq!(cloned.multi_click_timeout, config.multi_click_timeout);
+    }
+
+    #[test]
+    fn scroll_does_not_affect_click_state() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        // First click
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_50);
+
+        // Scroll in between
+        gr.process(&mouse_scroll_up(5, 5), t + MS_100);
+
+        // Second click should still be DoubleClick
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t + MS_200);
+        let events = gr.process(
+            &mouse_up(5, 5, MouseButton::Left),
+            t + Duration::from_millis(250),
+        );
+        assert!(matches!(events[0], SemanticEvent::DoubleClick { .. }));
+    }
+
+    #[test]
+    fn escape_clears_mouse_down_state() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        gr.process(&esc(), t + MS_50);
+
+        // Long press should not fire (Escape cleared long_press_pos)
+        assert!(gr.check_long_press(t + MS_600).is_none());
+
+        // Mouse up should produce a click from fresh state (mouse_down is None,
+        // so no drag → click with fresh count)
+        let events = gr.process(&mouse_up(5, 5, MouseButton::Left), t + MS_100);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SemanticEvent::Click { .. }));
+    }
+
+    #[test]
+    fn focus_loss_clears_long_press_fired_flag() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        // Fire a long press
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        assert!(gr.check_long_press(t + MS_600).is_some());
+        assert!(
+            gr.check_long_press(t + Duration::from_millis(700))
+                .is_none()
+        ); // Already fired
+
+        // Focus loss resets long_press_fired
+        gr.process(&Event::Focus(false), t + Duration::from_millis(800));
+
+        // New mouse down + long press should fire again
+        gr.process(
+            &mouse_down(10, 10, MouseButton::Left),
+            t + Duration::from_secs(1),
+        );
+        assert!(
+            gr.check_long_press(t + Duration::from_millis(1600))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn drag_at_u16_max_coordinates() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(u16::MAX - 5, u16::MAX, MouseButton::Left), t);
+        let events = gr.process(
+            &mouse_drag(u16::MAX, u16::MAX, MouseButton::Left),
+            t + MS_50,
+        );
+
+        // Manhattan distance = 5, above threshold of 3
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SemanticEvent::DragStart { .. }))
+        );
+
+        // Delta: u16::MAX - (u16::MAX - 5) = 5
+        if let Some(SemanticEvent::DragMove { delta, .. }) = events
+            .iter()
+            .find(|e| matches!(e, SemanticEvent::DragMove { .. }))
+        {
+            assert_eq!(delta.0, 5);
+            assert_eq!(delta.1, 0);
+        }
+    }
+
+    #[test]
+    fn reset_during_long_press_pending() {
+        let mut gr = GestureRecognizer::new(GestureConfig::default());
+        let t = now();
+
+        gr.process(&mouse_down(5, 5, MouseButton::Left), t);
+        // Long press is pending but hasn't fired yet
+        gr.reset();
+
+        // Long press should NOT fire after reset
+        assert!(gr.check_long_press(t + MS_600).is_none());
+    }
 }
