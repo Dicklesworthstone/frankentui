@@ -153,12 +153,10 @@ fn strip_debug_quotes(s: &str) -> String {
 
 /// Simple HH:MM:SS timestamp (no external dependency needed).
 fn timestamp_now() -> String {
-    // Use std::time for a monotonic-ish wall clock.
+    // Use web_time for WASM compatibility (std::time panics on wasm32-unknown-unknown).
     // For deterministic tests, callers can disable show_time.
-    let now = std::time::SystemTime::now();
-    let since_epoch = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let now = web_time::SystemTime::now();
+    let since_epoch = now.duration_since(web_time::UNIX_EPOCH).unwrap_or_default();
     let secs = since_epoch.as_secs();
     let h = (secs / 3600) % 24;
     let m = (secs % 3600) / 60;

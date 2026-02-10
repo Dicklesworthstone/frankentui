@@ -37,7 +37,7 @@ use crate::{Widget, draw_text_span, set_style_area};
 use ftui_style::Style;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Instant;
+use web_time::Instant;
 
 #[cfg(feature = "tracing")]
 use tracing::{info_span, trace};
