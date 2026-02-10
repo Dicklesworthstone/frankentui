@@ -1206,4 +1206,772 @@ mod tests {
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
     }
+
+    // =========================================================================
+    // Edge-Case Tests (bd-9bvp0)
+    // =========================================================================
+
+    // --- SpatialHitConfig trait coverage ---
+
+    #[test]
+    fn config_debug_clone() {
+        let config = SpatialHitConfig::default();
+        let dbg = format!("{:?}", config);
+        assert!(dbg.contains("SpatialHitConfig"), "Debug: {dbg}");
+        let cloned = config.clone();
+        assert_eq!(cloned.cell_size, 8);
+    }
+
+    // --- HitEntry trait coverage ---
+
+    #[test]
+    fn hit_entry_debug_clone_copy_eq() {
+        let entry = HitEntry::new(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            42,
+            5,
+            0,
+        );
+        let dbg = format!("{:?}", entry);
+        assert!(dbg.contains("HitEntry"), "Debug: {dbg}");
+        let copied = entry; // Copy
+        assert_eq!(entry, copied);
+        let cloned: HitEntry = entry; // Clone == Copy for this type
+        assert_eq!(entry, cloned);
+    }
+
+    #[test]
+    fn hit_entry_ne() {
+        let a = HitEntry::new(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+            0,
+            0,
+        );
+        let b = HitEntry::new(
+            HitId::new(2),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+            0,
+            0,
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn hit_entry_contains_zero_width() {
+        let entry = HitEntry::new(
+            HitId::new(1),
+            Rect::new(10, 10, 0, 5),
+            HitRegion::Content,
+            0,
+            0,
+            0,
+        );
+        // Zero width: x >= 10 && x < 10+0=10 → always false
+        assert!(!entry.contains(10, 10));
+    }
+
+    #[test]
+    fn hit_entry_contains_zero_height() {
+        let entry = HitEntry::new(
+            HitId::new(1),
+            Rect::new(10, 10, 5, 0),
+            HitRegion::Content,
+            0,
+            0,
+            0,
+        );
+        assert!(!entry.contains(10, 10));
+    }
+
+    #[test]
+    fn hit_entry_contains_at_saturating_boundary() {
+        // Rect near u16::MAX tests saturating_add
+        let entry = HitEntry::new(
+            HitId::new(1),
+            Rect::new(u16::MAX - 5, u16::MAX - 5, 10, 10),
+            HitRegion::Content,
+            0,
+            0,
+            0,
+        );
+        // saturating_add: (65530 + 10).min(65535) = 65535
+        // contains uses strict <, so u16::MAX is excluded
+        assert!(entry.contains(u16::MAX - 5, u16::MAX - 5));
+        assert!(entry.contains(u16::MAX - 1, u16::MAX - 1));
+        assert!(!entry.contains(u16::MAX, u16::MAX));
+    }
+
+    // --- CacheStats ---
+
+    #[test]
+    fn cache_stats_default() {
+        let stats = CacheStats::default();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.rebuilds, 0);
+        assert_eq!(stats.hit_rate(), 0.0);
+    }
+
+    #[test]
+    fn cache_stats_debug_copy() {
+        let stats = CacheStats {
+            hits: 10,
+            misses: 5,
+            rebuilds: 1,
+        };
+        let dbg = format!("{:?}", stats);
+        assert!(dbg.contains("CacheStats"), "Debug: {dbg}");
+        let copy = stats; // Copy
+        assert_eq!(copy.hits, stats.hits);
+    }
+
+    #[test]
+    fn cache_stats_100_percent_hit_rate() {
+        let stats = CacheStats {
+            hits: 100,
+            misses: 0,
+            rebuilds: 0,
+        };
+        assert!((stats.hit_rate() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn cache_stats_0_percent_hit_rate() {
+        let stats = CacheStats {
+            hits: 0,
+            misses: 100,
+            rebuilds: 0,
+        };
+        assert!((stats.hit_rate()).abs() < 0.01);
+    }
+
+    // --- SpatialHitIndex construction ---
+
+    #[test]
+    fn new_with_cell_size_zero_clamped_to_one() {
+        let config = SpatialHitConfig {
+            cell_size: 0,
+            ..Default::default()
+        };
+        let idx = SpatialHitIndex::new(80, 24, config);
+        // cell_size=0 clamped to 1, grid = 80x24 buckets
+        assert_eq!(idx.grid_width, 80);
+        assert_eq!(idx.grid_height, 24);
+        assert!(idx.is_empty());
+    }
+
+    #[test]
+    fn new_with_cell_size_one() {
+        let config = SpatialHitConfig {
+            cell_size: 1,
+            ..Default::default()
+        };
+        let idx = SpatialHitIndex::new(10, 5, config);
+        // 1 bucket per cell
+        assert_eq!(idx.grid_width, 10);
+        assert_eq!(idx.grid_height, 5);
+    }
+
+    #[test]
+    fn new_with_large_cell_size() {
+        let config = SpatialHitConfig {
+            cell_size: 100,
+            ..Default::default()
+        };
+        let idx = SpatialHitIndex::new(80, 24, config);
+        // 80/100 rounds up to 1, 24/100 rounds up to 1
+        assert_eq!(idx.grid_width, 1);
+        assert_eq!(idx.grid_height, 1);
+    }
+
+    #[test]
+    fn new_zero_dimensions() {
+        let idx = SpatialHitIndex::with_defaults(0, 0);
+        assert!(idx.is_empty());
+        // All hit tests should return None
+        assert!(idx.hit_test_readonly(0, 0).is_none());
+    }
+
+    #[test]
+    fn with_defaults_uses_default_config() {
+        let idx = SpatialHitIndex::with_defaults(80, 24);
+        assert_eq!(idx.config.cell_size, 8);
+        assert_eq!(idx.config.bucket_warn_threshold, 64);
+        assert!(!idx.config.track_cache_stats);
+    }
+
+    #[test]
+    fn index_debug_format() {
+        let idx = SpatialHitIndex::with_defaults(10, 10);
+        let dbg = format!("{:?}", idx);
+        assert!(dbg.contains("SpatialHitIndex"), "Debug: {dbg}");
+    }
+
+    // --- Register edge cases ---
+
+    #[test]
+    fn register_zero_width_rect_not_in_buckets() {
+        let mut idx = index();
+        idx.register_simple(HitId::new(1), Rect::new(5, 5, 0, 10), HitRegion::Content, 0);
+        // Still registered (len=1) but won't be found by hit_test
+        assert_eq!(idx.len(), 1);
+        assert!(idx.hit_test(5, 5).is_none());
+    }
+
+    #[test]
+    fn register_zero_height_rect_not_in_buckets() {
+        let mut idx = index();
+        idx.register_simple(HitId::new(1), Rect::new(5, 5, 10, 0), HitRegion::Content, 0);
+        assert_eq!(idx.len(), 1);
+        assert!(idx.hit_test(5, 5).is_none());
+    }
+
+    #[test]
+    fn register_rect_extending_past_screen() {
+        let mut idx = index();
+        // Rect extends past 80x24 screen
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(70, 20, 20, 10),
+            HitRegion::Content,
+            0,
+        );
+        // Should still hit within screen bounds
+        assert!(idx.hit_test(75, 22).is_some());
+        // Outside screen returns None
+        assert!(idx.hit_test(85, 25).is_none());
+    }
+
+    #[test]
+    fn register_many_widgets() {
+        let mut idx = index();
+        for i in 0..100u32 {
+            let x = (i % 8) as u16 * 10;
+            let y = (i / 8) as u16 * 3;
+            idx.register_simple(
+                HitId::new(i + 1),
+                Rect::new(x, y, 5, 2),
+                HitRegion::Content,
+                i as u64,
+            );
+        }
+        assert_eq!(idx.len(), 100);
+        // Spot check
+        let result = idx.hit_test(2, 1);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn register_simple_uses_z_order_zero() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        // Register with explicit z=1 in same area
+        idx.register(
+            HitId::new(2),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Border,
+            0,
+            1,
+        );
+        // Widget 2 should win (z=1 > z=0)
+        let result = idx.hit_test(5, 5);
+        assert_eq!(result, Some((HitId::new(2), HitRegion::Border, 0)));
+    }
+
+    // --- Update edge cases ---
+
+    #[test]
+    fn update_to_zero_size_rect() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        assert!(idx.hit_test(5, 5).is_some());
+
+        idx.update(HitId::new(1), Rect::new(0, 0, 0, 0));
+        // Zero-size rect won't be in buckets
+        assert!(idx.hit_test(0, 0).is_none());
+    }
+
+    #[test]
+    fn update_shrinks_widget() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 20, 20),
+            HitRegion::Content,
+            0,
+        );
+        assert!(idx.hit_test(15, 15).is_some());
+
+        idx.update(HitId::new(1), Rect::new(0, 0, 5, 5));
+        assert!(idx.hit_test(15, 15).is_none());
+        assert!(idx.hit_test(2, 2).is_some());
+    }
+
+    // --- Remove edge cases ---
+
+    #[test]
+    fn remove_middle_entry_compacts() {
+        let mut idx = index();
+        idx.register_simple(HitId::new(1), Rect::new(0, 0, 5, 5), HitRegion::Content, 10);
+        idx.register_simple(
+            HitId::new(2),
+            Rect::new(10, 0, 5, 5),
+            HitRegion::Content,
+            20,
+        );
+        idx.register_simple(
+            HitId::new(3),
+            Rect::new(20, 0, 5, 5),
+            HitRegion::Content,
+            30,
+        );
+        assert_eq!(idx.len(), 3);
+
+        idx.remove(HitId::new(2));
+        assert_eq!(idx.len(), 2);
+
+        // Widget 1 and 3 should still work
+        let r1 = idx.hit_test(2, 2);
+        assert_eq!(r1, Some((HitId::new(1), HitRegion::Content, 10)));
+        let r3 = idx.hit_test(22, 2);
+        assert_eq!(r3, Some((HitId::new(3), HitRegion::Content, 30)));
+    }
+
+    #[test]
+    fn double_remove_returns_false() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        assert!(idx.remove(HitId::new(1)));
+        assert!(!idx.remove(HitId::new(1)));
+    }
+
+    // --- hit_test edge cases ---
+
+    #[test]
+    fn hit_test_at_exact_screen_boundary() {
+        let mut idx = index(); // 80x24
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(70, 20, 10, 4),
+            HitRegion::Content,
+            0,
+        );
+        // Last valid pixel
+        assert!(idx.hit_test(79, 23).is_some());
+        // One past screen
+        assert!(idx.hit_test(80, 23).is_none());
+        assert!(idx.hit_test(79, 24).is_none());
+    }
+
+    #[test]
+    fn hit_test_at_grid_cell_boundaries() {
+        let mut idx = index(); // cell_size=8
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(6, 6, 4, 4), // spans cells (0,0) and (1,1)
+            HitRegion::Content,
+            0,
+        );
+        // At x=7,y=7 (cell 0,0) - should hit
+        assert!(idx.hit_test(7, 7).is_some());
+        // At x=8,y=8 (cell 1,1) - should hit
+        assert!(idx.hit_test(8, 8).is_some());
+        // At x=9,y=9 (cell 1,1) - should hit
+        assert!(idx.hit_test(9, 9).is_some());
+        // At x=10,y=10 (cell 1,1) - outside rect
+        assert!(idx.hit_test(10, 10).is_none());
+    }
+
+    #[test]
+    fn hit_test_readonly_out_of_bounds() {
+        let idx = index();
+        assert!(idx.hit_test_readonly(80, 0).is_none());
+        assert!(idx.hit_test_readonly(0, 24).is_none());
+        assert!(idx.hit_test_readonly(u16::MAX, u16::MAX).is_none());
+    }
+
+    #[test]
+    fn hit_test_readonly_skips_removed() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        idx.register_simple(HitId::new(2), Rect::new(0, 0, 10, 10), HitRegion::Border, 1);
+        idx.remove(HitId::new(2));
+        // Widget 1 should still be found
+        let result = idx.hit_test_readonly(5, 5);
+        assert_eq!(result, Some((HitId::new(1), HitRegion::Content, 0)));
+    }
+
+    // --- Cache behavior ---
+
+    #[test]
+    fn cache_updates_on_different_positions() {
+        let mut idx = SpatialHitIndex::new(
+            80,
+            24,
+            SpatialHitConfig {
+                track_cache_stats: true,
+                ..Default::default()
+            },
+        );
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 40, 12),
+            HitRegion::Content,
+            1,
+        );
+        idx.register_simple(
+            HitId::new(2),
+            Rect::new(40, 12, 40, 12),
+            HitRegion::Border,
+            2,
+        );
+
+        // First query
+        let r1 = idx.hit_test(5, 5);
+        assert_eq!(r1, Some((HitId::new(1), HitRegion::Content, 1)));
+        assert_eq!(idx.stats().misses, 1);
+
+        // Different position - miss
+        let r2 = idx.hit_test(50, 15);
+        assert_eq!(r2, Some((HitId::new(2), HitRegion::Border, 2)));
+        assert_eq!(idx.stats().misses, 2);
+
+        // Back to first position - miss (cache only stores one position)
+        idx.hit_test(5, 5);
+        assert_eq!(idx.stats().misses, 3);
+    }
+
+    #[test]
+    fn cache_invalidated_by_invalidate_all_then_same_position() {
+        let mut idx = SpatialHitIndex::new(
+            80,
+            24,
+            SpatialHitConfig {
+                track_cache_stats: true,
+                ..Default::default()
+            },
+        );
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+
+        // Prime cache
+        idx.hit_test(5, 5);
+        assert_eq!(idx.stats().misses, 1);
+        assert_eq!(idx.stats().hits, 0);
+
+        // Invalidate all then query same position
+        idx.invalidate_all();
+        idx.hit_test(5, 5);
+        // Should be a miss since cache was invalidated
+        assert_eq!(idx.stats().misses, 2);
+    }
+
+    #[test]
+    fn cache_not_updated_by_readonly() {
+        let mut idx = SpatialHitIndex::new(
+            80,
+            24,
+            SpatialHitConfig {
+                track_cache_stats: true,
+                ..Default::default()
+            },
+        );
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+
+        // readonly doesn't update cache
+        idx.hit_test_readonly(5, 5);
+        assert_eq!(idx.stats().hits, 0);
+        assert_eq!(idx.stats().misses, 0);
+
+        // mutable query at same position should be a miss
+        idx.hit_test(5, 5);
+        assert_eq!(idx.stats().misses, 1);
+    }
+
+    // --- Invalidation edge cases ---
+
+    #[test]
+    fn invalidate_region_zero_size() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        idx.hit_test(5, 5);
+        assert!(idx.cache.valid);
+
+        // Zero-size rect shouldn't invalidate anything
+        idx.invalidate_region(Rect::new(5, 5, 0, 0));
+        assert!(idx.cache.valid);
+    }
+
+    #[test]
+    fn invalidate_region_outside_screen() {
+        let mut idx = index();
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        idx.hit_test(5, 5);
+        assert!(idx.cache.valid);
+
+        // Region outside screen
+        idx.invalidate_region(Rect::new(100, 100, 10, 10));
+        // Cache position (5,5) is not in the dirty region, so cache stays valid
+        assert!(idx.cache.valid);
+    }
+
+    // --- Rebuild tracking ---
+
+    #[test]
+    fn rebuild_counted_in_stats() {
+        let mut idx = SpatialHitIndex::new(
+            80,
+            24,
+            SpatialHitConfig {
+                track_cache_stats: true,
+                ..Default::default()
+            },
+        );
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        assert_eq!(idx.stats().rebuilds, 0);
+
+        // Update triggers rebuild
+        idx.update(HitId::new(1), Rect::new(10, 10, 5, 5));
+        assert_eq!(idx.stats().rebuilds, 1);
+
+        // Remove triggers rebuild
+        idx.remove(HitId::new(1));
+        assert_eq!(idx.stats().rebuilds, 2);
+    }
+
+    // --- Full lifecycle ---
+
+    #[test]
+    fn register_hit_update_hit_remove_clear() {
+        let mut idx = index();
+
+        // Register
+        idx.register_simple(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            0,
+        );
+        assert_eq!(idx.len(), 1);
+
+        // Hit
+        assert!(idx.hit_test(5, 5).is_some());
+
+        // Update
+        idx.update(HitId::new(1), Rect::new(20, 20, 10, 10));
+        assert!(idx.hit_test(5, 5).is_none());
+        assert!(idx.hit_test(25, 22).is_some());
+
+        // Remove
+        idx.remove(HitId::new(1));
+        assert!(idx.is_empty());
+        assert!(idx.hit_test(25, 22).is_none());
+
+        // Re-register
+        idx.register_simple(HitId::new(2), Rect::new(0, 0, 5, 5), HitRegion::Button, 99);
+        assert_eq!(idx.len(), 1);
+        let r = idx.hit_test(2, 2);
+        assert_eq!(r, Some((HitId::new(2), HitRegion::Button, 99)));
+
+        // Clear
+        idx.clear();
+        assert!(idx.is_empty());
+        assert!(idx.hit_test(2, 2).is_none());
+    }
+
+    // --- Z-order tie-breaking ---
+
+    #[test]
+    fn z_order_tie_broken_by_registration_order() {
+        let mut idx = index();
+        // Same z_order=5, different registration order
+        idx.register(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            10,
+            5,
+        );
+        idx.register(
+            HitId::new(2),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Border,
+            20,
+            5,
+        );
+        idx.register(
+            HitId::new(3),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Button,
+            30,
+            5,
+        );
+
+        // Widget 3 wins (latest registration at same z)
+        let result = idx.hit_test(5, 5);
+        assert_eq!(result, Some((HitId::new(3), HitRegion::Button, 30)));
+    }
+
+    #[test]
+    fn z_order_higher_z_beats_later_registration() {
+        let mut idx = index();
+        // Widget 1: z=10, registered first
+        idx.register(
+            HitId::new(1),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Content,
+            10,
+            10,
+        );
+        // Widget 2: z=5, registered later
+        idx.register(
+            HitId::new(2),
+            Rect::new(0, 0, 10, 10),
+            HitRegion::Border,
+            20,
+            5,
+        );
+
+        // Widget 1 wins (higher z trumps registration order)
+        let result = idx.hit_test(5, 5);
+        assert_eq!(result, Some((HitId::new(1), HitRegion::Content, 10)));
+    }
+
+    // --- HitRegion variants in hit_test ---
+
+    #[test]
+    fn all_hit_region_variants_returned() {
+        let mut idx = index();
+        let regions = [
+            (1, HitRegion::Content),
+            (2, HitRegion::Border),
+            (3, HitRegion::Scrollbar),
+            (4, HitRegion::Handle),
+            (5, HitRegion::Button),
+            (6, HitRegion::Link),
+            (7, HitRegion::Custom(42)),
+        ];
+        for (i, (id, region)) in regions.iter().enumerate() {
+            let x = (i as u16) * 10;
+            idx.register_simple(HitId::new(*id), Rect::new(x, 0, 5, 5), *region, *id as u64);
+        }
+        for (i, (id, region)) in regions.iter().enumerate() {
+            let x = (i as u16) * 10 + 2;
+            let result = idx.hit_test(x, 2);
+            assert_eq!(
+                result,
+                Some((HitId::new(*id), *region, *id as u64)),
+                "Failed for region {:?}",
+                region
+            );
+        }
+    }
+
+    // --- Width=1 and Height=1 edge ---
+
+    #[test]
+    fn single_cell_screen() {
+        let mut idx = SpatialHitIndex::with_defaults(1, 1);
+        idx.register_simple(HitId::new(1), Rect::new(0, 0, 1, 1), HitRegion::Content, 0);
+        assert!(idx.hit_test(0, 0).is_some());
+        assert!(idx.hit_test(1, 0).is_none());
+    }
+
+    // --- Readonly equivalence across whole grid ---
+
+    #[test]
+    fn hit_test_readonly_equivalent_to_mutable_for_grid() {
+        let mut idx = index();
+        idx.register(
+            HitId::new(1),
+            Rect::new(0, 0, 40, 12),
+            HitRegion::Content,
+            1,
+            0,
+        );
+        idx.register(
+            HitId::new(2),
+            Rect::new(30, 8, 20, 10),
+            HitRegion::Border,
+            2,
+            1,
+        );
+        idx.register(
+            HitId::new(3),
+            Rect::new(60, 0, 20, 24),
+            HitRegion::Button,
+            3,
+            2,
+        );
+
+        // Compare at grid of points
+        for x in (0..80).step_by(5) {
+            for y in (0..24).step_by(3) {
+                let ro = idx.hit_test_readonly(x, y);
+                let expected_id = ro.map(|(id, _, _)| id);
+                // We can't use hit_test (mutates cache) in a fair comparison loop,
+                // so just verify readonly is consistent with itself
+                let ro2 = idx.hit_test_readonly(x, y);
+                assert_eq!(ro, ro2, "Readonly inconsistency at ({x}, {y})");
+                // Also verify against mutable
+                let mut_result = idx.hit_test(x, y);
+                let mut_id = mut_result.map(|(id, _, _)| id);
+                assert_eq!(
+                    expected_id, mut_id,
+                    "Mutable/readonly mismatch at ({x}, {y})"
+                );
+            }
+        }
+    }
 }
