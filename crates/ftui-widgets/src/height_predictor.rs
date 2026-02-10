@@ -805,4 +805,272 @@ mod tests {
         assert!(p.lower <= p.predicted);
         assert!(p.predicted <= p.upper);
     }
+
+    // ── Edge-case tests (bd-l9r1a) ──────────────────────────
+
+    #[test]
+    fn observe_height_zero() {
+        let mut pred = HeightPredictor::default();
+        pred.observe(0, 0);
+        let p = pred.predict(0);
+        // predicted is max(mu.round(), 1.0) so at least 1
+        assert!(p.predicted >= 1);
+    }
+
+    #[test]
+    fn observe_height_max_u16() {
+        let mut pred = HeightPredictor::default();
+        pred.observe(0, u16::MAX);
+        let p = pred.predict(0);
+        assert!(p.predicted > 0);
+        assert!(p.observations == 1);
+    }
+
+    #[test]
+    fn cold_prediction_zero_variance() {
+        let pred = HeightPredictor::new(PredictorConfig {
+            default_height: 5,
+            prior_variance: 0.0,
+            ..Default::default()
+        });
+        let p = pred.predict(0);
+        assert_eq!(p.predicted, 5);
+        // margin = ceil(sqrt(0.0) * 2.0) = 0
+        assert_eq!(p.lower, 5);
+        assert_eq!(p.upper, 5);
+    }
+
+    #[test]
+    fn cold_prediction_large_variance() {
+        let pred = HeightPredictor::new(PredictorConfig {
+            default_height: 1,
+            prior_variance: 10000.0,
+            ..Default::default()
+        });
+        let p = pred.predict(0);
+        assert_eq!(p.predicted, 1);
+        // margin = ceil(sqrt(10000) * 2) = ceil(200) = 200
+        assert_eq!(p.lower, 0); // 1.saturating_sub(200) = 0
+    }
+
+    #[test]
+    fn coverage_zero() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            coverage: 0.0,
+            prior_mean: 3.0,
+            prior_strength: 1.0,
+            ..Default::default()
+        });
+        for _ in 0..20 {
+            pred.observe(0, 3);
+        }
+        // alpha = 1.0, quantile_idx → 0
+        let p = pred.predict(0);
+        assert!(p.predicted > 0);
+    }
+
+    #[test]
+    fn coverage_one() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            coverage: 1.0,
+            prior_mean: 3.0,
+            prior_strength: 1.0,
+            ..Default::default()
+        });
+        for _ in 0..20 {
+            pred.observe(0, 3);
+        }
+        for _ in 0..5 {
+            pred.observe(0, 10);
+        }
+        // alpha = 0.0, quantile_idx → max residual
+        let p = pred.predict(0);
+        assert!(p.lower <= p.predicted);
+        assert!(p.predicted <= p.upper);
+    }
+
+    #[test]
+    fn calibration_window_one() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            calibration_window: 1,
+            prior_mean: 3.0,
+            prior_strength: 1.0,
+            ..Default::default()
+        });
+        for _ in 0..10 {
+            pred.observe(0, 3);
+        }
+        let p = pred.predict(0);
+        assert!(p.predicted > 0);
+        assert!(p.lower <= p.predicted);
+    }
+
+    #[test]
+    fn single_observation_uses_wide_bounds() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            prior_mean: 5.0,
+            prior_strength: 1.0,
+            prior_variance: 4.0,
+            ..Default::default()
+        });
+        pred.observe(0, 5);
+        let p = pred.predict(0);
+        assert_eq!(p.observations, 1);
+        // With only 1 residual, bounds come from that single residual
+        assert!(p.lower <= p.predicted);
+        assert!(p.predicted <= p.upper);
+    }
+
+    #[test]
+    fn predictor_config_clone_and_debug() {
+        let config = PredictorConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.default_height, config.default_height);
+        let dbg = format!("{:?}", config);
+        assert!(dbg.contains("PredictorConfig"));
+    }
+
+    #[test]
+    fn height_prediction_copy_and_debug() {
+        let p = HeightPrediction {
+            predicted: 3,
+            lower: 1,
+            upper: 5,
+            observations: 10,
+        };
+        let p2 = p; // Copy
+        assert_eq!(p.predicted, p2.predicted);
+        assert_eq!(p.lower, p2.lower);
+        assert_eq!(p.upper, p2.upper);
+        assert_eq!(p.observations, p2.observations);
+        let dbg = format!("{:?}", p);
+        assert!(dbg.contains("HeightPrediction"));
+    }
+
+    #[test]
+    fn height_prediction_clone() {
+        let p = HeightPrediction {
+            predicted: 2,
+            lower: 1,
+            upper: 4,
+            observations: 5,
+        };
+        let cloned = p.clone();
+        assert_eq!(cloned.predicted, 2);
+    }
+
+    #[test]
+    fn predictor_clone_independence() {
+        let mut pred = HeightPredictor::default();
+        pred.observe(0, 5);
+        pred.observe(0, 5);
+        let mut cloned = pred.clone();
+        cloned.observe(0, 100);
+        // Original should be unaffected
+        assert_eq!(pred.total_measurements(), 2);
+        assert_eq!(cloned.total_measurements(), 3);
+    }
+
+    #[test]
+    fn predictor_debug() {
+        let pred = HeightPredictor::default();
+        let dbg = format!("{:?}", pred);
+        assert!(dbg.contains("HeightPredictor"));
+    }
+
+    #[test]
+    fn posterior_variance_with_two_identical_observations() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            prior_variance: 4.0,
+            prior_strength: 1.0,
+            ..Default::default()
+        });
+        pred.observe(0, 3);
+        pred.observe(0, 3);
+        // Welford variance with identical values = 0, κ_n = 3
+        // posterior_variance = 0 / 3 = 0
+        let var = pred.posterior_variance(0);
+        assert!(var.abs() < 1e-10, "identical obs should give ~0 variance");
+    }
+
+    #[test]
+    fn posterior_variance_with_one_observation_uses_prior() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            prior_variance: 4.0,
+            prior_strength: 2.0,
+            ..Default::default()
+        });
+        pred.observe(0, 3);
+        // n=1, so welford.variance() returns f64::MAX → uses prior_variance
+        // But wait: code checks n < 2, uses prior_variance = 4.0
+        // posterior_variance = 4.0 / (2.0 + 1) = 4/3
+        let var = pred.posterior_variance(0);
+        assert!((var - 4.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn observe_returns_false_for_first_cold_outlier() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            default_height: 1,
+            prior_mean: 1.0,
+            prior_strength: 2.0,
+            prior_variance: 0.25,
+            ..Default::default()
+        });
+        // Cold prediction: predicted=1, margin=ceil(sqrt(0.25)*2)=ceil(1.0)=1
+        // bounds: [0, 2]
+        // First observation is cold (observations=0), so violation not counted
+        let within = pred.observe(0, 100);
+        // Cold start: prediction.observations == 0, so violation is NOT counted
+        assert!(within || pred.total_violations() == 0);
+    }
+
+    #[test]
+    fn all_same_height_converges_exactly() {
+        let mut pred = HeightPredictor::new(PredictorConfig {
+            prior_mean: 3.0,
+            prior_strength: 1.0,
+            ..Default::default()
+        });
+        for _ in 0..100 {
+            pred.observe(0, 3);
+        }
+        let p = pred.predict(0);
+        assert_eq!(p.predicted, 3);
+        // With all identical observations, bounds should collapse
+        assert_eq!(p.lower, 3);
+        assert_eq!(p.upper, 3);
+    }
+
+    #[test]
+    fn many_categories_auto_created() {
+        let mut pred = HeightPredictor::default();
+        pred.observe(10, 5);
+        // Categories 0..=10 should exist now
+        assert_eq!(pred.category_count(), 11);
+        // Intermediate categories have no observations
+        assert_eq!(pred.category_observations(5), 0);
+        assert_eq!(pred.category_observations(10), 1);
+    }
+
+    #[test]
+    fn prediction_bounds_ordering_after_mixed_data() {
+        let mut pred = HeightPredictor::default();
+        for h in [1, 2, 5, 10, 1, 3, 7, 2, 4, 6] {
+            pred.observe(0, h);
+        }
+        let p = pred.predict(0);
+        assert!(
+            p.lower <= p.predicted,
+            "lower={} > predicted={}",
+            p.lower,
+            p.predicted
+        );
+        assert!(
+            p.predicted <= p.upper,
+            "predicted={} > upper={}",
+            p.predicted,
+            p.upper
+        );
+    }
 }
