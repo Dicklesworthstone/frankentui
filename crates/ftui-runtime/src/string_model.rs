@@ -92,6 +92,7 @@ impl<S: StringModel> StringModelAdapter<S> {
 
     /// Get a reference to the inner model.
     #[inline]
+    #[must_use]
     pub fn inner(&self) -> &S {
         &self.inner
     }
@@ -104,6 +105,7 @@ impl<S: StringModel> StringModelAdapter<S> {
 
     /// Consume the adapter and return the inner model.
     #[inline]
+    #[must_use]
     pub fn into_inner(self) -> S {
         self.inner
     }
