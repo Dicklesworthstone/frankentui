@@ -882,4 +882,517 @@ mod tests {
         assert_eq!(m.style_at(5, 0).fg, None);
         assert_eq!(m.row_text(0), "ERROR: something");
     }
+
+    // ─── Edge-case tests (bd-1p1kn) ─────────────────────────────
+
+    #[test]
+    fn cell_diff_display() {
+        let diff = CellDiff {
+            x: 3,
+            y: 7,
+            expected: ModelCell {
+                ch: 'A',
+                style: ModelStyle::default(),
+                link: None,
+            },
+            actual: ModelCell {
+                ch: 'B',
+                style: ModelStyle::default(),
+                link: None,
+            },
+        };
+        let s = format!("{diff}");
+        assert!(s.contains("(3, 7)"));
+        assert!(s.contains("expected 'A'"));
+        assert!(s.contains("got 'B'"));
+    }
+
+    #[test]
+    fn cell_diff_debug_clone() {
+        let diff = CellDiff {
+            x: 0,
+            y: 0,
+            expected: ModelCell::default(),
+            actual: ModelCell::default(),
+        };
+        let debug = format!("{diff:?}");
+        assert!(debug.contains("CellDiff"));
+
+        let cloned = diff.clone();
+        assert_eq!(cloned.x, 0);
+        assert_eq!(cloned.y, 0);
+    }
+
+    #[test]
+    fn rgb_new_and_default() {
+        let rgb = Rgb::new(10, 20, 30);
+        assert_eq!(rgb.r, 10);
+        assert_eq!(rgb.g, 20);
+        assert_eq!(rgb.b, 30);
+
+        let def = Rgb::default();
+        assert_eq!(def, Rgb::new(0, 0, 0));
+    }
+
+    #[test]
+    fn rgb_debug_copy_eq() {
+        let a = Rgb::new(255, 128, 0);
+        let b = a; // Copy
+        assert_eq!(a, b);
+
+        let debug = format!("{a:?}");
+        assert!(debug.contains("Rgb"));
+    }
+
+    #[test]
+    fn model_style_default() {
+        let s = ModelStyle::default();
+        assert!(s.fg.is_none());
+        assert!(s.bg.is_none());
+        assert!(!s.bold);
+        assert!(!s.dim);
+        assert!(!s.italic);
+        assert!(!s.underline);
+        assert!(!s.blink);
+        assert!(!s.reverse);
+        assert!(!s.strikethrough);
+    }
+
+    #[test]
+    fn model_style_debug_clone_eq() {
+        let s = ModelStyle {
+            bold: true,
+            fg: Some(Rgb::new(1, 2, 3)),
+            ..ModelStyle::default()
+        };
+
+        let cloned = s.clone();
+        assert_eq!(s, cloned);
+
+        let debug = format!("{s:?}");
+        assert!(debug.contains("ModelStyle"));
+    }
+
+    #[test]
+    fn model_cell_default() {
+        let c = ModelCell::default();
+        assert_eq!(c.ch, ' ');
+        assert_eq!(c.style, ModelStyle::default());
+        assert!(c.link.is_none());
+    }
+
+    #[test]
+    fn model_cell_debug_clone_eq() {
+        let c = ModelCell {
+            ch: 'X',
+            style: ModelStyle::default(),
+            link: Some("http://test.com".to_string()),
+        };
+        let cloned = c.clone();
+        assert_eq!(c, cloned);
+
+        let debug = format!("{c:?}");
+        assert!(debug.contains("ModelCell"));
+    }
+
+    #[test]
+    fn cursor_wrap_at_bottom_edge() {
+        let mut m = TerminalModel::new(3, 2);
+        // Fill entire 3x2 grid: ABC\nDEF
+        m.feed(b"ABCDE");
+        // After 3 chars: cursor at (0, 1). After 5: cursor at (2, 1).
+        assert_eq!(m.cursor(), (2, 1));
+        // Writing one more: cursor would wrap but is at bottom row
+        m.feed(b"F");
+        // Cursor wraps x to 0, but y can't go past height-1
+        assert_eq!(m.cursor(), (0, 1));
+        assert_eq!(m.char_at(2, 1), 'F');
+    }
+
+    #[test]
+    fn lf_at_bottom_of_screen() {
+        let mut m = TerminalModel::new(10, 2);
+        m.feed(b"\x1b[2;1H"); // Move to bottom row
+        assert_eq!(m.cursor(), (0, 1));
+        m.feed(b"\n"); // LF at bottom should not go past
+        assert_eq!(m.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn bs_at_column_zero() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x08"); // BS at column 0
+        assert_eq!(m.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn tab_near_end_of_line() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"1234567\t"); // At col 7, tab to col 8
+        assert_eq!(m.cursor(), (8, 0));
+        m.feed(b"\r12345678\t"); // At col 8, tab would go to col 16, clamped to 9
+        assert_eq!(m.cursor(), (9, 0));
+    }
+
+    #[test]
+    fn tab_already_at_end() {
+        let mut m = TerminalModel::new(8, 3);
+        m.feed(b"12345678"); // Fill first line, cursor wraps to (0, 1)
+        m.feed(b"\x1b[1;8H"); // Move to col 8 (which is col 7 zero-indexed)
+        m.feed(b"\t"); // Tab should clamp to width-1 = 7
+        assert_eq!(m.cursor().0, 7);
+    }
+
+    #[test]
+    fn cup_f_variant() {
+        let mut m = TerminalModel::new(20, 10);
+        m.feed(b"\x1b[3;5f"); // CUP with 'f' instead of 'H'
+        assert_eq!(m.cursor(), (4, 2));
+    }
+
+    #[test]
+    fn cup_clamps_to_screen_bounds() {
+        let mut m = TerminalModel::new(10, 5);
+        m.feed(b"\x1b[100;200H");
+        assert_eq!(m.cursor(), (9, 4));
+    }
+
+    #[test]
+    fn cup_zero_params_default_to_1_1() {
+        let mut m = TerminalModel::new(10, 5);
+        m.feed(b"\x1b[5;5H"); // move to (4, 4)
+        m.feed(b"\x1b[0;0H"); // 0 params → treated as 1;1 (home)
+        // 0 is treated as default (1), so cursor should be at (0, 0)
+        assert_eq!(m.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn erase_display_to_start() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"Line1     ");
+        m.feed(b"Line2     ");
+        m.feed(b"Line3     ");
+        m.feed(b"\x1b[2;5H"); // row 2, col 5 (0-indexed: y=1, x=4)
+        m.feed(b"\x1b[1J"); // Erase from start of display to cursor
+
+        // Row 0 should be erased
+        assert_eq!(m.row_text(0), "");
+        // Row 1: columns 0-4 erased (ToStart includes cursor pos)
+        assert_eq!(m.char_at(0, 1), ' ');
+        assert_eq!(m.char_at(3, 1), ' ');
+        assert_eq!(m.char_at(4, 1), ' ');
+        // Row 2 untouched
+        assert_eq!(m.row_text(2), "Line3");
+    }
+
+    #[test]
+    fn sgr_truecolor_insufficient_params_fg() {
+        let mut m = TerminalModel::new(10, 3);
+        // 38;2 without enough r;g;b params
+        m.feed(b"\x1b[38;2;255mX");
+        // Should not set fg (insufficient params)
+        assert!(m.style_at(0, 0).fg.is_none());
+    }
+
+    #[test]
+    fn sgr_truecolor_insufficient_params_bg() {
+        let mut m = TerminalModel::new(10, 3);
+        // 48;2 without enough r;g;b params
+        m.feed(b"\x1b[48;2mX");
+        assert!(m.style_at(0, 0).bg.is_none());
+    }
+
+    #[test]
+    fn sgr_empty_is_reset() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b[1mA\x1b[mB"); // \x1b[m with no params = reset
+        assert!(m.style_at(0, 0).bold);
+        assert!(!m.style_at(1, 0).bold);
+    }
+
+    #[test]
+    fn sgr_unknown_code_ignored() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b[1;99;3mX"); // 99 is unknown, should be ignored
+        let s = m.style_at(0, 0);
+        assert!(s.bold);
+        assert!(s.italic);
+    }
+
+    #[test]
+    fn multi_byte_utf8_treated_as_question() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(&[0xC3, 0xA9]); // 'é' in UTF-8
+        // First byte 0xC3 triggers put_char('?'), second byte 0xA9 is >0x7e, ignored
+        assert_eq!(m.char_at(0, 0), '?');
+    }
+
+    #[test]
+    fn char_at_out_of_bounds() {
+        let m = TerminalModel::new(5, 3);
+        // Out of bounds returns ' ' (default)
+        assert_eq!(m.char_at(10, 0), ' ');
+        assert_eq!(m.char_at(0, 10), ' ');
+        assert_eq!(m.char_at(100, 100), ' ');
+    }
+
+    #[test]
+    fn style_at_out_of_bounds() {
+        let m = TerminalModel::new(5, 3);
+        let s = m.style_at(100, 100);
+        assert_eq!(s, ModelStyle::default());
+    }
+
+    #[test]
+    fn link_at_out_of_bounds() {
+        let m = TerminalModel::new(5, 3);
+        assert!(m.link_at(100, 100).is_none());
+    }
+
+    #[test]
+    fn row_text_out_of_bounds() {
+        let m = TerminalModel::new(5, 3);
+        assert_eq!(m.row_text(100), "");
+    }
+
+    #[test]
+    fn screen_text_all_empty() {
+        let m = TerminalModel::new(5, 3);
+        assert_eq!(m.screen_text(), "");
+    }
+
+    #[test]
+    fn screen_text_trailing_empty_lines_trimmed() {
+        let mut m = TerminalModel::new(10, 5);
+        m.feed(b"Hello");
+        m.feed(b"\x1b[2;1HWorld");
+        let text = m.screen_text();
+        assert_eq!(text, "Hello\nWorld");
+    }
+
+    #[test]
+    fn unknown_escape_sequence_returns_to_ground() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b)A"); // Unknown escape char ')'
+        // Should return to ground and write 'A'
+        assert_eq!(m.char_at(0, 0), 'A');
+    }
+
+    #[test]
+    fn unknown_csi_final_byte_returns_to_ground() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b[5ZA"); // 'Z' is unknown CSI final byte
+        // Should return to ground, then write 'A'
+        assert_eq!(m.char_at(0, 0), 'A');
+    }
+
+    #[test]
+    fn csi_private_mode_prefix_ignored() {
+        let mut m = TerminalModel::new(10, 3);
+        // DEC private mode: CSI ? 2026 h (synchronized output)
+        m.feed(b"\x1b[?2026hA");
+        // Should not affect cursor or state; 'A' written after
+        assert_eq!(m.char_at(0, 0), 'A');
+    }
+
+    #[test]
+    fn csi_save_restore_cursor_ignored() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"AB");
+        m.feed(b"\x1b[s"); // Save cursor (ignored)
+        m.feed(b"CD");
+        m.feed(b"\x1b[u"); // Restore cursor (ignored)
+        m.feed(b"EF");
+        // Since save/restore is ignored, cursor just continues
+        assert_eq!(m.row_text(0), "ABCDEF");
+    }
+
+    #[test]
+    fn osc8_link_toggle() {
+        let mut m = TerminalModel::new(30, 3);
+        // Link on, write, link off, write, different link on, write
+        m.feed(b"\x1b]8;;http://a.com\x07A\x1b]8;;\x07B\x1b]8;;http://b.com\x07C\x1b]8;;\x07");
+        assert_eq!(m.link_at(0, 0), Some("http://a.com".to_string()));
+        assert!(m.link_at(1, 0).is_none());
+        assert_eq!(m.link_at(2, 0), Some("http://b.com".to_string()));
+    }
+
+    #[test]
+    fn cr_lf_sequence() {
+        let mut m = TerminalModel::new(10, 5);
+        m.feed(b"ABC\r\nDEF\r\nGHI");
+        assert_eq!(m.row_text(0), "ABC");
+        assert_eq!(m.row_text(1), "DEF");
+        assert_eq!(m.row_text(2), "GHI");
+    }
+
+    #[test]
+    fn multiple_backspaces() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"ABCDE\x08\x08\x08XY");
+        // After ABCDE cursor at 5. 3 BS → cursor at 2. XY overwrites at 2,3.
+        assert_eq!(m.row_text(0), "ABXYE");
+    }
+
+    #[test]
+    fn cursor_movement_explicit_one() {
+        let mut m = TerminalModel::new(20, 10);
+        m.feed(b"\x1b[5;10H"); // row 5, col 10 → (9, 4)
+        m.feed(b"\x1b[1A"); // up 1
+        assert_eq!(m.cursor(), (9, 3));
+        m.feed(b"\x1b[1B"); // down 1
+        assert_eq!(m.cursor(), (9, 4));
+        m.feed(b"\x1b[1C"); // right 1
+        assert_eq!(m.cursor(), (10, 4));
+        m.feed(b"\x1b[1D"); // left 1
+        assert_eq!(m.cursor(), (9, 4));
+    }
+
+    #[test]
+    fn cursor_movement_no_param_is_zero() {
+        // In this model, CSI A without digits pushes csi_current=0,
+        // so param(0, 1) returns 0 (not default 1). This is a
+        // simplification vs real terminals which treat 0 as 1.
+        let mut m = TerminalModel::new(20, 10);
+        m.feed(b"\x1b[5;10H"); // (9, 4)
+        m.feed(b"\x1b[A"); // no digits → n=0, cursor stays
+        assert_eq!(m.cursor(), (9, 4));
+    }
+
+    #[test]
+    fn sgr_22_resets_both_bold_and_dim() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b[1;2mA\x1b[22mB");
+        let a = m.style_at(0, 0);
+        assert!(a.bold);
+        assert!(a.dim);
+        let b = m.style_at(1, 0);
+        assert!(!b.bold);
+        assert!(!b.dim);
+    }
+
+    #[test]
+    fn sgr_blink_and_reverse_reset() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b[5;7mA\x1b[25;27mB");
+        let a = m.style_at(0, 0);
+        assert!(a.blink);
+        assert!(a.reverse);
+        let b = m.style_at(1, 0);
+        assert!(!b.blink);
+        assert!(!b.reverse);
+    }
+
+    #[test]
+    fn erase_line_at_row_zero() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"ABCDEFGHIJ");
+        m.feed(b"\x1b[1;1H\x1b[2K");
+        assert_eq!(m.row_text(0), "");
+    }
+
+    #[test]
+    fn erase_display_all_preserves_cursor() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"XXXXXXXXXX");
+        m.feed(b"\x1b[1;5H"); // cursor at (4, 0)
+        m.feed(b"\x1b[2J");
+        assert_eq!(m.screen_text(), "");
+        // Cursor position not reset by ED
+        assert_eq!(m.cursor(), (4, 0));
+    }
+
+    #[test]
+    fn feed_empty_bytes() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"");
+        assert_eq!(m.cursor(), (0, 0));
+        assert_eq!(m.screen_text(), "");
+    }
+
+    #[test]
+    fn feed_str_empty() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed_str("");
+        assert_eq!(m.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn put_char_at_full_grid_bottom_right() {
+        let mut m = TerminalModel::new(3, 2);
+        // Position at last cell
+        m.feed(b"\x1b[2;3H"); // row 2, col 3 → (2, 1)
+        m.feed(b"Z");
+        assert_eq!(m.char_at(2, 1), 'Z');
+        // Cursor wraps but stays at bottom
+        assert_eq!(m.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn control_chars_ignored() {
+        let mut m = TerminalModel::new(10, 3);
+        // Various control chars that should be ignored (not 0x08, 0x09, 0x0a, 0x0d, 0x1b)
+        m.feed(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0b, 0x0c]);
+        // Cursor should not have moved
+        assert_eq!(m.cursor(), (0, 0));
+        assert_eq!(m.screen_text(), "");
+    }
+
+    #[test]
+    fn printable_ascii_range() {
+        let mut m = TerminalModel::new(95, 1);
+        // All printable ASCII: 0x20 to 0x7e
+        let printable: Vec<u8> = (0x20..=0x7eu8).collect();
+        m.feed(&printable);
+        assert_eq!(m.char_at(0, 0), ' ');
+        assert_eq!(m.char_at(94, 0), '~');
+    }
+
+    #[test]
+    fn dump_shows_cursor_and_style() {
+        let mut m = TerminalModel::new(5, 2);
+        m.feed(b"\x1b[1mBold\x1b[0m");
+        let dump = m.dump();
+        assert!(dump.contains("Bold"));
+        assert!(dump.contains("Cursor:"));
+        assert!(dump.contains("Style:"));
+    }
+
+    #[test]
+    fn multiple_sgr_sequences_accumulate() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b[1m\x1b[3m\x1b[4mX");
+        let s = m.style_at(0, 0);
+        assert!(s.bold);
+        assert!(s.italic);
+        assert!(s.underline);
+    }
+
+    #[test]
+    fn sgr_zero_in_middle_resets_all() {
+        let mut m = TerminalModel::new(10, 3);
+        m.feed(b"\x1b[1;0;3mX");
+        // SGR 1 sets bold, SGR 0 resets, SGR 3 sets italic
+        let s = m.style_at(0, 0);
+        assert!(!s.bold);
+        assert!(s.italic);
+    }
+
+    #[test]
+    fn width_1_terminal() {
+        let mut m = TerminalModel::new(1, 3);
+        m.feed(b"ABC");
+        assert_eq!(m.char_at(0, 0), 'A');
+        assert_eq!(m.char_at(0, 1), 'B');
+        assert_eq!(m.char_at(0, 2), 'C');
+    }
+
+    #[test]
+    fn height_1_terminal() {
+        let mut m = TerminalModel::new(10, 1);
+        m.feed(b"Hello");
+        assert_eq!(m.row_text(0), "Hello");
+        m.feed(b"\n"); // LF at bottom, should not move
+        assert_eq!(m.cursor(), (5, 0));
+    }
 }
