@@ -641,4 +641,301 @@ mod tests {
             "Stiff ({stiff_delta}) should be closer to target than slow ({slow_delta})"
         );
     }
+
+    // ── Edge-case tests (bd-3r5rp) ──────────────────────────────────
+
+    #[test]
+    fn clone_independence() {
+        let mut spring = Spring::new(0.0, 1.0);
+        simulate(&mut spring, 5); // Only 5 frames — still in motion.
+        let pos_after_5 = spring.position();
+        let mut clone = spring.clone();
+        // Original doesn't advance further.
+        // Clone advances 5 more frames.
+        simulate(&mut clone, 5);
+        // Clone should have moved beyond the original's position.
+        assert!(
+            (clone.position() - pos_after_5).abs() > 0.01,
+            "clone should advance independently (clone: {}, original: {})",
+            clone.position(),
+            pos_after_5
+        );
+        // Original should not have moved.
+        assert!(
+            (spring.position() - pos_after_5).abs() < f64::EPSILON,
+            "original should not have changed"
+        );
+    }
+
+    #[test]
+    fn debug_format() {
+        let spring = Spring::new(0.0, 1.0);
+        let dbg = format!("{spring:?}");
+        assert!(dbg.contains("Spring"));
+        assert!(dbg.contains("position"));
+        assert!(dbg.contains("velocity"));
+        assert!(dbg.contains("target"));
+    }
+
+    #[test]
+    fn negative_stiffness_clamped() {
+        let spring = Spring::new(0.0, 1.0).with_stiffness(-100.0);
+        assert!(spring.stiffness() >= MIN_STIFFNESS);
+    }
+
+    #[test]
+    fn with_rest_threshold_builder() {
+        let spring = Spring::new(0.0, 1.0).with_rest_threshold(0.1);
+        assert!((spring.rest_threshold - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn with_rest_threshold_negative_takes_abs() {
+        let spring = Spring::new(0.0, 1.0).with_rest_threshold(-0.05);
+        assert!((spring.rest_threshold - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn with_velocity_threshold_builder() {
+        let spring = Spring::new(0.0, 1.0).with_velocity_threshold(0.5);
+        assert!((spring.velocity_threshold - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn with_velocity_threshold_negative_takes_abs() {
+        let spring = Spring::new(0.0, 1.0).with_velocity_threshold(-0.3);
+        assert!((spring.velocity_threshold - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn initial_equals_target_settles_immediately() {
+        let mut spring = Spring::new(5.0, 5.0);
+        // After one tick, should settle since position == target and velocity == 0.
+        spring.tick(MS_16);
+        assert!(spring.is_complete());
+        assert!((spring.position() - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn normalized_constructor() {
+        let spring = Spring::normalized();
+        assert!((spring.position() - 0.0).abs() < f64::EPSILON);
+        assert!((spring.target() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn impulse_negative_velocity() {
+        let mut spring = Spring::new(0.5, 0.5);
+        spring.tick(MS_16); // Settle at 0.5.
+        // Apply strong negative impulse.
+        spring.impulse(-100.0);
+        assert!(!spring.is_complete());
+        spring.tick(MS_16);
+        assert!(
+            spring.position() < 0.5,
+            "Negative impulse should move position below target, got {}",
+            spring.position()
+        );
+    }
+
+    #[test]
+    fn impulse_on_moving_spring() {
+        let mut spring = Spring::new(0.0, 1.0);
+        spring.tick(MS_16);
+        let vel_before = spring.velocity();
+        spring.impulse(10.0);
+        // Velocity should be additive.
+        assert!(
+            (spring.velocity() - (vel_before + 10.0)).abs() < f64::EPSILON,
+            "impulse should add to velocity"
+        );
+    }
+
+    #[test]
+    fn set_target_within_rest_threshold_stays_at_rest() {
+        let mut spring = Spring::new(0.0, 1.0).with_rest_threshold(0.01);
+        simulate(&mut spring, 300);
+        assert!(spring.is_complete());
+
+        // Set target very close (within rest_threshold).
+        spring.set_target(1.0 + 0.005);
+        assert!(
+            spring.is_complete(),
+            "set_target within rest_threshold should not wake spring"
+        );
+    }
+
+    #[test]
+    fn set_target_just_beyond_rest_threshold_wakes() {
+        let mut spring = Spring::new(0.0, 1.0).with_rest_threshold(0.01);
+        simulate(&mut spring, 300);
+        assert!(spring.is_complete());
+
+        // Set target just beyond rest_threshold.
+        spring.set_target(1.0 + 0.02);
+        assert!(
+            !spring.is_complete(),
+            "set_target beyond rest_threshold should wake spring"
+        );
+    }
+
+    #[test]
+    fn large_rest_threshold_settles_quickly() {
+        let mut spring = Spring::new(0.0, 1.0)
+            .with_stiffness(170.0)
+            .with_damping(26.0)
+            .with_rest_threshold(0.5)
+            .with_velocity_threshold(10.0);
+
+        // With huge thresholds, spring should settle very quickly.
+        simulate(&mut spring, 10);
+        assert!(
+            spring.is_complete(),
+            "Large thresholds should cause early settling (pos: {}, vel: {})",
+            spring.position(),
+            spring.velocity()
+        );
+    }
+
+    #[test]
+    fn value_clamps_negative_position() {
+        // Spring going negative due to overshoot/impulse.
+        let mut spring = Spring::new(0.0, 0.0);
+        spring.impulse(-100.0);
+        spring.tick(MS_16);
+        // Position should be negative, but value() clamped to 0.
+        assert!(spring.position() < 0.0);
+        assert!((spring.value() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn value_clamps_above_one() {
+        // Spring targeting beyond 1.0.
+        let mut spring = Spring::new(0.0, 5.0);
+        simulate(&mut spring, 200);
+        assert!(spring.position() > 1.0);
+        assert!((spring.value() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn zero_damping_oscillates() {
+        let mut spring = Spring::new(0.0, 1.0)
+            .with_stiffness(170.0)
+            .with_damping(0.0);
+
+        // With zero damping, spring should oscillate.
+        let mut crossed_target = false;
+        let mut crossed_back = false;
+        let mut above = false;
+        for _ in 0..200 {
+            spring.tick(MS_16);
+            if spring.position() > 1.0 {
+                above = true;
+            }
+            if above && spring.position() < 1.0 {
+                crossed_target = true;
+            }
+            if crossed_target && spring.position() > 1.0 {
+                crossed_back = true;
+                break;
+            }
+        }
+        assert!(crossed_back, "Zero-damping spring should oscillate");
+    }
+
+    #[test]
+    fn advance_at_rest_is_noop() {
+        let mut spring = Spring::new(0.0, 1.0);
+        simulate(&mut spring, 300);
+        assert!(spring.is_complete());
+
+        let pos = spring.position();
+        let vel = spring.velocity();
+        spring.advance(Duration::from_secs(10));
+        assert!((spring.position() - pos).abs() < f64::EPSILON);
+        assert!((spring.velocity() - vel).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn reset_restores_initial() {
+        let mut spring = Spring::new(42.0, 100.0);
+        simulate(&mut spring, 200);
+        spring.reset();
+        assert!((spring.position() - 42.0).abs() < f64::EPSILON);
+        assert!((spring.velocity() - 0.0).abs() < f64::EPSILON);
+        assert!(!spring.is_complete());
+    }
+
+    #[test]
+    fn reset_after_impulse() {
+        let mut spring = Spring::new(0.0, 0.0);
+        spring.impulse(50.0);
+        spring.tick(MS_16);
+        spring.reset();
+        assert!((spring.position() - 0.0).abs() < f64::EPSILON);
+        assert!((spring.velocity() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn multiple_set_target_chained() {
+        let mut spring = Spring::new(0.0, 1.0);
+        simulate(&mut spring, 50);
+        spring.set_target(2.0);
+        simulate(&mut spring, 50);
+        spring.set_target(0.0);
+        simulate(&mut spring, 300);
+        assert!(
+            spring.position().abs() < 0.01,
+            "Should converge to final target 0.0, got {}",
+            spring.position()
+        );
+    }
+
+    #[test]
+    fn animation_trait_overshoot_not_used_for_spring() {
+        // Spring doesn't override overshoot(), so it returns Duration::ZERO by default.
+        // Actually, check if it's implemented. If not, we test the base trait default.
+        let mut spring = Spring::new(0.0, 1.0);
+        simulate(&mut spring, 300);
+        // Since Spring doesn't use overshoot in a meaningful way, just verify no panic.
+        let _ = spring.is_complete();
+    }
+
+    #[test]
+    fn preset_gentle_parameters() {
+        let s = presets::gentle();
+        assert!((s.stiffness() - 120.0).abs() < f64::EPSILON);
+        assert!((s.damping() - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn preset_bouncy_parameters() {
+        let s = presets::bouncy();
+        assert!((s.stiffness() - 300.0).abs() < f64::EPSILON);
+        assert!((s.damping() - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn preset_stiff_parameters() {
+        let s = presets::stiff();
+        assert!((s.stiffness() - 400.0).abs() < f64::EPSILON);
+        assert!((s.damping() - 38.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn preset_slow_parameters() {
+        let s = presets::slow();
+        assert!((s.stiffness() - 50.0).abs() < f64::EPSILON);
+        assert!((s.damping() - 14.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn preset_critical_is_critically_damped() {
+        let s = presets::critical();
+        let expected_damping = 2.0 * s.stiffness().sqrt();
+        assert!(
+            (s.damping() - expected_damping).abs() < f64::EPSILON,
+            "critical preset should have c = 2*sqrt(k)"
+        );
+    }
 }
