@@ -451,4 +451,153 @@ mod tests {
         assert_eq!(group.len(), 1);
         assert!(group.get("x").is_some());
     }
+
+    // ── Edge-case tests (bd-1p7ii) ──────────────────────────────────
+
+    #[test]
+    fn default_trait() {
+        let group = AnimationGroup::default();
+        assert!(group.is_empty());
+        assert_eq!(group.len(), 0);
+        assert!(group.all_complete());
+    }
+
+    #[test]
+    fn get_unknown_label_returns_none() {
+        let group = AnimationGroup::new().add("a", Fade::new(MS_100));
+        assert!(group.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn get_mut_unknown_label_returns_none() {
+        let mut group = AnimationGroup::new().add("a", Fade::new(MS_100));
+        assert!(group.get_mut("nonexistent").is_none());
+    }
+
+    #[test]
+    fn insert_replaces_existing() {
+        let mut group = AnimationGroup::new();
+        group.insert("x", Box::new(Fade::new(MS_100)));
+        group.insert("x", Box::new(Fade::new(SEC_1)));
+        assert_eq!(group.len(), 1);
+        // Tick 100ms: if it was the original 100ms fade, it'd be complete.
+        // Since it was replaced with 1s fade, it should not be complete.
+        group.tick(MS_100);
+        assert!(!group.all_complete());
+    }
+
+    #[test]
+    fn remove_from_empty_group() {
+        let mut group = AnimationGroup::new();
+        assert!(!group.remove("anything"));
+        assert_eq!(group.len(), 0);
+    }
+
+    #[test]
+    fn tick_on_empty_group_no_panic() {
+        let mut group = AnimationGroup::new();
+        group.tick(MS_500);
+        assert!(group.is_complete());
+    }
+
+    #[test]
+    fn reset_on_empty_group_no_panic() {
+        let mut group = AnimationGroup::new();
+        group.reset();
+        assert!(group.is_complete());
+    }
+
+    #[test]
+    fn single_member_progress() {
+        let mut group = AnimationGroup::new().add("only", Fade::new(MS_200));
+        group.tick(MS_100);
+        assert!((group.overall_progress() - 0.5).abs() < 0.02);
+    }
+
+    #[test]
+    fn three_members_progress() {
+        let mut group = AnimationGroup::new()
+            .add("a", Fade::new(MS_100))
+            .add("b", Fade::new(MS_200))
+            .add("c", Fade::new(MS_300));
+
+        assert_eq!(group.len(), 3);
+        group.tick(MS_300);
+        assert!(group.all_complete());
+        assert!((group.overall_progress() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn add_remove_add_same_label() {
+        let mut group = AnimationGroup::new().add("x", Fade::new(MS_100));
+        assert!(group.remove("x"));
+        assert_eq!(group.len(), 0);
+        group.insert("x", Box::new(Fade::new(MS_200)));
+        assert_eq!(group.len(), 1);
+    }
+
+    #[test]
+    fn start_all_on_empty_no_panic() {
+        let mut group = AnimationGroup::new();
+        group.start_all();
+        assert!(group.is_empty());
+    }
+
+    #[test]
+    fn cancel_all_on_empty_no_panic() {
+        let mut group = AnimationGroup::new();
+        group.cancel_all();
+        assert!(group.is_empty());
+    }
+
+    #[test]
+    fn progress_mixed_complete_and_incomplete() {
+        let mut group = AnimationGroup::new()
+            .add("done", Fade::new(MS_100))
+            .add("half", Fade::new(MS_500));
+
+        group.tick(MS_200);
+        // "done" at 1.0, "half" at 0.4 → avg ≈ 0.7
+        let progress = group.overall_progress();
+        assert!(progress > 0.5 && progress < 0.9, "progress: {progress}");
+        assert!(!group.all_complete());
+    }
+
+    #[test]
+    fn iter_empty_group() {
+        let group = AnimationGroup::new();
+        assert_eq!(group.iter().count(), 0);
+    }
+
+    #[test]
+    fn labels_empty_group() {
+        let group = AnimationGroup::new();
+        assert_eq!(group.labels().count(), 0);
+    }
+
+    #[test]
+    fn get_at_after_removal() {
+        let mut group = AnimationGroup::new()
+            .add("a", Fade::new(MS_100))
+            .add("b", Fade::new(MS_200));
+
+        group.remove("a");
+        // After removing "a", index 0 should be "b".
+        assert!(group.get_at(0).is_some());
+        assert!(group.get_at(1).is_none());
+    }
+
+    #[test]
+    fn animation_value_empty_is_zero() {
+        let group = AnimationGroup::new();
+        assert!((group.value() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn debug_format_includes_progress_and_complete() {
+        let group = AnimationGroup::new().add("a", Fade::new(MS_100));
+        let dbg = format!("{group:?}");
+        assert!(dbg.contains("progress"));
+        assert!(dbg.contains("complete"));
+    }
 }

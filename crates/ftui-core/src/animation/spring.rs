@@ -892,13 +892,12 @@ mod tests {
     }
 
     #[test]
-    fn animation_trait_overshoot_not_used_for_spring() {
-        // Spring doesn't override overshoot(), so it returns Duration::ZERO by default.
-        // Actually, check if it's implemented. If not, we test the base trait default.
+    fn animation_trait_overshoot_is_zero_for_spring() {
         let mut spring = Spring::new(0.0, 1.0);
+        assert_eq!(spring.overshoot(), Duration::ZERO);
+
         simulate(&mut spring, 300);
-        // Since Spring doesn't use overshoot in a meaningful way, just verify no panic.
-        let _ = spring.is_complete();
+        assert_eq!(spring.overshoot(), Duration::ZERO);
     }
 
     #[test]
