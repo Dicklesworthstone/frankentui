@@ -60,3 +60,7 @@ __pycache__/
 
 # Beads history snapshots (JSONL export is tracked, history is local)
 .beads/.br_history/
+
+# Ephemeral debug/test output files (agent artifacts)
+row_skip_dy*
+--graph-format.svg
