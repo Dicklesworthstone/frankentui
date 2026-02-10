@@ -668,10 +668,23 @@ impl MetaballsCanvasAdapter {
         let hue_cache = &self.hue_cache;
         const EPS: f64 = 1e-8;
 
-        // Row-level spatial culling threshold: precompute once before the row
-        // loop.  For any row, sum(r²_i / dy²_i) ≤ sum(r²_i) / min(dy²_i).
-        // If min(dy²_i) > sum(r²_i) / glow, the row is provably dark.
-        let sum_r2: f64 = r2_cache.iter().copied().sum();
+        // Spatial culling threshold: precompute once before the row loop.
+        //
+        // For any pixel, `dist² = dx² + dy² >= min_dist²`, so:
+        //   sum_i (r²_i / dist²_i) <= sum_i (r²_i) / min_dist²
+        //
+        // This bound is used for:
+        // - row-level skip using `min(dy²)` (cheap)
+        // - 4-pixel-block skip using `min(dx²+dy²)` (tighter, avoids divisions on dark blocks)
+        let sum_r2: f64 = if step == 1 {
+            r2_cache.iter().copied().sum()
+        } else {
+            self.active_indices
+                .iter()
+                .copied()
+                .map(|i| r2_cache[i])
+                .sum()
+        };
         let row_skip_dy2 = if glow > 0.0 { sum_r2 / glow } else { f64::MAX };
 
         // Hoist step==1 branching outside the hot pixel loop.
@@ -702,13 +715,35 @@ impl MetaballsCanvasAdapter {
                 let full_blocks = w / 4;
                 for block in 0..full_blocks {
                     let x_base = block * 4;
+
+                    // Block-level spatial culling:
+                    // If every ball is far enough from every pixel in this 4-wide block,
+                    // the aggregate field cannot exceed `glow` and we can skip the expensive
+                    // per-pixel divisions entirely.
+                    let mut min_dist2 = f64::MAX;
+                    for (i, &dy2) in dy2_cache.iter().enumerate().take(balls_len) {
+                        let dx2_base = i * w + x_base;
+                        let d0 = dx2_cache[dx2_base] + dy2;
+                        let d1 = dx2_cache[dx2_base + 1] + dy2;
+                        let d2 = dx2_cache[dx2_base + 2] + dy2;
+                        let d3 = dx2_cache[dx2_base + 3] + dy2;
+                        min_dist2 = min_dist2.min(d0.min(d1).min(d2).min(d3));
+
+                        // Early-out: once min_dist² is below the threshold, skipping is impossible.
+                        if min_dist2 <= row_skip_dy2 {
+                            break;
+                        }
+                    }
+                    if min_dist2 > row_skip_dy2 {
+                        continue;
+                    }
+
                     let mut sums = [0.0_f64; 4];
                     let mut hues = [0.0_f64; 4];
 
-                    for i in 0..balls_len {
+                    for (i, &dy2) in dy2_cache.iter().enumerate().take(balls_len) {
                         let r2 = r2_cache[i];
                         let hue_val = hue_cache[i];
-                        let dy2 = dy2_cache[i];
                         let dx2_base = i * w + x_base;
 
                         // 4 contiguous dx² reads from ball-major layout.
@@ -777,8 +812,8 @@ impl MetaballsCanvasAdapter {
                 for x in (full_blocks * 4)..w {
                     let mut sum = 0.0;
                     let mut weighted_hue = 0.0;
-                    for i in 0..balls_len {
-                        let dist_sq = dx2_cache[i * w + x] + dy2_cache[i];
+                    for (i, &dy2) in dy2_cache.iter().enumerate().take(balls_len) {
+                        let dist_sq = dx2_cache[i * w + x] + dy2;
                         if dist_sq > EPS {
                             let contrib = r2_cache[i] / dist_sq;
                             sum += contrib;
@@ -825,6 +860,25 @@ impl MetaballsCanvasAdapter {
                 let full_blocks = w / 4;
                 for block in 0..full_blocks {
                     let x_base = block * 4;
+
+                    // Block-level spatial culling (active balls only).
+                    let mut min_dist2 = f64::MAX;
+                    for &i in active_indices {
+                        let dy2 = dy2_cache[i];
+                        let dx2_base = i * w + x_base;
+                        let d0 = dx2_cache[dx2_base] + dy2;
+                        let d1 = dx2_cache[dx2_base + 1] + dy2;
+                        let d2 = dx2_cache[dx2_base + 2] + dy2;
+                        let d3 = dx2_cache[dx2_base + 3] + dy2;
+                        min_dist2 = min_dist2.min(d0.min(d1).min(d2).min(d3));
+                        if min_dist2 <= row_skip_dy2 {
+                            break;
+                        }
+                    }
+                    if min_dist2 > row_skip_dy2 {
+                        continue;
+                    }
+
                     let mut sums = [0.0_f64; 4];
                     let mut hues = [0.0_f64; 4];
 
