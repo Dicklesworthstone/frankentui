@@ -2415,10 +2415,7 @@ mod tests {
 
     #[test]
     fn toast_animation_phase_default_is_visible() {
-        assert_eq!(
-            ToastAnimationPhase::default(),
-            ToastAnimationPhase::Visible
-        );
+        assert_eq!(ToastAnimationPhase::default(), ToastAnimationPhase::Visible);
     }
 
     #[test]
@@ -2474,22 +2471,19 @@ mod tests {
     #[test]
     fn entrance_offset_progress_clamped() {
         // Below 0 should clamp
-        let (dx, dy) =
-            ToastEntranceAnimation::SlideFromTop.offset_at_progress(-0.5, 20, 5);
+        let (dx, dy) = ToastEntranceAnimation::SlideFromTop.offset_at_progress(-0.5, 20, 5);
         assert_eq!(dx, 0);
         assert_eq!(dy, -5); // Same as progress 0.0
 
         // Above 1 should clamp
-        let (dx, dy) =
-            ToastEntranceAnimation::SlideFromTop.offset_at_progress(2.0, 20, 5);
+        let (dx, dy) = ToastEntranceAnimation::SlideFromTop.offset_at_progress(2.0, 20, 5);
         assert_eq!(dx, 0);
         assert_eq!(dy, 0); // Same as progress 1.0
     }
 
     #[test]
     fn entrance_offset_at_half_progress() {
-        let (dx, dy) =
-            ToastEntranceAnimation::SlideFromRight.offset_at_progress(0.5, 20, 5);
+        let (dx, dy) = ToastEntranceAnimation::SlideFromRight.offset_at_progress(0.5, 20, 5);
         assert_eq!(dx, 10); // Half of width
         assert_eq!(dy, 0);
     }
@@ -2549,12 +2543,10 @@ mod tests {
     #[test]
     fn exit_offset_progress_clamped() {
         let entrance = ToastEntranceAnimation::SlideFromRight;
-        let (dx, dy) =
-            ToastExitAnimation::SlideToTop.offset_at_progress(-1.0, 20, 5, entrance);
+        let (dx, dy) = ToastExitAnimation::SlideToTop.offset_at_progress(-1.0, 20, 5, entrance);
         assert_eq!((dx, dy), (0, 0)); // Clamped to 0.0
 
-        let (dx, dy) =
-            ToastExitAnimation::SlideToTop.offset_at_progress(5.0, 20, 5, entrance);
+        let (dx, dy) = ToastExitAnimation::SlideToTop.offset_at_progress(5.0, 20, 5, entrance);
         assert_eq!((dx, dy), (0, -5)); // Clamped to 1.0
     }
 
@@ -2599,13 +2591,19 @@ mod tests {
     #[test]
     fn easing_ease_in_out_first_half() {
         let result = ToastEasing::EaseInOut.apply(0.25);
-        assert!(result < 0.25, "EaseInOut at 0.25 should be < 0.25 (accelerating)");
+        assert!(
+            result < 0.25,
+            "EaseInOut at 0.25 should be < 0.25 (accelerating)"
+        );
     }
 
     #[test]
     fn easing_ease_in_out_second_half() {
         let result = ToastEasing::EaseInOut.apply(0.75);
-        assert!(result > 0.75, "EaseInOut at 0.75 should be > 0.75 (decelerating)");
+        assert!(
+            result > 0.75,
+            "EaseInOut at 0.75 should be > 0.75 (decelerating)"
+        );
     }
 
     #[test]
@@ -2797,8 +2795,7 @@ mod tests {
 
     #[test]
     fn toast_tick_animation_returns_true_on_phase_change() {
-        let mut toast = Toast::new("Test")
-            .entrance_duration(Duration::ZERO);
+        let mut toast = Toast::new("Test").entrance_duration(Duration::ZERO);
         assert_eq!(toast.state.animation.phase, ToastAnimationPhase::Entering);
         let changed = toast.tick_animation();
         assert!(changed);
