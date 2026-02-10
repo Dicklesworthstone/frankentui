@@ -11,7 +11,7 @@
 //! - Tunnel zoom effect
 //! - Fire simulation
 
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, Ref, RefCell};
 use std::collections::VecDeque;
 use std::env;
 use std::f64::consts::TAU;
@@ -36,7 +36,7 @@ use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
-use ftui_text::{WrapMode, display_width, truncate_to_width};
+use ftui_text::{Text, WrapMode, display_width, truncate_to_width};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -61,6 +61,25 @@ This panel is **real markdown** rendered on top of animated backdrops.
 
 `←/→` switch effects · `p` palette · `t` text mode
 "#;
+
+#[derive(Debug)]
+struct MarkdownPanelWrapped {
+    width: u16,
+    paragraph: Paragraph<'static>,
+}
+
+fn wrap_text_cached(base: &Text, width: u16, mode: WrapMode) -> Text {
+    let wrap_width = usize::from(width.max(1));
+    let mut out = Vec::new();
+    for line in base.lines() {
+        if line.width() > wrap_width {
+            out.extend(line.wrap(wrap_width, mode));
+        } else {
+            out.push(line.clone());
+        }
+    }
+    Text::from_lines(out)
+}
 
 /// Visual effects demo screen.
 pub struct VisualEffectsScreen {
@@ -134,8 +153,10 @@ pub struct VisualEffectsScreen {
     demo_mode: DemoMode,
     /// Text effects demo state (initialized on first TextEffects use).
     text_effects: OnceCell<TextEffectsDemo>,
-    /// Markdown panel rendered over backdrop effects (initialized on first overlay render).
-    markdown_panel: OnceCell<Paragraph<'static>>,
+    /// Markdown overlay base text (parsed once on first overlay render).
+    markdown_text: OnceCell<Text>,
+    /// Cached wrapped markdown paragraph for the last seen overlay width.
+    markdown_panel_cache: RefCell<Option<MarkdownPanelWrapped>>,
     /// Reused header string buffer to avoid per-frame allocations.
     header_text_buf: RefCell<String>,
     /// Active FPS movement input state (WASD).
@@ -3336,7 +3357,8 @@ impl Default for VisualEffectsScreen {
             // Text effects demo (bd-2b82)
             demo_mode: DemoMode::Canvas,
             text_effects: OnceCell::new(),
-            markdown_panel: OnceCell::new(),
+            markdown_text: OnceCell::new(),
+            markdown_panel_cache: RefCell::new(None),
             header_text_buf: RefCell::new(String::with_capacity(196)),
             fps_input: FpsInputState::default(),
             fps_last_mouse: None,
@@ -3375,9 +3397,34 @@ impl VisualEffectsScreen {
         text_effects.effect_idx = 0;
     }
 
-    fn markdown_panel(&self) -> &Paragraph<'static> {
-        self.markdown_panel
-            .get_or_init(|| Paragraph::new(render_markdown(MARKDOWN_OVERLAY)).wrap(WrapMode::Word))
+    fn markdown_panel(&self, width: u16) -> Ref<'_, Paragraph<'static>> {
+        {
+            let base = self
+                .markdown_text
+                .get_or_init(|| render_markdown(MARKDOWN_OVERLAY));
+
+            let mut cache = self.markdown_panel_cache.borrow_mut();
+            let needs_rebuild = match cache.as_ref() {
+                Some(c) => c.width != width,
+                None => true,
+            };
+            if needs_rebuild {
+                // Paragraph wraps by allocating a Vec<Line> per render. Pre-wrapping moves that
+                // work to the (rare) width-change path, reducing steady-state per-frame churn.
+                let wrapped = wrap_text_cached(base, width, WrapMode::Word);
+                *cache = Some(MarkdownPanelWrapped {
+                    width,
+                    paragraph: Paragraph::new(wrapped),
+                });
+            }
+        }
+
+        Ref::map(self.markdown_panel_cache.borrow(), |cache| {
+            &cache
+                .as_ref()
+                .expect("markdown panel cache should be populated")
+                .paragraph
+        })
     }
 
     fn with_metaballs_adapter_mut<F, R>(&self, f: F) -> R
@@ -3672,7 +3719,7 @@ impl VisualEffectsScreen {
             return;
         }
 
-        self.markdown_panel().render(inner, frame);
+        self.markdown_panel(inner.width).render(inner, frame);
     }
 
     /// Render text effects demo area
@@ -4703,7 +4750,8 @@ mod tests {
     fn heavy_ui_state_is_lazy_initialized() {
         let mut screen = VisualEffectsScreen::default();
         assert!(screen.text_effects.get().is_none());
-        assert!(screen.markdown_panel.get().is_none());
+        assert!(screen.markdown_text.get().is_none());
+        assert!(screen.markdown_panel_cache.borrow().is_none());
         assert!(screen.metaballs_adapter.get().is_none());
         assert!(screen.plasma_adapter.get().is_none());
 
@@ -4713,7 +4761,8 @@ mod tests {
         let mut frame = Frame::new(80, 24, &mut pool);
         screen.view(&mut frame, Rect::new(0, 0, 80, 24));
         assert!(screen.text_effects.get().is_some());
-        assert!(screen.markdown_panel.get().is_none());
+        assert!(screen.markdown_text.get().is_none());
+        assert!(screen.markdown_panel_cache.borrow().is_none());
         assert!(screen.metaballs_adapter.get().is_none());
         assert!(screen.plasma_adapter.get().is_none());
 
@@ -4721,7 +4770,8 @@ mod tests {
         screen.demo_mode = DemoMode::Canvas;
         screen.effect = EffectType::Metaballs;
         screen.view(&mut frame, Rect::new(0, 0, 80, 24));
-        assert!(screen.markdown_panel.get().is_some());
+        assert!(screen.markdown_text.get().is_some());
+        assert!(screen.markdown_panel_cache.borrow().is_some());
         assert!(screen.metaballs_adapter.get().is_some());
         assert!(screen.plasma_adapter.get().is_none());
 
