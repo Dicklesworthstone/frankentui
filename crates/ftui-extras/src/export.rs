@@ -867,6 +867,31 @@ mod tests {
         assert!(svg.ends_with("</svg>"));
     }
 
+    #[test]
+    fn svg_exports_styled_empty_cells_as_bg_rects() {
+        let mut buf = Buffer::new(1, 1);
+        let pool = GraphemePool::new();
+
+        // Background-only: content is empty, but the cell still has a visual background.
+        buf.set_fast(0, 0, Cell::default().with_bg(PackedRgba::rgb(0, 0, 255)));
+
+        let svg = SvgExporter::default().export(&buf, &pool);
+        // The background rect must be present even though content is empty.
+        assert!(
+            svg.contains("fill=\"#0000ff\""),
+            "missing bg rect for styled empty cell"
+        );
+        assert!(
+            svg.contains("<rect"),
+            "missing rect element for styled empty cell"
+        );
+        // No text element should be emitted for empty content.
+        assert!(
+            !svg.contains("<text"),
+            "unexpected text element for empty cell"
+        );
+    }
+
     // --- Text exporter tests ---
 
     #[test]
