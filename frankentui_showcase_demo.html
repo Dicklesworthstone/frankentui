@@ -5,10 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>FrankenTUI — Showcase Demo</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; }
-  #container {
-    width: 100%; height: 100%;
+	  @font-face {
+	    font-family: "Pragmasevka NF";
+	    src: url("./fonts/pragmasevka-nf-regular.ttf") format("truetype");
+	    font-weight: 400;
+	    font-style: normal;
+	    font-display: block;
+	  }
+	  * { margin: 0; padding: 0; box-sizing: border-box; }
+	  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; }
+	  #container {
+	    width: 100%; height: 100%;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
   }
@@ -17,19 +24,19 @@
     width: 100%; height: 100%;
     image-rendering: pixelated;
   }
-  #status {
-    position: fixed; bottom: 8px; right: 12px;
-    color: #666; font: 12px/1 monospace;
-    pointer-events: none; z-index: 10;
-  }
-  #error-overlay {
-    display: none;
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.85);
-    color: #f44; font: 16px/1.5 monospace;
-    padding: 32px; overflow: auto; z-index: 20;
-  }
-  #error-overlay.visible { display: block; }
+	  #status {
+	    position: fixed; bottom: 8px; right: 12px;
+	    color: #666; font: 12px/1 "Pragmasevka NF", monospace;
+	    pointer-events: none; z-index: 10;
+	  }
+	  #error-overlay {
+	    display: none;
+	    position: fixed; inset: 0;
+	    background: rgba(0,0,0,0.85);
+	    color: #f44; font: 16px/1.5 "Pragmasevka NF", monospace;
+	    padding: 32px; overflow: auto; z-index: 20;
+	  }
+	  #error-overlay.visible { display: block; }
 </style>
 </head>
 <body>
@@ -59,6 +66,18 @@ function showError(msg) {
   status.textContent = "Error";
   console.error("[ShowcaseDemo]", msg);
 }
+
+// ── Font loading (must happen before first glyph rasterization) ───────────
+const fontsReady = (async () => {
+  if (!("fonts" in document) || !document.fonts?.load) return;
+  try {
+    status.textContent = "Loading fonts…";
+    await document.fonts.load('16px "Pragmasevka NF"');
+    await document.fonts.ready;
+  } catch (e) {
+    console.warn("[ShowcaseDemo] Font load failed; continuing with fallback.", e);
+  }
+})();
 
 // ── WASM module loading ────────────────────────────────────────────────
 // wasm-pack builds produce an ES module with an `default` init function
@@ -95,6 +114,7 @@ const term   = new FrankenTermWeb();
 const dpr    = window.devicePixelRatio || 1.0;
 
 try {
+  await fontsReady;
   status.textContent = "Initializing WebGPU terminal…";
   await term.init(canvas, {
     cols: INITIAL_COLS,

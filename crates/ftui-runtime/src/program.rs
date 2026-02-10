@@ -6495,7 +6495,7 @@ mod tests {
     #[test]
     fn cmd_count_atomic() {
         assert_eq!(Cmd::<TestMsg>::quit().count(), 1);
-        assert_eq!(Cmd::<TestMsg>::msg(TestMsg::Inc).count(), 1);
+        assert_eq!(Cmd::<TestMsg>::msg(TestMsg::Increment).count(), 1);
         assert_eq!(Cmd::<TestMsg>::tick(Duration::from_millis(100)).count(), 1);
         assert_eq!(Cmd::<TestMsg>::log("hello").count(), 1);
         assert_eq!(Cmd::<TestMsg>::save_state().count(), 1);
@@ -6505,15 +6505,16 @@ mod tests {
 
     #[test]
     fn cmd_count_batch() {
-        let cmd: Cmd<TestMsg> = Cmd::Batch(vec![Cmd::quit(), Cmd::msg(TestMsg::Inc), Cmd::none()]);
+        let cmd: Cmd<TestMsg> =
+            Cmd::Batch(vec![Cmd::quit(), Cmd::msg(TestMsg::Increment), Cmd::none()]);
         assert_eq!(cmd.count(), 2); // quit + msg, none counts 0
     }
 
     #[test]
     fn cmd_count_nested() {
         let cmd: Cmd<TestMsg> = Cmd::Batch(vec![
-            Cmd::msg(TestMsg::Inc),
-            Cmd::Sequence(vec![Cmd::quit(), Cmd::msg(TestMsg::Inc)]),
+            Cmd::msg(TestMsg::Increment),
+            Cmd::Sequence(vec![Cmd::quit(), Cmd::msg(TestMsg::Increment)]),
         ]);
         assert_eq!(cmd.count(), 3);
     }
@@ -6534,13 +6535,16 @@ mod tests {
             Cmd::<TestMsg>::Sequence(vec![Cmd::none()]).type_name(),
             "Sequence"
         );
-        assert_eq!(Cmd::<TestMsg>::msg(TestMsg::Inc).type_name(), "Msg");
+        assert_eq!(Cmd::<TestMsg>::msg(TestMsg::Increment).type_name(), "Msg");
         assert_eq!(
             Cmd::<TestMsg>::tick(Duration::from_millis(1)).type_name(),
             "Tick"
         );
         assert_eq!(Cmd::<TestMsg>::log("x").type_name(), "Log");
-        assert_eq!(Cmd::<TestMsg>::task(|| TestMsg::Inc).type_name(), "Task");
+        assert_eq!(
+            Cmd::<TestMsg>::task(|| TestMsg::Increment).type_name(),
+            "Task"
+        );
         assert_eq!(Cmd::<TestMsg>::save_state().type_name(), "SaveState");
         assert_eq!(Cmd::<TestMsg>::restore_state().type_name(), "RestoreState");
         assert_eq!(
@@ -6567,7 +6571,7 @@ mod tests {
 
     #[test]
     fn cmd_batch_multiple_stays_batch() {
-        let cmd: Cmd<TestMsg> = Cmd::batch(vec![Cmd::quit(), Cmd::msg(TestMsg::Inc)]);
+        let cmd: Cmd<TestMsg> = Cmd::batch(vec![Cmd::quit(), Cmd::msg(TestMsg::Increment)]);
         assert!(matches!(cmd, Cmd::Batch(_)));
     }
 
@@ -6578,14 +6582,14 @@ mod tests {
     }
 
     #[test]
-    fn cmd_sequence_single_unwraps() {
+    fn cmd_sequence_single_unwraps_to_inner() {
         let cmd: Cmd<TestMsg> = Cmd::sequence(vec![Cmd::quit()]);
         assert!(matches!(cmd, Cmd::Quit));
     }
 
     #[test]
     fn cmd_sequence_multiple_stays_sequence() {
-        let cmd: Cmd<TestMsg> = Cmd::sequence(vec![Cmd::quit(), Cmd::msg(TestMsg::Inc)]);
+        let cmd: Cmd<TestMsg> = Cmd::sequence(vec![Cmd::quit(), Cmd::msg(TestMsg::Increment)]);
         assert!(matches!(cmd, Cmd::Sequence(_)));
     }
 
@@ -6596,7 +6600,7 @@ mod tests {
     #[test]
     fn cmd_task_with_spec() {
         let spec = TaskSpec::new(3.0, 25.0).with_name("my_task");
-        let cmd: Cmd<TestMsg> = Cmd::task_with_spec(spec, || TestMsg::Inc);
+        let cmd: Cmd<TestMsg> = Cmd::task_with_spec(spec, || TestMsg::Increment);
         match cmd {
             Cmd::Task(s, _) => {
                 assert_eq!(s.weight, 3.0);
@@ -6609,7 +6613,7 @@ mod tests {
 
     #[test]
     fn cmd_task_weighted() {
-        let cmd: Cmd<TestMsg> = Cmd::task_weighted(2.0, 50.0, || TestMsg::Inc);
+        let cmd: Cmd<TestMsg> = Cmd::task_weighted(2.0, 50.0, || TestMsg::Increment);
         match cmd {
             Cmd::Task(s, _) => {
                 assert_eq!(s.weight, 2.0);
@@ -6622,7 +6626,7 @@ mod tests {
 
     #[test]
     fn cmd_task_named() {
-        let cmd: Cmd<TestMsg> = Cmd::task_named("background_fetch", || TestMsg::Inc);
+        let cmd: Cmd<TestMsg> = Cmd::task_named("background_fetch", || TestMsg::Increment);
         match cmd {
             Cmd::Task(s, _) => {
                 assert_eq!(s.weight, DEFAULT_TASK_WEIGHT);
@@ -6638,15 +6642,15 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn cmd_debug_all_variants() {
+    fn cmd_debug_all_variant_strings() {
         assert_eq!(format!("{:?}", Cmd::<TestMsg>::none()), "None");
         assert_eq!(format!("{:?}", Cmd::<TestMsg>::quit()), "Quit");
-        assert!(format!("{:?}", Cmd::<TestMsg>::msg(TestMsg::Inc)).starts_with("Msg("));
+        assert!(format!("{:?}", Cmd::<TestMsg>::msg(TestMsg::Increment)).starts_with("Msg("));
         assert!(
             format!("{:?}", Cmd::<TestMsg>::tick(Duration::from_millis(100))).starts_with("Tick(")
         );
         assert!(format!("{:?}", Cmd::<TestMsg>::log("hi")).starts_with("Log("));
-        assert!(format!("{:?}", Cmd::<TestMsg>::task(|| TestMsg::Inc)).starts_with("Task"));
+        assert!(format!("{:?}", Cmd::<TestMsg>::task(|| TestMsg::Increment)).starts_with("Task"));
         assert_eq!(format!("{:?}", Cmd::<TestMsg>::save_state()), "SaveState");
         assert_eq!(
             format!("{:?}", Cmd::<TestMsg>::restore_state()),
@@ -6880,7 +6884,7 @@ mod tests {
 
     #[test]
     fn classify_event_fairness_paste_is_input() {
-        let event = Event::Paste("hello".into());
+        let event = Event::Paste(ftui_core::event::PasteEvent::bracketed("hello"));
         let classification =
             Program::<TestModel, HeadlessEventSource, Vec<u8>>::classify_event_for_fairness(&event);
         assert_eq!(classification, FairnessEventType::Input);
@@ -6927,8 +6931,7 @@ mod tests {
 
     #[test]
     fn program_config_with_locale_context() {
-        let config =
-            ProgramConfig::default().with_locale_context(LocaleContext::new("de"));
+        let config = ProgramConfig::default().with_locale_context(LocaleContext::new("de"));
         let _ = format!("{:?}", config);
     }
 
@@ -6948,8 +6951,10 @@ mod tests {
 
     #[test]
     fn program_config_with_widget_refresh() {
-        let mut wrc = WidgetRefreshConfig::default();
-        wrc.enabled = false;
+        let wrc = WidgetRefreshConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let config = ProgramConfig::default().with_widget_refresh(wrc);
         assert!(!config.widget_refresh.enabled);
     }
@@ -6962,7 +6967,7 @@ mod tests {
     }
 
     #[test]
-    fn program_config_with_resize_coalescer() {
+    fn program_config_with_resize_coalescer_custom() {
         let cc = CoalescerConfig {
             steady_delay_ms: 42,
             ..Default::default()
@@ -7052,14 +7057,14 @@ mod tests {
         assert_eq!(
             BudgetDecisionEvidence::decision_from_levels(
                 DegradationLevel::Full,
-                DegradationLevel::Reduced
+                DegradationLevel::SimpleBorders
             ),
             BudgetDecision::Degrade
         );
         // Upgrade: after < before
         assert_eq!(
             BudgetDecisionEvidence::decision_from_levels(
-                DegradationLevel::Reduced,
+                DegradationLevel::SimpleBorders,
                 DegradationLevel::Full
             ),
             BudgetDecision::Upgrade
@@ -7096,9 +7101,9 @@ mod tests {
     fn widget_refresh_plan_as_budget_empty_signals() {
         let plan = WidgetRefreshPlan::new();
         let budget = plan.as_budget();
-        // With signal_count == 0, should be allow_all
-        assert!(budget.should_render(0));
-        assert!(budget.should_render(999));
+        // With signal_count == 0, should be allow_all (allows any widget)
+        assert!(budget.allows(0, false));
+        assert!(budget.allows(999, false));
     }
 
     #[test]
@@ -7173,7 +7178,9 @@ mod tests {
     fn headless_execute_cmd_log_preserves_trailing_newline() {
         let mut program =
             headless_program_with_config(TestModel { value: 0 }, ProgramConfig::default());
-        program.execute_cmd(Cmd::log("with newline\n")).expect("log");
+        program
+            .execute_cmd(Cmd::log("with newline\n"))
+            .expect("log");
 
         let bytes = program.writer.into_inner().expect("writer output");
         let output = String::from_utf8_lossy(&bytes);
@@ -7262,8 +7269,7 @@ mod tests {
             fn view(&self, _frame: &mut Frame) {}
         }
 
-        let mut program =
-            headless_program_with_config(SimpleModel, ProgramConfig::default());
+        let mut program = headless_program_with_config(SimpleModel, ProgramConfig::default());
         program
             .apply_resize(0, 0, Duration::ZERO, false)
             .expect("resize");
