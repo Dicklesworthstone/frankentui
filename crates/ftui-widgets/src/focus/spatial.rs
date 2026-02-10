@@ -69,7 +69,9 @@ pub fn spatial_navigate(graph: &FocusGraph, origin: FocusId, dir: NavDirection) 
 
         let score = distance_score_i32(oc, cc, dir);
 
-        if best.is_none_or(|(_, best_score)| score < best_score) {
+        if best.is_none_or(|(best_id, best_score)| {
+            score < best_score || (score == best_score && candidate_id < best_id)
+        }) {
             best = Some((candidate_id, score));
         }
     }
@@ -270,6 +272,17 @@ mod tests {
         let g = grid_3x3();
         let target = spatial_navigate(&g, 5, NavDirection::Right);
         assert_eq!(target, Some(6));
+    }
+
+    #[test]
+    fn tie_break_prefers_lower_focus_id() {
+        let mut g = FocusGraph::new();
+        g.insert(node_at(10, 10, 10, 4, 2)); // origin
+        g.insert(node_at(42, 20, 6, 4, 2)); // above-right
+        g.insert(node_at(7, 20, 14, 4, 2)); // below-right, identical score
+
+        let target = spatial_navigate(&g, 10, NavDirection::Right);
+        assert_eq!(target, Some(7));
     }
 
     // --- Explicit edge override ---
