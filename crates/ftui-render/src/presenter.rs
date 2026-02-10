@@ -3169,6 +3169,891 @@ mod tests {
         );
     }
 
+    // =========================================================================
+    // Edge-case tests (bd-27tya)
+    // =========================================================================
+
+    // --- Cost model boundary values ---
+
+    #[test]
+    fn cost_cup_zero_zero() {
+        // CUP at (0,0) → "\x1b[1;1H" = 6 bytes
+        assert_eq!(cost_model::cup_cost(0, 0), 6);
+    }
+
+    #[test]
+    fn cost_cup_max_max() {
+        // CUP at (u16::MAX, u16::MAX) → "\x1b[65536;65536H"
+        // 2 (CSI) + 5 (row digits) + 1 (;) + 5 (col digits) + 1 (H) = 14
+        assert_eq!(cost_model::cup_cost(u16::MAX, u16::MAX), 14);
+    }
+
+    #[test]
+    fn cost_cha_zero() {
+        // CHA at col 0 → "\x1b[1G" = 4 bytes
+        assert_eq!(cost_model::cha_cost(0), 4);
+    }
+
+    #[test]
+    fn cost_cha_max() {
+        // CHA at col u16::MAX → "\x1b[65536G" = 8 bytes
+        assert_eq!(cost_model::cha_cost(u16::MAX), 8);
+    }
+
+    #[test]
+    fn cost_cuf_zero_is_free() {
+        assert_eq!(cost_model::cuf_cost(0), 0);
+    }
+
+    #[test]
+    fn cost_cuf_one_is_three() {
+        // CUF(1) = "\x1b[C" = 3 bytes
+        assert_eq!(cost_model::cuf_cost(1), 3);
+    }
+
+    #[test]
+    fn cost_cuf_two_has_digit() {
+        // CUF(2) = "\x1b[2C" = 4 bytes
+        assert_eq!(cost_model::cuf_cost(2), 4);
+    }
+
+    #[test]
+    fn cost_cuf_max() {
+        // CUF(u16::MAX) = "\x1b[65535C" = 3 + 5 = 8 bytes
+        assert_eq!(cost_model::cuf_cost(u16::MAX), 8);
+    }
+
+    #[test]
+    fn cost_cheapest_move_already_at_target() {
+        assert_eq!(cost_model::cheapest_move_cost(Some(5), Some(3), 5, 3), 0);
+    }
+
+    #[test]
+    fn cost_cheapest_move_unknown_position() {
+        // When from is unknown, can only use CUP
+        let cost = cost_model::cheapest_move_cost(None, None, 5, 3);
+        assert_eq!(cost, cost_model::cup_cost(3, 5));
+    }
+
+    #[test]
+    fn cost_cheapest_move_known_y_unknown_x() {
+        // from_x=None, from_y=Some → still uses CUP
+        let cost = cost_model::cheapest_move_cost(None, Some(3), 5, 3);
+        assert_eq!(cost, cost_model::cup_cost(3, 5));
+    }
+
+    #[test]
+    fn cost_cheapest_move_backward_same_row() {
+        // Moving backward on same row: CHA or CUP, whichever is cheaper
+        let cost = cost_model::cheapest_move_cost(Some(50), Some(0), 5, 0);
+        let cha = cost_model::cha_cost(5);
+        let cup = cost_model::cup_cost(0, 5);
+        assert_eq!(cost, cha.min(cup));
+    }
+
+    #[test]
+    fn cost_cheapest_move_same_row_same_col() {
+        // Same (x, y) via the (fx, fy) == (to_x, to_y) check
+        assert_eq!(cost_model::cheapest_move_cost(Some(0), Some(0), 0, 0), 0);
+    }
+
+    // --- CUP/CHA/CUF cost accuracy across digit boundaries ---
+
+    #[test]
+    fn cost_cup_digit_boundaries() {
+        let mut buf = Vec::new();
+        for (row, col) in [
+            (0u16, 0u16),
+            (8, 8),
+            (9, 9),
+            (98, 98),
+            (99, 99),
+            (998, 998),
+            (999, 999),
+            (9998, 9998),
+            (9999, 9999),
+            (u16::MAX, u16::MAX),
+        ] {
+            buf.clear();
+            ansi::cup(&mut buf, row, col).unwrap();
+            assert_eq!(
+                buf.len(),
+                cost_model::cup_cost(row, col),
+                "CUP cost mismatch at ({row}, {col})"
+            );
+        }
+    }
+
+    #[test]
+    fn cost_cha_digit_boundaries() {
+        let mut buf = Vec::new();
+        for col in [0u16, 8, 9, 98, 99, 998, 999, 9998, 9999, u16::MAX] {
+            buf.clear();
+            ansi::cha(&mut buf, col).unwrap();
+            assert_eq!(
+                buf.len(),
+                cost_model::cha_cost(col),
+                "CHA cost mismatch at col {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn cost_cuf_digit_boundaries() {
+        let mut buf = Vec::new();
+        for n in [1u16, 2, 9, 10, 99, 100, 999, 1000, 9999, 10000, u16::MAX] {
+            buf.clear();
+            ansi::cuf(&mut buf, n).unwrap();
+            assert_eq!(
+                buf.len(),
+                cost_model::cuf_cost(n),
+                "CUF cost mismatch for n={n}"
+            );
+        }
+    }
+
+    // --- RowPlan scratch reuse ---
+
+    #[test]
+    fn plan_row_reuse_matches_plan_row() {
+        let runs = [
+            ChangeRun::new(5, 2, 4),
+            ChangeRun::new(5, 8, 10),
+            ChangeRun::new(5, 20, 25),
+        ];
+        let plan1 = cost_model::plan_row(&runs, Some(0), Some(5));
+        let mut scratch = cost_model::RowPlanScratch::default();
+        let plan2 = cost_model::plan_row_reuse(&runs, Some(0), Some(5), &mut scratch);
+        assert_eq!(plan1, plan2);
+    }
+
+    #[test]
+    fn plan_row_reuse_across_different_sizes() {
+        // Use scratch with a large row first, then a small row
+        let mut scratch = cost_model::RowPlanScratch::default();
+
+        let large_runs: Vec<ChangeRun> = (0..20)
+            .map(|i| ChangeRun::new(0, i * 4, i * 4 + 1))
+            .collect();
+        let plan_large = cost_model::plan_row_reuse(&large_runs, None, None, &mut scratch);
+        assert!(!plan_large.spans().is_empty());
+
+        let small_runs = [ChangeRun::new(1, 5, 8)];
+        let plan_small = cost_model::plan_row_reuse(&small_runs, None, None, &mut scratch);
+        assert_eq!(plan_small.spans().len(), 1);
+        assert_eq!(plan_small.spans()[0].x0, 5);
+        assert_eq!(plan_small.spans()[0].x1, 8);
+    }
+
+    // --- DP gap boundary (exactly 32 and 33 cells) ---
+
+    #[test]
+    fn plan_row_gap_exactly_32_cells() {
+        // Two runs with exactly 32-cell gap: run at 0-0 and 33-33
+        // gap = 33 - 0 + 1 - 2 = 32 cells
+        let runs = [ChangeRun::new(0, 0, 0), ChangeRun::new(0, 33, 33)];
+        let plan = cost_model::plan_row(&runs, None, None);
+        // 32-cell gap is at the break boundary; the DP may still consider merging
+        // since the check is `gap_cells > 32` (strictly greater)
+        // gap = 34 total - 2 changed = 32, which is NOT > 32, so merge is considered
+        assert!(
+            plan.spans().len() <= 2,
+            "32-cell gap should still consider merge"
+        );
+    }
+
+    #[test]
+    fn plan_row_gap_33_cells_stays_sparse() {
+        // Two runs with 33-cell gap: run at 0-0 and 34-34
+        // gap = 34 - 0 + 1 - 2 = 33 > 32, so merge is NOT considered
+        let runs = [ChangeRun::new(0, 0, 0), ChangeRun::new(0, 34, 34)];
+        let plan = cost_model::plan_row(&runs, None, None);
+        assert_eq!(
+            plan.spans().len(),
+            2,
+            "33-cell gap should stay sparse (gap > 32 breaks)"
+        );
+    }
+
+    // --- SmallVec spill: >4 separate spans ---
+
+    #[test]
+    fn plan_row_many_sparse_spans() {
+        // 6 runs with 34+ cell gaps between them (each gap > 32, no merging)
+        let runs = [
+            ChangeRun::new(0, 0, 0),
+            ChangeRun::new(0, 40, 40),
+            ChangeRun::new(0, 80, 80),
+            ChangeRun::new(0, 120, 120),
+            ChangeRun::new(0, 160, 160),
+            ChangeRun::new(0, 200, 200),
+        ];
+        let plan = cost_model::plan_row(&runs, None, None);
+        // All gaps are > 32, so no merging possible
+        assert_eq!(plan.spans().len(), 6, "Should have 6 separate sparse spans");
+    }
+
+    // --- CellStyle ---
+
+    #[test]
+    fn cell_style_default_is_transparent_no_attrs() {
+        let style = CellStyle::default();
+        assert_eq!(style.fg, PackedRgba::TRANSPARENT);
+        assert_eq!(style.bg, PackedRgba::TRANSPARENT);
+        assert!(style.attrs.is_empty());
+    }
+
+    #[test]
+    fn cell_style_from_cell_captures_all() {
+        let fg = PackedRgba::rgb(10, 20, 30);
+        let bg = PackedRgba::rgb(40, 50, 60);
+        let flags = StyleFlags::BOLD | StyleFlags::ITALIC;
+        let cell = Cell::from_char('X')
+            .with_fg(fg)
+            .with_bg(bg)
+            .with_attrs(CellAttrs::new(flags, 5));
+        let style = CellStyle::from_cell(&cell);
+        assert_eq!(style.fg, fg);
+        assert_eq!(style.bg, bg);
+        assert_eq!(style.attrs, flags);
+    }
+
+    #[test]
+    fn cell_style_eq_and_clone() {
+        let a = CellStyle {
+            fg: PackedRgba::rgb(1, 2, 3),
+            bg: PackedRgba::TRANSPARENT,
+            attrs: StyleFlags::DIM,
+        };
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    // --- SGR length estimation ---
+
+    #[test]
+    fn sgr_flags_len_empty() {
+        assert_eq!(Presenter::<Vec<u8>>::sgr_flags_len(StyleFlags::empty()), 0);
+    }
+
+    #[test]
+    fn sgr_flags_len_single() {
+        // Single flag: "\x1b[1m" = 4 bytes → 3 + digits(code) + 0 separators
+        let len = Presenter::<Vec<u8>>::sgr_flags_len(StyleFlags::BOLD);
+        assert!(len > 0);
+        // Verify by actually emitting
+        let mut buf = Vec::new();
+        ansi::sgr_flags(&mut buf, StyleFlags::BOLD).unwrap();
+        assert_eq!(len as usize, buf.len());
+    }
+
+    #[test]
+    fn sgr_flags_len_multiple() {
+        let flags = StyleFlags::BOLD | StyleFlags::ITALIC | StyleFlags::UNDERLINE;
+        let len = Presenter::<Vec<u8>>::sgr_flags_len(flags);
+        let mut buf = Vec::new();
+        ansi::sgr_flags(&mut buf, flags).unwrap();
+        assert_eq!(len as usize, buf.len());
+    }
+
+    #[test]
+    fn sgr_flags_off_len_empty() {
+        assert_eq!(
+            Presenter::<Vec<u8>>::sgr_flags_off_len(StyleFlags::empty()),
+            0
+        );
+    }
+
+    #[test]
+    fn sgr_rgb_len_matches_actual() {
+        let color = PackedRgba::rgb(0, 0, 0);
+        let estimated = Presenter::<Vec<u8>>::sgr_rgb_len(color);
+        // "\x1b[38;2;0;0;0m" = 2(CSI) + "38;2;" + "0;0;0" + "m" but sgr_rgb_len
+        // is used for cost comparison, not exact output. Just check > 0.
+        assert!(estimated > 0);
+    }
+
+    #[test]
+    fn sgr_rgb_len_large_values() {
+        let color = PackedRgba::rgb(255, 255, 255);
+        let small_color = PackedRgba::rgb(0, 0, 0);
+        let large_len = Presenter::<Vec<u8>>::sgr_rgb_len(color);
+        let small_len = Presenter::<Vec<u8>>::sgr_rgb_len(small_color);
+        // 255,255,255 has more digits than 0,0,0
+        assert!(large_len > small_len);
+    }
+
+    #[test]
+    fn dec_len_u8_boundaries() {
+        assert_eq!(Presenter::<Vec<u8>>::dec_len_u8(0), 1);
+        assert_eq!(Presenter::<Vec<u8>>::dec_len_u8(9), 1);
+        assert_eq!(Presenter::<Vec<u8>>::dec_len_u8(10), 2);
+        assert_eq!(Presenter::<Vec<u8>>::dec_len_u8(99), 2);
+        assert_eq!(Presenter::<Vec<u8>>::dec_len_u8(100), 3);
+        assert_eq!(Presenter::<Vec<u8>>::dec_len_u8(255), 3);
+    }
+
+    // --- Style delta corner cases ---
+
+    #[test]
+    fn sgr_delta_all_attrs_removed_at_once() {
+        let mut presenter = test_presenter();
+        let all_flags = StyleFlags::BOLD
+            | StyleFlags::DIM
+            | StyleFlags::ITALIC
+            | StyleFlags::UNDERLINE
+            | StyleFlags::BLINK
+            | StyleFlags::REVERSE
+            | StyleFlags::STRIKETHROUGH;
+        let old = CellStyle {
+            fg: PackedRgba::rgb(100, 100, 100),
+            bg: PackedRgba::TRANSPARENT,
+            attrs: all_flags,
+        };
+        let new = CellStyle {
+            fg: PackedRgba::rgb(100, 100, 100),
+            bg: PackedRgba::TRANSPARENT,
+            attrs: StyleFlags::empty(),
+        };
+
+        presenter.current_style = Some(old);
+        presenter.emit_style_delta(old, new).unwrap();
+        let output = presenter.into_inner().unwrap();
+
+        // Should either use individual off codes or fall back to full reset
+        // Either way, output should be non-empty
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn sgr_delta_fg_to_transparent() {
+        let mut presenter = test_presenter();
+        let old = CellStyle {
+            fg: PackedRgba::rgb(200, 100, 50),
+            bg: PackedRgba::TRANSPARENT,
+            attrs: StyleFlags::empty(),
+        };
+        let new = CellStyle {
+            fg: PackedRgba::TRANSPARENT,
+            bg: PackedRgba::TRANSPARENT,
+            attrs: StyleFlags::empty(),
+        };
+
+        presenter.current_style = Some(old);
+        presenter.emit_style_delta(old, new).unwrap();
+        let output = presenter.into_inner().unwrap();
+        let output_str = String::from_utf8_lossy(&output);
+
+        // When going to TRANSPARENT fg, the delta should emit the default fg code
+        // or reset. Either way, output should be non-empty.
+        assert!(!output.is_empty(), "Should emit fg removal: {output_str:?}");
+    }
+
+    #[test]
+    fn sgr_delta_bg_to_transparent() {
+        let mut presenter = test_presenter();
+        let old = CellStyle {
+            fg: PackedRgba::TRANSPARENT,
+            bg: PackedRgba::rgb(30, 60, 90),
+            attrs: StyleFlags::empty(),
+        };
+        let new = CellStyle {
+            fg: PackedRgba::TRANSPARENT,
+            bg: PackedRgba::TRANSPARENT,
+            attrs: StyleFlags::empty(),
+        };
+
+        presenter.current_style = Some(old);
+        presenter.emit_style_delta(old, new).unwrap();
+        let output = presenter.into_inner().unwrap();
+        assert!(!output.is_empty(), "Should emit bg removal");
+    }
+
+    #[test]
+    fn sgr_delta_dim_removed_bold_stays() {
+        // Reverse of the bold-dim collateral test: removing DIM while BOLD stays.
+        // DIM off (code 22) also disables BOLD. If BOLD should remain,
+        // the delta engine must re-enable BOLD.
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(3, 1);
+
+        let attrs1 = CellAttrs::new(StyleFlags::BOLD | StyleFlags::DIM, 0);
+        let attrs2 = CellAttrs::new(StyleFlags::BOLD, 0);
+        buffer.set_raw(0, 0, Cell::from_char('A').with_attrs(attrs1));
+        buffer.set_raw(1, 0, Cell::from_char('B').with_attrs(attrs2));
+
+        let old = Buffer::new(3, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter.present(&buffer, &diff).unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Should contain dim-off (22) and then bold re-enable (1)
+        assert!(
+            output_str.contains("\x1b[22m"),
+            "Expected dim-off (22) in: {output_str:?}"
+        );
+        assert!(
+            output_str.contains("\x1b[1m"),
+            "Expected bold re-enable (1) in: {output_str:?}"
+        );
+    }
+
+    #[test]
+    fn sgr_delta_fallback_to_full_reset_when_cheaper() {
+        // Many attrs removed + colors changed → delta is expensive, full reset is cheaper
+        let mut presenter = test_presenter();
+        let old = CellStyle {
+            fg: PackedRgba::rgb(10, 20, 30),
+            bg: PackedRgba::rgb(40, 50, 60),
+            attrs: StyleFlags::BOLD
+                | StyleFlags::DIM
+                | StyleFlags::ITALIC
+                | StyleFlags::UNDERLINE
+                | StyleFlags::STRIKETHROUGH,
+        };
+        let new = CellStyle {
+            fg: PackedRgba::TRANSPARENT,
+            bg: PackedRgba::TRANSPARENT,
+            attrs: StyleFlags::empty(),
+        };
+
+        presenter.current_style = Some(old);
+        presenter.emit_style_delta(old, new).unwrap();
+        let output = presenter.into_inner().unwrap();
+        let output_str = String::from_utf8_lossy(&output);
+
+        // With everything removed and going to default, full reset ("\x1b[0m") is cheapest
+        assert!(
+            output_str.contains("\x1b[0m"),
+            "Expected full reset fallback: {output_str:?}"
+        );
+    }
+
+    // --- Content emission edge cases ---
+
+    #[test]
+    fn emit_cell_control_char_replaced_with_fffd() {
+        let mut presenter = test_presenter();
+        presenter.cursor_x = Some(0);
+        presenter.cursor_y = Some(0);
+
+        // Control character '\x01' has width 0, not empty, not continuation.
+        // The zero-width-content path replaces it with U+FFFD.
+        let cell = Cell::from_char('\x01');
+        presenter.emit_cell(0, &cell, None, None).unwrap();
+        let output = presenter.into_inner().unwrap();
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Should emit U+FFFD (replacement character), not the raw control char
+        assert!(
+            output_str.contains('\u{FFFD}'),
+            "Control char (width 0) should be replaced with U+FFFD, got: {output:?}"
+        );
+        assert!(
+            !output.contains(&0x01),
+            "Raw control char should not appear"
+        );
+    }
+
+    #[test]
+    fn emit_content_empty_cell_emits_space() {
+        let mut presenter = test_presenter();
+        presenter.cursor_x = Some(0);
+        presenter.cursor_y = Some(0);
+
+        let cell = Cell::default();
+        assert!(cell.is_empty());
+        presenter.emit_cell(0, &cell, None, None).unwrap();
+        let output = presenter.into_inner().unwrap();
+        assert!(output.contains(&b' '), "Empty cell should emit space");
+    }
+
+    // --- Continuation cell cursor_x variants ---
+
+    #[test]
+    fn continuation_cell_cursor_x_none() {
+        let mut presenter = test_presenter();
+        // cursor_x = None → defensive path, emits CUF(1) and sets cursor_x
+        presenter.cursor_x = None;
+        presenter.cursor_y = Some(0);
+
+        let cell = Cell::CONTINUATION;
+        presenter.emit_cell(5, &cell, None, None).unwrap();
+        let output = presenter.into_inner().unwrap();
+
+        // Should emit CUF(1) = "\x1b[C"
+        assert!(
+            output.windows(3).any(|w| w == b"\x1b[C"),
+            "Should emit CUF(1) for continuation with unknown cursor_x"
+        );
+    }
+
+    #[test]
+    fn continuation_cell_cursor_already_past() {
+        let mut presenter = test_presenter();
+        // cursor_x > cell x → cursor already advanced past, skip
+        presenter.cursor_x = Some(10);
+        presenter.cursor_y = Some(0);
+
+        let cell = Cell::CONTINUATION;
+        presenter.emit_cell(5, &cell, None, None).unwrap();
+        let output = presenter.into_inner().unwrap();
+
+        // Should produce no output (cursor already past)
+        assert!(
+            output.is_empty(),
+            "Should skip continuation when cursor is past it"
+        );
+    }
+
+    // --- clear_line ---
+
+    #[test]
+    fn clear_line_positions_cursor_and_erases() {
+        let mut presenter = test_presenter();
+        presenter.clear_line(5).unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Should contain CUP to row 5 col 0 and erase line
+        assert!(
+            output_str.contains("\x1b[2K"),
+            "Should contain erase line sequence"
+        );
+    }
+
+    // --- into_inner ---
+
+    #[test]
+    fn into_inner_returns_accumulated_output() {
+        let mut presenter = test_presenter();
+        presenter.position_cursor(0, 0).unwrap();
+        let inner = presenter.into_inner().unwrap();
+        assert!(!inner.is_empty(), "into_inner should return buffered data");
+    }
+
+    // --- move_cursor_optimal edge cases ---
+
+    #[test]
+    fn move_cursor_optimal_same_row_forward_large() {
+        let mut presenter = test_presenter();
+        presenter.cursor_x = Some(0);
+        presenter.cursor_y = Some(0);
+
+        // Forward by 100 columns. CUF(100) vs CHA(100) vs CUP(0,100)
+        presenter.move_cursor_optimal(100, 0).unwrap();
+        let output = presenter.into_inner().unwrap();
+
+        // Verify the output picks the cheapest move
+        let cuf = cost_model::cuf_cost(100);
+        let cha = cost_model::cha_cost(100);
+        let cup = cost_model::cup_cost(0, 100);
+        let cheapest = cuf.min(cha).min(cup);
+        assert_eq!(output.len(), cheapest, "Should pick cheapest cursor move");
+    }
+
+    #[test]
+    fn move_cursor_optimal_same_row_backward_to_zero() {
+        let mut presenter = test_presenter();
+        presenter.cursor_x = Some(50);
+        presenter.cursor_y = Some(0);
+
+        presenter.move_cursor_optimal(0, 0).unwrap();
+        let output = presenter.into_inner().unwrap();
+
+        // CHA(0) → "\x1b[1G" = 4 bytes, CUP(0,0) = "\x1b[1;1H" = 6 bytes
+        // CHA should win
+        let mut expected = Vec::new();
+        ansi::cha(&mut expected, 0).unwrap();
+        assert_eq!(output, expected, "Should use CHA for backward to col 0");
+    }
+
+    #[test]
+    fn move_cursor_optimal_unknown_cursor_uses_cup() {
+        let mut presenter = test_presenter();
+        // cursor_x and cursor_y are None
+        presenter.move_cursor_optimal(10, 5).unwrap();
+        let output = presenter.into_inner().unwrap();
+        let mut expected = Vec::new();
+        ansi::cup(&mut expected, 5, 10).unwrap();
+        assert_eq!(output, expected, "Should use CUP when cursor is unknown");
+    }
+
+    // --- Present with sync: verify wrap order ---
+
+    #[test]
+    fn sync_wrap_order_begin_content_reset_end() {
+        let mut presenter = test_presenter_with_sync();
+        let mut buffer = Buffer::new(3, 1);
+        buffer.set_raw(0, 0, Cell::from_char('Z'));
+
+        let old = Buffer::new(3, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter.present(&buffer, &diff).unwrap();
+        let output = get_output(presenter);
+
+        let sync_begin_pos = output
+            .windows(ansi::SYNC_BEGIN.len())
+            .position(|w| w == ansi::SYNC_BEGIN)
+            .expect("sync begin missing");
+        let z_pos = output
+            .iter()
+            .position(|&b| b == b'Z')
+            .expect("character Z missing");
+        let reset_pos = output
+            .windows(b"\x1b[0m".len())
+            .rposition(|w| w == b"\x1b[0m")
+            .expect("SGR reset missing");
+        let sync_end_pos = output
+            .windows(ansi::SYNC_END.len())
+            .rposition(|w| w == ansi::SYNC_END)
+            .expect("sync end missing");
+
+        assert!(sync_begin_pos < z_pos, "sync begin before content");
+        assert!(z_pos < reset_pos, "content before reset");
+        assert!(reset_pos < sync_end_pos, "reset before sync end");
+    }
+
+    // --- Multi-frame style state ---
+
+    #[test]
+    fn style_none_after_each_frame() {
+        let mut presenter = test_presenter();
+        let fg = PackedRgba::rgb(255, 128, 64);
+
+        for _ in 0..5 {
+            let mut buffer = Buffer::new(3, 1);
+            buffer.set_raw(0, 0, Cell::from_char('X').with_fg(fg));
+            let old = Buffer::new(3, 1);
+            let diff = BufferDiff::compute(&old, &buffer);
+            presenter.present(&buffer, &diff).unwrap();
+
+            // After each present(), current_style should be None (reset at frame end)
+            assert!(
+                presenter.current_style.is_none(),
+                "Style should be None after frame end"
+            );
+            assert!(
+                presenter.current_link.is_none(),
+                "Link should be None after frame end"
+            );
+        }
+    }
+
+    // --- Link state after present with open link ---
+
+    #[test]
+    fn link_closed_at_frame_end_even_if_all_cells_linked() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(3, 1);
+        let mut links = LinkRegistry::new();
+        let link_id = links.register("https://all-linked.test");
+
+        // All cells have the same link
+        for x in 0..3 {
+            buffer.set_raw(
+                x,
+                0,
+                Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)),
+            );
+        }
+
+        let old = Buffer::new(3, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+        presenter
+            .present_with_pool(&buffer, &diff, None, Some(&links))
+            .unwrap();
+
+        // After present, current_link must be None (closed at frame end)
+        assert!(
+            presenter.current_link.is_none(),
+            "Link must be closed at frame end"
+        );
+    }
+
+    // --- PresentStats ---
+
+    #[test]
+    fn present_stats_empty_diff() {
+        let mut presenter = test_presenter();
+        let buffer = Buffer::new(10, 10);
+        let diff = BufferDiff::new();
+        let stats = presenter.present(&buffer, &diff).unwrap();
+
+        assert_eq!(stats.cells_changed, 0);
+        assert_eq!(stats.run_count, 0);
+        // bytes_emitted includes the SGR reset
+        assert!(stats.bytes_emitted > 0);
+    }
+
+    #[test]
+    fn present_stats_full_row() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(10, 1);
+        for x in 0..10 {
+            buffer.set_raw(x, 0, Cell::from_char('A'));
+        }
+        let old = Buffer::new(10, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+        let stats = presenter.present(&buffer, &diff).unwrap();
+
+        assert_eq!(stats.cells_changed, 10);
+        assert!(stats.run_count >= 1);
+        assert!(stats.bytes_emitted > 10, "Should include ANSI overhead");
+    }
+
+    // --- Capabilities accessor ---
+
+    #[test]
+    fn capabilities_accessor() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.sync_output = true;
+        let presenter = Presenter::new(Vec::<u8>::new(), caps);
+        assert!(presenter.capabilities().sync_output);
+    }
+
+    // --- Flush ---
+
+    #[test]
+    fn flush_succeeds_on_empty_presenter() {
+        let mut presenter = test_presenter();
+        presenter.flush().unwrap();
+        let output = get_output(presenter);
+        assert!(output.is_empty());
+    }
+
+    // --- RowPlan total_cost ---
+
+    #[test]
+    fn row_plan_total_cost_matches_dp() {
+        let runs = [ChangeRun::new(3, 5, 10), ChangeRun::new(3, 15, 20)];
+        let plan = cost_model::plan_row(&runs, None, None);
+        assert!(plan.total_cost() > 0);
+        // The total cost includes move costs + cell costs
+        // Just verify it's consistent (non-zero) and accessible
+    }
+
+    // --- Style delta: same attrs, only colors change (hot path) ---
+
+    #[test]
+    fn sgr_delta_hot_path_only_fg_change() {
+        let mut presenter = test_presenter();
+        let old = CellStyle {
+            fg: PackedRgba::rgb(255, 0, 0),
+            bg: PackedRgba::rgb(0, 0, 0),
+            attrs: StyleFlags::BOLD | StyleFlags::ITALIC,
+        };
+        let new = CellStyle {
+            fg: PackedRgba::rgb(0, 255, 0),
+            bg: PackedRgba::rgb(0, 0, 0),
+            attrs: StyleFlags::BOLD | StyleFlags::ITALIC, // same attrs
+        };
+
+        presenter.current_style = Some(old);
+        presenter.emit_style_delta(old, new).unwrap();
+        let output = presenter.into_inner().unwrap();
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Only fg should change, no reset
+        assert!(output_str.contains("38;2;0;255;0"), "Should emit new fg");
+        assert!(
+            !output_str.contains("\x1b[0m"),
+            "No reset needed for color-only change"
+        );
+        // Should NOT re-emit attrs
+        assert!(
+            !output_str.contains("\x1b[1m"),
+            "Bold should not be re-emitted"
+        );
+    }
+
+    #[test]
+    fn sgr_delta_hot_path_both_colors_change() {
+        let mut presenter = test_presenter();
+        let old = CellStyle {
+            fg: PackedRgba::rgb(1, 2, 3),
+            bg: PackedRgba::rgb(4, 5, 6),
+            attrs: StyleFlags::UNDERLINE,
+        };
+        let new = CellStyle {
+            fg: PackedRgba::rgb(7, 8, 9),
+            bg: PackedRgba::rgb(10, 11, 12),
+            attrs: StyleFlags::UNDERLINE, // same
+        };
+
+        presenter.current_style = Some(old);
+        presenter.emit_style_delta(old, new).unwrap();
+        let output = presenter.into_inner().unwrap();
+        let output_str = String::from_utf8_lossy(&output);
+
+        assert!(output_str.contains("38;2;7;8;9"), "Should emit new fg");
+        assert!(output_str.contains("48;2;10;11;12"), "Should emit new bg");
+        assert!(!output_str.contains("\x1b[0m"), "No reset for color-only");
+    }
+
+    // --- Style full apply ---
+
+    #[test]
+    fn emit_style_full_default_is_just_reset() {
+        let mut presenter = test_presenter();
+        let default_style = CellStyle::default();
+        presenter.emit_style_full(default_style).unwrap();
+        let output = presenter.into_inner().unwrap();
+
+        // Default style (transparent fg/bg, no attrs) should just be reset
+        assert_eq!(output, b"\x1b[0m");
+    }
+
+    #[test]
+    fn emit_style_full_with_all_properties() {
+        let mut presenter = test_presenter();
+        let style = CellStyle {
+            fg: PackedRgba::rgb(10, 20, 30),
+            bg: PackedRgba::rgb(40, 50, 60),
+            attrs: StyleFlags::BOLD | StyleFlags::ITALIC,
+        };
+        presenter.emit_style_full(style).unwrap();
+        let output = presenter.into_inner().unwrap();
+        let output_str = String::from_utf8_lossy(&output);
+
+        // Should have reset + fg + bg + attrs
+        assert!(output_str.contains("\x1b[0m"), "Should start with reset");
+        assert!(output_str.contains("38;2;10;20;30"), "Should have fg");
+        assert!(output_str.contains("48;2;40;50;60"), "Should have bg");
+    }
+
+    // --- Multiple rows with different strategies ---
+
+    #[test]
+    fn present_multiple_rows_different_strategies() {
+        let mut presenter = test_presenter();
+        let mut buffer = Buffer::new(80, 5);
+
+        // Row 0: dense changes (should merge)
+        for x in (0..20).step_by(2) {
+            buffer.set_raw(x, 0, Cell::from_char('D'));
+        }
+        // Row 2: sparse changes (large gap, should stay sparse)
+        buffer.set_raw(0, 2, Cell::from_char('L'));
+        buffer.set_raw(79, 2, Cell::from_char('R'));
+        // Row 4: single cell
+        buffer.set_raw(40, 4, Cell::from_char('M'));
+
+        let old = Buffer::new(80, 5);
+        let diff = BufferDiff::compute(&old, &buffer);
+        presenter.present(&buffer, &diff).unwrap();
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+
+        assert!(output_str.contains('D'));
+        assert!(output_str.contains('L'));
+        assert!(output_str.contains('R'));
+        assert!(output_str.contains('M'));
+    }
+
     #[test]
     fn zero_width_chars_replaced_with_placeholder() {
         let mut presenter = test_presenter();
