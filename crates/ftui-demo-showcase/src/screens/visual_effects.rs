@@ -11,7 +11,7 @@
 //! - Tunnel zoom effect
 //! - Fire simulation
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::VecDeque;
 use std::env;
 use std::f64::consts::TAU;
@@ -70,12 +70,12 @@ pub struct VisualEffectsScreen {
     frame: u64,
     /// Global time for animations.
     time: f64,
-    /// Metaballs canvas adapter (high-res via Braille).
-    metaballs_adapter: RefCell<MetaballsCanvasAdapter>,
+    /// Metaballs canvas adapter (high-res via Braille, lazy init).
+    metaballs_adapter: OnceCell<RefCell<MetaballsCanvasAdapter>>,
     /// 3D shape state.
     shape3d: Shape3DState,
-    /// Plasma canvas adapter (high-res via Braille).
-    plasma_adapter: RefCell<PlasmaCanvasAdapter>,
+    /// Plasma canvas adapter (high-res via Braille, lazy init).
+    plasma_adapter: OnceCell<RefCell<PlasmaCanvasAdapter>>,
     /// Current plasma palette.
     plasma_palette: PlasmaPalette,
     /// Particle system state.
@@ -132,10 +132,10 @@ pub struct VisualEffectsScreen {
     // Text effects demo (bd-2b82)
     /// Current demo mode: Canvas or TextEffects
     demo_mode: DemoMode,
-    /// Text effects demo state
-    text_effects: TextEffectsDemo,
-    /// Markdown panel rendered over backdrop effects.
-    markdown_panel: Paragraph<'static>,
+    /// Text effects demo state (initialized on first TextEffects use).
+    text_effects: OnceCell<TextEffectsDemo>,
+    /// Markdown panel rendered over backdrop effects (initialized on first overlay render).
+    markdown_panel: OnceCell<Paragraph<'static>>,
     /// Reused header string buffer to avoid per-frame allocations.
     header_text_buf: RefCell<String>,
     /// Active FPS movement input state (WASD).
@@ -3295,7 +3295,6 @@ fn fx_stride_for_area(quality: FxQuality, width: u16, height: u16, max_samples: 
 impl Default for VisualEffectsScreen {
     fn default() -> Self {
         let plasma_palette = PlasmaPalette::Sunset;
-        let markdown_panel = Paragraph::new(render_markdown(MARKDOWN_OVERLAY)).wrap(WrapMode::Word);
         let effect = initial_effect_from_env().unwrap_or(EffectType::Metaballs);
         reset_rand_state(effect_seed(effect));
 
@@ -3303,9 +3302,9 @@ impl Default for VisualEffectsScreen {
             effect,
             frame: 0,
             time: 0.0,
-            metaballs_adapter: RefCell::new(MetaballsCanvasAdapter::new()),
+            metaballs_adapter: OnceCell::new(),
             shape3d: Shape3DState::default(),
-            plasma_adapter: RefCell::new(PlasmaCanvasAdapter::new(plasma_palette)),
+            plasma_adapter: OnceCell::new(),
             plasma_palette,
             particles: ParticleState::default(),
             matrix: MatrixState::default(),
@@ -3336,8 +3335,8 @@ impl Default for VisualEffectsScreen {
             effect_panic: Cell::new(None),
             // Text effects demo (bd-2b82)
             demo_mode: DemoMode::Canvas,
-            text_effects: TextEffectsDemo::default(),
-            markdown_panel,
+            text_effects: OnceCell::new(),
+            markdown_panel: OnceCell::new(),
             header_text_buf: RefCell::new(String::with_capacity(196)),
             fps_input: FpsInputState::default(),
             fps_last_mouse: None,
@@ -3357,6 +3356,51 @@ fn initial_effect_from_env() -> Option<EffectType> {
 }
 
 impl VisualEffectsScreen {
+    fn text_effects(&self) -> &TextEffectsDemo {
+        self.text_effects.get_or_init(TextEffectsDemo::default)
+    }
+
+    fn text_effects_mut(&mut self) -> &mut TextEffectsDemo {
+        if self.text_effects.get().is_none() {
+            let _ = self.text_effects.get_or_init(TextEffectsDemo::default);
+        }
+        self.text_effects
+            .get_mut()
+            .expect("text effects should be initialized")
+    }
+
+    fn set_text_effects_tab(&mut self, tab: TextEffectsTab) {
+        let text_effects = self.text_effects_mut();
+        text_effects.tab = tab;
+        text_effects.effect_idx = 0;
+    }
+
+    fn markdown_panel(&self) -> &Paragraph<'static> {
+        self.markdown_panel
+            .get_or_init(|| Paragraph::new(render_markdown(MARKDOWN_OVERLAY)).wrap(WrapMode::Word))
+    }
+
+    fn with_metaballs_adapter_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut MetaballsCanvasAdapter) -> R,
+    {
+        let adapter = self
+            .metaballs_adapter
+            .get_or_init(|| RefCell::new(MetaballsCanvasAdapter::new()));
+        f(&mut adapter.borrow_mut())
+    }
+
+    fn with_plasma_adapter_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut PlasmaCanvasAdapter) -> R,
+    {
+        let palette = self.plasma_palette;
+        let adapter = self
+            .plasma_adapter
+            .get_or_init(|| RefCell::new(PlasmaCanvasAdapter::new(palette)));
+        f(&mut adapter.borrow_mut())
+    }
+
     fn with_doom_mut<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut DoomE1M1State) -> R,
@@ -3572,18 +3616,22 @@ impl VisualEffectsScreen {
 
     fn cycle_plasma_palette(&mut self) {
         self.plasma_palette = next_plasma_palette(self.plasma_palette);
-        self.plasma_adapter
-            .borrow_mut()
-            .set_palette(self.plasma_palette);
+        if let Some(adapter) = self.plasma_adapter.get() {
+            adapter.borrow_mut().set_palette(self.plasma_palette);
+        }
     }
 
     /// Start a transition overlay for text effects.
     fn start_text_effects_transition(&mut self) {
-        self.transition.start_with_gradient(
-            self.text_effects.current_effect_name(),
-            self.text_effects.current_effect_description(),
-            ColorGradient::rainbow(),
-        );
+        let (name, description) = {
+            let text_effects = self.text_effects();
+            (
+                text_effects.current_effect_name().to_string(),
+                text_effects.current_effect_description().to_string(),
+            )
+        };
+        self.transition
+            .start_with_gradient(&name, &description, ColorGradient::rainbow());
         self.transition.set_speed(0.05);
     }
 
@@ -3624,7 +3672,7 @@ impl VisualEffectsScreen {
             return;
         }
 
-        self.markdown_panel.render(inner, frame);
+        self.markdown_panel().render(inner, frame);
     }
 
     /// Render text effects demo area
@@ -3666,9 +3714,10 @@ impl VisualEffectsScreen {
     fn render_text_effects_tabs(&self, frame: &mut Frame, area: Rect) {
         let mut text = String::with_capacity(area.width as usize);
         text.push(' ');
+        let text_effects = self.text_effects();
 
         for (i, tab) in TextEffectsTab::ALL.iter().enumerate() {
-            let is_active = *tab == self.text_effects.tab;
+            let is_active = *tab == text_effects.tab;
             let name = tab.name();
 
             if is_active {
@@ -3709,6 +3758,7 @@ impl VisualEffectsScreen {
         } else {
             1
         };
+        let text_effects = self.text_effects();
 
         let mut constraints = Vec::new();
         for _ in 0..slots {
@@ -3721,9 +3771,8 @@ impl VisualEffectsScreen {
                 continue;
             }
 
-            let effect_idx =
-                (self.text_effects.effect_idx + idx) % self.text_effects.tab.effect_count();
-            let demo = self.text_effects.variant_with_effect(effect_idx);
+            let effect_idx = (text_effects.effect_idx + idx) % text_effects.tab.effect_count();
+            let demo = text_effects.variant_with_effect(effect_idx);
             let rows = Flex::vertical()
                 .constraints([
                     Constraint::Fixed(1),
@@ -3893,26 +3942,27 @@ impl VisualEffectsScreen {
 
     /// Render help bar for text effects
     fn render_text_effects_help(&self, frame: &mut Frame, area: Rect) {
-        let help_text = match self.text_effects.tab {
+        let text_effects = self.text_effects();
+        let help_text = match text_effects.tab {
             TextEffectsTab::Combinations => {
                 format!(
                     "Combos: [1]Gradient:{} [2]Anim:{} [3]Typo:{} [4]FX:{}",
-                    if self.text_effects.combo_enabled[0] {
+                    if text_effects.combo_enabled[0] {
                         "ON"
                     } else {
                         "off"
                     },
-                    if self.text_effects.combo_enabled[1] {
+                    if text_effects.combo_enabled[1] {
                         "ON"
                     } else {
                         "off"
                     },
-                    if self.text_effects.combo_enabled[2] {
+                    if text_effects.combo_enabled[2] {
                         "ON"
                     } else {
                         "off"
                     },
-                    if self.text_effects.combo_enabled[3] {
+                    if text_effects.combo_enabled[3] {
                         "ON"
                     } else {
                         "off"
@@ -3922,7 +3972,7 @@ impl VisualEffectsScreen {
             _ => {
                 format!(
                     "FPS: {:.1} │ Time: {:.2} │ Easing: {:?}",
-                    self.fps, self.text_effects.time, self.text_effects.easing
+                    self.fps, text_effects.time, text_effects.easing
                 )
             }
         };
@@ -4008,79 +4058,74 @@ impl Screen for VisualEffectsScreen {
                     match code {
                         // 1-6 keys switch tabs
                         KeyCode::Char('1') => {
-                            if self.text_effects.tab == TextEffectsTab::Combinations {
-                                self.text_effects.toggle_combo(0);
+                            if self.text_effects().tab == TextEffectsTab::Combinations {
+                                self.text_effects_mut().toggle_combo(0);
                             } else if let Some(tab) = TextEffectsTab::from_key(1) {
-                                self.text_effects.tab = tab;
-                                self.text_effects.effect_idx = 0;
+                                self.set_text_effects_tab(tab);
                                 self.start_text_effects_transition();
                             }
                         }
                         KeyCode::Char('2') => {
-                            if self.text_effects.tab == TextEffectsTab::Combinations {
-                                self.text_effects.toggle_combo(1);
+                            if self.text_effects().tab == TextEffectsTab::Combinations {
+                                self.text_effects_mut().toggle_combo(1);
                             } else if let Some(tab) = TextEffectsTab::from_key(2) {
-                                self.text_effects.tab = tab;
-                                self.text_effects.effect_idx = 0;
+                                self.set_text_effects_tab(tab);
                                 self.start_text_effects_transition();
                             }
                         }
                         KeyCode::Char('3') => {
-                            if self.text_effects.tab == TextEffectsTab::Combinations {
-                                self.text_effects.toggle_combo(2);
+                            if self.text_effects().tab == TextEffectsTab::Combinations {
+                                self.text_effects_mut().toggle_combo(2);
                             } else if let Some(tab) = TextEffectsTab::from_key(3) {
-                                self.text_effects.tab = tab;
-                                self.text_effects.effect_idx = 0;
+                                self.set_text_effects_tab(tab);
                                 self.start_text_effects_transition();
                             }
                         }
                         KeyCode::Char('4') => {
-                            if self.text_effects.tab == TextEffectsTab::Combinations {
-                                self.text_effects.toggle_combo(3);
+                            if self.text_effects().tab == TextEffectsTab::Combinations {
+                                self.text_effects_mut().toggle_combo(3);
                             } else if let Some(tab) = TextEffectsTab::from_key(4) {
-                                self.text_effects.tab = tab;
-                                self.text_effects.effect_idx = 0;
+                                self.set_text_effects_tab(tab);
                                 self.start_text_effects_transition();
                             }
                         }
                         KeyCode::Char('5') => {
                             if let Some(tab) = TextEffectsTab::from_key(5) {
-                                self.text_effects.tab = tab;
-                                self.text_effects.effect_idx = 0;
+                                self.set_text_effects_tab(tab);
                                 self.start_text_effects_transition();
                             }
                         }
                         KeyCode::Char('6') => {
                             if let Some(tab) = TextEffectsTab::from_key(6) {
-                                self.text_effects.tab = tab;
-                                self.text_effects.effect_idx = 0;
+                                self.set_text_effects_tab(tab);
                                 self.start_text_effects_transition();
                             }
                         }
                         // Space cycles effects within tab
                         KeyCode::Char(' ') | KeyCode::Right => {
                             if is_press || is_repeat {
-                                self.text_effects.next_effect();
+                                self.text_effects_mut().next_effect();
                                 self.start_text_effects_transition();
                             }
                         }
                         KeyCode::Left => {
                             if is_press || is_repeat {
-                                self.text_effects.prev_effect();
+                                self.text_effects_mut().prev_effect();
                                 self.start_text_effects_transition();
                             }
                         }
                         // 'e' cycles easing functions
                         KeyCode::Char('e') => {
                             if is_press {
-                                self.text_effects.easing_mode = !self.text_effects.easing_mode;
-                                self.text_effects.next_easing();
+                                let text_effects = self.text_effects_mut();
+                                text_effects.easing_mode = !text_effects.easing_mode;
+                                text_effects.next_easing();
                             }
                         }
                         // 'c' jumps to combinations tab
                         KeyCode::Char('c') => {
                             if is_press {
-                                self.text_effects.tab = TextEffectsTab::Combinations;
+                                self.set_text_effects_tab(TextEffectsTab::Combinations);
                                 self.start_text_effects_transition();
                             }
                         }
@@ -4216,20 +4261,14 @@ impl Screen for VisualEffectsScreen {
                     }
                     // Canvas adapters for metaballs and plasma (bd-l8x9.5.3)
                     EffectType::Metaballs => {
-                        self.metaballs_adapter.borrow_mut().fill_frame(
-                            &mut painter,
-                            self.time,
-                            quality,
-                            &theme_inputs,
-                        );
+                        self.with_metaballs_adapter_mut(|adapter| {
+                            adapter.fill_frame(&mut painter, self.time, quality, &theme_inputs);
+                        });
                     }
                     EffectType::Plasma => {
-                        self.plasma_adapter.borrow_mut().fill(
-                            &mut painter,
-                            self.time,
-                            quality,
-                            &theme_inputs,
-                        );
+                        self.with_plasma_adapter_mut(|adapter| {
+                            adapter.fill(&mut painter, self.time, quality, &theme_inputs);
+                        });
                     }
                 }));
                 if result.is_err() {
@@ -4504,7 +4543,7 @@ impl Screen for VisualEffectsScreen {
 
         // Update text effects only when the text demo is visible (bd-2b82).
         if matches!(self.demo_mode, DemoMode::TextEffects) {
-            self.text_effects.tick();
+            self.text_effects_mut().tick();
         }
 
         // Update transition overlay animation
@@ -4658,6 +4697,37 @@ mod tests {
         let seed_b = effect_seed(EffectType::Metaballs);
         assert_eq!(seed_a, seed_b);
         assert_ne!(seed_a, effect_seed(EffectType::QuakeE1M1));
+    }
+
+    #[test]
+    fn heavy_ui_state_is_lazy_initialized() {
+        let mut screen = VisualEffectsScreen::default();
+        assert!(screen.text_effects.get().is_none());
+        assert!(screen.markdown_panel.get().is_none());
+        assert!(screen.metaballs_adapter.get().is_none());
+        assert!(screen.plasma_adapter.get().is_none());
+
+        // Text-effects state initializes when text-effects mode first renders.
+        screen.demo_mode = DemoMode::TextEffects;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+        assert!(screen.text_effects.get().is_some());
+        assert!(screen.markdown_panel.get().is_none());
+        assert!(screen.metaballs_adapter.get().is_none());
+        assert!(screen.plasma_adapter.get().is_none());
+
+        // Markdown overlay initializes when canvas overlay is first rendered.
+        screen.demo_mode = DemoMode::Canvas;
+        screen.effect = EffectType::Metaballs;
+        screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+        assert!(screen.markdown_panel.get().is_some());
+        assert!(screen.metaballs_adapter.get().is_some());
+        assert!(screen.plasma_adapter.get().is_none());
+
+        screen.effect = EffectType::Plasma;
+        screen.view(&mut frame, Rect::new(0, 0, 80, 24));
+        assert!(screen.plasma_adapter.get().is_some());
     }
 
     // =========================================================================
