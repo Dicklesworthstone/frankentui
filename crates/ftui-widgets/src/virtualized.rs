@@ -1172,23 +1172,27 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
         // Render visible items
         for idx in render_start..render_end {
             // Calculate Y position relative to viewport
-            let relative_idx = idx as i32 - state.scroll_offset as i32;
-            let y_offset = relative_idx * self.fixed_height as i32;
+            // Use saturating casts to prevent overflow with large item counts.
+            let idx_i32 = i32::try_from(idx).unwrap_or(i32::MAX);
+            let offset_i32 = i32::try_from(state.scroll_offset).unwrap_or(i32::MAX);
+            let relative_idx = idx_i32.saturating_sub(offset_i32);
+            let height_i32 = i32::from(self.fixed_height);
+            let y_offset = relative_idx.saturating_mul(height_i32);
 
             // Skip items above viewport
-            if y_offset + self.fixed_height as i32 <= 0 {
+            if y_offset.saturating_add(height_i32) <= 0 {
                 continue;
             }
 
             // Stop if below viewport
-            if y_offset >= area.height as i32 {
+            if y_offset >= i32::from(area.height) {
                 break;
             }
 
             // Check if item starts off-screen top (terminal y < 0)
             // We cannot render at negative coordinates, and clamping to 0 causes artifacts
             // (drawing top of item instead of bottom). Skip such items.
-            if i32::from(area.y) + y_offset < 0 {
+            if i32::from(area.y).saturating_add(y_offset) < 0 {
                 continue;
             }
 
