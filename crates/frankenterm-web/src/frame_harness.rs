@@ -692,7 +692,7 @@ pub fn resize_storm_frame_jsonl(
 ///
 /// When `interaction` is present, this additionally emits:
 /// - `interaction_hash` (geometry + cells + overlay state)
-/// - raw overlay fields (`hovered_link_id`, `cursor_*`, `selection_*`, `text_shaping_*`)
+/// - overlay fields (`hovered_link_id`, `cursor_*`, `selection_*`, `text_shaping_*`)
 /// - accessibility state flags (`screen_reader_enabled`, `high_contrast_enabled`,
 ///   `reduced_motion_enabled`, `focused`)
 #[must_use]
@@ -730,7 +730,7 @@ pub fn resize_storm_frame_jsonl_with_interaction(
             Some(state.selection_start),
             Some(state.selection_end),
             Some(state.text_shaping_enabled),
-            Some(state.text_shaping_engine),
+            Some(state.effective_text_shaping_engine()),
             Some(state.screen_reader_enabled),
             Some(state.high_contrast_enabled),
             Some(state.reduced_motion_enabled),
@@ -1456,6 +1456,44 @@ mod tests {
         assert_eq!(with_parsed["high_contrast_enabled"], true);
         assert_eq!(with_parsed["reduced_motion_enabled"], false);
         assert_eq!(with_parsed["focused"], true);
+    }
+
+    #[test]
+    fn resize_storm_frame_jsonl_with_interaction_canonicalizes_disabled_shaping_engine() {
+        let geometry = GeometrySnapshot {
+            cols: 2,
+            rows: 1,
+            pixel_width: 20,
+            pixel_height: 10,
+            cell_width_px: 10.0,
+            cell_height_px: 10.0,
+            dpr: 1.0,
+            zoom: 1.0,
+        };
+        let cells = vec![CellData::EMPTY; 2];
+        let interaction = InteractionSnapshot {
+            text_shaping_enabled: false,
+            text_shaping_engine: 1,
+            ..InteractionSnapshot::default()
+        };
+        let expected_hash =
+            stable_frame_hash_with_interaction(&cells, geometry, InteractionSnapshot::default());
+
+        let line = resize_storm_frame_jsonl_with_interaction(
+            "run-2",
+            7,
+            "T000002",
+            4,
+            geometry,
+            &cells,
+            Some(interaction),
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&line).expect("interaction frame line should be parseable JSON");
+
+        assert_eq!(parsed["text_shaping_enabled"], false);
+        assert_eq!(parsed["text_shaping_engine"], 0);
+        assert_eq!(parsed["interaction_hash"], expected_hash);
     }
 
     #[test]
