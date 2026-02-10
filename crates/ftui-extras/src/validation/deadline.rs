@@ -842,4 +842,190 @@ mod tests {
             assert!(rationale.prob_exceed_deadline <= 1.0);
         }
     }
+
+    // --- Additional edge case tests (bd-5myuv) ---
+
+    #[test]
+    fn stats_window_size_zero_clamped_to_one() {
+        let stats = SurvivalStats::new(0);
+        assert_eq!(stats.window_size, 1);
+    }
+
+    #[test]
+    fn stats_survival_negative_t_returns_one() {
+        let stats = SurvivalStats::new(10);
+        assert!((stats.survival(-5.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stats_expected_remaining_near_zero_survival() {
+        let mut stats = SurvivalStats::new(10);
+        // Train so model has parameters
+        for _ in 0..5 {
+            stats.record(Duration::from_millis(10));
+        }
+        // Very large elapsed time → survival ≈ 0 → expected_remaining = 0
+        let remaining = stats.expected_remaining(1_000_000.0);
+        assert!(
+            remaining.abs() < 1e-6,
+            "Expected remaining should be ~0 for extreme elapsed, got {}",
+            remaining
+        );
+    }
+
+    #[test]
+    fn stats_expected_remaining_positive_for_moderate_elapsed() {
+        let mut stats = SurvivalStats::new(10);
+        for _ in 0..10 {
+            stats.record(Duration::from_millis(100));
+        }
+        let remaining = stats.expected_remaining(0.05); // 50ms elapsed
+        assert!(
+            remaining > 0.0,
+            "Expected remaining should be positive, got {}",
+            remaining
+        );
+        assert!(remaining.is_finite());
+    }
+
+    #[test]
+    fn stats_estimate_weibull_identical_samples_no_panic() {
+        let mut stats = SurvivalStats::new(10);
+        // All identical → variance = 0 → should not change params
+        for _ in 0..5 {
+            stats.record(Duration::from_millis(100));
+        }
+        // Should not panic; k and lambda should remain finite
+        assert!(stats.k().is_finite());
+        assert!(stats.lambda().is_finite());
+    }
+
+    #[test]
+    fn stats_ema_converges_toward_input() {
+        let mut stats = SurvivalStats::new(100);
+        // Feed 200ms repeatedly; EMA should approach 0.2
+        for _ in 0..100 {
+            stats.record(Duration::from_millis(200));
+        }
+        assert!(
+            (stats.mean() - 0.2).abs() < 0.01,
+            "EMA should converge near 0.2, got {}",
+            stats.mean()
+        );
+    }
+
+    #[test]
+    fn config_with_window_size_zero_clamped_to_one() {
+        let config = DeadlineConfig::default().with_window_size(0);
+        assert_eq!(config.window_size, 1);
+    }
+
+    #[test]
+    fn config_with_min_samples_zero_clamped_to_one() {
+        let config = DeadlineConfig::default().with_min_samples(0);
+        assert_eq!(config.min_samples, 1);
+    }
+
+    #[test]
+    fn config_partial_eq() {
+        let a = DeadlineConfig::new(Duration::from_millis(500));
+        let b = DeadlineConfig::new(Duration::from_millis(500));
+        assert_eq!(a, b);
+
+        let c = DeadlineConfig::new(Duration::from_millis(200));
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn controller_default() {
+        let controller = DeadlineController::default();
+        assert_eq!(controller.config().deadline, Duration::from_millis(500));
+        assert_eq!(controller.stats().sample_count(), 0);
+    }
+
+    #[test]
+    fn controller_decide_matches_rationale() {
+        let mut controller = DeadlineController::with_deadline(Duration::from_millis(500));
+        for _ in 0..10 {
+            controller.record_completion(Duration::from_millis(100));
+        }
+        let elapsed = Duration::from_millis(50);
+        let decision = controller.decide(elapsed);
+        let rationale = controller.decide_with_rationale(elapsed);
+        assert_eq!(decision, rationale.decision);
+    }
+
+    #[test]
+    fn controller_new_input_returns_sequence() {
+        let mut controller = DeadlineController::default();
+        let s1 = controller.new_input();
+        let s2 = controller.new_input();
+        assert!(s2 > s1, "Sequence should increase");
+    }
+
+    #[test]
+    fn controller_start_validation_increments_sequence() {
+        let mut controller = DeadlineController::default();
+        let s1 = controller.start_validation();
+        let s2 = controller.start_validation();
+        assert_eq!(s2, s1 + 1);
+    }
+
+    #[test]
+    fn decision_debug_clone_eq() {
+        let wait = DeadlineDecision::Wait;
+        let cancel = DeadlineDecision::Cancel;
+        assert_ne!(wait, cancel);
+        assert_eq!(wait.clone(), DeadlineDecision::Wait);
+        // Debug should produce non-empty output
+        assert!(!format!("{:?}", wait).is_empty());
+        assert!(!format!("{:?}", cancel).is_empty());
+    }
+
+    #[test]
+    fn rationale_debug_clone() {
+        let mut controller = DeadlineController::default();
+        for _ in 0..10 {
+            controller.record_completion(Duration::from_millis(50));
+        }
+        let rationale = controller.decide_with_rationale(Duration::from_millis(30));
+        let cloned = rationale.clone();
+        assert_eq!(cloned.decision, rationale.decision);
+        assert!(!format!("{:?}", rationale).is_empty());
+    }
+
+    #[test]
+    fn rationale_past_deadline_explanation_contains_exceeds() {
+        let controller = DeadlineController::with_deadline(Duration::from_millis(100));
+        let rationale = controller.decide_with_rationale(Duration::from_millis(200));
+        assert_eq!(rationale.decision, DeadlineDecision::Cancel);
+        assert!(
+            rationale.explanation.contains("exceeds deadline"),
+            "Explanation should mention exceeds deadline: {}",
+            rationale.explanation
+        );
+        assert!((rationale.prob_exceed_deadline - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn controller_debug_clone() {
+        let controller = DeadlineController::default();
+        let cloned = controller.clone();
+        assert_eq!(cloned.config().deadline, controller.config().deadline);
+        assert!(!format!("{:?}", controller).is_empty());
+    }
+
+    #[test]
+    fn controller_staleness_multiple_inputs() {
+        let mut controller = DeadlineController::default();
+        let v1 = controller.start_validation();
+        controller.new_input();
+        let v2 = controller.start_validation();
+        controller.new_input();
+        let v3 = controller.start_validation();
+
+        assert!(controller.is_stale(v1));
+        assert!(controller.is_stale(v2));
+        assert!(!controller.is_stale(v3));
+    }
 }
