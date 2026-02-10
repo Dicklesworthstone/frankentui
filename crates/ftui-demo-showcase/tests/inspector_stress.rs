@@ -360,6 +360,14 @@ fn stress_overlay_render_full_mode_200x50() {
 
     let overlay = InspectorOverlay::new(&state);
     let mut pool = GraphemePool::new();
+
+    // Warmup: prime caches and page tables before timing.
+    {
+        let mut frame = Frame::with_hit_grid(200, 50, &mut pool);
+        populate_hit_grid(&mut frame, area, 10);
+        overlay.render(area, &mut frame);
+    }
+
     let mut render_times = Vec::with_capacity(50);
 
     for _ in 0..50 {
@@ -412,6 +420,13 @@ fn stress_deep_widget_tree_render() {
 
     let overlay = InspectorOverlay::new(&state);
     let mut pool = GraphemePool::new();
+
+    // Warmup: prime caches and page tables before timing.
+    {
+        let mut frame = Frame::with_hit_grid(120, 40, &mut pool);
+        overlay.render(area, &mut frame);
+    }
+
     let mut render_times = Vec::with_capacity(50);
 
     for _ in 0..50 {
@@ -461,6 +476,13 @@ fn stress_wide_widget_tree_render() {
 
     let overlay = InspectorOverlay::new(&state);
     let mut pool = GraphemePool::new();
+
+    // Warmup: prime caches and page tables before timing.
+    {
+        let mut frame = Frame::with_hit_grid(200, 50, &mut pool);
+        overlay.render(area, &mut frame);
+    }
+
     let mut render_times = Vec::with_capacity(50);
 
     for _ in 0..50 {
@@ -691,6 +713,14 @@ fn stress_hit_region_scan_large_grid() {
 
     let overlay = InspectorOverlay::new(&state);
     let mut pool = GraphemePool::new();
+
+    // Warmup: prime caches and page tables before timing.
+    {
+        let mut frame = Frame::with_hit_grid(200, 50, &mut pool);
+        populate_hit_grid(&mut frame, area, 3);
+        overlay.render(area, &mut frame);
+    }
+
     let mut render_times = Vec::with_capacity(30);
 
     for _ in 0..30 {
@@ -749,6 +779,14 @@ fn stress_combined_worst_case() {
 
     let overlay = InspectorOverlay::new(&state);
     let mut pool = GraphemePool::new();
+
+    // Warmup: prime caches and page tables before timing.
+    {
+        let mut frame = Frame::with_hit_grid(200, 50, &mut pool);
+        populate_hit_grid(&mut frame, area, 5);
+        overlay.render(area, &mut frame);
+    }
+
     let mut render_times = Vec::with_capacity(30);
 
     for _ in 0..30 {
