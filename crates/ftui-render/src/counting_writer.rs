@@ -469,4 +469,193 @@ mod tests {
         assert!(stats.within_budget(), "Full redraw should be within budget");
         assert!(stats.bytes_emitted < 80000, "Full redraw should be < 80KB");
     }
+
+    // --- CountingWriter edge cases ---
+
+    #[test]
+    fn counting_writer_debug() {
+        let buffer: Vec<u8> = Vec::new();
+        let writer = CountingWriter::new(buffer);
+        let dbg = format!("{:?}", writer);
+        assert!(dbg.contains("CountingWriter"), "Debug: {dbg}");
+    }
+
+    #[test]
+    fn counting_writer_inner_mut() {
+        let mut writer = CountingWriter::new(Vec::<u8>::new());
+        writer.write_all(b"hello").unwrap();
+        // Modify inner via inner_mut
+        writer.inner_mut().push(b'!');
+        assert_eq!(writer.inner(), &b"hello!"[..]);
+        // Byte counter unchanged by direct inner manipulation
+        assert_eq!(writer.bytes_written(), 5);
+    }
+
+    #[test]
+    fn counting_writer_empty_write() {
+        let mut buffer = Vec::new();
+        let mut writer = CountingWriter::new(&mut buffer);
+        writer.write_all(b"").unwrap();
+        assert_eq!(writer.bytes_written(), 0);
+        let n = writer.write(b"").unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(writer.bytes_written(), 0);
+    }
+
+    #[test]
+    fn counting_writer_multiple_resets() {
+        let mut buffer = Vec::new();
+        let mut writer = CountingWriter::new(&mut buffer);
+        writer.write_all(b"abc").unwrap();
+        writer.reset_counter();
+        writer.reset_counter();
+        assert_eq!(writer.bytes_written(), 0);
+        writer.write_all(b"de").unwrap();
+        assert_eq!(writer.bytes_written(), 2);
+    }
+
+    #[test]
+    fn counting_writer_accumulates_u64() {
+        let mut buffer = Vec::new();
+        let mut writer = CountingWriter::new(&mut buffer);
+        // Write enough to test u64 accumulation (though not near overflow)
+        for _ in 0..1000 {
+            writer.write_all(b"x").unwrap();
+        }
+        assert_eq!(writer.bytes_written(), 1000);
+    }
+
+    #[test]
+    fn counting_writer_multiple_flushes() {
+        let mut buffer = Vec::new();
+        let mut writer = CountingWriter::new(&mut buffer);
+        writer.write_all(b"test").unwrap();
+        writer.flush().unwrap();
+        writer.flush().unwrap();
+        writer.flush().unwrap();
+        assert_eq!(writer.bytes_written(), 4);
+    }
+
+    #[test]
+    fn counting_writer_into_inner_preserves_data() {
+        let mut writer = CountingWriter::new(Vec::<u8>::new());
+        writer.write_all(b"hello world").unwrap();
+        let inner = writer.into_inner();
+        assert_eq!(&inner, b"hello world");
+    }
+
+    #[test]
+    fn counting_writer_initial_state() {
+        let buffer: Vec<u8> = Vec::new();
+        let writer = CountingWriter::new(buffer);
+        assert_eq!(writer.bytes_written(), 0);
+        assert!(writer.inner().is_empty());
+    }
+
+    // --- PresentStats edge cases ---
+
+    #[test]
+    fn present_stats_debug_clone_eq() {
+        let a = PresentStats::new(100, 10, 2, Duration::from_micros(50));
+        let dbg = format!("{:?}", a);
+        assert!(dbg.contains("PresentStats"), "Debug: {dbg}");
+        let cloned = a.clone();
+        assert_eq!(a, cloned);
+        let b = PresentStats::new(200, 10, 2, Duration::from_micros(50));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn present_stats_log_noop() {
+        let stats = PresentStats::default();
+        stats.log(); // Should not panic (noop without tracing)
+    }
+
+    #[test]
+    fn present_stats_large_values() {
+        let stats = PresentStats::new(u64::MAX, usize::MAX, usize::MAX, Duration::MAX);
+        assert_eq!(stats.bytes_emitted, u64::MAX);
+        assert_eq!(stats.cells_changed, usize::MAX);
+    }
+
+    #[test]
+    fn present_stats_bytes_per_cell_fractional() {
+        let stats = PresentStats::new(10, 3, 1, Duration::ZERO);
+        let bpc = stats.bytes_per_cell();
+        assert!((bpc - 3.333333333).abs() < 0.001);
+    }
+
+    #[test]
+    fn present_stats_bytes_per_run_fractional() {
+        let stats = PresentStats::new(10, 5, 3, Duration::ZERO);
+        let bpr = stats.bytes_per_run();
+        assert!((bpr - 3.333333333).abs() < 0.001);
+    }
+
+    #[test]
+    fn present_stats_within_budget_at_exact_boundary() {
+        // Budget for 10 cells, 2 runs: 2*10 + 10*40 + 20 = 440
+        let budget = expected_max_bytes(10, 2);
+        assert_eq!(budget, 440);
+
+        let at_boundary = PresentStats::new(440, 10, 2, Duration::ZERO);
+        assert!(at_boundary.within_budget());
+
+        let over_boundary = PresentStats::new(441, 10, 2, Duration::ZERO);
+        assert!(!over_boundary.within_budget());
+    }
+
+    // --- Constants ---
+
+    #[test]
+    fn constants_values() {
+        assert_eq!(BYTES_PER_CELL_MAX, 40);
+        assert_eq!(SYNC_OVERHEAD, 20);
+        assert_eq!(BYTES_PER_CURSOR_MOVE, 10);
+    }
+
+    // --- expected_max_bytes edge cases ---
+
+    #[test]
+    fn expected_max_bytes_many_runs_few_cells() {
+        // 1 cell, 100 runs (pathological case)
+        let budget = expected_max_bytes(1, 100);
+        // 100*10 + 1*40 + 20 = 1060
+        assert_eq!(budget, 1060);
+    }
+
+    #[test]
+    fn expected_max_bytes_many_cells_one_run() {
+        let budget = expected_max_bytes(1000, 1);
+        // 1*10 + 1000*40 + 20 = 40030
+        assert_eq!(budget, 40030);
+    }
+
+    // --- StatsCollector edge cases ---
+
+    #[test]
+    fn stats_collector_debug() {
+        let collector = StatsCollector::start(5, 2);
+        let dbg = format!("{:?}", collector);
+        assert!(dbg.contains("StatsCollector"), "Debug: {dbg}");
+    }
+
+    #[test]
+    fn stats_collector_zero_cells_runs() {
+        let collector = StatsCollector::start(0, 0);
+        let stats = collector.finish(0);
+        assert_eq!(stats.cells_changed, 0);
+        assert_eq!(stats.run_count, 0);
+        assert_eq!(stats.bytes_emitted, 0);
+        assert!(stats.within_budget()); // 0 <= SYNC_OVERHEAD
+    }
+
+    #[test]
+    fn stats_collector_immediate_finish() {
+        let collector = StatsCollector::start(1, 1);
+        let stats = collector.finish(50);
+        assert_eq!(stats.bytes_emitted, 50);
+        // Duration should be very small (near zero)
+        assert!(stats.duration < Duration::from_millis(100));
+    }
 }
