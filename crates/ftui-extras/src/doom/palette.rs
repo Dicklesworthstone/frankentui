@@ -440,7 +440,10 @@ mod tests {
         for light in 0..=255u8 {
             for dist in [0.0, 100.0, 500.0, 1000.0, 5000.0] {
                 let idx = pal.light_to_colormap(light, dist);
-                assert!(idx <= 31, "colormap index {idx} out of range for light={light} dist={dist}");
+                assert!(
+                    idx <= 31,
+                    "colormap index {idx} out of range for light={light} dist={dist}"
+                );
             }
         }
     }

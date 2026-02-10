@@ -850,4 +850,267 @@ mod tests {
         let idx = wad.find_lump_after("MAP01", 0);
         assert_eq!(idx, None);
     }
+
+    #[test]
+    fn parse_colormap_missing_lump() {
+        let data = make_minimal_wad();
+        let wad = WadFile::parse(data).unwrap();
+        assert!(wad.parse_colormap().is_err());
+    }
+
+    #[test]
+    fn parse_multiple_linedefs() {
+        let mut lump = Vec::new();
+        for i in 0..5u16 {
+            lump.extend_from_slice(&i.to_le_bytes()); // v1
+            lump.extend_from_slice(&(i + 1).to_le_bytes()); // v2
+            lump.extend_from_slice(&0u16.to_le_bytes()); // flags
+            lump.extend_from_slice(&0u16.to_le_bytes()); // special
+            lump.extend_from_slice(&0u16.to_le_bytes()); // tag
+            lump.extend_from_slice(&0u16.to_le_bytes()); // right_sidedef
+            lump.extend_from_slice(&0xFFFFu16.to_le_bytes()); // left_sidedef
+        }
+        let wad_data = make_wad_with_lump(b"LINEDEFS", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let linedefs = wad.parse_linedefs(0);
+        assert_eq!(linedefs.len(), 5);
+        assert_eq!(linedefs[3].v1, 3);
+        assert_eq!(linedefs[3].v2, 4);
+    }
+
+    #[test]
+    fn parse_multiple_sectors() {
+        let mut lump = Vec::new();
+        for i in 0..3i16 {
+            lump.extend_from_slice(&(i * 10).to_le_bytes()); // floor_height
+            lump.extend_from_slice(&128i16.to_le_bytes()); // ceiling_height
+            lump.extend_from_slice(b"FLOOR4_8"); // floor_texture
+            lump.extend_from_slice(b"CEIL3_5\0"); // ceiling_texture
+            lump.extend_from_slice(&160u16.to_le_bytes()); // light_level
+            lump.extend_from_slice(&0u16.to_le_bytes()); // special
+            lump.extend_from_slice(&0u16.to_le_bytes()); // tag
+        }
+        let wad_data = make_wad_with_lump(b"SECTORS\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let sectors = wad.parse_sectors(0);
+        assert_eq!(sectors.len(), 3);
+        assert_eq!(sectors[2].floor_height, 20);
+    }
+
+    #[test]
+    fn parse_multiple_segs() {
+        let mut lump = Vec::new();
+        for i in 0..4u16 {
+            lump.extend_from_slice(&i.to_le_bytes()); // v1
+            lump.extend_from_slice(&(i + 1).to_le_bytes()); // v2
+            lump.extend_from_slice(&0i16.to_le_bytes()); // angle
+            lump.extend_from_slice(&i.to_le_bytes()); // linedef
+            lump.extend_from_slice(&0u16.to_le_bytes()); // direction
+            lump.extend_from_slice(&0i16.to_le_bytes()); // offset
+        }
+        let wad_data = make_wad_with_lump(b"SEGS\0\0\0\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let segs = wad.parse_segs(0);
+        assert_eq!(segs.len(), 4);
+        assert_eq!(segs[2].v1, 2);
+        assert_eq!(segs[2].linedef, 2);
+    }
+
+    #[test]
+    fn parse_multiple_subsectors() {
+        let mut lump = Vec::new();
+        for i in 0..3u16 {
+            lump.extend_from_slice(&(i + 2).to_le_bytes()); // num_segs
+            lump.extend_from_slice(&(i * 3).to_le_bytes()); // first_seg
+        }
+        let wad_data = make_wad_with_lump(b"SSECTORS", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let ssectors = wad.parse_subsectors(0);
+        assert_eq!(ssectors.len(), 3);
+        assert_eq!(ssectors[1].num_segs, 3);
+        assert_eq!(ssectors[1].first_seg, 3);
+    }
+
+    #[test]
+    fn parse_multiple_nodes() {
+        let mut lump = Vec::new();
+        for i in 0..2i16 {
+            lump.extend_from_slice(&(i * 100).to_le_bytes()); // x
+            lump.extend_from_slice(&(i * 200).to_le_bytes()); // y
+            lump.extend_from_slice(&1i16.to_le_bytes()); // dx
+            lump.extend_from_slice(&0i16.to_le_bytes()); // dy
+            for _ in 0..8 {
+                lump.extend_from_slice(&0i16.to_le_bytes()); // bbox entries
+            }
+            lump.extend_from_slice(&0u16.to_le_bytes()); // right_child
+            lump.extend_from_slice(&0u16.to_le_bytes()); // left_child
+        }
+        let wad_data = make_wad_with_lump(b"NODES\0\0\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let nodes = wad.parse_nodes(0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].x, 100);
+        assert_eq!(nodes[1].y, 200);
+    }
+
+    #[test]
+    fn parse_multiple_things() {
+        let mut lump = Vec::new();
+        for i in 0..3i16 {
+            lump.extend_from_slice(&(i * 50).to_le_bytes()); // x
+            lump.extend_from_slice(&(i * 25).to_le_bytes()); // y
+            lump.extend_from_slice(&((i as u16) * 90).to_le_bytes()); // angle
+            lump.extend_from_slice(&1u16.to_le_bytes()); // thing_type
+            lump.extend_from_slice(&7u16.to_le_bytes()); // flags
+        }
+        let wad_data = make_wad_with_lump(b"THINGS\0\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let things = wad.parse_things(0);
+        assert_eq!(things.len(), 3);
+        assert_eq!(things[2].x, 100);
+        assert_eq!(things[2].y, 50);
+        assert_eq!(things[2].angle, 180);
+    }
+
+    #[test]
+    fn parse_multiple_sidedefs() {
+        let mut lump = Vec::new();
+        for i in 0..2i16 {
+            lump.extend_from_slice(&(i * 5).to_le_bytes()); // x_offset
+            lump.extend_from_slice(&(i * 10).to_le_bytes()); // y_offset
+            lump.extend_from_slice(b"UPPER\0\0\0"); // upper_texture
+            lump.extend_from_slice(b"LOWER\0\0\0"); // lower_texture
+            lump.extend_from_slice(b"MIDDLE\0\0"); // middle_texture
+            lump.extend_from_slice(&((i as u16) + 1).to_le_bytes()); // sector
+        }
+        let wad_data = make_wad_with_lump(b"SIDEDEFS", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let sides = wad.parse_sidedefs(0);
+        assert_eq!(sides.len(), 2);
+        assert_eq!(sides[1].x_offset, 5);
+        assert_eq!(sides[1].y_offset, 10);
+        assert_eq!(sides[1].sector, 2);
+    }
+
+    #[test]
+    fn parse_segs_empty_lump() {
+        let wad_data = make_wad_with_lump(b"SEGS\0\0\0\0", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        assert!(wad.parse_segs(0).is_empty());
+    }
+
+    #[test]
+    fn parse_subsectors_empty_lump() {
+        let wad_data = make_wad_with_lump(b"SSECTORS", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        assert!(wad.parse_subsectors(0).is_empty());
+    }
+
+    #[test]
+    fn parse_nodes_empty_lump() {
+        let wad_data = make_wad_with_lump(b"NODES\0\0\0", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        assert!(wad.parse_nodes(0).is_empty());
+    }
+
+    #[test]
+    fn parse_sectors_empty_lump() {
+        let wad_data = make_wad_with_lump(b"SECTORS\0", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        assert!(wad.parse_sectors(0).is_empty());
+    }
+
+    #[test]
+    fn parse_sidedefs_empty_lump() {
+        let wad_data = make_wad_with_lump(b"SIDEDEFS", &[]);
+        let wad = WadFile::parse(wad_data).unwrap();
+        assert!(wad.parse_sidedefs(0).is_empty());
+    }
+
+    #[test]
+    fn find_lump_after_case_insensitive() {
+        let data = make_two_lump_wad();
+        let wad = WadFile::parse(data).unwrap();
+        // find_lump_after should be case-insensitive
+        let idx = wad.find_lump_after("things", 0);
+        assert_eq!(idx, Some(1));
+    }
+
+    #[test]
+    fn find_lump_after_beyond_end() {
+        let data = make_two_lump_wad();
+        let wad = WadFile::parse(data).unwrap();
+        // Searching beyond the last index returns None
+        let idx = wad.find_lump_after("THINGS", 100);
+        assert_eq!(idx, None);
+    }
+
+    #[test]
+    fn lump_data_with_zero_size() {
+        // Create a WAD with a zero-size lump
+        let mut data = Vec::new();
+        data.extend_from_slice(b"IWAD");
+        data.extend_from_slice(&1i32.to_le_bytes());
+        data.extend_from_slice(&12i32.to_le_bytes()); // dir at 12
+
+        // Directory entry with size 0
+        data.extend_from_slice(&12i32.to_le_bytes()); // filepos (points to dir itself, but size=0)
+        data.extend_from_slice(&0i32.to_le_bytes()); // size = 0
+        data.extend_from_slice(b"EMPTY\0\0\0");
+
+        let wad = WadFile::parse(data).unwrap();
+        assert!(wad.lump_data(0).is_empty());
+    }
+
+    #[test]
+    fn parse_playpal_larger_than_minimum() {
+        // PLAYPAL can have multiple palettes (14 × 768 bytes)
+        // but we only use the first. Verify extra data doesn't cause issues.
+        let lump = vec![42u8; 768 * 14];
+        let wad_data = make_wad_with_lump(b"PLAYPAL\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let palette = wad.parse_playpal().unwrap();
+        assert_eq!(palette.len(), 256);
+        assert_eq!(palette[0], [42, 42, 42]);
+    }
+
+    #[test]
+    fn parse_partial_linedef_data_truncates() {
+        // 13 bytes = less than one full linedef (14 bytes), should produce 0
+        let lump = vec![0u8; 13];
+        let wad_data = make_wad_with_lump(b"LINEDEFS", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let linedefs = wad.parse_linedefs(0);
+        assert!(linedefs.is_empty());
+    }
+
+    #[test]
+    fn parse_partial_thing_data_truncates() {
+        // 9 bytes = less than one full thing (10 bytes), should produce 0
+        let lump = vec![0u8; 9];
+        let wad_data = make_wad_with_lump(b"THINGS\0\0", &lump);
+        let wad = WadFile::parse(wad_data).unwrap();
+        let things = wad.parse_things(0);
+        assert!(things.is_empty());
+    }
+
+    #[test]
+    fn dir_entry_name_str_trims_nulls() {
+        let entry = DirEntry {
+            filepos: 0,
+            size: 0,
+            name: *b"HI\0\0\0\0\0\0",
+        };
+        assert_eq!(entry.name_str(), "HI");
+    }
+
+    #[test]
+    fn dir_entry_name_str_full_8_chars() {
+        let entry = DirEntry {
+            filepos: 0,
+            size: 0,
+            name: *b"LONGNAME",
+        };
+        assert_eq!(entry.name_str(), "LONGNAME");
+    }
 }
