@@ -6,9 +6,46 @@
 //! Only compiled on `wasm32` targets.
 
 use js_sys::{Array, Object, Reflect, Uint32Array};
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use super::runner_core::RunnerCore;
+
+fn console_error(msg: &str) {
+    let global = js_sys::global();
+    let Ok(console) = Reflect::get(&global, &"console".into()) else {
+        return;
+    };
+    let Ok(error) = Reflect::get(&console, &"error".into()) else {
+        return;
+    };
+    let Ok(error_fn) = error.dyn_into::<js_sys::Function>() else {
+        return;
+    };
+    let _ = error_fn.call1(&console, &JsValue::from_str(msg));
+}
+
+fn install_panic_hook() {
+    use std::sync::Once;
+
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            // Keep it simple and robust: always print something useful.
+            let msg = if let Some(loc) = info.location() {
+                format!(
+                    "panic at {}:{}:{}: {info}",
+                    loc.file(),
+                    loc.line(),
+                    loc.column()
+                )
+            } else {
+                format!("panic: {info}")
+            };
+            console_error(&msg);
+        }));
+    });
+}
 
 /// WASM showcase runner for the FrankenTUI demo application.
 ///
@@ -19,11 +56,17 @@ pub struct ShowcaseRunner {
     inner: RunnerCore,
 }
 
+#[wasm_bindgen(start)]
+pub fn wasm_start() {
+    install_panic_hook();
+}
+
 #[wasm_bindgen]
 impl ShowcaseRunner {
     /// Create a new runner with initial terminal dimensions (cols, rows).
     #[wasm_bindgen(constructor)]
     pub fn new(cols: u16, rows: u16) -> Self {
+        install_panic_hook();
         Self {
             inner: RunnerCore::new(cols, rows),
         }
