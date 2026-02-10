@@ -801,4 +801,537 @@ mod tests {
         }
         s
     }
+
+    // ── display_width helper ────────────────────────────────────────
+
+    #[test]
+    fn display_width_pure_ascii() {
+        assert_eq!(display_width("hello"), 5);
+        assert_eq!(display_width(""), 0);
+        assert_eq!(display_width(" "), 1);
+    }
+
+    #[test]
+    fn display_width_ascii_with_control() {
+        // Tab and newline count via ascii_display_width path
+        assert_eq!(display_width("a\tb"), 3);
+        assert_eq!(display_width("\n"), 1);
+    }
+
+    #[test]
+    fn display_width_cjk() {
+        // CJK ideograph U+4E16 is double-width
+        assert_eq!(display_width("世"), 2);
+        assert_eq!(display_width("世界"), 4);
+    }
+
+    #[test]
+    fn display_width_with_zero_width_chars() {
+        // Soft hyphen U+00AD is zero-width
+        let text = "a\u{00AD}b";
+        assert_eq!(display_width(text), 2);
+    }
+
+    #[test]
+    fn display_width_combining_marks() {
+        // U+0301 combining acute accent
+        let text = "e\u{0301}"; // é as base + combining
+        let w = display_width(text);
+        // Grapheme cluster "é" should have width 1
+        assert!((1..=2).contains(&w));
+    }
+
+    // ── grapheme_width helper ───────────────────────────────────────
+
+    #[test]
+    fn grapheme_width_ascii_char() {
+        assert_eq!(grapheme_width("a"), 1);
+        assert_eq!(grapheme_width("Z"), 1);
+        assert_eq!(grapheme_width(" "), 1);
+    }
+
+    #[test]
+    fn grapheme_width_tab() {
+        assert_eq!(grapheme_width("\t"), 1);
+    }
+
+    #[test]
+    fn grapheme_width_non_ascii() {
+        assert_eq!(grapheme_width("世"), 2);
+    }
+
+    #[test]
+    fn grapheme_width_zero_width_only() {
+        // All zero-width chars => 0
+        assert_eq!(grapheme_width("\u{200B}"), 0); // ZWSP
+    }
+
+    // ── ascii_display_width helper ──────────────────────────────────
+
+    #[test]
+    fn ascii_display_width_printable() {
+        assert_eq!(ascii_display_width("abc"), 3);
+        assert_eq!(ascii_display_width(""), 0);
+    }
+
+    #[test]
+    fn ascii_display_width_whitespace() {
+        assert_eq!(ascii_display_width("\t"), 1);
+        assert_eq!(ascii_display_width("\n"), 1);
+        assert_eq!(ascii_display_width("\r"), 1);
+        assert_eq!(ascii_display_width("\t\n\r"), 3);
+    }
+
+    #[test]
+    fn ascii_display_width_skips_non_printable_high_bytes() {
+        // bytes 0x80+ are not counted by ascii_display_width
+        // "é" is 0xC3 0xA9 in UTF-8
+        assert_eq!(ascii_display_width("é"), 0);
+    }
+
+    // ── is_zero_width_codepoint ─────────────────────────────────────
+
+    #[test]
+    fn zero_width_control_chars() {
+        assert!(is_zero_width_codepoint('\0')); // U+0000
+        assert!(is_zero_width_codepoint('\x1F')); // U+001F
+        assert!(is_zero_width_codepoint('\x7F')); // U+007F (DEL)
+    }
+
+    #[test]
+    fn zero_width_combining_diacriticals() {
+        assert!(is_zero_width_codepoint('\u{0300}')); // Combining grave accent
+        assert!(is_zero_width_codepoint('\u{036F}')); // End of range
+    }
+
+    #[test]
+    fn zero_width_special() {
+        assert!(is_zero_width_codepoint('\u{00AD}')); // Soft hyphen
+        assert!(is_zero_width_codepoint('\u{200B}')); // ZWSP
+        assert!(is_zero_width_codepoint('\u{200D}')); // ZWJ
+        assert!(is_zero_width_codepoint('\u{FEFF}')); // BOM
+        assert!(is_zero_width_codepoint('\u{2060}')); // Word joiner
+    }
+
+    #[test]
+    fn zero_width_bidi_controls() {
+        assert!(is_zero_width_codepoint('\u{202A}')); // LRE
+        assert!(is_zero_width_codepoint('\u{202E}')); // RLO
+        assert!(is_zero_width_codepoint('\u{2066}')); // LRI
+        assert!(is_zero_width_codepoint('\u{2069}')); // PDI
+    }
+
+    #[test]
+    fn not_zero_width_regular_chars() {
+        assert!(!is_zero_width_codepoint('a'));
+        assert!(!is_zero_width_codepoint('Z'));
+        assert!(!is_zero_width_codepoint(' '));
+        assert!(!is_zero_width_codepoint('世'));
+    }
+
+    // ── digit_count edge cases ──────────────────────────────────────
+
+    #[test]
+    fn digit_count_large_numbers() {
+        assert_eq!(digit_count(10_000), 5);
+        assert_eq!(digit_count(99_999), 5);
+        assert_eq!(digit_count(100_000), 6);
+        assert_eq!(digit_count(1_000_000), 7);
+        assert_eq!(digit_count(usize::MAX), format!("{}", usize::MAX).len());
+    }
+
+    // ── style() builder ─────────────────────────────────────────────
+
+    #[test]
+    fn custom_style_applied() {
+        let custom = TracebackStyle {
+            title: Style::new().fg(PackedRgba::rgb(0, 255, 0)),
+            ..TracebackStyle::default()
+        };
+        let tb = Traceback::new(Vec::new(), "E", "m").style(custom.clone());
+        assert_eq!(tb.style.title.fg, Some(PackedRgba::rgb(0, 255, 0)));
+    }
+
+    // ── derive traits ───────────────────────────────────────────────
+
+    #[test]
+    fn traceback_frame_debug_clone() {
+        let f = TracebackFrame::new("func", 42).filename("test.rs");
+        let cloned = f.clone();
+        assert_eq!(f, cloned);
+        let debug = format!("{f:?}");
+        assert!(debug.contains("func"));
+        assert!(debug.contains("42"));
+    }
+
+    #[test]
+    fn traceback_debug_clone() {
+        let tb = Traceback::new(vec![TracebackFrame::new("main", 1)], "Err", "msg");
+        let cloned = tb.clone();
+        assert_eq!(cloned.exception_type(), "Err");
+        assert_eq!(cloned.exception_message(), "msg");
+        assert_eq!(cloned.frames().len(), 1);
+        let debug = format!("{tb:?}");
+        assert!(debug.contains("Err"));
+    }
+
+    #[test]
+    fn traceback_style_debug_clone() {
+        let style = TracebackStyle::default();
+        let cloned = style.clone();
+        assert_eq!(cloned.title.fg, style.title.fg);
+        let debug = format!("{style:?}");
+        assert!(debug.contains("TracebackStyle"));
+    }
+
+    // ── frame without filename (render path) ────────────────────────
+
+    #[test]
+    fn render_frame_no_filename() {
+        let tb = Traceback::new(
+            vec![TracebackFrame::new("anonymous", 7)],
+            "TypeError",
+            "not a function",
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 10, &mut pool);
+        tb.render(Rect::new(0, 0, 60, 10), &mut frame);
+
+        let loc = read_line(&frame.buffer, 1, 60);
+        assert!(
+            loc.contains("line 7"),
+            "Should show line number without filename: {loc}"
+        );
+        assert!(
+            loc.contains("anonymous"),
+            "Should show function name: {loc}"
+        );
+        // Should NOT contain 'File' when there's no filename
+        assert!(
+            !loc.contains("File"),
+            "Should not contain 'File' without filename: {loc}"
+        );
+    }
+
+    // ── empty source_context ────────────────────────────────────────
+
+    #[test]
+    fn frame_empty_source_context() {
+        let f = TracebackFrame::new("f", 1).source_context("", 1);
+        assert_eq!(f.source_context.as_deref(), Some(""));
+        // Empty string has 0 lines via .lines()
+        let tb = Traceback::new(vec![f], "E", "m");
+        // title(1) + location(1) + 0 source lines + exception(1) = 3
+        assert_eq!(tb.line_count(), 3);
+    }
+
+    // ── line_count with multiple mixed frames ───────────────────────
+
+    #[test]
+    fn line_count_multiple_mixed_frames() {
+        let tb = Traceback::new(
+            vec![
+                TracebackFrame::new("a", 1).source_context("x\ny\nz", 1),
+                TracebackFrame::new("b", 5), // no source context
+                TracebackFrame::new("c", 10).source_context("one\ntwo", 9),
+            ],
+            "E",
+            "m",
+        );
+        // title(1) + frame_a(1+3) + frame_b(1+0) + frame_c(1+2) + exception(1) = 10
+        assert_eq!(tb.line_count(), 10);
+    }
+
+    // ── render with multiple frames ─────────────────────────────────
+
+    #[test]
+    fn render_multiple_frames_content() {
+        let tb = Traceback::new(
+            vec![
+                TracebackFrame::new("outer", 10).filename("outer.rs"),
+                TracebackFrame::new("inner", 20).filename("inner.rs"),
+            ],
+            "RuntimeError",
+            "boom",
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 10, &mut pool);
+        tb.render(Rect::new(0, 0, 60, 10), &mut frame);
+
+        // Line 0: title
+        let title = read_line(&frame.buffer, 0, 60);
+        assert!(title.contains("Traceback"));
+
+        // Line 1: first frame location
+        let loc1 = read_line(&frame.buffer, 1, 60);
+        assert!(loc1.contains("outer.rs"), "First frame: {loc1}");
+
+        // Line 2: second frame location
+        let loc2 = read_line(&frame.buffer, 2, 60);
+        assert!(loc2.contains("inner.rs"), "Second frame: {loc2}");
+
+        // Line 3: exception
+        let exc = read_line(&frame.buffer, 3, 60);
+        assert!(exc.contains("RuntimeError"), "Exception: {exc}");
+        assert!(exc.contains("boom"), "Exception msg: {exc}");
+    }
+
+    // ── render with offset area ─────────────────────────────────────
+
+    #[test]
+    fn render_offset_area() {
+        let tb = Traceback::new(
+            vec![TracebackFrame::new("func", 1).filename("f.rs")],
+            "Error",
+            "oops",
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        // Render at offset (5, 3)
+        tb.render(Rect::new(5, 3, 40, 10), &mut frame);
+
+        // Row 3 should have the title at x=5
+        let title = read_line(&frame.buffer, 3, 80);
+        assert!(title.contains("Traceback"), "Title at offset: {title}");
+
+        // Row 0-2 should be empty
+        let row0 = read_line(&frame.buffer, 0, 80);
+        assert!(
+            row0.trim().is_empty(),
+            "Row before offset should be empty: {row0}"
+        );
+    }
+
+    // ── render zero-width (width=0, height>0) ───────────────────────
+
+    #[test]
+    fn render_zero_width_nonzero_height() {
+        let tb = Traceback::new(Vec::new(), "E", "m");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        // width=0 should early-return
+        tb.render(Rect::new(0, 0, 0, 10), &mut frame);
+    }
+
+    // ── source context with single error line ───────────────────────
+
+    #[test]
+    fn render_source_single_error_line() {
+        let tb = Traceback::new(
+            vec![TracebackFrame::new("crash", 5).source_context("panic!(\"fail\")", 5)],
+            "PanicError",
+            "fail",
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 10, &mut pool);
+        tb.render(Rect::new(0, 0, 60, 10), &mut frame);
+
+        // Line 2: the single source line, should be the error line with indicator
+        let src = read_line(&frame.buffer, 2, 60);
+        assert!(src.contains("panic!"), "Source line content: {src}");
+    }
+
+    // ── source context where error line is not in range ─────────────
+
+    #[test]
+    fn render_source_error_line_outside_range() {
+        // error line=99 but source context only covers lines 1-3
+        let tb = Traceback::new(
+            vec![TracebackFrame::new("f", 99).source_context("a\nb\nc", 1)],
+            "E",
+            "m",
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 10, &mut pool);
+        // Should not panic even though the error line is outside the context
+        tb.render(Rect::new(0, 0, 60, 10), &mut frame);
+
+        // No indicator should appear on any source line
+        for row in 2..5 {
+            let line = read_line(&frame.buffer, row, 60);
+            assert!(
+                !line.contains('❱'),
+                "Row {row} should not have indicator: {line}"
+            );
+        }
+    }
+
+    // ── lineno_column_width with large line numbers ─────────────────
+
+    #[test]
+    fn lineno_column_width_large_offset() {
+        // source_first_line=9999, 3 lines => last=10001 => 5 digits
+        let f = TracebackFrame::new("f", 10_000).source_context("a\nb\nc", 9999);
+        assert_eq!(lineno_column_width(&f), 5);
+    }
+
+    // ── frame from String (Into<String>) ────────────────────────────
+
+    #[test]
+    fn frame_from_string_type() {
+        let name = String::from("dynamic_name");
+        let f = TracebackFrame::new(name, 1);
+        assert_eq!(f.name, "dynamic_name");
+    }
+
+    #[test]
+    fn frame_filename_from_string() {
+        let f = TracebackFrame::new("f", 1).filename(String::from("owned_path.rs"));
+        assert_eq!(f.filename.as_deref(), Some("owned_path.rs"));
+    }
+
+    #[test]
+    fn frame_source_context_from_string() {
+        let src = String::from("let x = 1;");
+        let f = TracebackFrame::new("f", 1).source_context(src, 1);
+        assert_eq!(f.source_context.as_deref(), Some("let x = 1;"));
+    }
+
+    // ── traceback from Into<Vec<TracebackFrame>> ────────────────────
+
+    #[test]
+    fn traceback_from_vec_into() {
+        let frames = vec![TracebackFrame::new("a", 1), TracebackFrame::new("b", 2)];
+        let tb = Traceback::new(frames, String::from("Err"), String::from("msg"));
+        assert_eq!(tb.frames().len(), 2);
+        assert_eq!(tb.exception_type(), "Err");
+    }
+
+    // ── exception line with long type and message ───────────────────
+
+    #[test]
+    fn render_long_exception_truncated() {
+        let long_type = "VeryLongExceptionTypeName";
+        let long_msg = "x".repeat(100);
+        let tb = Traceback::new(Vec::new(), long_type, long_msg);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 5, &mut pool);
+        tb.render(Rect::new(0, 0, 30, 5), &mut frame);
+
+        let exc = read_line(&frame.buffer, 1, 30);
+        // Should contain the type (or truncated portion)
+        assert!(
+            exc.starts_with("VeryLong"),
+            "Exception should start with type: {exc}"
+        );
+    }
+
+    // ── render exactly one row (only title fits) ────────────────────
+
+    #[test]
+    fn render_height_one() {
+        let tb = Traceback::new(vec![TracebackFrame::new("f", 1)], "Error", "msg");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 1, &mut pool);
+        tb.render(Rect::new(0, 0, 60, 1), &mut frame);
+
+        let title = read_line(&frame.buffer, 0, 60);
+        assert!(
+            title.contains("Traceback"),
+            "Only title should render: {title}"
+        );
+    }
+
+    // ── push_frame preserves order ──────────────────────────────────
+
+    #[test]
+    fn push_frame_order() {
+        let mut tb = Traceback::new(vec![TracebackFrame::new("first", 1)], "E", "m");
+        tb.push_frame(TracebackFrame::new("second", 2));
+        tb.push_frame(TracebackFrame::new("third", 3));
+        assert_eq!(tb.frames()[0].name, "first");
+        assert_eq!(tb.frames()[1].name, "second");
+        assert_eq!(tb.frames()[2].name, "third");
+    }
+
+    // ── default title text ──────────────────────────────────────────
+
+    #[test]
+    fn default_title_text() {
+        let tb = Traceback::new(Vec::new(), "E", "m");
+        assert_eq!(tb.title, "Traceback (most recent call last)");
+    }
+
+    // ── all default style fields are non-None ───────────────────────
+
+    #[test]
+    fn default_style_all_fields_have_fg() {
+        let s = TracebackStyle::default();
+        assert!(s.title.fg.is_some());
+        assert!(s.border.fg.is_some());
+        assert!(s.filename.fg.is_some());
+        assert!(s.function.fg.is_some());
+        assert!(s.lineno.fg.is_some());
+        assert!(s.indicator.fg.is_some());
+        assert!(s.source.fg.is_some());
+        assert!(s.error_line.fg.is_some());
+        assert!(s.exception_type.fg.is_some());
+        assert!(s.exception_message.fg.is_some());
+    }
+
+    // ── frame with line=0 ───────────────────────────────────────────
+
+    #[test]
+    fn frame_line_zero() {
+        let f = TracebackFrame::new("f", 0);
+        assert_eq!(f.line, 0);
+        let loc = format_location(&f);
+        assert!(loc.contains("line 0"), "Should format line 0: {loc}");
+    }
+
+    // ── render source context lineno alignment ──────────────────────
+
+    #[test]
+    fn render_source_lineno_alignment() {
+        // source lines 98-102 => last line 102 => 3-digit column
+        let tb = Traceback::new(
+            vec![
+                TracebackFrame::new("f", 100)
+                    .source_context("line98\nline99\nline100\nline101\nline102", 98),
+            ],
+            "E",
+            "m",
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 20, &mut pool);
+        tb.render(Rect::new(0, 0, 60, 20), &mut frame);
+
+        // The error line is 100, which is at index 2 (98, 99, 100)
+        // Row 0=title, 1=location, 2=line98, 3=line99, 4=line100(error)
+        let error_row = read_line(&frame.buffer, 4, 60);
+        assert!(
+            error_row.contains("100"),
+            "Error row should contain lineno 100: {error_row}"
+        );
+    }
+
+    // ── frame_equality asymmetric fields ────────────────────────────
+
+    #[test]
+    fn frame_inequality_different_filename() {
+        let a = TracebackFrame::new("f", 1).filename("a.rs");
+        let b = TracebackFrame::new("f", 1).filename("b.rs");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn frame_inequality_one_has_filename() {
+        let a = TracebackFrame::new("f", 1).filename("a.rs");
+        let b = TracebackFrame::new("f", 1);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn frame_inequality_different_source_context() {
+        let a = TracebackFrame::new("f", 1).source_context("aaa", 1);
+        let b = TracebackFrame::new("f", 1).source_context("bbb", 1);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn frame_equality_with_source_context() {
+        let a = TracebackFrame::new("f", 1).source_context("code", 5);
+        let b = TracebackFrame::new("f", 1).source_context("code", 5);
+        assert_eq!(a, b);
+    }
 }
