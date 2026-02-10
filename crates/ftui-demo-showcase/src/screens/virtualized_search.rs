@@ -35,7 +35,7 @@ use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::Style;
-use ftui_text::display_width;
+use ftui_text::{Span, Text, display_width};
 use ftui_widgets::Widget;
 use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
@@ -1057,36 +1057,72 @@ impl VirtualizedSearch {
         is_selected: bool,
         score: i32,
     ) {
+        let has_matches = !positions.is_empty();
+
+        // Base row style: selection overrides everything, otherwise matched rows are promoted
+        // to PRIMARY while non-matches remain SECONDARY.
         let base_style = if is_selected {
             Style::new()
                 .fg(theme::fg::PRIMARY)
                 .bg(theme::alpha::HIGHLIGHT)
+        } else if has_matches {
+            Style::new().fg(theme::fg::PRIMARY)
         } else {
             Style::new().fg(theme::fg::SECONDARY)
         };
 
-        // Format display text with score if we have matches
-        let display_text = if !positions.is_empty() && score != 0 {
-            format!("{} [{}]", text, score)
-        } else {
-            text.to_string()
-        };
+        // Char-level match style. Background is handled by the paragraph base style; spans only
+        // override foreground + attrs to avoid repeated BG compositing in Paragraph.
+        let match_style = Style::new().fg(MATCH_HIGHLIGHT).bold();
 
-        // For now, use simple rendering without character-level highlighting
-        // TODO(bd-2zbk): Add character-level match highlighting
-        let style = if !positions.is_empty() {
-            // When there are matches, use a highlight indicator
-            if is_selected {
-                Style::new().fg(MATCH_HIGHLIGHT).bg(theme::alpha::HIGHLIGHT)
-            } else {
-                Style::new().fg(theme::fg::PRIMARY)
+        // Build spans with match segments highlighted at character indices in `positions`.
+        // `positions` is produced by `fuzzy_match()` and is sorted in ascending order.
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut pos_idx = 0usize;
+        let mut seg_is_match = false;
+        let mut started = false;
+        let mut seg = String::new();
+
+        for (i, ch) in text.chars().enumerate() {
+            let is_match = pos_idx < positions.len() && positions[pos_idx] == i;
+            if is_match {
+                pos_idx += 1;
             }
-        } else {
-            base_style
-        };
 
-        Paragraph::new(display_text.as_str())
-            .style(style)
+            if !started {
+                seg_is_match = is_match;
+                started = true;
+            } else if is_match != seg_is_match {
+                let flushed = std::mem::take(&mut seg);
+                if seg_is_match {
+                    spans.push(Span::styled(flushed, match_style));
+                } else {
+                    spans.push(Span::raw(flushed));
+                }
+                seg_is_match = is_match;
+            }
+
+            seg.push(ch);
+        }
+
+        if !seg.is_empty() || spans.is_empty() {
+            if seg_is_match {
+                spans.push(Span::styled(seg, match_style));
+            } else {
+                spans.push(Span::raw(seg));
+            }
+        }
+
+        // Append score for matched rows (existing behavior), but keep it un-highlighted.
+        if has_matches && score != 0 {
+            spans.push(Span::styled(
+                format!(" [{score}]"),
+                Style::new().fg(theme::fg::MUTED),
+            ));
+        }
+
+        Paragraph::new(Text::from_spans(spans))
+            .style(base_style)
             .render(area, frame);
     }
 
@@ -2059,6 +2095,30 @@ mod tests {
 
         // "cat" at start of "category" should score higher than "cat" in "concatenate"
         assert!(result1.unwrap().score > result2.unwrap().score);
+    }
+
+    #[test]
+    fn virtualized_search_row_highlights_matching_characters() {
+        let screen = VirtualizedSearch::new();
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::new(32, 1, &mut pool);
+        let area = Rect::new(0, 0, 32, 1);
+
+        screen.render_highlighted_row(&mut frame, area, "abcdef", &[0, 3, 5], false, 123);
+
+        let fg = |x: u16| frame.buffer.get(x, 0).unwrap().fg;
+
+        // Matched characters (a, d, f) should be highlighted.
+        assert_eq!(fg(0), MATCH_HIGHLIGHT);
+        assert_eq!(fg(3), MATCH_HIGHLIGHT);
+        assert_eq!(fg(5), MATCH_HIGHLIGHT);
+
+        // Non-matched characters in a matched row use PRIMARY fg.
+        assert_eq!(fg(1), theme::fg::PRIMARY.into());
+
+        // Score suffix is muted (not match-highlighted).
+        // "abcdef [123]" → '[' at x=7
+        assert_eq!(fg(7), theme::fg::MUTED.into());
     }
 
     #[test]
