@@ -21,12 +21,12 @@ use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures, B
 use ftui_core::event::Event;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
-use ftui_render::cell::{Cell, CellContent};
+use ftui_render::cell::{Cell, CellAttrs, CellContent};
 use ftui_render::diff::BufferDiff;
 
 const GRAPHEME_FALLBACK_CODEPOINT: u32 = '□' as u32;
 const ATTR_STYLE_MASK: u32 = 0xFF;
-const ATTR_LINK_ID_MAX: u32 = 0x00FF_FFFF;
+const ATTR_LINK_ID_MAX: u32 = CellAttrs::LINK_ID_MAX;
 const WEB_PATCH_CELL_BYTES: u64 = 16;
 const PATCH_HASH_ALGO: &str = "fnv1a64";
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -367,7 +367,9 @@ fn diff_to_patches(buffer: &Buffer, diff: &BufferDiff) -> Vec<WebPatchRun> {
     if diff.is_empty() {
         return Vec::new();
     }
-    let cols = u32::from(buffer.width());
+    let width = buffer.width();
+    let height = buffer.height();
+    let cols = u32::from(width);
     // Heuristic: most sparse diffs produce one patch per ~8 dirty cells.
     let est_patches = diff.len().div_ceil(8).max(1);
     let mut patches = Vec::with_capacity(est_patches);
@@ -377,6 +379,10 @@ fn diff_to_patches(buffer: &Buffer, diff: &BufferDiff) -> Vec<WebPatchRun> {
     let mut has_span = false;
 
     for &(x, y) in diff.changes() {
+        // Safety: diffs can become stale across resize; fall back to a full patch.
+        if x >= width || y >= height {
+            return vec![full_buffer_patch(buffer)];
+        }
         let offset = u32::from(y) * cols + u32::from(x);
         if !has_span {
             span_start = offset;
@@ -617,6 +623,21 @@ mod tests {
         assert_eq!(stats.bytes_uploaded, 48);
         let hash = outputs.last_patch_hash.expect("hash should be present");
         assert!(hash.starts_with("fnv1a64:"));
+    }
+
+    #[test]
+    fn stale_diff_falls_back_to_full_patch() {
+        let old = Buffer::new(4, 2);
+        let mut next = Buffer::new(4, 2);
+        next.set_raw(3, 1, Cell::from_char('X'));
+        let stale_diff = BufferDiff::compute(&old, &next);
+
+        let resized = Buffer::new(2, 1);
+        let patches = build_patch_runs(&resized, Some(&stale_diff), false);
+
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].offset, 0);
+        assert_eq!(patches[0].cells.len(), 2);
     }
 
     #[test]
@@ -988,5 +1009,18 @@ mod tests {
         let cell = Cell::from_char('A');
         let patch = cell_to_patch(&cell);
         assert_eq!(patch.glyph, 'A' as u32);
+    }
+
+    #[test]
+    fn cell_to_patch_preserves_max_link_id() {
+        use ftui_render::cell::{CellAttrs, StyleFlags};
+
+        let cell = Cell::from_char('L').with_attrs(CellAttrs::new(
+            StyleFlags::UNDERLINE,
+            CellAttrs::LINK_ID_MAX,
+        ));
+        let patch = cell_to_patch(&cell);
+
+        assert_eq!(patch.attrs >> 8, CellAttrs::LINK_ID_MAX);
     }
 }

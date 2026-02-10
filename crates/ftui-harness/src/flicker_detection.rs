@@ -1323,7 +1323,7 @@ mod tests {
         let s = Severity::Warning;
         let s2 = s; // Copy
         assert_eq!(s, s2);
-        let s3 = s.clone();
+        let s3 = s;
         assert_eq!(s, s3);
         // Hash consistency
         use std::collections::HashSet;

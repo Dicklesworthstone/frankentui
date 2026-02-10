@@ -534,6 +534,9 @@ impl CommandPalette {
         }
         self.update_filtered(false);
         #[cfg(feature = "tracing")]
+        #[cfg(test)]
+        tracing::callsite::rebuild_interest_cache();
+        #[cfg(feature = "tracing")]
         emit_palette_opened(self.actions.len(), self.filtered.len());
     }
 
@@ -670,6 +673,8 @@ impl CommandPalette {
                     #[cfg(feature = "tracing")]
                     {
                         let latency_ms = self.opened_at.map(|start| start.elapsed().as_millis());
+                        #[cfg(test)]
+                        tracing::callsite::rebuild_interest_cache();
                         emit_palette_action_executed(&id, latency_ms);
                     }
                     self.close_with_reason(PaletteCloseReason::Execute);
@@ -796,6 +801,8 @@ impl CommandPalette {
 
         #[cfg(feature = "tracing")]
         if let Some(start) = start {
+            #[cfg(test)]
+            tracing::callsite::rebuild_interest_cache();
             emit_palette_query_updated(
                 &self.query,
                 self.filtered.len(),
@@ -812,6 +819,8 @@ impl CommandPalette {
         #[cfg(feature = "tracing")]
         {
             self.opened_at = None;
+            #[cfg(test)]
+            tracing::callsite::rebuild_interest_cache();
             emit_palette_closed(_reason);
         }
     }

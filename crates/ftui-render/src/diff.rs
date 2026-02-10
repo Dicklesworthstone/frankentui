@@ -2472,6 +2472,926 @@ mod tests {
         }
         assert_tile_diff_equivalence(&old, &full, "full_buffer");
     }
+
+    // =========================================================================
+    // Edge-Case Tests (bd-27b0k)
+    // =========================================================================
+
+    // --- BufferDiff::full zero/edge dimensions ---
+
+    #[test]
+    fn full_zero_width_returns_empty() {
+        let diff = BufferDiff::full(0, 10);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn full_zero_height_returns_empty() {
+        let diff = BufferDiff::full(10, 0);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn full_zero_both_returns_empty() {
+        let diff = BufferDiff::full(0, 0);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn full_single_cell_has_one_change() {
+        let diff = BufferDiff::full(1, 1);
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff.changes(), &[(0, 0)]);
+    }
+
+    #[test]
+    fn full_row_major_order() {
+        let diff = BufferDiff::full(2, 3);
+        assert_eq!(
+            diff.changes(),
+            &[(0, 0), (1, 0), (0, 1), (1, 1), (0, 2), (1, 2)]
+        );
+    }
+
+    // --- runs_into ---
+
+    #[test]
+    fn runs_into_matches_runs_output() {
+        let old = Buffer::new(20, 5);
+        let mut new = Buffer::new(20, 5);
+        new.set_raw(0, 0, Cell::from_char('A'));
+        new.set_raw(1, 0, Cell::from_char('B'));
+        new.set_raw(5, 2, Cell::from_char('C'));
+        new.set_raw(10, 4, Cell::from_char('D'));
+        new.set_raw(11, 4, Cell::from_char('E'));
+
+        let diff = BufferDiff::compute(&old, &new);
+        let runs = diff.runs();
+        let mut runs_buf = Vec::new();
+        diff.runs_into(&mut runs_buf);
+
+        assert_eq!(runs, runs_buf);
+    }
+
+    #[test]
+    fn runs_into_clears_previous_content() {
+        let diff = BufferDiff::new();
+        let mut out = vec![ChangeRun::new(0, 0, 0)];
+        diff.runs_into(&mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn runs_into_preserves_capacity() {
+        let old = Buffer::new(10, 2);
+        let mut new = Buffer::new(10, 2);
+        new.set_raw(0, 0, Cell::from_char('A'));
+        let diff = BufferDiff::compute(&old, &new);
+
+        let mut out = Vec::with_capacity(64);
+        diff.runs_into(&mut out);
+        assert_eq!(out.len(), 1);
+        assert!(out.capacity() >= 64);
+    }
+
+    // --- ChangeRun ---
+
+    #[test]
+    fn change_run_fields_accessible() {
+        let run = ChangeRun::new(7, 3, 10);
+        assert_eq!(run.y, 7);
+        assert_eq!(run.x0, 3);
+        assert_eq!(run.x1, 10);
+        assert_eq!(run.len(), 8);
+        assert!(!run.is_empty());
+    }
+
+    #[test]
+    fn change_run_single_cell_not_empty() {
+        let run = ChangeRun::new(0, 5, 5);
+        assert_eq!(run.len(), 1);
+        assert!(!run.is_empty());
+    }
+
+    #[test]
+    fn change_run_debug_format() {
+        let run = ChangeRun::new(1, 2, 3);
+        let dbg = format!("{:?}", run);
+        assert!(dbg.contains("ChangeRun"), "Debug output: {dbg}");
+    }
+
+    #[test]
+    fn change_run_clone_copy_eq() {
+        let run = ChangeRun::new(5, 10, 20);
+        let copied = run; // Copy
+        assert_eq!(run, copied);
+        let cloned: ChangeRun = run; // Copy
+        assert_eq!(run, cloned);
+    }
+
+    #[test]
+    fn change_run_ne() {
+        let a = ChangeRun::new(0, 0, 5);
+        let b = ChangeRun::new(0, 0, 6);
+        assert_ne!(a, b);
+    }
+
+    // --- TileDiffConfig ---
+
+    #[test]
+    fn tile_diff_config_default_values() {
+        let config = TileDiffConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.tile_w, 16);
+        assert_eq!(config.tile_h, 8);
+        assert!(config.skip_clean_rows);
+        assert_eq!(config.min_cells_for_tiles, 12_000);
+        assert!((config.dense_cell_ratio - 0.25).abs() < f64::EPSILON);
+        assert!((config.dense_tile_ratio - 0.60).abs() < f64::EPSILON);
+        assert_eq!(config.max_tiles, 4096);
+    }
+
+    #[test]
+    fn tile_diff_config_builder_methods() {
+        let config = TileDiffConfig::default()
+            .with_enabled(false)
+            .with_tile_size(32, 32)
+            .with_min_cells_for_tiles(500)
+            .with_skip_clean_rows(false)
+            .with_dense_cell_ratio(0.5)
+            .with_dense_tile_ratio(0.8)
+            .with_max_tiles(100);
+
+        assert!(!config.enabled);
+        assert_eq!(config.tile_w, 32);
+        assert_eq!(config.tile_h, 32);
+        assert!(!config.skip_clean_rows);
+        assert_eq!(config.min_cells_for_tiles, 500);
+        assert!((config.dense_cell_ratio - 0.5).abs() < f64::EPSILON);
+        assert!((config.dense_tile_ratio - 0.8).abs() < f64::EPSILON);
+        assert_eq!(config.max_tiles, 100);
+    }
+
+    #[test]
+    fn tile_diff_config_debug_clone() {
+        let config = TileDiffConfig::default();
+        let dbg = format!("{:?}", config);
+        assert!(dbg.contains("TileDiffConfig"), "Debug: {dbg}");
+        let cloned = config.clone();
+        assert_eq!(cloned.tile_w, 16);
+    }
+
+    // --- TileDiffFallback ---
+
+    #[test]
+    fn tile_diff_fallback_as_str_all_variants() {
+        assert_eq!(TileDiffFallback::Disabled.as_str(), "disabled");
+        assert_eq!(TileDiffFallback::SmallScreen.as_str(), "small_screen");
+        assert_eq!(TileDiffFallback::DirtyAll.as_str(), "dirty_all");
+        assert_eq!(TileDiffFallback::DenseCells.as_str(), "dense_cells");
+        assert_eq!(TileDiffFallback::DenseTiles.as_str(), "dense_tiles");
+        assert_eq!(TileDiffFallback::TooManyTiles.as_str(), "too_many_tiles");
+        assert_eq!(TileDiffFallback::Overflow.as_str(), "overflow");
+    }
+
+    #[test]
+    fn tile_diff_fallback_traits() {
+        let a = TileDiffFallback::Disabled;
+        let b = a; // Copy
+        assert_eq!(a, b);
+        let c: TileDiffFallback = a; // Copy
+        assert_eq!(a, c);
+        assert_ne!(a, TileDiffFallback::Overflow);
+        let dbg = format!("{:?}", a);
+        assert!(dbg.contains("Disabled"), "Debug: {dbg}");
+    }
+
+    // --- TileDiffBuilder direct ---
+
+    #[test]
+    fn tile_builder_dirty_all_fallback() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default().with_min_cells_for_tiles(0);
+        let dirty_rows = vec![true; 10];
+        let dirty_bits = vec![1u8; 200]; // 20x10
+
+        let input = TileDiffInput {
+            width: 20,
+            height: 10,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 200,
+            dirty_all: true,
+        };
+
+        let result = builder.build(&config, input);
+        assert!(matches!(
+            result,
+            TileDiffBuild::Fallback(stats) if stats.fallback == Some(TileDiffFallback::DirtyAll)
+        ));
+    }
+
+    #[test]
+    fn tile_builder_dense_cells_fallback() {
+        // DenseCells triggers when dirty_cell_ratio >= dense_cell_ratio
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default()
+            .with_min_cells_for_tiles(0)
+            .with_dense_cell_ratio(0.10); // 10% threshold
+
+        let w = 20u16;
+        let h = 10u16;
+        let total = (w as usize) * (h as usize);
+        let dirty_count = total / 10; // exactly 10%
+
+        let dirty_rows = vec![true; h as usize];
+        let dirty_bits = vec![0u8; total];
+
+        let input = TileDiffInput {
+            width: w,
+            height: h,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: dirty_count,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        assert!(matches!(
+            result,
+            TileDiffBuild::Fallback(stats) if stats.fallback == Some(TileDiffFallback::DenseCells)
+        ));
+    }
+
+    #[test]
+    fn tile_builder_reuse_across_builds() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default()
+            .with_min_cells_for_tiles(0)
+            .with_dense_tile_ratio(1.1)
+            .with_dense_cell_ratio(1.1)
+            .with_max_tiles(usize::MAX / 4);
+
+        // First build: 20x10 with one dirty cell
+        let dirty_rows_1 = vec![true; 10];
+        let mut dirty_bits_1 = vec![0u8; 200];
+        dirty_bits_1[0] = 1;
+        let input_1 = TileDiffInput {
+            width: 20,
+            height: 10,
+            dirty_rows: &dirty_rows_1,
+            dirty_bits: &dirty_bits_1,
+            dirty_cells: 1,
+            dirty_all: false,
+        };
+        let result_1 = builder.build(&config, input_1);
+        assert!(matches!(result_1, TileDiffBuild::UseTiles(_)));
+
+        // Second build: 30x15 with one dirty cell — reuses internal allocations
+        let dirty_rows_2 = vec![true; 15];
+        let mut dirty_bits_2 = vec![0u8; 450];
+        dirty_bits_2[200] = 1;
+        let input_2 = TileDiffInput {
+            width: 30,
+            height: 15,
+            dirty_rows: &dirty_rows_2,
+            dirty_bits: &dirty_bits_2,
+            dirty_cells: 1,
+            dirty_all: false,
+        };
+        let result_2 = builder.build(&config, input_2);
+        assert!(matches!(result_2, TileDiffBuild::UseTiles(_)));
+    }
+
+    #[test]
+    fn tile_builder_default_matches_new() {
+        let from_new = TileDiffBuilder::new();
+        let from_default = TileDiffBuilder::default();
+        assert_eq!(format!("{:?}", from_new), format!("{:?}", from_default));
+    }
+
+    // --- TileParams ---
+
+    #[test]
+    fn tile_params_total_tiles_and_cells() {
+        let params = TileParams {
+            width: 100,
+            height: 50,
+            tile_w: 16,
+            tile_h: 8,
+            tiles_x: 7, // ceil(100/16)
+            tiles_y: 7, // ceil(50/8)
+        };
+        assert_eq!(params.total_tiles(), 49);
+        assert_eq!(params.total_cells(), 5000);
+    }
+
+    // --- TileDiffStats ---
+
+    #[test]
+    fn tile_diff_stats_from_builder() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default()
+            .with_min_cells_for_tiles(0)
+            .with_dense_tile_ratio(1.1)
+            .with_dense_cell_ratio(1.1)
+            .with_max_tiles(usize::MAX / 4);
+
+        let w = 32u16;
+        let h = 16u16;
+        let dirty_rows = vec![true; h as usize];
+        let mut dirty_bits = vec![0u8; (w as usize) * (h as usize)];
+        dirty_bits[0] = 1; // one cell dirty in first tile
+
+        let input = TileDiffInput {
+            width: w,
+            height: h,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 1,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        match result {
+            TileDiffBuild::UseTiles(plan) => {
+                let stats = plan.stats;
+                assert_eq!(stats.width, w);
+                assert_eq!(stats.height, h);
+                // tile_w clamped from 16 → 16 (within [8,64])
+                assert_eq!(stats.tile_w, 16);
+                assert_eq!(stats.tile_h, 8);
+                // tiles_x = ceil(32/16) = 2, tiles_y = ceil(16/8) = 2
+                assert_eq!(stats.tiles_x, 2);
+                assert_eq!(stats.tiles_y, 2);
+                assert_eq!(stats.total_tiles, 4);
+                assert_eq!(stats.dirty_cells, 1);
+                assert_eq!(stats.dirty_tiles, 1);
+                assert_eq!(stats.skipped_tiles, 3);
+                assert!(stats.fallback.is_none());
+                // Copy trait works
+                let copy = stats;
+                assert_eq!(copy.width, stats.width);
+            }
+            _ => assert!(false, "expected UseTiles"),
+        }
+    }
+
+    // --- clamp_tile_size via builder ---
+
+    #[test]
+    fn tile_size_clamped_to_min_8() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig {
+            enabled: true,
+            tile_w: 1, // below min 8
+            tile_h: 0, // below min 8
+            skip_clean_rows: false,
+            min_cells_for_tiles: 0,
+            dense_cell_ratio: 1.1,
+            dense_tile_ratio: 1.1,
+            max_tiles: usize::MAX / 4,
+        };
+
+        let dirty_rows = vec![true; 16];
+        let mut dirty_bits = vec![0u8; 256]; // 16x16
+        dirty_bits[0] = 1;
+
+        let input = TileDiffInput {
+            width: 16,
+            height: 16,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 1,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        match result {
+            TileDiffBuild::UseTiles(plan) => {
+                assert_eq!(plan.stats.tile_w, 8);
+                assert_eq!(plan.stats.tile_h, 8);
+            }
+            _ => assert!(false, "expected UseTiles"),
+        }
+    }
+
+    #[test]
+    fn tile_size_clamped_to_max_64() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig {
+            enabled: true,
+            tile_w: 255, // above max 64
+            tile_h: 100, // above max 64
+            skip_clean_rows: false,
+            min_cells_for_tiles: 0,
+            dense_cell_ratio: 1.1,
+            dense_tile_ratio: 1.1,
+            max_tiles: usize::MAX / 4,
+        };
+
+        let dirty_rows = vec![true; 128];
+        let mut dirty_bits = vec![0u8; 128 * 128];
+        dirty_bits[0] = 1;
+
+        let input = TileDiffInput {
+            width: 128,
+            height: 128,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 1,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        match result {
+            TileDiffBuild::UseTiles(plan) => {
+                assert_eq!(plan.stats.tile_w, 64);
+                assert_eq!(plan.stats.tile_h, 64);
+            }
+            _ => assert!(false, "expected UseTiles"),
+        }
+    }
+
+    // --- BufferDiff trait coverage ---
+
+    #[test]
+    fn buffer_diff_default_is_empty() {
+        let diff: BufferDiff = Default::default();
+        assert!(diff.is_empty());
+        assert_eq!(diff.len(), 0);
+        assert!(diff.last_tile_stats().is_none());
+    }
+
+    #[test]
+    fn buffer_diff_debug_format() {
+        let diff = BufferDiff::new();
+        let dbg = format!("{:?}", diff);
+        assert!(dbg.contains("BufferDiff"), "Debug: {dbg}");
+    }
+
+    #[test]
+    fn buffer_diff_clone_preserves_changes() {
+        let old = Buffer::new(5, 5);
+        let mut new = Buffer::new(5, 5);
+        new.set_raw(2, 3, Cell::from_char('X'));
+        let diff = BufferDiff::compute(&old, &new);
+        let cloned = diff.clone();
+        assert_eq!(diff.changes(), cloned.changes());
+    }
+
+    // --- compute_into reuse ---
+
+    #[test]
+    fn compute_into_replaces_previous_changes() {
+        let mut diff = BufferDiff::new();
+
+        let old1 = Buffer::new(5, 5);
+        let mut new1 = Buffer::new(5, 5);
+        new1.set_raw(0, 0, Cell::from_char('A'));
+        diff.compute_into(&old1, &new1);
+        assert_eq!(diff.len(), 1);
+
+        let old2 = Buffer::new(3, 3);
+        let mut new2 = Buffer::new(3, 3);
+        new2.set_raw(1, 1, Cell::from_char('B'));
+        new2.set_raw(2, 2, Cell::from_char('C'));
+        diff.compute_into(&old2, &new2);
+        assert_eq!(diff.len(), 2);
+        assert_eq!(diff.changes(), &[(1, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn compute_into_identical_clears() {
+        let mut diff = BufferDiff::new();
+        let old = Buffer::new(5, 5);
+        let mut new = Buffer::new(5, 5);
+        new.set_raw(0, 0, Cell::from_char('X'));
+        diff.compute_into(&old, &new);
+        assert_eq!(diff.len(), 1);
+
+        diff.compute_into(&old, &old);
+        assert!(diff.is_empty());
+    }
+
+    // --- compute_dirty_into ---
+
+    #[test]
+    fn compute_dirty_into_no_dirty_rows() {
+        let old = Buffer::new(10, 10);
+        let mut new = old.clone();
+        new.clear_dirty();
+
+        let mut diff = BufferDiff::new();
+        diff.compute_dirty_into(&old, &new);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn compute_dirty_into_reuse() {
+        let mut diff = BufferDiff::new();
+
+        let old = Buffer::new(10, 10);
+        let mut new1 = old.clone();
+        new1.clear_dirty();
+        new1.set_raw(5, 5, Cell::from_char('X'));
+        diff.compute_dirty_into(&old, &new1);
+        assert_eq!(diff.len(), 1);
+
+        let mut new2 = old.clone();
+        new2.clear_dirty();
+        new2.set_raw(3, 3, Cell::from_char('Y'));
+        new2.set_raw(7, 7, Cell::from_char('Z'));
+        diff.compute_dirty_into(&old, &new2);
+        assert_eq!(diff.len(), 2);
+        assert_eq!(diff.changes(), &[(3, 3), (7, 7)]);
+    }
+
+    // --- last_tile_stats ---
+
+    #[test]
+    fn last_tile_stats_none_after_compute_into() {
+        let mut diff = BufferDiff::new();
+        let old = Buffer::new(5, 5);
+        let new = Buffer::new(5, 5);
+        diff.compute_into(&old, &new);
+        assert!(diff.last_tile_stats().is_none());
+    }
+
+    #[test]
+    fn last_tile_stats_some_after_compute_dirty_into() {
+        let mut diff = BufferDiff::new();
+        let old = Buffer::new(10, 10);
+        let mut new = old.clone();
+        new.set_raw(0, 0, Cell::from_char('A'));
+        diff.compute_dirty_into(&old, &new);
+        // 10x10=100 < 12000 min threshold → SmallScreen fallback
+        let stats = diff.last_tile_stats().expect("should have tile stats");
+        assert_eq!(stats.fallback, Some(TileDiffFallback::SmallScreen));
+    }
+
+    // --- tile_config_mut ---
+
+    #[test]
+    fn tile_config_mut_modifies_behavior() {
+        let old = Buffer::new(200, 60);
+        let mut new = old.clone();
+        new.clear_dirty();
+        new.set_raw(0, 0, Cell::from_char('X'));
+
+        // Default config: tiles enabled for 200x60=12000 cells
+        let mut diff = BufferDiff::new();
+        diff.compute_dirty_into(&old, &new);
+        let stats = diff.last_tile_stats().expect("stats");
+        assert!(
+            stats.fallback.is_none(),
+            "tiles should be active for 200x60"
+        );
+
+        // Disable via config_mut
+        diff.tile_config_mut().enabled = false;
+        diff.compute_dirty_into(&old, &new);
+        let stats = diff.last_tile_stats().expect("stats");
+        assert_eq!(stats.fallback, Some(TileDiffFallback::Disabled));
+    }
+
+    // --- Row scan boundary ---
+
+    #[test]
+    fn row_scan_width_31_below_row_block_size() {
+        let old = Buffer::new(31, 1);
+        let mut new = Buffer::new(31, 1);
+        new.set_raw(0, 0, Cell::from_char('A'));
+        new.set_raw(15, 0, Cell::from_char('B'));
+        new.set_raw(30, 0, Cell::from_char('C'));
+
+        let diff = BufferDiff::compute(&old, &new);
+        assert_eq!(diff.len(), 3);
+        assert_eq!(diff.changes(), &[(0, 0), (15, 0), (30, 0)]);
+    }
+
+    #[test]
+    fn row_scan_width_32_exact_row_block_size() {
+        let old = Buffer::new(32, 1);
+        let mut new = Buffer::new(32, 1);
+        new.set_raw(0, 0, Cell::from_char('A'));
+        new.set_raw(15, 0, Cell::from_char('B'));
+        new.set_raw(31, 0, Cell::from_char('C'));
+
+        let diff = BufferDiff::compute(&old, &new);
+        assert_eq!(diff.len(), 3);
+        assert_eq!(diff.changes(), &[(0, 0), (15, 0), (31, 0)]);
+    }
+
+    #[test]
+    fn row_scan_width_33_one_past_row_block_size() {
+        let old = Buffer::new(33, 1);
+        let mut new = Buffer::new(33, 1);
+        new.set_raw(0, 0, Cell::from_char('A'));
+        new.set_raw(31, 0, Cell::from_char('B'));
+        new.set_raw(32, 0, Cell::from_char('C'));
+
+        let diff = BufferDiff::compute(&old, &new);
+        assert_eq!(diff.len(), 3);
+        assert_eq!(diff.changes(), &[(0, 0), (31, 0), (32, 0)]);
+    }
+
+    // --- DenseCells threshold boundary ---
+
+    #[test]
+    fn dense_cells_exact_threshold_triggers_fallback() {
+        let mut builder = TileDiffBuilder::new();
+        let w = 20u16;
+        let h = 20u16;
+        let total = (w as usize) * (h as usize); // 400
+        let dirty_count = total / 4; // 100 = exactly 25%
+
+        let config = TileDiffConfig {
+            enabled: true,
+            tile_w: 8,
+            tile_h: 8,
+            skip_clean_rows: false,
+            min_cells_for_tiles: 0,
+            dense_cell_ratio: 0.25,
+            dense_tile_ratio: 1.1,
+            max_tiles: usize::MAX / 4,
+        };
+
+        let dirty_rows = vec![true; h as usize];
+        let dirty_bits = vec![1u8; total];
+
+        let input = TileDiffInput {
+            width: w,
+            height: h,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: dirty_count,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        assert!(matches!(
+            result,
+            TileDiffBuild::Fallback(stats) if stats.fallback == Some(TileDiffFallback::DenseCells)
+        ));
+    }
+
+    #[test]
+    fn dense_cells_just_below_threshold_passes() {
+        let mut builder = TileDiffBuilder::new();
+        let w = 20u16;
+        let h = 20u16;
+        let total = (w as usize) * (h as usize); // 400
+        let dirty_count = total / 4 - 1; // 99 = 24.75% < 25%
+
+        let config = TileDiffConfig {
+            enabled: true,
+            tile_w: 8,
+            tile_h: 8,
+            skip_clean_rows: false,
+            min_cells_for_tiles: 0,
+            dense_cell_ratio: 0.25,
+            dense_tile_ratio: 1.1,
+            max_tiles: usize::MAX / 4,
+        };
+
+        let dirty_rows = vec![true; h as usize];
+        let mut dirty_bits = vec![0u8; total];
+        for bit in dirty_bits.iter_mut().take(dirty_count) {
+            *bit = 1;
+        }
+
+        let input = TileDiffInput {
+            width: w,
+            height: h,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: dirty_count,
+            dirty_all: false,
+        };
+
+        let result = builder.build(&config, input);
+        match &result {
+            TileDiffBuild::Fallback(stats) => {
+                assert_ne!(
+                    stats.fallback,
+                    Some(TileDiffFallback::DenseCells),
+                    "should not trigger DenseCells below 25%: {:?}",
+                    stats.fallback
+                );
+            }
+            TileDiffBuild::UseTiles(_) => { /* expected */ }
+        }
+    }
+
+    // --- Switching between compute paths ---
+
+    #[test]
+    fn switch_between_compute_and_dirty() {
+        let mut diff = BufferDiff::new();
+        let old = Buffer::new(10, 10);
+        let mut new = Buffer::new(10, 10);
+        new.set_raw(3, 3, Cell::from_char('X'));
+
+        diff.compute_into(&old, &new);
+        assert_eq!(diff.len(), 1);
+        assert!(diff.last_tile_stats().is_none());
+
+        diff.compute_dirty_into(&old, &new);
+        assert_eq!(diff.len(), 1);
+        assert!(diff.last_tile_stats().is_some());
+
+        diff.compute_into(&old, &new);
+        assert_eq!(diff.len(), 1);
+        assert!(diff.last_tile_stats().is_none());
+    }
+
+    // --- Dimension mismatch panics ---
+
+    #[test]
+    #[should_panic(expected = "buffer heights must match")]
+    fn compute_panics_on_height_mismatch() {
+        let old = Buffer::new(5, 5);
+        let new = Buffer::new(5, 4);
+        let _ = BufferDiff::compute(&old, &new);
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer widths must match")]
+    fn compute_dirty_panics_on_width_mismatch() {
+        let old = Buffer::new(5, 5);
+        let new = Buffer::new(4, 5);
+        let _ = BufferDiff::compute_dirty(&old, &new);
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer heights must match")]
+    fn compute_dirty_panics_on_height_mismatch() {
+        let old = Buffer::new(5, 5);
+        let new = Buffer::new(5, 4);
+        let _ = BufferDiff::compute_dirty(&old, &new);
+    }
+
+    // --- TileDiffInput/TileDiffBuild trait coverage ---
+
+    #[test]
+    fn tile_diff_input_debug_copy() {
+        let dirty_rows = vec![true; 2];
+        let dirty_bits = vec![0u8; 4];
+        let input = TileDiffInput {
+            width: 2,
+            height: 2,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 0,
+            dirty_all: false,
+        };
+        let dbg = format!("{:?}", input);
+        assert!(dbg.contains("TileDiffInput"), "Debug: {dbg}");
+        let copy = input; // Copy
+        assert_eq!(copy.width, input.width);
+    }
+
+    #[test]
+    fn tile_diff_build_debug() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default();
+        let dirty_rows = vec![true; 1];
+        let dirty_bits = vec![0u8; 4];
+        let input = TileDiffInput {
+            width: 4,
+            height: 1,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 0,
+            dirty_all: false,
+        };
+        let result = builder.build(&config, input);
+        let dbg = format!("{:?}", result);
+        assert!(dbg.contains("Fallback"), "Debug: {dbg}");
+    }
+
+    // --- BufferDiff::full runs ---
+
+    #[test]
+    fn full_diff_runs_one_per_row() {
+        let diff = BufferDiff::full(10, 3);
+        let runs = diff.runs();
+        assert_eq!(runs.len(), 3);
+        for (i, run) in runs.iter().enumerate() {
+            assert_eq!(run.y, i as u16);
+            assert_eq!(run.x0, 0);
+            assert_eq!(run.x1, 9);
+            assert_eq!(run.len(), 10);
+        }
+    }
+
+    // --- dirty diff false positive rows ---
+
+    #[test]
+    fn dirty_diff_skips_false_positive_rows() {
+        let old = Buffer::new(10, 5);
+        let mut new = old.clone();
+        new.clear_dirty();
+
+        // set_raw marks rows dirty, but Cell::default() matches old content
+        for y in 0..5u16 {
+            new.set_raw(0, y, Cell::default());
+        }
+        // Real changes on rows 1 and 3
+        new.set_raw(5, 1, Cell::from_char('A'));
+        new.set_raw(7, 3, Cell::from_char('B'));
+
+        let diff = BufferDiff::compute_dirty(&old, &new);
+        assert_eq!(diff.len(), 2);
+        assert!(diff.changes().contains(&(5, 1)));
+        assert!(diff.changes().contains(&(7, 3)));
+    }
+
+    // --- Attribute-only change ---
+
+    #[test]
+    fn bg_only_change_detected() {
+        let old = Buffer::new(5, 1);
+        let mut new = Buffer::new(5, 1);
+        new.set_raw(2, 0, Cell::default().with_bg(PackedRgba::rgb(0, 0, 255)));
+
+        let diff = BufferDiff::compute(&old, &new);
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff.changes(), &[(2, 0)]);
+    }
+
+    // --- Changes at buffer boundaries ---
+
+    #[test]
+    fn changes_at_buffer_corners() {
+        let w = 100u16;
+        let h = 50u16;
+        let old = Buffer::new(w, h);
+        let mut new = Buffer::new(w, h);
+        new.set_raw(0, 0, Cell::from_char('A'));
+        new.set_raw(w - 1, h - 1, Cell::from_char('Z'));
+
+        let diff = BufferDiff::compute(&old, &new);
+        assert_eq!(diff.len(), 2);
+        assert_eq!(diff.changes()[0], (0, 0));
+        assert_eq!(diff.changes()[1], (w - 1, h - 1));
+
+        let runs = diff.runs();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0], ChangeRun::new(0, 0, 0));
+        assert_eq!(runs[1], ChangeRun::new(h - 1, w - 1, w - 1));
+    }
+
+    // --- TileParams Debug/Copy ---
+
+    #[test]
+    fn tile_params_debug_copy() {
+        let params = TileParams {
+            width: 80,
+            height: 24,
+            tile_w: 16,
+            tile_h: 8,
+            tiles_x: 5,
+            tiles_y: 3,
+        };
+        let dbg = format!("{:?}", params);
+        assert!(dbg.contains("TileParams"), "Debug: {dbg}");
+        let copy = params; // Copy
+        assert_eq!(copy.width, params.width);
+        let cloned: TileParams = params; // Copy
+        assert_eq!(cloned.tiles_x, params.tiles_x);
+    }
+
+    // --- TileDiffStats Debug/Copy ---
+
+    #[test]
+    fn tile_diff_stats_debug_copy() {
+        let mut builder = TileDiffBuilder::new();
+        let config = TileDiffConfig::default();
+        let dirty_rows = vec![true; 1];
+        let dirty_bits = vec![0u8; 1];
+        let input = TileDiffInput {
+            width: 1,
+            height: 1,
+            dirty_rows: &dirty_rows,
+            dirty_bits: &dirty_bits,
+            dirty_cells: 0,
+            dirty_all: false,
+        };
+        let result = builder.build(&config, input);
+        match result {
+            TileDiffBuild::Fallback(stats) => {
+                let dbg = format!("{:?}", stats);
+                assert!(dbg.contains("TileDiffStats"), "Debug: {dbg}");
+                let copy = stats;
+                assert_eq!(copy.width, stats.width);
+                let cloned: TileDiffStats = stats; // Copy
+                assert_eq!(cloned.height, stats.height);
+            }
+            _ => assert!(false, "expected Fallback for 1x1"),
+        }
+    }
 }
 
 #[cfg(test)]
