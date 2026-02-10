@@ -137,39 +137,39 @@ impl<'a> Block<'a> {
         // Edges
         if self.borders.contains(Borders::LEFT) {
             for y in area.y..area.bottom() {
-                buf.set(area.x, y, self.border_cell(set.vertical));
+                buf.set_fast(area.x, y, self.border_cell(set.vertical));
             }
         }
         if self.borders.contains(Borders::RIGHT) {
             let x = area.right() - 1;
             for y in area.y..area.bottom() {
-                buf.set(x, y, self.border_cell(set.vertical));
+                buf.set_fast(x, y, self.border_cell(set.vertical));
             }
         }
         if self.borders.contains(Borders::TOP) {
             for x in area.x..area.right() {
-                buf.set(x, area.y, self.border_cell(set.horizontal));
+                buf.set_fast(x, area.y, self.border_cell(set.horizontal));
             }
         }
         if self.borders.contains(Borders::BOTTOM) {
             let y = area.bottom() - 1;
             for x in area.x..area.right() {
-                buf.set(x, y, self.border_cell(set.horizontal));
+                buf.set_fast(x, y, self.border_cell(set.horizontal));
             }
         }
 
         // Corners (drawn after edges to overwrite edge characters at corners)
         if self.borders.contains(Borders::LEFT | Borders::TOP) {
-            buf.set(area.x, area.y, self.border_cell(set.top_left));
+            buf.set_fast(area.x, area.y, self.border_cell(set.top_left));
         }
         if self.borders.contains(Borders::RIGHT | Borders::TOP) {
-            buf.set(area.right() - 1, area.y, self.border_cell(set.top_right));
+            buf.set_fast(area.right() - 1, area.y, self.border_cell(set.top_right));
         }
         if self.borders.contains(Borders::LEFT | Borders::BOTTOM) {
-            buf.set(area.x, area.bottom() - 1, self.border_cell(set.bottom_left));
+            buf.set_fast(area.x, area.bottom() - 1, self.border_cell(set.bottom_left));
         }
         if self.borders.contains(Borders::RIGHT | Borders::BOTTOM) {
-            buf.set(
+            buf.set_fast(
                 area.right() - 1,
                 area.bottom() - 1,
                 self.border_cell(set.bottom_right),
@@ -187,38 +187,38 @@ impl<'a> Block<'a> {
 
         if self.borders.contains(Borders::LEFT) {
             for y in area.y..area.bottom() {
-                buf.set(area.x, y, self.border_cell(set.vertical));
+                buf.set_fast(area.x, y, self.border_cell(set.vertical));
             }
         }
         if self.borders.contains(Borders::RIGHT) {
             let x = area.right() - 1;
             for y in area.y..area.bottom() {
-                buf.set(x, y, self.border_cell(set.vertical));
+                buf.set_fast(x, y, self.border_cell(set.vertical));
             }
         }
         if self.borders.contains(Borders::TOP) {
             for x in area.x..area.right() {
-                buf.set(x, area.y, self.border_cell(set.horizontal));
+                buf.set_fast(x, area.y, self.border_cell(set.horizontal));
             }
         }
         if self.borders.contains(Borders::BOTTOM) {
             let y = area.bottom() - 1;
             for x in area.x..area.right() {
-                buf.set(x, y, self.border_cell(set.horizontal));
+                buf.set_fast(x, y, self.border_cell(set.horizontal));
             }
         }
 
         if self.borders.contains(Borders::LEFT | Borders::TOP) {
-            buf.set(area.x, area.y, self.border_cell(set.top_left));
+            buf.set_fast(area.x, area.y, self.border_cell(set.top_left));
         }
         if self.borders.contains(Borders::RIGHT | Borders::TOP) {
-            buf.set(area.right() - 1, area.y, self.border_cell(set.top_right));
+            buf.set_fast(area.right() - 1, area.y, self.border_cell(set.top_right));
         }
         if self.borders.contains(Borders::LEFT | Borders::BOTTOM) {
-            buf.set(area.x, area.bottom() - 1, self.border_cell(set.bottom_left));
+            buf.set_fast(area.x, area.bottom() - 1, self.border_cell(set.bottom_left));
         }
         if self.borders.contains(Borders::RIGHT | Borders::BOTTOM) {
-            buf.set(
+            buf.set_fast(
                 area.right() - 1,
                 area.bottom() - 1,
                 self.border_cell(set.bottom_right),
