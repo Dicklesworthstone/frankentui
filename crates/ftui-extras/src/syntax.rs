@@ -4459,4 +4459,795 @@ fn main() {
         assert!(names.contains(&"Rust"));
         assert!(names.contains(&"Plain"));
     }
+
+    // -----------------------------------------------------------------------
+    // GenericTokenizer: string edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn single_quoted_string() {
+        let t = rust_tokenizer();
+        let (tokens, state) = t.tokenize_line("'a'", LineState::Normal);
+        assert_eq!(state, LineState::Normal);
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::String));
+    }
+
+    #[test]
+    fn empty_double_quoted_string() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line(r#""""#, LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].range, 0..2);
+    }
+
+    #[test]
+    fn empty_single_quoted_string() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("''", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].range, 0..2);
+    }
+
+    #[test]
+    fn string_with_multiple_escapes() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line(r#""a\\b\\c""#, LineState::Normal);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::String)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn continue_string_single_quote() {
+        let t = rust_tokenizer();
+        // Start unclosed single-quote string
+        let (_, state) = t.tokenize_line("'unclosed", LineState::Normal);
+        assert!(matches!(state, LineState::InString(StringKind::Single)));
+
+        // Continue on next line and close
+        let (tokens, state2) = t.tokenize_line("closed' rest", state);
+        assert_eq!(state2, LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::String);
+    }
+
+    #[test]
+    fn continue_string_still_unclosed() {
+        let t = rust_tokenizer();
+        let (_, state) = t.tokenize_line(r#""start"#, LineState::Normal);
+        // Continue but still don't close
+        let (tokens, state2) = t.tokenize_line("middle", state);
+        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].range, 0..6); // whole line
+        assert!(matches!(state2, LineState::InString(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // GenericTokenizer: number scanning edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn number_hex_with_underscores() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("0xFF_AB", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].range, 0..7);
+    }
+
+    #[test]
+    fn number_decimal_with_underscores() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("1_000_000", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].range, 0..9);
+    }
+
+    #[test]
+    fn number_float_without_leading_digit_is_not_float() {
+        // ".5" should not be parsed as a number (starts with dot)
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line(".5", LineState::Normal);
+        // The dot is punctuation, then 5 is a number
+        assert_eq!(tokens[0].kind, TokenKind::Punctuation);
+        assert_eq!(tokens[1].kind, TokenKind::Number);
+    }
+
+    #[test]
+    fn number_0x_alone() {
+        // "0x" with no hex digits following
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("0x ", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Number);
+    }
+
+    #[test]
+    fn number_with_type_suffix() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("42f64", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].range, 0..5);
+    }
+
+    #[test]
+    fn number_dot_not_followed_by_digit() {
+        // "3.x" → 3 is number, dot is punctuation, x is identifier
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("3.x", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].range, 0..1); // just "3"
+    }
+
+    // -----------------------------------------------------------------------
+    // GenericTokenizer: block comment edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn block_comment_empty() {
+        let t = rust_tokenizer();
+        let (tokens, state) = t.tokenize_line("/**/", LineState::Normal);
+        assert_eq!(state, LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::CommentBlock);
+        assert_eq!(tokens[0].range, 0..4);
+    }
+
+    #[test]
+    fn block_comment_with_code_before_and_after() {
+        let t = rust_tokenizer();
+        let (tokens, state) = t.tokenize_line("a /* b */ c", LineState::Normal);
+        assert_eq!(state, LineState::Normal);
+        let kinds: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.kind != TokenKind::Whitespace)
+            .map(|t| t.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Identifier,
+                TokenKind::CommentBlock,
+                TokenKind::Identifier,
+            ]
+        );
+    }
+
+    #[test]
+    fn multiline_block_comment_closes_mid_line() {
+        let t = rust_tokenizer();
+        // In block comment state, close mid-line
+        let (tokens, state) =
+            t.tokenize_line("end */ let x = 1", LineState::InComment(CommentKind::Block));
+        assert_eq!(state, LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::CommentBlock);
+        // After the comment, we should have code tokens
+        let code_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::Keyword || t.kind == TokenKind::Identifier)
+            .collect();
+        assert!(!code_tokens.is_empty());
+    }
+
+    #[test]
+    fn nested_comment_kind_handled() {
+        let t = rust_tokenizer();
+        // InComment(Nested(1)) should also trigger continue_block_comment
+        let (tokens, _) = t.tokenize_line(
+            "still inside */",
+            LineState::InComment(CommentKind::Nested(1)),
+        );
+        assert_eq!(tokens[0].kind, TokenKind::CommentBlock);
+    }
+
+    // -----------------------------------------------------------------------
+    // GenericTokenizer: attribute edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn attribute_at_sign() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("@annotation", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Attribute);
+    }
+
+    #[test]
+    fn attribute_hash_without_bracket() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("# not a bracket", LineState::Normal);
+        // # alone is still an attribute (just the # char)
+        assert_eq!(tokens[0].kind, TokenKind::Attribute);
+        assert_eq!(tokens[0].range, 0..1);
+    }
+
+    #[test]
+    fn attribute_unclosed_bracket() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("#[unclosed", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Attribute);
+        // Should consume to end of line
+        assert_eq!(tokens[0].range, 0..10);
+    }
+
+    // -----------------------------------------------------------------------
+    // GenericTokenizer: operator and delimiter edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn all_operator_bytes() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("+-*/%=!<>&|^~", LineState::Normal);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Operator);
+    }
+
+    #[test]
+    fn all_delimiter_bytes() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("()[]{}()", LineState::Normal);
+        assert_eq!(tokens.len(), 8);
+        assert!(tokens.iter().all(|t| t.kind == TokenKind::Delimiter));
+    }
+
+    // -----------------------------------------------------------------------
+    // GenericTokenizer: UTF-8 punctuation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn utf8_punctuation() {
+        let t = rust_tokenizer();
+        // Non-ASCII characters should be treated as punctuation
+        let (tokens, _) = t.tokenize_line("\u{2026}", LineState::Normal); // ellipsis
+        assert_eq!(tokens[0].kind, TokenKind::Punctuation);
+        // Range should cover the full UTF-8 byte length
+        assert_eq!(
+            tokens[0].range.end - tokens[0].range.start,
+            "\u{2026}".len()
+        );
+    }
+
+    #[test]
+    fn mixed_utf8_and_ascii() {
+        let t = rust_tokenizer();
+        let source = "x\u{2192}y"; // x→y
+        let (tokens, _) = t.tokenize_line(source, LineState::Normal);
+        assert!(validate_tokens(source, &tokens));
+    }
+
+    // -----------------------------------------------------------------------
+    // GenericTokenizer: identifiers starting with underscore
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn identifier_underscore_prefix() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("_foo", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Identifier);
+        assert_eq!(tokens[0].range, 0..4);
+    }
+
+    #[test]
+    fn identifier_all_underscores() {
+        let t = rust_tokenizer();
+        let (tokens, _) = t.tokenize_line("___", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Identifier);
+    }
+
+    // -----------------------------------------------------------------------
+    // DiffTokenizer edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn diff_plus_line() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("+added line", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Keyword);
+    }
+
+    #[test]
+    fn diff_minus_line() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("-removed line", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Error);
+    }
+
+    #[test]
+    fn diff_triple_plus() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("+++ b/file.rs", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Attribute);
+    }
+
+    #[test]
+    fn diff_triple_minus() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("--- a/file.rs", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Attribute);
+    }
+
+    #[test]
+    fn diff_hunk_header() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("@@ -1,5 +1,7 @@", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::KeywordControl);
+    }
+
+    #[test]
+    fn diff_index_line() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("index abc123..def456 100644", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Comment);
+    }
+
+    #[test]
+    fn diff_new_file_line() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("new file mode 100644", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Comment);
+    }
+
+    #[test]
+    fn diff_deleted_file_line() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("deleted file mode 100644", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Comment);
+    }
+
+    #[test]
+    fn diff_context_line() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line(" unchanged context", LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::Text);
+    }
+
+    #[test]
+    fn diff_empty_line() {
+        let t = DiffTokenizer;
+        let (tokens, _) = t.tokenize_line("", LineState::Normal);
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn diff_preserves_state() {
+        let t = DiffTokenizer;
+        // DiffTokenizer should always return the input state unchanged
+        let (_, state) = t.tokenize_line("+add", LineState::InString(StringKind::Double));
+        assert_eq!(state, LineState::InString(StringKind::Double));
+    }
+
+    // -----------------------------------------------------------------------
+    // PlainTokenizer edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn plain_tokenizer_preserves_state() {
+        let t = PlainTokenizer;
+        let (_, state) = t.tokenize_line("text", LineState::InComment(CommentKind::Block));
+        assert_eq!(state, LineState::InComment(CommentKind::Block));
+    }
+
+    // -----------------------------------------------------------------------
+    // LineState / StringKind / CommentKind coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn line_state_default_is_normal() {
+        assert_eq!(LineState::default(), LineState::Normal);
+    }
+
+    #[test]
+    fn line_state_variants_distinct() {
+        let states = [
+            LineState::Normal,
+            LineState::InString(StringKind::Double),
+            LineState::InString(StringKind::Single),
+            LineState::InString(StringKind::Backtick),
+            LineState::InString(StringKind::Triple),
+            LineState::InComment(CommentKind::Block),
+            LineState::InComment(CommentKind::Doc),
+            LineState::InComment(CommentKind::Nested(0)),
+            LineState::InComment(CommentKind::Nested(5)),
+            LineState::InRawString(0),
+            LineState::InRawString(3),
+        ];
+        // All should be distinct except Normal == Normal
+        for (i, a) in states.iter().enumerate() {
+            for (j, b) in states.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn string_kind_eq_and_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(StringKind::Double);
+        set.insert(StringKind::Single);
+        set.insert(StringKind::Backtick);
+        set.insert(StringKind::Triple);
+        assert_eq!(set.len(), 4);
+    }
+
+    #[test]
+    fn comment_kind_eq_and_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(CommentKind::Block);
+        set.insert(CommentKind::Doc);
+        set.insert(CommentKind::Nested(0));
+        set.insert(CommentKind::Nested(1));
+        assert_eq!(set.len(), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenKind additional predicates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn token_kind_keyword_modifier_is_keyword() {
+        assert!(TokenKind::KeywordModifier.is_keyword());
+    }
+
+    #[test]
+    fn token_kind_non_comment_non_string_non_keyword() {
+        assert!(!TokenKind::Number.is_comment());
+        assert!(!TokenKind::Number.is_string());
+        assert!(!TokenKind::Number.is_keyword());
+        assert!(!TokenKind::Operator.is_comment());
+        assert!(!TokenKind::Delimiter.is_string());
+        assert!(!TokenKind::Whitespace.is_keyword());
+    }
+
+    // -----------------------------------------------------------------------
+    // Token edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)]
+    fn token_len_saturating() {
+        // Token with range where start > end (pathological, only via direct construction)
+        let t = Token {
+            kind: TokenKind::Text,
+            range: 5..3,
+            meta: None,
+        };
+        assert_eq!(t.len(), 0); // saturating_sub
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn token_clone_eq() {
+        let t1 = Token::with_nesting(TokenKind::Comment, 10..20, 2);
+        let t2 = t1.clone();
+        assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn token_meta_none_vs_some() {
+        let a = Token::new(TokenKind::Text, 0..5);
+        let b = Token::with_nesting(TokenKind::Text, 0..5, 0);
+        // These are NOT equal because meta differs (None vs Some)
+        assert_ne!(a, b);
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenizedText edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tokenized_text_from_empty() {
+        let t = rust_tokenizer();
+        let cache = TokenizedText::from_text(&t, "");
+        assert!(cache.lines().is_empty());
+    }
+
+    #[test]
+    fn tokenized_text_tokens_in_range_out_of_bounds_line() {
+        let t = rust_tokenizer();
+        let cache = TokenizedText::from_text(&t, "let x = 1");
+        // Line index beyond available lines
+        let hits = cache.tokens_in_range(999, 0..5);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn tokenized_text_tokens_in_range_no_overlap() {
+        let t = rust_tokenizer();
+        let cache = TokenizedText::from_lines(&t, &["let x = 1"]);
+        // Range that doesn't overlap any tokens (past end of line)
+        let hits = cache.tokens_in_range(0, 100..200);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn tokenized_text_update_line_different_count_rebuilds() {
+        let t = rust_tokenizer();
+        let lines1 = ["let a = 1", "let b = 2"];
+        let mut cache = TokenizedText::from_lines(&t, &lines1);
+        assert_eq!(cache.lines().len(), 2);
+
+        // Update with different line count → full rebuild
+        let lines2 = ["let a = 1", "let b = 2", "let c = 3"];
+        cache.update_line(&t, &lines2, 0);
+        assert_eq!(cache.lines().len(), 3);
+    }
+
+    #[test]
+    fn tokenized_text_update_line_beyond_range() {
+        let t = rust_tokenizer();
+        let lines = ["let a = 1"];
+        let mut cache = TokenizedText::from_lines(&t, &lines);
+        // line_index beyond available lines → no-op
+        cache.update_line(&t, &lines, 999);
+        assert_eq!(cache.lines().len(), 1);
+    }
+
+    #[test]
+    fn tokenized_text_update_line_early_exit() {
+        let t = rust_tokenizer();
+        let lines = ["let a = 1", "let b = 2", "let c = 3"];
+        let mut cache = TokenizedText::from_lines(&t, &lines);
+
+        // Update line 0 with same content → tokens match → early exit
+        cache.update_line(&t, &lines, 0);
+        assert_eq!(cache.lines().len(), 3);
+    }
+
+    #[test]
+    fn tokenized_text_from_lines_preserves_empty() {
+        let t = rust_tokenizer();
+        let lines = ["let x", "", "let y"];
+        let cache = TokenizedText::from_lines(&t, &lines);
+        assert_eq!(cache.lines().len(), 3);
+        assert!(cache.lines()[1].tokens.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Registry edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn registry_empty_extension_ignored() {
+        // Extensions with empty string after trimming should be ignored
+        let mut reg = TokenizerRegistry::new();
+        reg.register(Box::new(PlainTokenizer));
+        // "txt" is registered but "" or "." should not match
+        assert!(reg.for_extension("").is_none());
+        assert!(reg.for_extension(".").is_none());
+    }
+
+    #[test]
+    fn registry_nonexistent_name() {
+        let reg = TokenizerRegistry::new();
+        assert!(reg.by_name("nonexistent").is_none());
+    }
+
+    #[test]
+    fn registry_override_same_extension() {
+        let mut reg = TokenizerRegistry::new();
+        reg.register(Box::new(PlainTokenizer));
+        // Register another tokenizer that also claims "txt"
+        let custom = GenericTokenizer::new(GenericTokenizerConfig {
+            name: "Custom",
+            extensions: &["txt"],
+            keywords: &[],
+            control_keywords: &[],
+            type_keywords: &[],
+            line_comment: "",
+            block_comment_start: "",
+            block_comment_end: "",
+        });
+        reg.register(Box::new(custom));
+        // The newer registration should win for "txt"
+        let t = reg.for_extension("txt").unwrap();
+        assert_eq!(t.name(), "Custom");
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_tokens edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_tokens_empty_list() {
+        assert!(validate_tokens("any source", &[]));
+    }
+
+    #[test]
+    fn validate_tokens_with_gaps() {
+        // Tokens that don't cover the full source (gaps are OK)
+        let source = "abcdef";
+        let tokens = vec![
+            Token::new(TokenKind::Text, 0..2),
+            Token::new(TokenKind::Text, 4..6),
+        ];
+        assert!(validate_tokens(source, &tokens));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tokenizer::tokenize with bare CR line ending
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn full_tokenize_bare_cr() {
+        let t = rust_tokenizer();
+        let source = "let\rx";
+        let tokens = t.tokenize(source);
+        assert!(validate_tokens(source, &tokens));
+        let non_ws: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.kind != TokenKind::Whitespace)
+            .collect();
+        assert_eq!(non_ws.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Language-specific tokenizer construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn all_generic_tokenizers_name_and_extension() {
+        let tokenizers: Vec<Box<dyn Tokenizer>> = vec![
+            Box::new(rust_tokenizer()),
+            Box::new(python_tokenizer()),
+            Box::new(javascript_tokenizer()),
+            Box::new(typescript_tokenizer()),
+            Box::new(go_tokenizer()),
+            Box::new(sql_tokenizer()),
+            Box::new(yaml_tokenizer()),
+            Box::new(bash_tokenizer()),
+            Box::new(cpp_tokenizer()),
+            Box::new(kotlin_tokenizer()),
+            Box::new(powershell_tokenizer()),
+            Box::new(csharp_tokenizer()),
+            Box::new(ruby_tokenizer()),
+            Box::new(java_tokenizer()),
+            Box::new(c_tokenizer()),
+            Box::new(swift_tokenizer()),
+            Box::new(php_tokenizer()),
+            Box::new(html_tokenizer()),
+            Box::new(css_tokenizer()),
+            Box::new(fish_tokenizer()),
+            Box::new(lua_tokenizer()),
+            Box::new(r_tokenizer()),
+            Box::new(elixir_tokenizer()),
+            Box::new(haskell_tokenizer()),
+            Box::new(zig_tokenizer()),
+            Box::new(mermaid_tokenizer()),
+        ];
+        for t in &tokenizers {
+            assert!(!t.name().is_empty());
+            assert!(!t.extensions().is_empty());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Haskell block comment delimiter {- -}
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn haskell_block_comment() {
+        let t = haskell_tokenizer();
+        let (tokens, state) = t.tokenize_line("x {- comment -} y", LineState::Normal);
+        assert_eq!(state, LineState::Normal);
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::CommentBlock));
+    }
+
+    #[test]
+    fn haskell_multiline_block_comment() {
+        let t = haskell_tokenizer();
+        let (_, state) = t.tokenize_line("x {- start", LineState::Normal);
+        assert!(matches!(state, LineState::InComment(CommentKind::Block)));
+        let (_, state2) = t.tokenize_line("end -} y", state);
+        assert_eq!(state2, LineState::Normal);
+    }
+
+    // -----------------------------------------------------------------------
+    // Lua block comment --[[ ]]
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lua_line_comment_takes_priority_over_block() {
+        let t = lua_tokenizer();
+        // In the generic tokenizer, "--" is the line comment prefix and
+        // "--[[" is the block comment start. Because line comment check
+        // runs first, "--[[ comment ]]" is consumed as a line comment.
+        let (tokens, state) = t.tokenize_line("x --[[ comment ]] y", LineState::Normal);
+        assert_eq!(state, LineState::Normal);
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Comment));
+    }
+
+    // -----------------------------------------------------------------------
+    // HTML comment delimiter <!-- -->
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn html_block_comment() {
+        let t = html_tokenizer();
+        let (tokens, state) = t.tokenize_line("<!-- comment -->", LineState::Normal);
+        assert_eq!(state, LineState::Normal);
+        assert_eq!(tokens[0].kind, TokenKind::CommentBlock);
+    }
+
+    #[test]
+    fn html_multiline_comment() {
+        let t = html_tokenizer();
+        let (_, state) = t.tokenize_line("<!-- start", LineState::Normal);
+        assert!(matches!(state, LineState::InComment(_)));
+        let (_, state2) = t.tokenize_line("end -->", state);
+        assert_eq!(state2, LineState::Normal);
+    }
+
+    // -----------------------------------------------------------------------
+    // Mermaid comment delimiter %%{ }%%
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mermaid_line_comment() {
+        let t = mermaid_tokenizer();
+        let (tokens, _) = t.tokenize_line("%% this is a comment", LineState::Normal);
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Comment));
+    }
+
+    // -----------------------------------------------------------------------
+    // Python: no block comments (empty config)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn python_no_block_comment() {
+        let t = python_tokenizer();
+        // "/*" should not be treated as block comment start
+        let (tokens, state) = t.tokenize_line("x /* y */", LineState::Normal);
+        assert_eq!(state, LineState::Normal);
+        // Should NOT produce a CommentBlock token
+        assert!(!tokens.iter().any(|t| t.kind == TokenKind::CommentBlock));
+    }
+
+    // -----------------------------------------------------------------------
+    // CSS: no line comment (empty config)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn css_no_line_comment() {
+        let t = css_tokenizer();
+        // "//" should not be treated as line comment in CSS
+        let (tokens, _) = t.tokenize_line("// not a comment", LineState::Normal);
+        // Should produce operator tokens, not a Comment
+        assert!(!tokens.iter().any(|t| t.kind == TokenKind::Comment));
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenLine clone and eq
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn token_line_clone_eq() {
+        let tl = TokenLine {
+            tokens: vec![Token::new(TokenKind::Keyword, 0..3)],
+            state_after: LineState::Normal,
+        };
+        let cloned = tl.clone();
+        assert_eq!(tl, cloned);
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenizedText::from_text vs from_lines consistency
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn from_text_vs_from_lines_consistent() {
+        let t = rust_tokenizer();
+        let source = "let a = 1\nlet b = 2";
+        let from_text = TokenizedText::from_text(&t, source);
+        let lines: Vec<&str> = source.lines().collect();
+        let from_lines = TokenizedText::from_lines(&t, &lines);
+        assert_eq!(from_text.lines().len(), from_lines.lines().len());
+        for (a, b) in from_text.lines().iter().zip(from_lines.lines().iter()) {
+            assert_eq!(a, b);
+        }
+    }
 }
