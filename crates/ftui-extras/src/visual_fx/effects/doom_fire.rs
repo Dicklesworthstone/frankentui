@@ -170,12 +170,11 @@ impl DoomFireFx {
             self.heat.resize(len, 0);
         }
 
-        // If dimensions changed, reset the buffer
-        let old_len = self.last_width as usize * self.last_height as usize;
-        if old_len != len {
-            for v in self.heat[..len].iter_mut() {
-                *v = 0;
-            }
+        // Dimensions changed, so we must reset the buffer. Even if `len`
+        // stays the same (e.g., 12x8 -> 8x12), the row stride changes and
+        // stale heat would be reinterpreted as a different 2D layout.
+        for v in self.heat[..len].iter_mut() {
+            *v = 0;
         }
 
         self.last_width = width;
@@ -420,6 +419,42 @@ mod tests {
         for c in bottom {
             assert_eq!(*c, PackedRgba::rgb(255, 255, 255));
         }
+    }
+
+    #[test]
+    fn fire_resize_same_len_resets_non_bottom_heat() {
+        let mut fx = DoomFireFx::new();
+
+        // Warm up so we have non-zero heat above the bottom row.
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 12 * 8];
+        for frame in 0..40 {
+            fx.render(make_ctx(12, 8, frame), &mut buf);
+        }
+
+        let w1 = 12usize;
+        let h1 = 8usize;
+        let bottom_start1 = (h1 - 1) * w1;
+        assert!(
+            fx.heat[..bottom_start1].iter().any(|&h| h > 0),
+            "warmup should propagate heat above the bottom row"
+        );
+
+        // Resize to a different shape with the same total cell count.
+        fx.resize(8, 12);
+
+        let w2 = 8usize;
+        let h2 = 12usize;
+        let bottom_start2 = (h2 - 1) * w2;
+        assert!(
+            fx.heat[..bottom_start2].iter().all(|&h| h == 0),
+            "non-bottom cells should be reset on resize even when len is unchanged"
+        );
+        assert!(
+            fx.heat[bottom_start2..bottom_start2 + w2]
+                .iter()
+                .all(|&h| h == 36),
+            "bottom row should be reseeded to max heat on resize when active"
+        );
     }
 
     #[test]
