@@ -344,6 +344,15 @@ mod tests {
     }
 
     #[test]
+    fn draw_column_top_at_height_draws_nothing() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column(2, 5, 9, PackedRgba::RED);
+        for y in 0..5 {
+            assert_eq!(fb.get_pixel(2, y), PackedRgba::BLACK, "y={y}");
+        }
+    }
+
+    #[test]
     fn draw_column_full_height() {
         let mut fb = DoomFramebuffer::new(3, 4);
         fb.draw_column(1, 0, 4, PackedRgba::GREEN);
@@ -416,6 +425,27 @@ mod tests {
         assert_eq!(fb.get_pixel(0, 3), PackedRgba::rgb(200, 200, 200));
         assert_eq!(fb.get_pixel(0, 4), PackedRgba::rgb(200, 200, 200));
         // No panic from exceeding bounds
+    }
+
+    #[test]
+    fn draw_column_shaded_inverted_range_draws_nothing() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column_shaded(1, 4, 2, 255, 255, 255, 1.0, 0.0);
+        for y in 0..5 {
+            assert_eq!(fb.get_pixel(1, y), PackedRgba::BLACK, "y={y}");
+        }
+    }
+
+    #[test]
+    fn draw_column_shaded_negative_light_clamps_to_zero() {
+        let mut fb = DoomFramebuffer::new(5, 5);
+        fb.draw_column_shaded(0, 0, 2, 200, 150, 100, -1.0, -0.5);
+        for y in 0..2 {
+            let pixel = fb.get_pixel(0, y);
+            assert_eq!(pixel.r(), 0, "r at y={y}");
+            assert_eq!(pixel.g(), 0, "g at y={y}");
+            assert_eq!(pixel.b(), 0, "b at y={y}");
+        }
     }
 
     // --- resize edge cases ---
@@ -735,6 +765,26 @@ mod tests {
         assert_eq!(fb.width, 5);
         assert_eq!(fb.height, 5);
         assert_eq!(fb.pixels.len(), 25);
+        assert_eq!(fb.get_pixel(2, 2), PackedRgba::RED);
+    }
+
+    #[test]
+    fn blit_to_painter_stride_larger_than_dimensions_samples_once() {
+        let mut fb = DoomFramebuffer::new(4, 4);
+        fb.set_pixel(0, 0, PackedRgba::RED);
+        let mut painter = Painter::new(4, 4, Mode::HalfBlock);
+        fb.blit_to_painter(&mut painter, 99);
+
+        for y in 0..4u16 {
+            for x in 0..4u16 {
+                let expected = x == 0 && y == 0;
+                assert_eq!(
+                    painter.get(i32::from(x), i32::from(y)),
+                    expected,
+                    "({x},{y})"
+                );
+            }
+        }
     }
 
     #[test]
