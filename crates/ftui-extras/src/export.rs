@@ -345,16 +345,14 @@ impl SvgExporter {
             for x in 0..buffer.width() {
                 let cell = buffer.get(x, y).unwrap();
 
-                if cell.is_continuation() || cell.is_empty() {
+                if cell.is_continuation() {
                     continue;
                 }
 
                 let content = cell_content_str(cell.content, pool);
-                if content.is_empty() {
-                    continue;
-                }
 
                 // Cell background (only if non-transparent).
+                // Emit even for empty-content cells so backgrounds are preserved.
                 if cell.bg != PackedRgba::TRANSPARENT && cell.bg.a() > 0 {
                     let bx = f32::from(x) * self.cell_width;
                     let by = f32::from(y) * self.cell_height;
@@ -369,6 +367,11 @@ impl SvgExporter {
                         cell.bg.b(),
                     )
                     .unwrap();
+                }
+
+                // Only emit <text> when there is visible content.
+                if content.is_empty() {
+                    continue;
                 }
 
                 let tx = f32::from(x) * self.cell_width;
