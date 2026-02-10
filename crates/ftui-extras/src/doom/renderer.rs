@@ -137,6 +137,10 @@ impl DoomRenderer {
         player: &Player,
         palette: &DoomPalette,
     ) {
+        if self.width != fb.width || self.height != fb.height {
+            self.resize(fb.width, fb.height);
+        }
+
         // Reset state
         self.reset();
 
@@ -1121,6 +1125,22 @@ mod tests {
         assert!(renderer.stats.subsectors_rendered > 0);
         assert!(renderer.stats.segs_processed > 0);
         assert_eq!(renderer.stats.total_columns, 80);
+    }
+
+    #[test]
+    fn render_adapts_to_framebuffer_dimensions() {
+        let map = make_simple_map();
+        let mut renderer = DoomRenderer::new(80, 50);
+        let mut fb = DoomFramebuffer::new(64, 32);
+        let player = Player::default();
+        let palette = DoomPalette::default();
+
+        renderer.render(&mut fb, &map, &player, &palette);
+
+        assert_eq!(renderer.width, 64);
+        assert_eq!(renderer.height, 32);
+        assert_eq!(renderer.column_clips.len(), 64);
+        assert_eq!(renderer.stats.total_columns, 64);
     }
 
     #[test]

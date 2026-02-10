@@ -1080,7 +1080,7 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
     match kind {
         "key" => {
             let code_str = extract_str(data, "code").ok_or("missing key code")?;
-            let code = parse_key_code(code_str)?;
+            let code = parse_key_code(&json_unescape(code_str))?;
             let mods_bits = extract_u64(data, "modifiers")
                 .or(extract_u64(data, "mods"))
                 .unwrap_or(0) as u8;
@@ -1516,10 +1516,15 @@ mod tests {
             SCHEMA_VERSION, data_json
         );
         let trace = SessionTrace::from_jsonl(&line).expect("input JSON should parse");
-        match trace.records.into_iter().next() {
-            Some(TraceRecord::Input { event, .. }) => event,
-            other => panic!("expected single input record, got {other:?}"),
-        }
+        trace
+            .records
+            .into_iter()
+            .next()
+            .and_then(|record| match record {
+                TraceRecord::Input { event, .. } => Some(event),
+                _ => None,
+            })
+            .expect("expected single input record")
     }
 
     fn new_counter(value: i32) -> Counter {
@@ -2222,15 +2227,16 @@ mod tests {
             let jsonl = record.to_jsonl();
             let parsed = SessionTrace::from_jsonl(&jsonl).unwrap();
             let parsed_record = &parsed.records[0];
-            if let TraceRecord::Input {
+            let TraceRecord::Input {
                 event: parsed_event,
                 ..
             } = parsed_record
-            {
-                assert_eq!(parsed_event, event, "event {i} round-trip failed: {jsonl}");
-            } else {
-                panic!("expected Input record for event {i}");
-            }
+            else {
+                assert!(false, "expected Input record for event {i}");
+                continue;
+            };
+
+            assert_eq!(parsed_event, event, "event {i} round-trip failed: {jsonl}");
         }
     }
 
@@ -2403,6 +2409,27 @@ mod tests {
                 kind: KeyEventKind::Release,
             })
         );
+    }
+
+    #[test]
+    fn key_event_json_round_trip_unescapes_code() {
+        let quote_key = Event::Key(KeyEvent {
+            code: KeyCode::Char('"'),
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        let quote_json = event_to_json(&quote_key);
+        let parsed_quote = parse_event_json(&quote_json).expect("quote key should parse");
+        assert_eq!(parsed_quote, quote_key);
+
+        let slash_key = Event::Key(KeyEvent {
+            code: KeyCode::Char('\\'),
+            modifiers: Modifiers::SHIFT,
+            kind: KeyEventKind::Press,
+        });
+        let slash_json = event_to_json(&slash_key);
+        let parsed_slash = parse_event_json(&slash_json).expect("slash key should parse");
+        assert_eq!(parsed_slash, slash_key);
     }
 
     #[test]

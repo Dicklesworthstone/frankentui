@@ -714,7 +714,9 @@ impl PlasmaFx {
         if !ctx.quality.is_enabled() || ctx.is_empty() {
             return;
         }
-        debug_assert_eq!(out.len(), ctx.len());
+        if out.len() != ctx.len() {
+            return;
+        }
 
         let w = ctx.width as f64;
         let h = ctx.height as f64;
@@ -982,6 +984,19 @@ mod tests {
         };
         let mut out = vec![PackedRgba::TRANSPARENT; 1];
         fx.render(ctx, &mut out);
+    }
+
+    #[test]
+    fn length_mismatch_is_ignored_without_mutating_output() {
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::default();
+        let ctx = ctx(&theme);
+        let sentinel = PackedRgba::rgb(1, 2, 3);
+        let mut out = vec![sentinel; ctx.len().saturating_sub(1)];
+
+        fx.render(ctx, &mut out);
+
+        assert!(out.iter().all(|px| *px == sentinel));
     }
 
     #[test]

@@ -29,3 +29,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# VFX-heavy crate: prefer speed over binary size so the rasterizer
+# inner loops benefit from SIMD, loop unrolling, and aggressive inlining.
+[profile.release.package.ftui-extras]
+opt-level = 3

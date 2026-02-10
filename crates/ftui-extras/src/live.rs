@@ -125,10 +125,13 @@ pub struct Live {
     last_height: Mutex<usize>,
     /// Whether the live display is currently active.
     started: AtomicBool,
-    /// Stop signal for auto-refresh thread.
-    refresh_stop: Arc<AtomicBool>,
-    /// Auto-refresh thread handle.
-    refresh_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Auto-refresh thread state (stop token + join handle).
+    refresh_thread: Mutex<Option<RefreshThread>>,
+}
+
+struct RefreshThread {
+    stop: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
 }
 
 impl Live {
@@ -145,8 +148,7 @@ impl Live {
             config,
             last_height: Mutex::new(0),
             started: AtomicBool::new(false),
-            refresh_stop: Arc::new(AtomicBool::new(false)),
-            refresh_handle: Mutex::new(None),
+            refresh_thread: Mutex::new(None),
         }
     }
 
@@ -167,12 +169,12 @@ impl Live {
     ///
     /// Idempotent: calling stop when already stopped is a no-op.
     pub fn stop(&self) -> io::Result<()> {
+        // Auto-refresh may be running even if `start()` was never called.
+        self.stop_refresh_thread();
+
         if !self.started.swap(false, Ordering::SeqCst) {
             return Ok(()); // Already stopped
         }
-
-        // Stop auto-refresh thread if running
-        self.stop_refresh_thread();
 
         let mut writer = self.lock_writer();
 
@@ -281,32 +283,49 @@ impl Live {
             return;
         }
 
-        self.refresh_stop.store(false, Ordering::SeqCst);
-        let stop = Arc::clone(&self.refresh_stop);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
         let interval = Duration::from_secs_f64(1.0 / rate);
 
         let handle = std::thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
+            while !stop_thread.load(Ordering::Relaxed) {
                 std::thread::sleep(interval);
-                if !stop.load(Ordering::Relaxed) {
+                if !stop_thread.load(Ordering::Relaxed) {
                     callback();
                 }
             }
         });
 
-        if let Ok(mut h) = self.refresh_handle.lock() {
-            *h = Some(handle);
-        }
+        let mut guard = self
+            .refresh_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = Some(RefreshThread { stop, handle });
     }
 
     /// Stop the auto-refresh thread.
     pub fn stop_refresh_thread(&self) {
-        self.refresh_stop.store(true, Ordering::SeqCst);
-        if let Ok(mut handle) = self.refresh_handle.lock()
-            && let Some(h) = handle.take()
-            && h.thread().id() != std::thread::current().id()
-        {
-            let _ = h.join();
+        let current = std::thread::current().id();
+        let to_join = {
+            let mut guard = self
+                .refresh_thread
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(rt) = guard.as_ref() else {
+                return;
+            };
+
+            rt.stop.store(true, Ordering::SeqCst);
+            if rt.handle.thread().id() == current {
+                // Don't self-join. Leave the handle so another thread can join later.
+                None
+            } else {
+                guard.take()
+            }
+        };
+
+        if let Some(rt) = to_join {
+            let _ = rt.handle.join();
         }
     }
 
@@ -381,6 +400,7 @@ mod tests {
     use super::*;
     use ftui_text::Segment;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A test writer that captures all bytes written.
     #[derive(Clone, Default)]
@@ -514,8 +534,46 @@ mod tests {
 
         live.start_auto_refresh(|| {});
 
-        let handle = live.refresh_handle.lock().unwrap();
-        assert!(handle.is_none(), "no refresh thread should be spawned");
+        let refresh = live.refresh_thread.lock().unwrap();
+        assert!(refresh.is_none(), "no refresh thread should be spawned");
+    }
+
+    #[test]
+    fn stop_stops_refresh_thread_even_when_not_started() {
+        let w = TestWriter::new();
+        let cfg = LiveConfig {
+            refresh_per_second: 200.0,
+            ..Default::default()
+        };
+        let live = Live::with_config(Box::new(w), 80, cfg);
+
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticks_clone = Arc::clone(&ticks);
+        live.start_auto_refresh(move || {
+            ticks_clone.fetch_add(1, Ordering::Relaxed);
+        });
+
+        {
+            let refresh = live.refresh_thread.lock().unwrap();
+            assert!(refresh.is_some(), "refresh thread should be active");
+        }
+
+        std::thread::sleep(Duration::from_millis(30));
+        live.stop().unwrap();
+
+        let after_stop = ticks.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            ticks.load(Ordering::Relaxed),
+            after_stop,
+            "refresh callback should not run after stop()"
+        );
+
+        let refresh = live.refresh_thread.lock().unwrap();
+        assert!(
+            refresh.is_none(),
+            "refresh thread should be joined and cleared"
+        );
     }
 
     #[test]

@@ -1731,7 +1731,7 @@ mod tests {
         };
         let r2 = r; // Copy
         assert_eq!(r.elapsed, r2.elapsed);
-        let r3 = r.clone();
+        let r3 = r; // Copy
         assert_eq!(r3.dirty_cells, 5);
         let dbg = format!("{:?}", r);
         assert!(dbg.contains("42"));
@@ -1823,7 +1823,7 @@ mod tests {
         };
         let h2 = h; // Copy
         assert_eq!(h.count, h2.count);
-        let h3 = h.clone();
+        let h3 = h; // Copy
         assert_eq!(h3.p50_us, 50);
         let dbg = format!("{:?}", h);
         assert!(dbg.contains("FrameTimeHistogram"));
@@ -1908,7 +1908,7 @@ mod tests {
         };
         let g2 = g; // Copy
         assert_eq!(g, g2);
-        let g3 = g.clone();
+        let g3 = g; // Copy
         assert_eq!(g, g3);
         let dbg = format!("{:?}", g);
         assert!(dbg.contains("GeometrySnapshot"));
@@ -1973,8 +1973,10 @@ mod tests {
 
     #[test]
     fn interaction_snapshot_effective_shaping_engine() {
-        let mut i = InteractionSnapshot::default();
-        i.text_shaping_engine = 2;
+        let mut i = InteractionSnapshot {
+            text_shaping_engine: 2,
+            ..InteractionSnapshot::default()
+        };
         // When disabled, effective engine is 0
         assert_eq!(i.effective_text_shaping_engine(), 0);
         // When enabled, effective engine is the set value
@@ -1992,7 +1994,7 @@ mod tests {
         };
         let i2 = i; // Copy
         assert_eq!(i, i2);
-        let i3 = i.clone();
+        let i3 = i; // Copy
         assert_eq!(i, i3);
     }
 

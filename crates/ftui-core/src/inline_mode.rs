@@ -21,6 +21,8 @@
 
 use std::io::{self, Write};
 
+use unicode_width::UnicodeWidthChar;
+
 use crate::terminal_capabilities::TerminalCapabilities;
 
 // ============================================================================
@@ -273,9 +275,15 @@ impl<W: Write> InlineRenderer<W> {
 
                 // Move to bottom of log region
                 self.writer.write_all(&cursor_position(log_row, 1))?;
+                self.writer.write_all(ERASE_LINE)?;
 
-                // Write the log line
-                self.writer.write_all(text.as_bytes())?;
+                // Keep overlay logging single-line so wraps/newlines never scribble
+                // into the UI region below.
+                let safe_line =
+                    Self::sanitize_overlay_log_line(text, usize::from(self.config.term_width));
+                if !safe_line.is_empty() {
+                    self.writer.write_all(safe_line.as_bytes())?;
+                }
 
                 // Restore cursor
                 self.writer.write_all(CURSOR_RESTORE)?;
@@ -295,6 +303,13 @@ impl<W: Write> InlineRenderer<W> {
     where
         F: FnOnce(&mut W, &InlineConfig) -> io::Result<()>,
     {
+        if !self.config.is_valid() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid inline mode configuration",
+            ));
+        }
+
         // Begin sync output to prevent flicker
         if self.config.use_sync_output && !self.in_sync_block {
             self.writer.write_all(SYNC_BEGIN)?;
@@ -305,32 +320,89 @@ impl<W: Write> InlineRenderer<W> {
         self.writer.write_all(CURSOR_SAVE)?;
         self.cursor_saved = true;
 
-        // Move to UI region
-        let ui_row = self.config.ui_top_row();
-        self.writer.write_all(&cursor_position(ui_row, 1))?;
+        let operation_result = (|| -> io::Result<()> {
+            // Move to UI region
+            let ui_row = self.config.ui_top_row();
+            self.writer.write_all(&cursor_position(ui_row, 1))?;
 
-        // Clear and render each UI line
-        for row in 0..self.config.ui_height {
-            self.writer
-                .write_all(&cursor_position(ui_row.saturating_add(row), 1))?;
-            self.writer.write_all(ERASE_LINE)?;
+            // Clear and render each UI line
+            for row in 0..self.config.ui_height {
+                self.writer
+                    .write_all(&cursor_position(ui_row.saturating_add(row), 1))?;
+                self.writer.write_all(ERASE_LINE)?;
+            }
+
+            // Move back to start of UI and let caller render
+            self.writer.write_all(&cursor_position(ui_row, 1))?;
+            render_fn(&mut self.writer, &self.config)?;
+            Ok(())
+        })();
+
+        // Always attempt to restore terminal state even if rendering failed.
+        let restore_result = self.writer.write_all(CURSOR_RESTORE);
+        if restore_result.is_ok() {
+            self.cursor_saved = false;
         }
 
-        // Move back to start of UI and let caller render
-        self.writer.write_all(&cursor_position(ui_row, 1))?;
-        render_fn(&mut self.writer, &self.config)?;
+        let sync_end_result = if self.in_sync_block {
+            let res = self.writer.write_all(SYNC_END);
+            if res.is_ok() {
+                self.in_sync_block = false;
+            }
+            Some(res)
+        } else {
+            None
+        };
 
-        // Restore cursor position
-        self.writer.write_all(CURSOR_RESTORE)?;
-        self.cursor_saved = false;
+        let flush_result = self.writer.flush();
 
-        // End sync output
-        if self.in_sync_block {
-            self.writer.write_all(SYNC_END)?;
-            self.in_sync_block = false;
+        operation_result?;
+        restore_result?;
+        if let Some(res) = sync_end_result {
+            res?;
+        }
+        flush_result
+    }
+
+    fn sanitize_overlay_log_line(text: &str, max_cols: usize) -> String {
+        if max_cols == 0 {
+            return String::new();
         }
 
-        self.writer.flush()
+        let mut out = String::new();
+        let mut used_cols = 0usize;
+
+        for ch in text.chars() {
+            if ch == '\n' || ch == '\r' {
+                break;
+            }
+
+            // Skip ASCII control characters so logs cannot inject cursor motion.
+            if ch.is_control() {
+                continue;
+            }
+
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if ch_width == 0 {
+                // Keep combining marks only when they can attach to prior text.
+                if !out.is_empty() {
+                    out.push(ch);
+                }
+                continue;
+            }
+
+            if used_cols.saturating_add(ch_width) > max_cols {
+                break;
+            }
+
+            out.push(ch);
+            used_cols += ch_width;
+            if used_cols == max_cols {
+                break;
+            }
+        }
+
+        out
     }
 
     /// Internal cleanup - guaranteed to run on drop.
@@ -516,6 +588,47 @@ mod tests {
     }
 
     #[test]
+    fn write_log_overlay_truncates_to_single_safe_line() {
+        let writer = test_writer();
+        let config = InlineConfig::new(6, 24, 5).with_strategy(InlineStrategy::OverlayRedraw);
+        let mut renderer = InlineRenderer::new(writer, config);
+
+        renderer.write_log("ABCDE\nSECOND").unwrap();
+
+        let output = String::from_utf8_lossy(renderer.writer.get_ref());
+        assert!(output.contains("ABCDE"));
+        assert!(!output.contains("SECOND"));
+        assert!(!output.contains('\n'));
+    }
+
+    #[test]
+    fn write_log_overlay_truncates_wide_chars_by_display_width() {
+        let writer = test_writer();
+        let config = InlineConfig::new(6, 24, 3).with_strategy(InlineStrategy::OverlayRedraw);
+        let mut renderer = InlineRenderer::new(writer, config);
+
+        renderer.write_log("ab界Z").unwrap();
+
+        let output = String::from_utf8_lossy(renderer.writer.get_ref());
+        assert!(output.contains("ab"));
+        assert!(!output.contains('界'));
+        assert!(!output.contains('Z'));
+    }
+
+    #[test]
+    fn write_log_overlay_allows_wide_char_when_it_exactly_fits_width() {
+        let writer = test_writer();
+        let config = InlineConfig::new(6, 24, 4).with_strategy(InlineStrategy::OverlayRedraw);
+        let mut renderer = InlineRenderer::new(writer, config);
+
+        renderer.write_log("ab界Z").unwrap();
+
+        let output = String::from_utf8_lossy(renderer.writer.get_ref());
+        assert!(output.contains("ab界"));
+        assert!(!output.contains('Z'));
+    }
+
+    #[test]
     fn hybrid_does_not_set_scroll_region_in_enter() {
         let writer = test_writer();
         let config = InlineConfig::new(6, 24, 80).with_strategy(InlineStrategy::Hybrid);
@@ -633,6 +746,36 @@ mod tests {
             .filter(|w| *w == ERASE_LINE)
             .count();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn present_ui_render_error_still_restores_state() {
+        let writer = test_writer();
+        let config = InlineConfig::new(2, 10, 80)
+            .with_strategy(InlineStrategy::OverlayRedraw)
+            .with_sync_output(true);
+        let mut renderer = InlineRenderer::new(writer, config);
+
+        let err = renderer
+            .present_ui(|_, _| Err(io::Error::other("boom")))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+
+        assert!(writer_contains_sequence(&renderer.writer, CURSOR_RESTORE));
+        assert!(writer_contains_sequence(&renderer.writer, SYNC_END));
+        assert!(!renderer.cursor_saved);
+        assert!(!renderer.in_sync_block);
+    }
+
+    #[test]
+    fn present_ui_rejects_invalid_config() {
+        let writer = test_writer();
+        let config = InlineConfig::new(0, 24, 80).with_strategy(InlineStrategy::OverlayRedraw);
+        let mut renderer = InlineRenderer::new(writer, config);
+
+        let err = renderer.present_ui(|_, _| Ok(())).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!writer_contains_sequence(&renderer.writer, CURSOR_SAVE));
     }
 
     #[test]
