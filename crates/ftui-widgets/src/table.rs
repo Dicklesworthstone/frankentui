@@ -2544,19 +2544,25 @@ mod tests {
     #[test]
     fn wide_chars_in_render() {
         // CJK characters are 2 cells wide — should clip correctly.
-        // Wide chars are stored in the grapheme pool, so as_char() returns None.
-        // We verify the cell at (0,0) is not blank (the default space).
+        // Wide chars may use the grapheme pool, so we check the cell is populated.
         let table = Table::new([Row::new(["界界界"])], [Constraint::Fixed(4)]);
         let area = Rect::new(0, 0, 4, 1);
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(4, 1, &mut pool);
         Widget::render(&table, area, &mut frame);
 
-        // "界界界" needs 6 cells but only 4 available — first two wide chars fit
+        // "界界界" needs 6 cells but only 4 available — first two wide chars fit.
+        // The cell at (0,0) should have content (not empty).
         let cell = frame.buffer.get(0, 0).unwrap();
         assert!(
-            !cell.content.is_default(),
-            "first cell should contain content, not be blank"
+            !cell.content.is_empty(),
+            "first cell should contain CJK content, not be empty"
+        );
+        // Cell at (1,0) should be a continuation marker for the wide char
+        let cell1 = frame.buffer.get(1, 0).unwrap();
+        assert!(
+            cell1.content.is_continuation(),
+            "second cell should be continuation of wide char"
         );
     }
 
