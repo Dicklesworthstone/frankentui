@@ -314,9 +314,7 @@ impl<M> Cmd<M> {
         if cmds.is_empty() {
             Self::None
         } else if cmds.len() == 1 {
-            cmds.into_iter()
-                .next()
-                .expect("non-empty vec has at least one element")
+            cmds.into_iter().next().unwrap_or(Self::None)
         } else {
             Self::Batch(cmds)
         }
@@ -327,9 +325,7 @@ impl<M> Cmd<M> {
         if cmds.is_empty() {
             Self::None
         } else if cmds.len() == 1 {
-            cmds.into_iter()
-                .next()
-                .expect("non-empty vec has at least one element")
+            cmds.into_iter().next().unwrap_or(Self::None)
         } else {
             Self::Sequence(cmds)
         }
@@ -897,17 +893,16 @@ impl<M: Send + 'static> EffectQueue<M> {
         config: EffectQueueConfig,
         result_sender: mpsc::Sender<M>,
         evidence_sink: Option<EvidenceSink>,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel::<EffectCommand<M>>();
         let handle = thread::Builder::new()
             .name("ftui-effects".into())
-            .spawn(move || effect_queue_loop(config, rx, result_sender, evidence_sink))
-            .expect("failed to spawn effect queue");
+            .spawn(move || effect_queue_loop(config, rx, result_sender, evidence_sink))?;
 
-        Self {
+        Ok(Self {
             sender: tx,
             handle: Some(handle),
-        }
+        })
     }
 
     fn enqueue(&self, spec: TaskSpec, task: Box<dyn FnOnce() -> M + Send>) {
@@ -1835,7 +1830,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
                 config.effect_queue.clone(),
                 task_sender.clone(),
                 evidence_sink.clone(),
-            ))
+            )?)
         } else {
             None
         };
@@ -1951,7 +1946,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 config.effect_queue.clone(),
                 task_sender.clone(),
                 evidence_sink.clone(),
-            ))
+            )?)
         } else {
             None
         };
@@ -5423,10 +5418,11 @@ mod tests {
     fn read_evidence_event(path: &PathBuf, event: &str) -> Value {
         let jsonl = std::fs::read_to_string(path).expect("read evidence jsonl");
         let needle = format!("\"event\":\"{event}\"");
+        let missing_msg = format!("missing {event} line");
         let line = jsonl
             .lines()
             .find(|line| line.contains(&needle))
-            .unwrap_or_else(|| panic!("missing {event} line"));
+            .expect(&missing_msg);
         serde_json::from_str(line).expect("valid evidence json")
     }
 
@@ -5958,17 +5954,14 @@ mod tests {
             .expect("task cmd");
 
         let deadline = Instant::now() + Duration::from_millis(200);
-        while !program.model().done {
+        while !program.model().done && Instant::now() <= deadline {
             program
                 .process_task_results()
                 .expect("process task results");
             program.reap_finished_tasks();
-            if Instant::now() > deadline {
-                panic!("task result did not arrive in time");
-            }
         }
 
-        assert!(program.model().done);
+        assert!(program.model().done, "task result did not arrive in time");
     }
 
     #[test]
@@ -6109,6 +6102,9 @@ mod tests {
         let mut config = ProgramConfig::default().with_resize_behavior(ResizeBehavior::Throttled);
         config.resize_coalescer.steady_delay_ms = 0;
         config.resize_coalescer.burst_delay_ms = 0;
+        // Use a large hard deadline so elapsed wall-clock time between coalescer
+        // construction and `handle_resize` never triggers an immediate apply.
+        config.resize_coalescer.hard_deadline_ms = 10_000;
         config.evidence_sink = sink_config.clone();
 
         let mut program = headless_program_with_config(ResizeModel { last_size: None }, config);
@@ -6195,16 +6191,16 @@ mod tests {
             .expect("task cmd");
 
         let deadline = Instant::now() + Duration::from_millis(200);
-        while !program.model().done {
+        while !program.model().done && Instant::now() <= deadline {
             program
                 .process_task_results()
                 .expect("process task results");
-            if Instant::now() > deadline {
-                panic!("effect queue task result did not arrive in time");
-            }
         }
 
-        assert!(program.model().done);
+        assert!(
+            program.model().done,
+            "effect queue task result did not arrive in time"
+        );
     }
 
     // =========================================================================
