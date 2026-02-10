@@ -483,4 +483,290 @@ mod tests {
         assert_eq!(ring.get(998), Some(&998));
         assert_eq!(ring.get(999), Some(&999));
     }
+
+    // ── Edge-case tests (bd-2n2oo) ──────────────────────────
+
+    #[test]
+    fn capacity_one_ring() {
+        let mut ring = LogRing::new(1);
+        ring.push("a");
+        assert_eq!(ring.len(), 1);
+        assert_eq!(ring.get(0), Some(&"a"));
+
+        ring.push("b"); // evicts "a"
+        assert_eq!(ring.len(), 1);
+        assert_eq!(ring.total_count(), 2);
+        assert_eq!(ring.get(0), None);
+        assert_eq!(ring.get(1), Some(&"b"));
+        assert_eq!(ring.first_index(), 1);
+    }
+
+    #[test]
+    fn get_mut_evicted_returns_none() {
+        let mut ring = LogRing::new(2);
+        ring.push(1);
+        ring.push(2);
+        ring.push(3); // evicts 1
+        assert!(ring.get_mut(0).is_none());
+    }
+
+    #[test]
+    fn get_mut_beyond_total_returns_none() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        assert!(ring.get_mut(1).is_none());
+        assert!(ring.get_mut(100).is_none());
+    }
+
+    #[test]
+    fn get_beyond_total_count() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        assert_eq!(ring.get(1), None); // total_count=1, idx 1 is out of range
+        assert_eq!(ring.get(usize::MAX), None);
+    }
+
+    #[test]
+    fn get_range_empty_range() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        ring.push(2);
+        let items: Vec<_> = ring.get_range(1..1).collect();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn get_range_inverted_start_gt_end() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        ring.push(2);
+        // Range 5..2 is empty since start > end
+        let items: Vec<_> = ring.get_range(5..2).collect();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn get_range_fully_evicted() {
+        let mut ring = LogRing::new(2);
+        ring.push(1);
+        ring.push(2);
+        ring.push(3);
+        ring.push(4);
+        // indices 0..2 are evicted, first_index=2
+        let items: Vec<_> = ring.get_range(0..2).collect();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn get_range_fully_future() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        // total_count=1, range 5..10 is entirely future
+        let items: Vec<_> = ring.get_range(5..10).collect();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn get_range_partial_overlap() {
+        let mut ring = LogRing::new(3);
+        ring.push(10);
+        ring.push(20);
+        ring.push(30);
+        ring.push(40); // evicts 10, first_index=1
+        // Request range 0..5, only 1..4 is in memory
+        let items: Vec<_> = ring.get_range(0..5).collect();
+        assert_eq!(items, vec![&20, &30, &40]);
+    }
+
+    #[test]
+    fn iter_empty_ring() {
+        let ring: LogRing<i32> = LogRing::new(5);
+        assert_eq!(ring.iter().count(), 0);
+    }
+
+    #[test]
+    fn iter_indexed_empty_ring() {
+        let ring: LogRing<i32> = LogRing::new(5);
+        assert_eq!(ring.iter_indexed().count(), 0);
+    }
+
+    #[test]
+    fn iter_reverse() {
+        let mut ring = LogRing::new(3);
+        ring.push(1);
+        ring.push(2);
+        ring.push(3);
+        let rev: Vec<_> = ring.iter().rev().copied().collect();
+        assert_eq!(rev, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn iter_indexed_reverse() {
+        let mut ring = LogRing::new(2);
+        ring.push("a");
+        ring.push("b");
+        ring.push("c"); // evicts "a"
+        let rev: Vec<_> = ring.iter_indexed().rev().collect();
+        assert_eq!(rev, vec![(2, &"c"), (1, &"b")]);
+    }
+
+    #[test]
+    fn extend_empty_iterator() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        ring.extend(std::iter::empty::<i32>());
+        assert_eq!(ring.len(), 1);
+        assert_eq!(ring.total_count(), 1);
+    }
+
+    #[test]
+    fn extend_trait_impl() {
+        let mut ring = LogRing::new(5);
+        Extend::extend(&mut ring, vec![1, 2, 3]);
+        assert_eq!(ring.len(), 3);
+        assert_eq!(ring.total_count(), 3);
+    }
+
+    #[test]
+    fn from_iter_empty() {
+        let ring: LogRing<i32> = std::iter::empty().collect();
+        assert_eq!(ring.capacity(), 1); // max(0, 1)
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn from_iter_single() {
+        let ring: LogRing<i32> = std::iter::once(42).collect();
+        assert_eq!(ring.capacity(), 1);
+        assert_eq!(ring.len(), 1);
+        assert_eq!(ring.get(0), Some(&42));
+    }
+
+    #[test]
+    fn clone_independence() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        ring.push(2);
+        let mut cloned = ring.clone();
+        cloned.push(3);
+        assert_eq!(ring.len(), 2);
+        assert_eq!(cloned.len(), 3);
+        assert_eq!(ring.total_count(), 2);
+        assert_eq!(cloned.total_count(), 3);
+    }
+
+    #[test]
+    fn debug_format() {
+        let mut ring = LogRing::new(3);
+        ring.push(1);
+        let dbg = format!("{:?}", ring);
+        assert!(dbg.contains("LogRing"));
+    }
+
+    #[test]
+    fn drain_empty_ring() {
+        let mut ring: LogRing<i32> = LogRing::new(5);
+        let drained: Vec<_> = ring.drain().collect();
+        assert!(drained.is_empty());
+        assert_eq!(ring.total_count(), 0);
+    }
+
+    #[test]
+    fn clear_then_push_continues_absolute_index() {
+        let mut ring = LogRing::new(5);
+        ring.push("a");
+        ring.push("b");
+        ring.clear();
+        assert_eq!(ring.total_count(), 2);
+        assert_eq!(ring.first_index(), 2);
+
+        ring.push("c");
+        assert_eq!(ring.total_count(), 3);
+        assert_eq!(ring.first_index(), 2);
+        assert_eq!(ring.get(2), Some(&"c"));
+        assert_eq!(ring.get(0), None); // old indices gone
+        assert_eq!(ring.get(1), None);
+    }
+
+    #[test]
+    fn reset_then_push_starts_fresh() {
+        let mut ring = LogRing::new(5);
+        ring.push("a");
+        ring.push("b");
+        ring.reset();
+        ring.push("c");
+        assert_eq!(ring.total_count(), 1);
+        assert_eq!(ring.first_index(), 0);
+        assert_eq!(ring.get(0), Some(&"c"));
+    }
+
+    #[test]
+    fn last_index_after_clear() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        ring.clear();
+        assert_eq!(ring.last_index(), Some(0));
+        // total_count is 1, so last_index = 0
+    }
+
+    #[test]
+    fn last_index_after_reset() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        ring.reset();
+        assert_eq!(ring.last_index(), None);
+    }
+
+    #[test]
+    fn front_back_after_clear() {
+        let mut ring = LogRing::new(5);
+        ring.push(1);
+        ring.clear();
+        assert_eq!(ring.front(), None);
+        assert_eq!(ring.back(), None);
+    }
+
+    #[test]
+    fn is_in_memory_at_exact_boundaries() {
+        let mut ring = LogRing::new(3);
+        ring.push(10);
+        ring.push(20);
+        ring.push(30);
+        // first_index=0, total_count=3
+        assert!(ring.is_in_memory(0));
+        assert!(ring.is_in_memory(2));
+        assert!(!ring.is_in_memory(3)); // == total_count, out of range
+    }
+
+    #[test]
+    fn extend_causes_eviction() {
+        let mut ring = LogRing::new(3);
+        ring.extend(vec![1, 2, 3, 4, 5]);
+        assert_eq!(ring.len(), 3);
+        assert_eq!(ring.total_count(), 5);
+        assert_eq!(ring.get(2), Some(&3));
+        assert_eq!(ring.get(4), Some(&5));
+        assert_eq!(ring.get(0), None); // evicted
+    }
+
+    #[test]
+    fn get_range_exact_memory_window() {
+        let mut ring = LogRing::new(3);
+        ring.push(1);
+        ring.push(2);
+        ring.push(3);
+        ring.push(4); // first_index=1
+        let items: Vec<_> = ring.get_range(1..4).collect();
+        assert_eq!(items, vec![&2, &3, &4]);
+    }
+
+    #[test]
+    fn push_with_string_types() {
+        let mut ring = LogRing::new(2);
+        ring.push(String::from("hello"));
+        ring.push(String::from("world"));
+        ring.push(String::from("foo")); // evicts "hello"
+        assert_eq!(ring.get(1), Some(&String::from("world")));
+        assert_eq!(ring.get(2), Some(&String::from("foo")));
+    }
 }
