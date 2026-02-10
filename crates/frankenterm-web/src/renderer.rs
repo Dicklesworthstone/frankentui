@@ -808,9 +808,8 @@ mod gpu {
             }
 
             let font_px = (f64::from(height_px.max(1)) * TERMINAL_FONT_SCALE).max(1.0);
-            self.cached_font_css = format!(
-                "{font_px:.2}px \"{TERMINAL_FONT_FAMILY}\", {TERMINAL_FONT_FALLBACK}"
-            );
+            self.cached_font_css =
+                format!("{font_px:.2}px \"{TERMINAL_FONT_FAMILY}\", {TERMINAL_FONT_FALLBACK}");
             self.context.set_font(&self.cached_font_css);
             self.cached_font_height = height_px;
         }
@@ -839,11 +838,7 @@ mod gpu {
             let mut glyph_buf = [0u8; 4];
             let glyph_text = ch.encode_utf8(&mut glyph_buf);
 
-            if self
-                .context
-                .fill_text(glyph_text, 0.0, 0.0)
-                .is_err()
-            {
+            if self.context.fill_text(glyph_text, 0.0, 0.0).is_err() {
                 return rasterize_procedural_glyph(codepoint, width, height);
             }
 
