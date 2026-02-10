@@ -699,4 +699,283 @@ mod tests {
         assert!(json.contains(r#""glyph_mode":"ascii""#));
         assert!(json.contains(r#""emoji":false"#));
     }
+
+    // ===== detect_mode with additional terminal profiles =====
+
+    #[test]
+    fn vt100_terminal_defaults_to_ascii() {
+        let env = map_env(&[]);
+        let caps = TerminalCapabilities::vt100();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Ascii);
+        assert!(!policy.unicode_line_drawing);
+        assert!(!policy.unicode_arrows);
+    }
+
+    #[test]
+    fn linux_console_defaults_to_ascii_despite_box_drawing_caps() {
+        // LinuxConsole has unicode_box_drawing=true but the profile match
+        // still forces Ascii mode — a distinct code path from dumb/vt100.
+        let env = map_env(&[]);
+        let caps = TerminalCapabilities::linux_console();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(caps.unicode_box_drawing);
+        assert_eq!(policy.mode, GlyphMode::Ascii);
+        assert!(!policy.unicode_line_drawing);
+        assert!(!policy.unicode_arrows);
+        assert!(!policy.emoji);
+    }
+
+    #[test]
+    fn mode_env_override_unicode_on_linux_console() {
+        let env = map_env(&[(ENV_GLYPH_MODE, "unicode")]);
+        let caps = TerminalCapabilities::linux_console();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Unicode);
+    }
+
+    // ===== detect_emoji edge cases =====
+
+    #[test]
+    fn legacy_no_emoji_false_enables_emoji() {
+        // NO_EMOJI=0 means "don't disable emoji" → emoji should be true.
+        let env = map_env(&[(ENV_NO_EMOJI, "0")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(policy.emoji);
+    }
+
+    #[test]
+    fn emoji_disabled_in_ascii_mode_even_with_all_caps() {
+        let env = map_env(&[(ENV_GLYPH_MODE, "ascii")]);
+        let mut caps = TerminalCapabilities::modern();
+        caps.unicode_emoji = true;
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Ascii);
+        assert!(!policy.emoji);
+    }
+
+    #[test]
+    fn emoji_override_true_in_ascii_mode_still_disabled() {
+        // Even GLYPH_EMOJI=1 cannot override ASCII mode's emoji suppression
+        // because detect_emoji returns (false, false) early for ASCII.
+        let env = map_env(&[(ENV_GLYPH_MODE, "ascii"), (ENV_GLYPH_EMOJI, "1")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(!policy.emoji);
+    }
+
+    // ===== glyph_width with CJK mode =====
+
+    #[test]
+    fn glyph_width_box_drawing_cjk_mode() {
+        // Box-drawing characters are East Asian Ambiguous, so width_cjk()
+        // returns 2 for them.
+        assert_eq!(glyph_width('─', true), 2);
+        assert_eq!(glyph_width('│', true), 2);
+        assert_eq!(glyph_width('┌', true), 2);
+        assert_eq!(glyph_width('╭', true), 2);
+    }
+
+    #[test]
+    fn glyph_width_arrows_cjk_mode() {
+        // Standard arrows (U+2190-U+2199) are East Asian Ambiguous.
+        assert_eq!(glyph_width('→', true), 2);
+        assert_eq!(glyph_width('←', true), 2);
+        assert_eq!(glyph_width('↑', true), 2);
+        assert_eq!(glyph_width('↓', true), 2);
+    }
+
+    #[test]
+    fn glyph_width_combining_mark_zero_width() {
+        // Combining diacritical marks (e.g., U+0300 COMBINING GRAVE ACCENT)
+        // are zero-width.
+        assert_eq!(glyph_width('\u{0300}', false), 0);
+        assert_eq!(glyph_width('\u{0300}', true), 0);
+    }
+
+    #[test]
+    fn glyph_width_cjk_mode_does_not_affect_ascii() {
+        // CJK mode should not change ASCII character widths.
+        assert_eq!(glyph_width('a', true), 1);
+        assert_eq!(glyph_width('Z', true), 1);
+        assert_eq!(glyph_width('\0', true), 0);
+    }
+
+    // ===== glyphs_fit_narrow with CJK mode =====
+
+    #[test]
+    fn line_drawing_glyphs_wide_in_cjk_mode() {
+        // In CJK mode, box-drawing chars become double-width, so they
+        // no longer fit in a single cell.
+        assert!(!glyphs_fit_narrow(LINE_DRAWING_GLYPHS, true));
+    }
+
+    #[test]
+    fn arrow_glyphs_wide_in_cjk_mode() {
+        // In CJK mode, arrow chars become double-width.
+        assert!(!glyphs_fit_narrow(ARROW_GLYPHS, true));
+    }
+
+    // ===== CJK-width interaction disabling line drawing/arrows =====
+
+    #[test]
+    fn cjk_width_disables_line_drawing_in_unicode_mode() {
+        // When CJK width is enabled, box-drawing chars become wide,
+        // so unicode_line_drawing should be auto-disabled.
+        let env = map_env(&[("FTUI_TEXT_CJK_WIDTH", "1")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Unicode);
+        assert!(policy.cjk_width);
+        assert!(!policy.unicode_line_drawing);
+    }
+
+    #[test]
+    fn cjk_width_disables_arrows_in_unicode_mode() {
+        // When CJK width is enabled, arrow chars become wide,
+        // so unicode_arrows should be auto-disabled.
+        let env = map_env(&[("FTUI_TEXT_CJK_WIDTH", "1")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Unicode);
+        assert!(policy.cjk_width);
+        assert!(!policy.unicode_arrows);
+    }
+
+    #[test]
+    fn line_drawing_env_override_still_disabled_by_cjk_width() {
+        // Even with LINE_DRAWING=1, CJK width should still disable it
+        // because the glyphs don't fit narrow in CJK mode.
+        let env = map_env(&[(ENV_GLYPH_LINE_DRAWING, "1"), ("FTUI_TEXT_CJK_WIDTH", "1")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(!policy.unicode_line_drawing);
+    }
+
+    #[test]
+    fn arrows_env_override_still_disabled_by_cjk_width() {
+        // Even with ARROWS=1, CJK width should still disable it.
+        let env = map_env(&[(ENV_GLYPH_ARROWS, "1"), ("FTUI_TEXT_CJK_WIDTH", "1")]);
+        let caps = TerminalCapabilities::modern();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert!(!policy.unicode_arrows);
+    }
+
+    // ===== env_override_bool with valid values =====
+
+    #[test]
+    fn env_override_bool_truthy_values() {
+        for val in &["1", "true", "yes", "on", "TRUE", "YES", "ON"] {
+            let env = map_env(&[(ENV_GLYPH_EMOJI, val)]);
+            assert_eq!(
+                env_override_bool(&get_env(&env), ENV_GLYPH_EMOJI),
+                Some(true),
+                "expected Some(true) for {val:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_override_bool_falsy_values() {
+        for val in &["0", "false", "no", "off", "FALSE", "NO", "OFF"] {
+            let env = map_env(&[(ENV_GLYPH_EMOJI, val)]);
+            assert_eq!(
+                env_override_bool(&get_env(&env), ENV_GLYPH_EMOJI),
+                Some(false),
+                "expected Some(false) for {val:?}"
+            );
+        }
+    }
+
+    // ===== Copy/Clone trait verification =====
+
+    #[test]
+    fn glyph_mode_is_copy() {
+        let mode = GlyphMode::Unicode;
+        let copy = mode;
+        assert_eq!(mode, copy);
+    }
+
+    #[test]
+    fn glyph_policy_is_copy() {
+        let policy = GlyphPolicy {
+            mode: GlyphMode::Unicode,
+            emoji: true,
+            cjk_width: false,
+            double_width: true,
+            unicode_box_drawing: true,
+            unicode_line_drawing: true,
+            unicode_arrows: true,
+        };
+        let copy = policy;
+        // Both original and copy should still be usable (Copy semantics).
+        assert_eq!(policy, copy);
+        assert_eq!(policy.mode, copy.mode);
+    }
+
+    // ===== to_json roundtrip completeness =====
+
+    #[test]
+    fn to_json_mixed_flags() {
+        let policy = GlyphPolicy {
+            mode: GlyphMode::Unicode,
+            emoji: false,
+            cjk_width: true,
+            double_width: true,
+            unicode_box_drawing: true,
+            unicode_line_drawing: false,
+            unicode_arrows: true,
+        };
+        let json = policy.to_json();
+        assert!(json.contains(r#""glyph_mode":"unicode""#));
+        assert!(json.contains(r#""emoji":false"#));
+        assert!(json.contains(r#""cjk_width":true"#));
+        assert!(json.contains(r#""double_width":true"#));
+        assert!(json.contains(r#""unicode_box_drawing":true"#));
+        assert!(json.contains(r#""unicode_line_drawing":false"#));
+        assert!(json.contains(r#""unicode_arrows":true"#));
+    }
+
+    // ===== Full policy snapshot for edge-case terminal profiles =====
+
+    #[test]
+    fn full_policy_vt100_all_defaults() {
+        let env = map_env(&[]);
+        let caps = TerminalCapabilities::vt100();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Ascii);
+        assert!(!policy.emoji);
+        assert!(!policy.cjk_width);
+        assert!(!policy.double_width);
+        assert!(!policy.unicode_box_drawing);
+        assert!(!policy.unicode_line_drawing);
+        assert!(!policy.unicode_arrows);
+    }
+
+    #[test]
+    fn full_policy_linux_console_all_defaults() {
+        let env = map_env(&[]);
+        let caps = TerminalCapabilities::linux_console();
+        let policy = GlyphPolicy::from_env_with(get_env(&env), &caps);
+
+        assert_eq!(policy.mode, GlyphMode::Ascii);
+        assert!(!policy.emoji);
+        assert!(!policy.cjk_width);
+        assert!(!policy.double_width);
+        assert!(policy.unicode_box_drawing); // LinuxConsole has box drawing
+        assert!(!policy.unicode_line_drawing); // But ASCII mode disables line drawing
+        assert!(!policy.unicode_arrows);
+    }
 }
