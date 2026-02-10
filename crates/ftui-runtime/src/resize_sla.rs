@@ -891,4 +891,367 @@ mod tests {
         let monitor = ResizeSlaMonitor::new(test_config());
         assert!(monitor.sampling_logs_to_jsonl().is_none());
     }
+
+    // =========================================================================
+    // Edge-case tests (bd-1nn7a)
+    // =========================================================================
+
+    #[test]
+    fn edge_on_decision_none_applied_size() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+        let entry = DecisionLog {
+            timestamp: Instant::now(),
+            elapsed_ms: 0.0,
+            event_idx: 1,
+            dt_ms: 0.0,
+            event_rate: 0.0,
+            regime: Regime::Steady,
+            action: "apply",
+            pending_size: None,
+            applied_size: None, // Missing applied_size
+            time_since_render_ms: 10.0,
+            coalesce_ms: Some(10.0),
+            forced: false,
+        };
+        let result = monitor.on_decision(&entry);
+        assert!(result.is_none(), "Should return None when applied_size is None");
+        // Event should not be counted
+        assert_eq!(*monitor.event_count.borrow(), 0);
+    }
+
+    #[test]
+    fn edge_on_decision_coalesce_ms_none_falls_back() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+        let entry = DecisionLog {
+            timestamp: Instant::now(),
+            elapsed_ms: 0.0,
+            event_idx: 1,
+            dt_ms: 0.0,
+            event_rate: 0.0,
+            regime: Regime::Steady,
+            action: "apply",
+            pending_size: None,
+            applied_size: Some((80, 24)),
+            time_since_render_ms: 42.0,
+            coalesce_ms: None, // Falls back to time_since_render_ms
+            forced: false,
+        };
+        let result = monitor.on_decision(&entry);
+        // Should process using time_since_render_ms (42.0)
+        assert!(result.is_none()); // Still in calibration
+        assert_eq!(monitor.calibration_count(), 1);
+    }
+
+    #[test]
+    fn edge_zero_latency() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+        for _ in 0..5 {
+            monitor.process_latency(0.0, (80, 24), false);
+        }
+        // All-zero calibration, observe zero -> no alert
+        let result = monitor.process_latency(0.0, (80, 24), false);
+        assert!(result.is_some());
+        assert!(!result.unwrap().is_alert);
+    }
+
+    #[test]
+    fn edge_negative_latency() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+        // Negative latencies should not panic
+        for _ in 0..5 {
+            monitor.process_latency(-10.0, (80, 24), false);
+        }
+        let result = monitor.process_latency(-5.0, (80, 24), false);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn edge_nan_latency() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+        for _ in 0..5 {
+            monitor.process_latency(10.0, (80, 24), false);
+        }
+        // NaN latency should not panic
+        let result = monitor.process_latency(f64::NAN, (80, 24), false);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn edge_infinity_latency() {
+        let mut config = test_config();
+        config.hysteresis = 0.1;
+        let monitor = ResizeSlaMonitor::new(config);
+        for _ in 0..5 {
+            monitor.process_latency(10.0, (80, 24), false);
+        }
+        let result = monitor.process_latency(f64::INFINITY, (80, 24), false);
+        assert!(result.is_some());
+        // Infinite latency should trigger conformal alert
+        assert!(result.unwrap().evidence.conformal_alert);
+    }
+
+    #[test]
+    fn edge_logging_disabled() {
+        let mut config = test_config();
+        config.enable_logging = false;
+        let monitor = ResizeSlaMonitor::new(config);
+
+        for i in 0..10 {
+            monitor.process_latency(10.0 + i as f64, (80, 24), false);
+        }
+
+        assert!(monitor.logs().is_empty(), "Logs should be empty when disabled");
+        assert!(monitor.logs_to_jsonl().is_empty());
+    }
+
+    #[test]
+    fn edge_reset_then_reuse() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+
+        // First cycle
+        for i in 0..10 {
+            monitor.process_latency(10.0 + i as f64, (80, 24), false);
+        }
+        assert!(monitor.is_active());
+        let summary1 = monitor.summary();
+        assert_eq!(summary1.total_events, 10);
+
+        // Reset
+        monitor.reset();
+        assert!(!monitor.is_active());
+        assert_eq!(monitor.calibration_count(), 0);
+        assert!(monitor.last_alert().is_none());
+
+        // Second cycle with different data
+        for i in 0..10 {
+            monitor.process_latency(50.0 + i as f64, (120, 40), false);
+        }
+        assert!(monitor.is_active());
+        let summary2 = monitor.summary();
+        assert_eq!(summary2.total_events, 10);
+        // Mean should reflect new data, not old
+        assert!(summary2.mean_latency_ms > 40.0);
+    }
+
+    #[test]
+    fn edge_multiple_resets() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+
+        for _ in 0..3 {
+            for i in 0..5 {
+                monitor.process_latency(10.0 + i as f64, (80, 24), false);
+            }
+            monitor.reset();
+        }
+
+        assert!(!monitor.is_active());
+        assert_eq!(*monitor.event_count.borrow(), 0);
+    }
+
+    #[test]
+    fn edge_min_calibration_zero() {
+        let mut config = test_config();
+        config.min_calibration = 0;
+        let monitor = ResizeSlaMonitor::new(config);
+
+        // Immediately active since min_calibration=0
+        assert!(monitor.is_active());
+
+        // First observation goes directly to observe phase
+        let result = monitor.process_latency(10.0, (80, 24), false);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn edge_last_alert_updates() {
+        let mut config = test_config();
+        config.hysteresis = 0.1;
+        config.alert_cooldown = 0;
+        let monitor = ResizeSlaMonitor::new(config);
+
+        // Calibrate
+        for _ in 0..5 {
+            monitor.process_latency(10.0, (80, 24), false);
+        }
+
+        // Trigger alerts with extreme latency
+        let mut got_alert = false;
+        for _ in 0..10 {
+            let result = monitor.process_latency(1000.0, (80, 24), false);
+            if let Some(decision) = result {
+                if decision.is_alert {
+                    got_alert = true;
+                }
+            }
+        }
+
+        if got_alert {
+            let last = monitor.last_alert();
+            assert!(last.is_some());
+            assert!(last.unwrap().is_alert);
+        }
+    }
+
+    #[test]
+    fn edge_forced_flag_propagates_to_log() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+
+        monitor.process_latency(10.0, (80, 24), true);
+
+        let logs = monitor.logs();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].forced);
+    }
+
+    #[test]
+    fn edge_applied_size_propagates_to_log() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+
+        monitor.process_latency(10.0, (200, 60), false);
+
+        let logs = monitor.logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].applied_size, (200, 60));
+    }
+
+    #[test]
+    fn edge_event_count_accuracy() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+
+        for i in 0..15 {
+            monitor.process_latency(10.0 + i as f64, (80, 24), false);
+        }
+
+        assert_eq!(*monitor.event_count.borrow(), 15);
+        assert_eq!(monitor.summary().total_events, 15);
+    }
+
+    #[test]
+    fn edge_jsonl_with_alert() {
+        let mut config = test_config();
+        config.hysteresis = 0.1;
+        config.alert_cooldown = 0;
+        let monitor = ResizeSlaMonitor::new(config);
+
+        // Calibrate with tight distribution
+        for _ in 0..5 {
+            monitor.process_latency(10.0, (80, 24), false);
+        }
+
+        // Trigger alert
+        monitor.process_latency(10000.0, (80, 24), false);
+
+        let jsonl = monitor.logs_to_jsonl();
+        // Should have both calibrate and either observe/alert entries
+        assert!(jsonl.contains(r#""type":"calibrate""#));
+        let has_alert_or_observe =
+            jsonl.contains(r#""type":"alert""#) || jsonl.contains(r#""type":"observe""#);
+        assert!(has_alert_or_observe);
+    }
+
+    #[test]
+    fn edge_summary_after_reset() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+
+        for i in 0..10 {
+            monitor.process_latency(10.0 + i as f64, (80, 24), false);
+        }
+
+        monitor.reset();
+
+        let summary = monitor.summary();
+        assert_eq!(summary.total_events, 0);
+        assert_eq!(summary.total_alerts, 0);
+        assert_eq!(summary.calibration_events, 0);
+    }
+
+    #[test]
+    fn edge_sla_config_clone_debug() {
+        let config = SlaConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.alpha, config.alpha);
+        assert_eq!(cloned.min_calibration, config.min_calibration);
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("SlaConfig"));
+    }
+
+    #[test]
+    fn edge_resize_evidence_clone_debug() {
+        let ev = ResizeEvidence {
+            timestamp: Instant::now(),
+            latency_ms: 42.0,
+            applied_size: (80, 24),
+            forced: false,
+            regime: "steady",
+            coalesce_ms: Some(10.0),
+        };
+        let cloned = ev.clone();
+        assert_eq!(cloned.latency_ms, 42.0);
+        assert_eq!(cloned.applied_size, (80, 24));
+        let debug = format!("{:?}", ev);
+        assert!(debug.contains("ResizeEvidence"));
+    }
+
+    #[test]
+    fn edge_sla_log_entry_clone_debug() {
+        let entry = SlaLogEntry {
+            event_idx: 1,
+            event_type: "calibrate",
+            latency_ms: 10.0,
+            target_latency_ms: 50.0,
+            threshold_ms: 20.0,
+            e_value: 1.0,
+            is_alert: false,
+            alert_reason: None,
+            applied_size: (80, 24),
+            forced: false,
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.event_idx, 1);
+        assert_eq!(cloned.event_type, "calibrate");
+        let debug = format!("{:?}", entry);
+        assert!(debug.contains("SlaLogEntry"));
+    }
+
+    #[test]
+    fn edge_sla_summary_clone_debug() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+        for i in 0..5 {
+            monitor.process_latency(10.0 + i as f64, (80, 24), false);
+        }
+        let summary = monitor.summary();
+        let cloned = summary.clone();
+        assert_eq!(cloned.total_events, summary.total_events);
+        let debug = format!("{:?}", summary);
+        assert!(debug.contains("SlaSummary"));
+    }
+
+    #[test]
+    fn edge_max_calibration_small() {
+        let mut config = test_config();
+        config.max_calibration = 3;
+        config.min_calibration = 3;
+        let monitor = ResizeSlaMonitor::new(config);
+
+        // Feed more than max_calibration samples
+        for i in 0..10 {
+            monitor.process_latency(10.0 + i as f64, (80, 24), false);
+        }
+
+        // Calibration window should be bounded
+        assert!(monitor.calibration_count() <= 3);
+    }
+
+    #[test]
+    fn edge_large_latency_values() {
+        let monitor = ResizeSlaMonitor::new(test_config());
+        for _ in 0..5 {
+            monitor.process_latency(1e15, (80, 24), false);
+        }
+        // Should handle very large values without panic
+        let result = monitor.process_latency(1e15, (80, 24), false);
+        assert!(result.is_some());
+        let summary = monitor.summary();
+        assert!(summary.mean_latency_ms.is_finite());
+    }
 }
