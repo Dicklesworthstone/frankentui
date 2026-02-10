@@ -75,7 +75,7 @@ pub enum ErrorBoundaryState {
 
 impl ErrorBoundaryState {
     /// Returns the current error, if any.
-    #[must_use]
+    #[must_use = "use the returned error for diagnostics"]
     pub fn error(&self) -> Option<&CapturedError> {
         match self {
             Self::Healthy => None,
