@@ -1272,11 +1272,14 @@ mod tests {
         let highlight_fg = PackedRgba::rgb(60, 0, 0);
         let span_fg = PackedRgba::rgb(70, 0, 0);
 
-        let mut theme = TableTheme::default();
-        theme.row = Style::new().fg(base_fg);
-        theme.row_alt = theme.row;
-        theme.row_selected = Style::new().fg(selected_fg);
-        theme.row_hover = Style::new().fg(hovered_fg);
+        let base_row = Style::new().fg(base_fg);
+        let theme = TableTheme {
+            row: base_row,
+            row_alt: base_row,
+            row_selected: Style::new().fg(selected_fg),
+            row_hover: Style::new().fg(hovered_fg),
+            ..Default::default()
+        };
 
         let text = Text::from_line(Line::from_spans([
             Span::raw("A"),
@@ -1454,10 +1457,13 @@ mod tests {
     fn divider_style_overrides_row_style() {
         let row_fg = PackedRgba::rgb(120, 10, 10);
         let divider_fg = PackedRgba::rgb(0, 200, 0);
-        let mut theme = TableTheme::default();
-        theme.row = Style::new().fg(row_fg);
-        theme.row_alt = theme.row;
-        theme.divider = Style::new().fg(divider_fg);
+        let row_style = Style::new().fg(row_fg);
+        let theme = TableTheme {
+            row: row_style,
+            row_alt: row_style,
+            divider: Style::new().fg(divider_fg),
+            ..Default::default()
+        };
 
         let table = Table::new(
             [Row::new(["AA", "BB"])],
@@ -2149,9 +2155,11 @@ mod tests {
         let hovered_fg = PackedRgba::rgb(0, 100, 0);
         let highlight_fg = PackedRgba::rgb(0, 0, 100);
 
-        let mut theme = TableTheme::default();
-        theme.row_selected = Style::new().fg(selected_fg);
-        theme.row_hover = Style::new().fg(hovered_fg);
+        let theme = TableTheme {
+            row_selected: Style::new().fg(selected_fg),
+            row_hover: Style::new().fg(hovered_fg),
+            ..Default::default()
+        };
 
         let table = Table::new([Row::new(["X"])], [Constraint::Fixed(3)])
             .highlight_style(Style::new().fg(highlight_fg))
@@ -2176,9 +2184,11 @@ mod tests {
         // Even/odd rows should get different theme styles
         let even_fg = PackedRgba::rgb(10, 10, 10);
         let odd_fg = PackedRgba::rgb(20, 20, 20);
-        let mut theme = TableTheme::default();
-        theme.row = Style::new().fg(even_fg);
-        theme.row_alt = Style::new().fg(odd_fg);
+        let theme = TableTheme {
+            row: Style::new().fg(even_fg),
+            row_alt: Style::new().fg(odd_fg),
+            ..Default::default()
+        };
 
         let table = Table::new(
             [Row::new(["E"]), Row::new(["O"]), Row::new(["E2"])],
@@ -2251,8 +2261,10 @@ mod tests {
 
     #[test]
     fn select_deselect_resets_offset_then_reselect() {
-        let mut state = TableState::default();
-        state.offset = 15;
+        let mut state = TableState {
+            offset: 15,
+            ..Default::default()
+        };
         state.select(Some(20));
         assert_eq!(state.selected, Some(20));
         assert_eq!(state.offset, 15); // offset not reset on select

@@ -172,6 +172,14 @@ impl CellContent {
         self.0 == Self::EMPTY.0
     }
 
+    /// Check if this content is the default value.
+    ///
+    /// This is equivalent to `is_empty()` and primarily exists for readability in tests.
+    #[inline]
+    pub const fn is_default(self) -> bool {
+        self.0 == Self::EMPTY.0
+    }
+
     /// Extract the character if this is a direct char (not a grapheme).
     ///
     /// Returns `None` if this is empty, continuation, or a grapheme reference.
