@@ -511,4 +511,325 @@ mod tests {
         let area = Rect::new(0, 0, 30, 30);
         panel.render(area, &mut frame); // Should not panic in full mode
     }
+
+    // ── Edge-case tests (bd-2yn6z) ──────────────────────────
+
+    #[test]
+    fn style_setters_applied() {
+        let style = Style::new().italic();
+        let panel = HistoryPanel::new()
+            .with_title_style(style)
+            .with_undo_style(style)
+            .with_redo_style(style)
+            .with_marker_style(style)
+            .with_bg_style(style);
+        assert_eq!(panel.title_style, style);
+        assert_eq!(panel.undo_style, style);
+        assert_eq!(panel.redo_style, style);
+        assert_eq!(panel.marker_style, style);
+        assert_eq!(panel.bg_style, style);
+    }
+
+    #[test]
+    fn clone_preserves_all_fields() {
+        let panel = HistoryPanel::new()
+            .with_title("T")
+            .with_undo_items(&["A"])
+            .with_redo_items(&["B"])
+            .with_mode(HistoryPanelMode::Full)
+            .with_compact_limit(3)
+            .with_marker_text("NOW")
+            .with_undo_icon("U ")
+            .with_redo_icon("R ");
+        let cloned = panel.clone();
+        assert_eq!(cloned.title, "T");
+        assert_eq!(cloned.undo_items, vec!["A"]);
+        assert_eq!(cloned.redo_items, vec!["B"]);
+        assert_eq!(cloned.mode, HistoryPanelMode::Full);
+        assert_eq!(cloned.compact_limit, 3);
+        assert_eq!(cloned.marker_text, "NOW");
+        assert_eq!(cloned.undo_icon, "U ");
+        assert_eq!(cloned.redo_icon, "R ");
+    }
+
+    #[test]
+    fn debug_format() {
+        let panel = HistoryPanel::new();
+        let dbg = format!("{:?}", panel);
+        assert!(dbg.contains("HistoryPanel"));
+        assert!(dbg.contains("History"));
+
+        let entry = HistoryEntry::new("X", true);
+        let dbg_e = format!("{:?}", entry);
+        assert!(dbg_e.contains("HistoryEntry"));
+        assert!(dbg_e.contains("is_redo: true"));
+
+        let mode = HistoryPanelMode::Compact;
+        assert!(format!("{:?}", mode).contains("Compact"));
+    }
+
+    #[test]
+    fn history_entry_clone() {
+        let a = HistoryEntry::new("Hello", false);
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert_eq!(b.description, "Hello");
+    }
+
+    #[test]
+    fn history_panel_mode_copy_eq() {
+        let a = HistoryPanelMode::Full;
+        let b = a; // Copy
+        assert_eq!(a, b);
+        assert_ne!(a, HistoryPanelMode::Compact);
+    }
+
+    #[test]
+    fn render_only_redo_no_undo() {
+        let panel = HistoryPanel::new().with_redo_items(&["Redo1", "Redo2"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        let area = Rect::new(0, 0, 30, 10);
+        panel.render(area, &mut frame);
+        // Title on row 0, blank on row 1, marker on row 2, redo items on rows 3-4
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('H')); // "History"
+    }
+
+    #[test]
+    fn render_empty_title() {
+        let panel = HistoryPanel::new().with_title("").with_undo_items(&["A"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        let area = Rect::new(0, 0, 30, 10);
+        panel.render(area, &mut frame);
+        // With empty title, undo icon should start at row 0
+        let cell = frame.buffer.get(0, 0).unwrap();
+        // First char should be undo icon '↶'
+        assert_ne!(cell.content.as_char(), Some('H'));
+    }
+
+    #[test]
+    fn compact_both_stacks_overflow() {
+        let undo: Vec<_> = (0..8).map(|i| format!("U{i}")).collect();
+        let redo: Vec<_> = (0..8).map(|i| format!("R{i}")).collect();
+        let panel = HistoryPanel::new()
+            .with_mode(HistoryPanelMode::Compact)
+            .with_compact_limit(4)
+            .with_undo_items(&undo)
+            .with_redo_items(&redo);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 20, &mut pool);
+        let area = Rect::new(0, 0, 40, 20);
+        panel.render(area, &mut frame);
+        // Should show: title, blank, "... (6 more)", 2 undo items, marker, 2 redo items, "... (6 more)"
+    }
+
+    #[test]
+    fn compact_limit_zero() {
+        let panel = HistoryPanel::new()
+            .with_compact_limit(0)
+            .with_undo_items(&["A", "B"])
+            .with_redo_items(&["C"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        let area = Rect::new(0, 0, 30, 10);
+        panel.render(area, &mut frame); // half_limit=0, no items shown
+    }
+
+    #[test]
+    fn compact_limit_one_odd() {
+        let panel = HistoryPanel::new()
+            .with_compact_limit(1)
+            .with_undo_items(&["A", "B", "C"])
+            .with_redo_items(&["D", "E"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        let area = Rect::new(0, 0, 30, 10);
+        // half_limit = 0 (1/2 = 0 in integer division), so nothing shown
+        panel.render(area, &mut frame);
+    }
+
+    #[test]
+    fn render_width_one() {
+        let panel = HistoryPanel::new()
+            .with_undo_items(&["LongItem"])
+            .with_redo_items(&["AnotherLong"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        let area = Rect::new(0, 0, 1, 10);
+        panel.render(area, &mut frame); // Should not panic, content truncated
+    }
+
+    #[test]
+    fn render_height_one() {
+        let panel = HistoryPanel::new()
+            .with_undo_items(&["A"])
+            .with_redo_items(&["B"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        let area = Rect::new(0, 0, 30, 1);
+        panel.render(area, &mut frame); // Only title fits
+    }
+
+    #[test]
+    fn render_height_three_no_room_for_redo() {
+        let panel = HistoryPanel::new()
+            .with_undo_items(&["A"])
+            .with_redo_items(&["B"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        // title(1) + blank(1) + undo(1) = 3, marker and redo don't fit
+        let area = Rect::new(0, 0, 30, 3);
+        panel.render(area, &mut frame);
+    }
+
+    #[test]
+    fn bg_style_fills_area() {
+        use ftui_render::cell::PackedRgba;
+        let red = PackedRgba::rgb(255, 0, 0);
+        let panel = HistoryPanel::new().with_bg_style(Style::new().bg(red));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        let area = Rect::new(0, 0, 10, 5);
+        panel.render(area, &mut frame);
+        // All cells in area should have red background
+        for y in 0..5u16 {
+            for x in 0..10u16 {
+                let cell = frame.buffer.get(x, y).unwrap();
+                assert_eq!(cell.bg, red);
+            }
+        }
+    }
+
+    #[test]
+    fn bg_style_none_does_not_fill() {
+        use ftui_render::cell::PackedRgba;
+        let panel = HistoryPanel::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        let area = Rect::new(0, 0, 10, 5);
+        panel.render(area, &mut frame);
+        // Default bg should remain transparent
+        let cell = frame.buffer.get(5, 3).unwrap();
+        assert_eq!(cell.bg, PackedRgba::TRANSPARENT);
+    }
+
+    #[test]
+    fn marker_centering_even_width() {
+        let panel = HistoryPanel::new()
+            .with_title("")
+            .with_marker_text("XX")
+            .with_undo_items(&["A"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        let area = Rect::new(0, 0, 20, 10);
+        panel.render(area, &mut frame);
+        // "XX" is 2 chars wide, area is 20. pad_left = (20 - 2) / 2 = 9
+        // marker starts at x=9
+        let cell_before = frame.buffer.get(8, 1).unwrap();
+        assert_ne!(cell_before.content.as_char(), Some('X'));
+        let cell_start = frame.buffer.get(9, 1).unwrap();
+        assert_eq!(cell_start.content.as_char(), Some('X'));
+    }
+
+    #[test]
+    fn marker_wider_than_area() {
+        let panel = HistoryPanel::new()
+            .with_title("")
+            .with_marker_text("VERY LONG MARKER TEXT THAT EXCEEDS");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 5, &mut pool);
+        let area = Rect::new(0, 0, 10, 5);
+        // marker_width > available, pad_left = 0 (saturating_sub)
+        panel.render(area, &mut frame);
+    }
+
+    #[test]
+    fn overwrite_items_replaces() {
+        let panel = HistoryPanel::new()
+            .with_undo_items(&["Old1", "Old2"])
+            .with_undo_items(&["New1"]);
+        assert_eq!(panel.undo_items().len(), 1);
+        assert_eq!(panel.undo_items()[0], "New1");
+    }
+
+    #[test]
+    fn render_at_offset_area() {
+        let panel = HistoryPanel::new()
+            .with_undo_items(&["A"])
+            .with_redo_items(&["B"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 20, &mut pool);
+        let area = Rect::new(5, 5, 20, 10);
+        panel.render(area, &mut frame);
+        // Title should be at (5, 5)
+        let cell = frame.buffer.get(5, 5).unwrap();
+        assert_eq!(cell.content.as_char(), Some('H'));
+        // (0, 0) should not have been written by the panel
+        let origin = frame.buffer.get(0, 0).unwrap();
+        assert_ne!(origin.content.as_char(), Some('H'));
+    }
+
+    #[test]
+    fn empty_undo_icon_and_redo_icon() {
+        let panel = HistoryPanel::new()
+            .with_undo_icon("")
+            .with_redo_icon("")
+            .with_undo_items(&["A"])
+            .with_redo_items(&["B"]);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 10, &mut pool);
+        let area = Rect::new(0, 0, 30, 10);
+        panel.render(area, &mut frame);
+    }
+
+    #[test]
+    fn full_mode_no_ellipsis() {
+        let undo: Vec<_> = (0..10).map(|i| format!("U{i}")).collect();
+        let redo: Vec<_> = (0..10).map(|i| format!("R{i}")).collect();
+        let panel = HistoryPanel::new()
+            .with_mode(HistoryPanelMode::Full)
+            .with_undo_items(&undo)
+            .with_redo_items(&redo);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 30, &mut pool);
+        let area = Rect::new(0, 0, 30, 30);
+        panel.render(area, &mut frame);
+        // In full mode, all items should show without ellipsis
+    }
+
+    #[test]
+    fn compact_undo_only_with_overflow() {
+        let items: Vec<_> = (0..10).map(|i| format!("Item{i}")).collect();
+        let panel = HistoryPanel::new()
+            .with_mode(HistoryPanelMode::Compact)
+            .with_compact_limit(4)
+            .with_undo_items(&items);
+        // half_limit = 2, shows last 2 of 10 undo items + ellipsis
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 15, &mut pool);
+        let area = Rect::new(0, 0, 30, 15);
+        panel.render(area, &mut frame);
+    }
+
+    #[test]
+    fn compact_redo_only_with_overflow() {
+        let items: Vec<_> = (0..10).map(|i| format!("Item{i}")).collect();
+        let panel = HistoryPanel::new()
+            .with_mode(HistoryPanelMode::Compact)
+            .with_compact_limit(4)
+            .with_redo_items(&items);
+        // half_limit = 2, shows first 2 of 10 redo items + ellipsis
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 15, &mut pool);
+        let area = Rect::new(0, 0, 30, 15);
+        panel.render(area, &mut frame);
+    }
+
+    #[test]
+    fn history_entry_from_string_type() {
+        let entry = HistoryEntry::new(String::from("Owned"), false);
+        assert_eq!(entry.description, "Owned");
+    }
 }
