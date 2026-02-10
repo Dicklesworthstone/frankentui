@@ -1045,9 +1045,9 @@ mod tests {
         ];
 
         // Navigate to first
-        manager.navigate_targets(Direction::Down, &targets);
+        let _ = manager.navigate_targets(Direction::Down, &targets);
         // Navigate to second
-        manager.navigate_targets(Direction::Down, &targets);
+        let _ = manager.navigate_targets(Direction::Down, &targets);
         // Navigate past end, should wrap to first
         let selected = manager.navigate_targets(Direction::Down, &targets);
 
@@ -1065,7 +1065,7 @@ mod tests {
             Rect::new(0, 0, 10, 5),
         )];
 
-        manager.navigate_targets(Direction::Down, &targets);
+        let _ = manager.navigate_targets(Direction::Down, &targets);
 
         let result = manager.complete_drag();
         assert!(result.is_some());
@@ -1142,7 +1142,7 @@ mod tests {
 
         // Fill queue
         manager.start_drag(WidgetId(1), DragPayload::text("item1"));
-        manager.cancel_drag();
+        let _ = manager.cancel_drag();
         manager.start_drag(WidgetId(2), DragPayload::text("item2"));
 
         // Should have at most 2 announcements
@@ -1190,11 +1190,11 @@ mod tests {
         ];
 
         // 2. Navigate to target
-        manager.navigate_targets(Direction::Down, &targets);
+        let _ = manager.navigate_targets(Direction::Down, &targets);
         assert_eq!(manager.mode(), KeyboardDragMode::Navigating);
 
         // 3. Navigate to next target
-        manager.navigate_targets(Direction::Down, &targets);
+        let _ = manager.navigate_targets(Direction::Down, &targets);
 
         // 4. Complete drop
         let result = manager.drop_on_target(&targets);

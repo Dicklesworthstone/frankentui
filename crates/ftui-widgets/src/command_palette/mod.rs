@@ -1391,9 +1391,9 @@ mod widget_tests {
             kind: KeyEventKind::Press,
         });
 
-        palette.handle_event(&g);
-        palette.handle_event(&i);
-        palette.handle_event(&t);
+        let _ = palette.handle_event(&g);
+        let _ = palette.handle_event(&i);
+        let _ = palette.handle_event(&t);
 
         assert_eq!(palette.query(), "git");
         // Only "Git: Commit" should match well
@@ -1417,9 +1417,9 @@ mod widget_tests {
             kind: KeyEventKind::Press,
         });
 
-        palette.handle_event(&o);
+        let _ = palette.handle_event(&o);
         assert_eq!(palette.query(), "o");
-        palette.handle_event(&bs);
+        let _ = palette.handle_event(&bs);
         assert_eq!(palette.query(), "");
     }
 
@@ -1476,20 +1476,20 @@ mod widget_tests {
             kind: KeyEventKind::Press,
         });
 
-        palette.handle_event(&down);
+        let _ = palette.handle_event(&down);
         assert_eq!(palette.selected_index(), 1);
-        palette.handle_event(&down);
+        let _ = palette.handle_event(&down);
         assert_eq!(palette.selected_index(), 2);
         // Can't go past end
-        palette.handle_event(&down);
+        let _ = palette.handle_event(&down);
         assert_eq!(palette.selected_index(), 2);
 
-        palette.handle_event(&up);
+        let _ = palette.handle_event(&up);
         assert_eq!(palette.selected_index(), 1);
-        palette.handle_event(&up);
+        let _ = palette.handle_event(&up);
         assert_eq!(palette.selected_index(), 0);
         // Can't go below 0
-        palette.handle_event(&up);
+        let _ = palette.handle_event(&up);
         assert_eq!(palette.selected_index(), 0);
     }
 
@@ -1512,10 +1512,10 @@ mod widget_tests {
             kind: KeyEventKind::Press,
         });
 
-        palette.handle_event(&end);
+        let _ = palette.handle_event(&end);
         assert_eq!(palette.selected_index(), 19);
 
-        palette.handle_event(&home);
+        let _ = palette.handle_event(&home);
         assert_eq!(palette.selected_index(), 0);
     }
 
@@ -1530,7 +1530,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&o);
+        let _ = palette.handle_event(&o);
         assert_eq!(palette.query(), "o");
 
         let ctrl_u = Event::Key(KeyEvent {
@@ -1538,7 +1538,7 @@ mod widget_tests {
             modifiers: Modifiers::CTRL,
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&ctrl_u);
+        let _ = palette.handle_event(&ctrl_u);
         assert_eq!(palette.query(), "");
     }
 
@@ -1552,7 +1552,7 @@ mod widget_tests {
             modifiers: Modifiers::CTRL,
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&ctrl_p);
+        let _ = palette.handle_event(&ctrl_p);
         assert!(palette.is_visible());
     }
 
@@ -1770,7 +1770,7 @@ mod widget_tests {
             modifiers: Modifiers::CTRL,
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&ctrl_p);
+        let _ = palette.handle_event(&ctrl_p);
         assert!(palette.is_visible());
         assert_eq!(palette.result_count(), 3);
 
@@ -1781,7 +1781,7 @@ mod widget_tests {
                 modifiers: Modifiers::empty(),
                 kind: KeyEventKind::Press,
             });
-            palette.handle_event(&event);
+            let _ = palette.handle_event(&event);
         }
         assert!(palette.result_count() >= 1);
 
@@ -1791,7 +1791,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&down);
+        let _ = palette.handle_event(&down);
 
         // Step 4: Navigate back up
         let up = Event::Key(KeyEvent {
@@ -1799,7 +1799,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&up);
+        let _ = palette.handle_event(&up);
         assert_eq!(palette.selected_index(), 0);
 
         // Step 5: Execute with Enter
@@ -1826,7 +1826,7 @@ mod widget_tests {
                 modifiers: Modifiers::empty(),
                 kind: KeyEventKind::Press,
             });
-            palette.handle_event(&event);
+            let _ = palette.handle_event(&event);
         }
         assert_eq!(palette.result_count(), 0); // no matches
 
@@ -2192,7 +2192,7 @@ mod widget_tests {
             kind: KeyEventKind::Press,
         });
         tracing::callsite::rebuild_interest_cache();
-        palette.handle_event(&a);
+        let _ = palette.handle_event(&a);
 
         let enter = Event::Key(KeyEvent {
             code: KeyCode::Enter,
@@ -2276,7 +2276,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&bs);
+        let _ = palette.handle_event(&bs);
         assert_eq!(palette.query(), "");
         // Results should still show all items
         assert_eq!(palette.result_count(), 1);
@@ -2295,7 +2295,7 @@ mod widget_tests {
                 modifiers: Modifiers::empty(),
                 kind: KeyEventKind::Press,
             });
-            palette.handle_event(&event);
+            let _ = palette.handle_event(&event);
         }
         assert_eq!(palette.query(), "abc");
 
@@ -2304,7 +2304,7 @@ mod widget_tests {
             modifiers: Modifiers::CTRL,
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&ctrl_a);
+        let _ = palette.handle_event(&ctrl_a);
         // Cursor should move to 0 but query unchanged
         assert_eq!(palette.query(), "abc");
     }
@@ -2521,7 +2521,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&down);
+        let _ = palette.handle_event(&down);
 
         // Re-open should reset everything
         palette.open();
@@ -2604,13 +2604,13 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&pgdn);
+        let _ = palette.handle_event(&pgdn);
         assert_eq!(palette.selected_index(), 3); // 0 + max_visible
 
-        palette.handle_event(&pgdn);
+        let _ = palette.handle_event(&pgdn);
         assert_eq!(palette.selected_index(), 6);
 
-        palette.handle_event(&pgdn);
+        let _ = palette.handle_event(&pgdn);
         assert_eq!(palette.selected_index(), 9); // clamped to last
 
         let pgup = Event::Key(KeyEvent {
@@ -2618,13 +2618,13 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&pgup);
+        let _ = palette.handle_event(&pgup);
         assert_eq!(palette.selected_index(), 6); // 9 - 3
 
-        palette.handle_event(&pgup);
+        let _ = palette.handle_event(&pgup);
         assert_eq!(palette.selected_index(), 3);
 
-        palette.handle_event(&pgup);
+        let _ = palette.handle_event(&pgup);
         assert_eq!(palette.selected_index(), 0);
     }
 
@@ -2639,7 +2639,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&pgdn);
+        let _ = palette.handle_event(&pgdn);
         assert_eq!(palette.selected_index(), 0);
     }
 
@@ -2654,7 +2654,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&end);
+        let _ = palette.handle_event(&end);
         assert_eq!(palette.selected_index(), 0);
     }
 
@@ -2669,7 +2669,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&down);
+        let _ = palette.handle_event(&down);
         assert_eq!(palette.selected_index(), 0);
     }
 
@@ -2701,7 +2701,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&end);
+        let _ = palette.handle_event(&end);
         assert_eq!(palette.selected_index(), 9);
         // scroll_offset should have adjusted so item 9 is visible
         // (scroll_offset = selected + 1 - max_visible = 9 + 1 - 3 = 7)
@@ -2711,7 +2711,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&home);
+        let _ = palette.handle_event(&home);
         assert_eq!(palette.selected_index(), 0);
     }
 
@@ -2845,7 +2845,7 @@ mod widget_tests {
             modifiers: Modifiers::CTRL,
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&ctrl_p);
+        let _ = palette.handle_event(&ctrl_p);
         // The visible palette handles Ctrl+P as a Ctrl char, not toggling
         assert!(palette.is_visible());
     }
@@ -2898,7 +2898,7 @@ mod widget_tests {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&end);
+        let _ = palette.handle_event(&end);
 
         let area = Rect::from_size(60, 15);
         let mut pool = GraphemePool::new();

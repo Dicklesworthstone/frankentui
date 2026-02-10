@@ -816,7 +816,7 @@ mod tests {
         fm.focus(3);
 
         // Remove node 2 from graph
-        fm.graph_mut().remove(2);
+        let _ = fm.graph_mut().remove(2);
 
         // focus_back should skip 2 and go to 1
         assert!(fm.focus_back());

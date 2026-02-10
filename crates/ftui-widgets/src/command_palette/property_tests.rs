@@ -73,7 +73,7 @@ proptest! {
         palette.open();
 
         for code in ops {
-            palette.handle_event(&Event::Key(KeyEvent {
+            let _ = palette.handle_event(&Event::Key(KeyEvent {
                 code,
                 modifiers: Modifiers::empty(),
                 kind: KeyEventKind::Press,
@@ -151,10 +151,10 @@ fn page_up_down_viewport_movement() {
         kind: KeyEventKind::Press,
     });
 
-    palette.handle_event(&pg_down);
+    let _ = palette.handle_event(&pg_down);
     assert_eq!(palette.selected_index(), 5);
 
-    palette.handle_event(&pg_down);
+    let _ = palette.handle_event(&pg_down);
     assert_eq!(palette.selected_index(), 10);
 
     // PageUp -> -5
@@ -164,7 +164,7 @@ fn page_up_down_viewport_movement() {
         kind: KeyEventKind::Press,
     });
 
-    palette.handle_event(&pg_up);
+    let _ = palette.handle_event(&pg_up);
     assert_eq!(palette.selected_index(), 5);
 }
 

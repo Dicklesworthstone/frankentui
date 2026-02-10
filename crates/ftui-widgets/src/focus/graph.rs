@@ -452,7 +452,7 @@ mod tests {
         g.insert(node(1));
         g.insert(node(2));
         g.connect(1, NavDirection::Next, 2);
-        g.remove(1);
+        let _ = g.remove(1);
         // Edge (1, Next) should be gone.
         assert_eq!(g.edge_count(), 0);
     }
@@ -463,7 +463,7 @@ mod tests {
         g.insert(node(1));
         g.insert(node(2));
         g.connect(1, NavDirection::Next, 2);
-        g.remove(2);
+        let _ = g.remove(2);
         // Edge (1, Next) → 2 should be removed because target is gone.
         assert_eq!(g.edge_count(), 0);
         assert_eq!(g.navigate(1, NavDirection::Next), None);
@@ -725,7 +725,7 @@ mod tests {
         let mut g = FocusGraph::new();
         let n = node(1);
         g.insert(n.clone());
-        g.remove(1);
+        let _ = g.remove(1);
         g.insert(n.clone());
         assert_eq!(g.node_count(), 1);
         assert_eq!(g.get(1).unwrap().id, 1);
