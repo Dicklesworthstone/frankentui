@@ -666,17 +666,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var glyph_alpha = 0.0;
     if (in.glyph_id != 0u) {
-        let meta = glyph_meta[in.glyph_id];
-        if (all(uv >= meta.layout_min) && all(uv <= meta.layout_max)) {
-            let span = max(meta.layout_max - meta.layout_min, vec2<f32>(0.00001, 0.00001));
+        let glyph_meta_entry = glyph_meta[in.glyph_id];
+        if (all(uv >= glyph_meta_entry.layout_min) && all(uv <= glyph_meta_entry.layout_max)) {
+            let span = max(
+                glyph_meta_entry.layout_max - glyph_meta_entry.layout_min,
+                vec2<f32>(0.00001, 0.00001),
+            );
             let local_uv = clamp(
-                (uv - meta.layout_min) / span,
+                (uv - glyph_meta_entry.layout_min) / span,
                 vec2<f32>(0.0, 0.0),
                 vec2<f32>(1.0, 1.0),
             );
             let atlas_uv = vec2<f32>(
-                mix(meta.uv_min.x, meta.uv_max.x, local_uv.x),
-                mix(meta.uv_min.y, meta.uv_max.y, local_uv.y),
+                mix(glyph_meta_entry.uv_min.x, glyph_meta_entry.uv_max.x, local_uv.x),
+                mix(glyph_meta_entry.uv_min.y, glyph_meta_entry.uv_max.y, local_uv.y),
             );
             glyph_alpha = textureSample(glyph_atlas, glyph_sampler, atlas_uv).r;
         }
