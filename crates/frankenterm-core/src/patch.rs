@@ -1002,4 +1002,535 @@ mod tests {
         // Density should be small (81 / 1920 ≈ 4.2%).
         assert!(patch.density() < 0.05);
     }
+
+    // ── Edge-case tests (bd-2iaas) ──────────────────────────────────
+
+    // ── DirtySpan edge cases ────────────────────────────────────────
+
+    #[test]
+    fn dirty_span_reversed_is_empty() {
+        let span = DirtySpan::new(10, 5);
+        assert!(span.is_empty());
+        assert_eq!(span.len(), 0);
+    }
+
+    #[test]
+    fn dirty_span_u16_max() {
+        let span = DirtySpan::new(0, u16::MAX);
+        assert_eq!(span.len(), u16::MAX);
+        assert!(!span.is_empty());
+    }
+
+    #[test]
+    fn dirty_span_full_range() {
+        let span = DirtySpan::new(0, u16::MAX);
+        let other = DirtySpan::new(u16::MAX - 1, u16::MAX);
+        // Should be mergeable with gap 0 since they're adjacent.
+        assert!(span.mergeable(&other, 0));
+    }
+
+    #[test]
+    fn dirty_span_mergeable_exact_boundary() {
+        // Spans [0,5) and [5,10) with merge_gap=0 → adjacent → mergeable.
+        let a = DirtySpan::new(0, 5);
+        let b = DirtySpan::new(5, 10);
+        assert!(a.mergeable(&b, 0));
+        assert!(b.mergeable(&a, 0));
+    }
+
+    #[test]
+    fn dirty_span_not_mergeable_gap_1_no_merge_gap() {
+        // Spans [0,5) and [6,10) with merge_gap=0 → gap of 1 → not mergeable.
+        let a = DirtySpan::new(0, 5);
+        let b = DirtySpan::new(6, 10);
+        assert!(!a.mergeable(&b, 0));
+    }
+
+    #[test]
+    fn dirty_span_mergeable_gap_1_with_merge_gap_1() {
+        // Spans [0,5) and [6,10) with merge_gap=1 → gap of 1 → mergeable.
+        let a = DirtySpan::new(0, 5);
+        let b = DirtySpan::new(6, 10);
+        assert!(a.mergeable(&b, 1));
+    }
+
+    #[test]
+    fn dirty_span_merge_union() {
+        let mut a = DirtySpan::new(3, 7);
+        let b = DirtySpan::new(5, 12);
+        a.merge(&b);
+        assert_eq!(a.start, 3);
+        assert_eq!(a.end, 12);
+    }
+
+    #[test]
+    fn dirty_span_merge_disjoint() {
+        let mut a = DirtySpan::new(0, 5);
+        let b = DirtySpan::new(10, 20);
+        a.merge(&b);
+        // Union covers [0, 20) even if gap exists.
+        assert_eq!(a.start, 0);
+        assert_eq!(a.end, 20);
+    }
+
+    #[test]
+    fn dirty_span_merge_subset() {
+        let mut a = DirtySpan::new(0, 20);
+        let b = DirtySpan::new(5, 10);
+        a.merge(&b);
+        // Larger span unchanged.
+        assert_eq!(a.start, 0);
+        assert_eq!(a.end, 20);
+    }
+
+    // ── DirtyTracker edge cases ─────────────────────────────────────
+
+    #[test]
+    fn tracker_mark_cell_at_last_col() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_cell(0, 79); // cols - 1
+        assert!(t.is_dirty());
+        let spans = t.row_spans(0).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 79);
+        assert_eq!(spans[0].end, 80);
+    }
+
+    #[test]
+    fn tracker_mark_span_clamped_to_cols() {
+        let mut t = DirtyTracker::new(10, 1);
+        t.mark_span(0, 5, 100); // end_col > cols → clamped to 10
+        let spans = t.row_spans(0).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 5);
+        assert_eq!(spans[0].end, 10);
+    }
+
+    #[test]
+    fn tracker_mark_row_then_mark_cell_stays_full() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_row(0);
+        t.mark_cell(0, 10);
+        // Row still full — mark_cell on full row is a no-op.
+        assert!(t.row_spans(0).is_none());
+        assert_eq!(t.dirty_row_count(), 1);
+    }
+
+    #[test]
+    fn tracker_mark_row_twice_no_double_count() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_row(5);
+        t.mark_row(5);
+        assert_eq!(t.dirty_row_count(), 1);
+    }
+
+    #[test]
+    fn tracker_mark_cell_twice_same_cell() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_cell(3, 10);
+        t.mark_cell(3, 10);
+        assert_eq!(t.dirty_row_count(), 1);
+        let spans = t.row_spans(3).unwrap();
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn tracker_resize_to_zero_rows() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.resize(80, 0);
+        assert_eq!(t.row_count(), 0);
+        assert_eq!(t.dirty_row_count(), 0);
+        assert!(!t.is_dirty());
+    }
+
+    #[test]
+    fn tracker_resize_to_zero_cols() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.resize(0, 24);
+        assert_eq!(t.row_count(), 24);
+        // All rows marked dirty by resize.
+        assert_eq!(t.dirty_row_count(), 24);
+    }
+
+    #[test]
+    fn tracker_clear_then_mark_cell() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_all();
+        t.clear();
+        t.mark_cell(0, 0);
+        assert_eq!(t.dirty_row_count(), 1);
+        // Row 0 should have spans, not full.
+        let spans = t.row_spans(0).unwrap();
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn tracker_clone_independence() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_cell(0, 5);
+        let mut t2 = t.clone();
+        t2.mark_cell(1, 10);
+        assert_eq!(t.dirty_row_count(), 1);
+        assert_eq!(t2.dirty_row_count(), 2);
+    }
+
+    #[test]
+    fn tracker_row_spans_out_of_bounds() {
+        let t = DirtyTracker::new(80, 24);
+        assert_eq!(t.row_spans(24), None);
+        assert_eq!(t.row_spans(100), None);
+    }
+
+    #[test]
+    fn tracker_is_row_dirty_out_of_bounds() {
+        let t = DirtyTracker::new(80, 24);
+        assert!(!t.is_row_dirty(24));
+        assert!(!t.is_row_dirty(u16::MAX));
+    }
+
+    #[test]
+    fn tracker_multiple_spans_coalesce_three_way() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.set_merge_gap(0);
+        t.mark_span(0, 0, 3);
+        t.mark_span(0, 6, 9);
+        // Now add a span that bridges the gap.
+        t.mark_span(0, 3, 6);
+        let spans = t.row_spans(0).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, 9);
+    }
+
+    #[test]
+    fn tracker_mark_span_empty_range_no_op() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_span(0, 5, 5); // start == end
+        assert!(!t.is_dirty());
+    }
+
+    #[test]
+    fn tracker_mark_span_reversed_range_no_op() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_span(0, 10, 5); // start > end
+        assert!(!t.is_dirty());
+    }
+
+    #[test]
+    fn tracker_resize_shrink_then_grow() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.mark_cell(20, 0);
+        t.resize(80, 10); // Shrinks — row 20 gone.
+        assert_eq!(t.row_count(), 10);
+        t.clear();
+        t.resize(80, 30); // Grows.
+        assert_eq!(t.row_count(), 30);
+        assert_eq!(t.dirty_row_count(), 30); // Resize marks all dirty.
+    }
+
+    // ── ChangeRun edge cases ────────────────────────────────────────
+
+    #[test]
+    fn change_run_empty() {
+        let run = ChangeRun {
+            row: 0,
+            start_col: 5,
+            end_col: 5,
+        };
+        assert!(run.is_empty());
+        assert_eq!(run.len(), 0);
+    }
+
+    #[test]
+    fn change_run_single_cell() {
+        let run = ChangeRun {
+            row: 0,
+            start_col: 0,
+            end_col: 1,
+        };
+        assert!(!run.is_empty());
+        assert_eq!(run.len(), 1);
+    }
+
+    #[test]
+    fn change_run_clone_and_eq() {
+        let run = ChangeRun {
+            row: 5,
+            start_col: 10,
+            end_col: 20,
+        };
+        let run2 = run.clone();
+        assert_eq!(run, run2);
+    }
+
+    // ── Patch edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn patch_default_trait() {
+        let p = Patch::default();
+        assert_eq!(p.cols, 0);
+        assert_eq!(p.rows, 0);
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn patch_density_full_grid() {
+        let mut p = Patch::new(2, 2);
+        for r in 0..2u16 {
+            for c in 0..2u16 {
+                p.push(r, c, Cell::new('X'));
+            }
+        }
+        assert!((p.density() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn patch_density_zero_cols_nonzero_rows() {
+        let p = Patch::new(0, 10);
+        assert_eq!(p.density(), 0.0);
+    }
+
+    #[test]
+    fn patch_density_nonzero_cols_zero_rows() {
+        let p = Patch::new(10, 0);
+        assert_eq!(p.density(), 0.0);
+    }
+
+    #[test]
+    fn patch_runs_single_update() {
+        let mut p = Patch::new(80, 24);
+        p.push(12, 40, Cell::new('Z'));
+        let runs = p.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].row, 12);
+        assert_eq!(runs[0].start_col, 40);
+        assert_eq!(runs[0].end_col, 41);
+    }
+
+    #[test]
+    fn patch_runs_gap_of_one_splits() {
+        let mut p = Patch::new(10, 1);
+        p.push(0, 0, Cell::new('A'));
+        // col 1 is skipped
+        p.push(0, 2, Cell::new('B'));
+        let runs = p.runs();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].end_col, 1);
+        assert_eq!(runs[1].start_col, 2);
+    }
+
+    #[test]
+    fn patch_runs_into_clears_buffer() {
+        let mut p = Patch::new(10, 1);
+        p.push(0, 0, Cell::new('A'));
+
+        let mut buf = vec![ChangeRun {
+            row: 99,
+            start_col: 99,
+            end_col: 100,
+        }];
+        p.runs_into(&mut buf);
+        // Buffer should have been cleared and contain only the new run.
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].row, 0);
+    }
+
+    #[test]
+    fn patch_clone_and_eq() {
+        let mut p = Patch::new(5, 5);
+        p.push(0, 0, Cell::new('X'));
+        let p2 = p.clone();
+        assert_eq!(p, p2);
+    }
+
+    #[test]
+    fn patch_runs_three_rows_one_cell_each() {
+        let mut p = Patch::new(80, 24);
+        p.push(0, 10, Cell::new('A'));
+        p.push(5, 20, Cell::new('B'));
+        p.push(10, 30, Cell::new('C'));
+        let runs = p.runs();
+        assert_eq!(runs.len(), 3);
+        for run in &runs {
+            assert_eq!(run.len(), 1);
+        }
+    }
+
+    // ── GridDiff edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn diff_old_smaller_than_new() {
+        let old = Grid::new(5, 3);
+        let mut new = Grid::new(10, 5);
+        new.cell_mut(4, 9).unwrap().set_content('Z', 1);
+        let patch = GridDiff::diff(&old, &new);
+        // Cells beyond old's bounds (old returns None, new returns Some) → changes.
+        assert!(!patch.is_empty());
+        // Should include the cell at (4,9) at minimum.
+        assert!(patch.updates.iter().any(|u| u.row == 4 && u.col == 9));
+    }
+
+    #[test]
+    fn diff_new_smaller_than_old() {
+        let mut old = Grid::new(10, 5);
+        old.cell_mut(4, 9).unwrap().set_content('A', 1);
+        let new = Grid::new(5, 3);
+        // Diff uses new's dimensions, so (4,9) is out of range.
+        let patch = GridDiff::diff(&old, &new);
+        assert_eq!(patch.cols, 5);
+        assert_eq!(patch.rows, 3);
+        // No update at (4,9) since it's beyond new's bounds.
+        assert!(patch.updates.iter().all(|u| u.row < 3 && u.col < 5));
+    }
+
+    #[test]
+    fn diff_into_called_twice() {
+        let a = Grid::new(5, 3);
+        let mut b = Grid::new(5, 3);
+        b.cell_mut(0, 0).unwrap().set_content('X', 1);
+
+        let mut patch = Patch::new(0, 0);
+        GridDiff::diff_into(&a, &b, &mut patch);
+        assert_eq!(patch.len(), 1);
+
+        // Second call with identical grids → patch should be empty.
+        GridDiff::diff_into(&b, &b, &mut patch);
+        assert_eq!(patch.len(), 0);
+        assert_eq!(patch.cols, 5);
+    }
+
+    #[test]
+    fn diff_dirty_multiple_spans_same_row() {
+        let a = Grid::new(20, 1);
+        let mut b = Grid::new(20, 1);
+        b.cell_mut(0, 2).unwrap().set_content('A', 1);
+        b.cell_mut(0, 15).unwrap().set_content('B', 1);
+
+        let mut tracker = DirtyTracker::new(20, 1);
+        tracker.set_merge_gap(0);
+        tracker.mark_span(0, 0, 5);
+        tracker.mark_span(0, 12, 18);
+
+        let patch = GridDiff::diff_dirty(&a, &b, &tracker);
+        assert_eq!(patch.len(), 2);
+        assert_eq!(patch.updates[0].col, 2);
+        assert_eq!(patch.updates[1].col, 15);
+    }
+
+    #[test]
+    fn diff_dirty_full_row_vs_span_row() {
+        let a = Grid::new(10, 3);
+        let mut b = Grid::new(10, 3);
+        // Row 0: full dirty, one change.
+        b.cell_mut(0, 5).unwrap().set_content('A', 1);
+        // Row 2: span dirty, one change.
+        b.cell_mut(2, 3).unwrap().set_content('B', 1);
+
+        let mut tracker = DirtyTracker::new(10, 3);
+        tracker.mark_row(0);
+        tracker.mark_span(2, 0, 5);
+
+        let patch = GridDiff::diff_dirty(&a, &b, &tracker);
+        assert_eq!(patch.len(), 2);
+        assert_eq!(patch.updates[0].row, 0);
+        assert_eq!(patch.updates[1].row, 2);
+    }
+
+    #[test]
+    fn diff_all_cells_changed() {
+        let a = Grid::new(3, 3);
+        let mut b = Grid::new(3, 3);
+        for r in 0..3u16 {
+            for c in 0..3u16 {
+                b.cell_mut(r, c).unwrap().set_content('X', 1);
+            }
+        }
+        let patch = GridDiff::diff(&a, &b);
+        assert_eq!(patch.len(), 9);
+        assert!((patch.density() - 1.0).abs() < f64::EPSILON);
+        let runs = patch.runs();
+        assert_eq!(runs.len(), 3); // One run per row.
+        for run in &runs {
+            assert_eq!(run.len(), 3);
+        }
+    }
+
+    #[test]
+    fn diff_dirty_span_beyond_grid_cols() {
+        let a = Grid::new(5, 1);
+        let mut b = Grid::new(5, 1);
+        b.cell_mut(0, 3).unwrap().set_content('Z', 1);
+
+        let mut tracker = DirtyTracker::new(5, 1);
+        // Mark a span that extends beyond grid cols.
+        tracker.mark_span(0, 0, 100);
+        let patch = GridDiff::diff_dirty(&a, &b, &tracker);
+        assert_eq!(patch.len(), 1);
+        assert_eq!(patch.updates[0].col, 3);
+    }
+
+    // ── CellUpdate edge cases ───────────────────────────────────────
+
+    #[test]
+    fn cell_update_clone_and_eq() {
+        let u = CellUpdate {
+            row: 5,
+            col: 10,
+            cell: Cell::new('X'),
+        };
+        let u2 = u.clone();
+        assert_eq!(u, u2);
+        assert_eq!(u.row, u2.row);
+        assert_eq!(u.col, u2.col);
+    }
+
+    #[test]
+    fn cell_update_debug_format() {
+        let u = CellUpdate {
+            row: 0,
+            col: 0,
+            cell: Cell::new('A'),
+        };
+        let dbg = format!("{u:?}");
+        assert!(dbg.contains("CellUpdate"));
+    }
+
+    // ── DirtyTracker + merge_gap interactions ───────────────────────
+
+    #[test]
+    fn tracker_merge_gap_zero_keeps_separate() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.set_merge_gap(0);
+        t.mark_span(0, 0, 5);
+        t.mark_span(0, 5, 10); // adjacent at col 5
+        let spans = t.row_spans(0).unwrap();
+        // With merge_gap=0, adjacent spans [0,5) and [5,10) should merge.
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, 10);
+    }
+
+    #[test]
+    fn tracker_merge_gap_large_merges_everything() {
+        let mut t = DirtyTracker::new(80, 24);
+        t.set_merge_gap(u16::MAX);
+        t.mark_span(0, 0, 5);
+        t.mark_span(0, 70, 80);
+        let spans = t.row_spans(0).unwrap();
+        // Large merge gap should merge everything.
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, 80);
+    }
+
+    #[test]
+    fn tracker_new_zero_dimensions() {
+        let t = DirtyTracker::new(0, 0);
+        assert_eq!(t.row_count(), 0);
+        assert!(!t.is_dirty());
+        // Out-of-bounds operations are no-ops.
+        let mut t = t;
+        t.mark_cell(0, 0);
+        assert!(!t.is_dirty());
+    }
 }
