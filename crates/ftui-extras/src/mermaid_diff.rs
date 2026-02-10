@@ -1420,4 +1420,411 @@ mod tests {
         assert_eq!(removed_count, diff.removed_nodes);
         assert_eq!(changed, diff.changed_nodes);
     }
+
+    // =====================================================================
+    // Edge case tests (bd-50x22)
+    // =====================================================================
+
+    // -- endpoint_node_id fallback paths --
+
+    #[test]
+    fn endpoint_node_id_out_of_bounds_node() {
+        let ir = make_test_ir(&["A"], &[]);
+        // IrNodeId(99) is out of bounds → fallback to "?99"
+        let result = endpoint_node_id(&IrEndpoint::Node(IrNodeId(99)), &ir);
+        assert_eq!(result, "?99");
+    }
+
+    #[test]
+    fn endpoint_node_id_port_fallback() {
+        use crate::mermaid::{IrPort, IrPortId, IrPortSideHint};
+        let mut ir = make_test_ir(&["A"], &[]);
+        // Add a port that references node 0
+        ir.ports.push(IrPort {
+            node: IrNodeId(0),
+            name: "p1".to_string(),
+            side_hint: IrPortSideHint::Auto,
+            span: make_test_span(),
+        });
+        let result = endpoint_node_id(&IrEndpoint::Port(IrPortId(0)), &ir);
+        assert_eq!(result, "A");
+    }
+
+    #[test]
+    fn endpoint_node_id_port_out_of_bounds() {
+        let ir = make_test_ir(&["A"], &[]);
+        // Port index 99 doesn't exist → fallback to "?port99"
+        let result = endpoint_node_id(&IrEndpoint::Port(crate::mermaid::IrPortId(99)), &ir);
+        assert_eq!(result, "?port99");
+    }
+
+    // -- Node label edge cases --
+
+    #[test]
+    fn node_no_label_both_unchanged() {
+        // Both nodes have label=None → unchanged
+        let mut old = make_test_ir(&["A"], &[]);
+        old.nodes[0].label = None;
+        let mut new = make_test_ir(&["A"], &[]);
+        new.nodes[0].label = None;
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_nodes, 0);
+        assert_eq!(diff.nodes[0].status, DiffStatus::Unchanged);
+    }
+
+    #[test]
+    fn node_label_added_counts_as_change() {
+        // Old has no label, new has label → changed
+        let mut old = make_test_ir(&["A"], &[]);
+        old.nodes[0].label = None;
+        let new = make_test_ir(&["A"], &[]); // has label from make_test_ir
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_nodes, 1);
+    }
+
+    #[test]
+    fn node_label_removed_counts_as_change() {
+        // Old has label, new has None → changed
+        let old = make_test_ir(&["A"], &[]);
+        let mut new = make_test_ir(&["A"], &[]);
+        new.nodes[0].label = None;
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_nodes, 1);
+    }
+
+    // -- Edge label removed --
+
+    #[test]
+    fn edge_label_removed_counts_as_change() {
+        let mut old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        old.labels.push(IrLabel {
+            text: "edge label".to_string(),
+            span: make_test_span(),
+        });
+        old.edges[0].label = Some(IrLabelId(old.labels.len() - 1));
+
+        let new = make_test_ir(&["A", "B"], &[(0, 1)]); // no edge label
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_edges, 1);
+    }
+
+    // -- DiffStatus clone/copy --
+
+    #[test]
+    fn diff_status_clone_copy() {
+        let s = DiffStatus::Added;
+        let s2 = s; // Copy
+        let s3 = s; // Copy again
+        assert_eq!(s2, s3);
+        assert_eq!(s, DiffStatus::Added);
+    }
+
+    #[test]
+    fn diff_status_all_variants_debug() {
+        // Ensure Debug works for all variants
+        for status in [
+            DiffStatus::Added,
+            DiffStatus::Removed,
+            DiffStatus::Changed,
+            DiffStatus::Unchanged,
+        ] {
+            let dbg = format!("{:?}", status);
+            assert!(!dbg.is_empty());
+        }
+    }
+
+    // -- DiffNode/DiffEdge clone --
+
+    #[test]
+    fn diff_node_clone() {
+        let dn = DiffNode {
+            id: "test".to_string(),
+            status: DiffStatus::Added,
+            node_idx: 0,
+            old_node_idx: None,
+        };
+        let cloned = dn.clone();
+        assert_eq!(cloned.id, "test");
+        assert_eq!(cloned.status, DiffStatus::Added);
+        assert_eq!(cloned.node_idx, 0);
+        assert!(cloned.old_node_idx.is_none());
+    }
+
+    #[test]
+    fn diff_edge_clone() {
+        let de = DiffEdge {
+            from_id: "A".to_string(),
+            to_id: "B".to_string(),
+            status: DiffStatus::Removed,
+            edge_idx: 5,
+            old_edge_idx: Some(3),
+        };
+        let cloned = de.clone();
+        assert_eq!(cloned.from_id, "A");
+        assert_eq!(cloned.to_id, "B");
+        assert_eq!(cloned.status, DiffStatus::Removed);
+        assert_eq!(cloned.edge_idx, 5);
+        assert_eq!(cloned.old_edge_idx, Some(3));
+    }
+
+    // -- DiagramDiff clone --
+
+    #[test]
+    fn diagram_diff_clone() {
+        let ir = make_test_ir(&["A"], &[]);
+        let diff = diff_diagrams(&ir, &ir);
+        let cloned = diff.clone();
+        assert_eq!(cloned.nodes.len(), diff.nodes.len());
+        assert_eq!(cloned.is_empty(), diff.is_empty());
+    }
+
+    // -- render_diff with only edge changes --
+
+    #[test]
+    fn render_diff_only_edge_change_no_node_change() {
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let mut new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        new.edges[0].arrow = "-->|label|".to_string();
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_nodes, 0);
+        assert_eq!(diff.changed_edges, 1);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 30,
+        };
+        let mut buf = make_test_buffer(60, 30);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+    }
+
+    // -- render_diff with offset area --
+
+    #[test]
+    fn render_diff_offset_area() {
+        let ir = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&ir, &ir);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&ir, &config);
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 50,
+            height: 25,
+        };
+        let mut buf = make_test_buffer(70, 40);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+    }
+
+    // -- render_diff with multiple removed nodes (legend truncation) --
+
+    #[test]
+    fn render_diff_many_removed_nodes_legend() {
+        let old = make_test_ir(
+            &[
+                "A",
+                "B",
+                "LongNodeName1",
+                "LongNodeName2",
+                "LongNodeName3",
+                "LongNodeName4",
+            ],
+            &[(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+        );
+        let new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.removed_nodes, 4);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        // Narrow area to force legend truncation
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 30,
+            height: 20,
+        };
+        let mut buf = make_test_buffer(30, 20);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+    }
+
+    // -- render_diff with only removed edges (no removed nodes) --
+
+    #[test]
+    fn render_diff_removed_edges_only() {
+        let old = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2), (0, 2)]);
+        let new = make_test_ir(&["A", "B", "C"], &[(0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.removed_edges, 2);
+        assert_eq!(diff.removed_nodes, 0);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 30,
+        };
+        let mut buf = make_test_buffer(60, 30);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // Legend should still appear (removed edges count)
+        let has_red = (0..60)
+            .any(|x| (0..30).any(|y| buf.get(x, y).is_some_and(|c| c.fg == DiffColors::REMOVED)));
+        assert!(has_red, "removed edges should show red legend");
+    }
+
+    // -- dim_rect_interior leaves spaces alone --
+
+    #[test]
+    fn dim_rect_interior_skips_spaces() {
+        let mut buf = make_test_buffer(10, 10);
+        // Interior cells are all spaces (default)
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 5,
+            height: 5,
+        };
+        let before_fg = buf.get(2, 2).unwrap().fg;
+        dim_rect_interior(rect, DiffColors::UNCHANGED, &mut buf);
+        // Space cells should NOT be recolored
+        let after_fg = buf.get(2, 2).unwrap().fg;
+        assert_eq!(before_fg, after_fg);
+    }
+
+    // -- recolor_rect_border with larger rect --
+
+    #[test]
+    fn recolor_rect_border_3x3() {
+        let mut buf = make_test_buffer(10, 10);
+        // Fill 3x3 area with content
+        for y in 2..5 {
+            for x in 2..5 {
+                buf.set_fast(x, y, Cell::from_char('X'));
+            }
+        }
+        let rect = Rect {
+            x: 2,
+            y: 2,
+            width: 3,
+            height: 3,
+        };
+        recolor_rect_border(rect, DiffColors::CHANGED, &mut buf);
+        // All border cells should have the color
+        // Top edge
+        assert_eq!(buf.get(2, 2).unwrap().fg, DiffColors::CHANGED);
+        assert_eq!(buf.get(3, 2).unwrap().fg, DiffColors::CHANGED);
+        assert_eq!(buf.get(4, 2).unwrap().fg, DiffColors::CHANGED);
+        // Bottom edge
+        assert_eq!(buf.get(2, 4).unwrap().fg, DiffColors::CHANGED);
+        assert_eq!(buf.get(4, 4).unwrap().fg, DiffColors::CHANGED);
+        // Left edge
+        assert_eq!(buf.get(2, 3).unwrap().fg, DiffColors::CHANGED);
+        // Right edge
+        assert_eq!(buf.get(4, 3).unwrap().fg, DiffColors::CHANGED);
+        // Interior should NOT be changed
+        let interior = buf.get(3, 3).unwrap();
+        assert_ne!(interior.fg, DiffColors::CHANGED);
+    }
+
+    // -- is_empty with each counter individually nonzero --
+
+    #[test]
+    fn is_empty_false_for_removed_nodes_only() {
+        let old = make_test_ir(&["A"], &[]);
+        let new = make_test_ir(&[], &[]);
+        let diff = diff_diagrams(&old, &new);
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_for_removed_edges_only() {
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let new = make_test_ir(&["A", "B"], &[]);
+        let diff = diff_diagrams(&old, &new);
+        assert!(!diff.is_empty());
+        assert_eq!(diff.removed_edges, 1);
+        assert_eq!(diff.added_nodes, 0);
+        assert_eq!(diff.removed_nodes, 0);
+        assert_eq!(diff.changed_nodes, 0);
+    }
+
+    #[test]
+    fn is_empty_false_for_changed_edges_only() {
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let mut new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        new.edges[0].arrow = "-.->".to_string();
+        let diff = diff_diagrams(&old, &new);
+        assert!(!diff.is_empty());
+        assert_eq!(diff.changed_edges, 1);
+        assert_eq!(diff.added_nodes, 0);
+    }
+
+    // -- Edge total count consistency --
+
+    #[test]
+    fn diff_total_edge_count_consistent() {
+        let old = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2)]);
+        let new = make_test_ir(&["A", "B", "D"], &[(0, 1), (1, 2)]);
+        let diff = diff_diagrams(&old, &new);
+
+        let added = diff
+            .edges
+            .iter()
+            .filter(|e| e.status == DiffStatus::Added)
+            .count();
+        let removed = diff
+            .edges
+            .iter()
+            .filter(|e| e.status == DiffStatus::Removed)
+            .count();
+        let changed = diff
+            .edges
+            .iter()
+            .filter(|e| e.status == DiffStatus::Changed)
+            .count();
+        let unchanged = diff
+            .edges
+            .iter()
+            .filter(|e| e.status == DiffStatus::Unchanged)
+            .count();
+        assert_eq!(added + removed + changed + unchanged, diff.edges.len());
+        assert_eq!(added, diff.added_edges);
+        assert_eq!(removed, diff.removed_edges);
+        assert_eq!(changed, diff.changed_edges);
+    }
+
+    // -- Symmetry: diff(A, B) vs diff(B, A) --
+
+    #[test]
+    fn diff_symmetry_added_removed_swap() {
+        let a = make_test_ir(&["X", "Y"], &[(0, 1)]);
+        let b = make_test_ir(&["X", "Z"], &[(0, 1)]);
+        let diff_ab = diff_diagrams(&a, &b);
+        let diff_ba = diff_diagrams(&b, &a);
+        // What's added in A→B should be removed in B→A and vice versa
+        assert_eq!(diff_ab.added_nodes, diff_ba.removed_nodes);
+        assert_eq!(diff_ab.removed_nodes, diff_ba.added_nodes);
+    }
+
+    // -- render_diff with area height barely enough for legend --
+
+    #[test]
+    fn render_diff_minimal_height_with_legend() {
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let new = make_test_ir(&["A"], &[]);
+        let diff = diff_diagrams(&old, &new);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        // Height=6: barely enough for diagram (4) + legend (2)
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 6,
+        };
+        let mut buf = make_test_buffer(40, 6);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+    }
 }
