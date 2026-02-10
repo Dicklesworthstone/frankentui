@@ -1199,6 +1199,7 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut observed = Vec::new();
+        let mut last_error: Option<WsError> = None;
         while Instant::now() < deadline {
             match client.read() {
                 Ok(Message::Binary(bytes)) => {
@@ -1216,21 +1217,30 @@ mod tests {
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                     ) => {}
-                Err(error) => panic!("websocket read failed: {error}"),
+                Err(error) => {
+                    last_error = Some(error);
+                    break;
+                }
             }
         }
 
-        assert!(
-            observed
-                .windows(b"hello-through-bridge".len())
-                .any(|window| window == b"hello-through-bridge"),
-            "expected PTY echo in websocket output"
-        );
+        let saw_echo = observed
+            .windows(b"hello-through-bridge".len())
+            .any(|window| window == b"hello-through-bridge");
 
-        client
-            .send(Message::Text(r#"{"type":"close"}"#.to_string().into()))
-            .expect("send close control");
+        if let Err(err) = client.send(Message::Text(r#"{"type":"close"}"#.to_string().into())) {
+            // Preserve the first meaningful error for assertion diagnostics.
+            if last_error.is_none() {
+                last_error = Some(err);
+            }
+        }
         let result = handle.join().expect("bridge thread join");
         result.expect("bridge result");
+
+        assert!(
+            saw_echo,
+            "expected PTY echo in websocket output; last_error={last_error:?}; observed_len={}",
+            observed.len()
+        );
     }
 }
