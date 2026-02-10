@@ -1193,4 +1193,400 @@ mod tests {
         let _ = parse_dot(input);
         // Just verifying no panic — result may or may not parse correctly
     }
+
+    // ── Graph direction and edge arrow tests ────────────────────────────
+
+    #[test]
+    fn digraph_direction_is_tb() {
+        let result = parse_dot("digraph { A -> B; }").unwrap();
+        assert_eq!(result.ir.direction, GraphDirection::TB);
+    }
+
+    #[test]
+    fn graph_direction_is_lr() {
+        let result = parse_dot("graph { A -- B; }").unwrap();
+        assert_eq!(result.ir.direction, GraphDirection::LR);
+    }
+
+    #[test]
+    fn digraph_edge_arrow_is_directed() {
+        let result = parse_dot("digraph { A -> B; }").unwrap();
+        assert_eq!(result.ir.edges[0].arrow, "-->");
+    }
+
+    #[test]
+    fn graph_edge_arrow_is_undirected() {
+        let result = parse_dot("graph { A -- B; }").unwrap();
+        assert_eq!(result.ir.edges[0].arrow, "---");
+    }
+
+    // ── DotParseError trait tests ───────────────────────────────────────
+
+    #[test]
+    fn dot_parse_error_is_std_error() {
+        let err = DotParseError {
+            message: "test".to_string(),
+            line: 1,
+            col: 1,
+        };
+        // Verify it implements std::error::Error
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn dot_parse_error_clone() {
+        let err = DotParseError {
+            message: "original".to_string(),
+            line: 5,
+            col: 10,
+        };
+        let cloned = err.clone();
+        assert_eq!(cloned.message, "original");
+        assert_eq!(cloned.line, 5);
+        assert_eq!(cloned.col, 10);
+    }
+
+    #[test]
+    fn dot_parse_error_debug() {
+        let err = DotParseError {
+            message: "bad".to_string(),
+            line: 2,
+            col: 3,
+        };
+        let debug = format!("{err:?}");
+        assert!(debug.contains("DotParseError"));
+        assert!(debug.contains("bad"));
+    }
+
+    // ── Invalid input error tests ───────────────────────────────────────
+
+    #[test]
+    fn parse_error_no_graph_keyword() {
+        let err = parse_dot("flowchart LR { A -> B; }").unwrap_err();
+        assert!(
+            err.message.contains("expected 'graph' or 'digraph'"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn parse_error_random_text() {
+        assert!(parse_dot("hello world").is_err());
+    }
+
+    #[test]
+    fn parse_error_empty_input() {
+        assert!(parse_dot("").is_err());
+    }
+
+    #[test]
+    fn parse_error_whitespace_only() {
+        assert!(parse_dot("   \n\t  ").is_err());
+    }
+
+    // ── Subgraph edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn subgraph_non_cluster_name() {
+        let input = r#"digraph {
+            subgraph workers {
+                W1; W2;
+            }
+        }"#;
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.clusters.len(), 1);
+        // Name "workers" has no "cluster_" prefix, so title should be "workers"
+        let title = result.ir.clusters[0].title.unwrap();
+        assert_eq!(result.ir.labels[title.0].text, "workers");
+    }
+
+    #[test]
+    fn nested_subgraphs() {
+        let input = r#"digraph {
+            subgraph cluster_outer {
+                subgraph cluster_inner {
+                    A; B;
+                }
+                C;
+            }
+        }"#;
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.clusters.len(), 2);
+        // clusters[0] = outer (created first), clusters[1] = inner
+        // outer gets only C (inner is a separate parse_body)
+        assert_eq!(result.ir.clusters[0].members.len(), 1);
+        // inner gets A, B
+        assert_eq!(result.ir.clusters[1].members.len(), 2);
+    }
+
+    #[test]
+    fn subgraph_with_edges_inside() {
+        let input = r#"digraph {
+            subgraph cluster_0 {
+                A -> B;
+            }
+        }"#;
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.edges.len(), 1);
+        // Both A and B should be cluster members (deduped)
+        assert_eq!(result.ir.clusters[0].members.len(), 2);
+    }
+
+    #[test]
+    fn cluster_member_dedup() {
+        let input = r#"digraph {
+            subgraph cluster_0 {
+                A -> B;
+                A -> C;
+                B -> C;
+            }
+        }"#;
+        let result = parse_dot(input).unwrap();
+        // A, B, C each appear once despite multiple mentions
+        assert_eq!(result.ir.clusters[0].members.len(), 3);
+    }
+
+    // ── Attribute edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn empty_attribute_list() {
+        let input = "digraph { A []; }";
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes.len(), 1);
+        assert_eq!(result.ir.nodes[0].id, "A");
+    }
+
+    #[test]
+    fn edge_without_semicolons() {
+        let input = "digraph {\n  A -> B\n  C -> D\n}";
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes.len(), 4);
+        assert_eq!(result.ir.edges.len(), 2);
+    }
+
+    #[test]
+    fn tab_separated_default_attrs() {
+        let input = "digraph {\n\tnode\t[shape=box]\n\tA -> B\n}";
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.edges.len(), 1);
+    }
+
+    // ── Identifier and string edge cases ────────────────────────────────
+
+    #[test]
+    fn bare_id_with_dots_and_hyphens() {
+        let input = "digraph { foo-bar.baz -> x_y.z; }";
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes[0].id, "foo-bar.baz");
+        assert_eq!(result.ir.nodes[1].id, "x_y.z");
+    }
+
+    #[test]
+    fn empty_quoted_string_as_label() {
+        let input = r#"digraph { A [label=""]; }"#;
+        let result = parse_dot(input).unwrap();
+        let label_id = result.ir.nodes[0].label.unwrap();
+        assert_eq!(result.ir.labels[label_id.0].text, "");
+    }
+
+    #[test]
+    fn unknown_escape_sequence_preserved() {
+        let input = r#"digraph { A [label="hello\xworld"]; }"#;
+        let result = parse_dot(input).unwrap();
+        let label_id = result.ir.nodes[0].label.unwrap();
+        // Unknown escape \x should be kept as \x
+        assert_eq!(result.ir.labels[label_id.0].text, "hello\\xworld");
+    }
+
+    // ── Implicit then explicit node ─────────────────────────────────────
+
+    #[test]
+    fn implicit_node_upgraded_to_explicit() {
+        let input = r#"digraph {
+            A -> B;
+            B [label="Bee" shape=circle];
+        }"#;
+        let result = parse_dot(input).unwrap();
+        // B appears first via edge (implicit), then explicitly with attrs
+        assert_eq!(result.ir.nodes[1].id, "B");
+        assert_eq!(result.ir.nodes[1].shape, NodeShape::Circle);
+        assert!(!result.ir.nodes[1].implicit);
+        let label_id = result.ir.nodes[1].label.unwrap();
+        assert_eq!(result.ir.labels[label_id.0].text, "Bee");
+    }
+
+    #[test]
+    fn explicit_node_before_edge() {
+        let input = r#"digraph {
+            A [label="Alpha" shape=diamond];
+            A -> B;
+        }"#;
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes[0].id, "A");
+        assert_eq!(result.ir.nodes[0].shape, NodeShape::Diamond);
+        assert!(!result.ir.nodes[0].implicit);
+        // Node count should still be 2 (A and B), not 3
+        assert_eq!(result.ir.nodes.len(), 2);
+    }
+
+    // ── looks_like_dot edge cases ───────────────────────────────────────
+
+    #[test]
+    fn looks_like_dot_bare_graph_keyword() {
+        // "graph" alone with nothing after it
+        assert!(!looks_like_dot("graph"));
+    }
+
+    #[test]
+    fn looks_like_dot_graph_carriage_return() {
+        assert!(looks_like_dot("graph\r\n{ }"));
+    }
+
+    #[test]
+    fn looks_like_dot_hash_comment() {
+        assert!(looks_like_dot("# comment\ndigraph { }"));
+    }
+
+    #[test]
+    fn looks_like_dot_multiple_comments() {
+        assert!(looks_like_dot(
+            "// first\n/* second */\n# third\ndigraph G { }"
+        ));
+    }
+
+    #[test]
+    fn looks_like_dot_strict_keyword() {
+        assert!(looks_like_dot("strict graph G { }"));
+    }
+
+    #[test]
+    fn looks_like_dot_mermaid_direction_with_semicolon() {
+        // "graph td;" is Mermaid, not DOT
+        assert!(!looks_like_dot("graph td;"));
+    }
+
+    #[test]
+    fn looks_like_dot_case_insensitive() {
+        assert!(looks_like_dot("DIGRAPH { }"));
+        assert!(looks_like_dot("Digraph { }"));
+        assert!(looks_like_dot("GRAPH { }"));
+    }
+
+    // ── Additional shape mappings ───────────────────────────────────────
+
+    #[test]
+    fn dot_shape_remaining_variants() {
+        assert_eq!(dot_shape_to_node_shape("oval"), NodeShape::Rounded);
+        assert_eq!(dot_shape_to_node_shape("point"), NodeShape::Circle);
+        assert_eq!(dot_shape_to_node_shape("doublecircle"), NodeShape::Circle);
+        assert_eq!(dot_shape_to_node_shape("rect"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("square"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("tab"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("folder"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("box3d"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("component"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("cylinder"), NodeShape::Rect);
+        assert_eq!(dot_shape_to_node_shape("note"), NodeShape::Rect);
+    }
+
+    // ── HTML label edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn html_label_nested_tags() {
+        let input = r#"digraph { A [label=<<table><tr><td>Cell</td></tr></table>>]; }"#;
+        let result = parse_dot(input).unwrap();
+        let label_id = result.ir.nodes[0].label.unwrap();
+        assert_eq!(result.ir.labels[label_id.0].text, "Cell");
+    }
+
+    #[test]
+    fn html_label_empty() {
+        let input = "digraph { A [label=<>]; }";
+        let result = parse_dot(input).unwrap();
+        let label_id = result.ir.nodes[0].label.unwrap();
+        assert_eq!(result.ir.labels[label_id.0].text, "");
+    }
+
+    // ── strip_html_tags additional cases ────────────────────────────────
+
+    #[test]
+    fn strip_html_tags_empty_string() {
+        assert_eq!(strip_html_tags(""), "");
+    }
+
+    #[test]
+    fn strip_html_tags_only_tags() {
+        assert_eq!(strip_html_tags("<br/><hr/>"), "");
+    }
+
+    #[test]
+    fn strip_html_tags_text_between_multiple_tags() {
+        assert_eq!(strip_html_tags("A<b>B</b>C<i>D</i>E"), "ABCDE");
+    }
+
+    // ── skip_leading_comments additional cases ──────────────────────────
+
+    #[test]
+    fn skip_leading_comments_no_comments() {
+        assert_eq!(skip_leading_comments("digraph"), "digraph");
+    }
+
+    #[test]
+    fn skip_leading_comments_hash_no_newline() {
+        assert_eq!(skip_leading_comments("# only comment"), "");
+    }
+
+    #[test]
+    fn skip_leading_comments_mixed() {
+        assert_eq!(
+            skip_leading_comments("// line\n/* block */# hash\ncode"),
+            "code"
+        );
+    }
+
+    // ── Multi-edge chain in undirected graph ────────────────────────────
+
+    #[test]
+    fn graph_edge_chain() {
+        let input = "graph { A -- B -- C -- D; }";
+        let result = parse_dot(input).unwrap();
+        assert_eq!(result.ir.nodes.len(), 4);
+        assert_eq!(result.ir.edges.len(), 3);
+        // All edges should use "---" arrow
+        for edge in &result.ir.edges {
+            assert_eq!(edge.arrow, "---");
+        }
+    }
+
+    // ── Large graph stability ───────────────────────────────────────────
+
+    #[test]
+    fn parse_many_nodes_and_edges() {
+        let mut input = String::from("digraph {\n");
+        for i in 0..50 {
+            input.push_str(&format!("  N{i} -> N{};\n", i + 1));
+        }
+        input.push('}');
+        let result = parse_dot(&input).unwrap();
+        assert_eq!(result.ir.nodes.len(), 51);
+        assert_eq!(result.ir.edges.len(), 50);
+    }
+
+    // ── Diagram type is always Graph ────────────────────────────────────
+
+    #[test]
+    fn diagram_type_is_graph() {
+        let result = parse_dot("digraph { A -> B; }").unwrap();
+        assert_eq!(result.ir.diagram_type, DiagramType::Graph);
+    }
+
+    // ── Warnings and errors vectors ─────────────────────────────────────
+
+    #[test]
+    fn clean_parse_has_no_warnings_or_errors() {
+        let result = parse_dot("digraph { A -> B; }").unwrap();
+        assert!(result.warnings.is_empty());
+        assert!(result.errors.is_empty());
+    }
 }
