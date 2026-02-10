@@ -532,6 +532,301 @@ mod tests {
 
     // ─── Helpers ──────────────────────────────────────────────────
 
+    // ─── Edge-case tests (bd-1i1vn) ────────────────────────────────────
+
+    #[test]
+    fn single_element_tree() {
+        let mut ft = FenwickTree::new(1);
+        assert_eq!(ft.len(), 1);
+        assert!(!ft.is_empty());
+        assert_eq!(ft.total(), 0);
+        ft.update(0, 42);
+        assert_eq!(ft.get(0), 42);
+        assert_eq!(ft.prefix(0), 42);
+        assert_eq!(ft.total(), 42);
+    }
+
+    #[test]
+    fn from_values_empty() {
+        let ft = FenwickTree::from_values(&[]);
+        assert!(ft.is_empty());
+        assert_eq!(ft.len(), 0);
+        assert_eq!(ft.total(), 0);
+    }
+
+    #[test]
+    fn from_values_single() {
+        let ft = FenwickTree::from_values(&[99]);
+        assert_eq!(ft.len(), 1);
+        assert_eq!(ft.get(0), 99);
+        assert_eq!(ft.total(), 99);
+    }
+
+    #[test]
+    fn update_last_element() {
+        let mut ft = FenwickTree::new(5);
+        ft.update(4, 100);
+        assert_eq!(ft.get(4), 100);
+        assert_eq!(ft.total(), 100);
+    }
+
+    #[test]
+    fn update_negative_delta() {
+        let mut ft = FenwickTree::from_values(&[10, 20, 30]);
+        ft.update(1, -5);
+        assert_eq!(ft.get(1), 15);
+        assert_eq!(ft.total(), 55);
+    }
+
+    #[test]
+    fn update_wraps_below_zero() {
+        let mut ft = FenwickTree::from_values(&[5]);
+        ft.update(0, -10);
+        // 5u32.wrapping_add((-10i32) as u32) wraps
+        let expected = 5u32.wrapping_add((-10i32) as u32);
+        assert_eq!(ft.get(0), expected);
+    }
+
+    #[test]
+    fn get_at_zero_single_element() {
+        let ft = FenwickTree::from_values(&[42]);
+        assert_eq!(ft.get(0), 42);
+    }
+
+    #[test]
+    fn get_after_multiple_updates() {
+        let mut ft = FenwickTree::new(3);
+        ft.update(1, 10);
+        ft.update(1, 20);
+        ft.update(1, -5);
+        assert_eq!(ft.get(1), 25);
+    }
+
+    #[test]
+    fn prefix_zero_after_update() {
+        let mut ft = FenwickTree::new(5);
+        ft.update(0, 7);
+        assert_eq!(ft.prefix(0), 7);
+    }
+
+    #[test]
+    fn range_single_element() {
+        let ft = FenwickTree::from_values(&[10, 20, 30]);
+        assert_eq!(ft.range(1, 1), 20);
+    }
+
+    #[test]
+    fn range_full_equals_total() {
+        let ft = FenwickTree::from_values(&[1, 2, 3, 4, 5]);
+        assert_eq!(ft.range(0, 4), ft.total());
+    }
+
+    #[test]
+    fn range_all_zeros() {
+        let ft = FenwickTree::new(5);
+        assert_eq!(ft.range(0, 4), 0);
+        assert_eq!(ft.range(2, 3), 0);
+    }
+
+    #[test]
+    fn batch_update_empty() {
+        let mut ft = FenwickTree::from_values(&[1, 2, 3]);
+        ft.batch_update(&[]);
+        assert_eq!(ft.total(), 6);
+    }
+
+    #[test]
+    fn batch_update_same_index_multiple_times() {
+        let mut ft = FenwickTree::new(3);
+        ft.batch_update(&[(0, 10), (0, 20), (0, -5)]);
+        assert_eq!(ft.get(0), 25);
+        assert_eq!(ft.get(1), 0);
+    }
+
+    #[test]
+    fn rebuild_same_values_idempotent() {
+        let values = vec![5, 10, 15];
+        let mut ft = FenwickTree::from_values(&values);
+        let total_before = ft.total();
+        ft.rebuild(&values);
+        assert_eq!(ft.total(), total_before);
+        for (i, &v) in values.iter().enumerate() {
+            assert_eq!(ft.get(i), v);
+        }
+    }
+
+    #[test]
+    fn rebuild_all_zeros() {
+        let mut ft = FenwickTree::from_values(&[10, 20, 30]);
+        ft.rebuild(&[0, 0, 0]);
+        assert_eq!(ft.total(), 0);
+        assert_eq!(ft.get(0), 0);
+        assert_eq!(ft.get(1), 0);
+        assert_eq!(ft.get(2), 0);
+    }
+
+    #[test]
+    fn find_prefix_empty_tree() {
+        let ft = FenwickTree::new(0);
+        assert_eq!(ft.find_prefix(0), None);
+        assert_eq!(ft.find_prefix(100), None);
+    }
+
+    #[test]
+    fn find_prefix_single_element() {
+        let ft = FenwickTree::from_values(&[10]);
+        assert_eq!(ft.find_prefix(0), None);
+        assert_eq!(ft.find_prefix(10), Some(0));
+        assert_eq!(ft.find_prefix(100), Some(0));
+    }
+
+    #[test]
+    fn find_prefix_target_exceeds_total() {
+        let ft = FenwickTree::from_values(&[1, 2, 3]);
+        // total = 6, target = 1000 → should return last index
+        assert_eq!(ft.find_prefix(1000), Some(2));
+    }
+
+    #[test]
+    fn find_prefix_target_equals_total() {
+        let ft = FenwickTree::from_values(&[5, 5, 5]);
+        // total = 15
+        assert_eq!(ft.find_prefix(15), Some(2));
+    }
+
+    #[test]
+    fn find_prefix_exact_boundaries() {
+        let ft = FenwickTree::from_values(&[10, 10, 10]);
+        // prefix(0) = 10, prefix(1) = 20, prefix(2) = 30
+        assert_eq!(ft.find_prefix(10), Some(0));
+        assert_eq!(ft.find_prefix(20), Some(1));
+        assert_eq!(ft.find_prefix(30), Some(2));
+    }
+
+    #[test]
+    fn resize_to_zero() {
+        let mut ft = FenwickTree::from_values(&[1, 2, 3]);
+        ft.resize(0);
+        assert!(ft.is_empty());
+        assert_eq!(ft.total(), 0);
+    }
+
+    #[test]
+    fn resize_same_size_noop() {
+        let mut ft = FenwickTree::from_values(&[1, 2, 3]);
+        ft.resize(3);
+        assert_eq!(ft.len(), 3);
+        assert_eq!(ft.total(), 6);
+    }
+
+    #[test]
+    fn resize_grow_from_zero() {
+        let mut ft = FenwickTree::new(0);
+        ft.resize(3);
+        assert_eq!(ft.len(), 3);
+        assert_eq!(ft.total(), 0);
+        ft.update(0, 5);
+        assert_eq!(ft.get(0), 5);
+    }
+
+    #[test]
+    fn clone_independence() {
+        let mut ft = FenwickTree::from_values(&[1, 2, 3]);
+        let cloned = ft.clone();
+        ft.update(0, 100);
+        // Clone unaffected
+        assert_eq!(cloned.get(0), 1);
+        assert_eq!(ft.get(0), 101);
+    }
+
+    #[test]
+    fn debug_format_contains_name() {
+        let ft = FenwickTree::new(3);
+        let dbg = format!("{ft:?}");
+        assert!(dbg.contains("FenwickTree"));
+    }
+
+    #[test]
+    fn set_to_zero() {
+        let mut ft = FenwickTree::from_values(&[10, 20, 30]);
+        ft.set(1, 0);
+        assert_eq!(ft.get(1), 0);
+        assert_eq!(ft.total(), 40);
+    }
+
+    #[test]
+    fn set_same_value_is_noop() {
+        let mut ft = FenwickTree::from_values(&[10, 20, 30]);
+        ft.set(1, 20);
+        assert_eq!(ft.get(1), 20);
+        assert_eq!(ft.total(), 60);
+    }
+
+    #[test]
+    fn set_to_max_u32() {
+        let mut ft = FenwickTree::from_values(&[0, 0, 0]);
+        ft.set(0, u32::MAX);
+        assert_eq!(ft.get(0), u32::MAX);
+    }
+
+    #[test]
+    fn total_on_single_element() {
+        let ft = FenwickTree::from_values(&[42]);
+        assert_eq!(ft.total(), 42);
+    }
+
+    #[test]
+    fn from_values_preserves_all() {
+        let values: Vec<u32> = (1..=20).collect();
+        let ft = FenwickTree::from_values(&values);
+        for (i, &v) in values.iter().enumerate() {
+            assert_eq!(ft.get(i), v, "mismatch at index {i}");
+        }
+        assert_eq!(ft.total(), 210); // sum(1..=20)
+    }
+
+    #[test]
+    fn range_first_to_middle() {
+        let ft = FenwickTree::from_values(&[10, 20, 30, 40, 50]);
+        assert_eq!(ft.range(0, 2), 60);
+    }
+
+    #[test]
+    fn range_middle_to_end() {
+        let ft = FenwickTree::from_values(&[10, 20, 30, 40, 50]);
+        assert_eq!(ft.range(3, 4), 90);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn update_out_of_bounds_panics() {
+        let mut ft = FenwickTree::new(3);
+        ft.update(3, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn prefix_out_of_bounds_panics() {
+        let ft = FenwickTree::new(3);
+        ft.prefix(3);
+    }
+
+    #[test]
+    #[should_panic(expected = "left")]
+    fn range_left_greater_than_right_panics() {
+        let ft = FenwickTree::from_values(&[1, 2, 3]);
+        ft.range(2, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "rebuild size mismatch")]
+    fn rebuild_wrong_size_panics() {
+        let mut ft = FenwickTree::new(3);
+        ft.rebuild(&[1, 2]);
+    }
+
+    // ─── End edge-case tests (bd-1i1vn) ──────────────────────────────
+
     #[test]
     fn lowbit_correctness() {
         assert_eq!(lowbit(1), 1);
