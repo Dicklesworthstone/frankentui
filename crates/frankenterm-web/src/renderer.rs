@@ -1343,12 +1343,18 @@ mod gpu {
                     continue;
                 }
                 // Extract the sub-region rows into the scratch buffer.
+                //
+                // WebGPU requires `bytes_per_row` to be aligned to 256 bytes for
+                // `queue.write_texture` copies. Our atlas is `R8Unorm` (1 byte per
+                // pixel), so width-in-pixels == width-in-bytes for each row.
+                let bytes_per_row = (rw.saturating_add(255)) & !255;
                 self.patch_upload_scratch.clear();
-                self.patch_upload_scratch.reserve(rw * rh);
+                self.patch_upload_scratch.resize(bytes_per_row * rh, 0);
                 for row in 0..rh {
                     let src_start = (rect.y as usize + row) * atlas_w + rect.x as usize;
-                    self.patch_upload_scratch
-                        .extend_from_slice(&pixels[src_start..src_start + rw]);
+                    let dst_start = row * bytes_per_row;
+                    self.patch_upload_scratch[dst_start..dst_start + rw]
+                        .copy_from_slice(&pixels[src_start..src_start + rw]);
                 }
 
                 self.queue.write_texture(
@@ -1365,7 +1371,7 @@ mod gpu {
                     &self.patch_upload_scratch,
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(rw as u32),
+                        bytes_per_row: Some(bytes_per_row as u32),
                         rows_per_image: Some(rh as u32),
                     },
                     wgpu::Extent3d {
@@ -1486,10 +1492,18 @@ mod gpu {
 
         /// Encode and submit one render frame.
         pub fn render_frame(&mut self) -> Result<FrameStats, RendererError> {
-            let output = self
-                .surface
-                .get_current_texture()
-                .map_err(|e| RendererError::SurfaceError(e.to_string()))?;
+            let output = match self.surface.get_current_texture() {
+                Ok(output) => output,
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    // These errors are typically recoverable by reconfiguring the surface,
+                    // then retrying once.
+                    self.surface.configure(&self.device, &self.surface_config);
+                    self.surface
+                        .get_current_texture()
+                        .map_err(|e| RendererError::SurfaceError(e.to_string()))?
+                }
+                Err(e) => return Err(RendererError::SurfaceError(e.to_string())),
+            };
 
             let view = output
                 .texture

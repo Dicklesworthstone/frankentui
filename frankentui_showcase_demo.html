@@ -161,7 +161,11 @@ function domKeyToInput(e, phase) {
   return {
     kind: "key",
     phase,
-    code: e.key.length === 1 ? e.key : e.key,
+    // `key` and `code` are both required by `frankenterm-web` wasm bindings.
+    // - key: logical key value (e.g. "a", "Enter")
+    // - code: physical key code (e.g. "KeyA", "Enter")
+    key: e.key,
+    code: e.code,
     mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),
     repeat: e.repeat || false,
   };

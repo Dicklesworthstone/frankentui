@@ -291,16 +291,12 @@ impl FrankenTermWeb {
         canvas: HtmlCanvasElement,
         options: Option<JsValue>,
     ) -> Result<(), JsValue> {
-        let cols = parse_init_u16(&options, "cols").unwrap_or(80);
-        let rows = parse_init_u16(&options, "rows").unwrap_or(24);
-        let cell_width = parse_init_u16(&options, "cellWidth").unwrap_or(8);
-        let cell_height = parse_init_u16(&options, "cellHeight").unwrap_or(16);
-        let dpr = options
-            .as_ref()
-            .and_then(|o| Reflect::get(o, &JsValue::from_str("dpr")).ok())
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0) as f32;
-        let zoom = parse_init_f32(&options, "zoom").unwrap_or(1.0);
+        let cols = parse_init_u16(&options, "cols")?.unwrap_or(80);
+        let rows = parse_init_u16(&options, "rows")?.unwrap_or(24);
+        let cell_width = parse_init_u16(&options, "cellWidth")?.unwrap_or(8);
+        let cell_height = parse_init_u16(&options, "cellHeight")?.unwrap_or(16);
+        let dpr = parse_init_f32(&options, "dpr")?.unwrap_or(1.0);
+        let zoom = parse_init_f32(&options, "zoom")?.unwrap_or(1.0);
 
         let config = RendererConfig {
             cell_width,
@@ -992,7 +988,7 @@ impl FrankenTermWeb {
     /// Request a frame render. Encodes and submits a WebGPU draw pass.
     pub fn render(&mut self) -> Result<(), JsValue> {
         let Some(renderer) = self.renderer.as_mut() else {
-            return Ok(());
+            return Err(JsValue::from_str("renderer not initialized"));
         };
         renderer
             .render_frame()
@@ -1006,6 +1002,9 @@ impl FrankenTermWeb {
         self.renderer = None;
         self.initialized = false;
         self.canvas = None;
+        self.mods = ModifierTracker::default();
+        self.composition = CompositionState::default();
+        self.encoder_features = VtInputEncoderFeatures::default();
         self.encoded_inputs.clear();
         self.encoded_input_bytes.clear();
         self.link_clicks.clear();
@@ -1905,18 +1904,39 @@ fn get_i16(obj: &JsValue, key: &str) -> Result<i16, JsValue> {
     i16::try_from(n_i64).map_err(|_| JsValue::from_str(&format!("field {key} out of range")))
 }
 
-fn parse_init_u16(options: &Option<JsValue>, key: &str) -> Option<u16> {
-    let obj = options.as_ref()?;
-    let v = Reflect::get(obj, &JsValue::from_str(key)).ok()?;
-    let n = v.as_f64()?;
-    u16::try_from(n as i64).ok()
+fn parse_init_u16(options: &Option<JsValue>, key: &str) -> Result<Option<u16>, JsValue> {
+    let Some(obj) = options.as_ref() else {
+        return Ok(None);
+    };
+    let v = Reflect::get(obj, &JsValue::from_str(key))?;
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    let Some(n) = v.as_f64() else {
+        return Err(JsValue::from_str(&format!("field {key} must be a number")));
+    };
+    let n_i64 = number_to_i64_exact(n, key)?;
+    let val = u16::try_from(n_i64)
+        .map_err(|_| JsValue::from_str(&format!("field {key} out of range")))?;
+    Ok(Some(val))
 }
 
-fn parse_init_f32(options: &Option<JsValue>, key: &str) -> Option<f32> {
-    let obj = options.as_ref()?;
-    let v = Reflect::get(obj, &JsValue::from_str(key)).ok()?;
-    let n = v.as_f64()? as f32;
-    if n.is_finite() { Some(n) } else { None }
+fn parse_init_f32(options: &Option<JsValue>, key: &str) -> Result<Option<f32>, JsValue> {
+    let Some(obj) = options.as_ref() else {
+        return Ok(None);
+    };
+    let v = Reflect::get(obj, &JsValue::from_str(key))?;
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    let Some(n) = v.as_f64() else {
+        return Err(JsValue::from_str(&format!("field {key} must be a number")));
+    };
+    let n_f32 = n as f32;
+    if !n_f32.is_finite() {
+        return Err(JsValue::from_str(&format!("field {key} must be finite")));
+    }
+    Ok(Some(n_f32))
 }
 
 fn parse_init_bool(options: &Option<JsValue>, key: &str) -> Option<bool> {
