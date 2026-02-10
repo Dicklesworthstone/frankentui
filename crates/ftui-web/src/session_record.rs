@@ -2232,8 +2232,7 @@ mod tests {
                 ..
             } = parsed_record
             else {
-                assert!(false, "expected Input record for event {i}");
-                continue;
+                unreachable!("expected Input record for event {i}");
             };
 
             assert_eq!(parsed_event, event, "event {i} round-trip failed: {jsonl}");
