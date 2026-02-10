@@ -565,6 +565,12 @@ mod regression_tests {
         let mut pool = GraphemePool::new();
         let area = Rect::new(0, 0, 120, 40);
 
+        // Warmup: prime caches and page tables before timing.
+        {
+            let mut frame = Frame::new(120, 40, &mut pool);
+            mgr.view(&mut frame, area);
+        }
+
         let start = Instant::now();
         for _ in 0..100 {
             let mut frame = Frame::new(120, 40, &mut pool);
