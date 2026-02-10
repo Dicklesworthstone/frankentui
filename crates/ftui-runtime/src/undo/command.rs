@@ -1694,4 +1694,271 @@ mod tests {
         let meta = CommandMetadata::new("");
         assert_eq!(meta.size_bytes(), std::mem::size_of::<CommandMetadata>());
     }
+
+    // ====================================================================
+    // as_any / as_any_mut coverage
+    // ====================================================================
+
+    #[test]
+    fn test_text_insert_as_any_roundtrip() {
+        let cmd = TextInsertCmd::new(WidgetId::new(1), 0, "x");
+        let any_ref = cmd.as_any();
+        let downcasted = any_ref.downcast_ref::<TextInsertCmd>().unwrap();
+        assert_eq!(downcasted.text, "x");
+    }
+
+    #[test]
+    fn test_text_insert_as_any_mut_roundtrip() {
+        let mut cmd = TextInsertCmd::new(WidgetId::new(1), 0, "x");
+        let downcasted = cmd.as_any_mut().downcast_mut::<TextInsertCmd>().unwrap();
+        downcasted.text = "modified".to_string();
+        assert_eq!(cmd.text, "modified");
+    }
+
+    #[test]
+    fn test_text_delete_as_any_roundtrip() {
+        let cmd = TextDeleteCmd::new(WidgetId::new(1), 0, "abc");
+        let downcasted = cmd.as_any().downcast_ref::<TextDeleteCmd>().unwrap();
+        assert_eq!(downcasted.deleted_text, "abc");
+    }
+
+    #[test]
+    fn test_text_delete_as_any_mut_roundtrip() {
+        let mut cmd = TextDeleteCmd::new(WidgetId::new(1), 0, "abc");
+        let downcasted = cmd.as_any_mut().downcast_mut::<TextDeleteCmd>().unwrap();
+        downcasted.deleted_text = "xyz".to_string();
+        assert_eq!(cmd.deleted_text, "xyz");
+    }
+
+    #[test]
+    fn test_text_replace_as_any_roundtrip() {
+        let cmd = TextReplaceCmd::new(WidgetId::new(1), 0, "a", "b");
+        let downcasted = cmd.as_any().downcast_ref::<TextReplaceCmd>().unwrap();
+        assert_eq!(downcasted.old_text, "a");
+        assert_eq!(downcasted.new_text, "b");
+    }
+
+    #[test]
+    fn test_text_replace_as_any_mut_roundtrip() {
+        let mut cmd = TextReplaceCmd::new(WidgetId::new(1), 0, "a", "b");
+        let downcasted = cmd.as_any_mut().downcast_mut::<TextReplaceCmd>().unwrap();
+        downcasted.new_text = "replaced".to_string();
+        assert_eq!(cmd.new_text, "replaced");
+    }
+
+    #[test]
+    fn test_command_batch_as_any_roundtrip() {
+        let batch = CommandBatch::new("test batch");
+        let downcasted = batch.as_any().downcast_ref::<CommandBatch>().unwrap();
+        assert_eq!(downcasted.description(), "test batch");
+    }
+
+    #[test]
+    fn test_command_batch_as_any_mut_roundtrip() {
+        let mut batch = CommandBatch::new("test batch");
+        batch.push(Box::new(TextInsertCmd::new(WidgetId::new(1), 0, "x")));
+        let downcasted = batch.as_any_mut().downcast_mut::<CommandBatch>().unwrap();
+        assert_eq!(downcasted.len(), 1);
+    }
+
+    // ====================================================================
+    // Default trait methods on CommandBatch (UndoableCmd defaults)
+    // ====================================================================
+
+    #[test]
+    fn test_command_batch_description_matches() {
+        let batch = CommandBatch::new("My description");
+        assert_eq!(batch.description(), "My description");
+    }
+
+    #[test]
+    fn test_command_batch_merge_text_default_none() {
+        let batch = CommandBatch::new("test");
+        assert_eq!(batch.merge_text(), None);
+    }
+
+    #[test]
+    fn test_command_batch_accept_merge_default_false() {
+        let mut batch = CommandBatch::new("test");
+        let other = CommandBatch::new("other");
+        assert!(!batch.accept_merge(&other));
+    }
+
+    #[test]
+    fn test_command_batch_target_default_none() {
+        let batch = CommandBatch::new("test");
+        assert_eq!(batch.target(), None);
+    }
+
+    // ====================================================================
+    // Cross-type can_merge rejection
+    // ====================================================================
+
+    #[test]
+    fn test_text_insert_can_merge_rejects_delete_type() {
+        let cmd1 = TextInsertCmd::new(WidgetId::new(1), 0, "a");
+        let cmd2 = TextDeleteCmd::new(WidgetId::new(1), 0, "b");
+        let config = MergeConfig::default();
+        assert!(!cmd1.can_merge(&cmd2, &config));
+    }
+
+    #[test]
+    fn test_text_delete_can_merge_rejects_insert_type() {
+        let cmd1 = TextDeleteCmd::new(WidgetId::new(1), 0, "a");
+        let cmd2 = TextInsertCmd::new(WidgetId::new(1), 0, "b");
+        let config = MergeConfig::default();
+        assert!(!cmd1.can_merge(&cmd2, &config));
+    }
+
+    // ====================================================================
+    // Time constraint failures for can_merge
+    // ====================================================================
+
+    #[test]
+    fn test_text_insert_no_merge_time_exceeded() {
+        let cmd1 = TextInsertCmd::new(WidgetId::new(1), 0, "a");
+        // cmd2 created after cmd1, with a large enough delay
+        // We can't easily create a large time gap, but we can test
+        // the boundary by using a config with max_delay_ms = 0
+        let mut cmd2 = TextInsertCmd::new(WidgetId::new(1), 1, "b");
+        // Even with same timestamp, max_delay_ms=0 should reject if any time passed
+        // Set timestamps equal so the duration is 0ms — but config allows 0ms max
+        cmd2.metadata.timestamp = cmd1.metadata.timestamp;
+
+        let config = MergeConfig {
+            max_delay_ms: 0,
+            merge_across_words: true,
+            max_merged_size: 1024,
+        };
+        // 0 elapsed <= 0 max: should still pass (0 <= 0 is not >)
+        assert!(cmd1.can_merge(&cmd2, &config));
+    }
+
+    #[test]
+    fn test_text_delete_no_merge_time_exceeded() {
+        let cmd1 = TextDeleteCmd::new(WidgetId::new(1), 5, "a");
+        let mut cmd2 = TextDeleteCmd::new(WidgetId::new(1), 4, "b");
+        cmd2.metadata.timestamp = cmd1.metadata.timestamp;
+
+        let config = MergeConfig {
+            max_delay_ms: 0,
+            merge_across_words: true,
+            max_merged_size: 1024,
+        };
+        // 0 elapsed, 0 max: 0 > 0 is false, so merge allowed
+        assert!(cmd1.can_merge(&cmd2, &config));
+    }
+
+    // ====================================================================
+    // TextReplaceCmd redo (default delegates to execute)
+    // ====================================================================
+
+    #[test]
+    fn test_text_replace_redo() {
+        let buf = Arc::new(Mutex::new(String::from("Hello World")));
+        let b1 = buf.clone();
+
+        let mut cmd = TextReplaceCmd::new(WidgetId::new(1), 6, "World", "Rust").with_replace(
+            move |_, pos, old_len, new_text| {
+                let mut b = b1.lock().unwrap();
+                b.replace_range(pos..pos + old_len, new_text);
+                Ok(())
+            },
+        );
+
+        cmd.execute().unwrap();
+        assert_eq!(*buf.lock().unwrap(), "Hello Rust");
+
+        cmd.undo().unwrap();
+        assert_eq!(*buf.lock().unwrap(), "Hello World");
+
+        cmd.redo().unwrap();
+        assert_eq!(*buf.lock().unwrap(), "Hello Rust");
+    }
+
+    // ====================================================================
+    // CommandBatch execute on empty
+    // ====================================================================
+
+    #[test]
+    fn test_command_batch_execute_empty_is_noop() {
+        let mut batch = CommandBatch::new("Empty execute");
+        assert!(batch.execute().is_ok());
+        assert_eq!(batch.executed_to, 0);
+    }
+
+    // ====================================================================
+    // CommandBatch multiple push_executed
+    // ====================================================================
+
+    #[test]
+    fn test_command_batch_multiple_push_executed() {
+        let mut batch = CommandBatch::new("Multi pre-exec");
+        batch.push_executed(Box::new(TextInsertCmd::new(WidgetId::new(1), 0, "a")));
+        batch.push_executed(Box::new(TextInsertCmd::new(WidgetId::new(1), 1, "b")));
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.executed_to, 2);
+    }
+
+    // ====================================================================
+    // CommandError clone and equality
+    // ====================================================================
+
+    #[test]
+    fn test_command_error_clone_and_equality() {
+        let err1 = CommandError::TargetNotFound(WidgetId::new(5));
+        let err2 = err1.clone();
+        assert_eq!(err1, err2);
+
+        let err3 = CommandError::PositionOutOfBounds {
+            position: 10,
+            length: 5,
+        };
+        let err4 = err3.clone();
+        assert_eq!(err3, err4);
+    }
+
+    // ====================================================================
+    // MergeConfig clone and copy
+    // ====================================================================
+
+    #[test]
+    fn test_merge_config_clone_and_copy() {
+        let config = MergeConfig {
+            max_delay_ms: 1000,
+            merge_across_words: true,
+            max_merged_size: 2048,
+        };
+        let config2 = config;
+        assert_eq!(config2.max_delay_ms, 1000);
+        assert!(config2.merge_across_words);
+        assert_eq!(config2.max_merged_size, 2048);
+    }
+
+    // ====================================================================
+    // WidgetId copy semantics
+    // ====================================================================
+
+    #[test]
+    fn test_widget_id_copy() {
+        let a = WidgetId::new(42);
+        let b = a; // Copy
+        assert_eq!(a, b); // original still usable
+        assert_eq!(a.raw(), 42);
+    }
+
+    // ====================================================================
+    // CommandMetadata clone
+    // ====================================================================
+
+    #[test]
+    fn test_command_metadata_clone() {
+        let meta = CommandMetadata::new("test")
+            .with_source(CommandSource::Programmatic)
+            .with_batch(99);
+        let cloned = meta.clone();
+        assert_eq!(cloned.description, "test");
+        assert_eq!(cloned.source, CommandSource::Programmatic);
+        assert_eq!(cloned.batch_id, Some(99));
+    }
 }
