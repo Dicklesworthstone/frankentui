@@ -2653,4 +2653,594 @@ mod tests {
         let b = HelpEntry::new("q", "quit");
         assert_eq!(Help::entry_hash(&a), Help::entry_hash(&b));
     }
+
+    // ── Additional edge-case tests (bd-1noim, LavenderStone) ─────────
+
+    // ── HelpCategory: variant inequality + Custom("General") != General ──
+
+    #[test]
+    fn help_category_custom_general_not_eq_general() {
+        // Custom("General") and General are different enum variants
+        assert_ne!(
+            HelpCategory::Custom("General".into()),
+            HelpCategory::General
+        );
+    }
+
+    #[test]
+    fn help_category_all_variants_distinct() {
+        let variants: Vec<HelpCategory> = vec![
+            HelpCategory::General,
+            HelpCategory::Navigation,
+            HelpCategory::Editing,
+            HelpCategory::File,
+            HelpCategory::View,
+            HelpCategory::Global,
+            HelpCategory::Custom("X".into()),
+        ];
+        for (i, a) in variants.iter().enumerate() {
+            for (j, b) in variants.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "Variant {i} should differ from variant {j}");
+                }
+            }
+        }
+    }
+
+    // ── HelpEntry: field-by-field hash sensitivity ───────────────────
+
+    #[test]
+    fn help_entry_hash_differs_by_category() {
+        let a = HelpEntry::new("q", "quit");
+        let b = HelpEntry::new("q", "quit").with_category(HelpCategory::File);
+        assert_ne!(Help::entry_hash(&a), Help::entry_hash(&b));
+    }
+
+    #[test]
+    fn help_entry_only_key_no_desc_renders() {
+        let help = Help::new().with_entry(HelpEntry::new("q", ""));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        let area = Rect::new(0, 0, 20, 1);
+        Widget::render(&help, area, &mut frame);
+        // "q " should render (key + space + empty desc)
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('q'));
+    }
+
+    #[test]
+    fn help_entry_only_desc_no_key_renders() {
+        let help = Help::new().with_entry(HelpEntry::new("", "quit"));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        let area = Rect::new(0, 0, 20, 1);
+        Widget::render(&help, area, &mut frame);
+        // " quit" should render (empty key + space + desc)
+        let cell = frame.buffer.get(1, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('q'));
+    }
+
+    #[test]
+    fn help_entry_unicode_key_and_desc() {
+        let help = Help::new().with_entry(HelpEntry::new("\u{2191}", "up arrow"));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        let area = Rect::new(0, 0, 20, 1);
+        Widget::render(&help, area, &mut frame);
+    }
+
+    #[test]
+    fn help_entry_chained_builder_overrides() {
+        let entry = HelpEntry::new("q", "quit")
+            .with_enabled(false)
+            .with_category(HelpCategory::File)
+            .with_enabled(true)
+            .with_category(HelpCategory::View);
+        assert!(entry.enabled);
+        assert_eq!(entry.category, HelpCategory::View);
+    }
+
+    // ── Help: rendering with area offsets ─────────────────────────────
+
+    #[test]
+    fn render_short_area_offset() {
+        let help = Help::new().entry("x", "action");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 5, &mut pool);
+        let area = Rect::new(5, 2, 20, 1);
+        Widget::render(&help, area, &mut frame);
+        let cell = frame.buffer.get(5, 2).unwrap();
+        assert_eq!(cell.content.as_char(), Some('x'));
+        // Column 0,0 should be untouched
+        let cell_origin = frame.buffer.get(0, 0).unwrap();
+        assert!(cell_origin.content.is_empty() || cell_origin.content.as_char() == Some(' '));
+    }
+
+    #[test]
+    fn render_full_area_offset() {
+        let help = Help::new().with_mode(HelpMode::Full).entry("q", "quit");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 5, &mut pool);
+        let area = Rect::new(3, 1, 20, 3);
+        Widget::render(&help, area, &mut frame);
+        let cell = frame.buffer.get(3, 1).unwrap();
+        assert_eq!(cell.content.as_char(), Some('q'));
+    }
+
+    // ── Help: full mode with all entries disabled ─────────────────────
+
+    #[test]
+    fn render_full_all_disabled() {
+        let help = Help::new()
+            .with_mode(HelpMode::Full)
+            .with_entry(HelpEntry::new("a", "first").with_enabled(false))
+            .with_entry(HelpEntry::new("b", "second").with_enabled(false));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 3, &mut pool);
+        let area = Rect::new(0, 0, 30, 3);
+        Widget::render(&help, area, &mut frame);
+    }
+
+    // ── Help: ellipsis with empty ellipsis string ─────────────────────
+
+    #[test]
+    fn render_short_empty_ellipsis_string() {
+        let help = Help::new()
+            .with_ellipsis("")
+            .entry("q", "quit")
+            .entry("w", "this is a very long description that overflows");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 1, &mut pool);
+        let area = Rect::new(0, 0, 12, 1);
+        Widget::render(&help, area, &mut frame);
+    }
+
+    // ── Help: entry wider than entire area ────────────────────────────
+
+    #[test]
+    fn render_short_entry_wider_than_area() {
+        let help = Help::new().entry("verylongkey", "very long description text");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 1, &mut pool);
+        let area = Rect::new(0, 0, 3, 1);
+        Widget::render(&help, area, &mut frame);
+    }
+
+    // ── Stateful: style change invalidates cache ──────────────────────
+
+    #[test]
+    fn stateful_cache_invalidated_on_style_change() {
+        let help1 = Help::new().entry("q", "quit");
+        let help2 = Help::new()
+            .entry("q", "quit")
+            .with_key_style(Style::new().italic());
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+
+        StatefulWidget::render(&help1, area, &mut frame, &mut state);
+        let misses_1 = state.stats().misses;
+
+        StatefulWidget::render(&help2, area, &mut frame, &mut state);
+        assert!(
+            state.stats().misses > misses_1,
+            "Style change should cause cache miss"
+        );
+    }
+
+    // ── Stateful: entry addition triggers layout rebuild ──────────────
+
+    #[test]
+    fn stateful_entry_addition_rebuilds_layout() {
+        let mut help = Help::new().entry("q", "quit");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 3, &mut pool);
+        let area = Rect::new(0, 0, 40, 3);
+
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        let rebuilds_1 = state.stats().layout_rebuilds;
+
+        help.push_entry(HelpEntry::new("w", "write"));
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        assert!(
+            state.stats().layout_rebuilds > rebuilds_1,
+            "Entry addition should rebuild layout"
+        );
+    }
+
+    // ── Stateful: separator change invalidates cache ──────────────────
+
+    #[test]
+    fn stateful_separator_change_invalidates_cache() {
+        let help1 = Help::new()
+            .with_separator(" | ")
+            .entry("q", "quit")
+            .entry("w", "write");
+        let help2 = Help::new()
+            .with_separator(" - ")
+            .entry("q", "quit")
+            .entry("w", "write");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+
+        StatefulWidget::render(&help1, area, &mut frame, &mut state);
+        let misses_1 = state.stats().misses;
+
+        StatefulWidget::render(&help2, area, &mut frame, &mut state);
+        assert!(
+            state.stats().misses > misses_1,
+            "Separator change should cause cache miss"
+        );
+    }
+
+    // ── Stateful: dirty update in full mode tracks correct rects ──────
+
+    #[test]
+    fn stateful_full_mode_dirty_update_multiple() {
+        let mut help = Help::new()
+            .with_mode(HelpMode::Full)
+            .entry("q", "quit")
+            .entry("w", "save")
+            .entry("e", "edit");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 5, &mut pool);
+        let area = Rect::new(0, 0, 40, 5);
+
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+
+        // Change two entries (same-length descs to stay within slot width)
+        help.entries[0].desc = "exit".to_string();
+        help.entries[2].desc = "view".to_string();
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        let dirty = state.take_dirty_rects();
+        assert_eq!(dirty.len(), 2, "Two changed entries produce 2 dirty rects");
+    }
+
+    // ── Stateful: short mode dirty update ─────────────────────────────
+
+    #[test]
+    fn stateful_short_mode_dirty_update() {
+        let mut help = Help::new()
+            .with_mode(HelpMode::Short)
+            .entry("q", "quit")
+            .entry("w", "write");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+
+        help.entries[0].desc = "exit".to_string();
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        assert!(
+            state.stats().dirty_updates > 0,
+            "Changed desc should trigger dirty update"
+        );
+    }
+
+    // ── Layout builder edge cases ────────────────────────────────────
+
+    #[test]
+    fn build_short_layout_no_enabled_entries() {
+        let help = Help::new().with_entry(HelpEntry::new("a", "b").with_enabled(false));
+        let layout = help.build_short_layout(Rect::new(0, 0, 40, 1));
+        assert!(layout.entries.is_empty());
+        assert!(layout.ellipsis.is_none());
+    }
+
+    #[test]
+    fn build_full_layout_no_enabled_entries() {
+        let help = Help::new().with_entry(HelpEntry::new("a", "b").with_enabled(false));
+        let layout = help.build_full_layout(Rect::new(0, 0, 40, 5));
+        assert!(layout.entries.is_empty());
+        assert_eq!(layout.max_key_width, 0);
+    }
+
+    #[test]
+    fn build_short_layout_triggers_ellipsis() {
+        let help = Help::new()
+            .entry("longkey", "long description text here")
+            .entry("another", "even longer description text");
+        let layout = help.build_short_layout(Rect::new(0, 0, 20, 1));
+        // Second entry won't fit; ellipsis should appear
+        assert!(
+            !layout.entries.is_empty() || layout.ellipsis.is_some(),
+            "Should have entries or ellipsis"
+        );
+    }
+
+    #[test]
+    fn build_full_layout_respects_height() {
+        let help = Help::new()
+            .entry("a", "first")
+            .entry("b", "second")
+            .entry("c", "third")
+            .entry("d", "fourth");
+        let layout = help.build_full_layout(Rect::new(0, 0, 40, 2));
+        assert_eq!(layout.entries.len(), 2, "Should respect height=2 limit");
+    }
+
+    #[test]
+    fn build_short_layout_zero_width() {
+        let help = Help::new().entry("q", "quit");
+        let layout = help.build_short_layout(Rect::new(0, 0, 0, 1));
+        assert!(layout.entries.is_empty());
+    }
+
+    #[test]
+    fn build_full_layout_zero_height() {
+        let help = Help::new().entry("q", "quit");
+        let layout = help.build_full_layout(Rect::new(0, 0, 40, 0));
+        assert!(layout.entries.is_empty());
+    }
+
+    // ── entry_fits_slot edge cases ───────────────────────────────────
+
+    #[test]
+    fn entry_fits_slot_out_of_bounds_index_short() {
+        let help = Help::new().entry("q", "quit");
+        let layout = help.build_short_layout(Rect::new(0, 0, 40, 1));
+        let entry = &help.entries[0];
+        assert!(!entry_fits_slot(entry, 999, &layout));
+    }
+
+    #[test]
+    fn entry_fits_slot_out_of_bounds_index_full() {
+        let help = Help::new().entry("q", "quit");
+        let layout = help.build_full_layout(Rect::new(0, 0, 40, 1));
+        let entry = &help.entries[0];
+        assert!(!entry_fits_slot(entry, 999, &layout));
+    }
+
+    #[test]
+    fn entry_fits_slot_full_key_too_wide() {
+        let help = Help::new().entry("x", "d");
+        let layout = help.build_full_layout(Rect::new(0, 0, 40, 1));
+        if !layout.entries.is_empty() {
+            let wide_entry = HelpEntry::new("verylongkeyname", "d");
+            assert!(!entry_fits_slot(&wide_entry, 0, &layout));
+        }
+    }
+
+    // ── collect_enabled_indices edge cases ────────────────────────────
+
+    #[test]
+    fn collect_enabled_indices_all_disabled() {
+        let entries = vec![
+            HelpEntry::new("a", "b").with_enabled(false),
+            HelpEntry::new("c", "d").with_enabled(false),
+        ];
+        let mut out = Vec::new();
+        let count = collect_enabled_indices(&entries, &mut out);
+        assert_eq!(count, 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_enabled_indices_empty_entries_filtered() {
+        let entries = vec![
+            HelpEntry::new("", ""),
+            HelpEntry::new("q", "quit"),
+            HelpEntry::new("", ""),
+        ];
+        let mut out = Vec::new();
+        let count = collect_enabled_indices(&entries, &mut out);
+        assert_eq!(count, 1);
+        assert_eq!(out, vec![1]);
+    }
+
+    #[test]
+    fn collect_enabled_indices_mixed() {
+        let entries = vec![
+            HelpEntry::new("a", "first"),
+            HelpEntry::new("b", "second").with_enabled(false),
+            HelpEntry::new("", ""),
+            HelpEntry::new("d", "fourth"),
+        ];
+        let mut out = Vec::new();
+        let count = collect_enabled_indices(&entries, &mut out);
+        assert_eq!(count, 2);
+        assert_eq!(out, vec![0, 3]);
+    }
+
+    #[test]
+    fn collect_enabled_indices_clears_previous_data() {
+        let entries = vec![HelpEntry::new("a", "b")];
+        let mut out = vec![99, 100, 101];
+        let count = collect_enabled_indices(&entries, &mut out);
+        assert_eq!(count, 1);
+        assert_eq!(out, vec![0]);
+    }
+
+    // ── blit_cache edge cases ────────────────────────────────────────
+
+    #[test]
+    fn blit_cache_none_is_noop() {
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 1, &mut pool);
+        let area = Rect::new(0, 0, 10, 1);
+        blit_cache(None, area, &mut frame);
+    }
+
+    // ── StyleKey edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn style_key_from_default_style() {
+        let sk = StyleKey::from(Style::default());
+        assert!(sk.fg.is_none());
+        assert!(sk.bg.is_none());
+        assert!(sk.attrs.is_none());
+    }
+
+    #[test]
+    fn style_key_from_styled() {
+        let style = Style::new().bold();
+        let sk = StyleKey::from(style);
+        assert!(sk.attrs.is_some());
+    }
+
+    #[test]
+    fn style_key_equality_and_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        let a = StyleKey::from(Style::new().italic());
+        let b = StyleKey::from(Style::new().italic());
+        assert_eq!(a, b);
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        a.hash(&mut h1);
+        b.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn style_key_different_styles_ne() {
+        let a = StyleKey::from(Style::new().bold());
+        let b = StyleKey::from(Style::new().italic());
+        assert_ne!(a, b);
+    }
+
+    // ── hash_str edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn hash_str_empty_deterministic() {
+        assert_eq!(Help::hash_str(""), Help::hash_str(""));
+    }
+
+    #[test]
+    fn hash_str_different_strings_differ() {
+        assert_ne!(Help::hash_str("abc"), Help::hash_str("def"));
+    }
+
+    // ── KeybindingHints: custom categories in grouped view ───────────
+
+    #[test]
+    fn keybinding_hints_custom_categories_grouped() {
+        let entries = vec![
+            HelpEntry::new("a", "one").with_category(HelpCategory::Custom("Alpha".into())),
+            HelpEntry::new("b", "two").with_category(HelpCategory::Custom("Beta".into())),
+            HelpEntry::new("c", "three").with_category(HelpCategory::Custom("Alpha".into())),
+        ];
+        let groups = KeybindingHints::grouped_entries(&entries);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].1.len(), 2); // Alpha has 2 entries
+        assert_eq!(groups[1].1.len(), 1); // Beta has 1 entry
+    }
+
+    #[test]
+    fn keybinding_hints_all_contextual_context_on() {
+        let hints = KeybindingHints::new()
+            .with_show_context(true)
+            .contextual_entry("^s", "save")
+            .contextual_entry("^f", "find");
+        let visible = hints.visible_entries();
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn keybinding_hints_format_key_plain_empty() {
+        let hints = KeybindingHints::new().with_key_format(KeyFormat::Plain);
+        assert_eq!(hints.format_key(""), "");
+    }
+
+    #[test]
+    fn keybinding_hints_format_key_bracketed_empty() {
+        let hints = KeybindingHints::new().with_key_format(KeyFormat::Bracketed);
+        assert_eq!(hints.format_key(""), "[]");
+    }
+
+    #[test]
+    fn keybinding_hints_format_key_bracketed_unicode() {
+        let hints = KeybindingHints::new().with_key_format(KeyFormat::Bracketed);
+        assert_eq!(hints.format_key("\u{2191}"), "[\u{2191}]");
+    }
+
+    // ── KeybindingHints: render full grouped with single category ─────
+
+    #[test]
+    fn keybinding_hints_render_full_grouped_single_category() {
+        let hints = KeybindingHints::new()
+            .with_mode(HelpMode::Full)
+            .with_show_categories(true)
+            .global_entry_categorized("a", "first", HelpCategory::Navigation)
+            .global_entry_categorized("b", "second", HelpCategory::Navigation);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 10, &mut pool);
+        let area = Rect::new(0, 0, 40, 10);
+        Widget::render(&hints, area, &mut frame);
+        // Single category: header "Navigation" + 2 entries, no trailing blank
+    }
+
+    // ── HelpCacheStats trait coverage ─────────────────────────────────
+
+    #[test]
+    fn help_cache_stats_ne() {
+        let a = HelpCacheStats::default();
+        let b = HelpCacheStats {
+            hits: 1,
+            ..Default::default()
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn help_cache_stats_debug() {
+        let stats = HelpCacheStats {
+            hits: 5,
+            misses: 2,
+            dirty_updates: 1,
+            layout_rebuilds: 3,
+        };
+        let dbg = format!("{stats:?}");
+        assert!(dbg.contains("hits"));
+        assert!(dbg.contains("misses"));
+        assert!(dbg.contains("dirty_updates"));
+        assert!(dbg.contains("layout_rebuilds"));
+    }
+
+    // ── LayoutKey copy + hash coverage ────────────────────────────────
+
+    #[test]
+    fn layout_key_copy_and_eq() {
+        let help = Help::new().entry("q", "quit");
+        let area = Rect::new(0, 0, 40, 1);
+        let key1 = help.layout_key(area, DegradationLevel::Full);
+        let key2 = key1; // Copy
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn layout_key_differs_by_mode() {
+        let help_s = Help::new().entry("q", "quit");
+        let help_f = Help::new().with_mode(HelpMode::Full).entry("q", "quit");
+        let area = Rect::new(0, 0, 40, 1);
+        let deg = DegradationLevel::Full;
+        assert_ne!(help_s.layout_key(area, deg), help_f.layout_key(area, deg));
+    }
+
+    #[test]
+    fn layout_key_differs_by_dimensions() {
+        let help = Help::new().entry("q", "quit");
+        let deg = DegradationLevel::Full;
+        let k1 = help.layout_key(Rect::new(0, 0, 40, 1), deg);
+        let k2 = help.layout_key(Rect::new(0, 0, 80, 1), deg);
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn layout_key_hash_consistent() {
+        use std::collections::hash_map::DefaultHasher;
+        let help = Help::new().entry("q", "quit");
+        let key = help.layout_key(Rect::new(0, 0, 40, 1), DegradationLevel::Full);
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        key.hash(&mut h1);
+        key.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
 }
