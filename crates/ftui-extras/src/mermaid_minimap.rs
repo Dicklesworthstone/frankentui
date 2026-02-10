@@ -212,7 +212,7 @@ impl Minimap {
         let bg_cell = Cell::from_char(' ').with_bg(self.config.bg_color);
         for y in minimap_rect.y..minimap_rect.y + minimap_rect.height {
             for x in minimap_rect.x..minimap_rect.x + minimap_rect.width {
-                buf.set(x, y, bg_cell);
+                buf.set_fast(x, y, bg_cell);
             }
         }
 
@@ -252,21 +252,21 @@ impl Minimap {
         let bc = self.config.border_color;
 
         // Corners.
-        buf.set(x1, y1, Cell::from_char('\u{250C}').with_fg(bc));
-        buf.set(x2, y1, Cell::from_char('\u{2510}').with_fg(bc));
-        buf.set(x1, y2, Cell::from_char('\u{2514}').with_fg(bc));
-        buf.set(x2, y2, Cell::from_char('\u{2518}').with_fg(bc));
+        buf.set_fast(x1, y1, Cell::from_char('\u{250C}').with_fg(bc));
+        buf.set_fast(x2, y1, Cell::from_char('\u{2510}').with_fg(bc));
+        buf.set_fast(x1, y2, Cell::from_char('\u{2514}').with_fg(bc));
+        buf.set_fast(x2, y2, Cell::from_char('\u{2518}').with_fg(bc));
 
         // Horizontal edges.
         for x in (x1 + 1)..x2 {
-            buf.set(x, y1, Cell::from_char('\u{2500}').with_fg(bc));
-            buf.set(x, y2, Cell::from_char('\u{2500}').with_fg(bc));
+            buf.set_fast(x, y1, Cell::from_char('\u{2500}').with_fg(bc));
+            buf.set_fast(x, y2, Cell::from_char('\u{2500}').with_fg(bc));
         }
 
         // Vertical edges.
         for y in (y1 + 1)..y2 {
-            buf.set(x1, y, Cell::from_char('\u{2502}').with_fg(bc));
-            buf.set(x2, y, Cell::from_char('\u{2502}').with_fg(bc));
+            buf.set_fast(x1, y, Cell::from_char('\u{2502}').with_fg(bc));
+            buf.set_fast(x2, y, Cell::from_char('\u{2502}').with_fg(bc));
         }
     }
 
@@ -365,7 +365,7 @@ fn recolor_cell(buf: &mut Buffer, x: u16, y: u16, color: PackedRgba) {
     if let Some(existing) = buf.get(x, y) {
         let mut cell = *existing;
         cell.fg = color;
-        buf.set(x, y, cell);
+        buf.set_fast(x, y, cell);
     }
 }
 

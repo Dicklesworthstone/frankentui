@@ -561,7 +561,7 @@ impl Painter {
                     cell.bg = c;
                 }
 
-                buf.set(
+                buf.set_fast(
                     area.x.saturating_add(cx as u16),
                     area.y.saturating_add(cy as u16),
                     cell,

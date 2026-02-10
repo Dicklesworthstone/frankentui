@@ -1155,7 +1155,7 @@ impl MermaidRenderer {
             y = y.saturating_add(1);
             if y < area.y + area.height {
                 for x in area.x..=max_x {
-                    buf.set(x, y, Cell::from_char(h_line).with_fg(border_fg));
+                    buf.set_fast(x, y, Cell::from_char(h_line).with_fg(border_fg));
                 }
                 axis_line_y = Some(y);
                 y = y.saturating_add(1);
@@ -1436,7 +1436,7 @@ impl MermaidRenderer {
                 let cell = Cell::from_char(' ').with_fg(section_fg);
                 // Draw separator line first, then label on top so text remains visible.
                 for x in area.x..=max_x {
-                    buf.set(x, y, Cell::from_char(h_line).with_fg(border_fg));
+                    buf.set_fast(x, y, Cell::from_char(h_line).with_fg(border_fg));
                 }
                 buf.print_text_clipped(
                     area.x,
@@ -1447,7 +1447,7 @@ impl MermaidRenderer {
                 );
             } else {
                 for x in area.x..=max_x {
-                    buf.set(x, y, Cell::from_char(h_line).with_fg(border_fg));
+                    buf.set_fast(x, y, Cell::from_char(h_line).with_fg(border_fg));
                 }
             }
             y = y.saturating_add(1);
@@ -1507,12 +1507,12 @@ impl MermaidRenderer {
                             MermaidGlyphMode::Ascii => 'X',
                         };
                         let cell = Cell::from_char(ch).with_fg(self.colors.node_border);
-                        buf.set(bx0, y, cell);
+                        buf.set_fast(bx0, y, cell);
                     } else {
                         let bar_char = self.glyphs.border.horizontal;
                         let bar_cell = Cell::from_char(bar_char).with_fg(self.colors.node_border);
                         for x in bx0..=bx1.min(max_x) {
-                            buf.set(x, y, bar_cell);
+                            buf.set_fast(x, y, bar_cell);
                         }
                     }
                 }
@@ -1607,11 +1607,11 @@ impl MermaidRenderer {
 
             // Draw top border
             for x in bx0..bx1 {
-                buf.set(x, by0, Cell::from_char(h_char).with_fg(border_fg));
+                buf.set_fast(x, by0, Cell::from_char(h_char).with_fg(border_fg));
             }
             // Draw bottom border
             for x in bx0..bx1 {
-                buf.set(
+                buf.set_fast(
                     x,
                     by1.saturating_sub(1),
                     Cell::from_char(h_char).with_fg(border_fg),
@@ -1619,23 +1619,23 @@ impl MermaidRenderer {
             }
             // Draw left border
             for y in by0..by1 {
-                buf.set(bx0, y, Cell::from_char(v_char).with_fg(border_fg));
+                buf.set_fast(bx0, y, Cell::from_char(v_char).with_fg(border_fg));
             }
             // Draw right border
             for y in by0..by1 {
                 let rx = if bx1 > 0 { bx1 - 1 } else { bx1 };
-                buf.set(rx, y, Cell::from_char(v_char).with_fg(border_fg));
+                buf.set_fast(rx, y, Cell::from_char(v_char).with_fg(border_fg));
             }
 
             // Draw corners
-            buf.set(bx0, by0, Cell::from_char(tl_corner).with_fg(border_fg));
+            buf.set_fast(bx0, by0, Cell::from_char(tl_corner).with_fg(border_fg));
             if bx1 > 0 {
-                buf.set(bx1 - 1, by0, Cell::from_char(tr_corner).with_fg(border_fg));
+                buf.set_fast(bx1 - 1, by0, Cell::from_char(tr_corner).with_fg(border_fg));
             }
             if by1 > 0 {
-                buf.set(bx0, by1 - 1, Cell::from_char(bl_corner).with_fg(border_fg));
+                buf.set_fast(bx0, by1 - 1, Cell::from_char(bl_corner).with_fg(border_fg));
                 if bx1 > 0 {
-                    buf.set(
+                    buf.set_fast(
                         bx1 - 1,
                         by1 - 1,
                         Cell::from_char(br_corner).with_fg(border_fg),
@@ -1698,7 +1698,7 @@ impl MermaidRenderer {
         let (buf_x0, _) = vp.to_cell(chart_x, chart_y);
         let (buf_x1, _) = vp.to_cell(chart_x + chart_w, chart_y);
         for x in buf_x0..buf_x1 {
-            buf.set(x, buf_mid_y, Cell::from_char(h_line).with_fg(axis_fg));
+            buf.set_fast(x, buf_mid_y, Cell::from_char(h_line).with_fg(axis_fg));
         }
 
         // Draw vertical axis (center of chart area).
@@ -1707,11 +1707,11 @@ impl MermaidRenderer {
         let (_, buf_y0) = vp.to_cell(chart_x, chart_y);
         let (_, buf_y1) = vp.to_cell(chart_x, chart_y + chart_h);
         for y in buf_y0..buf_y1 {
-            buf.set(buf_mid_x, y, Cell::from_char(v_line).with_fg(axis_fg));
+            buf.set_fast(buf_mid_x, y, Cell::from_char(v_line).with_fg(axis_fg));
         }
 
         // Draw center cross.
-        buf.set(
+        buf.set_fast(
             buf_mid_x,
             buf_mid_y,
             Cell::from_char(cross).with_fg(axis_fg),
@@ -1792,7 +1792,7 @@ impl MermaidRenderer {
                 node.rect.y + node.rect.height / 2.0,
             );
             let color = self.colors.node_fills[pi % self.colors.node_fills.len()];
-            buf.set(cx, cy, Cell::from_char(point_char).with_fg(color));
+            buf.set_fast(cx, cy, Cell::from_char(point_char).with_fg(color));
 
             // Point label.
             if let Some(pt) = ir.quadrant_points.get(pi)
@@ -1907,7 +1907,7 @@ impl MermaidRenderer {
                         idx = entries.len() - 1;
                     }
                     let color = PIE_SLICE_COLORS[idx % PIE_SLICE_COLORS.len()];
-                    buf.set(cell_x, cell_y, Cell::from_char(fill_char).with_fg(color));
+                    buf.set_fast(cell_x, cell_y, Cell::from_char(fill_char).with_fg(color));
                 }
             }
         }
@@ -1951,7 +1951,7 @@ impl MermaidRenderer {
                 break;
             }
             let color = PIE_SLICE_COLORS[idx % PIE_SLICE_COLORS.len()];
-            buf.set(legend.x, y, Cell::from_char(mark_char).with_fg(color));
+            buf.set_fast(legend.x, y, Cell::from_char(mark_char).with_fg(color));
             let text = self.pie_entry_label_text(ir, entry, idx, max_label_width);
             buf.print_text_clipped(legend.x.saturating_add(2), y, &text, label_cell, max_x);
             y = y.saturating_add(1);
@@ -2026,7 +2026,7 @@ impl MermaidRenderer {
                 if line_start <= line_end && line_end >= area_x0 {
                     for x in line_start..=line_end {
                         if x >= area_x0 && x <= area_x1 {
-                            buf.set(x as u16, line_y, line_cell.with_char(leader_char));
+                            buf.set_fast(x as u16, line_y, line_cell.with_char(leader_char));
                         }
                     }
                 }
@@ -2036,7 +2036,7 @@ impl MermaidRenderer {
                 if line_start <= line_end && line_start <= area_x1 {
                     for x in line_start..=line_end {
                         if x >= area_x0 && x <= area_x1 {
-                            buf.set(x as u16, line_y, line_cell.with_char(leader_char));
+                            buf.set_fast(x as u16, line_y, line_cell.with_char(leader_char));
                         }
                     }
                 }
@@ -2114,7 +2114,7 @@ impl MermaidRenderer {
                 let (px, py) = waypoints[waypoints.len() - 2];
                 let (tx, ty) = *waypoints.last().unwrap();
                 let arrow_ch = self.arrowhead_char(px, py, tx, ty);
-                buf.set(tx, ty, edge_cell.with_char(arrow_ch));
+                buf.set_fast(tx, ty, edge_cell.with_char(arrow_ch));
             }
 
             let ir_label = if plan.show_edge_labels {
@@ -2214,22 +2214,22 @@ impl MermaidRenderer {
         // Fill interior
         for row in 1..h.saturating_sub(1) {
             for col in 1..w.saturating_sub(1) {
-                buf.set(r.x + col, r.y + row, fc);
+                buf.set_fast(r.x + col, r.y + row, fc);
             }
         }
         // Top/bottom borders
-        buf.set(r.x, r.y, bc.with_char(tl));
-        buf.set(r.x + w - 1, r.y, bc.with_char(tr));
-        buf.set(r.x, r.y + h - 1, bc.with_char(bl));
-        buf.set(r.x + w - 1, r.y + h - 1, bc.with_char(br));
+        buf.set_fast(r.x, r.y, bc.with_char(tl));
+        buf.set_fast(r.x + w - 1, r.y, bc.with_char(tr));
+        buf.set_fast(r.x, r.y + h - 1, bc.with_char(bl));
+        buf.set_fast(r.x + w - 1, r.y + h - 1, bc.with_char(br));
         for col in 1..w.saturating_sub(1) {
-            buf.set(r.x + col, r.y, bc.with_char(horiz));
-            buf.set(r.x + col, r.y + h - 1, bc.with_char(horiz));
+            buf.set_fast(r.x + col, r.y, bc.with_char(horiz));
+            buf.set_fast(r.x + col, r.y + h - 1, bc.with_char(horiz));
         }
         // Side borders
         for row in 1..h.saturating_sub(1) {
-            buf.set(r.x, r.y + row, bc.with_char(vert));
-            buf.set(r.x + w - 1, r.y + row, bc.with_char(vert));
+            buf.set_fast(r.x, r.y + row, bc.with_char(vert));
+            buf.set_fast(r.x + w - 1, r.y + row, bc.with_char(vert));
         }
         (2, 1, 2, 1)
     }
@@ -2253,14 +2253,14 @@ impl MermaidRenderer {
         };
         // Outer double-verticals
         for row in 1..h.saturating_sub(1) {
-            buf.set(r.x, r.y + row, bc.with_char(dbl_vert));
-            buf.set(r.x + w - 1, r.y + row, bc.with_char(dbl_vert));
+            buf.set_fast(r.x, r.y + row, bc.with_char(dbl_vert));
+            buf.set_fast(r.x + w - 1, r.y + row, bc.with_char(dbl_vert));
         }
         // Inner single-verticals (if wide enough)
         if w >= 4 {
             for row in 1..h.saturating_sub(1) {
-                buf.set(r.x + 1, r.y + row, bc.with_char(inner_vert));
-                buf.set(r.x + w - 2, r.y + row, bc.with_char(inner_vert));
+                buf.set_fast(r.x + 1, r.y + row, bc.with_char(inner_vert));
+                buf.set_fast(r.x + w - 2, r.y + row, bc.with_char(inner_vert));
             }
         }
         (2, 1, 2, 1)
@@ -2296,15 +2296,15 @@ impl MermaidRenderer {
             let right = left + row_width - 1;
             // Draw left and right diagonal chars
             if row <= half_h {
-                buf.set(r.x + left, r.y + row, bc.with_char(bck));
-                buf.set(r.x + right, r.y + row, bc.with_char(fwd));
+                buf.set_fast(r.x + left, r.y + row, bc.with_char(bck));
+                buf.set_fast(r.x + right, r.y + row, bc.with_char(fwd));
             } else {
-                buf.set(r.x + left, r.y + row, bc.with_char(fwd));
-                buf.set(r.x + right, r.y + row, bc.with_char(bck));
+                buf.set_fast(r.x + left, r.y + row, bc.with_char(fwd));
+                buf.set_fast(r.x + right, r.y + row, bc.with_char(bck));
             }
             // Fill interior
             for col in (left + 1)..right {
-                buf.set(r.x + col, r.y + row, fc);
+                buf.set_fast(r.x + col, r.y + row, fc);
             }
         }
         let inset_x = (w / 4).max(2);
@@ -2330,20 +2330,20 @@ impl MermaidRenderer {
         // Fill interior
         for row in 0..h {
             for col in 0..w {
-                buf.set(r.x + col, r.y + row, fc);
+                buf.set_fast(r.x + col, r.y + row, fc);
             }
         }
         // Top edge: ╱───╲
-        buf.set(r.x + diag - 1, r.y, bc.with_char(fwd));
-        buf.set(r.x + w - diag, r.y, bc.with_char(bck));
+        buf.set_fast(r.x + diag - 1, r.y, bc.with_char(fwd));
+        buf.set_fast(r.x + w - diag, r.y, bc.with_char(bck));
         for col in diag..(w - diag) {
-            buf.set(r.x + col, r.y, bc.with_char(horiz));
+            buf.set_fast(r.x + col, r.y, bc.with_char(horiz));
         }
         // Bottom edge: ╲───╱
-        buf.set(r.x + diag - 1, r.y + h - 1, bc.with_char(bck));
-        buf.set(r.x + w - diag, r.y + h - 1, bc.with_char(fwd));
+        buf.set_fast(r.x + diag - 1, r.y + h - 1, bc.with_char(bck));
+        buf.set_fast(r.x + w - diag, r.y + h - 1, bc.with_char(fwd));
         for col in diag..(w - diag) {
-            buf.set(r.x + col, r.y + h - 1, bc.with_char(horiz));
+            buf.set_fast(r.x + col, r.y + h - 1, bc.with_char(horiz));
         }
         // Left/right angled sides + middle vertical
         for row in 1..h.saturating_sub(1) {
@@ -2357,8 +2357,8 @@ impl MermaidRenderer {
                     diag.saturating_sub(diag * (h - 1 - row) / mid.max(1))
                 }
             };
-            buf.set(r.x + frac, r.y + row, bc.with_char(vert));
-            buf.set(r.x + w - 1 - frac, r.y + row, bc.with_char(vert));
+            buf.set_fast(r.x + frac, r.y + row, bc.with_char(vert));
+            buf.set_fast(r.x + w - 1 - frac, r.y + row, bc.with_char(vert));
         }
         (diag + 1, 1, diag + 1, 1)
     }
@@ -2382,22 +2382,22 @@ impl MermaidRenderer {
         // Fill interior
         for row in 1..h.saturating_sub(1) {
             for col in 1..w.saturating_sub(1) {
-                buf.set(r.x + col, r.y + row, fc);
+                buf.set_fast(r.x + col, r.y + row, fc);
             }
         }
         // Left side
-        buf.set(r.x, r.y, bc.with_char(tl));
-        buf.set(r.x, r.y + h - 1, bc.with_char(bl));
+        buf.set_fast(r.x, r.y, bc.with_char(tl));
+        buf.set_fast(r.x, r.y + h - 1, bc.with_char(bl));
         for row in 1..h.saturating_sub(1) {
-            buf.set(r.x, r.y + row, bc.with_char(vert));
+            buf.set_fast(r.x, r.y + row, bc.with_char(vert));
         }
         // Top and bottom
         for col in 1..w.saturating_sub(point_depth) {
-            buf.set(r.x + col, r.y, bc.with_char(horiz));
-            buf.set(r.x + col, r.y + h - 1, bc.with_char(horiz));
+            buf.set_fast(r.x + col, r.y, bc.with_char(horiz));
+            buf.set_fast(r.x + col, r.y + h - 1, bc.with_char(horiz));
         }
         // Right point
-        buf.set(r.x + w - 1, r.y + mid, bc.with_char(point));
+        buf.set_fast(r.x + w - 1, r.y + mid, bc.with_char(point));
         (1, 1, point_depth + 1, 1)
     }
 
@@ -2435,7 +2435,7 @@ impl MermaidRenderer {
         let top_y = cell_rect.y.saturating_add(1);
         let half_cell = Cell::from_char('\u{2584}').with_fg(fill_color);
         for x in x_start..x_end {
-            buf.set(x, top_y, half_cell);
+            buf.set_fast(x, top_y, half_cell);
         }
         // Bottom interior row: ▀ (upper half block) — fill ends partway up.
         let bot_y = cell_rect
@@ -2443,7 +2443,7 @@ impl MermaidRenderer {
             .saturating_add(cell_rect.height.saturating_sub(2));
         let half_cell = Cell::from_char('\u{2580}').with_fg(fill_color);
         for x in x_start..x_end {
-            buf.set(x, bot_y, half_cell);
+            buf.set_fast(x, bot_y, half_cell);
         }
     }
 
@@ -2525,13 +2525,13 @@ impl MermaidRenderer {
                     node.rect.x + node.rect.width / 2.0,
                     node.rect.y + node.rect.height / 2.0,
                 );
-                buf.set(cx, cy, border_cell.with_char(self.outline_char()));
+                buf.set_fast(cx, cy, border_cell.with_char(self.outline_char()));
                 continue;
             }
 
             if cell_rect.width < 2 || cell_rect.height < 2 {
                 let (cx, cy) = vp.to_cell(node.rect.x, node.rect.y);
-                buf.set(cx, cy, border_cell.with_char('*'));
+                buf.set_fast(cx, cy, border_cell.with_char('*'));
                 continue;
             }
 
@@ -2775,7 +2775,7 @@ impl MermaidRenderer {
             for dx in 0..inner_w {
                 let x = cell_rect.x.saturating_add(1 + dx as u16);
                 let y = cell_rect.y.saturating_add(1 + dy as u16);
-                buf.set(x, y, bg_cell);
+                buf.set_fast(x, y, bg_cell);
             }
         }
 
@@ -2844,7 +2844,7 @@ impl MermaidRenderer {
         let lx = cx.saturating_add(1);
         let bg_cell = Cell::from_char(' ').with_bg(PackedRgba::BLACK);
         for dx in 0..label_width {
-            buf.set(lx.saturating_add(dx as u16), cy, bg_cell);
+            buf.set_fast(lx.saturating_add(dx as u16), cy, bg_cell);
         }
 
         let label_cell = Cell::from_char(' ')
@@ -2926,7 +2926,7 @@ impl MermaidRenderer {
                     let (tx, ty) = waypoints[waypoints.len() - 1];
                     let (px, py) = waypoints[waypoints.len() - 2];
                     let ah = self.arrowhead_char(px, py, tx, ty);
-                    buf.set(tx, ty, cell.with_char(ah));
+                    buf.set_fast(tx, ty, cell.with_char(ah));
                 }
             }
         }
@@ -2946,18 +2946,18 @@ impl MermaidRenderer {
                 // Re-draw border cells with accent color (preserve char, change fg)
                 for col in x0..=x1 {
                     if let Some(c) = buf.get(col, y0) {
-                        buf.set(col, y0, c.with_fg(self.colors.accent));
+                        buf.set_fast(col, y0, c.with_fg(self.colors.accent));
                     }
                     if let Some(c) = buf.get(col, y1) {
-                        buf.set(col, y1, c.with_fg(self.colors.accent));
+                        buf.set_fast(col, y1, c.with_fg(self.colors.accent));
                     }
                 }
                 for row in y0..=y1 {
                     if let Some(c) = buf.get(x0, row) {
-                        buf.set(x0, row, c.with_fg(self.colors.accent));
+                        buf.set_fast(x0, row, c.with_fg(self.colors.accent));
                     }
                     if let Some(c) = buf.get(x1, row) {
-                        buf.set(x1, row, c.with_fg(self.colors.accent));
+                        buf.set_fast(x1, row, c.with_fg(self.colors.accent));
                     }
                 }
                 // Also recolor the label text for the selected node
@@ -2971,7 +2971,7 @@ impl MermaidRenderer {
                             if let Some(c) = buf.get(col, row)
                                 && c.content.as_char().unwrap_or(' ') != ' '
                             {
-                                buf.set(col, row, c.with_fg(self.colors.accent));
+                                buf.set_fast(col, row, c.with_fg(self.colors.accent));
                             }
                         }
                     }
@@ -3003,8 +3003,8 @@ impl MermaidRenderer {
             // Top and bottom borders.
             let horiz = self.glyphs.border.horizontal;
             for x in cell_rect.x..cell_rect.x + cell_rect.width {
-                buf.set(x, cell_rect.y, Cell::from_char(horiz).with_fg(border_color));
-                buf.set(
+                buf.set_fast(x, cell_rect.y, Cell::from_char(horiz).with_fg(border_color));
+                buf.set_fast(
                     x,
                     cell_rect.y + cell_rect.height.saturating_sub(1),
                     Cell::from_char(horiz).with_fg(border_color),
@@ -3013,30 +3013,30 @@ impl MermaidRenderer {
             // Left and right borders.
             let vert = self.glyphs.border.vertical;
             for y in cell_rect.y..cell_rect.y + cell_rect.height {
-                buf.set(cell_rect.x, y, Cell::from_char(vert).with_fg(border_color));
-                buf.set(
+                buf.set_fast(cell_rect.x, y, Cell::from_char(vert).with_fg(border_color));
+                buf.set_fast(
                     cell_rect.x + cell_rect.width.saturating_sub(1),
                     y,
                     Cell::from_char(vert).with_fg(border_color),
                 );
             }
             // Corners.
-            buf.set(
+            buf.set_fast(
                 cell_rect.x,
                 cell_rect.y,
                 Cell::from_char(self.glyphs.border.top_left).with_fg(border_color),
             );
-            buf.set(
+            buf.set_fast(
                 cell_rect.x + cell_rect.width.saturating_sub(1),
                 cell_rect.y,
                 Cell::from_char(self.glyphs.border.top_right).with_fg(border_color),
             );
-            buf.set(
+            buf.set_fast(
                 cell_rect.x,
                 cell_rect.y + cell_rect.height.saturating_sub(1),
                 Cell::from_char(self.glyphs.border.bottom_left).with_fg(border_color),
             );
-            buf.set(
+            buf.set_fast(
                 cell_rect.x + cell_rect.width.saturating_sub(1),
                 cell_rect.y + cell_rect.height.saturating_sub(1),
                 Cell::from_char(self.glyphs.border.bottom_right).with_fg(border_color),
@@ -3061,7 +3061,7 @@ impl MermaidRenderer {
                     for (j, ch) in display.chars().enumerate() {
                         let x = inner_x + j as u16;
                         if x < cell_rect.x + cell_rect.width.saturating_sub(1) {
-                            buf.set(x, y, Cell::from_char(ch).with_fg(text_color));
+                            buf.set_fast(x, y, Cell::from_char(ch).with_fg(text_color));
                         }
                     }
                 }
@@ -3096,8 +3096,8 @@ impl MermaidRenderer {
             // Top and bottom borders.
             let horiz = self.glyphs.border.horizontal;
             for x in cell_rect.x..cell_rect.x + cell_rect.width {
-                buf.set(x, cell_rect.y, Cell::from_char(horiz).with_fg(border_color));
-                buf.set(
+                buf.set_fast(x, cell_rect.y, Cell::from_char(horiz).with_fg(border_color));
+                buf.set_fast(
                     x,
                     cell_rect.y + cell_rect.height.saturating_sub(1),
                     Cell::from_char(horiz).with_fg(border_color),
@@ -3106,30 +3106,30 @@ impl MermaidRenderer {
             // Left and right borders.
             let vert = self.glyphs.border.vertical;
             for y in cell_rect.y..cell_rect.y + cell_rect.height {
-                buf.set(cell_rect.x, y, Cell::from_char(vert).with_fg(border_color));
-                buf.set(
+                buf.set_fast(cell_rect.x, y, Cell::from_char(vert).with_fg(border_color));
+                buf.set_fast(
                     cell_rect.x + cell_rect.width.saturating_sub(1),
                     y,
                     Cell::from_char(vert).with_fg(border_color),
                 );
             }
             // Corners.
-            buf.set(
+            buf.set_fast(
                 cell_rect.x,
                 cell_rect.y,
                 Cell::from_char(self.glyphs.border.top_left).with_fg(border_color),
             );
-            buf.set(
+            buf.set_fast(
                 cell_rect.x + cell_rect.width.saturating_sub(1),
                 cell_rect.y,
                 Cell::from_char(self.glyphs.border.top_right).with_fg(border_color),
             );
-            buf.set(
+            buf.set_fast(
                 cell_rect.x,
                 cell_rect.y + cell_rect.height.saturating_sub(1),
                 Cell::from_char(self.glyphs.border.bottom_left).with_fg(border_color),
             );
-            buf.set(
+            buf.set_fast(
                 cell_rect.x + cell_rect.width.saturating_sub(1),
                 cell_rect.y + cell_rect.height.saturating_sub(1),
                 Cell::from_char(self.glyphs.border.bottom_right).with_fg(border_color),
@@ -3154,7 +3154,7 @@ impl MermaidRenderer {
                     for (j, ch) in display.chars().enumerate() {
                         let x = inner_x + j as u16;
                         if x < cell_rect.x + cell_rect.width.saturating_sub(1) {
-                            buf.set(x, y, Cell::from_char(ch).with_fg(text_color));
+                            buf.set_fast(x, y, Cell::from_char(ch).with_fg(text_color));
                         }
                     }
                 }
@@ -3241,7 +3241,7 @@ impl MermaidRenderer {
                 let (px, py) = waypoints[waypoints.len() - 2];
                 let (tx, ty) = *waypoints.last().unwrap();
                 let arrow_ch = self.arrowhead_char(px, py, tx, ty);
-                buf.set(tx, ty, edge_cell.with_char(arrow_ch));
+                buf.set_fast(tx, ty, edge_cell.with_char(arrow_ch));
             }
 
             let ir_label = ir
@@ -3477,7 +3477,7 @@ impl MermaidRenderer {
             merged |= existing_bits;
         }
         let ch = self.line_char_for_bits(merged);
-        buf.set(x, y, cell.with_char(ch));
+        buf.set_fast(x, y, cell.with_char(ch));
     }
 
     #[allow(dead_code)]
@@ -3663,7 +3663,7 @@ impl MermaidRenderer {
         } else {
             self.glyphs.dot_v
         };
-        buf.set(x, y, cell.with_char(dot));
+        buf.set_fast(x, y, cell.with_char(dot));
     }
 
     /// Draw a single line segment between two cell positions.
@@ -3785,7 +3785,7 @@ impl MermaidRenderer {
             if cell_rect.width < 2 || cell_rect.height < 2 {
                 // Too small for a box; render as a single char.
                 let (cx, cy) = vp.to_cell(node.rect.x, node.rect.y);
-                buf.set(cx, cy, border_cell.with_char('*'));
+                buf.set_fast(cx, cy, border_cell.with_char('*'));
                 continue;
             }
 
@@ -4006,19 +4006,19 @@ impl MermaidRenderer {
                 .saturating_sub(1)
         {
             let horiz = self.glyphs.border.horizontal;
-            buf.set(
+            buf.set_fast(
                 cell_rect.x,
                 sep_y,
                 border_cell.with_char(self.glyphs.tee_right),
             );
             for col in 1..cell_rect.width.saturating_sub(1) {
-                buf.set(
+                buf.set_fast(
                     cell_rect.x.saturating_add(col),
                     sep_y,
                     border_cell.with_char(horiz),
                 );
             }
-            buf.set(
+            buf.set_fast(
                 cell_rect
                     .x
                     .saturating_add(cell_rect.width)

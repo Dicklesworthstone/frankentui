@@ -437,7 +437,7 @@ impl BarChart<'_> {
                                 if x < area.right() {
                                     let mut cell = Cell::from_char('█');
                                     cell.fg = color;
-                                    buf.set(x, y, cell);
+                                    buf.set_fast(x, y, cell);
                                 }
                             }
                         }
@@ -452,7 +452,7 @@ impl BarChart<'_> {
                                     if x < area.right() {
                                         let mut cell = Cell::from_char(ch);
                                         cell.fg = color;
-                                        buf.set(x, y, cell);
+                                        buf.set_fast(x, y, cell);
                                     }
                                 }
                             }
@@ -483,7 +483,7 @@ impl BarChart<'_> {
                                 if x < area.right() {
                                     let mut cell = Cell::from_char('█');
                                     cell.fg = color;
-                                    buf.set(x, y, cell);
+                                    buf.set_fast(x, y, cell);
                                 }
                             }
                         }
@@ -501,7 +501,7 @@ impl BarChart<'_> {
             {
                 let mut cell = Cell::from_char(ch);
                 style_cell(&mut cell, self.style);
-                buf.set(label_x, label_y, cell);
+                buf.set_fast(label_x, label_y, cell);
             }
         }
     }
@@ -545,7 +545,7 @@ impl BarChart<'_> {
                                 if x < area.right() {
                                     let mut cell = Cell::from_char('█');
                                     cell.fg = color;
-                                    buf.set(x, y, cell);
+                                    buf.set_fast(x, y, cell);
                                 }
                             }
                         }
@@ -578,7 +578,7 @@ impl BarChart<'_> {
                                 if x < area.right() {
                                     let mut cell = Cell::from_char('█');
                                     cell.fg = color;
-                                    buf.set(x, y, cell);
+                                    buf.set_fast(x, y, cell);
                                 }
                             }
                         }
@@ -600,7 +600,7 @@ impl BarChart<'_> {
                 if ly < area.bottom() {
                     let mut cell = Cell::from_char(ch);
                     style_cell(&mut cell, self.style);
-                    buf.set(area.x, ly, cell);
+                    buf.set_fast(area.x, ly, cell);
                 }
             }
         }

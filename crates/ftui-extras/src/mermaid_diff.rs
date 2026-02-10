@@ -409,7 +409,7 @@ pub fn render_diff(
             if let Some(m) = marker {
                 let mx = cell_rect.x + cell_rect.width.saturating_sub(1);
                 let my = cell_rect.y;
-                buf.set(mx, my, Cell::from_char(m).with_fg(color));
+                buf.set_fast(mx, my, Cell::from_char(m).with_fg(color));
             }
         }
     }
@@ -427,7 +427,7 @@ pub fn render_diff(
             for wp in &new_layout.edges[layout_idx].waypoints {
                 let (cx, cy) = vp.to_cell(wp.x, wp.y);
                 if let Some(c) = buf.get(cx, cy) {
-                    buf.set(cx, cy, c.with_fg(color));
+                    buf.set_fast(cx, cy, c.with_fg(color));
                 }
             }
         }
@@ -452,19 +452,19 @@ fn recolor_rect_border(rect: Rect, color: PackedRgba, buf: &mut Buffer) {
     // Top and bottom edges
     for col in x0..=x1 {
         if let Some(c) = buf.get(col, y0) {
-            buf.set(col, y0, c.with_fg(color));
+            buf.set_fast(col, y0, c.with_fg(color));
         }
         if let Some(c) = buf.get(col, y1) {
-            buf.set(col, y1, c.with_fg(color));
+            buf.set_fast(col, y1, c.with_fg(color));
         }
     }
     // Left and right edges
     for row in y0..=y1 {
         if let Some(c) = buf.get(x0, row) {
-            buf.set(x0, row, c.with_fg(color));
+            buf.set_fast(x0, row, c.with_fg(color));
         }
         if let Some(c) = buf.get(x1, row) {
-            buf.set(x1, row, c.with_fg(color));
+            buf.set_fast(x1, row, c.with_fg(color));
         }
     }
 }
@@ -479,7 +479,7 @@ fn dim_rect_interior(rect: Rect, color: PackedRgba, buf: &mut Buffer) {
             if let Some(c) = buf.get(col, row)
                 && c.content.as_char().unwrap_or(' ') != ' '
             {
-                buf.set(col, row, c.with_fg(color));
+                buf.set_fast(col, row, c.with_fg(color));
             }
         }
     }
@@ -536,7 +536,7 @@ fn render_removed_legend(diff: &DiagramDiff, area: Rect, rows: u16, buf: &mut Bu
         if x >= area.x + area.width {
             break;
         }
-        buf.set(x, legend_y, cell.with_char(ch));
+        buf.set_fast(x, legend_y, cell.with_char(ch));
         let cw = display_width(&ch.to_string());
         col += cw as u16;
     }
