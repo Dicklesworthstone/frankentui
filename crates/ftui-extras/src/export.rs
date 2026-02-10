@@ -31,6 +31,7 @@
 //! let text = TextExporter::plain().export(&buffer, &pool);
 //! ```
 
+use std::collections::HashMap;
 use std::fmt::Write;
 
 use ftui_render::buffer::Buffer;
@@ -40,6 +41,13 @@ use ftui_render::grapheme_pool::GraphemePool;
 // ---------------------------------------------------------------------------
 // HTML Exporter
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct HtmlStyleKey {
+    fg: PackedRgba,
+    bg: PackedRgba,
+    attrs: CellAttrs,
+}
 
 /// Configuration for HTML export.
 #[derive(Debug, Clone)]
@@ -72,6 +80,14 @@ impl HtmlExporter {
     /// converted to inline CSS or class attributes on `<span>` elements.
     /// Continuation cells (wide character tails) are skipped.
     pub fn export(&self, buffer: &Buffer, pool: &GraphemePool) -> String {
+        if self.inline_styles {
+            self.export_inline(buffer, pool)
+        } else {
+            self.export_css_classes(buffer, pool)
+        }
+    }
+
+    fn export_inline(&self, buffer: &Buffer, pool: &GraphemePool) -> String {
         let mut out = String::with_capacity(buffer.len() * 20);
 
         write!(
@@ -93,10 +109,11 @@ impl HtmlExporter {
                     continue;
                 }
 
-                let content = cell_content_str(cell.content, pool);
+                let mut content = cell_content_str(cell.content, pool);
                 if content.is_empty() {
-                    out.push(' ');
-                    continue;
+                    // Preserve background/style for "empty" cells by exporting an
+                    // explicit space that can carry styling.
+                    content.push(' ');
                 }
 
                 let has_style = cell.fg != PackedRgba::WHITE
@@ -118,6 +135,94 @@ impl HtmlExporter {
         }
 
         out.push_str("</pre>");
+        out
+    }
+
+    fn export_css_classes(&self, buffer: &Buffer, pool: &GraphemePool) -> String {
+        let mut css_rules = String::with_capacity(512);
+
+        // Base style for the <pre>.
+        write!(
+            css_rules,
+            ".{}{{font-family:{};font-size:{};line-height:1.2;}}",
+            self.class_prefix, self.font_family, self.font_size,
+        )
+        .unwrap();
+
+        let mut style_ids: HashMap<HtmlStyleKey, usize> = HashMap::new();
+        let mut next_style_id = 0usize;
+
+        let mut pre = String::with_capacity(buffer.len() * 20);
+        write!(pre, "<pre class=\"{}\">", self.class_prefix).unwrap();
+
+        for y in 0..buffer.height() {
+            if y > 0 {
+                pre.push('\n');
+            }
+            for x in 0..buffer.width() {
+                let cell = buffer.get(x, y).unwrap();
+
+                // Skip continuation cells (part of a wide character).
+                if cell.is_continuation() {
+                    continue;
+                }
+
+                let mut content = cell_content_str(cell.content, pool);
+                if content.is_empty() {
+                    // Preserve background/style for "empty" cells by exporting an
+                    // explicit space that can carry styling.
+                    content.push(' ');
+                }
+
+                let has_style = cell.fg != PackedRgba::WHITE
+                    || cell.bg != PackedRgba::TRANSPARENT
+                    || cell.attrs != CellAttrs::NONE;
+
+                if has_style {
+                    let key = HtmlStyleKey {
+                        fg: cell.fg,
+                        bg: cell.bg,
+                        attrs: cell.attrs,
+                    };
+
+                    let style_id = if let Some(&id) = style_ids.get(&key) {
+                        id
+                    } else {
+                        let id = next_style_id;
+                        next_style_id += 1;
+                        style_ids.insert(key, id);
+
+                        // Emit the class definition immediately (in first-seen order).
+                        write!(
+                            css_rules,
+                            ".{} .{}-s{}{{",
+                            self.class_prefix, self.class_prefix, id
+                        )
+                        .unwrap();
+                        self.write_inline_style(&mut css_rules, cell.fg, cell.bg, cell.attrs);
+                        css_rules.push('}');
+
+                        id
+                    };
+
+                    write!(pre, "<span class=\"{}-s{}\">", self.class_prefix, style_id).unwrap();
+                }
+
+                html_escape_into(&mut pre, &content);
+
+                if has_style {
+                    pre.push_str("</span>");
+                }
+            }
+        }
+
+        pre.push_str("</pre>");
+
+        let mut out = String::with_capacity(css_rules.len() + pre.len() + 32);
+        out.push_str("<style>");
+        out.push_str(&css_rules);
+        out.push_str("</style>");
+        out.push_str(&pre);
         out
     }
 
@@ -636,6 +741,45 @@ mod tests {
         assert!(html.contains("A"));
         assert!(html.contains("B"));
         assert!(html.contains('\n'));
+    }
+
+    #[test]
+    fn html_class_mode_emits_css_classes() {
+        let mut buf = Buffer::new(2, 1);
+        let pool = GraphemePool::new();
+
+        let cell = Cell::from_char('X')
+            .with_fg(PackedRgba::rgb(255, 0, 0))
+            .with_attrs(CellAttrs::new(StyleFlags::BOLD, 0));
+        buf.set_fast(0, 0, cell);
+        buf.set_fast(1, 0, cell);
+
+        let exporter = HtmlExporter {
+            inline_styles: false,
+            ..HtmlExporter::default()
+        };
+        let html = exporter.export(&buf, &pool);
+
+        assert!(html.contains("<style>"));
+        assert!(html.contains(".ftui{"));
+        assert!(html.contains(".ftui .ftui-s0{"));
+        assert!(html.contains("color:#ff0000"));
+        assert!(html.contains("font-weight:bold"));
+        assert!(html.contains("<span class=\"ftui-s0\">"));
+        assert!(!html.contains("<span style=\""));
+    }
+
+    #[test]
+    fn html_exports_styled_empty_cells_as_spans() {
+        let mut buf = Buffer::new(1, 1);
+        let pool = GraphemePool::new();
+
+        // Background-only: content is empty, but the cell still has a visual background.
+        buf.set_fast(0, 0, Cell::default().with_bg(PackedRgba::rgb(0, 0, 255)));
+
+        let html = HtmlExporter::default().export(&buf, &pool);
+        assert!(html.contains("background:#0000ff"));
+        assert!(html.contains("<span"));
     }
 
     // --- SVG exporter tests ---
