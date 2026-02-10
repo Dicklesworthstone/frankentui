@@ -631,4 +631,451 @@ mod tests {
             );
         }
     }
+
+    // =========================================================================
+    // Quality Tier Ordering (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn minimal_quality_less_distortion_than_reduced() {
+        let theme = Box::leak(Box::new(default_theme()));
+
+        let inner_r = Box::new(GradientFx);
+        let mut warp_reduced = UnderwaterWarpFx::with_params(inner_r, 4.0, 0.3);
+        let ctx_reduced = FxContext {
+            width: 20,
+            height: 15,
+            frame: 5,
+            time_seconds: 5.0 / 60.0,
+            quality: FxQuality::Reduced,
+            theme,
+        };
+
+        let inner_m = Box::new(GradientFx);
+        let mut warp_minimal = UnderwaterWarpFx::with_params(inner_m, 4.0, 0.3);
+        let ctx_minimal = FxContext {
+            quality: FxQuality::Minimal,
+            ..ctx_reduced
+        };
+
+        let mut plain = GradientFx;
+        let mut plain_buf = vec![PackedRgba::rgb(0, 0, 0); 300];
+        plain.render(ctx_reduced, &mut plain_buf);
+
+        let mut buf_reduced = vec![PackedRgba::rgb(0, 0, 0); 300];
+        let mut buf_minimal = vec![PackedRgba::rgb(0, 0, 0); 300];
+        warp_reduced.render(ctx_reduced, &mut buf_reduced);
+        warp_minimal.render(ctx_minimal, &mut buf_minimal);
+
+        let displaced_reduced = buf_reduced
+            .iter()
+            .zip(plain_buf.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        let displaced_minimal = buf_minimal
+            .iter()
+            .zip(plain_buf.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+
+        assert!(
+            displaced_reduced >= displaced_minimal,
+            "Reduced should displace >= Minimal: reduced={displaced_reduced}, minimal={displaced_minimal}"
+        );
+    }
+
+    #[test]
+    fn quality_tier_distortion_ordering() {
+        // Full >= Reduced >= Minimal > Off (0)
+        let theme = Box::leak(Box::new(default_theme()));
+        let base_ctx = FxContext {
+            width: 20,
+            height: 15,
+            frame: 5,
+            time_seconds: 5.0 / 60.0,
+            quality: FxQuality::Full,
+            theme,
+        };
+
+        let mut plain = GradientFx;
+        let mut plain_buf = vec![PackedRgba::rgb(0, 0, 0); 300];
+        plain.render(base_ctx, &mut plain_buf);
+
+        let mut counts = Vec::new();
+        for quality in [
+            FxQuality::Full,
+            FxQuality::Reduced,
+            FxQuality::Minimal,
+            FxQuality::Off,
+        ] {
+            let inner = Box::new(GradientFx);
+            let mut warp = UnderwaterWarpFx::with_params(inner, 4.0, 0.3);
+            let ctx = FxContext {
+                quality,
+                ..base_ctx
+            };
+            let sentinel = PackedRgba::rgb(42, 42, 42);
+            let mut buf = vec![sentinel; 300];
+            warp.render(ctx, &mut buf);
+
+            let displaced = if quality == FxQuality::Off {
+                // Off doesn't render, all sentinels remain
+                0
+            } else {
+                buf.iter()
+                    .zip(plain_buf.iter())
+                    .filter(|(a, b)| a != b)
+                    .count()
+            };
+            counts.push((quality, displaced));
+        }
+
+        // Full >= Reduced >= Minimal >= Off
+        for i in 0..counts.len() - 1 {
+            assert!(
+                counts[i].1 >= counts[i + 1].1,
+                "{:?} ({}) should displace >= {:?} ({})",
+                counts[i].0,
+                counts[i].1,
+                counts[i + 1].0,
+                counts[i + 1].1,
+            );
+        }
+    }
+
+    #[test]
+    fn minimal_quality_produces_output() {
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+        let theme = Box::leak(Box::new(default_theme()));
+        let ctx = FxContext {
+            width: 10,
+            height: 10,
+            frame: 5,
+            time_seconds: 0.1,
+            quality: FxQuality::Minimal,
+            theme,
+        };
+        let sentinel = PackedRgba::rgb(99, 99, 99);
+        let mut buf = vec![sentinel; 100];
+        warp.render(ctx, &mut buf);
+
+        // Output should not be all sentinels (i.e., rendering happened)
+        let changed = buf.iter().filter(|c| **c != sentinel).count();
+        assert!(
+            changed > 0,
+            "Minimal quality should produce output, not leave buffer untouched"
+        );
+    }
+
+    // =========================================================================
+    // High Amplitude Clamping (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn high_amplitude_does_not_panic_or_oob() {
+        // Very large amplitude should still produce valid output (clamped coords)
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::with_params(inner, 100.0, 0.5);
+        let ctx = make_ctx(20, 15, 5);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 300];
+        warp.render(ctx, &mut buf);
+        // Should not panic, and all pixels should be from inner source
+        let mut plain = GradientFx;
+        let mut plain_buf = vec![PackedRgba::rgb(0, 0, 0); 300];
+        plain.render(ctx, &mut plain_buf);
+
+        let inner_set: std::collections::HashSet<PackedRgba> = plain_buf.iter().copied().collect();
+        for (i, px) in buf.iter().enumerate() {
+            assert!(
+                inner_set.contains(px),
+                "high-amp pixel {i} ({px:?}) not from inner"
+            );
+        }
+    }
+
+    #[test]
+    fn very_high_amplitude_clamps_to_edges() {
+        // With extremely high amplitude, most source coords will clamp to edges.
+        // This means many output pixels will be edge pixels.
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::with_params(inner, 1000.0, 0.5);
+        let ctx = make_ctx(10, 10, 3);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 100];
+        warp.render(ctx, &mut buf);
+
+        // The gradient FX produces (0,0,128) at top-left and various values at edges.
+        // With extreme amplitude, many pixels should be clamped to boundary values.
+        // Just verify no panic and all pixels are from the inner set.
+        let mut plain = GradientFx;
+        let mut plain_buf = vec![PackedRgba::rgb(0, 0, 0); 100];
+        plain.render(ctx, &mut plain_buf);
+
+        let inner_set: std::collections::HashSet<PackedRgba> = plain_buf.iter().copied().collect();
+        for px in &buf {
+            assert!(inner_set.contains(px));
+        }
+    }
+
+    // =========================================================================
+    // Edge Dimensions (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn warp_1x1_dimension() {
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+        let ctx = make_ctx(1, 1, 5);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 1];
+        warp.render(ctx, &mut buf);
+        // With 1x1, there's only one pixel and it must come from inner (0,0)
+        let mut plain = GradientFx;
+        let mut plain_buf = vec![PackedRgba::rgb(0, 0, 0); 1];
+        plain.render(ctx, &mut plain_buf);
+        assert_eq!(
+            buf[0], plain_buf[0],
+            "1x1 should produce the only inner pixel"
+        );
+    }
+
+    #[test]
+    fn warp_zero_width_nonzero_height() {
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+        let ctx = make_ctx(0, 10, 5);
+        let mut buf = vec![];
+        warp.render(ctx, &mut buf);
+        // Should not panic
+    }
+
+    #[test]
+    fn warp_nonzero_width_zero_height() {
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+        let ctx = make_ctx(10, 0, 5);
+        let mut buf = vec![];
+        warp.render(ctx, &mut buf);
+        // Should not panic
+    }
+
+    #[test]
+    fn warp_2x2_minimal_grid() {
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+        let ctx = make_ctx(2, 2, 5);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 4];
+        warp.render(ctx, &mut buf);
+        // All pixels must come from inner
+        let mut plain = GradientFx;
+        let mut plain_buf = vec![PackedRgba::rgb(0, 0, 0); 4];
+        plain.render(ctx, &mut plain_buf);
+        let inner_set: std::collections::HashSet<PackedRgba> = plain_buf.iter().copied().collect();
+        for px in &buf {
+            assert!(inner_set.contains(px), "2x2 pixel not from inner");
+        }
+    }
+
+    // =========================================================================
+    // Grow-Only Buffer Verification (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn inner_buf_grow_only_on_shrink() {
+        // Render at large size, then small size. inner_buf should not shrink.
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+
+        let ctx_large = make_ctx(30, 20, 1);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 600];
+        warp.render(ctx_large, &mut buf);
+        let cap_after_large = warp.inner_buf.capacity();
+
+        let ctx_small = make_ctx(10, 5, 2);
+        let mut buf_small = vec![PackedRgba::rgb(0, 0, 0); 50];
+        warp.render(ctx_small, &mut buf_small);
+        let cap_after_small = warp.inner_buf.capacity();
+
+        assert!(
+            cap_after_small >= cap_after_large,
+            "inner_buf should be grow-only: {} < {}",
+            cap_after_small,
+            cap_after_large
+        );
+    }
+
+    #[test]
+    fn no_per_frame_allocation_on_repeated_renders() {
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+        let ctx = make_ctx(20, 15, 0);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 300];
+
+        // First render allocates
+        warp.render(ctx, &mut buf);
+        let cap_inner = warp.inner_buf.capacity();
+        let cap_col = warp.col_dy.capacity();
+
+        // Subsequent renders at same size should not grow
+        for frame in 1..10 {
+            let ctx_n = make_ctx(20, 15, frame);
+            warp.render(ctx_n, &mut buf);
+        }
+
+        assert_eq!(
+            warp.inner_buf.capacity(),
+            cap_inner,
+            "inner_buf grew during repeated renders"
+        );
+        assert_eq!(
+            warp.col_dy.capacity(),
+            cap_col,
+            "col_dy grew during repeated renders"
+        );
+    }
+
+    // =========================================================================
+    // Turbsin Symmetry (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn turbsin_antisymmetry() {
+        // sin(x) = -sin(-x) => turbsin[i] ≈ -turbsin[256-i] for i in 1..256
+        let table = build_turbsin();
+        for i in 1..256 {
+            let pos = table[i];
+            let neg = table[256 - i];
+            assert!(
+                (pos + neg).abs() < 1e-10,
+                "turbsin[{i}] ({pos}) + turbsin[{}] ({neg}) should ≈ 0",
+                256 - i
+            );
+        }
+    }
+
+    #[test]
+    fn turbsin_matches_actual_sin() {
+        // Each entry should match sin(i * 2*pi / 256) to high precision
+        let table = build_turbsin();
+        for i in 0..256 {
+            let expected = (i as f64 * std::f64::consts::TAU / 256.0).sin();
+            assert!(
+                (table[i] - expected).abs() < 1e-14,
+                "turbsin[{i}] = {}, expected {}",
+                table[i],
+                expected
+            );
+        }
+    }
+
+    // =========================================================================
+    // Render Updates Dimensions (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn render_updates_last_width_height() {
+        let inner = Box::new(GradientFx);
+        let mut warp = UnderwaterWarpFx::new(inner);
+        assert_eq!(warp.last_width, 0);
+        assert_eq!(warp.last_height, 0);
+
+        let ctx = make_ctx(25, 18, 1);
+        let mut buf = vec![PackedRgba::rgb(0, 0, 0); 450];
+        warp.render(ctx, &mut buf);
+
+        assert_eq!(warp.last_width, 25);
+        assert_eq!(warp.last_height, 18);
+    }
+
+    // =========================================================================
+    // Determinism with Different Parameters (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn deterministic_with_custom_params() {
+        let inner1 = Box::new(GradientFx);
+        let inner2 = Box::new(GradientFx);
+        let mut w1 = UnderwaterWarpFx::with_params(inner1, 3.5, 0.7);
+        let mut w2 = UnderwaterWarpFx::with_params(inner2, 3.5, 0.7);
+
+        let ctx = make_ctx(15, 10, 7);
+        let mut buf1 = vec![PackedRgba::rgb(0, 0, 0); 150];
+        let mut buf2 = vec![PackedRgba::rgb(0, 0, 0); 150];
+        w1.render(ctx, &mut buf1);
+        w2.render(ctx, &mut buf2);
+        assert_eq!(buf1, buf2, "Custom params should be deterministic");
+    }
+
+    #[test]
+    fn different_amplitude_produces_different_output() {
+        let inner1 = Box::new(GradientFx);
+        let inner2 = Box::new(GradientFx);
+        let mut w_low = UnderwaterWarpFx::with_params(inner1, 1.0, 0.3);
+        let mut w_high = UnderwaterWarpFx::with_params(inner2, 5.0, 0.3);
+
+        let ctx = make_ctx(20, 15, 5);
+        let mut buf_low = vec![PackedRgba::rgb(0, 0, 0); 300];
+        let mut buf_high = vec![PackedRgba::rgb(0, 0, 0); 300];
+        w_low.render(ctx, &mut buf_low);
+        w_high.render(ctx, &mut buf_high);
+
+        assert_ne!(
+            buf_low, buf_high,
+            "Different amplitudes should produce different output"
+        );
+    }
+
+    #[test]
+    fn different_frequency_produces_different_output() {
+        let inner1 = Box::new(GradientFx);
+        let inner2 = Box::new(GradientFx);
+        let mut w_low = UnderwaterWarpFx::with_params(inner1, 2.0, 0.1);
+        let mut w_high = UnderwaterWarpFx::with_params(inner2, 2.0, 0.9);
+
+        let ctx = make_ctx(20, 15, 5);
+        let mut buf_low = vec![PackedRgba::rgb(0, 0, 0); 300];
+        let mut buf_high = vec![PackedRgba::rgb(0, 0, 0); 300];
+        w_low.render(ctx, &mut buf_low);
+        w_high.render(ctx, &mut buf_high);
+
+        assert_ne!(
+            buf_low, buf_high,
+            "Different frequencies should produce different output"
+        );
+    }
+
+    // =========================================================================
+    // Turbsin Lookup Edge Cases (bd-3g6pi)
+    // =========================================================================
+
+    #[test]
+    fn turbsin_lookup_quarter_fractions() {
+        let warp = UnderwaterWarpFx::new(Box::new(GradientFx));
+        // At 0.25 between entries 0 and 1
+        let at_quarter = warp.turbsin_lookup(0.25);
+        let expected = warp.turbsin[0] * 0.75 + warp.turbsin[1] * 0.25;
+        assert!(
+            (at_quarter - expected).abs() < 1e-10,
+            "quarter interpolation: got {at_quarter}, expected {expected}"
+        );
+
+        // At 0.75 between entries 0 and 1
+        let at_three_quarter = warp.turbsin_lookup(0.75);
+        let expected_tq = warp.turbsin[0] * 0.25 + warp.turbsin[1] * 0.75;
+        assert!(
+            (at_three_quarter - expected_tq).abs() < 1e-10,
+            "3/4 interpolation: got {at_three_quarter}, expected {expected_tq}"
+        );
+    }
+
+    #[test]
+    fn turbsin_lookup_large_positive_phase() {
+        let warp = UnderwaterWarpFx::new(Box::new(GradientFx));
+        // 512.0 mod 256 = 0.0, should equal lookup(0)
+        let at_0 = warp.turbsin_lookup(0.0);
+        let at_512 = warp.turbsin_lookup(512.0);
+        assert!(
+            (at_0 - at_512).abs() < 1e-10,
+            "512 should wrap to 0: {at_0} vs {at_512}"
+        );
+    }
 }
