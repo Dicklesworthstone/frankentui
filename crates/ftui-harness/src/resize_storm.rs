@@ -1132,4 +1132,750 @@ mod tests {
             assert!(event.height >= 20 && event.height <= 40);
         }
     }
+
+    // ─── Edge-case tests (bd-38ujl) ─────────────────────────────
+
+    #[test]
+    fn pattern_name_all_variants() {
+        assert_eq!(StormPattern::Burst { count: 1 }.name(), "burst");
+        assert_eq!(
+            StormPattern::Sweep {
+                start_width: 80,
+                start_height: 24,
+                end_width: 160,
+                end_height: 48,
+                steps: 5
+            }
+            .name(),
+            "sweep"
+        );
+        assert_eq!(
+            StormPattern::Oscillate {
+                size_a: (80, 24),
+                size_b: (120, 40),
+                cycles: 1
+            }
+            .name(),
+            "oscillate"
+        );
+        assert_eq!(
+            StormPattern::Pathological { count: 1 }.name(),
+            "pathological"
+        );
+        assert_eq!(StormPattern::Mixed { count: 1 }.name(), "mixed");
+        assert_eq!(StormPattern::Custom { events: Vec::new() }.name(), "custom");
+    }
+
+    #[test]
+    fn pattern_event_count_all_variants() {
+        assert_eq!(StormPattern::Burst { count: 42 }.event_count(), 42);
+        assert_eq!(
+            StormPattern::Sweep {
+                start_width: 80,
+                start_height: 24,
+                end_width: 160,
+                end_height: 48,
+                steps: 10
+            }
+            .event_count(),
+            10
+        );
+        assert_eq!(
+            StormPattern::Oscillate {
+                size_a: (80, 24),
+                size_b: (120, 40),
+                cycles: 5
+            }
+            .event_count(),
+            10 // cycles * 2
+        );
+        assert_eq!(StormPattern::Pathological { count: 7 }.event_count(), 7);
+        assert_eq!(StormPattern::Mixed { count: 20 }.event_count(), 20);
+        assert_eq!(
+            StormPattern::Custom {
+                events: vec![(80, 24, 10), (100, 50, 20)]
+            }
+            .event_count(),
+            2
+        );
+    }
+
+    #[test]
+    fn pattern_default_is_burst_50() {
+        let pattern = StormPattern::default();
+        assert_eq!(pattern, StormPattern::Burst { count: 50 });
+    }
+
+    #[test]
+    fn pattern_clone_and_eq() {
+        let pattern = StormPattern::Oscillate {
+            size_a: (80, 24),
+            size_b: (120, 40),
+            cycles: 3,
+        };
+        let cloned = pattern.clone();
+        assert_eq!(pattern, cloned);
+    }
+
+    #[test]
+    fn pattern_debug_format() {
+        let pattern = StormPattern::Burst { count: 5 };
+        let debug = format!("{pattern:?}");
+        assert!(debug.contains("Burst"));
+        assert!(debug.contains("5"));
+    }
+
+    #[test]
+    fn config_default_values() {
+        let config = StormConfig::default();
+        assert_eq!(config.seed, 0);
+        assert_eq!(config.initial_size, (80, 24));
+        assert_eq!(config.min_delay_ms, 5);
+        assert_eq!(config.max_delay_ms, 50);
+        assert_eq!(config.min_width, 20);
+        assert_eq!(config.max_width, 300);
+        assert_eq!(config.min_height, 5);
+        assert_eq!(config.max_height, 100);
+        assert_eq!(config.case_name, "default");
+        assert!(config.logging_enabled);
+    }
+
+    #[test]
+    fn config_builder_chain() {
+        let config = StormConfig::default()
+            .with_seed(99)
+            .with_initial_size(100, 50)
+            .with_delay_range(10, 100)
+            .with_size_bounds(30, 200, 10, 80)
+            .with_case_name("my_test")
+            .with_logging(false);
+
+        assert_eq!(config.seed, 99);
+        assert_eq!(config.initial_size, (100, 50));
+        assert_eq!(config.min_delay_ms, 10);
+        assert_eq!(config.max_delay_ms, 100);
+        assert_eq!(config.min_width, 30);
+        assert_eq!(config.max_width, 200);
+        assert_eq!(config.min_height, 10);
+        assert_eq!(config.max_height, 80);
+        assert_eq!(config.case_name, "my_test");
+        assert!(!config.logging_enabled);
+    }
+
+    #[test]
+    fn config_debug_format() {
+        let config = StormConfig::default();
+        let debug = format!("{config:?}");
+        assert!(debug.contains("StormConfig"));
+        assert!(debug.contains("seed"));
+    }
+
+    #[test]
+    fn config_clone() {
+        let config = StormConfig::default().with_seed(42);
+        let cloned = config.clone();
+        assert_eq!(cloned.seed, 42);
+    }
+
+    #[test]
+    fn resize_event_fields() {
+        let event = ResizeEvent::new(120, 40, 25, 7);
+        assert_eq!(event.width, 120);
+        assert_eq!(event.height, 40);
+        assert_eq!(event.delay_ms, 25);
+        assert_eq!(event.index, 7);
+    }
+
+    #[test]
+    fn resize_event_clone_eq_hash() {
+        let event = ResizeEvent::new(80, 24, 10, 0);
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
+
+        // Hash equality
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        event.hash(&mut h1);
+        cloned.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn resize_event_debug_format() {
+        let event = ResizeEvent::new(80, 24, 10, 0);
+        let debug = format!("{event:?}");
+        assert!(debug.contains("ResizeEvent"));
+        assert!(debug.contains("80"));
+    }
+
+    #[test]
+    fn resize_event_to_jsonl_format() {
+        let event = ResizeEvent::new(80, 24, 10, 3);
+        let jsonl = event.to_jsonl(500);
+        assert!(jsonl.starts_with('{'));
+        assert!(jsonl.ends_with('}'));
+        assert!(jsonl.contains(r#""event":"storm_resize""#));
+        assert!(jsonl.contains(r#""idx":3"#));
+        assert!(jsonl.contains(r#""width":80"#));
+        assert!(jsonl.contains(r#""height":24"#));
+        assert!(jsonl.contains(r#""delay_ms":10"#));
+        assert!(jsonl.contains(r#""elapsed_ms":500"#));
+    }
+
+    #[test]
+    fn burst_zero_count() {
+        let config = StormConfig::default()
+            .with_seed(1)
+            .with_pattern(StormPattern::Burst { count: 0 });
+        let storm = ResizeStorm::new(config);
+        assert!(storm.events().is_empty());
+    }
+
+    #[test]
+    fn burst_single_event() {
+        let config = StormConfig::default()
+            .with_seed(1)
+            .with_pattern(StormPattern::Burst { count: 1 });
+        let storm = ResizeStorm::new(config);
+        assert_eq!(storm.events().len(), 1);
+        assert_eq!(storm.events()[0].index, 0);
+    }
+
+    #[test]
+    fn sweep_single_step() {
+        let config = StormConfig::default().with_pattern(StormPattern::Sweep {
+            start_width: 80,
+            start_height: 24,
+            end_width: 160,
+            end_height: 48,
+            steps: 1,
+        });
+        let storm = ResizeStorm::new(config);
+        assert_eq!(storm.events().len(), 1);
+        // Single step should use t=1.0 → end values
+        assert_eq!(storm.events()[0].width, 160);
+        assert_eq!(storm.events()[0].height, 48);
+    }
+
+    #[test]
+    fn sweep_zero_steps() {
+        let config = StormConfig::default().with_pattern(StormPattern::Sweep {
+            start_width: 80,
+            start_height: 24,
+            end_width: 160,
+            end_height: 48,
+            steps: 0,
+        });
+        let storm = ResizeStorm::new(config);
+        assert!(storm.events().is_empty());
+    }
+
+    #[test]
+    fn sweep_same_start_end() {
+        let config = StormConfig::default().with_pattern(StormPattern::Sweep {
+            start_width: 80,
+            start_height: 24,
+            end_width: 80,
+            end_height: 24,
+            steps: 5,
+        });
+        let storm = ResizeStorm::new(config);
+        for event in storm.events() {
+            assert_eq!(event.width, 80);
+            assert_eq!(event.height, 24);
+        }
+    }
+
+    #[test]
+    fn oscillate_zero_cycles() {
+        let config = StormConfig::default().with_pattern(StormPattern::Oscillate {
+            size_a: (80, 24),
+            size_b: (120, 40),
+            cycles: 0,
+        });
+        let storm = ResizeStorm::new(config);
+        assert!(storm.events().is_empty());
+    }
+
+    #[test]
+    fn oscillate_single_cycle() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Oscillate {
+                size_a: (80, 24),
+                size_b: (120, 40),
+                cycles: 1,
+            });
+        let storm = ResizeStorm::new(config);
+        assert_eq!(storm.events().len(), 2);
+        assert_eq!(
+            (storm.events()[0].width, storm.events()[0].height),
+            (80, 24)
+        );
+        assert_eq!(
+            (storm.events()[1].width, storm.events()[1].height),
+            (120, 40)
+        );
+    }
+
+    #[test]
+    fn pathological_zero_count() {
+        let config = StormConfig::default()
+            .with_seed(1)
+            .with_pattern(StormPattern::Pathological { count: 0 });
+        let storm = ResizeStorm::new(config);
+        assert!(storm.events().is_empty());
+    }
+
+    #[test]
+    fn pathological_covers_all_8_patterns() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Pathological { count: 8 });
+        let storm = ResizeStorm::new(config);
+        assert_eq!(storm.events().len(), 8);
+
+        // Pattern 0: min_width, min_height, delay=0
+        assert_eq!(storm.events()[0].width, 20);
+        assert_eq!(storm.events()[0].height, 5);
+        assert_eq!(storm.events()[0].delay_ms, 0);
+
+        // Pattern 1: max_width, max_height, delay=0
+        assert_eq!(storm.events()[1].width, 300);
+        assert_eq!(storm.events()[1].height, 100);
+        assert_eq!(storm.events()[1].delay_ms, 0);
+
+        // Pattern 2: extreme minimum 1x1
+        assert_eq!(storm.events()[2].width, 1);
+        assert_eq!(storm.events()[2].height, 1);
+
+        // Pattern 3: large 500x200
+        assert_eq!(storm.events()[3].width, 500);
+        assert_eq!(storm.events()[3].height, 200);
+
+        // Pattern 4: normal 80x24 with long delay
+        assert_eq!(storm.events()[4].width, 80);
+        assert_eq!(storm.events()[4].height, 24);
+        assert_eq!(storm.events()[4].delay_ms, 500);
+    }
+
+    #[test]
+    fn mixed_zero_count() {
+        let config = StormConfig::default()
+            .with_seed(1)
+            .with_pattern(StormPattern::Mixed { count: 0 });
+        let storm = ResizeStorm::new(config);
+        assert!(storm.events().is_empty());
+    }
+
+    #[test]
+    fn custom_empty_events() {
+        let config =
+            StormConfig::default().with_pattern(StormPattern::Custom { events: Vec::new() });
+        let storm = ResizeStorm::new(config);
+        assert!(storm.events().is_empty());
+    }
+
+    #[test]
+    fn custom_preserves_order_and_indices() {
+        let config = StormConfig::default().with_pattern(StormPattern::Custom {
+            events: vec![(80, 24, 10), (100, 50, 20), (60, 15, 5)],
+        });
+        let storm = ResizeStorm::new(config);
+        let events = storm.events();
+        assert_eq!(events[0].index, 0);
+        assert_eq!(events[1].index, 1);
+        assert_eq!(events[2].index, 2);
+        assert_eq!((events[2].width, events[2].height), (60, 15));
+    }
+
+    #[test]
+    fn storm_run_id_is_nonempty() {
+        let storm = ResizeStorm::new(StormConfig::default());
+        assert!(!storm.run_id().is_empty());
+    }
+
+    #[test]
+    fn storm_config_accessor() {
+        let config = StormConfig::default().with_seed(77);
+        let storm = ResizeStorm::new(config);
+        assert_eq!(storm.config().seed, 77);
+    }
+
+    #[test]
+    fn storm_total_duration_zero_delays() {
+        let config = StormConfig::default().with_pattern(StormPattern::Custom {
+            events: vec![(80, 24, 0), (100, 50, 0), (60, 15, 0)],
+        });
+        let storm = ResizeStorm::new(config);
+        assert_eq!(storm.total_duration_ms(), 0);
+    }
+
+    #[test]
+    fn storm_sequence_checksum_deterministic() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Burst { count: 10 });
+        let storm1 = ResizeStorm::new(config.clone());
+        let storm2 = ResizeStorm::new(config);
+        assert_eq!(storm1.sequence_checksum(), storm2.sequence_checksum());
+    }
+
+    #[test]
+    fn storm_sequence_checksum_format() {
+        let storm = ResizeStorm::new(StormConfig::default().with_seed(42));
+        let checksum = storm.sequence_checksum();
+        assert_eq!(checksum.len(), 16, "checksum should be 16 hex chars");
+        assert!(
+            checksum.chars().all(|c| c.is_ascii_hexdigit()),
+            "checksum should be hex"
+        );
+    }
+
+    #[test]
+    fn storm_debug_format() {
+        let storm = ResizeStorm::new(StormConfig::default().with_seed(42));
+        let debug = format!("{storm:?}");
+        assert!(debug.contains("ResizeStorm"));
+    }
+
+    #[test]
+    fn storm_clone() {
+        let storm = ResizeStorm::new(
+            StormConfig::default()
+                .with_seed(42)
+                .with_pattern(StormPattern::Burst { count: 5 }),
+        );
+        let cloned = storm.clone();
+        assert_eq!(storm.events(), cloned.events());
+        assert_eq!(storm.sequence_checksum(), cloned.sequence_checksum());
+    }
+
+    #[test]
+    fn logger_log_capture() {
+        let mut logger = StormLogger::new("test-run");
+        logger.log_capture(3, 2048, "checksum123", true);
+        let jsonl = logger.to_jsonl();
+        assert!(jsonl.contains(r#""event":"storm_capture""#));
+        assert!(jsonl.contains(r#""idx":3"#));
+        assert!(jsonl.contains(r#""bytes_captured":2048"#));
+        assert!(jsonl.contains(r#""checksum":"checksum123""#));
+        assert!(jsonl.contains(r#""flicker_free":true"#));
+    }
+
+    #[test]
+    fn logger_log_capture_flicker_false() {
+        let mut logger = StormLogger::new("test-run");
+        logger.log_capture(0, 512, "abc", false);
+        let jsonl = logger.to_jsonl();
+        assert!(jsonl.contains(r#""flicker_free":false"#));
+    }
+
+    #[test]
+    fn logger_log_error() {
+        let mut logger = StormLogger::new("test-run");
+        logger.log_error("something went wrong");
+        let jsonl = logger.to_jsonl();
+        assert!(jsonl.contains(r#""event":"storm_error""#));
+        assert!(jsonl.contains("something went wrong"));
+    }
+
+    #[test]
+    fn logger_log_error_special_chars() {
+        let mut logger = StormLogger::new("test-run");
+        logger.log_error("error with \"quotes\" and \nnewline");
+        let jsonl = logger.to_jsonl();
+        assert!(jsonl.contains(r#"\"quotes\""#));
+        assert!(jsonl.contains(r#"\n"#));
+    }
+
+    #[test]
+    fn logger_empty() {
+        let logger = StormLogger::new("test-run");
+        let jsonl = logger.to_jsonl();
+        assert!(jsonl.is_empty());
+    }
+
+    #[test]
+    fn logger_line_count() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_case_name("line_test")
+            .with_pattern(StormPattern::Burst { count: 3 });
+        let storm = ResizeStorm::new(config);
+        let mut logger = StormLogger::new(storm.run_id());
+        let caps = TerminalCapabilities::default();
+
+        logger.log_start(&storm, &caps);
+        for event in storm.events() {
+            logger.log_resize(event);
+        }
+        logger.log_complete("pass", 3, 500, "abc");
+
+        let jsonl = logger.to_jsonl();
+        let line_count = jsonl.lines().count();
+        // 1 start + 3 resize + 1 complete = 5
+        assert_eq!(line_count, 5);
+    }
+
+    #[test]
+    fn terminal_capabilities_default() {
+        let caps = TerminalCapabilities::default();
+        assert_eq!(caps.term, "");
+        assert_eq!(caps.colorterm, "");
+        assert!(!caps.no_color);
+        assert!(!caps.in_mux);
+        assert!(caps.mux_name.is_none());
+        assert!(!caps.sync_output);
+    }
+
+    #[test]
+    fn terminal_capabilities_to_json_null_mux() {
+        let caps = TerminalCapabilities {
+            mux_name: None,
+            ..Default::default()
+        };
+        let json = caps.to_json();
+        assert!(json.contains(r#""mux_name":null"#));
+    }
+
+    #[test]
+    fn terminal_capabilities_clone() {
+        let caps = TerminalCapabilities {
+            term: "xterm".to_string(),
+            in_mux: true,
+            mux_name: Some("tmux".to_string()),
+            ..Default::default()
+        };
+        let cloned = caps.clone();
+        assert_eq!(cloned.term, "xterm");
+        assert!(cloned.in_mux);
+        assert_eq!(cloned.mux_name.as_deref(), Some("tmux"));
+    }
+
+    #[test]
+    fn terminal_capabilities_debug() {
+        let caps = TerminalCapabilities::default();
+        let debug = format!("{caps:?}");
+        assert!(debug.contains("TerminalCapabilities"));
+    }
+
+    #[test]
+    fn recorded_storm_record_with_output() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Burst { count: 5 });
+        let storm = ResizeStorm::new(config);
+
+        let recorded = RecordedStorm::record_with_output(&storm, "output_hash".to_string());
+        assert_eq!(
+            recorded.expected_output_checksum.as_deref(),
+            Some("output_hash")
+        );
+    }
+
+    #[test]
+    fn recorded_storm_verify_replay_different_seed_fails() {
+        let config1 = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Burst { count: 10 });
+        let storm1 = ResizeStorm::new(config1);
+        let recorded = RecordedStorm::record(&storm1);
+
+        let config2 = StormConfig::default()
+            .with_seed(99)
+            .with_pattern(StormPattern::Burst { count: 10 });
+        let storm2 = ResizeStorm::new(config2);
+
+        assert!(!recorded.verify_replay(&storm2));
+    }
+
+    #[test]
+    fn recorded_storm_to_json_format() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_case_name("json_test")
+            .with_pattern(StormPattern::Burst { count: 2 });
+        let storm = ResizeStorm::new(config);
+        let recorded = RecordedStorm::record(&storm);
+
+        let json = recorded.to_json();
+        assert!(json.starts_with('{'));
+        assert!(json.ends_with('}'));
+        assert!(json.contains(r#""seed":42"#));
+        assert!(json.contains(r#""pattern":"burst""#));
+        assert!(json.contains(r#""case_name":"json_test""#));
+        assert!(json.contains(r#""sequence_checksum":""#));
+        assert!(json.contains(r#""expected_output_checksum":null"#));
+    }
+
+    #[test]
+    fn recorded_storm_to_json_with_output_checksum() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Burst { count: 1 });
+        let storm = ResizeStorm::new(config);
+        let recorded = RecordedStorm::record_with_output(&storm, "deadbeef".to_string());
+
+        let json = recorded.to_json();
+        assert!(json.contains(r#""expected_output_checksum":"deadbeef""#));
+    }
+
+    #[test]
+    fn recorded_storm_clone_debug() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Burst { count: 3 });
+        let storm = ResizeStorm::new(config);
+        let recorded = RecordedStorm::record(&storm);
+
+        let cloned = recorded.clone();
+        assert_eq!(cloned.sequence_checksum, recorded.sequence_checksum);
+
+        let debug = format!("{recorded:?}");
+        assert!(debug.contains("RecordedStorm"));
+    }
+
+    #[test]
+    fn escape_json_special_chars() {
+        assert_eq!(escape_json(r#"hello "world""#), r#"hello \"world\""#);
+        assert_eq!(escape_json("line1\nline2"), r#"line1\nline2"#);
+        assert_eq!(escape_json("tab\there"), r#"tab\there"#);
+        assert_eq!(escape_json("cr\rhere"), r#"cr\rhere"#);
+        assert_eq!(escape_json(r"back\slash"), r"back\\slash");
+    }
+
+    #[test]
+    fn escape_json_empty() {
+        assert_eq!(escape_json(""), "");
+    }
+
+    #[test]
+    fn escape_json_no_special() {
+        assert_eq!(escape_json("hello world"), "hello world");
+    }
+
+    #[test]
+    fn compute_output_checksum_deterministic() {
+        let data = b"hello world";
+        let c1 = compute_output_checksum(data);
+        let c2 = compute_output_checksum(data);
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn compute_output_checksum_format() {
+        let checksum = compute_output_checksum(b"test");
+        assert_eq!(checksum.len(), 16);
+        assert!(checksum.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn compute_output_checksum_different_data() {
+        let c1 = compute_output_checksum(b"hello");
+        let c2 = compute_output_checksum(b"world");
+        assert_ne!(c1, c2);
+    }
+
+    #[test]
+    fn compute_output_checksum_empty() {
+        let checksum = compute_output_checksum(b"");
+        assert_eq!(checksum.len(), 16);
+    }
+
+    #[test]
+    fn storm_result_debug() {
+        let result = StormResult {
+            passed: true,
+            total_resizes: 10,
+            total_bytes: 5000,
+            duration_ms: 100,
+            flicker_analysis: None,
+            sequence_checksum: "abc".to_string(),
+            output_checksum: "def".to_string(),
+            jsonl: String::new(),
+            errors: Vec::new(),
+        };
+        let debug = format!("{result:?}");
+        assert!(debug.contains("StormResult"));
+        assert!(debug.contains("passed: true"));
+    }
+
+    #[test]
+    fn burst_events_have_sequential_indices() {
+        let config = StormConfig::default()
+            .with_seed(42)
+            .with_pattern(StormPattern::Burst { count: 10 });
+        let storm = ResizeStorm::new(config);
+        for (i, event) in storm.events().iter().enumerate() {
+            assert_eq!(event.index, i, "event at position {i} has wrong index");
+        }
+    }
+
+    #[test]
+    fn sweep_midpoint_interpolation() {
+        let config = StormConfig::default().with_pattern(StormPattern::Sweep {
+            start_width: 80,
+            start_height: 20,
+            end_width: 120,
+            end_height: 40,
+            steps: 3,
+        });
+        let storm = ResizeStorm::new(config);
+        let events = storm.events();
+
+        assert_eq!(events[0].width, 80);
+        assert_eq!(events[0].height, 20);
+        // Midpoint: t=0.5 → 100, 30
+        assert_eq!(events[1].width, 100);
+        assert_eq!(events[1].height, 30);
+        assert_eq!(events[2].width, 120);
+        assert_eq!(events[2].height, 40);
+    }
+
+    #[test]
+    fn sweep_delay_is_average_of_range() {
+        let config = StormConfig::default()
+            .with_delay_range(10, 50)
+            .with_pattern(StormPattern::Sweep {
+                start_width: 80,
+                start_height: 24,
+                end_width: 160,
+                end_height: 48,
+                steps: 3,
+            });
+        let storm = ResizeStorm::new(config);
+        // Sweep uses (min + max) / 2 = (10 + 50) / 2 = 30
+        for event in storm.events() {
+            assert_eq!(event.delay_ms, 30);
+        }
+    }
+
+    #[test]
+    fn mixed_events_have_correct_count() {
+        for count in [4, 12, 40, 100] {
+            let config = StormConfig::default()
+                .with_seed(42)
+                .with_pattern(StormPattern::Mixed { count });
+            let storm = ResizeStorm::new(config);
+            assert_eq!(
+                storm.events().len(),
+                count,
+                "mixed pattern should produce exactly {count} events"
+            );
+        }
+    }
+
+    #[test]
+    fn logger_log_complete_fields() {
+        let mut logger = StormLogger::new("run-123");
+        logger.log_complete("fail", 25, 10000, "xyz789");
+        let jsonl = logger.to_jsonl();
+        assert!(jsonl.contains(r#""event":"storm_complete""#));
+        assert!(jsonl.contains(r#""outcome":"fail""#));
+        assert!(jsonl.contains(r#""total_resizes":25"#));
+        assert!(jsonl.contains(r#""total_bytes":10000"#));
+        assert!(jsonl.contains(r#""checksum":"xyz789""#));
+        assert!(jsonl.contains(r#""duration_ms":"#));
+    }
 }
