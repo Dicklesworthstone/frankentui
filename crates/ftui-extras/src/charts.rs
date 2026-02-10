@@ -239,7 +239,7 @@ impl Widget for Sparkline<'_> {
                 cell.fg = lerp_color(low, high, normalized);
             }
 
-            frame.buffer.set(x, y, cell);
+            frame.buffer.set_fast(x, y, cell);
         }
     }
 }
@@ -812,7 +812,7 @@ impl Widget for LineChart<'_> {
             for y in chart_area.y..chart_area.bottom() {
                 let mut cell = Cell::from_char('│');
                 style_cell(&mut cell, self.style);
-                frame.buffer.set(axis_x, y, cell);
+                frame.buffer.set_fast(axis_x, y, cell);
             }
         }
 
@@ -822,13 +822,13 @@ impl Widget for LineChart<'_> {
             for x in chart_area.x..chart_area.right() {
                 let mut cell = Cell::from_char('─');
                 style_cell(&mut cell, self.style);
-                frame.buffer.set(x, axis_y, cell);
+                frame.buffer.set_fast(x, axis_y, cell);
             }
             // Corner.
             if axis_x >= area.x {
                 let mut cell = Cell::from_char('└');
                 style_cell(&mut cell, self.style);
-                frame.buffer.set(axis_x, axis_y, cell);
+                frame.buffer.set_fast(axis_x, axis_y, cell);
             }
         }
 
@@ -868,7 +868,7 @@ impl Widget for LineChart<'_> {
                     };
                     let mut cell = Cell::new(content);
                     style_cell(&mut cell, self.style);
-                    frame.buffer.set(start_x.saturating_add(col), y, cell);
+                    frame.buffer.set_fast(start_x.saturating_add(col), y, cell);
                     col = col.saturating_add(u16::try_from(g_width).unwrap_or(u16::MAX));
                 }
             }
@@ -908,7 +908,7 @@ impl Widget for LineChart<'_> {
                     };
                     let mut cell = Cell::new(content);
                     style_cell(&mut cell, self.style);
-                    frame.buffer.set(lx, text_y, cell);
+                    frame.buffer.set_fast(lx, text_y, cell);
                     col = col.saturating_add(u16::try_from(g_width).unwrap_or(u16::MAX));
                 }
             }
@@ -932,7 +932,7 @@ impl Widget for LineChart<'_> {
                 }
                 let mut marker = Cell::from_char('■');
                 marker.fg = series.color;
-                frame.buffer.set(legend_x, y, marker);
+                frame.buffer.set_fast(legend_x, y, marker);
 
                 let mut col = 0u16;
                 for grapheme in series.name.graphemes(true) {
@@ -955,7 +955,7 @@ impl Widget for LineChart<'_> {
                     };
                     let mut cell = Cell::new(content);
                     style_cell(&mut cell, self.style);
-                    frame.buffer.set(x, y, cell);
+                    frame.buffer.set_fast(x, y, cell);
                     col = col.saturating_add(u16::try_from(g_width).unwrap_or(u16::MAX));
                 }
             }
