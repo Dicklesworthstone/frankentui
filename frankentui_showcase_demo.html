@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FrankenTUI — Showcase Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; }
+  #container {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+  #terminal-canvas {
+    display: block;
+    width: 100%; height: 100%;
+    image-rendering: pixelated;
+  }
+  #status {
+    position: fixed; bottom: 8px; right: 12px;
+    color: #666; font: 12px/1 monospace;
+    pointer-events: none; z-index: 10;
+  }
+  #error-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.85);
+    color: #f44; font: 16px/1.5 monospace;
+    padding: 32px; overflow: auto; z-index: 20;
+  }
+  #error-overlay.visible { display: block; }
+</style>
+</head>
+<body>
+<div id="container">
+  <canvas id="terminal-canvas" tabindex="0"></canvas>
+</div>
+<div id="status">Loading WASM…</div>
+<div id="error-overlay"></div>
+
+<script type="module">
+// ── Configuration ──────────────────────────────────────────────────────
+const INITIAL_COLS = 80;
+const INITIAL_ROWS = 24;
+const CELL_WIDTH   = 8;
+const CELL_HEIGHT  = 16;
+const LOG_JSONL    = true;   // Emit JSONL evidence to console
+const LOG_PERF     = false;  // Per-frame timing in console
+
+// ── DOM refs ───────────────────────────────────────────────────────────
+const canvas   = document.getElementById("terminal-canvas");
+const status   = document.getElementById("status");
+const errorDiv = document.getElementById("error-overlay");
+
+function showError(msg) {
+  errorDiv.textContent = msg;
+  errorDiv.classList.add("visible");
+  status.textContent = "Error";
+  console.error("[ShowcaseDemo]", msg);
+}
+
+// ── WASM module loading ────────────────────────────────────────────────
+// wasm-pack builds produce an ES module with an `default` init function
+// and the exported classes. Adjust paths to match your wasm-pack output.
+let termMod, runnerMod;
+try {
+  status.textContent = "Loading WASM modules…";
+  [termMod, runnerMod] = await Promise.all([
+    import("./pkg/frankenterm_web.js"),
+    import("./pkg/ftui_showcase_wasm.js"),
+  ]);
+  // Initialize both WASM modules (fetches .wasm files).
+  await Promise.all([
+    termMod.default(),
+    runnerMod.default(),
+  ]);
+} catch (e) {
+  showError(
+    `Failed to load WASM modules.\n\n` +
+    `Expected wasm-pack output at ./pkg/frankenterm_web.js and ./pkg/ftui_showcase_wasm.js\n\n` +
+    `Build with:\n` +
+    `  wasm-pack build crates/frankenterm-web --target web --out-dir ../../pkg\n` +
+    `  wasm-pack build crates/ftui-showcase-wasm --target web --out-dir ../../pkg\n\n` +
+    `Error: ${e.message || e}`
+  );
+  throw e;
+}
+
+// ── Create instances ───────────────────────────────────────────────────
+const { FrankenTermWeb }  = termMod;
+const { ShowcaseRunner }  = runnerMod;
+
+const term   = new FrankenTermWeb();
+const dpr    = window.devicePixelRatio || 1.0;
+
+try {
+  status.textContent = "Initializing WebGPU terminal…";
+  await term.init(canvas, {
+    cols: INITIAL_COLS,
+    rows: INITIAL_ROWS,
+    cellWidth: CELL_WIDTH,
+    cellHeight: CELL_HEIGHT,
+    dpr,
+    focused: true,
+  });
+} catch (e) {
+  showError(`FrankenTermWeb.init() failed: ${e.message || e}\n\nWebGPU may not be supported in this browser.`);
+  throw e;
+}
+
+// Fit to actual container size and get real cols/rows.
+const container = document.getElementById("container");
+const geo = term.fitToContainer(container.clientWidth, container.clientHeight, dpr);
+const cols = geo.cols;
+const rows = geo.rows;
+
+const runner = new ShowcaseRunner(cols, rows);
+runner.init();
+status.textContent = `${cols}×${rows} — running`;
+
+// ── JSONL logger ───────────────────────────────────────────────────────
+function jsonl(obj) {
+  if (LOG_JSONL) console.log(JSON.stringify(obj));
+}
+
+jsonl({ event: "init", cols, rows, dpr, ts: Date.now() });
+
+// ── Resize handling ────────────────────────────────────────────────────
+let currentCols = cols;
+let currentRows = rows;
+
+const resizeObserver = new ResizeObserver(() => {
+  const newDpr = window.devicePixelRatio || 1.0;
+  const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
+  if (geo.cols !== currentCols || geo.rows !== currentRows) {
+    currentCols = geo.cols;
+    currentRows = geo.rows;
+    runner.resize(currentCols, currentRows);
+    jsonl({ event: "resize", cols: currentCols, rows: currentRows, ts: Date.now() });
+    status.textContent = `${currentCols}×${currentRows} — running`;
+  }
+});
+resizeObserver.observe(container);
+
+// Also handle DPR changes (e.g., moving window between monitors).
+window.matchMedia(`(resolution: ${dpr}dppx)`).addEventListener("change", () => {
+  const newDpr = window.devicePixelRatio || 1.0;
+  const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
+  if (geo.cols !== currentCols || geo.rows !== currentRows) {
+    currentCols = geo.cols;
+    currentRows = geo.rows;
+    runner.resize(currentCols, currentRows);
+  }
+});
+
+// ── Input forwarding ───────────────────────────────────────────────────
+// DOM events → FrankenTermWeb.input() → drainEncodedInputs() → runner
+
+function domKeyToInput(e, phase) {
+  return {
+    kind: "key",
+    phase,
+    code: e.key.length === 1 ? e.key : e.key,
+    mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),
+    repeat: e.repeat || false,
+  };
+}
+
+function domMouseToInput(e, phase) {
+  const rect = canvas.getBoundingClientRect();
+  const cellW = rect.width / currentCols;
+  const cellH = rect.height / currentRows;
+  const x = Math.floor((e.clientX - rect.left) / cellW);
+  const y = Math.floor((e.clientY - rect.top)  / cellH);
+  return {
+    kind: "mouse",
+    phase,
+    button: e.button,
+    x: Math.max(0, Math.min(x, currentCols - 1)),
+    y: Math.max(0, Math.min(y, currentRows - 1)),
+    mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),
+  };
+}
+
+function domWheelToInput(e) {
+  const rect = canvas.getBoundingClientRect();
+  const cellW = rect.width / currentCols;
+  const cellH = rect.height / currentRows;
+  const x = Math.floor((e.clientX - rect.left) / cellW);
+  const y = Math.floor((e.clientY - rect.top)  / cellH);
+  return {
+    kind: "wheel",
+    x: Math.max(0, Math.min(x, currentCols - 1)),
+    y: Math.max(0, Math.min(y, currentRows - 1)),
+    dx: Math.round(e.deltaX),
+    dy: Math.round(e.deltaY),
+    mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),
+  };
+}
+
+canvas.addEventListener("keydown", (e) => {
+  e.preventDefault();
+  term.input(domKeyToInput(e, "down"));
+});
+canvas.addEventListener("keyup", (e) => {
+  e.preventDefault();
+  term.input(domKeyToInput(e, "up"));
+});
+canvas.addEventListener("mousedown", (e) => {
+  canvas.focus();
+  term.input(domMouseToInput(e, "down"));
+});
+canvas.addEventListener("mouseup", (e) => {
+  term.input(domMouseToInput(e, "up"));
+});
+canvas.addEventListener("mousemove", (e) => {
+  term.input(domMouseToInput(e, "move"));
+});
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  term.input(domWheelToInput(e));
+}, { passive: false });
+canvas.addEventListener("paste", (e) => {
+  const text = (e.clipboardData || window.clipboardData).getData("text");
+  if (text) term.input({ kind: "paste", data: text });
+});
+canvas.addEventListener("focus", () => { term.input({ kind: "focus", focused: true }); });
+canvas.addEventListener("blur",  () => { term.input({ kind: "focus", focused: false }); });
+
+// Composition (IME) events.
+canvas.addEventListener("compositionstart", () => {
+  term.input({ kind: "composition", phase: "start" });
+});
+canvas.addEventListener("compositionupdate", (e) => {
+  term.input({ kind: "composition", phase: "update", data: e.data || "" });
+});
+canvas.addEventListener("compositionend", (e) => {
+  term.input({ kind: "composition", phase: "end", data: e.data || "" });
+});
+
+// ── Host frame loop ────────────────────────────────────────────────────
+let lastTs = 0;
+let totalFrames = 0;
+
+function frame(timestamp) {
+  const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
+  lastTs = timestamp;
+
+  // 1. Advance deterministic clock.
+  runner.advanceTime(dt);
+
+  // 2. Drain normalized inputs from FrankenTermWeb → push to runner.
+  const inputs = term.drainEncodedInputs();
+  for (let i = 0; i < inputs.length; i++) {
+    runner.pushEncodedInput(inputs[i]);
+  }
+
+  // 3. Step the application.
+  const result = runner.step();
+
+  // 4. If a frame was rendered, apply patches and present.
+  if (result.rendered) {
+    const patches = runner.takeFlatPatches();
+    if (patches.cells.length > 0) {
+      term.applyPatchBatchFlat(patches.spans, patches.cells);
+    }
+    term.render();
+    totalFrames++;
+
+    if (LOG_JSONL) {
+      const stats = runner.patchStats();
+      jsonl({
+        event: "frame",
+        frame_idx: result.frame_idx,
+        events_processed: result.events_processed,
+        patch_hash: runner.patchHash(),
+        dirty_cells: stats ? stats.dirty_cells : 0,
+        patch_count: stats ? stats.patch_count : 0,
+        ts: Date.now(),
+      });
+    }
+  }
+
+  // 5. Drain logs.
+  const logs = runner.takeLogs();
+  for (let i = 0; i < logs.length; i++) {
+    jsonl({ event: "log", text: logs[i], frame_idx: result.frame_idx, ts: Date.now() });
+  }
+
+  // 6. Continue or stop.
+  if (result.running) {
+    requestAnimationFrame(frame);
+  } else {
+    status.textContent = `${currentCols}×${currentRows} — stopped (${totalFrames} frames)`;
+    jsonl({ event: "quit", total_frames: totalFrames, ts: Date.now() });
+    runner.destroy();
+  }
+}
+
+// Focus the canvas and start.
+canvas.focus();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
