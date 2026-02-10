@@ -260,7 +260,10 @@ impl ListState {
     ///
     /// Clamps so that the last item can still appear at the top of the viewport.
     pub fn scroll_down(&mut self, lines: usize, item_count: usize) {
-        self.offset = (self.offset + lines).min(item_count.saturating_sub(1));
+        self.offset = self
+            .offset
+            .saturating_add(lines)
+            .min(item_count.saturating_sub(1));
     }
 
     /// Move selection to the next item.
@@ -271,7 +274,7 @@ impl ListState {
             return;
         }
         let next = match self.selected {
-            Some(i) => (i + 1).min(item_count - 1),
+            Some(i) => (i + 1).min(item_count.saturating_sub(1)),
             None => 0,
         };
         self.selected = Some(next);

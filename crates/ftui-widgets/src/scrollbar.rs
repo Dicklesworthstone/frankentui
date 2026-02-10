@@ -229,7 +229,7 @@ impl ScrollbarState {
     /// Clamps so that the viewport stays within content bounds.
     pub fn scroll_down(&mut self, lines: usize) {
         let max_pos = self.content_length.saturating_sub(self.viewport_length);
-        self.position = (self.position + lines).min(max_pos);
+        self.position = self.position.saturating_add(lines).min(max_pos);
     }
 }
 
