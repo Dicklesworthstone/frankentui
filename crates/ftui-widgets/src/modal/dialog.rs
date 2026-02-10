@@ -1029,4 +1029,583 @@ mod tests {
         let mut frame = Frame::new(80, 24, &mut pool);
         dialog.render(Rect::new(0, 0, 80, 24), &mut frame, &mut state);
     }
+
+    // ---- Edge-case tests (bd-1is2p) ----
+
+    #[test]
+    fn edge_state_default_vs_new() {
+        let default = DialogState::default();
+        let new = DialogState::new();
+        // Default: open=false, input_focused=false
+        assert!(!default.open);
+        assert!(!default.input_focused);
+        // New: open=true, input_focused=true
+        assert!(new.open);
+        assert!(new.input_focused);
+    }
+
+    #[test]
+    fn edge_state_reset_then_reuse() {
+        let mut state = DialogState::new();
+        state.input_value = "typed".to_string();
+        state.focused_button = Some(1);
+        state.close(DialogResult::Cancel);
+
+        assert!(!state.is_open());
+        assert!(state.result.is_some());
+
+        state.reset();
+        assert!(state.is_open());
+        assert!(state.result.is_none());
+        assert!(state.input_value.is_empty());
+        assert_eq!(state.focused_button, None);
+        assert!(state.input_focused);
+    }
+
+    #[test]
+    fn edge_take_result_when_none() {
+        let mut state = DialogState::new();
+        assert_eq!(state.take_result(), None);
+        // Calling again still returns None
+        assert_eq!(state.take_result(), None);
+    }
+
+    #[test]
+    fn edge_take_result_consumes() {
+        let mut state = DialogState::new();
+        state.close(DialogResult::Ok);
+        assert_eq!(state.take_result(), Some(DialogResult::Ok));
+        // Second call returns None — consumed
+        assert_eq!(state.take_result(), None);
+    }
+
+    #[test]
+    fn edge_handle_event_when_closed() {
+        let dialog = Dialog::alert("Test", "Msg");
+        let mut state = DialogState::new();
+        state.close(DialogResult::Dismissed);
+
+        let enter = Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        // Events on a closed dialog return None immediately
+        let result = dialog.handle_event(&enter, &mut state, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn edge_prompt_tab_full_cycle() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+        // Prompt starts with input_focused=true
+        assert!(state.input_focused);
+        assert_eq!(state.focused_button, None);
+
+        let tab = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+
+        // Tab 1: input -> button 0 (OK)
+        dialog.handle_event(&tab, &mut state, None);
+        assert!(!state.input_focused);
+        assert_eq!(state.focused_button, Some(0));
+
+        // Tab 2: button 0 -> button 1 (Cancel)
+        dialog.handle_event(&tab, &mut state, None);
+        assert!(!state.input_focused);
+        assert_eq!(state.focused_button, Some(1));
+
+        // Tab 3: button 1 -> back to input
+        dialog.handle_event(&tab, &mut state, None);
+        assert!(state.input_focused);
+        assert_eq!(state.focused_button, None);
+    }
+
+    #[test]
+    fn edge_prompt_shift_tab_reverse_cycle() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+
+        let shift_tab = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: Modifiers::SHIFT,
+            kind: KeyEventKind::Press,
+        });
+
+        // Shift+Tab from input -> last button (Cancel, index 1)
+        dialog.handle_event(&shift_tab, &mut state, None);
+        assert!(!state.input_focused);
+        assert_eq!(state.focused_button, Some(1));
+
+        // Shift+Tab from button 1 -> button 0
+        dialog.handle_event(&shift_tab, &mut state, None);
+        assert!(!state.input_focused);
+        assert_eq!(state.focused_button, Some(0));
+
+        // Shift+Tab from button 0 -> back to input
+        dialog.handle_event(&shift_tab, &mut state, None);
+        assert!(state.input_focused);
+        assert_eq!(state.focused_button, None);
+    }
+
+    #[test]
+    fn edge_arrow_key_navigation() {
+        let dialog = Dialog::confirm("Test", "Msg");
+        let mut state = DialogState::new();
+        state.input_focused = false;
+        state.focused_button = Some(0);
+
+        let right = Event::Key(KeyEvent {
+            code: KeyCode::Right,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        let left = Event::Key(KeyEvent {
+            code: KeyCode::Left,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+
+        // Right: 0 -> 1
+        dialog.handle_event(&right, &mut state, None);
+        assert_eq!(state.focused_button, Some(1));
+
+        // Right: 1 -> 0 (wrap)
+        dialog.handle_event(&right, &mut state, None);
+        assert_eq!(state.focused_button, Some(0));
+
+        // Left: 0 -> 1 (wrap backwards)
+        dialog.handle_event(&left, &mut state, None);
+        assert_eq!(state.focused_button, Some(1));
+
+        // Left: 1 -> 0
+        dialog.handle_event(&left, &mut state, None);
+        assert_eq!(state.focused_button, Some(0));
+    }
+
+    #[test]
+    fn edge_arrow_keys_ignored_when_input_focused() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+        // input_focused=true by default for prompt
+        assert!(state.input_focused);
+        state.focused_button = None;
+
+        let right = Event::Key(KeyEvent {
+            code: KeyCode::Right,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+
+        dialog.handle_event(&right, &mut state, None);
+        // Arrow keys should NOT navigate buttons when input is focused
+        assert!(state.input_focused);
+        assert_eq!(state.focused_button, None);
+    }
+
+    #[test]
+    fn edge_input_backspace_on_empty() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+        assert!(state.input_value.is_empty());
+
+        let backspace = Event::Key(KeyEvent {
+            code: KeyCode::Backspace,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+
+        // Backspace on empty input should not panic
+        dialog.handle_event(&backspace, &mut state, None);
+        assert!(state.input_value.is_empty());
+    }
+
+    #[test]
+    fn edge_input_delete_clears_all() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+        state.input_value = "hello world".to_string();
+
+        let delete = Event::Key(KeyEvent {
+            code: KeyCode::Delete,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+
+        dialog.handle_event(&delete, &mut state, None);
+        assert!(state.input_value.is_empty());
+    }
+
+    #[test]
+    fn edge_input_char_accumulation() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+
+        for c in ['h', 'e', 'l', 'l', 'o'] {
+            let event = Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            });
+            dialog.handle_event(&event, &mut state, None);
+        }
+        assert_eq!(state.input_value, "hello");
+    }
+
+    #[test]
+    fn edge_prompt_cancel_returns_cancel() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+        state.input_value = "typed something".to_string();
+        state.input_focused = false;
+        state.focused_button = Some(1); // Cancel button
+
+        let enter = Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+
+        let result = dialog.handle_event(&enter, &mut state, None);
+        assert_eq!(result, Some(DialogResult::Cancel));
+        assert!(!state.is_open());
+    }
+
+    #[test]
+    fn edge_custom_button_activation() {
+        let dialog = Dialog::custom("Test", "Msg")
+            .custom_button("Save", "save")
+            .custom_button("Delete", "delete")
+            .build();
+        let mut state = DialogState::new();
+        state.input_focused = false;
+        state.focused_button = Some(1); // "Delete" button
+
+        let enter = Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+
+        let result = dialog.handle_event(&enter, &mut state, None);
+        assert_eq!(result, Some(DialogResult::Custom("delete".to_string())));
+    }
+
+    #[test]
+    fn edge_render_zero_size_area() {
+        let dialog = Dialog::alert("T", "M");
+        let mut state = DialogState::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        // Zero-width area
+        dialog.render(Rect::new(0, 0, 0, 0), &mut frame, &mut state);
+        // Zero-height area
+        dialog.render(Rect::new(0, 0, 80, 0), &mut frame, &mut state);
+        // Zero-width nonzero-height
+        dialog.render(Rect::new(0, 0, 0, 24), &mut frame, &mut state);
+    }
+
+    #[test]
+    fn edge_render_closed_dialog_is_noop() {
+        let dialog = Dialog::alert("Test", "Msg");
+        let mut state = DialogState::new();
+        state.close(DialogResult::Dismissed);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+
+        // Rendering a closed dialog should not panic or alter frame
+        dialog.render(Rect::new(0, 0, 80, 24), &mut frame, &mut state);
+    }
+
+    #[test]
+    fn edge_builder_hit_id() {
+        let dialog = Dialog::custom("T", "M")
+            .ok_button()
+            .hit_id(HitId::new(42))
+            .build();
+        assert_eq!(dialog.hit_id, Some(HitId::new(42)));
+    }
+
+    #[test]
+    fn edge_builder_modal_config() {
+        let config = ModalConfig::default().position(ModalPosition::TopCenter { margin: 5 });
+        let dialog = Dialog::custom("T", "M")
+            .ok_button()
+            .modal_config(config)
+            .build();
+        assert_eq!(
+            dialog.config.modal_config.position,
+            ModalPosition::TopCenter { margin: 5 }
+        );
+    }
+
+    #[test]
+    fn edge_content_height_alert() {
+        let dialog = Dialog::alert("Title", "Message");
+        let h = dialog.content_height();
+        // 2 (borders) + 1 (title) + 1 (message) + 1 (spacing) + 1 (buttons) = 6
+        assert_eq!(h, 6);
+    }
+
+    #[test]
+    fn edge_content_height_prompt() {
+        let dialog = Dialog::prompt("Title", "Message");
+        let h = dialog.content_height();
+        // 2 (borders) + 1 (title) + 1 (message) + 1 (spacing) + 1 (input) + 1 (input spacing) + 1 (buttons) = 8
+        assert_eq!(h, 8);
+    }
+
+    #[test]
+    fn edge_content_height_empty_title_and_message() {
+        let dialog = Dialog::alert("", "");
+        let h = dialog.content_height();
+        // 2 (borders) + 0 (no title) + 0 (no message) + 1 (spacing) + 1 (buttons) = 4
+        assert_eq!(h, 4);
+    }
+
+    #[test]
+    fn edge_button_display_width_unicode() {
+        let button = DialogButton::new("保存", "save");
+        // "保存" is 4 display columns + 4 for brackets = 8
+        assert_eq!(button.display_width(), 8);
+    }
+
+    #[test]
+    fn edge_dialog_result_equality() {
+        assert_eq!(DialogResult::Ok, DialogResult::Ok);
+        assert_eq!(DialogResult::Cancel, DialogResult::Cancel);
+        assert_eq!(DialogResult::Dismissed, DialogResult::Dismissed);
+        assert_eq!(
+            DialogResult::Custom("a".into()),
+            DialogResult::Custom("a".into())
+        );
+        assert_ne!(
+            DialogResult::Custom("a".into()),
+            DialogResult::Custom("b".into())
+        );
+        assert_eq!(
+            DialogResult::Input("x".into()),
+            DialogResult::Input("x".into())
+        );
+        assert_ne!(DialogResult::Ok, DialogResult::Cancel);
+    }
+
+    #[test]
+    fn edge_mouse_down_mismatched_hit_id() {
+        let dialog = Dialog::confirm("Test", "Msg").hit_id(HitId::new(1));
+        let mut state = DialogState::new();
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+        ));
+        // Hit with different ID should not register
+        let hit = Some((HitId::new(99), HitRegion::Button, 0u64));
+        dialog.handle_event(&down, &mut state, hit);
+        assert_eq!(state.pressed_button, None);
+        assert_eq!(state.focused_button, None);
+    }
+
+    #[test]
+    fn edge_mouse_down_out_of_bounds_index() {
+        let dialog = Dialog::confirm("Test", "Msg").hit_id(HitId::new(1));
+        let mut state = DialogState::new();
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+        ));
+        // Button index beyond button count
+        let hit = Some((HitId::new(1), HitRegion::Button, 99u64));
+        dialog.handle_event(&down, &mut state, hit);
+        assert_eq!(state.pressed_button, None);
+    }
+
+    #[test]
+    fn edge_mouse_up_different_button_from_pressed() {
+        let dialog = Dialog::confirm("Test", "Msg").hit_id(HitId::new(1));
+        let mut state = DialogState::new();
+
+        // Press button 0
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+        ));
+        let hit0 = Some((HitId::new(1), HitRegion::Button, 0u64));
+        dialog.handle_event(&down, &mut state, hit0);
+        assert_eq!(state.pressed_button, Some(0));
+
+        // Release on button 1 — should NOT activate
+        let up = Event::Mouse(MouseEvent::new(MouseEventKind::Up(MouseButton::Left), 0, 0));
+        let hit1 = Some((HitId::new(1), HitRegion::Button, 1u64));
+        let result = dialog.handle_event(&up, &mut state, hit1);
+        assert_eq!(result, None);
+        assert!(state.is_open());
+        // pressed_button cleared by take()
+        assert_eq!(state.pressed_button, None);
+    }
+
+    #[test]
+    fn edge_non_prompt_clears_input_focused() {
+        let dialog = Dialog::alert("Test", "Msg");
+        let mut state = DialogState::new();
+        // Manually set input_focused (e.g. leftover from state reuse)
+        state.input_focused = true;
+
+        let tab = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        dialog.handle_event(&tab, &mut state, None);
+        // Non-prompt dialog should clear input_focused
+        assert!(!state.input_focused);
+    }
+
+    #[test]
+    fn edge_key_release_ignored() {
+        let dialog = Dialog::prompt("Test", "Enter:");
+        let mut state = DialogState::new();
+        state.input_value.clear();
+
+        // Key release event should be ignored by input handler
+        let release = Event::Key(KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Release,
+        });
+        dialog.handle_event(&release, &mut state, None);
+        assert!(state.input_value.is_empty());
+    }
+
+    #[test]
+    fn edge_enter_no_focused_no_primary_does_nothing() {
+        // Build a dialog with no primary button
+        let dialog = Dialog::custom("Test", "Msg")
+            .custom_button("A", "a")
+            .custom_button("B", "b")
+            .build();
+        let mut state = DialogState::new();
+        state.input_focused = false;
+        state.focused_button = None;
+
+        let enter = Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        // No focused button and no primary → activate_button returns None
+        let result = dialog.handle_event(&enter, &mut state, None);
+        assert_eq!(result, None);
+        assert!(state.is_open());
+    }
+
+    #[test]
+    fn edge_dialog_style_setters() {
+        let style = Style::new().bold();
+        let dialog = Dialog::alert("T", "M")
+            .button_style(style)
+            .primary_button_style(style)
+            .focused_button_style(style);
+        assert_eq!(dialog.config.button_style, style);
+        assert_eq!(dialog.config.primary_button_style, style);
+        assert_eq!(dialog.config.focused_button_style, style);
+    }
+
+    #[test]
+    fn edge_dialog_modal_config_setter() {
+        let mc = ModalConfig::default().position(ModalPosition::Custom { x: 10, y: 20 });
+        let dialog = Dialog::alert("T", "M").modal_config(mc);
+        assert_eq!(
+            dialog.config.modal_config.position,
+            ModalPosition::Custom { x: 10, y: 20 }
+        );
+    }
+
+    #[test]
+    fn edge_dialog_clone_debug() {
+        let dialog = Dialog::alert("T", "M");
+        let cloned = dialog.clone();
+        assert_eq!(cloned.title, dialog.title);
+        assert_eq!(cloned.message, dialog.message);
+        let _ = format!("{:?}", dialog);
+    }
+
+    #[test]
+    fn edge_dialog_builder_clone_debug() {
+        let builder = Dialog::custom("T", "M").ok_button();
+        let cloned = builder.clone();
+        assert_eq!(cloned.title, builder.title);
+        let _ = format!("{:?}", builder);
+    }
+
+    #[test]
+    fn edge_dialog_config_clone_debug() {
+        let config = DialogConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.kind, config.kind);
+        let _ = format!("{:?}", config);
+    }
+
+    #[test]
+    fn edge_dialog_state_clone_debug() {
+        let mut state = DialogState::new();
+        state.input_value = "test".to_string();
+        state.focused_button = Some(1);
+        let cloned = state.clone();
+        assert_eq!(cloned.input_value, "test");
+        assert_eq!(cloned.focused_button, Some(1));
+        assert_eq!(cloned.open, state.open);
+        let _ = format!("{:?}", state);
+    }
+
+    #[test]
+    fn edge_dialog_button_clone_debug() {
+        let button = DialogButton::new("Save", "save").primary();
+        let cloned = button.clone();
+        assert_eq!(cloned.label, "Save");
+        assert_eq!(cloned.id, "save");
+        assert!(cloned.primary);
+        let _ = format!("{:?}", button);
+    }
+
+    #[test]
+    fn edge_dialog_result_clone_debug() {
+        let results = [
+            DialogResult::Ok,
+            DialogResult::Cancel,
+            DialogResult::Dismissed,
+            DialogResult::Custom("x".into()),
+            DialogResult::Input("y".into()),
+        ];
+        for r in &results {
+            let cloned = r.clone();
+            assert_eq!(&cloned, r);
+            let _ = format!("{:?}", r);
+        }
+    }
+
+    #[test]
+    fn edge_dialog_kind_clone_debug_eq() {
+        let kinds = [
+            DialogKind::Alert,
+            DialogKind::Confirm,
+            DialogKind::Prompt,
+            DialogKind::Custom,
+        ];
+        for k in &kinds {
+            let cloned = *k;
+            assert_eq!(cloned, *k);
+            let _ = format!("{:?}", k);
+        }
+        assert_ne!(DialogKind::Alert, DialogKind::Confirm);
+    }
 }
