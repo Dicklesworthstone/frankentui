@@ -65,3 +65,6 @@ __pycache__/
 # Ephemeral debug/test output files (agent artifacts)
 row_skip_dy*
 --graph-format.svg
+
+# Puppeteer/Chrome screenshots (agent artifacts)
+Chrome_*.png
