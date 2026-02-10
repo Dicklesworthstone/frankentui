@@ -35,6 +35,8 @@
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI, SQRT_2, TAU};
 
+use web_time::Instant;
+
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, CellAttrs, CellContent, PackedRgba, StyleFlags as CellStyleFlags};
 use ftui_render::frame::Frame;
@@ -1239,7 +1241,7 @@ pub struct AnimationClock {
     /// Time multiplier (1.0 = normal, 0.0 = paused, 0.5 = half-speed).
     speed: f64,
     /// Last tick instant for delta calculation.
-    last_tick: std::time::Instant,
+    last_tick: Instant,
 }
 
 impl Default for AnimationClock {
@@ -1255,7 +1257,7 @@ impl AnimationClock {
         Self {
             time: 0.0,
             speed: 1.0,
-            last_tick: std::time::Instant::now(),
+            last_tick: Instant::now(),
         }
     }
 
@@ -1265,7 +1267,7 @@ impl AnimationClock {
         Self {
             time,
             speed: 1.0,
-            last_tick: std::time::Instant::now(),
+            last_tick: Instant::now(),
         }
     }
 
@@ -1275,7 +1277,7 @@ impl AnimationClock {
     /// speed multiplier, enabling pause/slow-motion effects.
     #[inline]
     pub fn tick(&mut self) {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         let delta = now.duration_since(self.last_tick).as_secs_f64();
         self.time += delta * self.speed;
         self.last_tick = now;
@@ -1287,7 +1289,7 @@ impl AnimationClock {
     #[inline]
     pub fn tick_delta(&mut self, delta_seconds: f64) {
         self.time += delta_seconds * self.speed;
-        self.last_tick = std::time::Instant::now();
+        self.last_tick = Instant::now();
     }
 
     /// Get the current animation time in seconds.
