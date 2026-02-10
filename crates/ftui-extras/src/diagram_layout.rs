@@ -2350,4 +2350,732 @@ mod tests {
             "pair count should match full count for 2-layer graph"
         );
     }
+
+    // =====================================================================
+    // Edge-case tests added for bd-1juai
+    // =====================================================================
+
+    // -- clip_to_boundary direct tests --
+
+    #[test]
+    fn clip_to_boundary_coincident_points() {
+        // When target == center, return center
+        let (x, y) = clip_to_boundary(10.0, 20.0, 80.0, 40.0, 10.0, 20.0);
+        assert!((x - 10.0).abs() < 1e-9);
+        assert!((y - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_to_boundary_horizontal_target() {
+        // Target directly to the right
+        let (x, y) = clip_to_boundary(0.0, 0.0, 80.0, 40.0, 100.0, 0.0);
+        assert!(
+            (x - 40.0).abs() < 1e-9,
+            "should clip to right edge: got {x}"
+        );
+        assert!((y - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_to_boundary_vertical_target() {
+        // Target directly below
+        let (x, y) = clip_to_boundary(0.0, 0.0, 80.0, 40.0, 0.0, 100.0);
+        assert!((x - 0.0).abs() < 1e-9);
+        assert!(
+            (y - 20.0).abs() < 1e-9,
+            "should clip to bottom edge: got {y}"
+        );
+    }
+
+    #[test]
+    fn clip_to_boundary_diagonal_target() {
+        // Target at 45 degrees from a square node
+        let (x, y) = clip_to_boundary(0.0, 0.0, 40.0, 40.0, 100.0, 100.0);
+        // For a square with half-width 20, going diagonal: min(20/100, 20/100) = 0.2
+        assert!((x - 20.0).abs() < 1e-9, "diagonal x: got {x}");
+        assert!((y - 20.0).abs() < 1e-9, "diagonal y: got {y}");
+    }
+
+    #[test]
+    fn clip_to_boundary_negative_direction() {
+        // Target to the left
+        let (x, y) = clip_to_boundary(0.0, 0.0, 80.0, 40.0, -100.0, 0.0);
+        assert!(
+            (x - (-40.0)).abs() < 1e-9,
+            "should clip to left edge: got {x}"
+        );
+        assert!((y - 0.0).abs() < 1e-9);
+    }
+
+    // -- compute_bounds direct tests --
+
+    #[test]
+    fn compute_bounds_empty() {
+        let bounds = compute_bounds(&[]);
+        assert_eq!(bounds, (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn compute_bounds_single_node() {
+        let nodes = vec![NodeBox {
+            ir_node: IrNodeId(0),
+            cx: 50.0,
+            cy: 30.0,
+            width: 20.0,
+            height: 10.0,
+        }];
+        let (x0, y0, x1, y1) = compute_bounds(&nodes);
+        assert!((x0 - 40.0).abs() < 1e-9);
+        assert!((y0 - 25.0).abs() < 1e-9);
+        assert!((x1 - 60.0).abs() < 1e-9);
+        assert!((y1 - 35.0).abs() < 1e-9);
+    }
+
+    // -- merge_sort_count_inversions direct tests --
+
+    #[test]
+    fn merge_sort_inversions_empty() {
+        let mut seq: Vec<usize> = vec![];
+        let mut buf: Vec<usize> = vec![];
+        assert_eq!(merge_sort_count_inversions(&mut seq, &mut buf), 0);
+    }
+
+    #[test]
+    fn merge_sort_inversions_single() {
+        let mut seq = vec![42];
+        let mut buf = vec![0];
+        assert_eq!(merge_sort_count_inversions(&mut seq, &mut buf), 0);
+    }
+
+    #[test]
+    fn merge_sort_inversions_sorted() {
+        let mut seq = vec![1, 2, 3, 4, 5];
+        let mut buf = vec![0; 5];
+        assert_eq!(merge_sort_count_inversions(&mut seq, &mut buf), 0);
+    }
+
+    #[test]
+    fn merge_sort_inversions_reversed() {
+        // Fully reversed: n*(n-1)/2 inversions
+        let mut seq = vec![5, 4, 3, 2, 1];
+        let mut buf = vec![0; 5];
+        assert_eq!(merge_sort_count_inversions(&mut seq, &mut buf), 10);
+    }
+
+    #[test]
+    fn merge_sort_inversions_known() {
+        // [3, 1, 2] has inversions (3,1), (3,2) = 2
+        let mut seq = vec![3, 1, 2];
+        let mut buf = vec![0; 3];
+        assert_eq!(merge_sort_count_inversions(&mut seq, &mut buf), 2);
+    }
+
+    // -- NodeBox::overlaps edge cases --
+
+    #[test]
+    fn node_box_overlaps_touching_not_overlapping() {
+        // Boxes that touch at edges should NOT overlap (strict inequality)
+        let a = NodeBox {
+            ir_node: IrNodeId(0),
+            cx: 0.0,
+            cy: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        let b = NodeBox {
+            ir_node: IrNodeId(1),
+            cx: 10.0, // b.left() = 5.0 == a.right() = 5.0
+            cy: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        assert!(!a.overlaps(&b), "touching boxes should not overlap");
+    }
+
+    #[test]
+    fn node_box_overlaps_identical() {
+        let a = NodeBox {
+            ir_node: IrNodeId(0),
+            cx: 5.0,
+            cy: 5.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        let b = NodeBox {
+            ir_node: IrNodeId(1),
+            cx: 5.0,
+            cy: 5.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        assert!(a.overlaps(&b), "identical boxes should overlap");
+    }
+
+    #[test]
+    fn node_box_zero_size() {
+        let nb = NodeBox {
+            ir_node: IrNodeId(0),
+            cx: 5.0,
+            cy: 5.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        assert!((nb.left() - 5.0).abs() < 1e-9);
+        assert!((nb.right() - 5.0).abs() < 1e-9);
+        assert!((nb.top() - 5.0).abs() < 1e-9);
+        assert!((nb.bottom() - 5.0).abs() < 1e-9);
+    }
+
+    // -- count_crossings edge cases --
+
+    #[test]
+    fn count_crossings_empty_layers() {
+        let layers: Vec<Vec<usize>> = vec![];
+        let adj: Vec<Vec<usize>> = vec![];
+        assert_eq!(count_crossings(&layers, &adj), 0);
+    }
+
+    #[test]
+    fn count_crossings_single_layer() {
+        let layers = vec![vec![0, 1, 2]];
+        let adj = vec![vec![], vec![], vec![]];
+        assert_eq!(count_crossings(&layers, &adj), 0);
+    }
+
+    #[test]
+    fn count_crossings_no_edges_between_layers() {
+        let layers = vec![vec![0, 1], vec![2, 3]];
+        let adj = vec![vec![], vec![], vec![], vec![]];
+        assert_eq!(count_crossings(&layers, &adj), 0);
+    }
+
+    #[test]
+    fn count_crossings_known_value() {
+        // [0, 1] -> [2, 3] with edges 0->3, 1->2: exactly 1 crossing
+        let layers = vec![vec![0, 1], vec![2, 3]];
+        let adj = vec![vec![3], vec![2], vec![], vec![]];
+        assert_eq!(count_crossings(&layers, &adj), 1);
+    }
+
+    // -- count_crossings_with scratch reuse --
+
+    #[test]
+    fn count_crossings_with_scratch_matches_non_scratch() {
+        let layers = vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7]];
+        let adj = vec![
+            vec![4],
+            vec![3, 5],
+            vec![5],
+            vec![6],
+            vec![7],
+            vec![6, 7],
+            vec![],
+            vec![],
+        ];
+        let expected = count_crossings(&layers, &adj);
+        let mut scratch = CrossingScratch::new();
+        let actual = count_crossings_with(&layers, &adj, &mut scratch);
+        assert_eq!(actual, expected);
+    }
+
+    // -- resolve_node with ports --
+
+    #[test]
+    fn resolve_node_port_endpoint() {
+        let mut ir = make_test_ir(&["A", "B"], &[], GraphDirection::TB);
+        ir.ports.push(IrPort {
+            node: IrNodeId(1),
+            name: "p0".to_string(),
+            side_hint: IrPortSideHint::Auto,
+            span: dummy_span(),
+        });
+        let result = resolve_node(&ir, IrEndpoint::Port(IrPortId(0)), 2);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn resolve_node_port_out_of_bounds() {
+        let ir = make_test_ir(&["A"], &[], GraphDirection::TB);
+        // Port index 5 doesn't exist
+        let result = resolve_node(&ir, IrEndpoint::Port(IrPortId(5)), 1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_node_node_out_of_bounds() {
+        let ir = make_test_ir(&["A"], &[], GraphDirection::TB);
+        let result = resolve_node(&ir, IrEndpoint::Node(IrNodeId(99)), 1);
+        assert_eq!(result, None);
+    }
+
+    // -- minimize_crossings with 0 nodes --
+
+    #[test]
+    fn minimize_crossings_zero_nodes() {
+        let mut budget = 10_000;
+        let result = minimize_crossings(&[], &[], &[], 0, 10, &mut budget);
+        assert!(result.is_empty());
+    }
+
+    // -- assign_layers with empty graph --
+
+    #[test]
+    fn assign_layers_empty_graph() {
+        let ir = make_test_ir(&[], &[], GraphDirection::TB);
+        let config = LayoutConfig::default();
+        let graph = LayoutGraph::from_ir(&ir, &config);
+        let mut budget = 10_000;
+        let layers = assign_layers(&graph, &mut budget);
+        assert!(layers.is_empty());
+    }
+
+    // -- Ports with different directions and side hints --
+
+    #[test]
+    fn port_resolution_all_directions() {
+        for &(dir, expected_side) in &[
+            (GraphDirection::TB, PortSide::Bottom),
+            (GraphDirection::BT, PortSide::Top),
+            (GraphDirection::LR, PortSide::Right),
+            (GraphDirection::RL, PortSide::Left),
+        ] {
+            let mut ir = make_test_ir(&["A"], &[], dir);
+            ir.ports.push(IrPort {
+                node: IrNodeId(0),
+                name: "p0".to_string(),
+                side_hint: IrPortSideHint::Auto,
+                span: dummy_span(),
+            });
+            let layout = layout_diagram(&ir);
+            assert_eq!(layout.ports.len(), 1, "dir={dir:?}");
+            assert_eq!(layout.ports[0].side, expected_side, "dir={dir:?}");
+        }
+    }
+
+    #[test]
+    fn port_horizontal_hint_lr() {
+        let mut ir = make_test_ir(&["A"], &[], GraphDirection::LR);
+        ir.ports.push(IrPort {
+            node: IrNodeId(0),
+            name: "p0".to_string(),
+            side_hint: IrPortSideHint::Horizontal,
+            span: dummy_span(),
+        });
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.ports[0].side, PortSide::Right);
+    }
+
+    #[test]
+    fn port_horizontal_hint_rl() {
+        let mut ir = make_test_ir(&["A"], &[], GraphDirection::RL);
+        ir.ports.push(IrPort {
+            node: IrNodeId(0),
+            name: "p0".to_string(),
+            side_hint: IrPortSideHint::Horizontal,
+            span: dummy_span(),
+        });
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.ports[0].side, PortSide::Left);
+    }
+
+    #[test]
+    fn port_vertical_hint_bt() {
+        let mut ir = make_test_ir(&["A"], &[], GraphDirection::BT);
+        ir.ports.push(IrPort {
+            node: IrNodeId(0),
+            name: "p0".to_string(),
+            side_hint: IrPortSideHint::Vertical,
+            span: dummy_span(),
+        });
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.ports[0].side, PortSide::Top);
+    }
+
+    #[test]
+    fn port_vertical_hint_tb() {
+        let mut ir = make_test_ir(&["A"], &[], GraphDirection::TB);
+        ir.ports.push(IrPort {
+            node: IrNodeId(0),
+            name: "p0".to_string(),
+            side_hint: IrPortSideHint::Vertical,
+            span: dummy_span(),
+        });
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.ports[0].side, PortSide::Bottom);
+    }
+
+    #[test]
+    fn port_node_out_of_bounds_filtered() {
+        let mut ir = make_test_ir(&["A"], &[], GraphDirection::TB);
+        ir.ports.push(IrPort {
+            node: IrNodeId(99), // doesn't exist
+            name: "p0".to_string(),
+            side_hint: IrPortSideHint::Auto,
+            span: dummy_span(),
+        });
+        let layout = layout_diagram(&ir);
+        assert!(
+            layout.ports.is_empty(),
+            "out-of-bounds port should be filtered"
+        );
+    }
+
+    // -- RouteGrid default --
+
+    #[test]
+    fn route_grid_default_empty() {
+        let grid = RouteGrid::default();
+        assert!(grid.vertical_channels.is_empty());
+        assert!(grid.horizontal_channels.is_empty());
+    }
+
+    // -- LayoutQuality edge cases --
+
+    #[test]
+    fn quality_zero_crossings_linear() {
+        let ir = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2)], GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.quality.crossings, 0);
+        assert_eq!(layout.quality.bends, 0);
+    }
+
+    #[test]
+    fn quality_single_node_zero() {
+        let ir = make_test_ir(&["A"], &[], GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.quality.crossings, 0);
+        assert_eq!(layout.quality.bends, 0);
+        assert!((layout.quality.variance - 0.0).abs() < 1e-9);
+        assert!((layout.quality.asymmetry - 0.0).abs() < 1e-9);
+        assert!((layout.quality.total_score - 0.0).abs() < 1e-9);
+    }
+
+    // -- Degraded flag --
+
+    #[test]
+    fn degraded_flag_with_exhausted_budget() {
+        let ir = make_test_ir(
+            &["A", "B", "C", "D"],
+            &[(0, 1), (1, 2), (2, 3)],
+            GraphDirection::TB,
+        );
+        let config = LayoutConfig {
+            iteration_budget: 0,
+            ..LayoutConfig::default()
+        };
+        let layout = layout_diagram_with_config(&ir, &config);
+        assert!(
+            layout.degraded,
+            "zero budget should produce degraded layout"
+        );
+        // But layout should still be valid
+        assert_eq!(layout.nodes.len(), 4);
+    }
+
+    #[test]
+    fn not_degraded_with_ample_budget() {
+        let ir = make_test_ir(&["A", "B"], &[(0, 1)], GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        assert!(!layout.degraded);
+    }
+
+    // -- Edge routing with reversed edges --
+
+    #[test]
+    fn reversed_edges_marked_in_routing() {
+        // Create a cycle so at least one edge gets reversed
+        let ir = make_test_ir(
+            &["A", "B", "C"],
+            &[(0, 1), (1, 2), (2, 0)],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir);
+        // At least one edge should be marked reversed
+        let reversed_count = layout.edges.iter().filter(|e| e.reversed).count();
+        assert!(reversed_count > 0, "cycle should produce reversed edges");
+    }
+
+    #[test]
+    fn edge_waypoints_always_have_two_points() {
+        let ir = make_test_ir(
+            &["A", "B", "C"],
+            &[(0, 1), (0, 2), (1, 2)],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir);
+        for (i, edge) in layout.edges.iter().enumerate() {
+            assert!(
+                edge.waypoints.len() >= 2,
+                "edge {i} should have >= 2 waypoints, got {}",
+                edge.waypoints.len()
+            );
+        }
+    }
+
+    // -- Cluster with empty members --
+
+    #[test]
+    fn cluster_empty_members_filtered() {
+        let mut ir = make_test_ir(&["A", "B"], &[(0, 1)], GraphDirection::TB);
+        ir.clusters.push(IrCluster {
+            id: IrClusterId(0),
+            title: None,
+            members: vec![], // empty cluster
+            span: dummy_span(),
+        });
+        let layout = layout_diagram(&ir);
+        assert!(
+            layout.clusters.is_empty(),
+            "empty cluster should be filtered out"
+        );
+    }
+
+    // -- remap_for_direction edge cases --
+
+    #[test]
+    fn remap_bt_reverses_y() {
+        let mut x = vec![10.0, 20.0];
+        let mut y = vec![0.0, 100.0];
+        remap_for_direction(&mut x, &mut y, GraphDirection::BT);
+        // max_y was 100, so y[0] = 100-0 = 100, y[1] = 100-100 = 0
+        assert!((y[0] - 100.0).abs() < 1e-9);
+        assert!((y[1] - 0.0).abs() < 1e-9);
+        // x unchanged
+        assert!((x[0] - 10.0).abs() < 1e-9);
+        assert!((x[1] - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remap_lr_swaps_axes() {
+        let mut x = vec![10.0, 20.0];
+        let mut y = vec![0.0, 100.0];
+        remap_for_direction(&mut x, &mut y, GraphDirection::LR);
+        assert!((x[0] - 0.0).abs() < 1e-9);
+        assert!((x[1] - 100.0).abs() < 1e-9);
+        assert!((y[0] - 10.0).abs() < 1e-9);
+        assert!((y[1] - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remap_rl_swaps_and_mirrors() {
+        let mut x = vec![10.0, 20.0];
+        let mut y = vec![0.0, 100.0];
+        remap_for_direction(&mut x, &mut y, GraphDirection::RL);
+        // After swap: x becomes old y, y becomes old x
+        // Then x is mirrored: max_old_y(=100) - old_y
+        assert!((x[0] - 100.0).abs() < 1e-9);
+        assert!((x[1] - 0.0).abs() < 1e-9);
+        assert!((y[0] - 10.0).abs() < 1e-9);
+        assert!((y[1] - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remap_tb_noop() {
+        let mut x = vec![10.0, 20.0];
+        let mut y = vec![0.0, 100.0];
+        remap_for_direction(&mut x, &mut y, GraphDirection::TB);
+        assert!((x[0] - 10.0).abs() < 1e-9);
+        assert!((y[0] - 0.0).abs() < 1e-9);
+    }
+
+    // -- LayoutConfig default values --
+
+    #[test]
+    fn layout_config_default_all_fields() {
+        let c = LayoutConfig::default();
+        assert!((c.node_width - 80.0).abs() < 1e-9);
+        assert!((c.node_height - 40.0).abs() < 1e-9);
+        assert!((c.node_spacing - 30.0).abs() < 1e-9);
+        assert!((c.layer_spacing - 60.0).abs() < 1e-9);
+        assert!((c.cluster_padding - 10.0).abs() < 1e-9);
+        assert_eq!(c.max_crossing_iterations, 24);
+        assert_eq!(c.iteration_budget, 10_000);
+        assert!(!c.collapse_clusters);
+    }
+
+    #[test]
+    fn layout_config_from_ir_no_degradation() {
+        let ir = make_test_ir(&["A"], &[], GraphDirection::TB);
+        let config = LayoutConfig::from_ir(&ir);
+        // Should use default values when no degradation
+        assert_eq!(config.max_crossing_iterations, 24);
+        assert_eq!(config.iteration_budget, 10_000);
+        assert!(!config.collapse_clusters);
+    }
+
+    // -- Port-based edge routing --
+
+    #[test]
+    fn edge_with_port_endpoints() {
+        let mut ir = make_test_ir(&["A", "B"], &[], GraphDirection::TB);
+        ir.ports.push(IrPort {
+            node: IrNodeId(0),
+            name: "p0".to_string(),
+            side_hint: IrPortSideHint::Auto,
+            span: dummy_span(),
+        });
+        ir.ports.push(IrPort {
+            node: IrNodeId(1),
+            name: "p1".to_string(),
+            side_hint: IrPortSideHint::Auto,
+            span: dummy_span(),
+        });
+        ir.edges.push(IrEdge {
+            from: IrEndpoint::Port(IrPortId(0)),
+            to: IrEndpoint::Port(IrPortId(1)),
+            arrow: "-->".to_string(),
+            label: None,
+            style_ref: None,
+            span: dummy_span(),
+        });
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.edges.len(), 1);
+        assert_eq!(layout.ports.len(), 2);
+    }
+
+    // -- Self-loop edge handling --
+
+    #[test]
+    fn self_loop_edge_skipped() {
+        let ir = make_test_ir(&["A"], &[(0, 0)], GraphDirection::TB);
+        let config = LayoutConfig::default();
+        let graph = LayoutGraph::from_ir(&ir, &config);
+        // Self-loops should be removed from adjacency
+        assert!(graph.adj[0].is_empty(), "self-loops should be removed");
+    }
+
+    // -- Disconnected components --
+
+    #[test]
+    fn disconnected_nodes_all_on_layer_zero() {
+        let ir = make_test_ir(&["A", "B", "C", "D", "E"], &[], GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        // All disconnected nodes should have the same y
+        let y0 = layout.nodes[0].cy;
+        for n in &layout.nodes {
+            assert!(
+                (n.cy - y0).abs() < 1e-9,
+                "disconnected nodes should share same y layer"
+            );
+        }
+    }
+
+    #[test]
+    fn disconnected_nodes_no_overlap() {
+        let ir = make_test_ir(&["A", "B", "C", "D"], &[], GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        for i in 0..layout.nodes.len() {
+            for j in (i + 1)..layout.nodes.len() {
+                assert!(
+                    !layout.nodes[i].overlaps(&layout.nodes[j]),
+                    "disconnected nodes {i} and {j} overlap"
+                );
+            }
+        }
+    }
+
+    // -- Large graph doesn't panic --
+
+    #[test]
+    fn large_graph_completes() {
+        // 50-node chain should complete without panic
+        let labels: Vec<String> = (0..50).map(|i| format!("N{i}")).collect();
+        let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let edges: Vec<(usize, usize)> = (0..49).map(|i| (i, i + 1)).collect();
+        let ir = make_test_ir(&label_refs, &edges, GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.nodes.len(), 50);
+        assert_eq!(layout.edges.len(), 49);
+        assert!(!layout.degraded);
+    }
+
+    // -- Multiple clusters --
+
+    #[test]
+    fn multiple_clusters_all_enclose_members() {
+        let ir = make_test_ir_with_clusters(
+            &["A", "B", "C", "D"],
+            &[(0, 1), (2, 3)],
+            &[(0, &[0, 1]), (1, &[2, 3])],
+            GraphDirection::TB,
+        );
+        let layout = layout_diagram(&ir);
+        assert_eq!(layout.clusters.len(), 2);
+        for cluster in &layout.clusters {
+            let cid = cluster.ir_cluster.0;
+            let member_ids: &[usize] = if cid == 0 { &[0, 1] } else { &[2, 3] };
+            for &mid in member_ids {
+                let node = &layout.nodes[mid];
+                assert!(
+                    node.left() >= cluster.x,
+                    "node {mid} left outside cluster {cid}"
+                );
+                assert!(
+                    node.right() <= cluster.x + cluster.width,
+                    "node {mid} right outside cluster {cid}"
+                );
+            }
+        }
+    }
+
+    // -- Edge routing route_grid channels --
+
+    #[test]
+    fn route_grid_has_channels_for_edges() {
+        let ir = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2)], GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        // With 2 edges, should have some channels
+        assert!(!layout.route_grid.vertical_channels.is_empty());
+        assert!(!layout.route_grid.horizontal_channels.is_empty());
+    }
+
+    // -- count_crossings_at_with boundary check --
+
+    #[test]
+    fn count_crossings_at_first_layer() {
+        let layers = vec![vec![0, 1], vec![2, 3]];
+        let adj = vec![vec![3], vec![2], vec![], vec![]];
+        let mut scratch = CrossingScratch::new();
+        let c = count_crossings_at_with(&layers, 0, &adj, &mut scratch);
+        // Only checks pair (layer 0, layer 1)
+        assert_eq!(c, 1);
+    }
+
+    #[test]
+    fn count_crossings_at_last_layer() {
+        let layers = vec![vec![0, 1], vec![2, 3]];
+        let adj = vec![vec![3], vec![2], vec![], vec![]];
+        let mut scratch = CrossingScratch::new();
+        let c = count_crossings_at_with(&layers, 1, &adj, &mut scratch);
+        // Only checks pair (layer 0, layer 1)
+        assert_eq!(c, 1);
+    }
+
+    // -- PortSide coverage --
+
+    #[test]
+    fn port_side_variants_debug() {
+        // Ensure all PortSide variants are constructible and debug-printable
+        let sides = [
+            PortSide::Top,
+            PortSide::Bottom,
+            PortSide::Left,
+            PortSide::Right,
+        ];
+        for side in &sides {
+            let _ = format!("{side:?}");
+        }
+    }
+
+    // -- DiagramLayout clone --
+
+    #[test]
+    fn diagram_layout_clone() {
+        let ir = make_test_ir(&["A", "B"], &[(0, 1)], GraphDirection::TB);
+        let layout = layout_diagram(&ir);
+        let cloned = layout.clone();
+        assert_eq!(cloned.nodes.len(), layout.nodes.len());
+        assert_eq!(cloned.edges.len(), layout.edges.len());
+        assert!((cloned.quality.total_score - layout.quality.total_score).abs() < 1e-12);
+    }
 }
