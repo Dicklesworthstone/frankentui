@@ -778,14 +778,10 @@ mod gpu {
                 ..Default::default()
             });
 
-            let surface = instance
-                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-                .map_err(|e| RendererError::SurfaceError(e.to_string()))?;
-
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
+                    compatible_surface: None,
                     force_fallback_adapter: false,
                 })
                 .await
@@ -800,6 +796,12 @@ mod gpu {
                 })
                 .await
                 .map_err(|e| RendererError::DeviceError(e.to_string()))?;
+
+            // Only touch the canvas after we know we have an adapter/device.
+            // This keeps the Canvas2D fallback path viable when WebGPU is unavailable.
+            let surface = instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+                .map_err(|e| RendererError::SurfaceError(e.to_string()))?;
 
             let geometry = grid_geometry(
                 cols,
