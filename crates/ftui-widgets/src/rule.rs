@@ -114,7 +114,7 @@ impl<'a> Rule<'a> {
         for x in start..end {
             let mut cell = Cell::from_char(ch);
             apply_style(&mut cell, style);
-            buf.set(x, y, cell);
+            buf.set_fast(x, y, cell);
         }
     }
 }

@@ -990,7 +990,7 @@ fn draw_vertical_dividers(
         for y in row_area.y..row_area.bottom() {
             let mut cell = Cell::from_char(divider_char);
             apply_style(&mut cell, style);
-            buf.set(x, y, cell);
+            buf.set_fast(x, y, cell);
         }
     }
 }

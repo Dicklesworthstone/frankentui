@@ -171,16 +171,16 @@ impl<'a> ConstraintOverlay<'a> {
     fn draw_requested_outline(&self, area: Rect, buf: &mut Buffer, cell: Cell) {
         // Draw corner dots to indicate requested size boundary
         if area.width >= 1 && area.height >= 1 {
-            buf.set(area.x, area.y, cell);
+            buf.set_fast(area.x, area.y, cell);
         }
         if area.width >= 2 && area.height >= 1 {
-            buf.set(area.right().saturating_sub(1), area.y, cell);
+            buf.set_fast(area.right().saturating_sub(1), area.y, cell);
         }
         if area.width >= 1 && area.height >= 2 {
-            buf.set(area.x, area.bottom().saturating_sub(1), cell);
+            buf.set_fast(area.x, area.bottom().saturating_sub(1), cell);
         }
         if area.width >= 2 && area.height >= 2 {
-            buf.set(
+            buf.set_fast(
                 area.right().saturating_sub(1),
                 area.bottom().saturating_sub(1),
                 cell,
