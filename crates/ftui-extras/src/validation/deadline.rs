@@ -279,11 +279,7 @@ impl SurvivalStats {
         // Approximate k from CV (empirical relationship for Weibull)
         // CV = sqrt(Gamma(1 + 2/k) / Gamma(1 + 1/k)^2 - 1)
         // For k > 1: CV ≈ 1.2 / k (rough approximation)
-        let k = if cv > 0.0 {
-            (1.2 / cv).clamp(0.5, 10.0)
-        } else {
-            1.5
-        };
+        let k = (1.2 / cv).clamp(0.5, 10.0);
 
         // λ = mean / Gamma(1 + 1/k)
         // Approximate Gamma(1 + 1/k) ≈ 1 - 0.5772/k + 0.98905/k^2 for k > 1
@@ -609,9 +605,41 @@ mod tests {
         stats.record(Duration::from_millis(100));
 
         // Mean should converge towards 0.1 (100ms)
-        assert!(stats.mean() > 0.05 && stats.mean() < 0.15);
-        // Variance should be small for identical samples
-        // (Note: EMA updates mean variance won't be exactly 0)
+        let mean = stats.mean();
+        assert!(mean > 0.05 && mean < 0.15);
+
+        let variance = stats.variance();
+        assert!(variance >= 0.0);
+        assert!(variance.is_finite());
+
+        let std_dev = stats.std_dev();
+        assert!(std_dev >= 0.0);
+        assert!(std_dev.is_finite());
+
+        assert!(stats.lambda() > 0.0);
+        assert!(stats.lambda().is_finite());
+        assert!(stats.k() > 0.0);
+        assert!(stats.k().is_finite());
+    }
+
+    #[test]
+    fn stats_default_uses_window_size_100() {
+        let stats = SurvivalStats::default();
+        assert_eq!(stats.sample_count(), 0);
+        assert_eq!(stats.window_size, 100);
+    }
+
+    #[test]
+    fn stats_estimate_weibull_empty_is_noop() {
+        let mut stats = SurvivalStats::new(10);
+        let lambda_before = stats.lambda;
+        let k_before = stats.k;
+
+        stats.estimate_weibull();
+
+        assert_eq!(stats.sample_count(), 0);
+        assert!((stats.lambda - lambda_before).abs() < 1e-12);
+        assert!((stats.k - k_before).abs() < 1e-12);
     }
 
     // -- DeadlineConfig tests --
@@ -785,7 +813,7 @@ mod tests {
     fn property_random_durations() {
         // Test with a variety of durations to ensure decision is reasonable
         let config = DeadlineConfig::new(Duration::from_millis(200))
-            .with_losses(0.7, 0.4, 0.5, 0.3)
+            .with_losses(0.7, 0.4, 0.3, 0.3)
             .with_min_samples(5);
         let mut controller = DeadlineController::new(config.clone());
 
@@ -796,7 +824,7 @@ mod tests {
         }
 
         // Test decisions at various elapsed times
-        for elapsed_ms in [10, 50, 100, 150, 180] {
+        for elapsed_ms in [10, 50, 100, 150, 180, 199] {
             let rationale = controller.decide_with_rationale(Duration::from_millis(elapsed_ms));
 
             // Decision should be consistent with loss comparison
