@@ -1244,6 +1244,7 @@ mod tests {
     fn config_builder_chain() {
         let config = StormConfig::default()
             .with_seed(99)
+            .with_pattern(StormPattern::Pathological { count: 3 })
             .with_initial_size(100, 50)
             .with_delay_range(10, 100)
             .with_size_bounds(30, 200, 10, 80)
@@ -1260,6 +1261,7 @@ mod tests {
         assert_eq!(config.max_height, 80);
         assert_eq!(config.case_name, "my_test");
         assert!(!config.logging_enabled);
+        assert_eq!(config.pattern, StormPattern::Pathological { count: 3 });
     }
 
     #[test]
@@ -1877,5 +1879,106 @@ mod tests {
         assert!(jsonl.contains(r#""total_bytes":10000"#));
         assert!(jsonl.contains(r#""checksum":"xyz789""#));
         assert!(jsonl.contains(r#""duration_ms":"#));
+    }
+
+    #[test]
+    fn logger_log_start_includes_pattern_and_event_count() {
+        let config = StormConfig::default()
+            .with_seed(7)
+            .with_case_name("start_case")
+            .with_pattern(StormPattern::Burst { count: 3 });
+        let storm = ResizeStorm::new(config);
+        let mut logger = StormLogger::new(storm.run_id());
+        let caps = TerminalCapabilities::default();
+
+        logger.log_start(&storm, &caps);
+        let jsonl = logger.to_jsonl();
+
+        assert!(jsonl.contains(r#""event":"storm_start""#));
+        assert!(jsonl.contains(r#""case":"start_case""#));
+        assert!(jsonl.contains(r#""pattern":"burst""#));
+        assert!(jsonl.contains(r#""event_count":3"#));
+        assert!(jsonl.contains(r#""capabilities":"#));
+    }
+
+    #[test]
+    fn logger_log_resize_uses_event_jsonl_shape() {
+        let mut logger = StormLogger::new("run-resize");
+        let event = ResizeEvent::new(111, 37, 12, 4);
+        logger.log_resize(&event);
+
+        let jsonl = logger.to_jsonl();
+        assert!(jsonl.contains(r#""event":"storm_resize""#));
+        assert!(jsonl.contains(r#""idx":4"#));
+        assert!(jsonl.contains(r#""width":111"#));
+        assert!(jsonl.contains(r#""height":37"#));
+        assert!(jsonl.contains(r#""delay_ms":12"#));
+        assert!(jsonl.contains(r#""elapsed_ms":"#));
+    }
+
+    #[test]
+    fn logger_write_to_file_roundtrip() {
+        let mut logger = StormLogger::new("run-file");
+        logger.log_error("disk test");
+
+        let path = std::env::temp_dir().join(format!(
+            "resize_storm_logger_{}_{}.jsonl",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+
+        logger
+            .write_to_file(&path)
+            .expect("write_to_file should succeed");
+        let body = std::fs::read_to_string(&path).expect("file should be readable");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(body.contains(r#""event":"storm_error""#));
+        assert!(body.ends_with('\n'));
+    }
+
+    #[test]
+    fn terminal_capabilities_to_json_escapes_special_chars() {
+        let caps = TerminalCapabilities {
+            term: "xterm\"weird".to_string(),
+            colorterm: "line1\nline2".to_string(),
+            no_color: false,
+            in_mux: true,
+            mux_name: Some("tmux\\session".to_string()),
+            sync_output: true,
+        };
+
+        let json = caps.to_json();
+        assert!(json.contains(r#""term":"xterm\"weird""#));
+        assert!(json.contains(r#""colorterm":"line1\nline2""#));
+        assert!(json.contains(r#""mux_name":"tmux\\session""#));
+    }
+
+    #[test]
+    fn recorded_storm_record_copies_config_events_and_checksum() {
+        let config = StormConfig::default()
+            .with_seed(123)
+            .with_case_name("record-copy")
+            .with_pattern(StormPattern::Burst { count: 6 });
+        let storm = ResizeStorm::new(config);
+        let recorded = RecordedStorm::record(&storm);
+
+        assert_eq!(recorded.config.seed, 123);
+        assert_eq!(recorded.config.case_name, "record-copy");
+        assert_eq!(recorded.events, storm.events);
+        assert_eq!(recorded.sequence_checksum, storm.sequence_checksum());
+        assert!(recorded.expected_output_checksum.is_none());
+    }
+
+    #[test]
+    fn compute_output_checksum_binary_payload_is_stable() {
+        let bytes = [0_u8, 255, 17, 42, b'\n', b'"', b'\\'];
+        let first = compute_output_checksum(&bytes);
+        let second = compute_output_checksum(&bytes);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 16);
     }
 }
