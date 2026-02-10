@@ -987,4 +987,437 @@ mod tests {
         render_diff(&diff, &layout, &config, area, &mut buf);
         // Should not panic
     }
+
+    // =========================================================================
+    // Additional diff algorithm tests (bd-2b8nu)
+    // =========================================================================
+
+    #[test]
+    fn diff_detects_changed_edge_label() {
+        let mut old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        old.labels.push(IrLabel {
+            text: "old label".to_string(),
+            span: make_test_span(),
+        });
+        old.edges[0].label = Some(IrLabelId(old.labels.len() - 1));
+
+        let mut new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        new.labels.push(IrLabel {
+            text: "new label".to_string(),
+            span: make_test_span(),
+        });
+        new.edges[0].label = Some(IrLabelId(new.labels.len() - 1));
+
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_edges, 1);
+        let changed = diff
+            .edges
+            .iter()
+            .find(|e| e.status == DiffStatus::Changed)
+            .unwrap();
+        assert_eq!(changed.from_id, "A");
+        assert_eq!(changed.to_id, "B");
+        assert!(changed.old_edge_idx.is_some());
+    }
+
+    #[test]
+    fn diff_edge_label_added_counts_as_change() {
+        // Old edge has no label, new edge has label
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let mut new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        new.labels.push(IrLabel {
+            text: "label".to_string(),
+            span: make_test_span(),
+        });
+        new.edges[0].label = Some(IrLabelId(new.labels.len() - 1));
+
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_edges, 1);
+    }
+
+    #[test]
+    fn diff_node_classes_change() {
+        let old = make_test_ir(&["A"], &[]);
+        let mut new = make_test_ir(&["A"], &[]);
+        new.nodes[0].classes = vec!["highlighted".to_string()];
+
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_nodes, 1);
+    }
+
+    #[test]
+    fn diff_duplicate_edges_matched_independently() {
+        // Old has two A->B edges, new has two A->B edges
+        let old = make_test_ir(&["A", "B"], &[(0, 1), (0, 1)]);
+        let new = make_test_ir(&["A", "B"], &[(0, 1), (0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.added_edges, 0);
+        assert_eq!(diff.removed_edges, 0);
+        assert_eq!(diff.edges.len(), 2);
+        for de in &diff.edges {
+            assert_eq!(de.status, DiffStatus::Unchanged);
+        }
+    }
+
+    #[test]
+    fn diff_duplicate_edge_added_one() {
+        // Old has one A->B edge, new has two A->B edges
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let new = make_test_ir(&["A", "B"], &[(0, 1), (0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.added_edges, 1);
+        assert_eq!(diff.removed_edges, 0);
+        // One matched (unchanged), one added
+        let unchanged_count = diff
+            .edges
+            .iter()
+            .filter(|e| e.status == DiffStatus::Unchanged)
+            .count();
+        let added_count = diff
+            .edges
+            .iter()
+            .filter(|e| e.status == DiffStatus::Added)
+            .count();
+        assert_eq!(unchanged_count, 1);
+        assert_eq!(added_count, 1);
+    }
+
+    #[test]
+    fn diff_self_loop_edge() {
+        let old = make_test_ir(&["A"], &[]);
+        let new = make_test_ir(&["A"], &[(0, 0)]); // self-loop
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.added_edges, 1);
+        let added = diff
+            .edges
+            .iter()
+            .find(|e| e.status == DiffStatus::Added)
+            .unwrap();
+        assert_eq!(added.from_id, "A");
+        assert_eq!(added.to_id, "A");
+    }
+
+    #[test]
+    fn diff_self_loop_unchanged() {
+        let ir = make_test_ir(&["A"], &[(0, 0)]);
+        let diff = diff_diagrams(&ir, &ir);
+        assert!(diff.is_empty());
+        assert_eq!(diff.edges.len(), 1);
+        assert_eq!(diff.edges[0].status, DiffStatus::Unchanged);
+    }
+
+    #[test]
+    fn diff_removed_node_has_old_node_idx() {
+        let old = make_test_ir(&["A", "B", "C"], &[]);
+        let new = make_test_ir(&["A"], &[]);
+        let diff = diff_diagrams(&old, &new);
+        let removed_b = diff.nodes.iter().find(|n| n.id == "B").unwrap();
+        assert_eq!(removed_b.status, DiffStatus::Removed);
+        assert_eq!(removed_b.old_node_idx, Some(1));
+
+        let removed_c = diff.nodes.iter().find(|n| n.id == "C").unwrap();
+        assert_eq!(removed_c.status, DiffStatus::Removed);
+        assert_eq!(removed_c.old_node_idx, Some(2));
+    }
+
+    #[test]
+    fn diff_removed_edge_has_old_edge_idx() {
+        let old = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2)]);
+        let new = make_test_ir(&["A", "B", "C"], &[(0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        let removed = diff
+            .edges
+            .iter()
+            .find(|e| e.status == DiffStatus::Removed)
+            .unwrap();
+        assert_eq!(removed.old_edge_idx, Some(1));
+    }
+
+    #[test]
+    fn diff_node_reordering_stable() {
+        // Same nodes but different order in new IR
+        let old = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2)]);
+        let new = make_test_ir(&["C", "A", "B"], &[(1, 2), (2, 0)]);
+        let diff = diff_diagrams(&old, &new);
+        // All nodes matched by ID, so no adds/removes
+        assert_eq!(diff.added_nodes, 0);
+        assert_eq!(diff.removed_nodes, 0);
+        // Edges: old had A->B, B->C; new has A->B, B->C (same semantically)
+        assert_eq!(diff.added_edges, 0);
+        assert_eq!(diff.removed_edges, 0);
+    }
+
+    #[test]
+    fn diff_single_node_unchanged() {
+        let ir = make_test_ir(&["X"], &[]);
+        let diff = diff_diagrams(&ir, &ir);
+        assert!(diff.is_empty());
+        assert_eq!(diff.nodes.len(), 1);
+        assert_eq!(diff.nodes[0].id, "X");
+        assert_eq!(diff.nodes[0].status, DiffStatus::Unchanged);
+    }
+
+    #[test]
+    fn diff_is_empty_false_with_only_added_edges() {
+        let ir1 = make_test_ir(&["A", "B"], &[]);
+        let ir2 = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&ir1, &ir2);
+        assert!(!diff.is_empty());
+        assert_eq!(diff.added_edges, 1);
+        assert_eq!(diff.added_nodes, 0);
+    }
+
+    #[test]
+    fn diff_is_empty_false_with_only_changed_nodes() {
+        let old = make_test_ir(&["A"], &[]);
+        let mut new = make_test_ir(&["A"], &[]);
+        new.nodes[0].shape = NodeShape::Circle;
+        let diff = diff_diagrams(&old, &new);
+        assert!(!diff.is_empty());
+        assert_eq!(diff.changed_nodes, 1);
+    }
+
+    // =========================================================================
+    // DiffStatus tests (bd-2b8nu)
+    // =========================================================================
+
+    #[test]
+    fn diff_status_equality() {
+        assert_eq!(DiffStatus::Added, DiffStatus::Added);
+        assert_eq!(DiffStatus::Removed, DiffStatus::Removed);
+        assert_eq!(DiffStatus::Changed, DiffStatus::Changed);
+        assert_eq!(DiffStatus::Unchanged, DiffStatus::Unchanged);
+        assert_ne!(DiffStatus::Added, DiffStatus::Removed);
+        assert_ne!(DiffStatus::Changed, DiffStatus::Unchanged);
+    }
+
+    // =========================================================================
+    // DiffColors tests (bd-2b8nu)
+    // =========================================================================
+
+    #[test]
+    fn diff_colors_are_distinct() {
+        assert_ne!(DiffColors::ADDED, DiffColors::REMOVED);
+        assert_ne!(DiffColors::ADDED, DiffColors::CHANGED);
+        assert_ne!(DiffColors::ADDED, DiffColors::UNCHANGED);
+        assert_ne!(DiffColors::REMOVED, DiffColors::CHANGED);
+        assert_ne!(DiffColors::REMOVED, DiffColors::UNCHANGED);
+        assert_ne!(DiffColors::CHANGED, DiffColors::UNCHANGED);
+    }
+
+    #[test]
+    fn diff_colors_rgb_values() {
+        // Green for added
+        assert_eq!(DiffColors::ADDED, PackedRgba::rgb(46, 204, 113));
+        // Red for removed
+        assert_eq!(DiffColors::REMOVED, PackedRgba::rgb(231, 76, 60));
+        // Yellow for changed
+        assert_eq!(DiffColors::CHANGED, PackedRgba::rgb(241, 196, 15));
+        // Gray for unchanged
+        assert_eq!(DiffColors::UNCHANGED, PackedRgba::rgb(100, 100, 100));
+    }
+
+    // =========================================================================
+    // render helper edge cases (bd-2b8nu)
+    // =========================================================================
+
+    #[test]
+    fn recolor_rect_border_zero_size_noop() {
+        let mut buf = make_test_buffer(10, 10);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        recolor_rect_border(rect, DiffColors::ADDED, &mut buf);
+        // Should not panic, no cells modified
+    }
+
+    #[test]
+    fn recolor_rect_border_single_cell() {
+        let mut buf = make_test_buffer(10, 10);
+        buf.set_fast(5, 5, Cell::from_char('X'));
+        let rect = Rect {
+            x: 5,
+            y: 5,
+            width: 1,
+            height: 1,
+        };
+        recolor_rect_border(rect, DiffColors::ADDED, &mut buf);
+        let cell = buf.get(5, 5).unwrap();
+        assert_eq!(cell.fg, DiffColors::ADDED);
+    }
+
+    #[test]
+    fn dim_rect_interior_too_small_noop() {
+        let mut buf = make_test_buffer(10, 10);
+        // 2x2 rect is too small for interior (needs >=3 in both dimensions)
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        dim_rect_interior(rect, DiffColors::UNCHANGED, &mut buf);
+        // Should not panic, no cells modified
+    }
+
+    #[test]
+    fn dim_rect_interior_dims_non_space_content() {
+        let mut buf = make_test_buffer(10, 10);
+        // Fill interior cells with content
+        buf.set_fast(2, 2, Cell::from_char('A'));
+        buf.set_fast(3, 2, Cell::from_char('B'));
+        let rect = Rect {
+            x: 1,
+            y: 1,
+            width: 4,
+            height: 4,
+        };
+        dim_rect_interior(rect, DiffColors::UNCHANGED, &mut buf);
+        let cell_a = buf.get(2, 2).unwrap();
+        assert_eq!(cell_a.fg, DiffColors::UNCHANGED);
+        let cell_b = buf.get(3, 2).unwrap();
+        assert_eq!(cell_b.fg, DiffColors::UNCHANGED);
+    }
+
+    // =========================================================================
+    // Render diff with edge changes (bd-2b8nu)
+    // =========================================================================
+
+    #[test]
+    fn render_diff_changed_edge_has_color() {
+        let old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let mut new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        new.edges[0].arrow = "-.->".to_string();
+        let diff = diff_diagrams(&old, &new);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 30,
+        };
+        let mut buf = make_test_buffer(60, 30);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // The changed edge should have yellow-colored waypoint cells
+        let has_changed_color = (0..60)
+            .any(|x| (0..30).any(|y| buf.get(x, y).is_some_and(|c| c.fg == DiffColors::CHANGED)));
+        assert!(
+            has_changed_color,
+            "changed edge should have yellow-colored cells"
+        );
+    }
+
+    #[test]
+    fn render_diff_small_area_does_not_panic() {
+        let old = make_test_ir(&["A", "B", "C"], &[(0, 1), (1, 2)]);
+        let new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+        let config = MermaidConfig::default();
+        let layout = mermaid_layout_diagram(&new, &config);
+        // Very small area with removed items (legend needs space)
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 5,
+            height: 5,
+        };
+        let mut buf = make_test_buffer(5, 5);
+        render_diff(&diff, &layout, &config, area, &mut buf);
+        // Should not panic even with tiny area
+    }
+
+    // =========================================================================
+    // Edge matching with node not found (bd-2b8nu)
+    // =========================================================================
+
+    #[test]
+    fn diff_edge_with_same_label_unchanged() {
+        let mut old = make_test_ir(&["A", "B"], &[(0, 1)]);
+        old.labels.push(IrLabel {
+            text: "same".to_string(),
+            span: make_test_span(),
+        });
+        old.edges[0].label = Some(IrLabelId(old.labels.len() - 1));
+
+        let mut new = make_test_ir(&["A", "B"], &[(0, 1)]);
+        new.labels.push(IrLabel {
+            text: "same".to_string(),
+            span: make_test_span(),
+        });
+        new.edges[0].label = Some(IrLabelId(new.labels.len() - 1));
+
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_edges, 0);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn diff_many_nodes_only_one_changed() {
+        let old = make_test_ir(
+            &["A", "B", "C", "D", "E"],
+            &[(0, 1), (1, 2), (2, 3), (3, 4)],
+        );
+        let mut new = make_test_ir(
+            &["A", "B", "C", "D", "E"],
+            &[(0, 1), (1, 2), (2, 3), (3, 4)],
+        );
+        new.nodes[2].shape = NodeShape::Hexagon;
+
+        let diff = diff_diagrams(&old, &new);
+        assert_eq!(diff.changed_nodes, 1);
+        assert_eq!(diff.added_nodes, 0);
+        assert_eq!(diff.removed_nodes, 0);
+        assert_eq!(diff.changed_edges, 0);
+        let changed = diff
+            .nodes
+            .iter()
+            .find(|n| n.status == DiffStatus::Changed)
+            .unwrap();
+        assert_eq!(changed.id, "C");
+    }
+
+    #[test]
+    fn diff_total_node_count_consistent() {
+        let old = make_test_ir(&["A", "B", "C"], &[(0, 1)]);
+        let new = make_test_ir(&["B", "C", "D", "E"], &[(0, 1)]);
+        let diff = diff_diagrams(&old, &new);
+
+        // Total diff nodes should equal new nodes + removed nodes
+        let new_count = new.nodes.len();
+        let removed = diff.removed_nodes;
+        assert_eq!(diff.nodes.len(), new_count + removed);
+
+        // Verify counts add up
+        let added = diff
+            .nodes
+            .iter()
+            .filter(|n| n.status == DiffStatus::Added)
+            .count();
+        let unchanged = diff
+            .nodes
+            .iter()
+            .filter(|n| n.status == DiffStatus::Unchanged)
+            .count();
+        let changed = diff
+            .nodes
+            .iter()
+            .filter(|n| n.status == DiffStatus::Changed)
+            .count();
+        let removed_count = diff
+            .nodes
+            .iter()
+            .filter(|n| n.status == DiffStatus::Removed)
+            .count();
+        assert_eq!(
+            added + unchanged + changed + removed_count,
+            diff.nodes.len()
+        );
+        assert_eq!(added, diff.added_nodes);
+        assert_eq!(removed_count, diff.removed_nodes);
+        assert_eq!(changed, diff.changed_nodes);
+    }
 }
