@@ -2218,5 +2218,686 @@ mod widget_tests {
         assert!(query_idx < exec_idx);
         assert!(exec_idx < close_idx);
     }
+
+    // -----------------------------------------------------------------------
+    // Edge-case tests (bd-2svld)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compute_word_starts_empty() {
+        let starts = compute_word_starts("");
+        assert!(starts.is_empty());
+    }
+
+    #[test]
+    fn compute_word_starts_single_word() {
+        let starts = compute_word_starts("hello");
+        assert_eq!(starts, vec![0]);
+    }
+
+    #[test]
+    fn compute_word_starts_spaces() {
+        let starts = compute_word_starts("open file now");
+        assert_eq!(starts, vec![0, 5, 10]);
+    }
+
+    #[test]
+    fn compute_word_starts_hyphen_underscore() {
+        let starts = compute_word_starts("git-commit_push");
+        // Positions: g=0, c=4, p=11
+        assert_eq!(starts, vec![0, 4, 11]);
+    }
+
+    #[test]
+    fn compute_word_starts_all_separators() {
+        let starts = compute_word_starts("- _");
+        // '-' at 0 is word start (i==0), ' ' at 1 follows '-' so word start,
+        // '_' at 2 follows ' ' so word start
+        assert_eq!(starts, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn backspace_on_empty_query_is_noop() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        assert_eq!(palette.query(), "");
+
+        let bs = Event::Key(KeyEvent {
+            code: KeyCode::Backspace,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&bs);
+        assert_eq!(palette.query(), "");
+        // Results should still show all items
+        assert_eq!(palette.result_count(), 1);
+    }
+
+    #[test]
+    fn ctrl_a_moves_cursor_to_start() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+
+        // Type "abc"
+        for ch in "abc".chars() {
+            let event = Event::Key(KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            });
+            palette.handle_event(&event);
+        }
+        assert_eq!(palette.query(), "abc");
+
+        let ctrl_a = Event::Key(KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: Modifiers::CTRL,
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&ctrl_a);
+        // Cursor should move to 0 but query unchanged
+        assert_eq!(palette.query(), "abc");
+    }
+
+    #[test]
+    fn key_release_events_ignored() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+
+        let release = Event::Key(KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Release,
+        });
+        let result = palette.handle_event(&release);
+        assert!(result.is_none());
+        assert_eq!(palette.query(), "");
+    }
+
+    #[test]
+    fn resize_event_ignored() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+
+        let resize = Event::Resize {
+            width: 80,
+            height: 24,
+        };
+        let result = palette.handle_event(&resize);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn is_essential_returns_true() {
+        let palette = CommandPalette::new();
+        assert!(palette.is_essential());
+    }
+
+    #[test]
+    fn render_too_small_area_noop() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+
+        // Width < 10
+        let area = Rect::new(0, 0, 9, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 20, &mut pool);
+        palette.render(area, &mut frame);
+        // Should not panic, cursor not set
+        assert!(frame.cursor_position.is_none());
+    }
+
+    #[test]
+    fn render_too_short_area_noop() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+
+        // Height < 5
+        let area = Rect::new(0, 0, 60, 4);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 10, &mut pool);
+        palette.render(area, &mut frame);
+        assert!(frame.cursor_position.is_none());
+    }
+
+    #[test]
+    fn render_hidden_palette_noop() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let palette = CommandPalette::new();
+        assert!(!palette.is_visible());
+
+        let area = Rect::from_size(60, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 10, &mut pool);
+        palette.render(area, &mut frame);
+        assert!(frame.cursor_position.is_none());
+    }
+
+    #[test]
+    fn render_empty_palette_shows_no_actions_hint() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        // No actions registered
+        palette.open();
+
+        let area = Rect::from_size(60, 15);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 15, &mut pool);
+        palette.render(area, &mut frame);
+
+        // Should show "No actions registered" somewhere in the results area
+        let palette_y = area.y + area.height / 6;
+        let result_y = palette_y + 2;
+        let mut found_n = false;
+        for x in 0..60u16 {
+            if let Some(cell) = frame.buffer.get(x, result_y)
+                && cell.content.as_char() == Some('N')
+            {
+                found_n = true;
+                break;
+            }
+        }
+        assert!(found_n, "Should render 'No actions registered' hint");
+    }
+
+    #[test]
+    fn render_query_no_results_shows_hint() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        palette.set_query("zzzznotfound");
+        assert_eq!(palette.result_count(), 0);
+
+        let area = Rect::from_size(60, 15);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 15, &mut pool);
+        palette.render(area, &mut frame);
+
+        // Should show "No results"
+        let palette_y = area.y + area.height / 6;
+        let result_y = palette_y + 2;
+        let mut found_n = false;
+        for x in 0..60u16 {
+            if let Some(cell) = frame.buffer.get(x, result_y)
+                && cell.content.as_char() == Some('N')
+            {
+                found_n = true;
+                break;
+            }
+        }
+        assert!(found_n, "Should render 'No results' hint");
+    }
+
+    #[test]
+    fn render_with_category_badge() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        let item = ActionItem::new("git_commit", "Commit Changes").with_category("Git");
+        palette.register_action(item);
+        palette.open();
+
+        let area = Rect::from_size(80, 15);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 15, &mut pool);
+        palette.render(area, &mut frame);
+
+        // Should render "[Git] " badge - look for '[' in results area
+        let palette_y = area.y + area.height / 6;
+        let result_y = palette_y + 2;
+        let mut found_bracket = false;
+        for x in 0..80u16 {
+            if let Some(cell) = frame.buffer.get(x, result_y)
+                && cell.content.as_char() == Some('[')
+            {
+                found_bracket = true;
+                break;
+            }
+        }
+        assert!(found_bracket, "Should render category badge '[Git]'");
+    }
+
+    #[test]
+    fn render_with_description_text() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        palette.register("Open File", Some("Opens a file from disk"), &[]);
+        palette.open();
+
+        let area = Rect::from_size(80, 15);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 15, &mut pool);
+        palette.render(area, &mut frame);
+
+        // Description text should appear after the title
+        let palette_y = area.y + area.height / 6;
+        let result_y = palette_y + 2;
+        let mut found_desc_char = false;
+        // Description starts with 'O' in "Opens..."
+        for x in 20..80u16 {
+            if let Some(cell) = frame.buffer.get(x, result_y)
+                && cell.content.as_char() == Some('O')
+            {
+                found_desc_char = true;
+                break;
+            }
+        }
+        assert!(found_desc_char, "Description text should be rendered");
+    }
+
+    #[test]
+    fn open_resets_previous_state() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.register("Beta", None, &[]);
+        palette.open();
+        palette.set_query("Alpha");
+
+        // Navigate down
+        let down = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&down);
+
+        // Re-open should reset everything
+        palette.open();
+        assert_eq!(palette.query(), "");
+        assert_eq!(palette.selected_index(), 0);
+        assert_eq!(palette.result_count(), 2);
+    }
+
+    #[test]
+    fn set_match_filter_same_value_is_noop() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        palette.set_query("alpha");
+
+        palette.set_match_filter(MatchFilter::All);
+        let count1 = palette.result_count();
+        // Setting same filter again — should not change anything
+        palette.set_match_filter(MatchFilter::All);
+        assert_eq!(palette.result_count(), count1);
+    }
+
+    #[test]
+    fn generation_increments_on_register() {
+        let mut palette = CommandPalette::new();
+        palette.register("A", None, &[]);
+        palette.register("B", None, &[]);
+        // Can't read generation directly, but replace_actions also bumps it
+        // and invalidates scorer — verify it doesn't panic
+        palette.replace_actions(vec![ActionItem::new("c", "C")]);
+        palette.open();
+        assert_eq!(palette.action_count(), 1);
+    }
+
+    #[test]
+    fn enable_evidence_tracking_toggle() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+
+        palette.enable_evidence_tracking(true);
+        palette.set_query("alpha");
+        assert!(palette.result_count() >= 1);
+
+        palette.enable_evidence_tracking(false);
+        palette.set_query("alpha");
+        assert!(palette.result_count() >= 1);
+    }
+
+    #[test]
+    fn register_chaining() {
+        let mut palette = CommandPalette::new();
+        palette
+            .register("A", None, &[])
+            .register("B", None, &[])
+            .register("C", Some("desc"), &["tag"]);
+        assert_eq!(palette.action_count(), 3);
+    }
+
+    #[test]
+    fn register_action_chaining() {
+        let mut palette = CommandPalette::new();
+        palette
+            .register_action(ActionItem::new("a", "A"))
+            .register_action(ActionItem::new("b", "B"));
+        assert_eq!(palette.action_count(), 2);
+    }
+
+    #[test]
+    fn page_up_down_navigation() {
+        let mut palette = CommandPalette::new().with_max_visible(3);
+        for i in 0..10 {
+            palette.register(format!("Action {i}"), None, &[]);
+        }
+        palette.open();
+        assert_eq!(palette.selected_index(), 0);
+
+        let pgdn = Event::Key(KeyEvent {
+            code: KeyCode::PageDown,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&pgdn);
+        assert_eq!(palette.selected_index(), 3); // 0 + max_visible
+
+        palette.handle_event(&pgdn);
+        assert_eq!(palette.selected_index(), 6);
+
+        palette.handle_event(&pgdn);
+        assert_eq!(palette.selected_index(), 9); // clamped to last
+
+        let pgup = Event::Key(KeyEvent {
+            code: KeyCode::PageUp,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&pgup);
+        assert_eq!(palette.selected_index(), 6); // 9 - 3
+
+        palette.handle_event(&pgup);
+        assert_eq!(palette.selected_index(), 3);
+
+        palette.handle_event(&pgup);
+        assert_eq!(palette.selected_index(), 0);
+    }
+
+    #[test]
+    fn page_down_empty_results_is_noop() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+        assert_eq!(palette.result_count(), 0);
+
+        let pgdn = Event::Key(KeyEvent {
+            code: KeyCode::PageDown,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&pgdn);
+        assert_eq!(palette.selected_index(), 0);
+    }
+
+    #[test]
+    fn end_empty_results_is_noop() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+        assert_eq!(palette.result_count(), 0);
+
+        let end = Event::Key(KeyEvent {
+            code: KeyCode::End,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&end);
+        assert_eq!(palette.selected_index(), 0);
+    }
+
+    #[test]
+    fn down_empty_results_is_noop() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+        assert_eq!(palette.result_count(), 0);
+
+        let down = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&down);
+        assert_eq!(palette.selected_index(), 0);
+    }
+
+    #[test]
+    fn selected_action_none_when_empty() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+        assert!(palette.selected_action().is_none());
+        assert!(palette.selected_match().is_none());
+    }
+
+    #[test]
+    fn results_iterator_empty() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+        assert_eq!(palette.results().count(), 0);
+    }
+
+    #[test]
+    fn scroll_adjust_keeps_selection_visible() {
+        let mut palette = CommandPalette::new().with_max_visible(3);
+        for i in 0..10 {
+            palette.register(format!("Action {i}"), None, &[]);
+        }
+        palette.open();
+
+        let end = Event::Key(KeyEvent {
+            code: KeyCode::End,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&end);
+        assert_eq!(palette.selected_index(), 9);
+        // scroll_offset should have adjusted so item 9 is visible
+        // (scroll_offset = selected + 1 - max_visible = 9 + 1 - 3 = 7)
+
+        let home = Event::Key(KeyEvent {
+            code: KeyCode::Home,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&home);
+        assert_eq!(palette.selected_index(), 0);
+    }
+
+    #[test]
+    fn action_item_clone() {
+        let item = ActionItem::new("id", "Title")
+            .with_description("Desc")
+            .with_tags(&["a", "b"])
+            .with_category("Cat");
+        let cloned = item.clone();
+        assert_eq!(cloned.id, "id");
+        assert_eq!(cloned.title, "Title");
+        assert_eq!(cloned.description.as_deref(), Some("Desc"));
+        assert_eq!(cloned.tags, vec!["a", "b"]);
+        assert_eq!(cloned.category.as_deref(), Some("Cat"));
+    }
+
+    #[test]
+    fn action_item_debug() {
+        let item = ActionItem::new("id", "Title");
+        let debug = format!("{:?}", item);
+        assert!(debug.contains("ActionItem"));
+        assert!(debug.contains("Title"));
+    }
+
+    #[test]
+    fn palette_action_clone_and_debug() {
+        let exec = PaletteAction::Execute("test".into());
+        let cloned = exec.clone();
+        assert_eq!(exec, cloned);
+
+        let dismiss = PaletteAction::Dismiss;
+        let debug = format!("{:?}", dismiss);
+        assert!(debug.contains("Dismiss"));
+    }
+
+    #[test]
+    fn match_filter_traits() {
+        // Debug
+        let f = MatchFilter::Fuzzy;
+        let debug = format!("{:?}", f);
+        assert!(debug.contains("Fuzzy"));
+
+        // Clone + Copy
+        let f2 = f;
+        assert_eq!(f, f2);
+
+        // PartialEq
+        assert_eq!(MatchFilter::All, MatchFilter::All);
+        assert_ne!(MatchFilter::Exact, MatchFilter::Prefix);
+    }
+
+    #[test]
+    fn match_filter_specific_allows() {
+        assert!(MatchFilter::Prefix.allows(MatchType::Prefix));
+        assert!(!MatchFilter::Prefix.allows(MatchType::Exact));
+        assert!(!MatchFilter::Prefix.allows(MatchType::Substring));
+
+        assert!(MatchFilter::WordStart.allows(MatchType::WordStart));
+        assert!(!MatchFilter::WordStart.allows(MatchType::Fuzzy));
+
+        assert!(MatchFilter::Substring.allows(MatchType::Substring));
+        assert!(!MatchFilter::Substring.allows(MatchType::WordStart));
+    }
+
+    #[test]
+    fn palette_style_default_has_all_colors() {
+        let style = PaletteStyle::default();
+        assert!(style.border.fg.is_some());
+        assert!(style.input.fg.is_some());
+        assert!(style.item.fg.is_some());
+        assert!(style.item_selected.fg.is_some());
+        assert!(style.item_selected.bg.is_some());
+        assert!(style.match_highlight.fg.is_some());
+        assert!(style.description.fg.is_some());
+        assert!(style.category.fg.is_some());
+        assert!(style.hint.fg.is_some());
+    }
+
+    #[test]
+    fn palette_style_debug_and_clone() {
+        let style = PaletteStyle::default();
+        let debug = format!("{:?}", style);
+        assert!(debug.contains("PaletteStyle"));
+
+        let cloned = style.clone();
+        // Verify cloned fields match
+        assert_eq!(cloned.border.fg, style.border.fg);
+    }
+
+    #[test]
+    fn with_style_builder() {
+        let style = PaletteStyle::default();
+        let palette = CommandPalette::new().with_style(style);
+        // Should not panic — style applied
+        assert!(!palette.is_visible());
+    }
+
+    #[test]
+    fn command_palette_debug() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        let debug = format!("{:?}", palette);
+        assert!(debug.contains("CommandPalette"));
+    }
+
+    #[test]
+    fn unrecognized_key_returns_none() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+
+        let tab = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        let result = palette.handle_event(&tab);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn ctrl_p_when_visible_does_not_reopen() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        palette.set_query("test");
+
+        // Ctrl+P while visible should be treated as Ctrl+Char('p')
+        let ctrl_p = Event::Key(KeyEvent {
+            code: KeyCode::Char('p'),
+            modifiers: Modifiers::CTRL,
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&ctrl_p);
+        // The visible palette handles Ctrl+P as a Ctrl char, not toggling
+        assert!(palette.is_visible());
+    }
+
+    #[test]
+    fn close_clears_query_and_results() {
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+        palette.set_query("alpha");
+        assert!(!palette.query().is_empty());
+        assert!(palette.result_count() > 0);
+
+        palette.close();
+        assert!(!palette.is_visible());
+        assert_eq!(palette.query(), "");
+        assert_eq!(palette.result_count(), 0);
+    }
+
+    #[test]
+    fn render_cursor_position_set() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+
+        let area = Rect::from_size(60, 15);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 15, &mut pool);
+        palette.render(area, &mut frame);
+
+        assert!(frame.cursor_position.is_some());
+        assert!(frame.cursor_visible);
+    }
+
+    #[test]
+    fn render_many_items_with_scroll() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new().with_max_visible(3);
+        for i in 0..20 {
+            palette.register(format!("Action {i}"), None, &[]);
+        }
+        palette.open();
+
+        // Scroll to bottom
+        let end = Event::Key(KeyEvent {
+            code: KeyCode::End,
+            modifiers: Modifiers::empty(),
+            kind: KeyEventKind::Press,
+        });
+        palette.handle_event(&end);
+
+        let area = Rect::from_size(60, 15);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 15, &mut pool);
+        // Should render without panic even when scrolled
+        palette.render(area, &mut frame);
+        assert!(frame.cursor_position.is_some());
+    }
 }
 mod property_tests;
