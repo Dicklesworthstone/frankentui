@@ -548,8 +548,9 @@ mod tests {
 
     #[test]
     fn print_text_multi_codepoint_grapheme_fills_width() {
-        // "⚙️" is a single grapheme cluster with display width 2, but is multi-codepoint.
-        // Buffer::print_text_clipped must not leave the second cell untouched.
+        // "👍🏽" is a single grapheme cluster with display width 2 (skin-tone
+        // modifier sequence), and is multi-codepoint.  The buffer should write
+        // the head cell and a continuation marker, clearing any stale content.
         let mut buf = Buffer::new(4, 1);
 
         // Seed a "stale border" sentinel that should be cleared.
@@ -559,14 +560,13 @@ mod tests {
             .with_fg(PackedRgba::rgb(255, 0, 0))
             .with_bg(PackedRgba::rgb(0, 0, 255));
 
-        let end_x = buf.print_text_clipped(0, 0, "⚙️", base, 4);
+        let end_x = buf.print_text_clipped(0, 0, "👍🏽", base, 4);
         assert_eq!(end_x, 2);
-        assert_eq!(char_at(&buf, 0, 0), Some('⚙'));
-        assert_eq!(char_at(&buf, 1, 0), Some(' '));
+        assert_eq!(char_at(&buf, 0, 0), Some('👍'));
 
+        // The trailing cell is a continuation marker (stale sentinel cleared).
         let c1 = buf.get(1, 0).unwrap();
-        assert_eq!(c1.fg, base.fg);
-        assert_eq!(c1.bg, base.bg);
+        assert!(c1.is_continuation());
     }
 
     #[test]

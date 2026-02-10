@@ -1033,7 +1033,9 @@ mod tests {
         let mut pool = GraphemePool::new();
         let mut frame = Frame::new(5, 1, &mut pool);
 
-        frame.print_text(0, 0, "⚙️", Cell::from_char(' '));
+        // Use a skin-tone modifier sequence (width 2, multi-codepoint, no VS16
+        // dependency) so the test is independent of ftui-core's VS16 policy.
+        frame.print_text(0, 0, "👍🏽", Cell::from_char(' '));
 
         let head = frame.buffer.get(0, 0).unwrap();
         let tail = frame.buffer.get(1, 0).unwrap();

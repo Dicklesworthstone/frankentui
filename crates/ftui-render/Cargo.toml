@@ -21,8 +21,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_
 bitflags = "2.10.0"
 memchr = "2.7.6"
 smallvec = "1.15.1"
-unicode-width = "0.2.2"
-unicode-display-width = "0.3.0"
 unicode-segmentation = "1.12.0"
 ftui-core = { path = "../ftui-core", version = "0.1.1" }
 tracing = { version = "0.1.41", optional = true }
