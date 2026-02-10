@@ -602,6 +602,280 @@ mod tests {
         assert!(frame.buffer.get(0, 0).unwrap().is_empty());
     }
 
+    // ─── Edge-case tests (bd-3szd1) ────────────────────────────────────
+
+    #[test]
+    fn zero_size_record_is_skipped() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.record(LayoutRecord::new(
+            "Empty",
+            Rect::new(0, 0, 0, 0),
+            Rect::new(0, 0, 0, 0),
+            LayoutConstraints::unconstrained(),
+        ));
+
+        let overlay = ConstraintOverlay::new(&debugger);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+        assert!(frame.buffer.get(0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_by_one_record_renders_border() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.record(LayoutRecord::new(
+            "Tiny",
+            Rect::new(2, 2, 1, 1),
+            Rect::new(2, 2, 1, 1),
+            LayoutConstraints::unconstrained(),
+        ));
+
+        let overlay = ConstraintOverlay::new(&debugger);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+        // 1x1 area: border drawn at the single cell
+        let cell = frame.buffer.get(2, 2).unwrap();
+        assert!(!cell.is_empty());
+    }
+
+    #[test]
+    fn overflow_only_height() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        // width OK (5 <= 10), height overflow (8 > 6)
+        debugger.record(LayoutRecord::new(
+            "HOverflow",
+            Rect::new(0, 0, 5, 8),
+            Rect::new(0, 0, 5, 8),
+            LayoutConstraints::new(0, 10, 0, 6),
+        ));
+
+        let style = ConstraintOverlayStyle {
+            overflow_color: PackedRgba::rgb(255, 0, 0),
+            ..Default::default()
+        };
+        let overlay = ConstraintOverlay::new(&debugger).style(style);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.fg, PackedRgba::rgb(255, 0, 0), "height overflow color");
+    }
+
+    #[test]
+    fn underflow_only_height() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        // width OK (6 >= 4), height underflow (2 < 3)
+        debugger.record(LayoutRecord::new(
+            "HUnderflow",
+            Rect::new(0, 0, 6, 2),
+            Rect::new(0, 0, 6, 2),
+            LayoutConstraints::new(4, 0, 3, 0),
+        ));
+
+        let style = ConstraintOverlayStyle {
+            underflow_color: PackedRgba::rgb(255, 255, 0),
+            ..Default::default()
+        };
+        let overlay = ConstraintOverlay::new(&debugger).style(style);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(
+            cell.fg,
+            PackedRgba::rgb(255, 255, 0),
+            "height underflow color"
+        );
+    }
+
+    #[test]
+    fn overflow_takes_priority_over_underflow() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        // width overflow (10 > 8), height underflow (2 < 3)
+        debugger.record(LayoutRecord::new(
+            "Both",
+            Rect::new(0, 0, 10, 2),
+            Rect::new(0, 0, 10, 2),
+            LayoutConstraints::new(0, 8, 3, 0),
+        ));
+
+        let style = ConstraintOverlayStyle {
+            overflow_color: PackedRgba::rgb(255, 0, 0),
+            underflow_color: PackedRgba::rgb(255, 255, 0),
+            ..Default::default()
+        };
+        let overlay = ConstraintOverlay::new(&debugger).style(style);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(
+            cell.fg,
+            PackedRgba::rgb(255, 0, 0),
+            "overflow wins over underflow"
+        );
+    }
+
+    #[test]
+    fn multiple_records_all_render() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.record(LayoutRecord::new(
+            "A",
+            Rect::new(0, 0, 5, 3),
+            Rect::new(0, 0, 5, 3),
+            LayoutConstraints::unconstrained(),
+        ));
+        debugger.record(LayoutRecord::new(
+            "B",
+            Rect::new(6, 0, 5, 3),
+            Rect::new(6, 0, 5, 3),
+            LayoutConstraints::unconstrained(),
+        ));
+
+        let overlay = ConstraintOverlay::new(&debugger);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('+'));
+        assert_eq!(frame.buffer.get(6, 0).unwrap().content.as_char(), Some('+'));
+    }
+
+    #[test]
+    fn deeply_nested_children_render() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+
+        let grandchild = LayoutRecord::new(
+            "GC",
+            Rect::new(4, 4, 3, 2),
+            Rect::new(4, 4, 3, 2),
+            LayoutConstraints::unconstrained(),
+        );
+        let child = LayoutRecord::new(
+            "Child",
+            Rect::new(2, 2, 8, 6),
+            Rect::new(2, 2, 8, 6),
+            LayoutConstraints::unconstrained(),
+        )
+        .with_child(grandchild);
+        let parent = LayoutRecord::new(
+            "Parent",
+            Rect::new(0, 0, 12, 10),
+            Rect::new(0, 0, 12, 10),
+            LayoutConstraints::unconstrained(),
+        )
+        .with_child(child);
+        debugger.record(parent);
+
+        let overlay = ConstraintOverlay::new(&debugger);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 12, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 12), &mut frame);
+
+        // All three levels should render borders
+        assert_eq!(frame.buffer.get(0, 0).unwrap().content.as_char(), Some('+'));
+        assert_eq!(frame.buffer.get(2, 2).unwrap().content.as_char(), Some('+'));
+        assert_eq!(frame.buffer.get(4, 4).unwrap().content.as_char(), Some('+'));
+    }
+
+    #[test]
+    fn format_label_empty_widget_name() {
+        let debugger = LayoutDebugger::new();
+        let overlay = ConstraintOverlay::new(&debugger);
+        let record = LayoutRecord::new(
+            "",
+            Rect::new(0, 0, 5, 3),
+            Rect::new(0, 0, 5, 3),
+            LayoutConstraints::unconstrained(),
+        );
+        let label = overlay.format_label(&record, false, false);
+        assert!(label.contains("5x3"), "size should still appear: {label}");
+    }
+
+    #[test]
+    fn format_label_both_bounds_finite() {
+        let debugger = LayoutDebugger::new();
+        let overlay = ConstraintOverlay::new(&debugger);
+        let record = LayoutRecord::new(
+            "W",
+            Rect::new(0, 0, 8, 4),
+            Rect::new(0, 0, 8, 4),
+            LayoutConstraints::new(4, 12, 2, 8),
+        );
+        let label = overlay.format_label(&record, false, false);
+        // Should show [4..12 x 2..8]
+        assert!(label.contains("[4..12 x 2..8]"), "label={label}");
+    }
+
+    #[test]
+    fn requested_outline_not_drawn_when_same_as_received() {
+        let mut debugger = LayoutDebugger::new();
+        debugger.set_enabled(true);
+        debugger.record(LayoutRecord::new(
+            "Same",
+            Rect::new(0, 0, 6, 4),
+            Rect::new(0, 0, 6, 4),
+            LayoutConstraints::unconstrained(),
+        ));
+
+        let style = ConstraintOverlayStyle {
+            requested_color: PackedRgba::rgb(0, 0, 255),
+            ..Default::default()
+        };
+        let overlay = ConstraintOverlay::new(&debugger).style(style);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        overlay.render(Rect::new(0, 0, 20, 10), &mut frame);
+
+        // The '.' marker should not appear since areas are identical
+        // Check a corner that would have '+' from border but not '.'
+        let cell = frame.buffer.get(5, 3).unwrap(); // bottom-right corner
+        assert_ne!(
+            cell.content.as_char(),
+            Some('.'),
+            "dot should not appear when same size"
+        );
+    }
+
+    #[test]
+    fn style_clone_and_debug() {
+        let style = ConstraintOverlayStyle::default();
+        let cloned = style.clone();
+        let _ = format!("{cloned:?}");
+        assert_eq!(cloned.normal_color, style.normal_color);
+    }
+
+    #[test]
+    fn max_width_zero_means_unconstrained_no_overflow() {
+        let debugger = LayoutDebugger::new();
+        let overlay = ConstraintOverlay::new(&debugger);
+        // max_width=0 means no max constraint
+        let record = LayoutRecord::new(
+            "W",
+            Rect::new(0, 0, 100, 4),
+            Rect::new(0, 0, 100, 4),
+            LayoutConstraints::new(0, 0, 0, 0),
+        );
+        // is_overflow check: max_width!=0 && received.width>max_width
+        // With max_width=0, first condition is false, so not overflow
+        let label = overlay.format_label(&record, false, false);
+        assert!(!label.contains('!'), "should not be overflow: {label}");
+    }
+
+    // ─── End edge-case tests (bd-3szd1) ──────────────────────────────
+
     #[test]
     fn no_borders_when_show_borders_disabled() {
         let mut debugger = LayoutDebugger::new();
