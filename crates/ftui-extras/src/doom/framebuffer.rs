@@ -119,15 +119,31 @@ impl DoomFramebuffer {
         let pw_usize = pw as usize;
         let fb_width = self.width as usize;
 
-        for py in (0..ph).step_by(stride as usize) {
-            let fb_y = (py * self.height) / ph;
-            let fb_row_start = fb_y as usize * fb_width;
-            let painter_row_start = py as usize * pw_usize;
-            for px in (0..pw).step_by(stride as usize) {
-                let fb_x = ((px * self.width) / pw) as usize;
-                let color = self.pixels[fb_row_start + fb_x];
-                let painter_idx = painter_row_start + px as usize;
-                painter.point_colored_at_index_in_bounds(painter_idx, color);
+        if stride == 1 {
+            // Every pixel will be written — skip per-pixel generation stamps.
+            painter.mark_full_coverage();
+            for py in 0..ph {
+                let fb_y = (py * self.height) / ph;
+                let fb_row_start = fb_y as usize * fb_width;
+                let painter_row_start = py as usize * pw_usize;
+                for px in 0..pw {
+                    let fb_x = ((px * self.width) / pw) as usize;
+                    let color = self.pixels[fb_row_start + fb_x];
+                    let painter_idx = painter_row_start + px as usize;
+                    painter.set_color_at_index_in_bounds(painter_idx, color);
+                }
+            }
+        } else {
+            for py in (0..ph).step_by(stride as usize) {
+                let fb_y = (py * self.height) / ph;
+                let fb_row_start = fb_y as usize * fb_width;
+                let painter_row_start = py as usize * pw_usize;
+                for px in (0..pw).step_by(stride as usize) {
+                    let fb_x = ((px * self.width) / pw) as usize;
+                    let color = self.pixels[fb_row_start + fb_x];
+                    let painter_idx = painter_row_start + px as usize;
+                    painter.point_colored_at_index_in_bounds(painter_idx, color);
+                }
             }
         }
     }
