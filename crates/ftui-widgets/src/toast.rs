@@ -1508,7 +1508,7 @@ mod tests {
             .buffer
             .get(x, y)
             .copied()
-            .unwrap_or_else(|| panic!("test cell should exist at ({x},{y})"))
+            .expect("test cell should exist")
     }
 
     fn focused_action_id(toast: &Toast) -> &str {
@@ -1684,13 +1684,14 @@ mod tests {
 
         // Icon should be at position (1, 1) - inside border
         let icon_cell = cell_at(&frame, 1, 1);
-        if let Some(ch) = icon_cell.content.as_char() {
-            assert_eq!(ch, '\u{2713}'); // ✓
+        let ok = if let Some(ch) = icon_cell.content.as_char() {
+            ch == '\u{2713}'
         } else if let Some(id) = icon_cell.content.grapheme_id() {
-            assert_eq!(frame.pool.get(id), Some("\u{2713}"));
+            frame.pool.get(id) == Some("\u{2713}")
         } else {
-            panic!("expected toast icon cell to contain ✓");
-        }
+            false
+        };
+        assert!(ok, "expected toast icon cell to contain ✓");
     }
 
     #[test]
@@ -2620,10 +2621,10 @@ mod tests {
         let v3 = ToastEasing::Bounce.apply(t3);
         let v4 = ToastEasing::Bounce.apply(t4);
 
-        assert!(v1 >= 0.0 && v1 <= 1.0, "branch 1: {v1}");
-        assert!(v2 >= 0.0 && v2 <= 1.0, "branch 2: {v2}");
-        assert!(v3 >= 0.0 && v3 <= 1.0, "branch 3: {v3}");
-        assert!(v4 >= 0.0 && v4 <= 1.0, "branch 4: {v4}");
+        assert!((0.0..=1.0).contains(&v1), "branch 1: {v1}");
+        assert!((0.0..=1.0).contains(&v2), "branch 2: {v2}");
+        assert!((0.0..=1.0).contains(&v3), "branch 3: {v3}");
+        assert!((0.0..=1.0).contains(&v4), "branch 4: {v4}");
     }
 
     // =========================================================================

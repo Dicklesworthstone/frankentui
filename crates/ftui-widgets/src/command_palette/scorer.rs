@@ -1677,6 +1677,36 @@ mod tests {
         assert_eq!(result.score, 0.0);
     }
 
+    // --- Internal ASCII Matcher Edge Cases ---
+
+    #[test]
+    fn word_start_match_ascii_empty_query_matches() {
+        let scorer = BayesianScorer::new();
+        let positions = scorer
+            .word_start_match_ascii(b"", b"go dashboard", None)
+            .expect("empty query should match");
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn word_start_match_ascii_skips_out_of_bounds_precomputed_positions() {
+        let scorer = BayesianScorer::new();
+        let starts = [999, 0, 3];
+        let positions = scorer
+            .word_start_match_ascii(b"gd", b"go dashboard", Some(&starts))
+            .expect("should still match despite out-of-bounds precomputed starts");
+        assert_eq!(positions, vec![0, 3]);
+    }
+
+    #[test]
+    fn fuzzy_match_ascii_empty_query_matches() {
+        let scorer = BayesianScorer::new();
+        let positions = scorer
+            .fuzzy_match_ascii(b"", b"settings")
+            .expect("empty query should match");
+        assert!(positions.is_empty());
+    }
+
     // --- Score Invariants ---
 
     #[test]
@@ -1985,12 +2015,9 @@ mod tests {
 
         // Verify descending score order.
         for w in ranked.items.windows(2) {
-            assert!(
-                w[0].result.score >= w[1].result.score,
-                "Items should be sorted descending: {} >= {}",
-                w[0].result.score,
-                w[1].result.score
-            );
+            let a = w[0].result.score;
+            let b = w[1].result.score;
+            assert!(a >= b, "Items should be sorted descending: {a} >= {b}");
         }
     }
 
@@ -2362,6 +2389,41 @@ mod tests {
     }
 
     #[test]
+    fn incremental_skips_out_of_bounds_cache_entries() {
+        let mut scorer = IncrementalScorer::new();
+
+        // Simulate a cache produced for a larger corpus. The scorer should safely
+        // skip entries that are out of bounds for the current corpus.
+        scorer.cache = vec![
+            CachedEntry { corpus_index: 0 },
+            CachedEntry { corpus_index: 999 },
+        ];
+
+        let corpus = ["a"];
+        let results = scorer.score_incremental("a", "a", &corpus);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0);
+
+        let corpus_lower = ["a"];
+        let results = scorer.score_incremental_lowered("a", "a", &corpus, &corpus_lower);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0);
+
+        let corpus_s = vec!["a".to_string()];
+        let corpus_lower_s = vec!["a".to_string()];
+        let word_starts = vec![vec![0]];
+        let results = scorer.score_incremental_lowered_with_words(
+            "a",
+            "a",
+            &corpus_s,
+            &corpus_lower_s,
+            &word_starts,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0);
+    }
+
+    #[test]
     fn incremental_empty_query() {
         let mut scorer = IncrementalScorer::new();
         let corpus = test_corpus();
@@ -2404,12 +2466,9 @@ mod tests {
 
         let results = scorer.score_corpus("o", &corpus, None);
         for w in results.windows(2) {
-            assert!(
-                w[0].1.score >= w[1].1.score,
-                "Results should be sorted descending: {} >= {}",
-                w[0].1.score,
-                w[1].1.score
-            );
+            let a = w[0].1.score;
+            let b = w[1].1.score;
+            assert!(a >= b, "Results should be sorted descending: {a} >= {b}");
         }
     }
 
@@ -3178,20 +3237,34 @@ mod perf_tests {
     const INCREMENTAL_7KEY_100_BUDGET_US: u64 = 2_000; // 2ms for 7 keystrokes on 100 items
     const INCREMENTAL_7KEY_1000_BUDGET_US: u64 = 15_000; // 15ms for 7 keystrokes on 1000 items
 
+    const COVERAGE_BUDGET_MULTIPLIER: u64 = 5;
+
     fn is_coverage_run() -> bool {
         std::env::var("LLVM_PROFILE_FILE").is_ok() || std::env::var("CARGO_LLVM_COV").is_ok()
     }
 
-    fn coverage_budget_us(base: u64) -> u64 {
-        if is_coverage_run() {
-            // Coverage instrumentation adds substantial overhead (and noise) to these
-            // microbench-style regression tests, so we relax budgets enough to keep
-            // `cargo llvm-cov` stable while still logging the timings.
-            const COVERAGE_BUDGET_MULTIPLIER: u64 = 5;
+    fn coverage_budget_us_with_mode(base: u64, coverage_run: bool) -> u64 {
+        // Coverage instrumentation adds substantial overhead (and noise) to these
+        // microbench-style regression tests, so we relax budgets enough to keep
+        // `cargo llvm-cov` stable while still logging the timings.
+        if coverage_run {
             base.saturating_mul(COVERAGE_BUDGET_MULTIPLIER)
         } else {
             base
         }
+    }
+
+    fn coverage_budget_us(base: u64) -> u64 {
+        coverage_budget_us_with_mode(base, is_coverage_run())
+    }
+
+    #[test]
+    fn coverage_budget_us_with_mode_respects_flag() {
+        assert_eq!(coverage_budget_us_with_mode(123, false), 123);
+        assert_eq!(
+            coverage_budget_us_with_mode(123, true),
+            123 * COVERAGE_BUDGET_MULTIPLIER
+        );
     }
 
     /// Generate a command corpus of the specified size with realistic variety.
@@ -3492,6 +3565,20 @@ mod perf_tests {
         );
     }
 
+    fn scaling_ratio_us(p50_small_us: u64, p50_large_us: u64) -> f64 {
+        if p50_small_us > 0 {
+            p50_large_us as f64 / p50_small_us as f64
+        } else {
+            0.0
+        }
+    }
+
+    #[test]
+    fn scaling_ratio_handles_zero_divisor() {
+        assert_eq!(scaling_ratio_us(0, 123), 0.0);
+        assert_eq!(scaling_ratio_us(10, 25), 2.5);
+    }
+
     #[test]
     fn perf_scaling_sublinear() {
         let scorer = BayesianScorer::fast();
@@ -3524,11 +3611,7 @@ mod perf_tests {
 
         // 10x corpus ⇒ O(n log n) theoretical ratio ≈ 15x.  Use 25x to absorb
         // system noise when tests run in parallel (still catches O(n²) = 100x).
-        let ratio = if stats_100.p50_us > 0 {
-            stats_1000.p50_us as f64 / stats_100.p50_us as f64
-        } else {
-            0.0
-        };
+        let ratio = scaling_ratio_us(stats_100.p50_us, stats_1000.p50_us);
         assert!(
             ratio < 25.0,
             "1000/100 scaling ratio = {:.1}x exceeds 25x threshold (100: {}µs, 1000: {}µs)",
