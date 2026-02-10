@@ -117,7 +117,7 @@
 //! ```
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 const EPS: f64 = 1e-12;
 const MU_0_MIN: f64 = 1e-6;

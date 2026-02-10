@@ -26,7 +26,7 @@ use std::fmt::Write as FmtWrite;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::{info, trace};
 

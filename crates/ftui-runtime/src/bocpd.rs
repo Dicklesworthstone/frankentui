@@ -174,7 +174,7 @@
 //! - Hazard function choice is geometric (constant hazard)
 
 use std::fmt;
-use std::time::Instant;
+use web_time::Instant;
 
 // =============================================================================
 // Configuration

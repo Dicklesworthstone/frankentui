@@ -58,7 +58,7 @@
 //! ```
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// Minimum wealth floor to prevent permanent zero-lock after adverse bets.
 const W_MIN: f64 = 1e-12;

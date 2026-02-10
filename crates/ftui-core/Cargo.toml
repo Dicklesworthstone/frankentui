@@ -28,6 +28,7 @@ bitflags = "2.10.0"
 unicode-display-width = "0.3.0"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.2"
+web-time = "1.1.0"
 
 # Optional tracing support (platform-independent)
 tracing = { version = "0.1.41", optional = true }

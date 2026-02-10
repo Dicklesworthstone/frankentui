@@ -48,7 +48,7 @@
 //! ```
 
 use std::io::{self, BufWriter, Write};
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::evidence_sink::EvidenceSink;
 use crate::evidence_telemetry::{DiffDecisionSnapshot, set_diff_snapshot};
@@ -1030,7 +1030,7 @@ impl<W: Write> TerminalWriter<W> {
             self.writer().enable_counting();
         }
         let present_start = if trace_enabled {
-            Some(std::time::Instant::now())
+            Some(Instant::now())
         } else {
             None
         };
@@ -1130,7 +1130,7 @@ impl<W: Write> TerminalWriter<W> {
             self.writer().enable_counting();
         }
         let present_start = if trace_enabled {
-            Some(std::time::Instant::now())
+            Some(Instant::now())
         } else {
             None
         };

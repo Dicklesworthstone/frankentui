@@ -11,7 +11,7 @@
 use std::fs::{OpenOptions, create_dir_all};
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;

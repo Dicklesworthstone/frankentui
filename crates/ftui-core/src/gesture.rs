@@ -34,7 +34,7 @@
 //! - If focus is lost during a drag, the caller should call `reset()` which will
 //!   not emit `DragCancel` (the caller handles focus-loss cancellation).
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use crate::semantic_event::{ChordKey, Position, SemanticEvent};

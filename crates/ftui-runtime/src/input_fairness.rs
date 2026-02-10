@@ -60,7 +60,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// Default maximum input latency before intervention (50ms).
 const DEFAULT_MAX_INPUT_LATENCY_MS: u64 = 50;

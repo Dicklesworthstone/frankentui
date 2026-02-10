@@ -35,7 +35,7 @@
 //! - Hysteresis state (inside band vs. outside)
 //! - Target switch events with evidence values
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Configuration

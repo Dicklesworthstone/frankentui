@@ -84,7 +84,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 use tracing::{debug, debug_span, info, info_span};
 
 /// The Model trait defines application state and behavior.

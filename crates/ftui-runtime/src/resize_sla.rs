@@ -44,7 +44,7 @@
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::conformal_alert::{AlertConfig, AlertDecision, AlertStats, ConformalAlert};
 use crate::resize_coalescer::{DecisionLog, TelemetryHooks};

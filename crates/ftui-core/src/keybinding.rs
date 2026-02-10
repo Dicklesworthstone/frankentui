@@ -86,7 +86,7 @@
 //! assert!(matches!(action, Some(Action::Quit)));
 //! ```
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 

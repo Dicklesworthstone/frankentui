@@ -33,7 +33,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::voi_sampling::{VoiConfig, VoiSampler, VoiSummary};
 

@@ -59,7 +59,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::bocpd::{BocpdConfig, BocpdDetector, BocpdRegime};
 use crate::evidence_sink::{EVIDENCE_SCHEMA_VERSION, EvidenceSink};

@@ -28,7 +28,7 @@
 //! ```
 
 use ftui_core::event::Event;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// A recorded input event with timing relative to recording start.
 #[derive(Debug, Clone)]

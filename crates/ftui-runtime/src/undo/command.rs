@@ -30,7 +30,7 @@
 
 use std::any::Any;
 use std::fmt;
-use std::time::Instant;
+use web_time::Instant;
 
 /// Unique identifier for a widget that commands operate on.
 ///

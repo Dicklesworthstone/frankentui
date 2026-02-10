@@ -20,7 +20,7 @@
 //! ```
 
 use std::sync::LazyLock;
-use std::time::Instant;
+use web_time::Instant;
 
 /// Static flag checked once at startup. After initialization, this is just a bool load.
 static DEBUG_TRACE_ENABLED: LazyLock<bool> = LazyLock::new(|| {
