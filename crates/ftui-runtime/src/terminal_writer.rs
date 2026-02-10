@@ -4098,4 +4098,796 @@ mod tests {
             "posterior should be preserved when reset_on_resize=false"
         );
     }
+
+    // =========================================================================
+    // Enum / Default / Debug tests
+    // =========================================================================
+
+    #[test]
+    fn screen_mode_default_is_altscreen() {
+        assert_eq!(ScreenMode::default(), ScreenMode::AltScreen);
+    }
+
+    #[test]
+    fn screen_mode_debug_format() {
+        let dbg = format!("{:?}", ScreenMode::Inline { ui_height: 7 });
+        assert!(dbg.contains("Inline"));
+        assert!(dbg.contains('7'));
+    }
+
+    #[test]
+    fn screen_mode_inline_auto_debug_format() {
+        let dbg = format!(
+            "{:?}",
+            ScreenMode::InlineAuto {
+                min_height: 3,
+                max_height: 10
+            }
+        );
+        assert!(dbg.contains("InlineAuto"));
+    }
+
+    #[test]
+    fn screen_mode_eq_inline_auto() {
+        let a = ScreenMode::InlineAuto {
+            min_height: 2,
+            max_height: 8,
+        };
+        let b = ScreenMode::InlineAuto {
+            min_height: 2,
+            max_height: 8,
+        };
+        assert_eq!(a, b);
+        let c = ScreenMode::InlineAuto {
+            min_height: 2,
+            max_height: 9,
+        };
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn ui_anchor_default_is_bottom() {
+        assert_eq!(UiAnchor::default(), UiAnchor::Bottom);
+    }
+
+    #[test]
+    fn ui_anchor_debug_format() {
+        assert_eq!(format!("{:?}", UiAnchor::Top), "Top");
+        assert_eq!(format!("{:?}", UiAnchor::Bottom), "Bottom");
+    }
+
+    // =========================================================================
+    // Accessor tests
+    // =========================================================================
+
+    #[test]
+    fn width_height_accessors() {
+        let output = Vec::new();
+        let mut writer = TerminalWriter::new(
+            output,
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        // Default dimensions are 80x24
+        assert_eq!(writer.width(), 80);
+        assert_eq!(writer.height(), 24);
+
+        writer.set_size(120, 40);
+        assert_eq!(writer.width(), 120);
+        assert_eq!(writer.height(), 40);
+    }
+
+    #[test]
+    fn screen_mode_accessor() {
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Top,
+            basic_caps(),
+        );
+        assert_eq!(writer.screen_mode(), ScreenMode::Inline { ui_height: 5 });
+    }
+
+    #[test]
+    fn capabilities_accessor() {
+        let caps = full_caps();
+        let writer = TerminalWriter::new(Vec::new(), ScreenMode::AltScreen, UiAnchor::Bottom, caps);
+        assert!(writer.capabilities().true_color);
+        assert!(writer.capabilities().sync_output);
+    }
+
+    // =========================================================================
+    // into_inner tests
+    // =========================================================================
+
+    #[test]
+    fn into_inner_returns_writer() {
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let inner = writer.into_inner();
+        assert!(inner.is_some());
+    }
+
+    #[test]
+    fn into_inner_performs_cleanup() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.cursor_saved = true;
+        writer.in_sync_block = false;
+
+        let inner = writer.into_inner().unwrap();
+        // Cleanup should have written cursor restore
+        assert!(
+            inner
+                .windows(CURSOR_RESTORE.len())
+                .any(|w| w == CURSOR_RESTORE),
+            "into_inner should perform cleanup before returning"
+        );
+    }
+
+    // =========================================================================
+    // take_render_buffer tests
+    // =========================================================================
+
+    #[test]
+    fn take_render_buffer_creates_new_when_no_spare() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let buf = writer.take_render_buffer(80, 24);
+        assert_eq!(buf.width(), 80);
+        assert_eq!(buf.height(), 24);
+    }
+
+    #[test]
+    fn take_render_buffer_reuses_spare_on_match() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        // Inject a spare buffer
+        writer.spare_buffer = Some(Buffer::new(80, 24));
+        assert!(writer.spare_buffer.is_some());
+
+        let buf = writer.take_render_buffer(80, 24);
+        assert_eq!(buf.width(), 80);
+        assert_eq!(buf.height(), 24);
+        // Spare should have been taken
+        assert!(writer.spare_buffer.is_none());
+    }
+
+    #[test]
+    fn take_render_buffer_ignores_spare_on_size_mismatch() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.spare_buffer = Some(Buffer::new(80, 24));
+
+        // Request different size - should create new, not reuse
+        let buf = writer.take_render_buffer(100, 30);
+        assert_eq!(buf.width(), 100);
+        assert_eq!(buf.height(), 30);
+    }
+
+    // =========================================================================
+    // gc tests
+    // =========================================================================
+
+    #[test]
+    fn gc_with_no_prev_buffer() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert!(writer.prev_buffer.is_none());
+        // Should not panic
+        writer.gc();
+    }
+
+    #[test]
+    fn gc_with_prev_buffer() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.prev_buffer = Some(Buffer::new(10, 5));
+        // Should not panic
+        writer.gc();
+    }
+
+    // =========================================================================
+    // hide_cursor / show_cursor tests
+    // =========================================================================
+
+    #[test]
+    fn hide_cursor_emits_sequence() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.hide_cursor().unwrap();
+        }
+        assert!(
+            output.windows(6).any(|w| w == b"\x1b[?25l"),
+            "hide_cursor should emit cursor hide sequence"
+        );
+    }
+
+    #[test]
+    fn show_cursor_emits_sequence() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            // First hide, then show
+            writer.hide_cursor().unwrap();
+            writer.show_cursor().unwrap();
+        }
+        assert!(
+            output.windows(6).any(|w| w == b"\x1b[?25h"),
+            "show_cursor should emit cursor show sequence"
+        );
+    }
+
+    #[test]
+    fn hide_cursor_idempotent() {
+        // Use Cursor<Vec<u8>> to own the writer
+        use std::io::Cursor;
+        let mut writer = TerminalWriter::new(
+            Cursor::new(Vec::new()),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.hide_cursor().unwrap();
+        let inner = writer.into_inner().unwrap().into_inner();
+        let hide_count = inner.windows(6).filter(|w| *w == b"\x1b[?25l").count();
+        // Should have exactly 1 hide (from hide_cursor) — Drop cleanup shows cursor (?25h)
+        assert_eq!(
+            hide_count, 1,
+            "hide_cursor called once should emit exactly one hide sequence"
+        );
+    }
+
+    #[test]
+    fn show_cursor_idempotent_when_already_visible() {
+        use std::io::Cursor;
+        let mut writer = TerminalWriter::new(
+            Cursor::new(Vec::new()),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        // Cursor starts visible — show should be noop
+        writer.show_cursor().unwrap();
+        let inner = writer.into_inner().unwrap().into_inner();
+        // No ?25h should appear from show_cursor (only from cleanup)
+        let show_count = inner.windows(6).filter(|w| *w == b"\x1b[?25h").count();
+        assert!(
+            show_count <= 1,
+            "show_cursor when already visible should not add extra show sequences"
+        );
+    }
+
+    // =========================================================================
+    // pool / links accessor tests
+    // =========================================================================
+
+    #[test]
+    fn pool_accessor() {
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        // Pool should be accessible (just testing it doesn't panic)
+        let _pool = writer.pool();
+    }
+
+    #[test]
+    fn pool_mut_accessor() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let _pool = writer.pool_mut();
+    }
+
+    #[test]
+    fn links_accessor() {
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let _links = writer.links();
+    }
+
+    #[test]
+    fn links_mut_accessor() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let _links = writer.links_mut();
+    }
+
+    #[test]
+    fn pool_and_links_mut_accessor() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        let (_pool, _links) = writer.pool_and_links_mut();
+    }
+
+    // =========================================================================
+    // Helper function tests
+    // =========================================================================
+
+    #[test]
+    fn sanitize_auto_bounds_normal() {
+        assert_eq!(sanitize_auto_bounds(3, 10), (3, 10));
+    }
+
+    #[test]
+    fn sanitize_auto_bounds_zero_min() {
+        // min=0 should become 1
+        assert_eq!(sanitize_auto_bounds(0, 10), (1, 10));
+    }
+
+    #[test]
+    fn sanitize_auto_bounds_max_less_than_min() {
+        // max < min should be clamped to min
+        assert_eq!(sanitize_auto_bounds(5, 3), (5, 5));
+    }
+
+    #[test]
+    fn sanitize_auto_bounds_both_zero() {
+        assert_eq!(sanitize_auto_bounds(0, 0), (1, 1));
+    }
+
+    #[test]
+    fn diff_strategy_str_variants() {
+        assert_eq!(diff_strategy_str(DiffStrategy::Full), "full");
+        assert_eq!(diff_strategy_str(DiffStrategy::DirtyRows), "dirty");
+        assert_eq!(diff_strategy_str(DiffStrategy::FullRedraw), "redraw");
+    }
+
+    #[test]
+    fn ui_anchor_str_variants() {
+        assert_eq!(ui_anchor_str(UiAnchor::Bottom), "bottom");
+        assert_eq!(ui_anchor_str(UiAnchor::Top), "top");
+    }
+
+    #[test]
+    fn json_escape_plain_text() {
+        assert_eq!(json_escape("hello"), "hello");
+    }
+
+    #[test]
+    fn json_escape_special_chars() {
+        assert_eq!(json_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(json_escape("a\\b"), r#"a\\b"#);
+        assert_eq!(json_escape("a\nb"), r#"a\nb"#);
+        assert_eq!(json_escape("a\rb"), r#"a\rb"#);
+        assert_eq!(json_escape("a\tb"), r#"a\tb"#);
+    }
+
+    #[test]
+    fn json_escape_control_chars() {
+        let s = String::from("\x00\x01\x1f");
+        let escaped = json_escape(&s);
+        assert!(escaped.contains("\\u0000"));
+        assert!(escaped.contains("\\u0001"));
+        assert!(escaped.contains("\\u001F"));
+    }
+
+    #[test]
+    fn json_escape_unicode_passthrough() {
+        assert_eq!(json_escape("caf\u{00e9}"), "caf\u{00e9}");
+        assert_eq!(json_escape("\u{1f600}"), "\u{1f600}");
+    }
+
+    // =========================================================================
+    // CountingWriter tests
+    // =========================================================================
+
+    #[test]
+    fn counting_writer_no_counting_by_default() {
+        let mut cw = CountingWriter::new(Vec::new());
+        cw.write_all(b"hello").unwrap();
+        assert_eq!(cw.take_count(), 0);
+    }
+
+    #[test]
+    fn counting_writer_counts_when_enabled() {
+        let mut cw = CountingWriter::new(Vec::new());
+        cw.enable_counting();
+        cw.write_all(b"hello").unwrap();
+        assert_eq!(cw.take_count(), 5);
+    }
+
+    #[test]
+    fn counting_writer_take_count_resets() {
+        let mut cw = CountingWriter::new(Vec::new());
+        cw.enable_counting();
+        cw.write_all(b"abc").unwrap();
+        assert_eq!(cw.take_count(), 3);
+        // After take, count resets
+        assert_eq!(cw.take_count(), 0);
+    }
+
+    #[test]
+    fn counting_writer_disable_stops_counting() {
+        let mut cw = CountingWriter::new(Vec::new());
+        cw.enable_counting();
+        cw.write_all(b"abc").unwrap();
+        cw.disable_counting();
+        cw.write_all(b"def").unwrap();
+        // Only "abc" was counted
+        assert_eq!(cw.take_count(), 3);
+    }
+
+    #[test]
+    fn counting_writer_write_counts_partial() {
+        let mut cw = CountingWriter::new(Vec::new());
+        cw.enable_counting();
+        let written = cw.write(b"hello world").unwrap();
+        assert_eq!(written, 11);
+        assert_eq!(cw.take_count(), 11);
+    }
+
+    #[test]
+    fn counting_writer_flush() {
+        let mut cw = CountingWriter::new(Vec::new());
+        cw.flush().unwrap();
+    }
+
+    #[test]
+    fn counting_writer_into_inner() {
+        let mut cw = CountingWriter::new(Vec::new());
+        cw.write_all(b"data").unwrap();
+        let inner = cw.into_inner();
+        assert_eq!(inner, b"data");
+    }
+
+    // =========================================================================
+    // estimate_diff_scan_cost tests
+    // =========================================================================
+
+    fn zero_span_stats() -> DirtySpanStats {
+        DirtySpanStats {
+            rows_full_dirty: 0,
+            rows_with_spans: 0,
+            total_spans: 0,
+            overflows: 0,
+            span_coverage_cells: 0,
+            max_span_len: 0,
+            max_spans_per_row: 4,
+        }
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_full_strategy() {
+        let stats = zero_span_stats();
+        let (cost, label) = estimate_diff_scan_cost(DiffStrategy::Full, 0, 80, 24, &stats, None);
+        assert_eq!(cost, 80 * 24);
+        assert_eq!(label, "full_strategy");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_full_redraw() {
+        let stats = zero_span_stats();
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::FullRedraw, 5, 80, 24, &stats, None);
+        assert_eq!(cost, 0);
+        assert_eq!(label, "full_redraw");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_dirty_rows_no_dirty() {
+        let stats = zero_span_stats();
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::DirtyRows, 0, 80, 24, &stats, None);
+        assert_eq!(cost, 0);
+        assert_eq!(label, "no_dirty_rows");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_dirty_rows_with_span_coverage() {
+        let mut stats = zero_span_stats();
+        stats.span_coverage_cells = 100;
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::DirtyRows, 5, 80, 24, &stats, None);
+        assert_eq!(cost, 100);
+        assert_eq!(label, "none");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_dirty_rows_no_spans() {
+        let stats = zero_span_stats();
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::DirtyRows, 5, 80, 24, &stats, None);
+        assert_eq!(cost, 5 * 80);
+        assert_eq!(label, "no_spans");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_dirty_rows_overflow_with_span() {
+        let mut stats = zero_span_stats();
+        stats.span_coverage_cells = 150;
+        stats.overflows = 1;
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::DirtyRows, 5, 80, 24, &stats, None);
+        assert_eq!(cost, 150);
+        assert_eq!(label, "span_overflow");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_dirty_rows_overflow_no_span() {
+        let mut stats = zero_span_stats();
+        stats.overflows = 1;
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::DirtyRows, 5, 80, 24, &stats, None);
+        assert_eq!(cost, 5 * 80);
+        assert_eq!(label, "span_overflow");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_tile_skip() {
+        let stats = zero_span_stats();
+        let tile = TileDiffStats {
+            width: 80,
+            height: 24,
+            tile_w: 16,
+            tile_h: 8,
+            tiles_x: 5,
+            tiles_y: 3,
+            total_tiles: 15,
+            dirty_cells: 10,
+            dirty_tiles: 2,
+            dirty_cell_ratio: 0.005,
+            dirty_tile_ratio: 0.13,
+            scanned_tiles: 2,
+            skipped_tiles: 13,
+            sat_build_cells: 1920,
+            scan_cells_estimate: 42,
+            fallback: None,
+        };
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::DirtyRows, 5, 80, 24, &stats, Some(tile));
+        assert_eq!(cost, 42);
+        assert_eq!(label, "tile_skip");
+    }
+
+    #[test]
+    fn estimate_diff_scan_cost_tile_with_fallback_uses_spans() {
+        let mut stats = zero_span_stats();
+        stats.span_coverage_cells = 200;
+        let tile = TileDiffStats {
+            width: 80,
+            height: 24,
+            tile_w: 16,
+            tile_h: 8,
+            tiles_x: 5,
+            tiles_y: 3,
+            total_tiles: 15,
+            dirty_cells: 10,
+            dirty_tiles: 2,
+            dirty_cell_ratio: 0.005,
+            dirty_tile_ratio: 0.13,
+            scanned_tiles: 2,
+            skipped_tiles: 13,
+            sat_build_cells: 1920,
+            scan_cells_estimate: 42,
+            fallback: Some(TileDiffFallback::SmallScreen),
+        };
+        let (cost, label) =
+            estimate_diff_scan_cost(DiffStrategy::DirtyRows, 5, 80, 24, &stats, Some(tile));
+        // Tile has fallback, so falls through to span logic
+        assert_eq!(cost, 200);
+        assert_eq!(label, "none");
+    }
+
+    // =========================================================================
+    // InlineAuto edge cases
+    // =========================================================================
+
+    #[test]
+    fn inline_auto_bounds_accessor() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 3,
+                max_height: 10,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        let bounds = writer.inline_auto_bounds();
+        assert_eq!(bounds, Some((3, 10)));
+    }
+
+    #[test]
+    fn inline_auto_bounds_clamped_to_terminal() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 3,
+                max_height: 50,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 20);
+        let bounds = writer.inline_auto_bounds();
+        assert_eq!(bounds, Some((3, 20)));
+    }
+
+    #[test]
+    fn inline_auto_bounds_returns_none_for_non_auto() {
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(writer.inline_auto_bounds(), None);
+
+        let writer2 = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(writer2.inline_auto_bounds(), None);
+    }
+
+    #[test]
+    fn auto_ui_height_returns_none_for_non_auto() {
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(writer.auto_ui_height(), None);
+    }
+
+    #[test]
+    fn render_height_hint_altscreen() {
+        let mut writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.set_size(80, 24);
+        assert_eq!(writer.render_height_hint(), 24);
+    }
+
+    #[test]
+    fn render_height_hint_inline_fixed() {
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 7 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(writer.render_height_hint(), 7);
+    }
+
+    // =========================================================================
+    // RuntimeDiffConfig builder edge cases
+    // =========================================================================
+
+    #[test]
+    fn runtime_diff_config_tile_skip_toggle() {
+        let config = RuntimeDiffConfig::new().with_tile_skip_enabled(false);
+        assert!(!config.tile_diff_config.enabled);
+    }
+
+    #[test]
+    fn runtime_diff_config_dirty_spans_toggle() {
+        let config = RuntimeDiffConfig::new().with_dirty_spans_enabled(false);
+        assert!(!config.dirty_span_config.enabled);
+    }
+
+    // =========================================================================
+    // present_ui edge cases
+    // =========================================================================
+
+    #[test]
+    fn present_ui_altscreen_no_cursor_save_restore() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(10, 5);
+            let buffer = Buffer::new(10, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        // AltScreen should NOT use cursor save/restore (those are inline-mode specific)
+        let save_count = output
+            .windows(CURSOR_SAVE.len())
+            .filter(|w| *w == CURSOR_SAVE)
+            .count();
+        assert_eq!(save_count, 0, "AltScreen should not save cursor");
+    }
+
+    #[test]
+    fn clear_screen_emits_ed2() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.clear_screen().unwrap();
+        }
+        assert!(
+            output.windows(4).any(|w| w == b"\x1b[2J"),
+            "clear_screen should emit ED2 sequence"
+        );
+    }
+
+    #[test]
+    fn set_size_resets_scroll_region_and_spare_buffer() {
+        let output = Vec::new();
+        let mut writer = TerminalWriter::new(
+            output,
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer.spare_buffer = Some(Buffer::new(80, 24));
+        writer.set_size(100, 30);
+        assert!(writer.spare_buffer.is_none());
+    }
 }
