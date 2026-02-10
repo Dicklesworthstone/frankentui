@@ -919,4 +919,232 @@ mod tests {
         let (_, _, pos) = spotlight.panel_position(screen);
         assert_eq!(pos, PanelPosition::Left);
     }
+
+    // --- Additional edge case tests (bd-pl0rv) ---
+
+    #[test]
+    fn config_overlay_color_builder() {
+        let color = PackedRgba::rgba(255, 0, 0, 128);
+        let config = SpotlightConfig::default().overlay_color(color);
+        assert_eq!(config.overlay_color, color);
+    }
+
+    #[test]
+    fn config_panel_bg_fg_builders() {
+        let bg = PackedRgba::rgb(10, 20, 30);
+        let fg = PackedRgba::rgb(200, 210, 220);
+        let config = SpotlightConfig::default().panel_bg(bg).panel_fg(fg);
+        assert_eq!(config.panel_bg, bg);
+        assert_eq!(config.panel_fg, fg);
+    }
+
+    #[test]
+    fn config_title_style_builder() {
+        let style = Style::new().fg(PackedRgba::rgb(255, 0, 0));
+        let config = SpotlightConfig::default().title_style(style);
+        assert_eq!(config.title_style.fg, Some(PackedRgba::rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn config_debug_clone() {
+        let config = SpotlightConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.target_padding, config.target_padding);
+        assert!(!format!("{:?}", config).is_empty());
+    }
+
+    #[test]
+    fn spotlight_default_equals_new() {
+        let a = Spotlight::default();
+        let b = Spotlight::new();
+        assert_eq!(a.title, b.title);
+        assert_eq!(a.content, b.content);
+        assert!(a.target.is_none());
+        assert!(a.progress.is_none());
+        assert!(a.hints.is_none());
+        assert!(a.forced_position.is_none());
+    }
+
+    #[test]
+    fn spotlight_debug_clone() {
+        let spotlight = Spotlight::new().title("Test").content("Body");
+        let cloned = spotlight.clone();
+        assert_eq!(cloned.title, "Test");
+        assert_eq!(cloned.content, "Body");
+        assert!(!format!("{:?}", spotlight).is_empty());
+    }
+
+    #[test]
+    fn spotlight_config_method() {
+        let config = SpotlightConfig::default().panel_max_width(30);
+        let spotlight = Spotlight::new().config(config);
+        assert_eq!(spotlight.config.panel_max_width, 30);
+    }
+
+    #[test]
+    fn panel_position_debug_clone_copy_eq() {
+        let pos = PanelPosition::Above;
+        let copied = pos;
+        assert_eq!(pos, copied);
+        assert_ne!(PanelPosition::Above, PanelPosition::Below);
+        assert_ne!(PanelPosition::Left, PanelPosition::Right);
+        assert!(!format!("{:?}", pos).is_empty());
+    }
+
+    #[test]
+    fn padded_target_applies_padding() {
+        let spotlight = Spotlight::new()
+            .target(Rect::new(10, 10, 20, 5))
+            .config(SpotlightConfig::default().target_padding(3));
+        let padded = spotlight.padded_target().unwrap();
+        assert_eq!(padded.x, 7);
+        assert_eq!(padded.y, 7);
+        assert_eq!(padded.width, 26);
+        assert_eq!(padded.height, 11);
+    }
+
+    #[test]
+    fn padded_target_saturates_at_zero() {
+        let spotlight = Spotlight::new()
+            .target(Rect::new(0, 0, 10, 5))
+            .config(SpotlightConfig::default().target_padding(5));
+        let padded = spotlight.padded_target().unwrap();
+        assert_eq!(padded.x, 0); // saturating_sub
+        assert_eq!(padded.y, 0);
+    }
+
+    #[test]
+    fn padded_target_none_when_no_target() {
+        let spotlight = Spotlight::new();
+        assert!(spotlight.padded_target().is_none());
+    }
+
+    #[test]
+    fn panel_size_title_only_no_content() {
+        let spotlight = Spotlight::new().title("Hello");
+        let screen = Rect::new(0, 0, 80, 24);
+        let (w, h) = spotlight.panel_size(screen);
+        assert!(w > 0, "width should be positive");
+        assert!(h > 0, "height should be positive");
+    }
+
+    #[test]
+    fn panel_size_narrow_screen_clamps_width() {
+        let spotlight = Spotlight::new()
+            .title("A very long title that exceeds narrow screen")
+            .content("And some content too");
+        let narrow = Rect::new(0, 0, 10, 30);
+        let (w, _) = spotlight.panel_size(narrow);
+        assert!(w <= 10, "panel width should not exceed screen, got {}", w);
+    }
+
+    #[test]
+    fn panel_size_hints_disabled_no_extra_height() {
+        let config = SpotlightConfig::default().show_hints(false);
+        let s1 = Spotlight::new()
+            .title("T")
+            .hints("Esc: Close")
+            .config(config);
+        let s2 = Spotlight::new().title("T"); // No hints at all
+        let screen = Rect::new(0, 0, 80, 24);
+        let (_, h1) = s1.panel_size(screen);
+        let (_, h2) = s2.panel_size(screen);
+        assert_eq!(h1, h2, "disabled hints should not add height");
+    }
+
+    #[test]
+    fn grapheme_width_ascii() {
+        assert_eq!(grapheme_width("a"), 1);
+        assert_eq!(grapheme_width(" "), 1);
+    }
+
+    #[test]
+    fn render_overlay_dims_cells_outside_target() {
+        let spotlight = Spotlight::new()
+            .target(Rect::new(5, 5, 3, 3))
+            .config(SpotlightConfig::default().overlay_color(PackedRgba::rgba(0, 0, 0, 255)));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 20, &mut pool);
+        let area = Rect::new(0, 0, 20, 20);
+
+        spotlight.render_overlay(&mut frame, area);
+
+        // Cell outside target should have been dimmed
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.bg, PackedRgba::rgba(0, 0, 0, 255));
+
+        // Cell inside target should NOT have been dimmed (still default)
+        let cell_inside = frame.buffer.get(6, 6).unwrap();
+        // Should differ from the overlay color since it was skipped
+        // (original bg is likely default black/transparent)
+        assert_ne!(
+            cell_inside.bg,
+            PackedRgba::rgba(0, 0, 0, 255),
+            "cell inside target should not be overlaid with opaque overlay"
+        );
+    }
+
+    #[test]
+    fn render_with_all_components() {
+        let spotlight = Spotlight::new()
+            .target(Rect::new(10, 5, 20, 3))
+            .title("Title")
+            .content("Content text here")
+            .progress("2 of 5")
+            .hints("Enter: Next | Esc: Skip");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        spotlight.render(Rect::new(0, 0, 80, 24), &mut frame);
+        // Should not panic; just verify it completes
+    }
+
+    #[test]
+    fn render_forced_above() {
+        let spotlight = Spotlight::new()
+            .target(Rect::new(10, 10, 20, 3))
+            .title("Above")
+            .force_position(PanelPosition::Above);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        spotlight.render(Rect::new(0, 0, 80, 24), &mut frame);
+    }
+
+    #[test]
+    fn panel_bounds_matches_size() {
+        let spotlight = Spotlight::new()
+            .target(Rect::new(10, 5, 20, 3))
+            .title("Test")
+            .content("Body");
+        let screen = Rect::new(0, 0, 80, 24);
+        let bounds = spotlight.panel_bounds(screen);
+        let (w, h) = spotlight.panel_size(screen);
+        assert_eq!(bounds.width, w);
+        assert_eq!(bounds.height, h);
+    }
+
+    #[test]
+    fn panel_position_clamped_to_screen() {
+        // Force panel to a position that would go off-screen
+        let spotlight = Spotlight::new()
+            .target(Rect::new(0, 0, 5, 3))
+            .title("Test Title Here")
+            .force_position(PanelPosition::Above); // Would go negative
+
+        let screen = Rect::new(0, 0, 80, 24);
+        let (px, py, _) = spotlight.panel_position(screen);
+        // panel_position returns u16 so non-negative is guaranteed;
+        // verify panel stays within the screen bounds
+        let (w, h) = spotlight.panel_size(screen);
+        assert!(
+            px + w <= screen.right(),
+            "panel should not exceed screen right"
+        );
+        assert!(
+            py + h <= screen.bottom(),
+            "panel should not exceed screen bottom"
+        );
+    }
 }
