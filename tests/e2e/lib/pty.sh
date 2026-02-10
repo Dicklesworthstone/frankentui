@@ -209,6 +209,16 @@ drain_timeout = float(os.environ.get("PTY_DRAIN_TIMEOUT_MS", "200")) / 1000.0
 terminate_grace = float(os.environ.get("PTY_TERMINATE_GRACE_MS", "300")) / 1000.0
 read_poll = float(os.environ.get("PTY_READ_POLL_MS", "50")) / 1000.0
 read_chunk = int(os.environ.get("PTY_READ_CHUNK", "4096"))
+capture_max_raw = os.environ.get("PTY_CAPTURE_MAX_BYTES", "")
+capture_max = None
+if capture_max_raw:
+    try:
+        capture_max = int(capture_max_raw)
+        if capture_max < 0:
+            capture_max = None
+    except ValueError:
+        print("Invalid PTY_CAPTURE_MAX_BYTES (expected integer)", file=sys.stderr)
+        sys.exit(2)
 
 send_bytes = b""
 if send_file:
@@ -233,6 +243,14 @@ try:
 except Exception:
     pass
 
+try:
+    import fcntl
+
+    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+except Exception:
+    pass
+
 start = time.monotonic()
 deadline = start + timeout
 resize_at = None
@@ -247,6 +265,22 @@ if resize_delay_ms > 0 and resize_cols and resize_rows:
     except ValueError:
         resize_at = None
 
+def _preexec_setup_controlling_tty() -> None:
+    # `pty.openpty()` alone does not guarantee `/dev/tty` is available in the
+    # child when launching as a new session. Make the slave PTY the controlling
+    # terminal so terminal libraries (e.g. crossterm) can open `/dev/tty`.
+    try:
+        os.setsid()
+    except Exception:
+        pass
+    try:
+        import fcntl
+        import termios
+
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    except Exception:
+        pass
+
 proc = subprocess.Popen(
     cmd,
     stdin=slave_fd,
@@ -254,7 +288,8 @@ proc = subprocess.Popen(
     stderr=slave_fd,
     close_fds=True,
     env=os.environ.copy(),
-    start_new_session=True,
+    start_new_session=False,
+    preexec_fn=_preexec_setup_controlling_tty,
 )
 slave_fd_open = slave_fd
 
@@ -322,14 +357,27 @@ try:
 
         rlist, _, _ = select.select([master_fd], [], [], read_poll)
         if rlist:
-            try:
-                chunk = os.read(master_fd, read_chunk)
-            except OSError:
+            eof = False
+            while True:
+                try:
+                    chunk = os.read(master_fd, read_chunk)
+                except BlockingIOError:
+                    break
+                except OSError:
+                    eof = True
+                    break
+                if not chunk:
+                    eof = True
+                    break
+                if capture_max != 0:
+                    captured.extend(chunk)
+                    if capture_max is not None and capture_max > 0:
+                        # Avoid O(n) tail-trimming on every read; trim lazily.
+                        if len(captured) > capture_max * 2:
+                            del captured[: len(captured) - capture_max]
+                last_data = now
+            if eof:
                 break
-            if not chunk:
-                break
-            captured.extend(chunk)
-            last_data = now
 
         exit_code = proc.poll()
         if exit_code is not None:
@@ -352,6 +400,9 @@ finally:
 exit_code = proc.poll()
 if exit_code is None:
     exit_code = 124
+
+if capture_max is not None and capture_max > 0 and len(captured) > capture_max:
+    del captured[: len(captured) - capture_max]
 
 with open(output_path, "wb") as handle:
     handle.write(captured)

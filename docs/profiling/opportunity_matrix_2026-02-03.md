@@ -334,31 +334,37 @@ This pass re-ran deterministic PTY harness measurements for the heavy effects
 Harness args:
 - `--vfx-harness --vfx-tick-ms=16 --vfx-frames=180 --vfx-seed=12345 --vfx-perf`
 
-Artifacts:
+Artifacts (raw PTY stream capture; can backpressure the PTY reader and inflate present timings):
 - `.scratch/vfx/bd-3e1t.5.3.15_plasma_120x40_pty.jsonl`
 - `.scratch/vfx/bd-3e1t.5.3.15_plasma_200x60_pty.jsonl`
 - `.scratch/vfx/bd-3e1t.5.3.15_metaballs_120x40_pty.jsonl`
 - `.scratch/vfx/bd-3e1t.5.3.15_metaballs_200x60_pty.jsonl`
 
+Artifacts (jsonl-only; use these for perf numbers):
+- `.scratch/vfx/bd-t153k_plasma_120x40_seed12345.jsonl`
+- `.scratch/vfx/bd-t153k_plasma_200x60_seed12345.jsonl`
+- `.scratch/vfx/bd-t153k_metaballs_120x40_seed12345.jsonl`
+- `.scratch/vfx/bd-t153k_metaballs_200x60_seed12345.jsonl`
+
 `total_ms_{p50,p95,p99}` (`vfx_perf_summary`):
 
 | Effect/Size | Frames | total_ms_p50 | total_ms_p95 | total_ms_p99 |
 |---|---:|---:|---:|---:|
-| plasma 120x40 | 182 | 1.502 | 2.143 | 3.259 |
-| plasma 200x60 | 181 | 12.163 | 21.209 | 26.494 |
-| metaballs 120x40 | 182 | 2.209 | 3.073 | 3.581 |
-| metaballs 200x60 | 182 | 4.808 | 6.004 | 7.332 |
+| plasma 120x40 | 181 | 1.356 | 1.948 | 2.168 |
+| plasma 200x60 | 181 | 3.092 | 4.011 | 4.462 |
+| metaballs 120x40 | 181 | 2.035 | 2.669 | 3.215 |
+| metaballs 200x60 | 181 | 4.778 | 5.967 | 7.305 |
 
 Phase p95 breakdown (for hotspot directionality):
 
 | Effect/Size | render_ms_p95 | diff_ms_p95 | present_ms_p95 | top_phase |
 |---|---:|---:|---:|---|
-| plasma 120x40 | 1.091 | 0.037 | 1.191 | present |
-| plasma 200x60 | 6.626 | 0.297 | 16.502 | present |
-| metaballs 120x40 | 1.709 | 0.036 | 1.704 | render |
-| metaballs 200x60 | 3.759 | 0.071 | 2.305 | render |
+| plasma 120x40 | 1.039 | 0.035 | 1.154 | present |
+| plasma 200x60 | 2.115 | 0.078 | 2.050 | render |
+| metaballs 120x40 | 1.799 | 0.031 | 1.161 | render |
+| metaballs 200x60 | 3.843 | 0.072 | 2.583 | render |
 
-Note: at `200x60`, plasma is I/O-bound in this run (present dominates).
+Note: perf tables above use the jsonl-only artifacts (bd-t153k); the raw PTY stream captures are retained for audit only.
 
 ---
 

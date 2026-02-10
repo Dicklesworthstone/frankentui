@@ -1285,7 +1285,30 @@ impl VirtualTerminal {
         }
     }
 
-    fn put_char(&mut self, ch: char) {
+    /// Place a single character at the current cursor position, applying all
+    /// terminal output logic: charset translation, Unicode width detection,
+    /// auto-wrap (DECAWM), wide-character handling, insert mode (IRM), and
+    /// cursor advancement.
+    ///
+    /// This is the character-level entry point that [`feed`](Self::feed) and
+    /// [`feed_str`](Self::feed_str) use internally after ANSI/UTF-8 parsing.
+    /// Call it directly when you already have decoded characters and want the
+    /// terminal to handle wrapping, widths, and cursor movement.
+    ///
+    /// Zero-width characters (combining marks, ZWJ) are silently skipped.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ftui_pty::virtual_terminal::VirtualTerminal;
+    ///
+    /// let mut vt = VirtualTerminal::new(10, 3);
+    /// vt.put_char('H');
+    /// vt.put_char('i');
+    /// assert_eq!(vt.row_text(0), "Hi");
+    /// assert_eq!(vt.cursor(), (2, 0));
+    /// ```
+    pub fn put_char(&mut self, ch: char) {
         // Charset translation: resolve effective charset and translate
         let designator = if let Some(shift) = self.single_shift {
             let slot = (shift as usize).min(3);
@@ -2941,5 +2964,94 @@ mod tests {
         vt3.feed("中文字".as_bytes());
         vt3.feed(b"\x1b[1;3H\x1b[2X"); // ECH 2 at col 2 (lead of 文)
         assert_invariants(&vt3);
+    }
+
+    // ── put_char public API tests ──────────────────────────────────
+
+    #[test]
+    fn put_char_basic_ascii() {
+        let mut vt = VirtualTerminal::new(80, 24);
+        vt.put_char('H');
+        vt.put_char('e');
+        vt.put_char('l');
+        vt.put_char('l');
+        vt.put_char('o');
+        assert_eq!(vt.row_text(0), "Hello");
+        assert_eq!(vt.cursor(), (5, 0));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_char_matches_feed_str() {
+        let mut vt_feed = VirtualTerminal::new(40, 10);
+        vt_feed.feed_str("Hello!");
+
+        let mut vt_put = VirtualTerminal::new(40, 10);
+        for ch in "Hello!".chars() {
+            vt_put.put_char(ch);
+        }
+
+        assert_eq!(vt_feed.screen_text(), vt_put.screen_text());
+        assert_eq!(vt_feed.cursor(), vt_put.cursor());
+    }
+
+    #[test]
+    fn put_char_wide_characters() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.put_char('中');
+        vt.put_char('文');
+        assert_eq!(vt.row_text(0), "中文");
+        assert_eq!(vt.cursor(), (4, 0)); // each CJK char is 2 columns wide
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_char_autowrap() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        for ch in "ABCDE".chars() {
+            vt.put_char(ch);
+        }
+        // Cursor is at pending-wrap position (col == width)
+        assert_eq!(vt.row_text(0), "ABCDE");
+        // Next character wraps to row 1
+        vt.put_char('F');
+        assert_eq!(vt.row_text(1), "F");
+        assert_eq!(vt.cursor(), (1, 1));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_char_wide_wrap_at_margin() {
+        // Terminal 5 columns wide, place 4 narrow chars then a wide char.
+        // The wide char needs 2 columns but only 1 remains, so it wraps.
+        let mut vt = VirtualTerminal::new(5, 3);
+        for ch in "ABCD".chars() {
+            vt.put_char(ch);
+        }
+        vt.put_char('中'); // wide: needs 2 cols, only 1 left → wraps
+        assert_eq!(vt.row_text(0), "ABCD");
+        assert_eq!(vt.row_text(1), "中");
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_char_zero_width_skipped() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.put_char('A');
+        vt.put_char('\u{0300}'); // combining grave accent (zero-width)
+        assert_eq!(vt.cursor(), (1, 0)); // cursor didn't advance
+        assert_eq!(vt.char_at(0, 0), Some('A'));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_char_preserves_style() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        // Set bold via ANSI escape
+        vt.feed(b"\x1b[1m");
+        vt.put_char('X');
+        let style = vt.style_at(0, 0).unwrap();
+        assert!(style.bold);
+        assert_invariants(&vt);
     }
 }
