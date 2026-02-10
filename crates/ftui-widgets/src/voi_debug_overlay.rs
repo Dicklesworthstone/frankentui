@@ -724,6 +724,316 @@ mod tests {
         assert_eq!(cloned.ledger.len(), data.ledger.len());
     }
 
+    // ─── Edge-case tests (bd-3szd1) ────────────────────────────────────
+
+    #[test]
+    fn build_lines_width_zero() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let lines = overlay.build_lines(0);
+        // Should not panic; divider is empty string
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn build_lines_width_one() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let lines = overlay.build_lines(1);
+        assert_eq!(lines[1], "-", "divider should be single dash");
+    }
+
+    #[test]
+    fn build_lines_empty_title() {
+        let data = VoiOverlayData {
+            title: String::new(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(20);
+        assert_eq!(lines[0], "", "empty title should produce empty header");
+    }
+
+    #[test]
+    fn build_lines_tick_only_no_source() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: Some(0),
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(30);
+        assert!(lines[0].contains("(tick 0)"));
+        assert!(!lines[0].contains('['));
+    }
+
+    #[test]
+    fn build_lines_source_only_no_tick() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: Some("src".to_string()),
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(30);
+        assert!(lines[0].contains("[src]"));
+        assert!(!lines[0].contains("tick"));
+    }
+
+    #[test]
+    fn render_width_below_threshold() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 40, &mut pool);
+        // width=19 is below the 20 threshold
+        overlay.render(Rect::new(0, 0, 19, 10), &mut frame);
+        // Should be noop — verify no border rendered
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_ne!(
+            cell.content.as_char(),
+            Some('╭'),
+            "should not render border at width=19"
+        );
+    }
+
+    #[test]
+    fn render_height_below_threshold() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 40, &mut pool);
+        // height=5 is below the 6 threshold
+        overlay.render(Rect::new(0, 0, 40, 5), &mut frame);
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_ne!(
+            cell.content.as_char(),
+            Some('╭'),
+            "should not render border at height=5"
+        );
+    }
+
+    #[test]
+    fn render_exact_minimum_size() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 40, &mut pool);
+        // Exactly at threshold: width=20, height=6
+        overlay.render(Rect::new(0, 0, 20, 6), &mut frame);
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(
+            cell.content.as_char(),
+            Some('╭'),
+            "should render border at exact minimum size"
+        );
+    }
+
+    #[test]
+    fn posterior_with_nan_values() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: VoiPosteriorSummary {
+                alpha: f64::NAN,
+                beta: f64::INFINITY,
+                mean: f64::NEG_INFINITY,
+                variance: 0.0,
+                expected_variance_after: 0.0,
+                voi_gain: -0.0,
+            },
+            decision: None,
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(50);
+        // Should format without panic
+        assert!(
+            lines.iter().any(|l| l.contains("NaN") || l.contains("nan")),
+            "NaN alpha should appear in output: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn large_event_idx_in_ledger() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: vec![VoiLedgerEntry::Decision {
+                event_idx: u64::MAX,
+                should_sample: true,
+                voi_gain: 0.0,
+                log_bayes_factor: 0.0,
+            }],
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(80);
+        assert!(
+            lines.iter().any(|l| l.contains(&u64::MAX.to_string())),
+            "large event_idx should appear: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_ledger_entries_same_type() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: None,
+            observation: None,
+            ledger: vec![
+                VoiLedgerEntry::Decision {
+                    event_idx: 1,
+                    should_sample: true,
+                    voi_gain: 0.01,
+                    log_bayes_factor: 0.5,
+                },
+                VoiLedgerEntry::Decision {
+                    event_idx: 2,
+                    should_sample: false,
+                    voi_gain: 0.001,
+                    log_bayes_factor: -0.3,
+                },
+                VoiLedgerEntry::Decision {
+                    event_idx: 3,
+                    should_sample: true,
+                    voi_gain: 0.02,
+                    log_bayes_factor: 1.0,
+                },
+            ],
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(50);
+        let decision_lines: Vec<_> = lines.iter().filter(|l| l.starts_with("D#")).collect();
+        assert_eq!(decision_lines.len(), 3, "expected 3 decision entries");
+    }
+
+    #[test]
+    fn negative_log_bayes_factor_format() {
+        let data = VoiOverlayData {
+            title: "T".to_string(),
+            tick: None,
+            source: None,
+            posterior: sample_posterior(),
+            decision: Some(VoiDecisionSummary {
+                event_idx: 1,
+                should_sample: false,
+                reason: "negative".to_string(),
+                score: 0.001,
+                cost: 0.1,
+                log_bayes_factor: -2.345,
+                e_value: 0.1,
+                e_threshold: 0.95,
+                boundary_score: 0.05,
+            }),
+            observation: None,
+            ledger: Vec::new(),
+        };
+        let overlay = VoiDebugOverlay::new(data);
+        let lines = overlay.build_lines(50);
+        assert!(
+            lines.iter().any(|l| l.contains("-2.345")),
+            "negative log BF should appear: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn voi_ledger_entry_clone() {
+        let entry = VoiLedgerEntry::Decision {
+            event_idx: 5,
+            should_sample: true,
+            voi_gain: 0.01,
+            log_bayes_factor: 0.5,
+        };
+        let cloned = entry.clone();
+        assert!(format!("{cloned:?}").contains("Decision"));
+    }
+
+    #[test]
+    fn voi_decision_summary_clone() {
+        let d = VoiDecisionSummary {
+            event_idx: 1,
+            should_sample: true,
+            reason: "test".to_string(),
+            score: 1.0,
+            cost: 0.5,
+            log_bayes_factor: 0.3,
+            e_value: 1.0,
+            e_threshold: 0.95,
+            boundary_score: 0.5,
+        };
+        let cloned = d.clone();
+        assert_eq!(cloned.reason, "test");
+        assert_eq!(cloned.event_idx, 1);
+    }
+
+    #[test]
+    fn voi_observation_summary_clone() {
+        let o = VoiObservationSummary {
+            sample_idx: 42,
+            violated: true,
+            posterior_mean: 0.5,
+            alpha: 3.0,
+            beta: 7.0,
+        };
+        let cloned = o.clone();
+        assert!(cloned.violated);
+        assert_eq!(cloned.sample_idx, 42);
+    }
+
+    #[test]
+    fn with_style_custom_border_type() {
+        let overlay = VoiDebugOverlay::new(sample_data()).with_style(VoiOverlayStyle {
+            border_type: BorderType::Double,
+            ..VoiOverlayStyle::default()
+        });
+        assert!(matches!(overlay.style.border_type, BorderType::Double));
+    }
+
+    #[test]
+    fn render_no_background() {
+        let data = sample_data();
+        let overlay = VoiDebugOverlay::new(data);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 32, &mut pool);
+        // Default style has no background
+        overlay.render(Rect::new(0, 0, 80, 32), &mut frame);
+        // Should render border without panic
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('╭'));
+    }
+
+    #[test]
+    fn build_lines_divider_matches_width() {
+        let overlay = VoiDebugOverlay::new(sample_data());
+        let width = 37;
+        let lines = overlay.build_lines(width);
+        // line[1] is the first divider
+        assert_eq!(
+            lines[1].len(),
+            width,
+            "divider should match requested width"
+        );
+    }
+
+    // ─── End edge-case tests (bd-3szd1) ──────────────────────────────
+
     // --- Struct Debug impls ---
 
     #[test]
