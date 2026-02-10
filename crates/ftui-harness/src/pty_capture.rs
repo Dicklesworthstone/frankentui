@@ -130,16 +130,35 @@ mod tests {
         })
     }
 
-    fn capture_text(mode: ScreenMode, cols: u16, rows: u16, command: &str) -> (String, String) {
+    fn capture_raw_output(
+        mode: ScreenMode,
+        cols: u16,
+        rows: u16,
+        command: &str,
+    ) -> (portable_pty::ExitStatus, Vec<u8>) {
         let mut writer = create_writer_with_mode(mode);
         let mut cmd = CommandBuilder::new("sh");
         cmd.args(["-c", command]);
         let config = PtyCaptureConfig::default().with_size(cols, rows);
-        let _ = run_command_with_pty(&mut writer, cmd, config);
-
+        let status = run_command_with_pty(&mut writer, cmd, config).expect("run PTY command");
         let output = writer.into_inner().unwrap_or_default();
+        (status, output)
+    }
+
+    fn capture_status_and_text(
+        mode: ScreenMode,
+        cols: u16,
+        rows: u16,
+        command: &str,
+    ) -> (portable_pty::ExitStatus, String, String) {
+        let (status, output) = capture_raw_output(mode, cols, rows, command);
         let text = normalize_output(&output);
         let checksum = compute_text_checksum(&text);
+        (status, text, checksum)
+    }
+
+    fn capture_text(mode: ScreenMode, cols: u16, rows: u16, command: &str) -> (String, String) {
+        let (_status, text, checksum) = capture_status_and_text(mode, cols, rows, command);
         (text, checksum)
     }
 
@@ -247,6 +266,102 @@ mod tests {
                 ("rows", JsonValue::u64(rows as u64)),
                 ("checksum", JsonValue::str(checksum)),
             ],
+        );
+    }
+
+    #[test]
+    fn harness_pty_capture_nonzero_exit_status_is_returned() {
+        let cols = 48;
+        let rows = 12;
+        let command = "printf 'before-fail\\n'; exit 7";
+
+        let (status, text, checksum) =
+            capture_status_and_text(ScreenMode::Inline { ui_height: 5 }, cols, rows, command);
+
+        assert!(
+            !status.success(),
+            "expected non-zero exit status for failing command"
+        );
+        assert!(
+            text.contains("before-fail"),
+            "expected captured text before failure: {text:?}"
+        );
+
+        logger().log(
+            "pty_capture_nonzero_exit",
+            &[
+                ("cols", JsonValue::u64(cols as u64)),
+                ("rows", JsonValue::u64(rows as u64)),
+                ("checksum", JsonValue::str(checksum)),
+            ],
+        );
+    }
+
+    #[test]
+    fn harness_pty_capture_exit_without_output_is_clean() {
+        let cols = 48;
+        let rows = 12;
+        let (status, text, checksum) =
+            capture_status_and_text(ScreenMode::Inline { ui_height: 5 }, cols, rows, "exit 0");
+
+        assert!(status.success(), "expected success status for `exit 0`");
+        assert_eq!(
+            text, "",
+            "expected no captured text for empty command output"
+        );
+
+        logger().log(
+            "pty_capture_empty_output_exit",
+            &[
+                ("cols", JsonValue::u64(cols as u64)),
+                ("rows", JsonValue::u64(rows as u64)),
+                ("checksum", JsonValue::str(checksum)),
+            ],
+        );
+    }
+
+    #[test]
+    fn harness_pty_capture_fragmented_ansi_sequences_are_sanitized() {
+        let cols = 64;
+        let rows = 16;
+        let command = "printf 'ok '; printf '\\033['; sleep 0.02; printf '31mred'; printf '\\033[0m'; printf ' done\\n'";
+
+        let (status, output) =
+            capture_raw_output(ScreenMode::Inline { ui_height: 5 }, cols, rows, command);
+        let output_str = String::from_utf8_lossy(&output);
+        let text = normalize_output(&output);
+
+        assert!(
+            status.success(),
+            "fragmented ANSI command should exit successfully"
+        );
+        assert!(
+            text.contains("ok red done"),
+            "sanitized text mismatch: {text:?}"
+        );
+        assert!(
+            !output_str.contains("\x1b[31m"),
+            "raw ANSI color escape leaked into writer output"
+        );
+    }
+
+    #[test]
+    fn harness_pty_capture_fragmented_ansi_replay_is_deterministic() {
+        let cols = 56;
+        let rows = 14;
+        let command = "printf 'alpha '; printf '\\033['; sleep 0.01; printf '32mgreen\\033[0m'; printf ' omega\\n'";
+
+        let (status1, text1, checksum1) =
+            capture_status_and_text(ScreenMode::Inline { ui_height: 5 }, cols, rows, command);
+        let (status2, text2, checksum2) =
+            capture_status_and_text(ScreenMode::Inline { ui_height: 5 }, cols, rows, command);
+
+        assert!(status1.success(), "first run should succeed");
+        assert!(status2.success(), "second run should succeed");
+        assert_eq!(text1, text2, "expected deterministic sanitized text replay");
+        assert_eq!(
+            checksum1, checksum2,
+            "expected deterministic checksum replay"
         );
     }
 
