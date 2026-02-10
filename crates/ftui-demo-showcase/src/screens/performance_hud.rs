@@ -15,7 +15,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::env;
 use std::sync::OnceLock;
-use std::time::Instant;
+use web_time::Instant;
 
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,

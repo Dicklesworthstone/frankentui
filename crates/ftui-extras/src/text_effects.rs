@@ -551,7 +551,11 @@ impl ColorGradient {
             return self.stops[0].1;
         }
         if idx >= self.stops.len() {
-            return self.stops.last().map(|s| s.1).unwrap();
+            return self
+                .stops
+                .last()
+                .map(|s| s.1)
+                .unwrap_or(PackedRgba::rgb(255, 255, 255));
         }
 
         let prev = &self.stops[idx - 1];
@@ -623,7 +627,11 @@ impl ColorGradient {
             return self.stops[0].1;
         }
         if idx >= self.stops.len() {
-            return self.stops.last().map(|s| s.1).unwrap();
+            return self
+                .stops
+                .last()
+                .map(|s| s.1)
+                .unwrap_or(PackedRgba::rgb(255, 255, 255));
         }
 
         let prev = &self.stops[idx - 1];

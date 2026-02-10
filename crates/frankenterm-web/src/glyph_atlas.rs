@@ -481,8 +481,7 @@ impl GlyphAtlasCache {
         if reused {
             self.atlas.clear_r8(slot);
         }
-        self.atlas
-            .write_r8(draw, width, height, &pixels, !reused)?;
+        self.atlas.write_r8(draw, width, height, &pixels, !reused)?;
 
         let id = glyph_id(key);
         let placement = GlyphPlacement {
@@ -820,10 +819,8 @@ mod tests {
         for y in p_small.slot.y..slot_y1 {
             for x in p_small.slot.x..slot_x1 {
                 let idx = (y as usize) * atlas_w + (x as usize);
-                let in_draw = x >= p_small.draw.x
-                    && x < draw_x1
-                    && y >= p_small.draw.y
-                    && y < draw_y1;
+                let in_draw =
+                    x >= p_small.draw.x && x < draw_x1 && y >= p_small.draw.y && y < draw_y1;
                 let expected = if in_draw { 0x55 } else { 0x00 };
                 assert_eq!(
                     pixels[idx], expected,

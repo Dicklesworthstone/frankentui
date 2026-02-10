@@ -9,7 +9,7 @@
 //! - HintRanker evidence ledger for keybinding hints
 
 use std::cell::Cell;
-use std::time::Instant;
+use web_time::Instant;
 
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEventKind,

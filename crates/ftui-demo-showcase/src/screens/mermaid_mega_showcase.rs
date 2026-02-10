@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use web_time::Instant;
 
 use ftui_core::event::{MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;

@@ -3,7 +3,7 @@
 //! VOI overlay demo screen (Galaxy-Brain widget).
 
 use std::cell::Cell;
-use std::time::Instant;
+use web_time::Instant;
 
 use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,

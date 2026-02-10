@@ -30,7 +30,7 @@ use crate::theme::{self, ThemeId};
 use std::cell::Cell as StdCell;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Instant;
+use web_time::Instant;
 
 // =============================================================================
 // Diagnostics + Telemetry (bd-vu0o.5)

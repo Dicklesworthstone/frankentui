@@ -250,6 +250,14 @@ fn stress_overlay_render_hit_regions_120x40() {
 
     let overlay = InspectorOverlay::new(&state);
     let mut pool = GraphemePool::new();
+
+    // Warmup: prime caches and page tables before timing.
+    {
+        let mut frame = Frame::with_hit_grid(120, 40, &mut pool);
+        populate_hit_grid(&mut frame, area, 5);
+        overlay.render(area, &mut frame);
+    }
+
     let mut render_times = Vec::with_capacity(50);
 
     for _ in 0..50 {
@@ -297,6 +305,13 @@ fn stress_overlay_render_widget_bounds_many_widgets() {
 
     let overlay = InspectorOverlay::new(&state);
     let mut pool = GraphemePool::new();
+
+    // Warmup: prime caches and page tables before timing.
+    {
+        let mut frame = Frame::with_hit_grid(120, 40, &mut pool);
+        overlay.render(area, &mut frame);
+    }
+
     let mut render_times = Vec::with_capacity(50);
 
     for _ in 0..50 {

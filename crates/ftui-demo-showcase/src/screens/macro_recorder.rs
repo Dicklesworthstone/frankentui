@@ -8,7 +8,7 @@
 //! - Timeline and scenario runner panels
 
 use std::cell::Cell;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseEvent};
 use ftui_core::geometry::Rect;

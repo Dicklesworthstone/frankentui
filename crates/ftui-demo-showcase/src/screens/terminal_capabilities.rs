@@ -18,7 +18,7 @@ use std::cell::Cell;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ftui_core::capability_override::{has_active_overrides, override_depth};
 #[cfg(feature = "caps-probe")]
@@ -217,8 +217,8 @@ impl DiagnosticEntry {
         {
             seq // Use sequence as deterministic timestamp
         } else {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0)
         };

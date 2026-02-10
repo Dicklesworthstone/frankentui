@@ -16,7 +16,7 @@
 use std::cell::Cell as StdCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;

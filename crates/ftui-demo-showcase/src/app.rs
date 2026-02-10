@@ -16,7 +16,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::determinism;
 use crate::screens;
@@ -6631,7 +6631,7 @@ mod tests {
         let mut app2 = AppModel::new();
         // Simulate 200 ticks with known intervals
         for _ in 0..200 {
-            app2.perf_last_tick = Some(std::time::Instant::now());
+            app2.perf_last_tick = Some(Instant::now());
             // Manually push to simulate without real timing
             if app2.perf_tick_times_us.len() >= 120 {
                 app2.perf_tick_times_us.pop_front();
