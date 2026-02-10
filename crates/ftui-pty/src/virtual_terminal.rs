@@ -536,6 +536,87 @@ impl VirtualTerminal {
         self.feed(s.as_bytes());
     }
 
+    // ── Higher-level Write API ──────────────────────────────────────
+
+    /// Write a plain-text string to the terminal.
+    ///
+    /// Each character is fed through [`put_char`](Self::put_char), which
+    /// handles auto-wrap, wide characters, insert mode, and charset
+    /// translation — but **no** ANSI escape sequences are interpreted.
+    /// Use this when you have pre-sanitized text and want deterministic
+    /// character-level output.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ftui_pty::virtual_terminal::VirtualTerminal;
+    ///
+    /// let mut vt = VirtualTerminal::new(10, 1);
+    /// vt.put_str("Hello");
+    /// assert_eq!(vt.row_text(0), "Hello");
+    /// assert_eq!(vt.cursor(), (5, 0));
+    /// ```
+    pub fn put_str(&mut self, s: &str) {
+        for ch in s.chars() {
+            self.put_char(ch);
+        }
+    }
+
+    /// Move the cursor to an absolute position, clamped to terminal bounds.
+    ///
+    /// Coordinates are 0-indexed. Out-of-range values are clamped:
+    /// `x` to `width - 1`, `y` to `height - 1`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ftui_pty::virtual_terminal::VirtualTerminal;
+    ///
+    /// let mut vt = VirtualTerminal::new(80, 24);
+    /// vt.set_cursor_position(5, 10);
+    /// assert_eq!(vt.cursor(), (5, 10));
+    ///
+    /// // Out-of-range values are clamped.
+    /// vt.set_cursor_position(999, 999);
+    /// assert_eq!(vt.cursor(), (79, 23));
+    /// ```
+    pub fn set_cursor_position(&mut self, x: u16, y: u16) {
+        self.cursor_x = x.min(self.width.saturating_sub(1));
+        self.cursor_y = y.min(self.height.saturating_sub(1));
+    }
+
+    /// Clear the entire visible display, filling every cell with the
+    /// current style's background.
+    ///
+    /// This is the programmatic equivalent of `ESC[2J`. The cursor
+    /// position is **not** changed. Scrollback is not affected — use
+    /// [`clear_scrollback`](Self::clear_scrollback) for that.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ftui_pty::virtual_terminal::VirtualTerminal;
+    ///
+    /// let mut vt = VirtualTerminal::new(5, 1);
+    /// vt.put_str("Hello");
+    /// vt.clear();
+    /// assert_eq!(vt.row_text(0), "");
+    /// ```
+    pub fn clear(&mut self) {
+        let blank = self.styled_blank();
+        for cell in &mut self.grid {
+            *cell = blank.clone();
+        }
+    }
+
+    /// Clear the scrollback buffer.
+    ///
+    /// This removes all lines that have scrolled off the visible area.
+    /// The visible display is not affected.
+    pub fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
+    }
+
     // ── Query Responses ─────────────────────────────────────────────
 
     /// Generate a cursor position report (CPR) response.
@@ -3052,6 +3133,180 @@ mod tests {
         vt.put_char('X');
         let style = vt.style_at(0, 0).unwrap();
         assert!(style.bold);
+        assert_invariants(&vt);
+    }
+
+    // ── put_str tests ─────────────────────────────────────────────
+
+    #[test]
+    fn put_str_basic() {
+        let mut vt = VirtualTerminal::new(20, 3);
+        vt.put_str("Hello, world!");
+        assert_eq!(vt.row_text(0), "Hello, world!");
+        assert_eq!(vt.cursor(), (13, 0));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_str_empty() {
+        let mut vt = VirtualTerminal::new(10, 1);
+        vt.put_str("");
+        assert_eq!(vt.cursor(), (0, 0));
+        assert_eq!(vt.row_text(0), "");
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_str_wraps_at_margin() {
+        let mut vt = VirtualTerminal::new(5, 3);
+        vt.put_str("ABCDEFGH");
+        assert_eq!(vt.row_text(0), "ABCDE");
+        assert_eq!(vt.row_text(1), "FGH");
+        assert_eq!(vt.cursor(), (3, 1));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_str_wide_chars() {
+        let mut vt = VirtualTerminal::new(10, 1);
+        vt.put_str("中文");
+        assert_eq!(vt.row_text(0), "中文");
+        assert_eq!(vt.cursor(), (4, 0));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn put_str_matches_put_char_sequence() {
+        let text = "Hi 😀!";
+        let mut vt_str = VirtualTerminal::new(20, 3);
+        vt_str.put_str(text);
+
+        let mut vt_char = VirtualTerminal::new(20, 3);
+        for ch in text.chars() {
+            vt_char.put_char(ch);
+        }
+
+        assert_eq!(vt_str.screen_text(), vt_char.screen_text());
+        assert_eq!(vt_str.cursor(), vt_char.cursor());
+        assert_invariants(&vt_str);
+    }
+
+    #[test]
+    fn put_str_does_not_interpret_escapes() {
+        let mut vt = VirtualTerminal::new(20, 1);
+        // ESC[1m would enable bold if processed as escape sequence
+        vt.put_str("\x1b[1mBold");
+        // The ESC char should be skipped (zero-width), but '[', '1', 'm'
+        // should appear as literal characters
+        let text = vt.row_text(0);
+        assert!(text.contains("[1mBold"), "got: {text:?}");
+        // Style should NOT be bold (no escape processing)
+        let style = vt.style_at(0, 0).unwrap();
+        assert!(!style.bold);
+        assert_invariants(&vt);
+    }
+
+    // ── set_cursor_position tests ────────────────────────────────
+
+    #[test]
+    fn set_cursor_position_basic() {
+        let mut vt = VirtualTerminal::new(80, 24);
+        vt.set_cursor_position(10, 5);
+        assert_eq!(vt.cursor(), (10, 5));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn set_cursor_position_clamps_x() {
+        let mut vt = VirtualTerminal::new(80, 24);
+        vt.set_cursor_position(200, 5);
+        assert_eq!(vt.cursor(), (79, 5));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn set_cursor_position_clamps_y() {
+        let mut vt = VirtualTerminal::new(80, 24);
+        vt.set_cursor_position(10, 100);
+        assert_eq!(vt.cursor(), (10, 23));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn set_cursor_position_origin() {
+        let mut vt = VirtualTerminal::new(80, 24);
+        vt.put_str("test");
+        vt.set_cursor_position(0, 0);
+        assert_eq!(vt.cursor(), (0, 0));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn set_cursor_position_then_put_char() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.set_cursor_position(3, 1);
+        vt.put_char('X');
+        assert_eq!(vt.char_at(3, 1), Some('X'));
+        assert_eq!(vt.cursor(), (4, 1));
+        assert_invariants(&vt);
+    }
+
+    // ── clear tests ─────────────────────────────────────────────
+
+    #[test]
+    fn clear_empties_display() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.put_str("Hello");
+        vt.set_cursor_position(0, 1);
+        vt.put_str("World");
+        vt.clear();
+        assert_eq!(vt.row_text(0), "");
+        assert_eq!(vt.row_text(1), "");
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn clear_preserves_cursor_position() {
+        let mut vt = VirtualTerminal::new(10, 3);
+        vt.set_cursor_position(5, 2);
+        vt.clear();
+        assert_eq!(vt.cursor(), (5, 2));
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn clear_does_not_affect_scrollback() {
+        let mut vt = VirtualTerminal::new(5, 2);
+        // Fill enough text to push lines into scrollback
+        vt.put_str("AAAAABBBBBCCCCC");
+        let sb_before = vt.scrollback_len();
+        assert!(sb_before > 0);
+        vt.clear();
+        assert_eq!(vt.scrollback_len(), sb_before);
+        assert_invariants(&vt);
+    }
+
+    // ── clear_scrollback tests ──────────────────────────────────
+
+    #[test]
+    fn clear_scrollback_empties_history() {
+        let mut vt = VirtualTerminal::new(5, 2);
+        vt.put_str("AAAAABBBBBCCCCC");
+        assert!(vt.scrollback_len() > 0);
+        vt.clear_scrollback();
+        assert_eq!(vt.scrollback_len(), 0);
+        assert_invariants(&vt);
+    }
+
+    #[test]
+    fn clear_scrollback_preserves_display() {
+        let mut vt = VirtualTerminal::new(10, 2);
+        vt.put_str("Hello");
+        vt.set_cursor_position(0, 1);
+        vt.put_str("World");
+        vt.clear_scrollback();
+        assert_eq!(vt.row_text(0), "Hello");
+        assert_eq!(vt.row_text(1), "World");
         assert_invariants(&vt);
     }
 }

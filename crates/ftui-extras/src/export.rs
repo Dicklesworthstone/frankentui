@@ -528,7 +528,7 @@ mod tests {
 
         for (i, ch) in text.chars().enumerate() {
             if (i as u16) < width {
-                buf.set(i as u16, 0, Cell::from_char(ch));
+                buf.set_fast(i as u16, 0, Cell::from_char(ch));
             }
         }
 
@@ -562,7 +562,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('R').with_fg(PackedRgba::rgb(255, 0, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let html = HtmlExporter::default().export(&buf, &pool);
         assert!(html.contains("color:#ff0000"));
@@ -574,7 +574,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('B').with_bg(PackedRgba::rgb(0, 0, 255));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let html = HtmlExporter::default().export(&buf, &pool);
         assert!(html.contains("background:#0000ff"));
@@ -586,7 +586,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('B').with_attrs(CellAttrs::new(StyleFlags::BOLD, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let html = HtmlExporter::default().export(&buf, &pool);
         assert!(html.contains("font-weight:bold"));
@@ -598,7 +598,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('I').with_attrs(CellAttrs::new(StyleFlags::ITALIC, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let html = HtmlExporter::default().export(&buf, &pool);
         assert!(html.contains("font-style:italic"));
@@ -610,7 +610,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('U').with_attrs(CellAttrs::new(StyleFlags::UNDERLINE, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let html = HtmlExporter::default().export(&buf, &pool);
         assert!(html.contains("text-decoration:underline"));
@@ -629,8 +629,8 @@ mod tests {
     fn html_multiline() {
         let mut buf = Buffer::new(3, 2);
         let pool = GraphemePool::new();
-        buf.set(0, 0, Cell::from_char('A'));
-        buf.set(0, 1, Cell::from_char('B'));
+        buf.set_fast(0, 0, Cell::from_char('A'));
+        buf.set_fast(0, 1, Cell::from_char('B'));
 
         let html = HtmlExporter::default().export(&buf, &pool);
         assert!(html.contains("A"));
@@ -670,7 +670,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('R').with_fg(PackedRgba::rgb(255, 0, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let svg = SvgExporter::default().export(&buf, &pool);
         assert!(svg.contains("fill=\"#ff0000\""));
@@ -682,7 +682,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('B').with_attrs(CellAttrs::new(StyleFlags::BOLD, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let svg = SvgExporter::default().export(&buf, &pool);
         assert!(svg.contains("font-weight=\"bold\""));
@@ -751,8 +751,8 @@ mod tests {
     fn text_plain_multiline() {
         let mut buf = Buffer::new(3, 2);
         let pool = GraphemePool::new();
-        buf.set(0, 0, Cell::from_char('A'));
-        buf.set(0, 1, Cell::from_char('B'));
+        buf.set_fast(0, 0, Cell::from_char('A'));
+        buf.set_fast(0, 1, Cell::from_char('B'));
 
         let text = TextExporter::plain().export(&buf, &pool);
         assert!(text.contains('A'));
@@ -777,7 +777,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('R').with_fg(PackedRgba::rgb(255, 0, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let text = TextExporter::ansi().export(&buf, &pool);
         assert!(text.contains("\x1b["));
@@ -791,7 +791,7 @@ mod tests {
         let pool = GraphemePool::new();
 
         let cell = Cell::from_char('B').with_attrs(CellAttrs::new(StyleFlags::BOLD, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let text = TextExporter::ansi().export(&buf, &pool);
         assert!(text.contains("\x1b[1m"));
@@ -805,7 +805,7 @@ mod tests {
         let cell = Cell::from_char('X')
             .with_fg(PackedRgba::rgb(0, 255, 0))
             .with_attrs(CellAttrs::new(StyleFlags::BOLD | StyleFlags::ITALIC, 0));
-        buf.set(0, 0, cell);
+        buf.set_fast(0, 0, cell);
 
         let text = TextExporter::ansi().export(&buf, &pool);
         assert!(text.contains("\x1b["));
