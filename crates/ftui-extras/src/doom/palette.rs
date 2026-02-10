@@ -384,4 +384,82 @@ mod tests {
         let idx = pal.light_to_colormap(128, 0.0);
         assert_eq!(idx, 15);
     }
+
+    #[test]
+    fn lit_color_with_mid_light_mid_distance() {
+        let pal = DoomPalette::default();
+        // Exercise lit_color through a realistic mid-range path
+        let color = pal.lit_color(100, 128, 500.0);
+        // Should produce a darkened version of palette entry
+        assert!(color[0] < 100, "mid-light mid-distance should darken");
+    }
+
+    #[test]
+    fn wall_color_channels_scale_independently() {
+        let pal = DoomPalette::default();
+        let c = pal.wall_color(200, 100, 50, 200, 500.0);
+        // Each channel should be independently scaled by the same factor
+        // factor = (200/255) * (1/(1+500/1000)) = ~0.784 * ~0.667 = ~0.523
+        assert!(c[0] > c[1], "R should be greater than G");
+        assert!(c[1] > c[2], "G should be greater than B");
+    }
+
+    #[test]
+    fn generate_default_colormaps_special_levels_all_zero() {
+        let pal = DoomPalette::default();
+        // Levels 32 and 33 use factor=0.0, so all entries should be 0
+        for level in 32..34 {
+            for i in 0..256 {
+                assert_eq!(
+                    pal.colormaps[level][i], 0,
+                    "special colormap[{level}][{i}] should be 0"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generate_default_colormaps_mid_level_darkens_proportionally() {
+        let pal = DoomPalette::default();
+        // Level 16: factor = 1.0 - 16/32 = 0.5
+        // Index 200: darkened = (200 * 0.5) as u8 = 100
+        assert_eq!(pal.colormaps[16][200], 100);
+    }
+
+    #[test]
+    fn light_to_colormap_extreme_distance_clamps_to_31() {
+        let pal = DoomPalette::default();
+        // Even with maximum light, extreme distance should clamp to 31
+        let idx = pal.light_to_colormap(255, f32::MAX);
+        assert_eq!(idx, 31);
+    }
+
+    #[test]
+    fn light_to_colormap_all_light_levels_in_range() {
+        let pal = DoomPalette::default();
+        for light in 0..=255u8 {
+            for dist in [0.0, 100.0, 500.0, 1000.0, 5000.0] {
+                let idx = pal.light_to_colormap(light, dist);
+                assert!(idx <= 31, "colormap index {idx} out of range for light={light} dist={dist}");
+            }
+        }
+    }
+
+    #[test]
+    fn light_factor_with_large_distance() {
+        let pal = DoomPalette::default();
+        // At very large distance, factor should approach 0
+        let f = pal.light_factor(255, 1_000_000.0);
+        assert!(f < 0.01, "expected near 0 at extreme distance, got {f}");
+    }
+
+    #[test]
+    fn wall_color_mid_light_preserves_channel_ratio() {
+        let pal = DoomPalette::default();
+        let c = pal.wall_color(100, 200, 50, 128, 0.0);
+        // factor = 128/255 ≈ 0.502
+        // R = 100 * 0.502 ≈ 50, G = 200 * 0.502 ≈ 100, B = 50 * 0.502 ≈ 25
+        assert!(c[1] > c[0], "G channel should be brightest");
+        assert!(c[0] > c[2], "R channel should be brighter than B");
+    }
 }
