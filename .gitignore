@@ -69,6 +69,10 @@ row_skip_dy*
 # Puppeteer/Chrome screenshots (agent artifacts)
 Chrome_*.png
 
+# Font setup scratch scripts (agent artifacts)
+optimize_fonts.py
+setup_fonts.sh
+
 # Local web deploy output (agent artifacts)
 dist/
 saga_of_frankenterm_js.md
