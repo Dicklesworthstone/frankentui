@@ -540,8 +540,11 @@ mod tests {
         let mut ring = LogRing::new(5);
         ring.push(1);
         ring.push(2);
-        // Range 5..2 is empty since start > end
-        let items: Vec<_> = ring.get_range(5..2).collect();
+        // Range start > end is empty. Use black_box to avoid clippy's
+        // `reversed_empty_ranges` lint while still exercising the path.
+        let start = std::hint::black_box(5usize);
+        let end = std::hint::black_box(2usize);
+        let items: Vec<_> = ring.get_range(start..end).collect();
         assert!(items.is_empty());
     }
 

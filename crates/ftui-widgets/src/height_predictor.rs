@@ -949,13 +949,15 @@ mod tests {
 
     #[test]
     fn height_prediction_clone() {
+        fn assert_clone<T: Clone>() {}
+        assert_clone::<HeightPrediction>();
         let p = HeightPrediction {
             predicted: 2,
             lower: 1,
             upper: 4,
             observations: 5,
         };
-        let cloned = p.clone();
+        let cloned = p; // Copy implies Clone; clippy forbids clone_on_copy
         assert_eq!(cloned.predicted, 2);
     }
 

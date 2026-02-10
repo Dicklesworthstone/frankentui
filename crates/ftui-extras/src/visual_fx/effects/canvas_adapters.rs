@@ -1314,6 +1314,97 @@ mod tests {
         assert!(painter.get(0, 0), "Single pixel should be set");
     }
 
+    #[test]
+    fn plasma_ensure_cache_sizes_internal_buffers_and_maps_midpoints() {
+        let mut adapter = PlasmaCanvasAdapter::theme();
+        adapter.ensure_cache(2, 2);
+
+        assert_eq!(adapter.cache_width, 2);
+        assert_eq!(adapter.cache_height, 2);
+        assert_eq!(adapter.wx.len(), 2);
+        assert_eq!(adapter.wy.len(), 2);
+
+        // Midpoint sampling: nx=(x+0.5)/w, wx=nx*6.0
+        const EPS: f64 = 1e-12;
+        assert!((adapter.wx[0] - 1.5).abs() < EPS, "wx[0]={}", adapter.wx[0]);
+        assert!((adapter.wx[1] - 4.5).abs() < EPS, "wx[1]={}", adapter.wx[1]);
+        assert!((adapter.wy[0] - 1.5).abs() < EPS, "wy[0]={}", adapter.wy[0]);
+        assert!((adapter.wy[1] - 4.5).abs() < EPS, "wy[1]={}", adapter.wy[1]);
+
+        // Radial + interference bases are per-pixel (row-major): w*h entries.
+        assert_eq!(adapter.radial_center_sin_base.len(), 4);
+        assert_eq!(adapter.radial_center_cos_base.len(), 4);
+        assert_eq!(adapter.radial_offset_sin_base.len(), 4);
+        assert_eq!(adapter.radial_offset_cos_base.len(), 4);
+        assert_eq!(adapter.interference_sin_base.len(), 4);
+        assert_eq!(adapter.interference_cos_base.len(), 4);
+    }
+
+    #[test]
+    fn metaballs_fill_without_prepare_is_noop() {
+        let theme = default_theme();
+        let mut adapter = MetaballsCanvasAdapter::new();
+        let mut painter = Painter::new(8, 6, Mode::Braille);
+
+        // Contract says to call prepare() first; ensure we degrade safely instead of panicking.
+        adapter.fill(&mut painter, FxQuality::Full, &theme);
+
+        let (w, h) = painter.size();
+        for y in 0..h {
+            for x in 0..w {
+                assert!(
+                    !painter.get(x as i32, y as i32),
+                    "fill() without prepare() should not set pixels"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn metaballs_ensure_coords_maps_midpoints() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.ensure_coords(1, 1);
+
+        const EPS: f64 = 1e-12;
+        assert_eq!(adapter.x_coords.len(), 1);
+        assert_eq!(adapter.y_coords.len(), 1);
+        assert!((adapter.x_coords[0] - 0.5).abs() < EPS);
+        assert!((adapter.y_coords[0] - 0.5).abs() < EPS);
+
+        adapter.ensure_coords(2, 2);
+        assert_eq!(adapter.x_coords.len(), 2);
+        assert_eq!(adapter.y_coords.len(), 2);
+        assert!((adapter.x_coords[0] - 0.25).abs() < EPS);
+        assert!((adapter.x_coords[1] - 0.75).abs() < EPS);
+        assert!((adapter.y_coords[0] - 0.25).abs() < EPS);
+        assert!((adapter.y_coords[1] - 0.75).abs() < EPS);
+    }
+
+    #[test]
+    fn metaballs_dx2_cache_and_coords_match_painter_size() {
+        let theme = default_theme();
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(0.0, FxQuality::Full);
+        let balls_len = adapter.ball_cache.len();
+        assert!(
+            balls_len > 0,
+            "default metaballs params should include balls"
+        );
+
+        let mut painter = Painter::new(7, 5, Mode::Braille);
+        adapter.fill(&mut painter, FxQuality::Full, &theme);
+
+        let (width, height) = painter.size();
+        let w = width as usize;
+        let h = height as usize;
+        assert_eq!(adapter.cache_width, width);
+        assert_eq!(adapter.cache_height, height);
+        assert_eq!(adapter.x_coords.len(), w);
+        assert_eq!(adapter.y_coords.len(), h);
+        assert_eq!(adapter.dx2_cache.len(), balls_len.saturating_mul(w));
+        assert_eq!(adapter.dy2_cache.len(), balls_len);
+    }
+
     // =========================================================================
     // Helper function tests
     // =========================================================================

@@ -1539,13 +1539,7 @@ mod tests {
 
         assert_eq!(
             hash1, hash2,
-            "Determinism failed: hash changed on re-render"
-        );
-
-        // Log for debugging (can be used to track regressions)
-        eprintln!(
-            "{{\"test\":\"determinism_hash\",\"preset\":\"Ocean\",\"dims\":\"16x8\",\"frame\":100,\"time\":5.0,\"hash\":\"{:016x}\"}}",
-            hash1
+            "Determinism failed: hash changed on re-render (hash1={hash1:016x}, hash2={hash2:016x})"
         );
     }
 

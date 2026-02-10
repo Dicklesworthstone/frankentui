@@ -769,4 +769,142 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].render_time.is_none());
     }
+
+    #[test]
+    fn overlay_does_not_clear_entries_when_clear_on_render_false() {
+        let state = DebugOverlayState::new();
+        state.set_enabled(true);
+        state.record(WidgetDebugInfo::new("Stub", Rect::new(0, 0, 2, 2)));
+
+        let options = DebugOverlayOptions {
+            clear_on_render: false,
+            show_names: false,
+            show_render_times: false,
+            ..Default::default()
+        };
+        let overlay = DebugOverlay::new(state.clone()).options(options);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 4, &mut pool);
+        overlay.render(Rect::new(0, 0, 4, 4), &mut frame);
+
+        assert_eq!(state.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn overlay_disabled_does_not_clear_entries() {
+        let state = DebugOverlayState::new();
+        state.set_enabled(true);
+        state.record(WidgetDebugInfo::new("Stub", Rect::new(0, 0, 2, 2)));
+        state.set_enabled(false);
+
+        let overlay = DebugOverlay::new(state.clone());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 4, &mut pool);
+        overlay.render(Rect::new(0, 0, 4, 4), &mut frame);
+
+        assert_eq!(state.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn update_hover_from_scroll_event_does_not_change_position() {
+        let state = DebugOverlayState::new();
+        state.set_hover(Some((3, 4)));
+
+        let event = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::ScrollDown,
+            7,
+            9,
+        ));
+
+        assert_eq!(state.update_hover_from_event(&event), Some((3, 4)));
+    }
+
+    #[test]
+    fn update_hover_from_drag_event_sets_position() {
+        let state = DebugOverlayState::new();
+        let event = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Drag(ftui_core::event::MouseButton::Left),
+            7,
+            9,
+        ));
+
+        assert_eq!(state.update_hover_from_event(&event), Some((7, 9)));
+    }
+
+    #[test]
+    fn overlay_draws_non_hot_hit_area() {
+        let state = DebugOverlayState::new();
+        state.set_enabled(true);
+
+        let mut info = WidgetDebugInfo::new("Hit", Rect::new(0, 0, 4, 3));
+        info.hit_areas = vec![Rect::new(2, 2, 1, 1)];
+        state.record(info);
+
+        let options = DebugOverlayOptions {
+            show_boundaries: false,
+            show_names: false,
+            show_render_times: false,
+            show_hit_areas: true,
+            ..Default::default()
+        };
+        let expected = options.palette.hit_color;
+
+        let overlay = DebugOverlay::new(state).options(options);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 4, &mut pool);
+        overlay.render(Rect::new(0, 0, 6, 4), &mut frame);
+
+        let cell = frame.buffer.get(2, 2).expect("hit cell exists");
+        assert_eq!(cell.content.as_char(), Some('.'));
+        assert_eq!(cell.fg, expected);
+    }
+
+    #[test]
+    fn overlay_label_clips_at_rect_right_edge() {
+        let state = DebugOverlayState::new();
+        state.set_enabled(true);
+        state.record(WidgetDebugInfo::new("WXYZ", Rect::new(0, 0, 3, 2)));
+
+        let options = DebugOverlayOptions {
+            show_boundaries: false,
+            show_render_times: false,
+            ..Default::default()
+        };
+        let overlay = DebugOverlay::new(state).options(options);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 2, &mut pool);
+        frame.buffer.set(3, 0, Cell::from_char('#'));
+
+        overlay.render(Rect::new(0, 0, 4, 2), &mut frame);
+
+        let cell = frame.buffer.get(1, 0).expect("label cell exists");
+        assert_eq!(cell.content.as_char(), Some('W'));
+        let cell = frame.buffer.get(2, 0).expect("label cell exists");
+        assert_eq!(cell.content.as_char(), Some('X'));
+
+        let cell = frame.buffer.get(3, 0).expect("sentinel cell exists");
+        assert_eq!(cell.content.as_char(), Some('#'));
+    }
+
+    #[test]
+    fn wrapper_widget_impl_records_entry() {
+        #[derive(Debug, Clone, Copy)]
+        struct StatelessStub;
+
+        impl Widget for StatelessStub {
+            fn render(&self, _area: Rect, _frame: &mut Frame) {}
+        }
+
+        let state = DebugOverlayState::new();
+        state.set_enabled(true);
+
+        let wrapper = DebugOverlayStateful::new(StatelessStub, "Stateless", state.clone());
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 2, &mut pool);
+        wrapper.render(Rect::new(0, 0, 4, 2), &mut frame);
+
+        let entries = state.snapshot();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "Stateless");
+    }
 }

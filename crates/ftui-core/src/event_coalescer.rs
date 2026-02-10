@@ -1166,7 +1166,10 @@ mod tests {
             } else {
                 MouseEventKind::ScrollDown
             };
-            if let Some(_) = coalescer.push(Event::Mouse(MouseEvent::new(kind, 0, 0))) {
+            if coalescer
+                .push(Event::Mouse(MouseEvent::new(kind, 0, 0)))
+                .is_some()
+            {
                 flushed_count += 1;
             }
         }

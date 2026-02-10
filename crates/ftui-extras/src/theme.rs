@@ -1710,12 +1710,10 @@ mod tests {
     }
 
     #[test]
-    fn theme_id_clone_copy() {
+    fn theme_id_copy_eq() {
         let a = ThemeId::Darcula;
         let b = a;
-        let c = a.clone();
         assert_eq!(a, b);
-        assert_eq!(a, c);
     }
 
     #[test]
@@ -1751,12 +1749,10 @@ mod tests {
     // ── Edge-case: ColorToken ────────────────────────────────────────
 
     #[test]
-    fn color_token_clone_copy() {
+    fn color_token_copy_eq() {
         let a = ColorToken::AccentPrimary;
         let b = a;
-        let c = a.clone();
         assert_eq!(a, b);
-        assert_eq!(a, c);
     }
 
     #[test]
@@ -1792,12 +1788,10 @@ mod tests {
     // ── Edge-case: AlphaColor ────────────────────────────────────────
 
     #[test]
-    fn alpha_color_clone_copy() {
+    fn alpha_color_copy_eq() {
         let a = AlphaColor::new(accent::PRIMARY, 200);
         let b = a;
-        let c = a.clone();
         assert_eq!(a, b);
-        assert_eq!(a, c);
     }
 
     #[test]
@@ -2068,23 +2062,19 @@ mod tests {
     }
 
     #[test]
-    fn status_badge_enum_clone_copy_debug() {
+    fn status_badge_enum_copy_debug() {
         let a = StatusBadge::Open;
         let b = a;
-        let c = a.clone();
         assert_eq!(a, b);
-        assert_eq!(a, c);
         let dbg = format!("{:?}", a);
         assert!(dbg.contains("Open"));
     }
 
     #[test]
-    fn priority_badge_enum_clone_copy_debug() {
+    fn priority_badge_enum_copy_debug() {
         let a = PriorityBadge::P0;
         let b = a;
-        let c = a.clone();
         assert_eq!(a, b);
-        assert_eq!(a, c);
         let dbg = format!("{:?}", a);
         assert!(dbg.contains("P0"));
     }
