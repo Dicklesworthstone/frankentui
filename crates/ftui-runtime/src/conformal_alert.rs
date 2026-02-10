@@ -1308,4 +1308,504 @@ mod tests {
             "E-value should be finite"
         );
     }
+
+    // =========================================================================
+    // Edge-case tests (bd-1uzxz)
+    // =========================================================================
+
+    #[test]
+    fn edge_observe_nan() {
+        let mut alerter = ConformalAlert::new(test_config());
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+        // NaN observation should not panic
+        let decision = alerter.observe(f64::NAN);
+        // NaN comparisons are always false, so conformal_alert should be false
+        assert!(!decision.evidence.conformal_alert);
+        assert_eq!(alerter.stats().total_observations, 1);
+    }
+
+    #[test]
+    fn edge_observe_infinity() {
+        let mut alerter = ConformalAlert::new(test_config());
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+        let decision = alerter.observe(f64::INFINITY);
+        // Infinite residual should trigger conformal alert
+        assert!(decision.evidence.conformal_alert);
+        // E-value should be clamped, not Inf
+        assert!(decision.evidence.e_value.is_finite() || decision.evidence.e_value <= E_MAX);
+    }
+
+    #[test]
+    fn edge_observe_neg_infinity() {
+        let mut alerter = ConformalAlert::new(test_config());
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+        let decision = alerter.observe(f64::NEG_INFINITY);
+        // Negative infinite residual should trigger conformal alert
+        assert!(decision.evidence.conformal_alert);
+    }
+
+    #[test]
+    fn edge_calibrate_nan() {
+        let mut alerter = ConformalAlert::new(test_config());
+        // NaN calibration should not panic
+        alerter.calibrate(f64::NAN);
+        assert_eq!(alerter.calibration_count(), 1);
+        // Mean will be NaN, which is handled gracefully
+    }
+
+    #[test]
+    fn edge_calibrate_infinity() {
+        let mut alerter = ConformalAlert::new(test_config());
+        alerter.calibrate(f64::INFINITY);
+        assert_eq!(alerter.calibration_count(), 1);
+    }
+
+    #[test]
+    fn edge_alpha_one() {
+        // alpha=1.0 means 100% FPR tolerance -> threshold should be very low
+        let mut config = test_config();
+        config.alpha = 1.0;
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        // With alpha=1.0: idx = ceil(0.0 * 6) - 1 = saturating_sub -> 0
+        // Threshold is the minimum residual
+        let threshold = alerter.threshold();
+        assert!(threshold >= 0.0);
+        assert!(threshold < f64::MAX);
+    }
+
+    #[test]
+    fn edge_alpha_very_small() {
+        // Very small alpha -> very high threshold, very few alerts
+        let mut config = test_config();
+        config.alpha = 1e-10;
+        config.hysteresis = 1.0;
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        // E-threshold = 1/alpha = 1e10 -> extremely hard to trigger
+        let stats = alerter.stats();
+        assert!(stats.current_threshold >= 0.0);
+        // Normal observation should not alert
+        let decision = alerter.observe(52.0);
+        assert!(!decision.evidence.eprocess_alert);
+    }
+
+    #[test]
+    fn edge_lambda_clamped_at_zero() {
+        let mut config = test_config();
+        config.lambda = 0.0;
+        config.adaptive_lambda = false;
+        let alerter = ConformalAlert::new(config);
+        // Lambda should be clamped to EPSILON, not 0.0
+        assert!(alerter.stats().current_lambda > 0.0);
+    }
+
+    #[test]
+    fn edge_lambda_clamped_at_one() {
+        let mut config = test_config();
+        config.lambda = 1.0;
+        config.adaptive_lambda = false;
+        let alerter = ConformalAlert::new(config);
+        // Lambda should be clamped to 1-EPSILON, not 1.0
+        assert!(alerter.stats().current_lambda < 1.0);
+    }
+
+    #[test]
+    fn edge_sigma_0_zero() {
+        let mut config = test_config();
+        config.sigma_0 = 0.0;
+        config.adaptive_lambda = false;
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        // With sigma_0=0, e-process exponent = lambda * z - 0
+        // Should not panic
+        let decision = alerter.observe(55.0);
+        assert!(decision.evidence.e_value.is_finite());
+    }
+
+    #[test]
+    fn edge_hysteresis_zero() {
+        let mut config = test_config();
+        config.hysteresis = 0.0;
+        config.alert_cooldown = 0;
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 50.0, 50.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        // E-threshold = 1/alpha * 0 = 0, so any positive e-value triggers e-process alert
+        let decision = alerter.observe(51.0);
+        assert!(decision.evidence.eprocess_alert);
+    }
+
+    #[test]
+    fn edge_max_calibration_zero() {
+        let mut config = test_config();
+        config.max_calibration = 0;
+        let mut alerter = ConformalAlert::new(config);
+
+        alerter.calibrate(50.0);
+        // With max_calibration=0, the value is immediately evicted
+        assert_eq!(alerter.calibration_count(), 0);
+    }
+
+    #[test]
+    fn edge_min_calibration_zero() {
+        let mut config = test_config();
+        config.min_calibration = 0;
+        config.alert_cooldown = 0;
+        let mut alerter = ConformalAlert::new(config);
+
+        // Even with no calibration data, min_calibration=0 allows observation
+        // But empty calibration returns FALLBACK_THRESHOLD
+        alerter.calibrate(50.0);
+        let decision = alerter.observe(55.0);
+        // Should not return InsufficientCalibration
+        assert_ne!(
+            decision.evidence.reason,
+            AlertReason::InsufficientCalibration
+        );
+    }
+
+    #[test]
+    fn edge_stats_no_observations() {
+        let alerter = ConformalAlert::new(test_config());
+        let stats = alerter.stats();
+        assert_eq!(stats.total_observations, 0);
+        assert_eq!(stats.total_alerts, 0);
+        assert_eq!(stats.conformal_alerts, 0);
+        assert_eq!(stats.eprocess_alerts, 0);
+        assert_eq!(stats.both_alerts, 0);
+        assert_eq!(stats.empirical_fpr, 0.0);
+        assert_eq!(stats.calibration_samples, 0);
+    }
+
+    #[test]
+    fn edge_adaptive_lambda_grapa() {
+        let mut config = test_config();
+        config.adaptive_lambda = true;
+        config.grapa_eta = 0.5;
+        config.hysteresis = 1e10; // Prevent alert reset
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        let lambda_before = alerter.stats().current_lambda;
+
+        // Extreme observation should shift lambda via GRAPA
+        alerter.observe(100.0);
+
+        let lambda_after = alerter.stats().current_lambda;
+        // Lambda should have changed (GRAPA gradient update)
+        assert!(
+            (lambda_after - lambda_before).abs() > 1e-10,
+            "Lambda should change with GRAPA: before={} after={}",
+            lambda_before,
+            lambda_after
+        );
+    }
+
+    #[test]
+    fn edge_adaptive_lambda_stays_bounded() {
+        let mut config = test_config();
+        config.adaptive_lambda = true;
+        config.grapa_eta = 1.0; // Aggressive learning rate
+        config.hysteresis = 1e10;
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        // Many extreme observations
+        for _ in 0..100 {
+            alerter.observe(1000.0);
+        }
+
+        let lambda = alerter.stats().current_lambda;
+        assert!(lambda > 0.0, "Lambda should be positive");
+        assert!(lambda < 1.0, "Lambda should be < 1.0");
+    }
+
+    #[test]
+    fn edge_alert_reason_equality() {
+        assert_eq!(AlertReason::Normal, AlertReason::Normal);
+        assert_eq!(
+            AlertReason::ConformalExceeded,
+            AlertReason::ConformalExceeded
+        );
+        assert_eq!(AlertReason::EProcessExceeded, AlertReason::EProcessExceeded);
+        assert_eq!(AlertReason::BothExceeded, AlertReason::BothExceeded);
+        assert_eq!(AlertReason::InCooldown, AlertReason::InCooldown);
+        assert_eq!(
+            AlertReason::InsufficientCalibration,
+            AlertReason::InsufficientCalibration
+        );
+        assert_ne!(AlertReason::Normal, AlertReason::InCooldown);
+    }
+
+    #[test]
+    fn edge_alert_config_clone_debug() {
+        let config = AlertConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.alpha, config.alpha);
+        assert_eq!(cloned.min_calibration, config.min_calibration);
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("AlertConfig"));
+    }
+
+    #[test]
+    fn edge_alert_evidence_clone_debug() {
+        let mut alerter = ConformalAlert::new(test_config());
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+        let decision = alerter.observe(60.0);
+        let cloned = decision.evidence.clone();
+        assert_eq!(cloned.observation_idx, decision.evidence.observation_idx);
+        assert_eq!(cloned.is_alert, decision.evidence.is_alert);
+        let debug = format!("{:?}", decision.evidence);
+        assert!(debug.contains("AlertEvidence"));
+    }
+
+    #[test]
+    fn edge_alert_decision_clone_debug() {
+        let mut alerter = ConformalAlert::new(test_config());
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+        let decision = alerter.observe(60.0);
+        let cloned = decision.clone();
+        assert_eq!(cloned.is_alert, decision.is_alert);
+        assert_eq!(
+            cloned.observations_since_alert,
+            decision.observations_since_alert
+        );
+        let debug = format!("{:?}", decision);
+        assert!(debug.contains("AlertDecision"));
+    }
+
+    #[test]
+    fn edge_alert_stats_clone_debug() {
+        let alerter = ConformalAlert::new(test_config());
+        let stats = alerter.stats();
+        let cloned = stats.clone();
+        assert_eq!(cloned.total_observations, stats.total_observations);
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("AlertStats"));
+    }
+
+    #[test]
+    fn edge_conformal_alert_debug() {
+        let alerter = ConformalAlert::new(test_config());
+        let debug = format!("{:?}", alerter);
+        assert!(debug.contains("ConformalAlert"));
+    }
+
+    #[test]
+    fn edge_evidence_is_alert_matches_decision() {
+        let mut alerter = ConformalAlert::new(test_config());
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        for obs in [50.0, 100.0, 50.5, 200.0, 49.0] {
+            let decision = alerter.observe(obs);
+            assert_eq!(
+                decision.is_alert, decision.evidence.is_alert,
+                "Decision.is_alert should match evidence.is_alert for obs={}",
+                obs
+            );
+        }
+    }
+
+    #[test]
+    fn edge_alert_counters_correct() {
+        let mut config = test_config();
+        config.alert_cooldown = 0;
+        config.hysteresis = 0.1; // Easy trigger
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 50.0, 50.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        let mut total = 0u64;
+        for _ in 0..20 {
+            let decision = alerter.observe(200.0);
+            if decision.is_alert {
+                total += 1;
+            }
+        }
+
+        let stats = alerter.stats();
+        assert_eq!(stats.total_alerts, total);
+        assert_eq!(
+            stats.conformal_alerts + stats.eprocess_alerts + stats.both_alerts,
+            stats.total_alerts
+        );
+    }
+
+    #[test]
+    fn edge_interleaved_calibrate_observe() {
+        let mut config = test_config();
+        config.min_calibration = 3;
+        config.alert_cooldown = 0;
+        let mut alerter = ConformalAlert::new(config);
+
+        // Calibrate enough to observe
+        alerter.calibrate(50.0);
+        alerter.calibrate(51.0);
+        alerter.calibrate(49.0);
+
+        let d1 = alerter.observe(50.0);
+        assert!(!d1.is_alert);
+
+        // Add more calibration
+        alerter.calibrate(50.0);
+        alerter.calibrate(50.0);
+
+        // Observe again - should still work
+        let d2 = alerter.observe(50.0);
+        assert!(!d2.is_alert);
+        assert_eq!(alerter.calibration_count(), 5);
+        assert_eq!(alerter.stats().total_observations, 2);
+    }
+
+    #[test]
+    fn edge_clear_then_recalibrate() {
+        let mut alerter = ConformalAlert::new(test_config());
+
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+        alerter.observe(60.0);
+        alerter.clear_calibration();
+
+        // Re-calibrate with completely different distribution
+        for v in [0.0, 1.0, 2.0, 3.0, 4.0] {
+            alerter.calibrate(v);
+        }
+
+        assert_eq!(alerter.calibration_count(), 5);
+        assert!((alerter.mean() - 2.0).abs() < f64::EPSILON);
+        assert!((alerter.e_value() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn edge_cooldown_max_u64() {
+        let mut config = test_config();
+        config.alert_cooldown = u64::MAX;
+        config.hysteresis = 0.1;
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 50.0, 50.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        // First extreme observation triggers alert
+        let mut got_alert = false;
+        for _ in 0..10 {
+            let d = alerter.observe(200.0);
+            if d.is_alert {
+                got_alert = true;
+                break;
+            }
+        }
+        assert!(got_alert, "Should get first alert");
+
+        // All subsequent observations should be in cooldown
+        for _ in 0..10 {
+            let d = alerter.observe(200.0);
+            assert_eq!(d.evidence.reason, AlertReason::InCooldown);
+        }
+    }
+
+    #[test]
+    fn edge_welford_variance_single_sample() {
+        let mut stats = CalibrationStats::new();
+        stats.update(42.0);
+        // With n=1, variance falls back to 1.0
+        assert!((stats.variance() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn edge_welford_variance_zero_samples() {
+        let stats = CalibrationStats::new();
+        // With n=0, variance falls back to 1.0
+        assert!((stats.variance() - 1.0).abs() < f64::EPSILON);
+        assert!((stats.std() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn edge_welford_known_variance() {
+        let mut stats = CalibrationStats::new();
+        // Values [2, 4, 6, 8, 10]: mean=6, var=10
+        for v in [2.0, 4.0, 6.0, 8.0, 10.0] {
+            stats.update(v);
+        }
+        assert!((stats.mean - 6.0).abs() < f64::EPSILON);
+        assert!((stats.variance() - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn edge_conformal_score_empty_calibration() {
+        let alerter = ConformalAlert::new(test_config());
+        let score = alerter.compute_conformal_score(42.0);
+        assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn edge_long_run_evalue_bounded() {
+        let mut config = test_config();
+        config.hysteresis = 1e10; // Prevent alert reset
+        config.adaptive_lambda = false;
+        let mut alerter = ConformalAlert::new(config);
+
+        for v in [50.0, 51.0, 49.0, 50.0, 50.0] {
+            alerter.calibrate(v);
+        }
+
+        // 1000 normal observations - e-value should remain bounded
+        for _ in 0..1000 {
+            alerter.observe(50.0);
+            let ev = alerter.e_value();
+            assert!(ev >= E_MIN, "E-value should be >= E_MIN: {}", ev);
+            assert!(ev <= E_MAX, "E-value should be <= E_MAX: {}", ev);
+            assert!(ev.is_finite(), "E-value should be finite");
+        }
+    }
+
+    #[test]
+    fn edge_default_config_valid() {
+        let config = AlertConfig::default();
+        assert!(config.alpha > 0.0 && config.alpha < 1.0);
+        assert!(config.min_calibration > 0);
+        assert!(config.max_calibration > 0);
+        assert!(config.lambda > 0.0 && config.lambda < 1.0);
+        assert!(config.sigma_0 > 0.0);
+        assert!(config.hysteresis >= 1.0);
+        assert!(config.grapa_eta > 0.0);
+    }
 }
