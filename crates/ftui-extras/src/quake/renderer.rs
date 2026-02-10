@@ -85,6 +85,10 @@ impl QuakeRenderer {
 
     /// Render a frame into the framebuffer.
     pub fn render(&mut self, fb: &mut QuakeFramebuffer, map: &QuakeMap, player: &Player) {
+        if self.width != fb.width || self.height != fb.height {
+            self.resize(fb.width, fb.height);
+        }
+
         self.stats = RenderStats::default();
         fb.clear_depth();
 
@@ -145,11 +149,13 @@ impl QuakeRenderer {
             self.face_order_buf.push((i, dist_sq));
         }
 
-        // Sort back-to-front (we use z-buffer so order is advisory for early-z)
+        // Sort front-to-back so the z-buffer rejects overlapping farther faces
+        // early, before expensive per-pixel divisions and color math.
         self.face_order_buf
-            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Precompute fog denominator (use division, not reciprocal, for FP determinism).
+        // Keep fog math in division form to preserve historical quantization
+        // behavior and stable visual output.
         let fog_range = FOG_END - FOG_START;
 
         // Use index-based iteration to avoid borrow conflict with self.
@@ -339,6 +345,9 @@ impl QuakeRenderer {
             let row_w0_fy = (fy - s1[1]) * e12_dx;
             let row_w1_fy = (fy - s2[1]) * e20_dx;
 
+            // Convex triangle: inside pixels form a contiguous interval per
+            // scanline, so once we leave we can skip the remaining columns.
+            let mut entered = false;
             for px in min_x..=max_x {
                 let fx = px as f32 + 0.5;
 
@@ -349,41 +358,41 @@ impl QuakeRenderer {
                 // Inside triangle test
                 if area > 0.0 {
                     if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                        if entered {
+                            break;
+                        }
                         continue;
                     }
                 } else if w0 > 0.0 || w1 > 0.0 || w2 > 0.0 {
+                    if entered {
+                        break;
+                    }
                     continue;
                 }
+                entered = true;
 
                 // Interpolate depth (1/z)
                 let inv_z = w0 * s0[2] + w1 * s1[2] + w2 * s2[2];
                 if inv_z <= 0.0 {
                     continue;
                 }
+
                 let z = 1.0 / inv_z;
 
-                // Early-z: reject occluded pixels before expensive color math.
-                // Loop bounds guarantee px/py are in-bounds, so index directly.
+                // Early-z: reject occluded pixels before any color math.
+                // With front-to-back sort this rejects most overdraw cheaply.
                 let idx = (row_offset + px) as usize;
                 if z >= fb.depth[idx] {
                     continue;
                 }
 
-                // Distance-based fog (Quake brown atmosphere)
-                let fog_t = ((z - FOG_START) / fog_range).clamp(0.0, 1.0);
-
-                // Distance-based light falloff
+                // These divisions + color math only execute for surviving pixels.
                 let dist_light = (1.0 / (1.0 + z * 0.003)).clamp(0.0, 1.0);
+                let fog_t = ((z - FOG_START) / fog_range).clamp(0.0, 1.0);
                 let total_light = light * dist_light;
-
-                let r = (base_color[0] as f32 * total_light) as u8;
-                let g = (base_color[1] as f32 * total_light) as u8;
-                let b = (base_color[2] as f32 * total_light) as u8;
-
-                // Apply fog
-                let fr = lerp_u8(r, FOG_COLOR[0], fog_t);
-                let fg = lerp_u8(g, FOG_COLOR[1], fog_t);
-                let fbl = lerp_u8(b, FOG_COLOR[2], fog_t);
+                let fr = shade_channel(base_color[0], FOG_COLOR[0], total_light, fog_t);
+                let fg = shade_channel(base_color[1], FOG_COLOR[1], total_light, fog_t);
+                let fbl = shade_channel(base_color[2], FOG_COLOR[2], total_light, fog_t);
 
                 fb.pixels[idx] = PackedRgba::rgb(fr, fg, fbl);
                 fb.depth[idx] = z;
@@ -453,6 +462,14 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).clamp(0.0, 255.0) as u8
 }
 
+/// Apply distance light, then quantize before fog blend to preserve
+/// historically stable output values.
+#[inline]
+fn shade_channel(base: u8, fog: u8, total_light: f32, fog_t: f32) -> u8 {
+    let lit = (base as f32 * total_light) as u8;
+    lerp_u8(lit, fog, fog_t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,6 +507,23 @@ mod tests {
     }
 
     #[test]
+    fn shade_channel_quantizes_before_fog_blend() {
+        // Regression case: moving quantization after fog blend changes output.
+        let base = 1u8;
+        let fog = 2u8;
+        let total_light = 0.05 * 0.95;
+        let fog_t = 0.49;
+
+        let legacy = shade_channel(base, fog, total_light, fog_t);
+        let fused =
+            (base as f32 * total_light * (1.0 - fog_t) + fog as f32 * fog_t).min(255.0) as u8;
+
+        assert_eq!(legacy, 0);
+        assert_eq!(fused, 1);
+        assert_ne!(legacy, fused);
+    }
+
+    #[test]
     fn face_color_lookup() {
         let face = Face {
             vertex_indices: vec![],
@@ -513,6 +547,19 @@ mod tests {
         renderer.render(&mut fb, &map, &player);
         // Should not panic, background should be drawn
         assert_eq!(renderer.stats.faces_tested, 0);
+    }
+
+    #[test]
+    fn render_adapts_to_framebuffer_dimensions() {
+        let mut renderer = QuakeRenderer::new(64, 40);
+        let mut fb = QuakeFramebuffer::new(48, 30);
+        let map = QuakeMap::new();
+        let player = Player::default();
+
+        renderer.render(&mut fb, &map, &player);
+
+        assert_eq!(renderer.width, 48);
+        assert_eq!(renderer.height, 30);
     }
 
     #[test]
