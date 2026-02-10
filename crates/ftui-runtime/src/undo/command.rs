@@ -1370,7 +1370,6 @@ mod tests {
     fn test_text_replace_execute_and_undo_with_callbacks() {
         let buf = Arc::new(Mutex::new(String::from("Hello World")));
         let b1 = buf.clone();
-        let b2 = buf.clone();
 
         let mut cmd = TextReplaceCmd::new(WidgetId::new(1), 6, "World", "Rust").with_replace(
             move |_, pos, old_len, new_text| {

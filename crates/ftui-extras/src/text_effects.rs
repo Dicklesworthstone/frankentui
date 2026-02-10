@@ -1343,7 +1343,7 @@ impl AnimationClock {
     #[inline]
     pub fn reset(&mut self) {
         self.time = 0.0;
-        self.last_tick = std::time::Instant::now();
+        self.last_tick = Instant::now();
     }
 
     /// Get elapsed time since a given start time (useful for relative animations).
