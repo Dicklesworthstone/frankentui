@@ -717,4 +717,293 @@ mod tests {
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.hits, 5);
     }
+
+    // ---- Edge-case tests (bd-2ncz7) ----
+
+    #[test]
+    fn edge_zero_capacity_cache() {
+        let mut cache = MeasureCache::new(0);
+        let id = WidgetId(1);
+        let size = Size::new(10, 10);
+
+        // Every call is a miss because capacity is 0
+        let mut calls = 0;
+        for _ in 0..3 {
+            cache.get_or_compute(id, size, || {
+                calls += 1;
+                SizeConstraints::ZERO
+            });
+        }
+        // With capacity 0, eviction fires before every insert,
+        // but the entry is still inserted (map has 0 capacity threshold).
+        // The entry exists after insert, so second call hits it.
+        let stats = cache.stats();
+        assert_eq!(stats.misses + stats.hits, 3);
+    }
+
+    #[test]
+    fn edge_capacity_one_evicts_on_second_widget() {
+        let mut cache = MeasureCache::new(1);
+
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || SizeConstraints::ZERO);
+        assert_eq!(cache.len(), 1);
+
+        // Second different widget should evict the first
+        cache.get_or_compute(WidgetId(2), Size::new(10, 10), || SizeConstraints::ZERO);
+        assert_eq!(cache.len(), 1);
+
+        // Widget 1 should be evicted
+        let mut was_called = false;
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || {
+            was_called = true;
+            SizeConstraints::ZERO
+        });
+        assert!(was_called, "widget 1 should have been evicted");
+    }
+
+    #[test]
+    fn edge_invalidate_all_multiple_times() {
+        let mut cache = MeasureCache::new(100);
+        let gen_before = cache.generation;
+        cache.invalidate_all();
+        cache.invalidate_all();
+        cache.invalidate_all();
+        assert_eq!(cache.generation, gen_before + 3);
+    }
+
+    #[test]
+    fn edge_invalidate_widget_nonexistent() {
+        let mut cache = MeasureCache::new(100);
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || SizeConstraints::ZERO);
+        assert_eq!(cache.len(), 1);
+
+        // Invalidating a widget that doesn't exist is a no-op
+        cache.invalidate_widget(WidgetId(999));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn edge_invalidate_widget_removes_all_sizes() {
+        let mut cache = MeasureCache::new(100);
+        let id = WidgetId(42);
+
+        // Same widget, different available sizes → multiple entries
+        cache.get_or_compute(id, Size::new(80, 24), || SizeConstraints::ZERO);
+        cache.get_or_compute(id, Size::new(120, 40), || SizeConstraints::ZERO);
+        cache.get_or_compute(id, Size::new(200, 60), || SizeConstraints::ZERO);
+        assert_eq!(cache.len(), 3);
+
+        cache.invalidate_widget(id);
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn edge_stale_entry_treated_as_miss() {
+        let mut cache = MeasureCache::new(100);
+        let id = WidgetId(1);
+        let size = Size::new(10, 10);
+
+        cache.get_or_compute(id, size, || SizeConstraints::ZERO);
+        assert_eq!(cache.stats().misses, 1);
+        assert_eq!(cache.stats().hits, 0);
+
+        // Invalidate makes all entries stale
+        cache.invalidate_all();
+
+        // Same key should now be a miss (stale generation)
+        let mut called = false;
+        cache.get_or_compute(id, size, || {
+            called = true;
+            SizeConstraints::ZERO
+        });
+        assert!(called, "stale entry should be treated as miss");
+        assert_eq!(cache.stats().misses, 2);
+    }
+
+    #[test]
+    fn edge_lfu_equal_access_counts() {
+        let mut cache = MeasureCache::new(2);
+
+        // Both entries accessed exactly once
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || SizeConstraints::ZERO);
+        cache.get_or_compute(WidgetId(2), Size::new(10, 10), || SizeConstraints::ZERO);
+
+        // Insert a third — one of the first two gets evicted
+        cache.get_or_compute(WidgetId(3), Size::new(10, 10), || SizeConstraints::ZERO);
+        assert_eq!(cache.len(), 2);
+
+        // At least one of widget 1 or 2 is evicted
+        let mut evicted = 0;
+        for id_val in [1u64, 2u64] {
+            let mut called = false;
+            cache.get_or_compute(WidgetId(id_val), Size::new(10, 10), || {
+                called = true;
+                SizeConstraints::ZERO
+            });
+            if called {
+                evicted += 1;
+            }
+        }
+        assert!(evicted >= 1, "at least one entry should be evicted");
+    }
+
+    #[test]
+    fn edge_size_zero_as_cache_key() {
+        let mut cache = MeasureCache::new(100);
+        let id = WidgetId(1);
+
+        cache.get_or_compute(id, Size::ZERO, || SizeConstraints::ZERO);
+        // Should hit on second call
+        cache.get_or_compute(id, Size::ZERO, || unreachable!("should hit for Size::ZERO"));
+        assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn edge_widget_id_zero() {
+        let mut cache = MeasureCache::new(100);
+        cache.get_or_compute(WidgetId(0), Size::new(10, 10), || SizeConstraints::ZERO);
+        cache.get_or_compute(WidgetId(0), Size::new(10, 10), || {
+            unreachable!("should hit for WidgetId(0)")
+        });
+        assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn edge_clear_preserves_stats() {
+        let mut cache = MeasureCache::new(100);
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || SizeConstraints::ZERO);
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || unreachable!());
+
+        cache.clear();
+        assert!(cache.is_empty());
+        // Stats should still be preserved after clear
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+    }
+
+    #[test]
+    fn edge_reset_stats_preserves_entries() {
+        let mut cache = MeasureCache::new(100);
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || SizeConstraints::ZERO);
+        assert_eq!(cache.len(), 1);
+
+        cache.reset_stats();
+        assert_eq!(cache.len(), 1);
+        // Entry should still be cached
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || {
+            unreachable!("should hit")
+        });
+        assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn edge_entries_never_exceed_capacity() {
+        let cap = 5;
+        let mut cache = MeasureCache::new(cap);
+
+        for i in 0..100u64 {
+            cache.get_or_compute(WidgetId(i), Size::new(10, 10), || SizeConstraints::ZERO);
+            assert!(
+                cache.len() <= cap,
+                "len {} > capacity {} at i={}",
+                cache.len(),
+                cap,
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn edge_clear_bumps_generation() {
+        let mut cache = MeasureCache::new(100);
+        let gen_before = cache.generation;
+        cache.clear();
+        assert_eq!(cache.generation, gen_before + 1);
+    }
+
+    #[test]
+    fn edge_invalidate_all_stale_but_still_counted_in_len() {
+        let mut cache = MeasureCache::new(100);
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || SizeConstraints::ZERO);
+        cache.get_or_compute(WidgetId(2), Size::new(10, 10), || SizeConstraints::ZERO);
+        assert_eq!(cache.len(), 2);
+
+        cache.invalidate_all();
+        // Stale entries are still in the map (not removed), just treated as misses
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn edge_invalidate_widget_does_not_affect_stats() {
+        let mut cache = MeasureCache::new(100);
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || SizeConstraints::ZERO);
+        cache.get_or_compute(WidgetId(1), Size::new(10, 10), || unreachable!());
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().misses, 1);
+
+        cache.invalidate_widget(WidgetId(1));
+        // Stats unchanged
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn edge_get_or_compute_returns_computed_value() {
+        let mut cache = MeasureCache::new(100);
+        let expected = SizeConstraints {
+            min: Size::new(5, 3),
+            preferred: Size::new(40, 10),
+            max: Some(Size::new(100, 50)),
+        };
+        let result = cache.get_or_compute(WidgetId(1), Size::new(80, 24), || expected);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn edge_cache_stats_default() {
+        let stats = CacheStats::default();
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.hit_rate, 0.0);
+    }
+
+    #[test]
+    fn edge_cache_stats_clone_debug() {
+        let stats = CacheStats {
+            entries: 5,
+            hits: 10,
+            misses: 3,
+            hit_rate: 0.769,
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.entries, 5);
+        assert_eq!(cloned.hits, 10);
+        let _ = format!("{stats:?}");
+    }
+
+    #[test]
+    fn edge_measure_cache_debug() {
+        let cache = MeasureCache::new(100);
+        let debug = format!("{cache:?}");
+        assert!(debug.contains("MeasureCache"), "{debug}");
+    }
+
+    #[test]
+    fn edge_widget_id_copy_clone_hash_debug() {
+        let id = WidgetId(42);
+        let copied: WidgetId = id; // Copy
+        assert_eq!(copied, id);
+        let cloned = id.clone();
+        assert_eq!(cloned, id);
+        let _ = format!("{id:?}");
+
+        // Hash: same IDs should hash equally
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(id);
+        assert!(set.contains(&WidgetId(42)));
+        assert!(!set.contains(&WidgetId(43)));
+    }
 }
