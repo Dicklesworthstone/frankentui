@@ -845,19 +845,100 @@ impl BackdropFx for PlasmaFx {
         let palette = self.palette;
         match palette {
             PlasmaPalette::ThemeAccents => {
-                self.render_with_palette(ctx, out, |t| PlasmaPalette::theme_gradient(t, theme));
+                // Precompute theme stops once (avoid per-pixel theme deref).
+                let bg_surface = theme.bg_surface;
+                let accent_primary = theme.accent_primary;
+                let accent_secondary = theme.accent_secondary;
+                let fg_primary = theme.fg_primary;
+                self.render_with_palette(ctx, out, |t| {
+                    if t < 0.33 {
+                        let s = t / 0.33;
+                        PlasmaPalette::lerp_color(bg_surface, accent_primary, s)
+                    } else if t < 0.66 {
+                        let s = (t - 0.33) / 0.33;
+                        PlasmaPalette::lerp_color(accent_primary, accent_secondary, s)
+                    } else {
+                        let s = (t - 0.66) / 0.34;
+                        PlasmaPalette::lerp_color(accent_secondary, fg_primary, s)
+                    }
+                });
             }
             PlasmaPalette::Aurora => {
-                self.render_with_palette(ctx, out, |t| PlasmaPalette::aurora(t, theme));
+                // Precompute fallbacks/stops once (avoid per-pixel slot checks).
+                let bg_surface = theme.bg_surface;
+                let cool1 = if theme.accent_slots[0] == PackedRgba::TRANSPARENT {
+                    PackedRgba::rgb(60, 100, 180) // Fallback: blue
+                } else {
+                    theme.accent_slots[0]
+                };
+                let cool2 = if theme.accent_slots[1] == PackedRgba::TRANSPARENT {
+                    PackedRgba::rgb(80, 200, 220) // Fallback: cyan
+                } else {
+                    theme.accent_slots[1]
+                };
+                let accent_primary = theme.accent_primary;
+                self.render_with_palette(ctx, out, |t| {
+                    if t < 0.33 {
+                        let s = t / 0.33;
+                        PlasmaPalette::lerp_color(bg_surface, cool1, s)
+                    } else if t < 0.66 {
+                        let s = (t - 0.33) / 0.33;
+                        PlasmaPalette::lerp_color(cool1, cool2, s)
+                    } else {
+                        let s = (t - 0.66) / 0.34;
+                        PlasmaPalette::lerp_color(cool2, accent_primary, s)
+                    }
+                });
             }
             PlasmaPalette::Ember => {
-                self.render_with_palette(ctx, out, |t| PlasmaPalette::ember(t, theme));
+                // Precompute fallbacks/stops once (avoid per-pixel slot checks).
+                let bg_surface = theme.bg_surface;
+                let warm1 = if theme.accent_slots[2] == PackedRgba::TRANSPARENT {
+                    PackedRgba::rgb(200, 80, 50) // Fallback: red-orange
+                } else {
+                    theme.accent_slots[2]
+                };
+                let warm2 = if theme.accent_slots[3] == PackedRgba::TRANSPARENT {
+                    PackedRgba::rgb(255, 180, 60) // Fallback: orange-yellow
+                } else {
+                    theme.accent_slots[3]
+                };
+                let accent_secondary = theme.accent_secondary;
+                self.render_with_palette(ctx, out, |t| {
+                    if t < 0.33 {
+                        let s = t / 0.33;
+                        PlasmaPalette::lerp_color(bg_surface, warm1, s)
+                    } else if t < 0.66 {
+                        let s = (t - 0.33) / 0.33;
+                        PlasmaPalette::lerp_color(warm1, warm2, s)
+                    } else {
+                        let s = (t - 0.66) / 0.34;
+                        PlasmaPalette::lerp_color(warm2, accent_secondary, s)
+                    }
+                });
             }
             PlasmaPalette::Subtle => {
-                self.render_with_palette(ctx, out, |t| PlasmaPalette::subtle(t, theme));
+                // Precompute theme stops once (avoid per-pixel theme deref).
+                let bg_base = theme.bg_base;
+                let bg_surface = theme.bg_surface;
+                let bg_overlay = theme.bg_overlay;
+                self.render_with_palette(ctx, out, |t| {
+                    if t < 0.5 {
+                        let s = t / 0.5;
+                        PlasmaPalette::lerp_color(bg_base, bg_surface, s)
+                    } else {
+                        let s = (t - 0.5) / 0.5;
+                        PlasmaPalette::lerp_color(bg_surface, bg_overlay, s)
+                    }
+                });
             }
             PlasmaPalette::Monochrome => {
-                self.render_with_palette(ctx, out, |t| PlasmaPalette::monochrome(t, theme));
+                // Precompute theme stops once (avoid per-pixel theme deref).
+                let bg_base = theme.bg_base;
+                let fg_primary = theme.fg_primary;
+                self.render_with_palette(ctx, out, |t| {
+                    PlasmaPalette::lerp_color(bg_base, fg_primary, t)
+                });
             }
             PlasmaPalette::Sunset => self.render_with_palette(ctx, out, PlasmaPalette::sunset),
             PlasmaPalette::Ocean => self.render_with_palette(ctx, out, PlasmaPalette::ocean),
