@@ -1470,4 +1470,381 @@ mod tests {
         }
         assert!(found_braille);
     }
+
+    // ===== Helper function tests =====
+
+    #[test]
+    fn lerp_color_nan_treated_as_zero() {
+        let a = PackedRgba::rgb(0, 0, 0);
+        let b = PackedRgba::rgb(255, 255, 255);
+        assert_eq!(lerp_color(a, b, f64::NAN), a);
+    }
+
+    #[test]
+    fn heatmap_gradient_nan_treated_as_cold() {
+        assert_eq!(heatmap_gradient(f64::NAN), heatmap_gradient(0.0));
+    }
+
+    #[test]
+    fn display_width_ascii_printable() {
+        assert_eq!(display_width("hello"), 5);
+        assert_eq!(display_width(""), 0);
+    }
+
+    #[test]
+    fn display_width_with_tabs_and_control() {
+        // Tabs and control chars counted as width 1 in ascii path.
+        assert_eq!(ascii_display_width("\t"), 1);
+        assert_eq!(ascii_display_width("\n"), 1);
+    }
+
+    #[test]
+    fn grapheme_width_ascii() {
+        assert_eq!(grapheme_width("a"), 1);
+        assert_eq!(grapheme_width(" "), 1);
+    }
+
+    // ===== Sparkline edge cases =====
+
+    #[test]
+    fn sparkline_nan_data_does_not_panic() {
+        let data = [f64::NAN, 1.0, f64::NAN];
+        let area = Rect::new(0, 0, 3, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 1, &mut pool);
+        Sparkline::new(&data).render(area, &mut frame);
+        // NaN is clamped to 0 => bar_idx=0 => space (not rendered)
+    }
+
+    #[test]
+    fn sparkline_infinity_data_does_not_panic() {
+        let data = [f64::NEG_INFINITY, 0.0, f64::INFINITY];
+        let area = Rect::new(0, 0, 3, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 1, &mut pool);
+        Sparkline::new(&data).render(area, &mut frame);
+    }
+
+    #[test]
+    fn sparkline_single_value() {
+        let data = [5.0];
+        let area = Rect::new(0, 0, 1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Sparkline::new(&data).render(area, &mut frame);
+        // Single value => range=0 => normalized=1.0 => full block.
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('█'));
+    }
+
+    #[test]
+    fn sparkline_style_applied() {
+        let fg = PackedRgba::rgb(255, 0, 0);
+        let data = [10.0];
+        let area = Rect::new(0, 0, 1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Sparkline::new(&data)
+            .style(Style::new().fg(fg))
+            .render(area, &mut frame);
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.fg, fg);
+    }
+
+    // ===== BarChart edge cases =====
+
+    #[test]
+    fn barchart_multiple_groups_vertical() {
+        let groups = vec![
+            BarGroup::new("A", vec![10.0]),
+            BarGroup::new("B", vec![5.0]),
+        ];
+        let area = Rect::new(0, 0, 10, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 6, &mut pool);
+        BarChart::new(groups)
+            .bar_width(1)
+            .group_gap(1)
+            .render(area, &mut frame);
+
+        // Group A at x=0, full height.
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('█'));
+        // Group B at x=2 (1 bar_width + 1 group_gap), half height.
+        // Should not be empty.
+        let mut found_b_bar = false;
+        for y in 0..5 {
+            if char_at(&frame.buffer, 2, y).is_some() {
+                found_b_bar = true;
+                break;
+            }
+        }
+        assert!(found_b_bar, "Second group should have rendered bars");
+    }
+
+    #[test]
+    fn barchart_wide_bars() {
+        let groups = vec![BarGroup::new("W", vec![10.0])];
+        let area = Rect::new(0, 0, 6, 4);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 4, &mut pool);
+        BarChart::new(groups).bar_width(3).render(area, &mut frame);
+
+        // Bar should span 3 columns (x=0,1,2).
+        for x in 0..3 {
+            assert_eq!(
+                char_at(&frame.buffer, x, 0),
+                Some('█'),
+                "Bar should fill column {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn barchart_explicit_max() {
+        let groups = vec![BarGroup::new("M", vec![5.0])];
+        let area = Rect::new(0, 0, 3, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 6, &mut pool);
+        BarChart::new(groups)
+            .bar_width(1)
+            .max(10.0)
+            .render(area, &mut frame);
+
+        // 5/10 = 0.5 => half the chart height (5 rows => ~2.5 full rows).
+        // Top of chart (y=0) should be empty.
+        assert!(
+            frame.buffer.get(0, 0).unwrap().is_empty(),
+            "Top should be empty with half-height bar"
+        );
+        // Bottom of chart (y=4) should be filled.
+        assert_eq!(char_at(&frame.buffer, 0, 4), Some('█'));
+    }
+
+    #[test]
+    fn barchart_empty_colors_uses_white() {
+        let groups = vec![BarGroup::new("E", vec![10.0])];
+        let area = Rect::new(0, 0, 3, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 3, &mut pool);
+        BarChart::new(groups)
+            .bar_width(1)
+            .colors(vec![])
+            .render(area, &mut frame);
+
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.fg, PackedRgba::WHITE);
+    }
+
+    #[test]
+    fn barchart_horizontal_grouped() {
+        let groups = vec![BarGroup::new("G", vec![5.0, 10.0])];
+        let area = Rect::new(0, 0, 14, 4);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(14, 4, &mut pool);
+        BarChart::new(groups)
+            .direction(BarDirection::Horizontal)
+            .bar_width(1)
+            .bar_gap(0)
+            .render(area, &mut frame);
+
+        // First bar (value 5, row 0) should fill half the chart width.
+        // Second bar (value 10, row 1) should fill the full chart width.
+        assert_eq!(
+            char_at(&frame.buffer, 2, 1),
+            Some('█'),
+            "Second bar should be present"
+        );
+        assert_eq!(
+            char_at(&frame.buffer, 13, 1),
+            Some('█'),
+            "Full-length bar should reach the end"
+        );
+    }
+
+    #[test]
+    fn barchart_nan_values_do_not_panic() {
+        let groups = vec![BarGroup::new("N", vec![f64::NAN, 10.0])];
+        let area = Rect::new(0, 0, 5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+        BarChart::new(groups).bar_width(1).render(area, &mut frame);
+    }
+
+    #[test]
+    fn barchart_tiny_area_no_chart_rows() {
+        let groups = vec![BarGroup::new("T", vec![10.0])];
+        let area = Rect::new(0, 0, 3, 1); // Only 1 row => 0 chart rows after label reservation.
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 1, &mut pool);
+        BarChart::new(groups).render(area, &mut frame);
+        // chart_height = 0 => early return.
+    }
+
+    #[test]
+    fn barchart_horizontal_tiny_area() {
+        let groups = vec![BarGroup::new("T", vec![10.0])];
+        let area = Rect::new(0, 0, 2, 3); // Only 2 cols => 0 chart width after label reservation.
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(2, 3, &mut pool);
+        BarChart::new(groups)
+            .direction(BarDirection::Horizontal)
+            .render(area, &mut frame);
+        // chart_width = 0 => early return.
+    }
+
+    #[test]
+    fn barchart_stacked_compute_max() {
+        let groups = vec![
+            BarGroup::new("A", vec![3.0, 7.0]),
+            BarGroup::new("B", vec![4.0, 1.0]),
+        ];
+        let area = Rect::new(0, 0, 6, 6);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 6, &mut pool);
+        BarChart::new(groups)
+            .bar_width(1)
+            .mode(BarMode::Stacked)
+            .render(area, &mut frame);
+
+        // Stacked max = max(3+7=10, 4+1=5) = 10.
+        // Group A should fill the full chart height (total=10, max=10).
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('█'));
+    }
+
+    #[test]
+    fn barchart_color_cycling() {
+        let red = PackedRgba::rgb(255, 0, 0);
+        let blue = PackedRgba::rgb(0, 0, 255);
+        let groups = vec![BarGroup::new("C", vec![10.0, 10.0, 10.0])];
+        let area = Rect::new(0, 0, 6, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 3, &mut pool);
+        BarChart::new(groups)
+            .bar_width(1)
+            .bar_gap(0)
+            .colors(vec![red, blue])
+            .render(area, &mut frame);
+
+        // series 0 = red, series 1 = blue, series 2 = red (wraps).
+        let c0 = frame.buffer.get(0, 0).unwrap().fg;
+        let c1 = frame.buffer.get(1, 0).unwrap().fg;
+        let c2 = frame.buffer.get(2, 0).unwrap().fg;
+        assert_eq!(c0, red, "Series 0 should be red");
+        assert_eq!(c1, blue, "Series 1 should be blue");
+        assert_eq!(c2, red, "Series 2 should cycle back to red");
+    }
+
+    // ===== LineChart edge cases =====
+
+    #[test]
+    fn linechart_nan_data_does_not_panic() {
+        let data: Vec<(f64, f64)> = vec![(f64::NAN, 0.0), (1.0, f64::NAN)];
+        let series = vec![Series::new("n", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(series).render(area, &mut frame);
+    }
+
+    #[test]
+    fn linechart_single_x_range_expands() {
+        // All points have x=5 => x_range=0 => expanded to [-1,1] around midpoint.
+        let data: Vec<(f64, f64)> = vec![(5.0, 0.0), (5.0, 10.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(series).render(area, &mut frame);
+        // Should draw axis without panic.
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('│'));
+    }
+
+    #[test]
+    fn linechart_empty_area_noop() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 0, 0);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        LineChart::new(series).render(area, &mut frame);
+    }
+
+    #[test]
+    fn linechart_with_multiple_y_labels() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 30, 12);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(30, 12, &mut pool);
+        LineChart::new(series)
+            .y_labels(vec!["10", "5", "0"])
+            .render(area, &mut frame);
+
+        // 3 y-labels distributed evenly along the chart height.
+        // First label "10" at y=0.
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('1'));
+    }
+
+    #[test]
+    fn linechart_single_x_label() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(series)
+            .x_labels(vec!["start"])
+            .render(area, &mut frame);
+        // Single label at chart_area.x.
+        assert_eq!(char_at(&frame.buffer, 1, 9), Some('s'));
+    }
+
+    #[test]
+    fn linechart_single_y_label() {
+        let data: Vec<(f64, f64)> = vec![(0.0, 0.0), (10.0, 10.0)];
+        let series = vec![Series::new("s", &data, PackedRgba::WHITE)];
+        let area = Rect::new(0, 0, 20, 10);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 10, &mut pool);
+        LineChart::new(series)
+            .y_labels(vec!["0"])
+            .render(area, &mut frame);
+        // Single label placed at chart_area.y.
+        assert_eq!(char_at(&frame.buffer, 0, 0), Some('0'));
+    }
+
+    // ===== display_width edge cases =====
+
+    #[test]
+    fn display_width_empty() {
+        assert_eq!(display_width(""), 0);
+    }
+
+    #[test]
+    fn display_width_pure_ascii() {
+        assert_eq!(display_width("abc"), 3);
+    }
+
+    // ===== style_cell =====
+
+    #[test]
+    fn style_cell_applies_fg_and_bg() {
+        let fg = PackedRgba::rgb(255, 0, 0);
+        let bg = PackedRgba::rgb(0, 255, 0);
+        let mut cell = Cell::from_char('x');
+        style_cell(&mut cell, Style::new().fg(fg).bg(bg));
+        assert_eq!(cell.fg, fg);
+        assert_eq!(cell.bg, bg);
+    }
+
+    #[test]
+    fn style_cell_no_color_preserves_existing() {
+        let orig_fg = PackedRgba::rgb(100, 100, 100);
+        let mut cell = Cell::from_char('x');
+        cell.fg = orig_fg;
+        style_cell(&mut cell, Style::new());
+        assert_eq!(
+            cell.fg, orig_fg,
+            "fg should be unchanged when style has no fg"
+        );
+    }
 }
