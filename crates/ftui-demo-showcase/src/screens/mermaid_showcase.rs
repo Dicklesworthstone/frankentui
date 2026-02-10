@@ -2872,7 +2872,7 @@ impl MermaidShowcaseScreen {
                     if let Some(&cell) = buffer.get(cx, y)
                         && cell.content.as_char() == Some(' ')
                     {
-                        buffer.set(cx, y, Cell::from_char('|').with_fg(grid_color));
+                        buffer.set_fast(cx, y, Cell::from_char('|').with_fg(grid_color));
                     }
                 }
                 gx += step;
@@ -2884,7 +2884,7 @@ impl MermaidShowcaseScreen {
                     if let Some(&cell) = buffer.get(x, cy)
                         && cell.content.as_char() == Some(' ')
                     {
-                        buffer.set(x, cy, Cell::from_char('-').with_fg(grid_color));
+                        buffer.set_fast(x, cy, Cell::from_char('-').with_fg(grid_color));
                     }
                 }
                 gy += step;
@@ -2905,12 +2905,12 @@ impl MermaidShowcaseScreen {
                     if let Some(&c) = buffer.get(x, y0)
                         && c.content.as_char() == Some(' ')
                     {
-                        buffer.set(x, y0, Cell::from_char('.').with_fg(bounds_color));
+                        buffer.set_fast(x, y0, Cell::from_char('.').with_fg(bounds_color));
                     }
                     if let Some(&c) = buffer.get(x, y1)
                         && c.content.as_char() == Some(' ')
                     {
-                        buffer.set(x, y1, Cell::from_char('.').with_fg(bounds_color));
+                        buffer.set_fast(x, y1, Cell::from_char('.').with_fg(bounds_color));
                     }
                 }
                 // Left/right edges.
@@ -2918,12 +2918,12 @@ impl MermaidShowcaseScreen {
                     if let Some(&c) = buffer.get(x0, y)
                         && c.content.as_char() == Some(' ')
                     {
-                        buffer.set(x0, y, Cell::from_char(':').with_fg(bounds_color));
+                        buffer.set_fast(x0, y, Cell::from_char(':').with_fg(bounds_color));
                     }
                     if let Some(&c) = buffer.get(x1, y)
                         && c.content.as_char() == Some(' ')
                     {
-                        buffer.set(x1, y, Cell::from_char(':').with_fg(bounds_color));
+                        buffer.set_fast(x1, y, Cell::from_char(':').with_fg(bounds_color));
                     }
                 }
             }
@@ -2938,7 +2938,7 @@ impl MermaidShowcaseScreen {
                     if let Some(&cell) = buffer.get(cx, cy)
                         && cell.content.as_char() == Some(' ')
                     {
-                        buffer.set(cx, cy, Cell::from_char('*').with_fg(route_color));
+                        buffer.set_fast(cx, cy, Cell::from_char('*').with_fg(route_color));
                     }
                 }
             }
@@ -2960,7 +2960,7 @@ impl MermaidShowcaseScreen {
                 for (px, py) in ports {
                     let (cell_x, cell_y) = to_cell(px, py);
                     if let Some(&c) = buffer.get(cell_x, cell_y) {
-                        buffer.set(cell_x, cell_y, Cell::from_char('+').with_fg(port_color));
+                        buffer.set_fast(cell_x, cell_y, Cell::from_char('+').with_fg(port_color));
                         let _ = c; // suppress unused warning
                     }
                 }
@@ -2989,11 +2989,11 @@ impl MermaidShowcaseScreen {
             let mut x = start_x;
             let bg = PackedRgba::rgba(20, 20, 30, 255);
             for (label, color) in &legend_items {
-                buffer.set(x, 0, Cell::from_char(' ').with_bg(bg));
+                buffer.set_fast(x, 0, Cell::from_char(' ').with_bg(bg));
                 x += 1;
                 for ch in label.chars() {
                     if x < render_width {
-                        buffer.set(x, 0, Cell::from_char(ch).with_fg(*color).with_bg(bg));
+                        buffer.set_fast(x, 0, Cell::from_char(ch).with_fg(*color).with_bg(bg));
                         x += 1;
                     }
                 }
@@ -3027,7 +3027,7 @@ impl MermaidShowcaseScreen {
         for x in 0..bar_area.width {
             let ch = text.chars().nth(x as usize).unwrap_or(' ');
             let cell = Cell::from_char(ch).with_fg(fg).with_bg(bg);
-            frame.buffer.set(bar_area.x + x, bar_area.y, cell);
+            frame.buffer.set_fast(bar_area.x + x, bar_area.y, cell);
         }
     }
 
@@ -3090,7 +3090,7 @@ impl MermaidShowcaseScreen {
                         cell.bg.b() / 3,
                         cell.bg.a(),
                     );
-                    buffer.set(x, y, cell.with_fg(dim_fg).with_bg(dim_bg));
+                    buffer.set_fast(x, y, cell.with_fg(dim_fg).with_bg(dim_bg));
                 }
             }
         }

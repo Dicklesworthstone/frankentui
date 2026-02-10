@@ -3604,7 +3604,7 @@ impl MermaidMegaShowcaseScreen {
         let bg = Cell::from_char(' ').with_fg(PackedRgba::rgb(40, 40, 60));
         for row in overlay.y..overlay.y + overlay.height {
             for col in overlay.x..overlay.x + overlay.width {
-                frame.buffer.set(col, row, bg);
+                frame.buffer.set_fast(col, row, bg);
             }
         }
 
@@ -3831,7 +3831,7 @@ impl MermaidMegaShowcaseScreen {
                 if let Some(cell) = buf.get(col, row)
                     && !cell.bits_eq(&empty)
                 {
-                    frame.buffer.set(area.x + col, area.y + row, *cell);
+                    frame.buffer.set_fast(area.x + col, area.y + row, *cell);
                 }
             }
         }
@@ -3850,7 +3850,7 @@ impl MermaidMegaShowcaseScreen {
         let bg = Cell::from_char(' ').with_fg(PackedRgba::rgb(40, 30, 30));
         for row in area.y..area.y + area.height {
             for col in area.x..area.x + area.width {
-                frame.buffer.set(col, row, bg);
+                frame.buffer.set_fast(col, row, bg);
             }
         }
 
