@@ -1546,7 +1546,7 @@ mod tests {
     // ---- encode_wheel_input ----
 
     #[test]
-    fn wheel_scroll_down_emits_sgr_code_64() {
+    fn wheel_scroll_up_negative_dy_emits_sgr_code_64() {
         let wheel = InputEvent::Wheel(WheelInput {
             x: 5,
             y: 10,
@@ -1559,14 +1559,14 @@ mod tests {
             ..VtInputEncoderFeatures::default()
         };
         let encoded = encode_vt_input_event(&wheel, features);
-        // dy < 0 → base_code 64, repeated 3 times
+        // dy < 0 → scroll up → base_code 64 (button 4), repeated 3 times
         let single = b"\x1b[<64;6;11M";
         assert_eq!(encoded.len(), single.len() * 3);
         assert_eq!(&encoded[..single.len()], single.as_slice());
     }
 
     #[test]
-    fn wheel_scroll_up_emits_sgr_code_65() {
+    fn wheel_scroll_down_positive_dy_emits_sgr_code_65() {
         let wheel = InputEvent::Wheel(WheelInput {
             x: 0,
             y: 0,
@@ -1579,6 +1579,7 @@ mod tests {
             ..VtInputEncoderFeatures::default()
         };
         let encoded = encode_vt_input_event(&wheel, features);
+        // dy > 0 → scroll down → base_code 65 (button 5)
         assert_eq!(encoded, b"\x1b[<65;1;1M".to_vec());
     }
 
