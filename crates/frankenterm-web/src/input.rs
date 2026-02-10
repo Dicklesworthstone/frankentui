@@ -2347,10 +2347,11 @@ mod tests {
 
     #[test]
     fn normalize_dom_key_multichar_is_unidentified() {
-        match normalize_dom_key_code("Compose", "Compose", Modifiers::empty()) {
-            KeyCode::Unidentified { .. } => {}
-            other => panic!("expected Unidentified, got {other:?}"),
-        }
+        let actual = normalize_dom_key_code("Compose", "Compose", Modifiers::empty());
+        assert!(
+            matches!(actual, KeyCode::Unidentified { .. }),
+            "expected Unidentified, got {actual:?}"
+        );
     }
 
     #[test]
@@ -2417,10 +2418,11 @@ mod tests {
 
     #[test]
     fn keycode_from_empty_string_is_unidentified() {
-        match KeyCode::from_code_string("", None, None) {
-            KeyCode::Unidentified { .. } => {}
-            other => panic!("expected Unidentified, got {other:?}"),
-        }
+        let actual = KeyCode::from_code_string("", None, None);
+        assert!(
+            matches!(actual, KeyCode::Unidentified { .. }),
+            "expected Unidentified, got {actual:?}"
+        );
     }
 
     // ---- MouseButton conversions ----

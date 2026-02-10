@@ -177,6 +177,14 @@ window.matchMedia(`(resolution: ${dpr}dppx)`).addEventListener("change", () => {
 // ── Input forwarding ───────────────────────────────────────────────────
 // DOM events → FrankenTermWeb.input() → drainEncodedInputs() → runner
 
+function safeTermInput(ev) {
+  try {
+    term.input(ev);
+  } catch (e) {
+    console.error("[ShowcaseDemo] term.input failed:", e, ev);
+  }
+}
+
 function domKeyToInput(e, phase) {
   return {
     kind: "key",
@@ -184,8 +192,8 @@ function domKeyToInput(e, phase) {
     // `key` and `code` are both required by `frankenterm-web` wasm bindings.
     // - key: logical key value (e.g. "a", "Enter")
     // - code: physical key code (e.g. "KeyA", "Enter")
-    key: e.key,
-    code: e.code,
+    key: (typeof e.key === "string") ? e.key : "",
+    code: (typeof e.code === "string") ? e.code : "",
     mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),
     repeat: e.repeat || false,
   };
@@ -223,44 +231,59 @@ function domWheelToInput(e) {
   };
 }
 
-canvas.addEventListener("keydown", (e) => {
+function shouldForwardKeyEvent(e) {
+  // Avoid double-encoding during IME composition.
+  return !(e.isComposing || e.key === "Process");
+}
+
+window.addEventListener("keydown", (e) => {
+  if (!shouldForwardKeyEvent(e)) return;
   e.preventDefault();
-  term.input(domKeyToInput(e, "down"));
-});
-canvas.addEventListener("keyup", (e) => {
+  safeTermInput(domKeyToInput(e, "down"));
+}, { capture: true });
+
+window.addEventListener("keyup", (e) => {
+  if (!shouldForwardKeyEvent(e)) return;
   e.preventDefault();
-  term.input(domKeyToInput(e, "up"));
-});
+  safeTermInput(domKeyToInput(e, "up"));
+}, { capture: true });
+
 canvas.addEventListener("mousedown", (e) => {
   canvas.focus();
-  term.input(domMouseToInput(e, "down"));
+  safeTermInput(domMouseToInput(e, "down"));
 });
 canvas.addEventListener("mouseup", (e) => {
-  term.input(domMouseToInput(e, "up"));
+  safeTermInput(domMouseToInput(e, "up"));
 });
 canvas.addEventListener("mousemove", (e) => {
-  term.input(domMouseToInput(e, "move"));
+  safeTermInput(domMouseToInput(e, "move"));
 });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  term.input(domWheelToInput(e));
+  safeTermInput(domWheelToInput(e));
 }, { passive: false });
-canvas.addEventListener("paste", (e) => {
+window.addEventListener("paste", (e) => {
   const text = (e.clipboardData || window.clipboardData).getData("text");
-  if (text) term.input({ kind: "paste", data: text });
+  if (text) safeTermInput({ kind: "paste", data: text });
+}, { capture: true });
+canvas.addEventListener("focus", () => { safeTermInput({ kind: "focus", focused: true }); });
+canvas.addEventListener("blur",  () => { safeTermInput({ kind: "focus", focused: false }); });
+
+window.addEventListener("blur", () => { safeTermInput({ kind: "focus", focused: false }); });
+window.addEventListener("focus", () => { safeTermInput({ kind: "focus", focused: true }); });
+document.addEventListener("visibilitychange", () => {
+  safeTermInput({ kind: "focus", focused: !document.hidden });
 });
-canvas.addEventListener("focus", () => { term.input({ kind: "focus", focused: true }); });
-canvas.addEventListener("blur",  () => { term.input({ kind: "focus", focused: false }); });
 
 // Composition (IME) events.
 canvas.addEventListener("compositionstart", () => {
-  term.input({ kind: "composition", phase: "start" });
+  safeTermInput({ kind: "composition", phase: "start" });
 });
 canvas.addEventListener("compositionupdate", (e) => {
-  term.input({ kind: "composition", phase: "update", data: e.data || "" });
+  safeTermInput({ kind: "composition", phase: "update", data: e.data || "" });
 });
 canvas.addEventListener("compositionend", (e) => {
-  term.input({ kind: "composition", phase: "end", data: e.data || "" });
+  safeTermInput({ kind: "composition", phase: "end", data: e.data || "" });
 });
 
 // ── Host frame loop ────────────────────────────────────────────────────

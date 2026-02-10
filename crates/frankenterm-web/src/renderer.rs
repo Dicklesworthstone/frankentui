@@ -1558,11 +1558,10 @@ mod gpu {
                 return 0;
             }
 
-            let placement = match self.glyph_cache.get_or_insert_with(key, |_| {
-                // Procedural fallback raster must match the per-cell quad size; otherwise the
-                // UV mapping would stretch it. The production font rasterizer (bd-lff4p.2.4)
-                // is expected to generate cell-sized bitmaps for this pipeline as well.
-                rasterize_procedural_glyph(codepoint, cell_w, cell_h)
+            let (glyph_cache, glyph_rasterizer) =
+                (&mut self.glyph_cache, &mut self.glyph_rasterizer);
+            let placement = match glyph_cache.get_or_insert_with(key, |_| {
+                glyph_rasterizer.rasterize(codepoint, cell_w, cell_h)
             }) {
                 Ok(placement) => placement,
                 Err(_) => return 0,

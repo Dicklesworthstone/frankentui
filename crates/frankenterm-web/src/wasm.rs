@@ -1593,8 +1593,10 @@ fn parse_input_event(event: &JsValue) -> Result<InputEvent, JsValue> {
 
 fn parse_key_event(event: &JsValue) -> Result<InputEvent, JsValue> {
     let phase = parse_key_phase(event)?;
-    let dom_key = get_string(event, "key")?;
-    let dom_code = get_string(event, "code")?;
+    // Some browsers / wrapper code paths can produce undefined `key`/`code`.
+    // Treat missing fields as empty strings to avoid throwing and dropping all input.
+    let dom_key = get_string_opt(event, "key")?.unwrap_or_default();
+    let dom_code = get_string_opt(event, "code")?.unwrap_or_default();
     let repeat = get_bool(event, "repeat")?.unwrap_or(false);
     let mods = parse_mods(event)?;
     let code = normalize_dom_key_code(&dom_key, &dom_code, mods);
