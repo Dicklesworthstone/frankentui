@@ -197,6 +197,12 @@ enum State {
     },
 }
 
+/// Upper bound for retained internal escape-buffer capacity between sequences.
+///
+/// This avoids pathological allocator churn after an unusually large escape
+/// payload inflates `self.buf` capacity.
+const ESC_BUF_RETAIN_CAP_MAX: usize = 16 * 1024;
+
 /// VT/ANSI parser state.
 #[derive(Debug, Clone)]
 pub struct Parser {
@@ -508,11 +514,11 @@ impl Parser {
     }
 
     fn take_buf(&mut self) -> Vec<u8> {
-        // Replace with a same-capacity Vec so `self.buf` retains its heap
-        // allocation for the next escape sequence (avoids repeated growth
-        // from zero).  The original swap-with-empty lost all capacity.
-        let cap = self.buf.capacity();
-        core::mem::replace(&mut self.buf, Vec::with_capacity(cap))
+        // Retain capacity for common-case reuse, but cap retained capacity so a
+        // single very large escape payload doesn't force repeated oversized
+        // allocations on subsequent small sequences.
+        let retained_cap = self.buf.capacity().min(ESC_BUF_RETAIN_CAP_MAX);
+        core::mem::replace(&mut self.buf, Vec::with_capacity(retained_cap))
     }
 
     fn decode_csi(seq: &[u8]) -> Option<Action> {
@@ -1803,5 +1809,19 @@ mod tests {
         p.feed_into(b"\x1b[32m", &mut out);
         // Capacity should be retained from the previous call.
         assert!(out.capacity() >= cap);
+    }
+
+    #[test]
+    fn take_buf_caps_retained_internal_capacity() {
+        let mut p = Parser::new();
+        p.buf = Vec::with_capacity(ESC_BUF_RETAIN_CAP_MAX * 4);
+        p.buf.extend_from_slice(b"\x1b[31m");
+
+        let taken = p.take_buf();
+        assert!(!taken.is_empty());
+        assert!(
+            p.buf.capacity() <= ESC_BUF_RETAIN_CAP_MAX,
+            "retained capacity must be capped to avoid oversized churn"
+        );
     }
 }
