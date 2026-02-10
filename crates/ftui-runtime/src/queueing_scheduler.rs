@@ -2214,4 +2214,607 @@ mod tests {
         let completed = scheduler.tick(1.0);
         assert_eq!(completed.len(), 1);
     }
+
+    // =========================================================================
+    // Job builder edge cases (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn job_new_nan_weight_clamps_to_min() {
+        let job = Job::new(1, f64::NAN, 10.0);
+        assert_eq!(job.weight, DEFAULT_W_MIN);
+    }
+
+    #[test]
+    fn job_new_pos_inf_weight_clamps_to_max() {
+        let job = Job::new(1, f64::INFINITY, 10.0);
+        assert_eq!(job.weight, DEFAULT_W_MAX);
+    }
+
+    #[test]
+    fn job_new_neg_inf_weight_clamps_to_min() {
+        let job = Job::new(1, f64::NEG_INFINITY, 10.0);
+        assert_eq!(job.weight, DEFAULT_W_MIN);
+    }
+
+    #[test]
+    fn job_new_nan_estimate_clamps_to_max() {
+        let job = Job::new(1, 1.0, f64::NAN);
+        assert_eq!(job.remaining_time, DEFAULT_P_MAX_MS);
+        assert_eq!(job.total_time, DEFAULT_P_MAX_MS);
+    }
+
+    #[test]
+    fn job_new_pos_inf_estimate_clamps_to_max() {
+        let job = Job::new(1, 1.0, f64::INFINITY);
+        assert_eq!(job.remaining_time, DEFAULT_P_MAX_MS);
+    }
+
+    #[test]
+    fn job_new_neg_inf_estimate_clamps_to_min() {
+        let job = Job::new(1, 1.0, f64::NEG_INFINITY);
+        assert_eq!(job.remaining_time, DEFAULT_P_MIN_MS);
+    }
+
+    #[test]
+    fn job_with_name_sets_name() {
+        let job = Job::with_name(1, 1.0, 10.0, "alpha");
+        assert_eq!(job.name.as_deref(), Some("alpha"));
+        assert_eq!(job.id, 1);
+    }
+
+    #[test]
+    fn job_with_sources_sets_both() {
+        let job =
+            Job::new(1, 1.0, 10.0).with_sources(WeightSource::Unknown, EstimateSource::Historical);
+        assert_eq!(job.weight_source, WeightSource::Unknown);
+        assert_eq!(job.estimate_source, EstimateSource::Historical);
+    }
+
+    #[test]
+    fn job_progress_zero_total_time() {
+        let mut job = Job::new(1, 1.0, 10.0);
+        job.total_time = 0.0;
+        assert_eq!(job.progress(), 1.0);
+    }
+
+    #[test]
+    fn job_is_complete_negative_remaining() {
+        let mut job = Job::new(1, 1.0, 10.0);
+        job.remaining_time = -5.0;
+        assert!(job.is_complete());
+    }
+
+    // =========================================================================
+    // Scheduler normalization edge cases (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn submit_nan_weight_normalized() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(f64::NAN, 10.0);
+        let next = scheduler.peek_next().unwrap();
+        assert!(next.weight >= DEFAULT_W_MIN);
+        assert!(next.weight.is_finite());
+    }
+
+    #[test]
+    fn submit_inf_weight_normalized() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(f64::INFINITY, 10.0);
+        let next = scheduler.peek_next().unwrap();
+        assert!(next.weight <= DEFAULT_W_MAX);
+        assert!(next.weight.is_finite());
+    }
+
+    #[test]
+    fn submit_nan_estimate_normalized() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, f64::NAN);
+        let next = scheduler.peek_next().unwrap();
+        assert!(next.remaining_time <= DEFAULT_P_MAX_MS);
+        assert!(next.remaining_time.is_finite());
+    }
+
+    #[test]
+    fn submit_inf_estimate_normalized() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, f64::INFINITY);
+        let next = scheduler.peek_next().unwrap();
+        assert!(next.remaining_time <= DEFAULT_P_MAX_MS);
+        assert!(next.remaining_time.is_finite());
+    }
+
+    // =========================================================================
+    // Config mode tests (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn config_mode_smith() {
+        let config = SchedulerConfig {
+            smith_enabled: true,
+            force_fifo: false,
+            ..Default::default()
+        };
+        assert_eq!(config.mode(), SchedulingMode::Smith);
+    }
+
+    #[test]
+    fn config_mode_srpt() {
+        let config = SchedulerConfig {
+            smith_enabled: false,
+            force_fifo: false,
+            ..Default::default()
+        };
+        assert_eq!(config.mode(), SchedulingMode::Srpt);
+    }
+
+    #[test]
+    fn config_mode_fifo_overrides_smith() {
+        let config = SchedulerConfig {
+            smith_enabled: true,
+            force_fifo: true,
+            ..Default::default()
+        };
+        assert_eq!(config.mode(), SchedulingMode::Fifo);
+    }
+
+    // =========================================================================
+    // Starvation guard (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn starvation_guard_triggers_after_threshold() {
+        let mut config = test_config();
+        config.aging_factor = 0.0;
+        config.wait_starve_ms = 50.0;
+        config.starve_boost_ratio = 5.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit(1.0, 100.0); // ratio = 1/100 = 0.01
+        scheduler.current_time = 60.0; // Beyond 50ms threshold
+        scheduler.refresh_priorities();
+
+        let evidence = scheduler.evidence();
+        let job_ev = &evidence.jobs[0];
+        // starvation_floor = 0.01 * 5.0 = 0.05
+        assert!(
+            job_ev.starvation_floor > 0.0,
+            "starvation floor should be active: {}",
+            job_ev.starvation_floor
+        );
+        assert!(
+            job_ev.effective_priority >= job_ev.starvation_floor,
+            "effective priority {} should be >= starvation floor {}",
+            job_ev.effective_priority,
+            job_ev.starvation_floor
+        );
+    }
+
+    #[test]
+    fn starvation_guard_disabled_when_zero() {
+        let mut config = test_config();
+        config.aging_factor = 0.0;
+        config.wait_starve_ms = 0.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit(1.0, 100.0);
+        scheduler.current_time = 1000.0;
+        scheduler.refresh_priorities();
+
+        let evidence = scheduler.evidence();
+        let job_ev = &evidence.jobs[0];
+        assert!(
+            (job_ev.starvation_floor - 0.0).abs() < f64::EPSILON,
+            "starvation floor should be 0 when disabled"
+        );
+    }
+
+    // =========================================================================
+    // Cancel edge cases (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn cancel_current_job() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        let id = scheduler.submit(1.0, 100.0).unwrap();
+        scheduler.tick(10.0); // Start processing (moves job to current_job)
+
+        assert!(scheduler.cancel(id));
+        assert!(scheduler.peek_next().is_none());
+    }
+
+    #[test]
+    fn cancel_from_middle_of_queue() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 100.0); // id=1
+        let id2 = scheduler.submit(1.0, 50.0).unwrap(); // id=2
+        scheduler.submit(1.0, 200.0); // id=3
+
+        assert!(scheduler.cancel(id2));
+        assert_eq!(scheduler.stats().queue_length, 2);
+    }
+
+    // =========================================================================
+    // Tick edge cases (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn tick_negative_delta_returns_empty() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 10.0);
+        let completed = scheduler.tick(-5.0);
+        assert!(completed.is_empty());
+    }
+
+    #[test]
+    fn tick_empty_queue_advances_time() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        let completed = scheduler.tick(100.0);
+        assert!(completed.is_empty());
+    }
+
+    #[test]
+    fn tick_processes_across_multiple_jobs_in_single_delta() {
+        let mut config = test_config();
+        config.aging_factor = 0.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit(1.0, 3.0);
+        scheduler.submit(1.0, 3.0);
+        scheduler.submit(1.0, 3.0);
+
+        // 9 units of work should complete all 3
+        let completed = scheduler.tick(9.0);
+        assert_eq!(completed.len(), 3);
+    }
+
+    // =========================================================================
+    // Stats edge cases (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn stats_default_values() {
+        let stats = SchedulerStats::default();
+        assert_eq!(stats.total_submitted, 0);
+        assert_eq!(stats.total_completed, 0);
+        assert_eq!(stats.total_rejected, 0);
+        assert_eq!(stats.total_preemptions, 0);
+        assert_eq!(stats.queue_length, 0);
+    }
+
+    #[test]
+    fn stats_mean_response_time_zero_completions() {
+        let stats = SchedulerStats::default();
+        assert_eq!(stats.mean_response_time(), 0.0);
+    }
+
+    #[test]
+    fn stats_throughput_zero_processing_time() {
+        let stats = SchedulerStats::default();
+        assert_eq!(stats.throughput(), 0.0);
+    }
+
+    #[test]
+    fn stats_max_response_time_tracked() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 5.0);
+        scheduler.submit(1.0, 10.0);
+        scheduler.tick(15.0);
+
+        let stats = scheduler.stats();
+        assert!(
+            stats.max_response_time >= 10.0,
+            "max response time {} should be >= 10",
+            stats.max_response_time
+        );
+    }
+
+    // =========================================================================
+    // Evidence / JSONL edge cases (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn evidence_continuation_reason() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 100.0);
+        scheduler.tick(10.0); // Partially process, sets current_job
+
+        let evidence = scheduler.evidence();
+        assert_eq!(evidence.reason, SelectionReason::Continuation);
+    }
+
+    #[test]
+    fn evidence_single_job_no_tie_break() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 10.0);
+
+        let evidence = scheduler.evidence();
+        assert!(
+            evidence.tie_break_reason.is_none(),
+            "single job should have no tie break"
+        );
+    }
+
+    #[test]
+    fn evidence_to_jsonl_contains_required_fields() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 10.0);
+        scheduler.submit(2.0, 5.0);
+
+        let evidence = scheduler.evidence();
+        let json = evidence.to_jsonl("test_event");
+
+        assert!(json.contains("\"event\":\"test_event\""));
+        assert!(json.contains("\"current_time\":"));
+        assert!(json.contains("\"selected_job_id\":"));
+        assert!(json.contains("\"queue_length\":"));
+        assert!(json.contains("\"mean_wait_time\":"));
+        assert!(json.contains("\"max_wait_time\":"));
+        assert!(json.contains("\"reason\":"));
+        assert!(json.contains("\"tie_break_reason\":"));
+        assert!(json.contains("\"jobs\":["));
+    }
+
+    #[test]
+    fn evidence_to_jsonl_empty_queue() {
+        let scheduler = QueueingScheduler::new(test_config());
+        let evidence = scheduler.evidence();
+        let json = evidence.to_jsonl("empty");
+
+        assert!(json.contains("\"selected_job_id\":null"));
+        assert!(json.contains("\"tie_break_reason\":null"));
+        assert!(json.contains("\"jobs\":[]"));
+    }
+
+    #[test]
+    fn job_evidence_to_json_contains_all_fields() {
+        let mut config = test_config();
+        config.aging_factor = 0.5;
+        config.wait_starve_ms = 5.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit_with_sources(
+            2.0,
+            10.0,
+            WeightSource::Explicit,
+            EstimateSource::Default,
+            Some("test-job"),
+        );
+        scheduler.current_time = 10.0;
+        scheduler.refresh_priorities();
+
+        let evidence = scheduler.evidence();
+        let json = evidence.to_jsonl("detail");
+
+        assert!(json.contains("\"job_id\":"));
+        assert!(json.contains("\"name\":\"test-job\""));
+        assert!(json.contains("\"estimate_ms\":"));
+        assert!(json.contains("\"weight\":"));
+        assert!(json.contains("\"ratio\":"));
+        assert!(json.contains("\"aging_reward\":"));
+        assert!(json.contains("\"starvation_floor\":"));
+        assert!(json.contains("\"age_ms\":"));
+        assert!(json.contains("\"effective_priority\":"));
+        assert!(json.contains("\"objective_loss_proxy\":"));
+        assert!(json.contains("\"estimate_source\":"));
+        assert!(json.contains("\"weight_source\":"));
+    }
+
+    #[test]
+    fn evidence_jsonl_escapes_special_chars_in_name() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit_named(1.0, 10.0, Some("job\"with\\special\nchars"));
+
+        let evidence = scheduler.evidence();
+        let json = evidence.to_jsonl("escape_test");
+
+        assert!(json.contains("\\\""));
+        assert!(json.contains("\\\\"));
+        assert!(json.contains("\\n"));
+    }
+
+    // =========================================================================
+    // as_str coverage (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn selection_reason_as_str_coverage() {
+        assert_eq!(SelectionReason::QueueEmpty.as_str(), "queue_empty");
+        assert_eq!(
+            SelectionReason::ShortestRemaining.as_str(),
+            "shortest_remaining"
+        );
+        assert_eq!(
+            SelectionReason::HighestWeightedPriority.as_str(),
+            "highest_weighted_priority"
+        );
+        assert_eq!(SelectionReason::Fifo.as_str(), "fifo");
+        assert_eq!(SelectionReason::AgingBoost.as_str(), "aging_boost");
+        assert_eq!(SelectionReason::Continuation.as_str(), "continuation");
+    }
+
+    #[test]
+    fn estimate_source_as_str_coverage() {
+        assert_eq!(EstimateSource::Explicit.as_str(), "explicit");
+        assert_eq!(EstimateSource::Historical.as_str(), "historical");
+        assert_eq!(EstimateSource::Default.as_str(), "default");
+        assert_eq!(EstimateSource::Unknown.as_str(), "unknown");
+    }
+
+    #[test]
+    fn weight_source_as_str_coverage() {
+        assert_eq!(WeightSource::Explicit.as_str(), "explicit");
+        assert_eq!(WeightSource::Default.as_str(), "default");
+        assert_eq!(WeightSource::Unknown.as_str(), "unknown");
+    }
+
+    #[test]
+    fn tie_break_reason_as_str_coverage() {
+        assert_eq!(
+            TieBreakReason::EffectivePriority.as_str(),
+            "effective_priority"
+        );
+        assert_eq!(TieBreakReason::BaseRatio.as_str(), "base_ratio");
+        assert_eq!(TieBreakReason::Weight.as_str(), "weight");
+        assert_eq!(TieBreakReason::RemainingTime.as_str(), "remaining_time");
+        assert_eq!(TieBreakReason::ArrivalSeq.as_str(), "arrival_seq");
+        assert_eq!(TieBreakReason::JobId.as_str(), "job_id");
+        assert_eq!(TieBreakReason::Continuation.as_str(), "continuation");
+    }
+
+    // =========================================================================
+    // Debug formatting (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn debug_job() {
+        let job = Job::with_name(1, 2.0, 50.0, "render");
+        let dbg = format!("{job:?}");
+        assert!(dbg.contains("Job"));
+        assert!(dbg.contains("render"));
+    }
+
+    #[test]
+    fn debug_scheduler_config() {
+        let config = SchedulerConfig::default();
+        let dbg = format!("{config:?}");
+        assert!(dbg.contains("SchedulerConfig"));
+        assert!(dbg.contains("aging_factor"));
+    }
+
+    #[test]
+    fn debug_scheduler_stats() {
+        let stats = SchedulerStats::default();
+        let dbg = format!("{stats:?}");
+        assert!(dbg.contains("SchedulerStats"));
+    }
+
+    #[test]
+    fn debug_scheduling_evidence() {
+        let scheduler = QueueingScheduler::new(test_config());
+        let evidence = scheduler.evidence();
+        let dbg = format!("{evidence:?}");
+        assert!(dbg.contains("SchedulingEvidence"));
+    }
+
+    #[test]
+    fn debug_scheduling_mode() {
+        assert!(format!("{:?}", SchedulingMode::Smith).contains("Smith"));
+        assert!(format!("{:?}", SchedulingMode::Srpt).contains("Srpt"));
+        assert!(format!("{:?}", SchedulingMode::Fifo).contains("Fifo"));
+    }
+
+    // =========================================================================
+    // Historical estimate source passthrough (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn historical_estimate_passes_through() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit_with_sources(
+            1.0,
+            42.0,
+            WeightSource::Explicit,
+            EstimateSource::Historical,
+            None::<&str>,
+        );
+
+        let next = scheduler.peek_next().unwrap();
+        assert!((next.remaining_time - 42.0).abs() < f64::EPSILON);
+    }
+
+    // =========================================================================
+    // Preemption count tracking (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn multiple_preemptions_counted() {
+        let mut config = test_config();
+        config.aging_factor = 0.0; // Disable aging for deterministic preemption
+        config.wait_starve_ms = 0.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit(1.0, 100.0); // Long job (priority=0.01)
+        scheduler.tick(1.0); // Start processing, remaining=99
+
+        scheduler.submit(1.0, 50.0); // Preempt 1 (priority=0.02 > 0.01)
+        scheduler.tick(1.0); // Start processing job2, remaining=49
+
+        scheduler.submit(1.0, 10.0); // Preempt 2 (priority=0.1 > 0.02)
+
+        assert!(
+            scheduler.stats().total_preemptions >= 2,
+            "expected >= 2 preemptions, got {}",
+            scheduler.stats().total_preemptions
+        );
+    }
+
+    // =========================================================================
+    // Queue rejection count (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn multiple_rejections_counted() {
+        let mut config = test_config();
+        config.max_queue_size = 1;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit(1.0, 10.0); // Accepted
+        scheduler.submit(1.0, 10.0); // Rejected
+        scheduler.submit(1.0, 10.0); // Rejected
+
+        assert_eq!(scheduler.stats().total_rejected, 2);
+    }
+
+    // =========================================================================
+    // Reset vs clear distinction (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn reset_resets_job_id_sequence() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 10.0); // id=1
+        scheduler.submit(1.0, 10.0); // id=2
+
+        scheduler.reset();
+
+        let id = scheduler.submit(1.0, 10.0).unwrap();
+        assert_eq!(id, 1, "job id should restart from 1 after reset");
+    }
+
+    #[test]
+    fn clear_preserves_job_id_sequence() {
+        let mut scheduler = QueueingScheduler::new(test_config());
+        scheduler.submit(1.0, 10.0); // id=1
+        scheduler.submit(1.0, 10.0); // id=2
+
+        scheduler.clear();
+
+        let id = scheduler.submit(1.0, 10.0).unwrap();
+        assert_eq!(id, 3, "job id should continue after clear");
+    }
+
+    // =========================================================================
+    // Evidence aging_boost selection reason (bd-2x2ys)
+    // =========================================================================
+
+    #[test]
+    fn evidence_aging_boost_reason() {
+        let mut config = test_config();
+        config.aging_factor = 1.0;
+        config.wait_starve_ms = 10.0;
+        let mut scheduler = QueueingScheduler::new(config);
+
+        scheduler.submit(1.0, 100.0);
+        scheduler.current_time = 100.0;
+        scheduler.refresh_priorities();
+
+        let evidence = scheduler.evidence();
+        assert_eq!(
+            evidence.reason,
+            SelectionReason::AgingBoost,
+            "long-waiting job should show aging boost reason"
+        );
+    }
 }
