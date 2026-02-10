@@ -716,4 +716,490 @@ mod tests {
         assert!(output.contains("message"));
         assert!(output.contains("key=value"));
     }
+
+    // --- Edge case tests (bd-207vs) ---
+
+    #[test]
+    fn strip_debug_quotes_single_char() {
+        // Single char that is a quote should not be stripped
+        assert_eq!(strip_debug_quotes("\""), "\"");
+    }
+
+    #[test]
+    fn strip_debug_quotes_no_quotes() {
+        assert_eq!(strip_debug_quotes("no quotes here"), "no quotes here");
+    }
+
+    #[test]
+    fn strip_debug_quotes_only_opening_quote() {
+        assert_eq!(strip_debug_quotes("\"hello"), "\"hello");
+    }
+
+    #[test]
+    fn strip_debug_quotes_only_closing_quote() {
+        assert_eq!(strip_debug_quotes("hello\""), "hello\"");
+    }
+
+    #[test]
+    fn strip_debug_quotes_inner_content_with_quotes() {
+        assert_eq!(
+            strip_debug_quotes("\"has \\\"inner\\\" quotes\""),
+            "has \\\"inner\\\" quotes"
+        );
+    }
+
+    #[test]
+    fn level_str_exact_values() {
+        assert_eq!(level_str(Level::ERROR), "ERROR");
+        assert_eq!(level_str(Level::WARN), "WARN ");
+        assert_eq!(level_str(Level::INFO), "INFO ");
+        assert_eq!(level_str(Level::DEBUG), "DEBUG");
+        assert_eq!(level_str(Level::TRACE), "TRACE");
+    }
+
+    #[test]
+    fn level_style_error_is_bold() {
+        let style = level_style(Level::ERROR);
+        assert!(style.has_attr(ftui_style::StyleFlags::BOLD));
+    }
+
+    #[test]
+    fn level_style_debug_is_dim() {
+        let style = level_style(Level::DEBUG);
+        assert!(style.has_attr(ftui_style::StyleFlags::DIM));
+    }
+
+    #[test]
+    fn level_style_trace_is_dim() {
+        let style = level_style(Level::TRACE);
+        assert!(style.has_attr(ftui_style::StyleFlags::DIM));
+    }
+
+    #[test]
+    fn config_fields_independent() {
+        let cfg = TracingConfig {
+            show_time: false,
+            ..TracingConfig::default()
+        };
+        assert!(!cfg.show_time);
+        assert!(cfg.show_level);
+        assert!(cfg.show_target);
+        assert!(cfg.show_fields);
+        assert!(!cfg.show_source);
+    }
+
+    #[test]
+    fn with_config_constructor() {
+        let config = TracingConfig {
+            show_time: false,
+            show_level: false,
+            show_target: false,
+            show_fields: false,
+            show_source: true,
+        };
+        let sink = ConsoleSink::capture();
+        let console = Console::new(80, sink);
+        let layer = TracingConsoleLayer::with_config(console, config);
+        assert!(!layer.config.show_time);
+        assert!(!layer.config.show_level);
+        assert!(!layer.config.show_target);
+        assert!(!layer.config.show_fields);
+        assert!(layer.config.show_source);
+    }
+
+    #[test]
+    fn error_level_output_via_shared_writer() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: true,
+                show_target: false,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::error!("an error occurred");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("ERROR"), "output: {output}");
+        assert!(output.contains("an error occurred"), "output: {output}");
+    }
+
+    #[test]
+    fn warn_level_output_via_shared_writer() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: true,
+                show_target: false,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::warn!("a warning");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("WARN"), "output: {output}");
+        assert!(output.contains("a warning"), "output: {output}");
+    }
+
+    #[test]
+    fn debug_level_output_via_shared_writer() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: true,
+                show_target: false,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::debug!("debug info");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("DEBUG"), "output: {output}");
+        assert!(output.contains("debug info"), "output: {output}");
+    }
+
+    #[test]
+    fn trace_level_output_via_shared_writer() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: true,
+                show_target: false,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::trace!("trace data");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("TRACE"), "output: {output}");
+        assert!(output.contains("trace data"), "output: {output}");
+    }
+
+    #[test]
+    fn event_with_bool_field() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: false,
+                show_fields: true,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(enabled = true, "with bool");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("enabled=true"), "output: {output}");
+    }
+
+    #[test]
+    fn event_with_i64_field() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: false,
+                show_fields: true,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(offset = -42_i64, "with i64");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("offset=-42"), "output: {output}");
+    }
+
+    #[test]
+    fn event_with_u64_field() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: false,
+                show_fields: true,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(count = 999_u64, "with u64");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("count=999"), "output: {output}");
+    }
+
+    #[test]
+    fn event_with_multiple_fields_separated() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: false,
+                show_fields: true,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(a = 1, b = "two", c = true, "multi");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("a=1"), "output: {output}");
+        assert!(output.contains("b=two"), "output: {output}");
+        assert!(output.contains("c=true"), "output: {output}");
+    }
+
+    #[test]
+    fn no_frills_config_disables_everything() {
+        let cfg = no_frills_config();
+        assert!(!cfg.show_time);
+        assert!(!cfg.show_level);
+        assert!(!cfg.show_target);
+        assert!(!cfg.show_fields);
+        assert!(!cfg.show_source);
+    }
+
+    #[test]
+    fn event_with_no_message_only_fields() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: false,
+                show_fields: true,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(action = "click", x = 10, y = 20);
+        });
+
+        let output = writer.snapshot();
+        // Fields should be present even without a message
+        assert!(output.contains("action=click"), "output: {output}");
+    }
+
+    #[test]
+    fn fields_hidden_when_show_fields_false() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: false,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(key = "value", "msg");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("msg"), "output: {output}");
+        assert!(!output.contains("key=value"), "output: {output}");
+    }
+
+    #[test]
+    fn show_source_includes_file_info() {
+        let writer = SharedWriter::new();
+        let console = Console::new(200, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: false,
+                show_fields: false,
+                show_source: true,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!("source test");
+        });
+
+        let output = writer.snapshot();
+        // Output should contain the source file path (this file)
+        assert!(
+            output.contains("logging.rs"),
+            "expected source file in output: {output}"
+        );
+    }
+
+    #[test]
+    fn show_time_includes_colon_separated_timestamp() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: true,
+                show_level: false,
+                show_target: false,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!("timestamped");
+        });
+
+        let output = writer.snapshot();
+        // Timestamp is HH:MM:SS, so should contain two colons
+        let colon_count = output.chars().filter(|&c| c == ':').count();
+        assert!(
+            colon_count >= 2,
+            "expected timestamp colons in output: {output}"
+        );
+    }
+
+    #[test]
+    fn show_target_includes_module_path() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: false,
+                show_target: true,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!("target test");
+        });
+
+        let output = writer.snapshot();
+        assert!(
+            output.contains("ftui_extras"),
+            "expected target module in output: {output}"
+        );
+    }
+
+    #[test]
+    fn empty_message_event() {
+        let writer = SharedWriter::new();
+        let console = Console::new(120, ConsoleSink::writer(writer.clone()));
+        let layer = TracingConsoleLayer::with_config(
+            console,
+            TracingConfig {
+                show_time: false,
+                show_level: true,
+                show_target: false,
+                show_fields: false,
+                show_source: false,
+            },
+        );
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!("");
+        });
+
+        let output = writer.snapshot();
+        assert!(output.contains("INFO"), "output: {output}");
+    }
+
+    #[test]
+    fn into_console_returns_valid_console() {
+        let sink = ConsoleSink::capture();
+        let console = Console::new(80, sink);
+        let layer = TracingConsoleLayer::new(console);
+        // into_console should return the inner console without panic
+        let _console = layer.into_console();
+    }
+
+    #[test]
+    fn event_visitor_record_str_message() {
+        let v = EventVisitor::default();
+        assert!(v.message.is_none());
+        assert!(v.fields.is_empty());
+    }
 }
