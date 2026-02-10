@@ -2145,4 +2145,512 @@ mod tests {
             // No panic = pass
         }
     }
+
+    // ========================================================================
+    // Edge-case tests (bd-1noim)
+    // ========================================================================
+
+    // ── HelpCategory edge cases ─────────────────────────────────────
+
+    #[test]
+    fn help_category_custom_empty_string() {
+        let cat = HelpCategory::Custom(String::new());
+        assert_eq!(cat.label(), "");
+    }
+
+    #[test]
+    fn help_category_custom_eq() {
+        let a = HelpCategory::Custom("Foo".into());
+        let b = HelpCategory::Custom("Foo".into());
+        let c = HelpCategory::Custom("Bar".into());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn help_category_clone() {
+        let cat = HelpCategory::Navigation;
+        let cloned = cat.clone();
+        assert_eq!(cat, cloned);
+    }
+
+    #[test]
+    fn help_category_hash_consistency() {
+        use std::collections::hash_map::DefaultHasher;
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        HelpCategory::File.hash(&mut h1);
+        HelpCategory::File.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn help_category_debug_format() {
+        let dbg = format!("{:?}", HelpCategory::General);
+        assert!(dbg.contains("General"));
+        let dbg_custom = format!("{:?}", HelpCategory::Custom("X".into()));
+        assert!(dbg_custom.contains("Custom"));
+    }
+
+    // ── HelpEntry edge cases ────────────────────────────────────────
+
+    #[test]
+    fn help_entry_empty_key_and_desc() {
+        let entry = HelpEntry::new("", "");
+        assert!(entry.key.is_empty());
+        assert!(entry.desc.is_empty());
+        assert!(entry.enabled);
+    }
+
+    #[test]
+    fn help_entry_clone() {
+        let entry = HelpEntry::new("q", "quit").with_category(HelpCategory::File);
+        let cloned = entry.clone();
+        assert_eq!(entry, cloned);
+    }
+
+    #[test]
+    fn help_entry_debug_format() {
+        let entry = HelpEntry::new("^s", "save");
+        let dbg = format!("{:?}", entry);
+        assert!(dbg.contains("HelpEntry"));
+        assert!(dbg.contains("save"));
+    }
+
+    // ── HelpMode edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn help_mode_default_is_short() {
+        assert_eq!(HelpMode::default(), HelpMode::Short);
+    }
+
+    #[test]
+    fn help_mode_eq_and_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        assert_eq!(HelpMode::Short, HelpMode::Short);
+        assert_ne!(HelpMode::Short, HelpMode::Full);
+        let mut h = DefaultHasher::new();
+        HelpMode::Full.hash(&mut h);
+        // Just verify it doesn't panic
+    }
+
+    #[test]
+    fn help_mode_copy() {
+        let m = HelpMode::Full;
+        let m2 = m; // Copy
+        assert_eq!(m, m2);
+    }
+
+    // ── Help rendering edge cases ───────────────────────────────────
+
+    #[test]
+    fn render_short_all_disabled() {
+        let help = Help::new()
+            .with_entry(HelpEntry::new("a", "first").with_enabled(false))
+            .with_entry(HelpEntry::new("b", "second").with_enabled(false));
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+        Widget::render(&help, area, &mut frame);
+        // No visible entries, buffer stays default
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert!(cell.content.is_empty() || cell.content.as_char() == Some(' '));
+    }
+
+    #[test]
+    fn render_short_empty_key_desc_entries_skipped() {
+        let help = Help::new()
+            .with_entry(HelpEntry::new("", ""))
+            .entry("q", "quit");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+        Widget::render(&help, area, &mut frame);
+        // The empty entry produces no text but separator logic still fires.
+        // Verify 'q' appears somewhere in the rendered row.
+        let mut found_q = false;
+        for x in 0..40 {
+            if let Some(cell) = frame.buffer.get(x, 0)
+                && cell.content.as_char() == Some('q')
+            {
+                found_q = true;
+                break;
+            }
+        }
+        assert!(found_q, "'q' should appear in the rendered row");
+    }
+
+    #[test]
+    fn render_short_width_one() {
+        let help = Help::new().entry("q", "quit");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        let area = Rect::new(0, 0, 1, 1);
+        Widget::render(&help, area, &mut frame);
+        // Should not panic; may show ellipsis or partial
+    }
+
+    #[test]
+    fn render_full_width_one() {
+        let help = Help::new().with_mode(HelpMode::Full).entry("q", "quit");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 5, &mut pool);
+        let area = Rect::new(0, 0, 1, 5);
+        Widget::render(&help, area, &mut frame);
+        // Should not panic
+    }
+
+    #[test]
+    fn render_full_height_one() {
+        let help = Help::new()
+            .with_mode(HelpMode::Full)
+            .entry("a", "first")
+            .entry("b", "second")
+            .entry("c", "third");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+        Widget::render(&help, area, &mut frame);
+        // Only first entry should render
+    }
+
+    #[test]
+    fn render_short_single_entry_exact_fit() {
+        // "q quit" = 6 chars, area width = 6
+        let help = Help::new().entry("q", "quit");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 1, &mut pool);
+        let area = Rect::new(0, 0, 6, 1);
+        Widget::render(&help, area, &mut frame);
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('q'));
+    }
+
+    #[test]
+    fn render_short_empty_separator() {
+        let help = Help::new()
+            .with_separator("")
+            .entry("a", "x")
+            .entry("b", "y");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+        Widget::render(&help, area, &mut frame);
+        // Both entries render without separator
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('a'));
+    }
+
+    // ── Help builder edge cases ─────────────────────────────────────
+
+    #[test]
+    fn help_with_mode_full() {
+        let help = Help::new().with_mode(HelpMode::Full);
+        assert_eq!(help.mode(), HelpMode::Full);
+    }
+
+    #[test]
+    fn help_clone() {
+        let help = Help::new()
+            .entry("q", "quit")
+            .with_separator(" | ")
+            .with_ellipsis("...");
+        let cloned = help.clone();
+        assert_eq!(cloned.entries().len(), 1);
+        assert_eq!(cloned.separator, " | ");
+        assert_eq!(cloned.ellipsis, "...");
+    }
+
+    #[test]
+    fn help_debug_format() {
+        let help = Help::new().entry("q", "quit");
+        let dbg = format!("{:?}", help);
+        assert!(dbg.contains("Help"));
+    }
+
+    // ── HelpRenderState edge cases ──────────────────────────────────
+
+    #[test]
+    fn help_render_state_default() {
+        let state = HelpRenderState::default();
+        assert!(state.cache.is_none());
+        assert!(state.dirty_rects().is_empty());
+        assert_eq!(state.stats().hits, 0);
+        assert_eq!(state.stats().misses, 0);
+    }
+
+    #[test]
+    fn help_render_state_clear_dirty_rects() {
+        let mut state = HelpRenderState::default();
+        state.dirty_rects.push(Rect::new(0, 0, 10, 1));
+        assert_eq!(state.dirty_rects().len(), 1);
+        state.clear_dirty_rects();
+        assert!(state.dirty_rects().is_empty());
+    }
+
+    #[test]
+    fn help_render_state_take_dirty_rects() {
+        let mut state = HelpRenderState::default();
+        state.dirty_rects.push(Rect::new(0, 0, 5, 1));
+        state.dirty_rects.push(Rect::new(0, 1, 5, 1));
+        let taken = state.take_dirty_rects();
+        assert_eq!(taken.len(), 2);
+        assert!(state.dirty_rects().is_empty()); // cleared after take
+    }
+
+    #[test]
+    fn help_render_state_reset_stats() {
+        let mut state = HelpRenderState::default();
+        state.stats.hits = 42;
+        state.stats.misses = 7;
+        state.stats.dirty_updates = 3;
+        state.stats.layout_rebuilds = 2;
+        state.reset_stats();
+        assert_eq!(state.stats(), HelpCacheStats::default());
+    }
+
+    #[test]
+    fn help_cache_stats_default() {
+        let stats = HelpCacheStats::default();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.dirty_updates, 0);
+        assert_eq!(stats.layout_rebuilds, 0);
+    }
+
+    #[test]
+    fn help_cache_stats_clone_eq() {
+        let a = HelpCacheStats {
+            hits: 5,
+            misses: 2,
+            dirty_updates: 1,
+            layout_rebuilds: 3,
+        };
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn stateful_render_empty_area_clears_cache() {
+        let help = Help::new().entry("q", "quit");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 1, &mut pool);
+        let area = Rect::new(0, 0, 40, 1);
+
+        // First render populates cache
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        assert!(state.cache.is_some());
+
+        // Render with empty area clears cache
+        let empty = Rect::new(0, 0, 0, 0);
+        StatefulWidget::render(&help, empty, &mut frame, &mut state);
+        assert!(state.cache.is_none());
+    }
+
+    #[test]
+    fn stateful_render_cache_miss_on_area_change() {
+        let help = Help::new().entry("q", "quit").entry("^s", "save");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 5, &mut pool);
+
+        StatefulWidget::render(&help, Rect::new(0, 0, 40, 1), &mut frame, &mut state);
+        let misses1 = state.stats().misses;
+
+        StatefulWidget::render(&help, Rect::new(0, 0, 60, 1), &mut frame, &mut state);
+        let misses2 = state.stats().misses;
+
+        assert!(misses2 > misses1, "Area change should cause cache miss");
+    }
+
+    #[test]
+    fn stateful_render_cache_miss_on_mode_change() {
+        let mut help = Help::new().entry("q", "quit");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(40, 5, &mut pool);
+        let area = Rect::new(0, 0, 40, 5);
+
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        let misses1 = state.stats().misses;
+
+        help.toggle_mode();
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        let misses2 = state.stats().misses;
+
+        assert!(misses2 > misses1, "Mode change should cause cache miss");
+    }
+
+    #[test]
+    fn stateful_render_layout_rebuild_on_enabled_count_change() {
+        let mut help = Help::new()
+            .entry("q", "quit")
+            .entry("^s", "save")
+            .entry("^x", "exit");
+        let mut state = HelpRenderState::default();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 1, &mut pool);
+        let area = Rect::new(0, 0, 80, 1);
+
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        let rebuilds1 = state.stats().layout_rebuilds;
+
+        // Disable one entry
+        help.entries[1].enabled = false;
+        StatefulWidget::render(&help, area, &mut frame, &mut state);
+        let rebuilds2 = state.stats().layout_rebuilds;
+
+        assert!(
+            rebuilds2 > rebuilds1,
+            "Enabled count change should trigger layout rebuild"
+        );
+    }
+
+    // ── KeyFormat edge cases ────────────────────────────────────────
+
+    #[test]
+    fn key_format_eq_and_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        assert_eq!(KeyFormat::Plain, KeyFormat::Plain);
+        assert_ne!(KeyFormat::Plain, KeyFormat::Bracketed);
+        let mut h = DefaultHasher::new();
+        KeyFormat::Bracketed.hash(&mut h);
+    }
+
+    #[test]
+    fn key_format_copy() {
+        let f = KeyFormat::Bracketed;
+        let f2 = f;
+        assert_eq!(f, f2);
+    }
+
+    #[test]
+    fn key_format_debug() {
+        let dbg = format!("{:?}", KeyFormat::Bracketed);
+        assert!(dbg.contains("Bracketed"));
+    }
+
+    // ── KeybindingHints edge cases ──────────────────────────────────
+
+    #[test]
+    fn keybinding_hints_clone() {
+        let hints = KeybindingHints::new()
+            .global_entry("q", "quit")
+            .contextual_entry("^s", "save");
+        let cloned = hints.clone();
+        assert_eq!(cloned.global_entries().len(), 1);
+        assert_eq!(cloned.contextual_entries().len(), 1);
+    }
+
+    #[test]
+    fn keybinding_hints_debug() {
+        let hints = KeybindingHints::new().global_entry("q", "quit");
+        let dbg = format!("{:?}", hints);
+        assert!(dbg.contains("KeybindingHints"));
+    }
+
+    #[test]
+    fn keybinding_hints_with_separator() {
+        let hints = KeybindingHints::new().with_separator(" | ");
+        assert_eq!(hints.separator, " | ");
+    }
+
+    #[test]
+    fn keybinding_hints_with_styles() {
+        let hints = KeybindingHints::new()
+            .with_key_style(Style::new().bold())
+            .with_desc_style(Style::default())
+            .with_separator_style(Style::default())
+            .with_category_style(Style::new().underline());
+        // Just verify builder doesn't panic
+        assert_eq!(hints.mode(), HelpMode::Short);
+    }
+
+    #[test]
+    fn keybinding_hints_visible_entries_disabled_contextual() {
+        let hints = KeybindingHints::new()
+            .with_show_context(true)
+            .global_entry("q", "quit")
+            .with_contextual_entry(HelpEntry::new("^s", "save").with_enabled(false));
+        let visible = hints.visible_entries();
+        // Only global "q" visible; disabled contextual "^s" hidden
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].desc, "quit");
+    }
+
+    #[test]
+    fn keybinding_hints_empty_global_nonempty_ctx_hidden() {
+        let hints = KeybindingHints::new()
+            .contextual_entry("^s", "save")
+            .contextual_entry("^f", "find");
+        // Context off by default
+        let visible = hints.visible_entries();
+        assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn keybinding_hints_render_full_grouped_height_limit() {
+        let hints = KeybindingHints::new()
+            .with_mode(HelpMode::Full)
+            .with_show_categories(true)
+            .global_entry_categorized("a", "first", HelpCategory::Navigation)
+            .global_entry_categorized("b", "second", HelpCategory::Navigation)
+            .global_entry_categorized("c", "third", HelpCategory::Navigation)
+            .global_entry_categorized("d", "fourth", HelpCategory::Global)
+            .global_entry_categorized("e", "fifth", HelpCategory::Global);
+
+        let mut pool = GraphemePool::new();
+        // Only 3 rows: header + 2 entries, can't fit all
+        let mut frame = Frame::new(40, 3, &mut pool);
+        let area = Rect::new(0, 0, 40, 3);
+        Widget::render(&hints, area, &mut frame);
+        // Should not panic; clips to available height
+    }
+
+    #[test]
+    fn keybinding_hints_render_empty_area() {
+        let hints = KeybindingHints::new().global_entry("q", "quit");
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Widget::render(&hints, Rect::new(0, 0, 0, 0), &mut frame);
+        // Should not panic (is_empty check)
+    }
+
+    // ── Help entry_hash edge cases ──────────────────────────────────
+
+    #[test]
+    fn entry_hash_differs_for_different_keys() {
+        let a = HelpEntry::new("q", "quit");
+        let b = HelpEntry::new("x", "quit");
+        assert_ne!(Help::entry_hash(&a), Help::entry_hash(&b));
+    }
+
+    #[test]
+    fn entry_hash_differs_for_different_descs() {
+        let a = HelpEntry::new("q", "quit");
+        let b = HelpEntry::new("q", "exit");
+        assert_ne!(Help::entry_hash(&a), Help::entry_hash(&b));
+    }
+
+    #[test]
+    fn entry_hash_differs_for_enabled_flag() {
+        let a = HelpEntry::new("q", "quit");
+        let b = HelpEntry::new("q", "quit").with_enabled(false);
+        assert_ne!(Help::entry_hash(&a), Help::entry_hash(&b));
+    }
+
+    #[test]
+    fn entry_hash_same_for_equal_entries() {
+        let a = HelpEntry::new("q", "quit");
+        let b = HelpEntry::new("q", "quit");
+        assert_eq!(Help::entry_hash(&a), Help::entry_hash(&b));
+    }
 }
