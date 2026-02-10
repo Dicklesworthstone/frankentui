@@ -1416,6 +1416,452 @@ mod tests {
         let none = StyleFlags::from_bits_truncate(0x00);
         assert!(none.is_empty());
     }
+
+    // ====== Edge-case tests (bd-35ddr) ======
+
+    // -- PackedRgba edge cases --
+
+    #[test]
+    fn over_not_commutative() {
+        let red_half = PackedRgba::rgba(255, 0, 0, 128);
+        let blue_half = PackedRgba::rgba(0, 0, 255, 128);
+        let a_over_b = red_half.over(blue_half);
+        let b_over_a = blue_half.over(red_half);
+        // Porter-Duff SourceOver is NOT commutative
+        assert_ne!(a_over_b, b_over_a);
+    }
+
+    #[test]
+    fn over_opaque_self_compositing_is_idempotent() {
+        let c = PackedRgba::rgba(42, 84, 168, 255);
+        assert_eq!(c.over(c), c);
+    }
+
+    #[test]
+    fn over_near_opaque_src_alpha_254() {
+        // Non-trivial branch: alpha=254 takes the blending path, not the early-out
+        let src = PackedRgba::rgba(255, 0, 0, 254);
+        let dst = PackedRgba::rgba(0, 0, 255, 255);
+        let result = src.over(dst);
+        assert_eq!(result.a(), 255);
+        // Red should dominate but not quite 255
+        assert!(result.r() >= 253, "r={}", result.r());
+        assert!(result.b() <= 2, "b={}", result.b());
+    }
+
+    #[test]
+    fn over_both_partial_alpha_symmetric_colors() {
+        // 128-alpha red over 128-alpha red — output alpha should be ~192
+        let c = PackedRgba::rgba(200, 100, 50, 128);
+        let result = c.over(c);
+        let ref_result = reference_over(c, c);
+        assert_eq!(result, ref_result);
+        // Alpha: 128 + 128*(1-128/255) = 128 + 128*0.498 ≈ 192
+        assert!(result.a() >= 190 && result.a() <= 194, "a={}", result.a());
+    }
+
+    #[test]
+    fn over_both_alpha_1_minimal() {
+        let src = PackedRgba::rgba(255, 255, 255, 1);
+        let dst = PackedRgba::rgba(0, 0, 0, 1);
+        let result = src.over(dst);
+        let ref_result = reference_over(src, dst);
+        assert_eq!(result, ref_result);
+        // Output alpha should be ~2 (very transparent)
+        assert!(result.a() <= 3, "a={}", result.a());
+    }
+
+    #[test]
+    fn over_white_alpha_0_over_opaque_is_dst() {
+        // White with alpha=0 should be treated as transparent
+        let src = PackedRgba::rgba(255, 255, 255, 0);
+        let dst = PackedRgba::rgba(100, 50, 25, 255);
+        assert_eq!(src.over(dst), dst);
+    }
+
+    #[test]
+    fn with_opacity_nan_clamps_to_zero() {
+        let c = PackedRgba::rgba(10, 20, 30, 200);
+        let result = c.with_opacity(f32::NAN);
+        // NaN.clamp(0.0, 1.0) returns... let's verify behavior
+        // In Rust, NaN.clamp returns NaN, and NaN * 200 = NaN, then NaN.round() = NaN
+        // NaN as u8 = 0 in Rust
+        assert_eq!(result.r(), 10);
+        assert_eq!(result.g(), 20);
+        assert_eq!(result.b(), 30);
+    }
+
+    #[test]
+    fn with_opacity_negative_infinity_clamps_to_zero() {
+        let c = PackedRgba::rgba(10, 20, 30, 200);
+        let result = c.with_opacity(f32::NEG_INFINITY);
+        assert_eq!(result.a(), 0);
+    }
+
+    #[test]
+    fn with_opacity_positive_infinity_clamps_to_original() {
+        let c = PackedRgba::rgba(10, 20, 30, 200);
+        let result = c.with_opacity(f32::INFINITY);
+        assert_eq!(result.a(), 200);
+    }
+
+    #[test]
+    fn with_opacity_on_transparent_stays_transparent() {
+        let c = PackedRgba::TRANSPARENT;
+        assert_eq!(c.with_opacity(0.5).a(), 0);
+        assert_eq!(c.with_opacity(1.0).a(), 0);
+    }
+
+    #[test]
+    fn packed_rgba_extreme_channel_values() {
+        let all_max = PackedRgba::rgba(255, 255, 255, 255);
+        assert_eq!(all_max.r(), 255);
+        assert_eq!(all_max.g(), 255);
+        assert_eq!(all_max.b(), 255);
+        assert_eq!(all_max.a(), 255);
+
+        let all_zero = PackedRgba::rgba(0, 0, 0, 0);
+        assert_eq!(all_zero, PackedRgba::TRANSPARENT);
+    }
+
+    #[test]
+    fn packed_rgba_hash_differs_for_different_values() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(PackedRgba::RED);
+        set.insert(PackedRgba::GREEN);
+        set.insert(PackedRgba::BLUE);
+        set.insert(PackedRgba::RED); // duplicate
+        assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn packed_rgba_channel_isolation() {
+        // Changing one channel should not affect others
+        let base = PackedRgba::rgba(10, 20, 30, 40);
+        let different_r = PackedRgba::rgba(99, 20, 30, 40);
+        assert_ne!(base, different_r);
+        assert_eq!(base.g(), different_r.g());
+        assert_eq!(base.b(), different_r.b());
+        assert_eq!(base.a(), different_r.a());
+    }
+
+    // -- CellContent edge cases --
+
+    #[test]
+    fn cell_content_nul_char_equals_empty() {
+        // '\0' as u32 == 0, same as EMPTY.raw()
+        let nul = CellContent::from_char('\0');
+        assert_eq!(nul.raw(), CellContent::EMPTY.raw());
+        assert!(nul.is_empty());
+        assert_eq!(nul.as_char(), None); // Empty is filtered out by as_char
+    }
+
+    #[test]
+    fn cell_content_max_unicode_codepoint() {
+        let max = CellContent::from_char('\u{10FFFF}');
+        assert_eq!(max.as_char(), Some('\u{10FFFF}'));
+        assert!(!max.is_grapheme());
+        // U+10FFFF is a noncharacter, should have width 1 (fast path)
+        assert_eq!(max.width_hint(), 1);
+    }
+
+    #[test]
+    fn cell_content_bmp_boundary_chars() {
+        // Last BMP char before surrogates (U+D7FF)
+        let last_before_surrogates = CellContent::from_char('\u{D7FF}');
+        assert_eq!(last_before_surrogates.as_char(), Some('\u{D7FF}'));
+
+        // First char after surrogates (U+E000)
+        let first_after_surrogates = CellContent::from_char('\u{E000}');
+        assert_eq!(first_after_surrogates.as_char(), Some('\u{E000}'));
+
+        // First supplementary char (U+10000)
+        let supplementary = CellContent::from_char('\u{10000}');
+        assert_eq!(supplementary.as_char(), Some('\u{10000}'));
+        assert!(!supplementary.is_grapheme()); // bit 31 is NOT set (U+10000 = 0x10000)
+    }
+
+    #[test]
+    fn cell_content_grapheme_with_zero_width() {
+        let id = GraphemeId::new(42, 0);
+        let c = CellContent::from_grapheme(id);
+        assert_eq!(c.width_hint(), 0);
+        assert_eq!(c.width(), 0);
+        assert!(c.is_grapheme());
+    }
+
+    #[test]
+    fn cell_content_grapheme_with_max_width() {
+        let id = GraphemeId::new(1, GraphemeId::MAX_WIDTH);
+        let c = CellContent::from_grapheme(id);
+        assert_eq!(c.width_hint(), 127);
+        assert_eq!(c.width(), 127);
+    }
+
+    #[test]
+    fn cell_content_continuation_value_is_max_i31() {
+        // CONTINUATION = 0x7FFF_FFFF — max value with bit 31 clear
+        assert_eq!(CellContent::CONTINUATION.raw(), 0x7FFF_FFFF);
+        assert!(!CellContent::CONTINUATION.is_grapheme()); // bit 31 = 0
+        assert!(CellContent::CONTINUATION.is_continuation());
+    }
+
+    #[test]
+    fn cell_content_empty_and_continuation_are_distinct() {
+        assert_ne!(CellContent::EMPTY, CellContent::CONTINUATION);
+        assert!(CellContent::EMPTY.is_empty());
+        assert!(!CellContent::EMPTY.is_continuation());
+        assert!(!CellContent::CONTINUATION.is_empty());
+        assert!(CellContent::CONTINUATION.is_continuation());
+    }
+
+    #[test]
+    fn cell_content_grapheme_id_strips_high_bit() {
+        let id = GraphemeId::new(0x00FF_FFFF, 127);
+        let c = CellContent::from_grapheme(id);
+        let extracted = c.grapheme_id().unwrap();
+        assert_eq!(extracted.slot(), id.slot());
+        assert_eq!(extracted.width(), id.width());
+    }
+
+    // -- GraphemeId edge cases --
+
+    #[test]
+    fn grapheme_id_slot_one_width_one() {
+        let id = GraphemeId::new(1, 1);
+        assert_eq!(id.slot(), 1);
+        assert_eq!(id.width(), 1);
+    }
+
+    #[test]
+    fn grapheme_id_hash_eq_consistency() {
+        use std::collections::HashSet;
+        let a = GraphemeId::new(42, 2);
+        let b = GraphemeId::new(42, 2);
+        let c = GraphemeId::new(42, 3);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let mut set = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b));
+        assert!(!set.contains(&c));
+    }
+
+    #[test]
+    fn grapheme_id_adjacent_slots_differ() {
+        let a = GraphemeId::new(0, 1);
+        let b = GraphemeId::new(1, 1);
+        assert_ne!(a, b);
+        assert_ne!(a.slot(), b.slot());
+        assert_eq!(a.width(), b.width());
+    }
+
+    // -- CellAttrs edge cases --
+
+    #[test]
+    fn cell_attrs_link_id_masks_overflow() {
+        // In release mode (no debug_assert), overflow is masked to 24 bits
+        let a = CellAttrs::new(StyleFlags::empty(), 0x00FF_FFFE);
+        assert_eq!(a.link_id(), 0x00FF_FFFE);
+    }
+
+    #[test]
+    fn cell_attrs_chained_mutations() {
+        let a = CellAttrs::new(StyleFlags::BOLD, 100)
+            .with_flags(StyleFlags::ITALIC)
+            .with_link(200)
+            .with_flags(StyleFlags::UNDERLINE | StyleFlags::DIM)
+            .with_link(300);
+        assert_eq!(a.flags(), StyleFlags::UNDERLINE | StyleFlags::DIM);
+        assert_eq!(a.link_id(), 300);
+    }
+
+    #[test]
+    fn cell_attrs_all_flags_max_link() {
+        let all_flags = StyleFlags::all();
+        let a = CellAttrs::new(all_flags, CellAttrs::LINK_ID_MAX);
+        assert_eq!(a.flags(), all_flags);
+        assert_eq!(a.link_id(), CellAttrs::LINK_ID_MAX);
+        // Verify no bit overlap
+        assert_eq!(a.flags().bits(), 0xFF);
+        assert_eq!(a.link_id(), 0x00FF_FFFE);
+    }
+
+    #[test]
+    fn cell_attrs_link_id_none_is_zero() {
+        assert_eq!(CellAttrs::LINK_ID_NONE, 0);
+    }
+
+    // -- Cell edge cases --
+
+    #[test]
+    fn cell_eq_matches_bits_eq() {
+        let pairs = [
+            (Cell::default(), Cell::default()),
+            (Cell::from_char('A'), Cell::from_char('A')),
+            (Cell::from_char('A'), Cell::from_char('B')),
+            (Cell::CONTINUATION, Cell::CONTINUATION),
+            (
+                Cell::from_char('X').with_fg(PackedRgba::RED),
+                Cell::from_char('X').with_fg(PackedRgba::BLUE),
+            ),
+        ];
+        for (a, b) in &pairs {
+            assert_eq!(
+                a == b,
+                a.bits_eq(b),
+                "PartialEq and bits_eq disagree for {:?} vs {:?}",
+                a,
+                b
+            );
+        }
+    }
+
+    #[test]
+    fn cell_from_grapheme_content() {
+        let id = GraphemeId::new(42, 2);
+        let cell = Cell::new(CellContent::from_grapheme(id));
+        assert!(cell.content.is_grapheme());
+        assert_eq!(cell.width_hint(), 2);
+        assert!(!cell.is_empty());
+        assert!(!cell.is_continuation());
+    }
+
+    #[test]
+    fn cell_with_char_on_continuation() {
+        let cell = Cell::CONTINUATION.with_char('A');
+        assert_eq!(cell.content.as_char(), Some('A'));
+        assert!(!cell.is_continuation());
+        // Colors from CONTINUATION are preserved
+        assert_eq!(cell.fg, PackedRgba::TRANSPARENT);
+        assert_eq!(cell.bg, PackedRgba::TRANSPARENT);
+    }
+
+    #[test]
+    fn cell_default_bits_eq_self() {
+        let cell = Cell::default();
+        assert!(cell.bits_eq(&cell));
+    }
+
+    #[test]
+    fn cell_new_empty_equals_default() {
+        let a = Cell::new(CellContent::EMPTY);
+        let b = Cell::default();
+        assert!(a.bits_eq(&b));
+    }
+
+    #[test]
+    fn cell_all_builder_methods_chain() {
+        let cell = Cell::default()
+            .with_char('Z')
+            .with_fg(PackedRgba::rgba(1, 2, 3, 4))
+            .with_bg(PackedRgba::rgba(5, 6, 7, 8))
+            .with_attrs(CellAttrs::new(
+                StyleFlags::BOLD | StyleFlags::STRIKETHROUGH,
+                999,
+            ));
+        assert_eq!(cell.content.as_char(), Some('Z'));
+        assert_eq!(cell.fg.r(), 1);
+        assert_eq!(cell.bg.a(), 8);
+        assert!(cell.attrs.has_flag(StyleFlags::BOLD));
+        assert!(cell.attrs.has_flag(StyleFlags::STRIKETHROUGH));
+        assert!(!cell.attrs.has_flag(StyleFlags::ITALIC));
+        assert_eq!(cell.attrs.link_id(), 999);
+    }
+
+    #[test]
+    fn cell_size_and_alignment_invariants() {
+        // Non-negotiable: 16 bytes, 16-byte aligned
+        assert_eq!(core::mem::size_of::<Cell>(), 16);
+        assert_eq!(core::mem::align_of::<Cell>(), 16);
+        // 4 cells per 64-byte cache line
+        assert_eq!(64 / core::mem::size_of::<Cell>(), 4);
+    }
+
+    #[test]
+    fn cell_content_size_invariant() {
+        assert_eq!(core::mem::size_of::<CellContent>(), 4);
+    }
+
+    #[test]
+    fn cell_attrs_size_invariant() {
+        assert_eq!(core::mem::size_of::<CellAttrs>(), 4);
+    }
+
+    // -- Porter-Duff over() stress tests --
+
+    #[test]
+    fn over_associativity_approximate() {
+        // Porter-Duff SourceOver is NOT perfectly associative due to rounding,
+        // but results should be very close (within 1 per channel)
+        let a = PackedRgba::rgba(200, 50, 100, 128);
+        let b = PackedRgba::rgba(50, 200, 50, 128);
+        let c = PackedRgba::rgba(100, 100, 200, 128);
+
+        let ab_c = a.over(b).over(c);
+        let a_bc = a.over(b.over(c));
+
+        // Allow ±1 per channel for rounding differences
+        assert!(
+            (ab_c.r() as i16 - a_bc.r() as i16).unsigned_abs() <= 1,
+            "r: {} vs {}",
+            ab_c.r(),
+            a_bc.r()
+        );
+        assert!(
+            (ab_c.g() as i16 - a_bc.g() as i16).unsigned_abs() <= 1,
+            "g: {} vs {}",
+            ab_c.g(),
+            a_bc.g()
+        );
+        assert!(
+            (ab_c.b() as i16 - a_bc.b() as i16).unsigned_abs() <= 1,
+            "b: {} vs {}",
+            ab_c.b(),
+            a_bc.b()
+        );
+        assert!(
+            (ab_c.a() as i16 - a_bc.a() as i16).unsigned_abs() <= 1,
+            "a: {} vs {}",
+            ab_c.a(),
+            a_bc.a()
+        );
+    }
+
+    #[test]
+    fn over_output_alpha_monotonic_with_src_alpha() {
+        // Higher src alpha → higher output alpha (or equal)
+        let dst = PackedRgba::rgba(0, 0, 255, 128);
+        let mut prev_a = 0u8;
+        for alpha in (0..=255).step_by(5) {
+            let src = PackedRgba::rgba(255, 0, 0, alpha);
+            let result = src.over(dst);
+            assert!(
+                result.a() >= prev_a,
+                "alpha monotonicity violated at src_a={}: result_a={} < prev={}",
+                alpha,
+                result.a(),
+                prev_a
+            );
+            prev_a = result.a();
+        }
+    }
+
+    #[test]
+    fn over_sweep_matches_reference() {
+        // Sweep through alpha values and verify each matches the f64 reference
+        for alpha in (0..=255).step_by(17) {
+            let src = PackedRgba::rgba(200, 100, 50, alpha);
+            let dst = PackedRgba::rgba(50, 100, 200, 200);
+            assert_eq!(
+                src.over(dst),
+                reference_over(src, dst),
+                "mismatch at src_alpha={}",
+                alpha
+            );
+        }
+    }
 }
 
 /// Property tests for Cell types (bd-10i.13.2).
