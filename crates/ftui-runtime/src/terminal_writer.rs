@@ -400,54 +400,63 @@ impl RuntimeDiffConfig {
     }
 
     /// Set whether Bayesian strategy selection is enabled.
+    #[must_use]
     pub fn with_bayesian_enabled(mut self, enabled: bool) -> Self {
         self.bayesian_enabled = enabled;
         self
     }
 
     /// Set whether dirty-row optimization is enabled.
+    #[must_use]
     pub fn with_dirty_rows_enabled(mut self, enabled: bool) -> Self {
         self.dirty_rows_enabled = enabled;
         self
     }
 
     /// Set whether dirty-span tracking is enabled.
+    #[must_use]
     pub fn with_dirty_spans_enabled(mut self, enabled: bool) -> Self {
         self.dirty_span_config = self.dirty_span_config.with_enabled(enabled);
         self
     }
 
     /// Set the dirty-span tracking configuration.
+    #[must_use]
     pub fn with_dirty_span_config(mut self, config: DirtySpanConfig) -> Self {
         self.dirty_span_config = config;
         self
     }
 
     /// Toggle tile-based skipping.
+    #[must_use]
     pub fn with_tile_skip_enabled(mut self, enabled: bool) -> Self {
         self.tile_diff_config = self.tile_diff_config.with_enabled(enabled);
         self
     }
 
     /// Set the tile-based diff configuration.
+    #[must_use]
     pub fn with_tile_diff_config(mut self, config: TileDiffConfig) -> Self {
         self.tile_diff_config = config;
         self
     }
 
     /// Set whether to reset posterior on resize.
+    #[must_use]
     pub fn with_reset_on_resize(mut self, enabled: bool) -> Self {
         self.reset_on_resize = enabled;
         self
     }
 
     /// Set whether to reset posterior on invalidation.
+    #[must_use]
     pub fn with_reset_on_invalidation(mut self, enabled: bool) -> Self {
         self.reset_on_invalidation = enabled;
         self
     }
 
     /// Set the underlying strategy configuration.
+    #[must_use]
     pub fn with_strategy_config(mut self, config: DiffStrategyConfig) -> Self {
         self.strategy_config = config;
         self

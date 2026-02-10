@@ -98,6 +98,7 @@ impl LayoutRecord {
     }
 
     /// Add a child record to this layout record.
+    #[must_use]
     pub fn with_child(mut self, child: LayoutRecord) -> Self {
         self.children.push(child);
         self

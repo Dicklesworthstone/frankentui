@@ -158,7 +158,7 @@ impl ListState {
 
     /// Return the currently selected item index.
     #[inline]
-    #[must_use]
+    #[must_use = "use the selected index (if any)"]
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }
@@ -172,7 +172,7 @@ impl ListState {
 
     /// Get the persistence ID, if set.
     #[inline]
-    #[must_use]
+    #[must_use = "use the persistence id (if any)"]
     pub fn persistence_id(&self) -> Option<&str> {
         self.persistence_id.as_deref()
     }

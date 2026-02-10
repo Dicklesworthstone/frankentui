@@ -391,6 +391,7 @@ impl ResizeScenario {
     }
 
     /// Add expected checksums for verification.
+    #[must_use]
     pub fn with_expected(mut self, checksums: Vec<String>) -> Self {
         self.expected_checksums = checksums;
         self

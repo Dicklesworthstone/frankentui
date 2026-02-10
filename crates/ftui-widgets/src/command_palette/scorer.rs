@@ -210,6 +210,7 @@ impl EvidenceLedger {
     }
 
     /// Get the prior odds (from MatchType entry, if present).
+    #[must_use = "use the prior odds (if any) for diagnostics"]
     pub fn prior_odds(&self) -> Option<f64> {
         self.entries
             .iter()

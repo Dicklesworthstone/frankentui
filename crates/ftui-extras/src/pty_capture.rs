@@ -40,6 +40,7 @@ impl Default for PtyCaptureConfig {
 
 impl PtyCaptureConfig {
     /// Override PTY dimensions.
+    #[must_use]
     pub fn with_size(mut self, cols: u16, rows: u16) -> Self {
         self.cols = cols;
         self.rows = rows;
@@ -47,12 +48,14 @@ impl PtyCaptureConfig {
     }
 
     /// Override TERM in the child.
+    #[must_use]
     pub fn with_term(mut self, term: impl Into<String>) -> Self {
         self.term = Some(term.into());
         self
     }
 
     /// Add an environment variable in the child.
+    #[must_use]
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));
         self

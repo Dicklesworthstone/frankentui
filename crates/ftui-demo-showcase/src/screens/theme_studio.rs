@@ -303,12 +303,14 @@ impl DiagnosticLog {
     }
 
     /// Create a log that writes to stderr.
+    #[must_use]
     pub fn with_stderr(mut self) -> Self {
         self.write_stderr = true;
         self
     }
 
     /// Set maximum entries to keep.
+    #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
         self
@@ -412,6 +414,7 @@ impl TelemetryHooks {
         }
     }
 
+    #[must_use]
     pub fn on_focus_change(
         mut self,
         callback: impl Fn(&DiagnosticEntry) + Send + Sync + 'static,
@@ -420,6 +423,7 @@ impl TelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_preset_change(
         mut self,
         callback: impl Fn(&DiagnosticEntry) + Send + Sync + 'static,
@@ -428,6 +432,7 @@ impl TelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_token_change(
         mut self,
         callback: impl Fn(&DiagnosticEntry) + Send + Sync + 'static,
@@ -436,6 +441,7 @@ impl TelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_theme_applied(
         mut self,
         callback: impl Fn(&DiagnosticEntry) + Send + Sync + 'static,
@@ -444,6 +450,7 @@ impl TelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_theme_cycled(
         mut self,
         callback: impl Fn(&DiagnosticEntry) + Send + Sync + 'static,
@@ -452,6 +459,7 @@ impl TelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_theme_exported(
         mut self,
         callback: impl Fn(&DiagnosticEntry) + Send + Sync + 'static,
@@ -460,6 +468,7 @@ impl TelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_any(mut self, callback: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_any_event = Some(Box::new(callback));
         self
@@ -608,12 +617,14 @@ impl ThemeStudioDemo {
     }
 
     /// Create with diagnostic log enabled (for testing).
+    #[must_use]
     pub fn with_diagnostics(mut self) -> Self {
         self.diagnostic_log = Some(DiagnosticLog::new());
         self
     }
 
     /// Create with telemetry hooks.
+    #[must_use]
     pub fn with_telemetry_hooks(mut self, hooks: TelemetryHooks) -> Self {
         self.telemetry_hooks = Some(hooks);
         self

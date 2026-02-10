@@ -203,6 +203,7 @@ impl HelpRegistry {
     /// Get help content for a specific widget (no hierarchy walk).
     ///
     /// Forces lazy providers if present.
+    #[must_use = "use the returned help content (if any)"]
     pub fn get(&mut self, id: HelpId) -> Option<&HelpContent> {
         // Force lazy → loaded if needed.
         if matches!(self.entries.get(&id), Some(Entry::Lazy(_)))
@@ -218,7 +219,7 @@ impl HelpRegistry {
     }
 
     /// Peek at help content without forcing lazy providers.
-    #[must_use]
+    #[must_use = "use the returned help content (if any)"]
     pub fn peek(&self, id: HelpId) -> Option<&HelpContent> {
         match self.entries.get(&id) {
             Some(Entry::Loaded(c)) => Some(c),
@@ -230,6 +231,7 @@ impl HelpRegistry {
     ///
     /// Returns the first content found starting from `id` and walking up
     /// through parents. Returns `None` if no content exists in the chain.
+    #[must_use = "use the returned help content (if any)"]
     pub fn resolve(&mut self, id: HelpId) -> Option<&HelpContent> {
         // Collect the chain of IDs to check (avoid borrow issues).
         let chain = self.ancestor_chain(id);

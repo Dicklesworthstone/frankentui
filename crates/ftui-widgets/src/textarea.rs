@@ -344,13 +344,13 @@ impl TextArea {
     }
 
     /// Current selection, if any.
-    #[must_use]
+    #[must_use = "use the returned selection (if any)"]
     pub fn selection(&self) -> Option<Selection> {
         self.editor.selection()
     }
 
     /// Get selected text.
-    #[must_use]
+    #[must_use = "use the returned selected text (if any)"]
     pub fn selected_text(&self) -> Option<String> {
         self.editor.selected_text()
     }

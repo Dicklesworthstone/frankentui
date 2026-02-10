@@ -126,30 +126,35 @@ impl<'a> Timer<'a> {
     }
 
     /// Sets the display format.
+    #[must_use]
     pub fn format(mut self, format: TimerFormat) -> Self {
         self.format = format;
         self
     }
 
     /// Sets the base style.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Sets a style override used while the timer is running.
+    #[must_use]
     pub fn running_style(mut self, style: Style) -> Self {
         self.running_style = Some(style);
         self
     }
 
     /// Sets a style override used when the timer has finished.
+    #[must_use]
     pub fn finished_style(mut self, style: Style) -> Self {
         self.finished_style = Some(style);
         self
     }
 
     /// Sets an optional label rendered before the time.
+    #[must_use]
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
         self

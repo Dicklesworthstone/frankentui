@@ -81,30 +81,35 @@ impl<'a> Layout<'a> {
     }
 
     /// Set the row constraints.
+    #[must_use]
     pub fn rows(mut self, constraints: impl IntoIterator<Item = Constraint>) -> Self {
         self.row_constraints = constraints.into_iter().collect();
         self
     }
 
     /// Set the column constraints.
+    #[must_use]
     pub fn columns(mut self, constraints: impl IntoIterator<Item = Constraint>) -> Self {
         self.col_constraints = constraints.into_iter().collect();
         self
     }
 
     /// Set the gap between rows.
+    #[must_use]
     pub fn row_gap(mut self, gap: u16) -> Self {
         self.row_gap = gap;
         self
     }
 
     /// Set the gap between columns.
+    #[must_use]
     pub fn col_gap(mut self, gap: u16) -> Self {
         self.col_gap = gap;
         self
     }
 
     /// Set uniform gap for both rows and columns.
+    #[must_use]
     pub fn gap(mut self, gap: u16) -> Self {
         self.row_gap = gap;
         self.col_gap = gap;
@@ -112,6 +117,7 @@ impl<'a> Layout<'a> {
     }
 
     /// Add a child widget at a specific grid position with spanning.
+    #[must_use]
     pub fn child(
         mut self,
         widget: impl Widget + 'a,
@@ -131,6 +137,7 @@ impl<'a> Layout<'a> {
     }
 
     /// Add a child widget at a single grid cell (1x1).
+    #[must_use]
     pub fn cell(self, widget: impl Widget + 'a, row: usize, col: usize) -> Self {
         self.child(widget, row, col, 1, 1)
     }

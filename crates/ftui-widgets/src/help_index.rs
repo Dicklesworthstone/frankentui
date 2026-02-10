@@ -538,7 +538,7 @@ impl HelpIndex {
     ///     focus_manager.focus(id.into());
     /// }
     /// ```
-    #[must_use]
+    #[must_use = "use the returned id (if any) to navigate"]
     pub fn jump_to(&self, query: &str) -> Option<HelpId> {
         self.search(query, 1).first().map(|r| r.id)
     }
@@ -547,7 +547,7 @@ impl HelpIndex {
     ///
     /// Useful for "I'm feeling lucky" style searches where you want
     /// the top result along with display information.
-    #[must_use]
+    #[must_use = "use the returned result (if any)"]
     pub fn best_match(&self, query: &str) -> Option<SearchResult> {
         self.search(query, 1).into_iter().next()
     }

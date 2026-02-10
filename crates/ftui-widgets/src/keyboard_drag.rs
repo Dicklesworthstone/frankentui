@@ -454,12 +454,13 @@ impl KeyboardDragManager {
     }
 
     /// Get the current drag state.
-    #[must_use]
+    #[must_use = "use the returned state (if any)"]
     pub fn state(&self) -> Option<&KeyboardDragState> {
         self.state.as_ref()
     }
 
     /// Get mutable access to the drag state.
+    #[must_use = "use the returned state (if any)"]
     pub fn state_mut(&mut self) -> Option<&mut KeyboardDragState> {
         self.state.as_mut()
     }
@@ -488,6 +489,7 @@ impl KeyboardDragManager {
     /// Navigate to the next drop target in the given direction.
     ///
     /// Returns the newly selected target info if navigation succeeded.
+    #[must_use = "use the returned target (if any)"]
     pub fn navigate_targets<'a>(
         &mut self,
         direction: Direction,
@@ -585,6 +587,7 @@ impl KeyboardDragManager {
     ///
     /// Returns `None` if no target is selected or no drag is active.
     /// Returns `Some((payload, target_index))` with the payload and target index.
+    #[must_use = "use the returned (payload, target_index) to complete the drop"]
     pub fn complete_drag(&mut self) -> Option<(DragPayload, usize)> {
         let state = self.state.take()?;
         let target_idx = state.selected_target_index?;
@@ -593,6 +596,7 @@ impl KeyboardDragManager {
     }
 
     /// Complete the drag with a specific target and get the drop result info.
+    #[must_use = "use the drop result (if any) to apply the drop"]
     pub fn drop_on_target(&mut self, targets: &[DropTargetInfo]) -> Option<KeyboardDropResult> {
         let state = self.state.take()?;
         let target_idx = state.selected_target_index?;
@@ -611,6 +615,7 @@ impl KeyboardDragManager {
     /// Cancel the current drag operation.
     ///
     /// Returns the payload if a drag was active.
+    #[must_use = "use the returned payload (if any) to restore state"]
     pub fn cancel_drag(&mut self) -> Option<DragPayload> {
         let state = self.state.take()?;
         self.queue_announcement(Announcement::normal("Drop cancelled"));

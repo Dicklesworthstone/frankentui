@@ -1114,6 +1114,7 @@ impl Toast {
     /// Get the remaining time before auto-dismiss.
     ///
     /// Accounts for paused time.
+    #[must_use = "use the remaining time (if any) for scheduling"]
     pub fn remaining_time(&self) -> Option<Duration> {
         self.config.duration.map(|d| {
             let wall_elapsed = self.state.created_at.elapsed();
@@ -1209,6 +1210,7 @@ impl Toast {
     }
 
     /// Get the currently focused action, if any.
+    #[must_use = "use the focused action (if any)"]
     pub fn focused_action(&self) -> Option<&ToastAction> {
         self.state
             .focused_action

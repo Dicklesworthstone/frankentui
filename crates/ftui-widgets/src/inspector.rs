@@ -374,12 +374,14 @@ impl DiagnosticLog {
     }
 
     /// Create a log that writes to stderr.
+    #[must_use]
     pub fn with_stderr(mut self) -> Self {
         self.write_stderr = true;
         self
     }
 
     /// Set maximum entries to keep.
+    #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
         self
@@ -453,24 +455,28 @@ impl TelemetryHooks {
     }
 
     /// Set toggle callback.
+    #[must_use]
     pub fn on_toggle(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_toggle = Some(Box::new(f));
         self
     }
 
     /// Set mode change callback.
+    #[must_use]
     pub fn on_mode_change(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_mode_change = Some(Box::new(f));
         self
     }
 
     /// Set hover change callback.
+    #[must_use]
     pub fn on_hover_change(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_hover_change = Some(Box::new(f));
         self
     }
 
     /// Set selection change callback.
+    #[must_use]
     pub fn on_selection_change(
         mut self,
         f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static,
@@ -480,6 +486,7 @@ impl TelemetryHooks {
     }
 
     /// Set catch-all callback.
+    #[must_use]
     pub fn on_any(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_any_event = Some(Box::new(f));
         self
@@ -742,25 +749,27 @@ impl InspectorState {
     }
 
     /// Create with diagnostic log enabled (for testing).
+    #[must_use]
     pub fn with_diagnostics(mut self) -> Self {
         self.diagnostic_log = Some(DiagnosticLog::new());
         self
     }
 
     /// Create with telemetry hooks.
+    #[must_use]
     pub fn with_telemetry_hooks(mut self, hooks: TelemetryHooks) -> Self {
         self.telemetry_hooks = Some(hooks);
         self
     }
 
     /// Get the diagnostic log (for testing).
-    #[must_use]
+    #[must_use = "use the diagnostic log (if enabled)"]
     pub fn diagnostic_log(&self) -> Option<&DiagnosticLog> {
         self.diagnostic_log.as_ref()
     }
 
     /// Get mutable diagnostic log (for testing).
-    #[must_use]
+    #[must_use = "use the diagnostic log (if enabled)"]
     pub fn diagnostic_log_mut(&mut self) -> Option<&mut DiagnosticLog> {
         self.diagnostic_log.as_mut()
     }
@@ -1307,7 +1316,7 @@ pub struct HitInfo {
 
 impl HitInfo {
     /// Create from a HitCell and position.
-    #[must_use]
+    #[must_use = "use the computed hit info (if any)"]
     pub fn from_cell(cell: &HitCell, x: u16, y: u16) -> Option<Self> {
         cell.widget_id.map(|id| Self {
             widget_id: id,

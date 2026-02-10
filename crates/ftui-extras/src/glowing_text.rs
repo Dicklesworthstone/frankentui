@@ -91,30 +91,35 @@ impl GlowingText {
     }
 
     /// Set the base text color.
+    #[must_use]
     pub fn color(mut self, color: PackedRgba) -> Self {
         self.base_color = color;
         self
     }
 
     /// Set the glow color (used for the glow effect).
+    #[must_use]
     pub fn glow(mut self, color: PackedRgba) -> Self {
         self.glow_color = color;
         self
     }
 
     /// Set the glow intensity (0.0 = no glow, 1.0 = maximum glow).
+    #[must_use]
     pub fn glow_intensity(mut self, intensity: f64) -> Self {
         self.glow_intensity = intensity.clamp(0.0, 1.0);
         self
     }
 
     /// Set the fade amount (0.0 = invisible, 1.0 = fully visible).
+    #[must_use]
     pub fn fade(mut self, fade: f64) -> Self {
         self.fade = fade.clamp(0.0, 1.0);
         self
     }
 
     /// Make the text bold.
+    #[must_use]
     pub fn bold(mut self) -> Self {
         self.bold = true;
         self
@@ -212,24 +217,28 @@ impl TransitionOverlay {
     /// Set the transition progress (0.0 to 1.0).
     ///
     /// The fade follows a bell curve: 0.0 = invisible, 0.5 = peak, 1.0 = invisible.
+    #[must_use]
     pub fn progress(mut self, progress: f64) -> Self {
         self.progress = progress.clamp(0.0, 1.0);
         self
     }
 
     /// Set the primary (title) color.
+    #[must_use]
     pub fn primary_color(mut self, color: PackedRgba) -> Self {
         self.primary_color = color;
         self
     }
 
     /// Set the secondary (subtitle) color.
+    #[must_use]
     pub fn secondary_color(mut self, color: PackedRgba) -> Self {
         self.secondary_color = color;
         self
     }
 
     /// Set the total duration in ticks.
+    #[must_use]
     pub fn duration(mut self, ticks: u32) -> Self {
         self.duration_ticks = ticks;
         self

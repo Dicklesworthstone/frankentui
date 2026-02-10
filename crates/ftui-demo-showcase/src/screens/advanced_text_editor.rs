@@ -427,12 +427,14 @@ impl DiagnosticLog {
     }
 
     /// Create a log that writes to stderr.
+    #[must_use]
     pub fn with_stderr(mut self) -> Self {
         self.write_stderr = true;
         self
     }
 
     /// Set maximum entries to keep.
+    #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
         self

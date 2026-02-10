@@ -399,7 +399,7 @@ impl DragDropDemo {
                             }
                         }
                         KeyboardDragKey::Cancel => {
-                            self.keyboard_drag.cancel_drag();
+                            let _ = self.keyboard_drag.cancel_drag();
                             self.announcements.push("Drag cancelled".to_string());
                         }
                     }

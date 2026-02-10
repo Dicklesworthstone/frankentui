@@ -464,24 +464,28 @@ impl<W> WidgetModalEntry<W> {
     }
 
     /// Set size constraints.
+    #[must_use]
     pub fn size(mut self, size: ModalSizeConstraints) -> Self {
         self.size = size;
         self
     }
 
     /// Set backdrop configuration.
+    #[must_use]
     pub fn backdrop(mut self, backdrop: BackdropConfig) -> Self {
         self.backdrop = backdrop;
         self
     }
 
     /// Set whether Escape closes the modal.
+    #[must_use]
     pub fn close_on_escape(mut self, close: bool) -> Self {
         self.close_on_escape = close;
         self
     }
 
     /// Set whether backdrop click closes the modal.
+    #[must_use]
     pub fn close_on_backdrop(mut self, close: bool) -> Self {
         self.close_on_backdrop = close;
         self
@@ -491,6 +495,7 @@ impl<W> WidgetModalEntry<W> {
     ///
     /// ARIA modals trap focus and announce semantics to screen readers.
     /// Default is `true` for accessibility compliance.
+    #[must_use]
     pub fn with_aria_modal(mut self, aria_modal: bool) -> Self {
         self.aria_modal = aria_modal;
         self
@@ -502,6 +507,7 @@ impl<W> WidgetModalEntry<W> {
     /// 1. Create a focus group constraining Tab navigation
     /// 2. Auto-focus the first focusable widget when modal opens
     /// 3. Restore focus to the previous element when modal closes
+    #[must_use]
     pub fn with_focusable_ids(mut self, ids: Vec<ModalFocusId>) -> Self {
         self.focusable_ids = Some(ids);
         self

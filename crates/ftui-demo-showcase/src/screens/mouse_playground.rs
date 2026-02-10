@@ -359,12 +359,14 @@ impl DiagnosticLog {
     }
 
     /// Create a log that writes to stderr.
+    #[must_use]
     pub fn with_stderr(mut self) -> Self {
         self.write_stderr = true;
         self
     }
 
     /// Set maximum entries to keep.
+    #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
         self
@@ -494,24 +496,28 @@ impl TelemetryHooks {
     }
 
     /// Set hit-test callback.
+    #[must_use]
     pub fn on_hit_test(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_hit_test = Some(Box::new(f));
         self
     }
 
     /// Set hover change callback.
+    #[must_use]
     pub fn on_hover_change(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_hover_change = Some(Box::new(f));
         self
     }
 
     /// Set target click callback.
+    #[must_use]
     pub fn on_target_click(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_target_click = Some(Box::new(f));
         self
     }
 
     /// Set catch-all callback.
+    #[must_use]
     pub fn on_any(mut self, f: impl Fn(&DiagnosticEntry) + Send + Sync + 'static) -> Self {
         self.on_any_event = Some(Box::new(f));
         self
@@ -686,12 +692,14 @@ impl MousePlayground {
     }
 
     /// Create with diagnostic log enabled (for testing).
+    #[must_use]
     pub fn with_diagnostics(mut self) -> Self {
         self.diagnostic_log = Some(DiagnosticLog::new());
         self
     }
 
     /// Create with telemetry hooks.
+    #[must_use]
     pub fn with_telemetry_hooks(mut self, hooks: TelemetryHooks) -> Self {
         self.telemetry_hooks = Some(hooks);
         self

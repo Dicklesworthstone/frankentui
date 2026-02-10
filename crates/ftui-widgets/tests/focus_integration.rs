@@ -453,7 +453,7 @@ fn remove_node_while_focused() {
     fm.focus(1);
 
     // Remove the focused node from the graph.
-    fm.graph_mut().remove(1);
+    let _ = fm.graph_mut().remove(1);
 
     // Focus is still set to 1 (manager doesn't auto-clear), but navigating
     // away should work since the manager will skip nodes that no longer exist.

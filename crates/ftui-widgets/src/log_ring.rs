@@ -81,7 +81,7 @@ impl<T> LogRing<T> {
     /// Get item by absolute index (across entire history).
     ///
     /// Returns `None` if the index is out of range or the item has been evicted.
-    #[must_use]
+    #[must_use = "use the returned item (if any)"]
     pub fn get(&self, absolute_idx: usize) -> Option<&T> {
         let ring_start = self.first_index();
 
@@ -93,7 +93,7 @@ impl<T> LogRing<T> {
     }
 
     /// Get mutable reference by absolute index.
-    #[must_use]
+    #[must_use = "use the returned item (if any)"]
     pub fn get_mut(&mut self, absolute_idx: usize) -> Option<&mut T> {
         let ring_start = self.first_index();
 
@@ -154,7 +154,7 @@ impl<T> LogRing<T> {
     /// Last absolute index (most recent item).
     ///
     /// Returns `None` if the ring is empty.
-    #[must_use]
+    #[must_use = "use the returned index (if any)"]
     pub fn last_index(&self) -> Option<usize> {
         if self.total_count > 0 {
             Some(self.total_count - 1)
@@ -189,13 +189,13 @@ impl<T> LogRing<T> {
     }
 
     /// Get the most recent item.
-    #[must_use]
+    #[must_use = "use the returned item (if any)"]
     pub fn back(&self) -> Option<&T> {
         self.ring.back()
     }
 
     /// Get the oldest item still in memory.
-    #[must_use]
+    #[must_use = "use the returned item (if any)"]
     pub fn front(&self) -> Option<&T> {
         self.ring.front()
     }

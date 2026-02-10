@@ -353,60 +353,70 @@ impl ModalAnimationConfig {
     }
 
     /// Set entrance animation type.
+    #[must_use]
     pub fn entrance(mut self, anim: ModalEntranceAnimation) -> Self {
         self.entrance = anim;
         self
     }
 
     /// Set exit animation type.
+    #[must_use]
     pub fn exit(mut self, anim: ModalExitAnimation) -> Self {
         self.exit = anim;
         self
     }
 
     /// Set entrance duration.
+    #[must_use]
     pub fn entrance_duration(mut self, duration: Duration) -> Self {
         self.entrance_duration = duration;
         self
     }
 
     /// Set exit duration.
+    #[must_use]
     pub fn exit_duration(mut self, duration: Duration) -> Self {
         self.exit_duration = duration;
         self
     }
 
     /// Set entrance easing function.
+    #[must_use]
     pub fn entrance_easing(mut self, easing: ModalEasing) -> Self {
         self.entrance_easing = easing;
         self
     }
 
     /// Set exit easing function.
+    #[must_use]
     pub fn exit_easing(mut self, easing: ModalEasing) -> Self {
         self.exit_easing = easing;
         self
     }
 
     /// Set minimum scale for scale animations.
+    #[must_use]
     pub fn min_scale(mut self, scale: f64) -> Self {
         self.min_scale = scale.clamp(0.5, 1.0);
         self
     }
 
     /// Set whether backdrop should animate.
+    #[must_use]
     pub fn animate_backdrop(mut self, animate: bool) -> Self {
         self.animate_backdrop = animate;
         self
     }
 
     /// Set backdrop fade duration.
+    #[must_use]
     pub fn backdrop_duration(mut self, duration: Duration) -> Self {
         self.backdrop_duration = duration;
         self
     }
 
     /// Set whether to respect reduced-motion preference.
+    #[must_use]
     pub fn respect_reduced_motion(mut self, respect: bool) -> Self {
         self.respect_reduced_motion = respect;
         self

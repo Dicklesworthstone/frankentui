@@ -255,7 +255,7 @@ impl TableState {
     }
 
     /// Get the persistence ID, if set.
-    #[must_use]
+    #[must_use = "use the persistence id (if any)"]
     pub fn persistence_id(&self) -> Option<&str> {
         self.persistence_id.as_deref()
     }
@@ -388,7 +388,7 @@ impl TableState {
     }
 
     /// Get the current sort column.
-    #[must_use]
+    #[must_use = "use the sort column (if any)"]
     pub fn sort_column(&self) -> Option<usize> {
         self.sort_column
     }

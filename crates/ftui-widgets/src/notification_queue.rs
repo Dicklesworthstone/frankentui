@@ -91,36 +91,42 @@ impl QueueConfig {
     }
 
     /// Set maximum visible toasts.
+    #[must_use]
     pub fn max_visible(mut self, max: usize) -> Self {
         self.max_visible = max;
         self
     }
 
     /// Set maximum queued notifications.
+    #[must_use]
     pub fn max_queued(mut self, max: usize) -> Self {
         self.max_queued = max;
         self
     }
 
     /// Set default duration for auto-dismiss.
+    #[must_use]
     pub fn default_duration(mut self, duration: Duration) -> Self {
         self.default_duration = duration;
         self
     }
 
     /// Set anchor position for the toast stack.
+    #[must_use]
     pub fn position(mut self, position: ToastPosition) -> Self {
         self.position = position;
         self
     }
 
     /// Set vertical spacing between stacked toasts.
+    #[must_use]
     pub fn stagger_offset(mut self, offset: u16) -> Self {
         self.stagger_offset = offset;
         self
     }
 
     /// Set deduplication time window in milliseconds.
+    #[must_use]
     pub fn dedup_window_ms(mut self, ms: u64) -> Self {
         self.dedup_window_ms = ms;
         self
@@ -223,6 +229,7 @@ impl<'a> NotificationStack<'a> {
     }
 
     /// Set the margin from the screen edge.
+    #[must_use]
     pub fn margin(mut self, margin: u16) -> Self {
         self.margin = margin;
         self

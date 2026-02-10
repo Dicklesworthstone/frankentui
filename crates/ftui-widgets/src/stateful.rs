@@ -233,6 +233,7 @@ impl<S> VersionedState<S> {
 
     /// Attempt to unpack, returning `None` if the version does not match
     /// the widget's current `state_version()`.
+    #[must_use = "use the unpacked state (if any)"]
     pub fn unpack<W: Stateful<State = S>>(self) -> Option<S> {
         if self.version == W::state_version() {
             Some(self.data)

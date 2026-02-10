@@ -114,24 +114,28 @@ impl EnvSnapshot {
     }
 
     /// Add a string field (value will be JSON-escaped and quoted).
+    #[must_use]
     pub fn with_str(mut self, key: &str, value: &str) -> Self {
         self.fields.insert(key.to_string(), json_string(value));
         self
     }
 
     /// Add a numeric field.
+    #[must_use]
     pub fn with_u64(mut self, key: &str, value: u64) -> Self {
         self.fields.insert(key.to_string(), value.to_string());
         self
     }
 
     /// Add a boolean field.
+    #[must_use]
     pub fn with_bool(mut self, key: &str, value: bool) -> Self {
         self.fields.insert(key.to_string(), value.to_string());
         self
     }
 
     /// Add a raw JSON field (caller is responsible for correctness).
+    #[must_use]
     pub fn with_raw(mut self, key: &str, raw_json: &str) -> Self {
         self.fields.insert(key.to_string(), raw_json.to_string());
         self
@@ -232,6 +236,7 @@ impl TestJsonlLogger {
     }
 
     /// Set the JSONL schema version.
+    #[must_use]
     pub fn with_schema_version(mut self, version: u32) -> Self {
         self.schema_version = version;
         self

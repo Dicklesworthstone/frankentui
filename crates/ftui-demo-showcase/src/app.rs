@@ -516,6 +516,7 @@ impl A11yTelemetryHooks {
         Self::default()
     }
 
+    #[must_use]
     pub fn on_panel_toggle(
         mut self,
         f: impl Fn(&A11yTelemetryEvent) + Send + Sync + 'static,
@@ -524,6 +525,7 @@ impl A11yTelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_high_contrast(
         mut self,
         f: impl Fn(&A11yTelemetryEvent) + Send + Sync + 'static,
@@ -532,6 +534,7 @@ impl A11yTelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_reduced_motion(
         mut self,
         f: impl Fn(&A11yTelemetryEvent) + Send + Sync + 'static,
@@ -540,6 +543,7 @@ impl A11yTelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_large_text(
         mut self,
         f: impl Fn(&A11yTelemetryEvent) + Send + Sync + 'static,
@@ -548,6 +552,7 @@ impl A11yTelemetryHooks {
         self
     }
 
+    #[must_use]
     pub fn on_any(mut self, f: impl Fn(&A11yTelemetryEvent) + Send + Sync + 'static) -> Self {
         self.on_any = Some(Box::new(f));
         self
@@ -782,11 +787,13 @@ impl ScreenId {
     }
 
     /// Next screen (wraps around).
+    #[must_use]
     pub fn next(self) -> Self {
         screens::next_screen(self)
     }
 
     /// Previous screen (wraps around).
+    #[must_use]
     pub fn prev(self) -> Self {
         screens::prev_screen(self)
     }
@@ -2656,6 +2663,7 @@ impl AppModel {
     }
 
     /// Attach telemetry hooks for accessibility mode changes.
+    #[must_use]
     pub fn with_a11y_telemetry_hooks(mut self, hooks: A11yTelemetryHooks) -> Self {
         self.a11y_telemetry = Some(hooks);
         self

@@ -118,30 +118,35 @@ impl<'a> Stopwatch<'a> {
     }
 
     /// Sets the display format.
+    #[must_use]
     pub fn format(mut self, format: StopwatchFormat) -> Self {
         self.format = format;
         self
     }
 
     /// Sets the base style.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Sets a style override used when the stopwatch is running.
+    #[must_use]
     pub fn running_style(mut self, style: Style) -> Self {
         self.running_style = Some(style);
         self
     }
 
     /// Sets a style override used when the stopwatch is stopped.
+    #[must_use]
     pub fn stopped_style(mut self, style: Style) -> Self {
         self.stopped_style = Some(style);
         self
     }
 
     /// Sets an optional label rendered before the time.
+    #[must_use]
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
         self

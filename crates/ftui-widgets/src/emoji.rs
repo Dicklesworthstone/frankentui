@@ -76,7 +76,7 @@ impl Emoji {
 
     /// Get the fallback text, if set.
     #[inline]
-    #[must_use]
+    #[must_use = "use the fallback text (if any)"]
     pub fn fallback(&self) -> Option<&str> {
         self.fallback.as_deref()
     }

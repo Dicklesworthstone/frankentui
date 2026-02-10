@@ -183,6 +183,7 @@ impl MacroRecorder {
     }
 
     /// Set the terminal size metadata.
+    #[must_use]
     pub fn with_terminal_size(mut self, width: u16, height: u16) -> Self {
         self.terminal_size = (width, height);
         self
@@ -412,6 +413,7 @@ impl MacroPlayback {
     }
 
     /// Fluent speed setter.
+    #[must_use]
     pub fn with_speed(mut self, speed: f64) -> Self {
         self.set_speed(speed);
         self
@@ -423,6 +425,7 @@ impl MacroPlayback {
     }
 
     /// Fluent looping setter.
+    #[must_use]
     pub fn with_looping(mut self, looping: bool) -> Self {
         self.set_looping(looping);
         self
@@ -653,6 +656,7 @@ impl EventRecorder {
     }
 
     /// Set the terminal size metadata.
+    #[must_use]
     pub fn with_terminal_size(mut self, width: u16, height: u16) -> Self {
         self.inner = self.inner.with_terminal_size(width, height);
         self
@@ -861,6 +865,7 @@ impl FilteredEventRecorder {
     }
 
     /// Set terminal size metadata.
+    #[must_use]
     pub fn with_terminal_size(mut self, width: u16, height: u16) -> Self {
         self.recorder = self.recorder.with_terminal_size(width, height);
         self

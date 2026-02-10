@@ -219,6 +219,7 @@ impl CompressedFrame {
     }
 
     /// Set cursor position for this frame.
+    #[must_use]
     pub fn with_cursor(mut self, cursor: Option<(u16, u16)>) -> Self {
         self.cursor = cursor;
         self
@@ -254,12 +255,14 @@ impl FrameMetadata {
     }
 
     /// Set event count.
+    #[must_use]
     pub fn with_events(mut self, count: u32) -> Self {
         self.event_count = count;
         self
     }
 
     /// Set model hash.
+    #[must_use]
     pub fn with_model_hash(mut self, hash: u64) -> Self {
         self.model_hash = Some(hash);
         self

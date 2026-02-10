@@ -134,6 +134,7 @@ impl FocusGraph {
     /// Remove a node and all edges incident on it.
     ///
     /// Returns the removed node, or `None` if not present.
+    #[must_use = "use the removed node (if any)"]
     pub fn remove(&mut self, id: FocusId) -> Option<FocusNode> {
         let node = self.nodes.remove(&id)?;
 
@@ -165,13 +166,13 @@ impl FocusGraph {
     /// Navigate from a node in a direction.
     ///
     /// Returns the target node ID, or `None` if no edge exists.
-    #[must_use]
+    #[must_use = "use the returned target id (if any)"]
     pub fn navigate(&self, from: FocusId, dir: NavDirection) -> Option<FocusId> {
         self.edges.get(&(from, dir)).copied()
     }
 
     /// Look up a node by ID.
-    #[must_use]
+    #[must_use = "use the returned node (if any)"]
     pub fn get(&self, id: FocusId) -> Option<&FocusNode> {
         self.nodes.get(&id)
     }
@@ -229,7 +230,7 @@ impl FocusGraph {
     /// forming the cycle (starting and ending at the same node), or `None`.
     ///
     /// Uses tortoise-and-hare for O(V) time, O(1) extra space.
-    #[must_use]
+    #[must_use = "use the returned cycle (if any) to diagnose invalid focus graphs"]
     pub fn find_cycle(&self, start: FocusId) -> Option<Vec<FocusId>> {
         // Phase 1: detect cycle with Floyd's algorithm.
         let mut slow = start;
@@ -268,7 +269,7 @@ impl FocusGraph {
     /// Detect cycles reachable from `start` following any single direction.
     ///
     /// More general than `find_cycle` (which only follows `Next`).
-    #[must_use]
+    #[must_use = "use the returned cycle (if any) to diagnose invalid focus graphs"]
     pub fn find_cycle_in_direction(
         &self,
         start: FocusId,

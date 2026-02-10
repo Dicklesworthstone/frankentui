@@ -305,30 +305,35 @@ impl FilePicker {
     }
 
     /// Set the directory entry style.
+    #[must_use]
     pub fn dir_style(mut self, style: Style) -> Self {
         self.dir_style = style;
         self
     }
 
     /// Set the file entry style.
+    #[must_use]
     pub fn file_style(mut self, style: Style) -> Self {
         self.file_style = style;
         self
     }
 
     /// Set the cursor (highlight) style.
+    #[must_use]
     pub fn cursor_style(mut self, style: Style) -> Self {
         self.cursor_style = style;
         self
     }
 
     /// Set the header style.
+    #[must_use]
     pub fn header_style(mut self, style: Style) -> Self {
         self.header_style = style;
         self
     }
 
     /// Toggle header display.
+    #[must_use]
     pub fn show_header(mut self, show: bool) -> Self {
         self.show_header = show;
         self

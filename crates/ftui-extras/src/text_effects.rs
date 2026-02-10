@@ -5195,14 +5195,12 @@ impl EffectSequenceBuilder {
     }
 
     /// Add a step with the given effect and duration.
-    #[must_use]
     pub fn step(mut self, effect: TextEffect, duration_secs: f64) -> Self {
         self.steps.push(SequenceStep::new(effect, duration_secs));
         self
     }
 
     /// Add a step with custom easing.
-    #[must_use]
     pub fn step_with_easing(
         mut self,
         effect: TextEffect,
@@ -5215,14 +5213,12 @@ impl EffectSequenceBuilder {
     }
 
     /// Set the loop mode for the sequence.
-    #[must_use]
     pub fn loop_mode(mut self, mode: LoopMode) -> Self {
         self.loop_mode = mode;
         self
     }
 
     /// Set the global easing function (used when steps don't specify their own).
-    #[must_use]
     pub fn easing(mut self, easing: Easing) -> Self {
         self.global_easing = easing;
         self

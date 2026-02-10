@@ -25,6 +25,7 @@ impl Vec3 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 
+    #[must_use]
     pub fn cross(self, other: Self) -> Self {
         Self {
             x: self.y * other.z - self.z * other.y,
@@ -37,6 +38,7 @@ impl Vec3 {
         (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
     }
 
+    #[must_use]
     pub fn normalized(self) -> Self {
         let len = self.len();
         if len > 0.0 {

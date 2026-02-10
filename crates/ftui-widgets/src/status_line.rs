@@ -132,30 +132,35 @@ impl<'a> StatusLine<'a> {
     }
 
     /// Add an item to the left region.
+    #[must_use]
     pub fn left(mut self, item: StatusItem<'a>) -> Self {
         self.left.push(item);
         self
     }
 
     /// Add an item to the center region.
+    #[must_use]
     pub fn center(mut self, item: StatusItem<'a>) -> Self {
         self.center.push(item);
         self
     }
 
     /// Add an item to the right region.
+    #[must_use]
     pub fn right(mut self, item: StatusItem<'a>) -> Self {
         self.right.push(item);
         self
     }
 
     /// Set the overall style for the status line.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set the separator between items (default: " ").
+    #[must_use]
     pub fn separator(mut self, separator: &'a str) -> Self {
         self.separator = separator;
         self

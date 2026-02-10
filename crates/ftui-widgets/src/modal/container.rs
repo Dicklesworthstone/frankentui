@@ -51,12 +51,14 @@ impl BackdropConfig {
     }
 
     /// Set backdrop color.
+    #[must_use]
     pub fn color(mut self, color: PackedRgba) -> Self {
         self.color = color;
         self
     }
 
     /// Set backdrop opacity.
+    #[must_use]
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity;
         self
@@ -93,24 +95,28 @@ impl ModalSizeConstraints {
     }
 
     /// Set minimum width.
+    #[must_use]
     pub fn min_width(mut self, value: u16) -> Self {
         self.min_width = Some(value);
         self
     }
 
     /// Set maximum width.
+    #[must_use]
     pub fn max_width(mut self, value: u16) -> Self {
         self.max_width = Some(value);
         self
     }
 
     /// Set minimum height.
+    #[must_use]
     pub fn min_height(mut self, value: u16) -> Self {
         self.min_height = Some(value);
         self
     }
 
     /// Set maximum height.
+    #[must_use]
     pub fn max_height(mut self, value: u16) -> Self {
         self.max_height = Some(value);
         self
@@ -211,31 +217,37 @@ impl Default for ModalConfig {
 }
 
 impl ModalConfig {
+    #[must_use]
     pub fn position(mut self, position: ModalPosition) -> Self {
         self.position = position;
         self
     }
 
+    #[must_use]
     pub fn backdrop(mut self, backdrop: BackdropConfig) -> Self {
         self.backdrop = backdrop;
         self
     }
 
+    #[must_use]
     pub fn size(mut self, size: ModalSizeConstraints) -> Self {
         self.size = size;
         self
     }
 
+    #[must_use]
     pub fn close_on_backdrop(mut self, close: bool) -> Self {
         self.close_on_backdrop = close;
         self
     }
 
+    #[must_use]
     pub fn close_on_escape(mut self, close: bool) -> Self {
         self.close_on_escape = close;
         self
     }
 
+    #[must_use]
     pub fn hit_id(mut self, id: HitId) -> Self {
         self.hit_id = Some(id);
         self
@@ -337,42 +349,49 @@ impl<C> Modal<C> {
     }
 
     /// Set modal configuration.
+    #[must_use]
     pub fn config(mut self, config: ModalConfig) -> Self {
         self.config = config;
         self
     }
 
     /// Set modal position.
+    #[must_use]
     pub fn position(mut self, position: ModalPosition) -> Self {
         self.config.position = position;
         self
     }
 
     /// Set backdrop configuration.
+    #[must_use]
     pub fn backdrop(mut self, backdrop: BackdropConfig) -> Self {
         self.config.backdrop = backdrop;
         self
     }
 
     /// Set size constraints.
+    #[must_use]
     pub fn size(mut self, size: ModalSizeConstraints) -> Self {
         self.config.size = size;
         self
     }
 
     /// Set close-on-backdrop behavior.
+    #[must_use]
     pub fn close_on_backdrop(mut self, close: bool) -> Self {
         self.config.close_on_backdrop = close;
         self
     }
 
     /// Set close-on-escape behavior.
+    #[must_use]
     pub fn close_on_escape(mut self, close: bool) -> Self {
         self.config.close_on_escape = close;
         self
     }
 
     /// Set the hit id used for backdrop/content hit regions.
+    #[must_use]
     pub fn hit_id(mut self, id: HitId) -> Self {
         self.config.hit_id = Some(id);
         self

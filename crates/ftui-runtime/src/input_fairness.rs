@@ -122,12 +122,14 @@ impl FairnessConfig {
     }
 
     /// Create config with custom max input latency.
+    #[must_use]
     pub fn with_max_latency(mut self, latency: Duration) -> Self {
         self.input_priority_threshold = latency;
         self
     }
 
     /// Create config with custom dominance threshold.
+    #[must_use]
     pub fn with_dominance_threshold(mut self, threshold: u32) -> Self {
         self.dominance_threshold = threshold;
         self

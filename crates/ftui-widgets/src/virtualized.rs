@@ -396,7 +396,7 @@ impl<T> Virtualized<T> {
     }
 
     /// Get item by index (owned storage only).
-    #[must_use]
+    #[must_use = "use the returned item (if any)"]
     pub fn get(&self, idx: usize) -> Option<&T> {
         if let VirtualizedStorage::Owned(items) = &self.storage {
             items.get(idx)
@@ -406,6 +406,7 @@ impl<T> Virtualized<T> {
     }
 
     /// Get mutable item by index (owned storage only).
+    #[must_use = "use the returned item (if any)"]
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut T> {
         if let VirtualizedStorage::Owned(items) = &mut self.storage {
             items.get_mut(idx)
@@ -835,7 +836,7 @@ impl VirtualizedListState {
     }
 
     /// Get the persistence ID, if set.
-    #[must_use]
+    #[must_use = "use the persistence id (if any)"]
     pub fn persistence_id(&self) -> Option<&str> {
         self.persistence_id.as_deref()
     }

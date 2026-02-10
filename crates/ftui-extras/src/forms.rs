@@ -225,42 +225,49 @@ impl Form {
     }
 
     /// Set base style.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set label style.
+    #[must_use]
     pub fn label_style(mut self, style: Style) -> Self {
         self.label_style = style;
         self
     }
 
     /// Set focused field style.
+    #[must_use]
     pub fn focused_style(mut self, style: Style) -> Self {
         self.focused_style = style;
         self
     }
 
     /// Set error message style.
+    #[must_use]
     pub fn error_style(mut self, style: Style) -> Self {
         self.error_style = style;
         self
     }
 
     /// Set success style (valid field state).
+    #[must_use]
     pub fn success_style(mut self, style: Style) -> Self {
         self.success_style = style;
         self
     }
 
     /// Set disabled field style.
+    #[must_use]
     pub fn disabled_style(mut self, style: Style) -> Self {
         self.disabled_style = style;
         self
     }
 
     /// Set required indicator style.
+    #[must_use]
     pub fn required_style(mut self, style: Style) -> Self {
         self.required_style = style;
         self
@@ -302,12 +309,14 @@ impl Form {
     }
 
     /// Mark a field as required (adds indicator).
+    #[must_use]
     pub fn required(mut self, field_index: usize, required: bool) -> Self {
         self.set_required(field_index, required);
         self
     }
 
     /// Mark a field as disabled (non-interactive).
+    #[must_use]
     pub fn disabled(mut self, field_index: usize, disabled: bool) -> Self {
         self.set_disabled(field_index, disabled);
         self
@@ -338,12 +347,14 @@ impl Form {
     }
 
     /// Set fixed label width (0 = auto-detect from longest label).
+    #[must_use]
     pub fn label_width(mut self, width: u16) -> Self {
         self.label_width = width;
         self
     }
 
     /// Attach a validator to a field by index.
+    #[must_use]
     pub fn validate(mut self, field_index: usize, f: ValidateFn) -> Self {
         if field_index < self.validators.len() {
             self.validators[field_index] = Some(f);
@@ -1255,6 +1266,7 @@ impl ConfirmDialog {
     }
 
     /// Set custom button labels.
+    #[must_use]
     pub fn labels(mut self, yes: impl Into<String>, no: impl Into<String>) -> Self {
         self.yes_label = yes.into();
         self.no_label = no.into();
@@ -1262,12 +1274,14 @@ impl ConfirmDialog {
     }
 
     /// Set base style.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set selected button style.
+    #[must_use]
     pub fn selected_style(mut self, style: Style) -> Self {
         self.selected_style = style;
         self

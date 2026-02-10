@@ -57,30 +57,35 @@ impl<'a> Paginator<'a> {
     }
 
     /// Set the current page (1-based).
+    #[must_use]
     pub fn current_page(mut self, current_page: u64) -> Self {
         self.current_page = current_page;
         self
     }
 
     /// Set the total pages.
+    #[must_use]
     pub fn total_pages(mut self, total_pages: u64) -> Self {
         self.total_pages = total_pages;
         self
     }
 
     /// Set the display mode.
+    #[must_use]
     pub fn mode(mut self, mode: PaginatorMode) -> Self {
         self.mode = mode;
         self
     }
 
     /// Set the overall style for the paginator text.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set the symbols used for dot mode.
+    #[must_use]
     pub fn dots_symbols(mut self, active: &'a str, inactive: &'a str) -> Self {
         self.active_symbol = active;
         self.inactive_symbol = inactive;

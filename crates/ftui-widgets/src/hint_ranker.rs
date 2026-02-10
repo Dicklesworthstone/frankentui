@@ -327,6 +327,7 @@ impl HintRanker {
     }
 
     /// Get stats for a hint.
+    #[must_use = "use the returned stats (if any)"]
     pub fn stats(&self, id: usize) -> Option<&HintStats> {
         self.hints.get(id).map(|h| &h.stats)
     }

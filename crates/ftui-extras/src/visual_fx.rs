@@ -1098,6 +1098,7 @@ impl Backdrop {
     ///     .with_scrim(Scrim::vignette(0.5))
     ///     .over(child)
     /// ```
+    #[must_use]
     #[inline]
     pub fn with_effect_opacity(mut self, opacity: f32) -> Self {
         self.effect_opacity = opacity.clamp(0.0, 1.0);
@@ -1105,6 +1106,7 @@ impl Backdrop {
     }
 
     /// Set the scrim and return self for chaining.
+    #[must_use]
     #[inline]
     pub fn with_scrim(mut self, scrim: Scrim) -> Self {
         self.scrim = scrim;
@@ -1112,6 +1114,7 @@ impl Backdrop {
     }
 
     /// Set the theme and return self for chaining.
+    #[must_use]
     #[inline]
     pub fn with_theme(mut self, theme: ThemeInputs) -> Self {
         self.theme = theme;
@@ -1122,6 +1125,7 @@ impl Backdrop {
     /// Set a quality override and return self for chaining.
     ///
     /// When set, this overrides the automatic derivation from `frame.buffer.degradation`.
+    #[must_use]
     #[inline]
     pub fn with_quality_override(mut self, quality: Option<FxQuality>) -> Self {
         self.quality_override = quality;
@@ -1132,6 +1136,7 @@ impl Backdrop {
     ///
     /// Good for backgrounds where legibility of foreground content is paramount.
     /// Uses 15% effect opacity.
+    #[must_use]
     #[inline]
     pub fn subtle(mut self) -> Self {
         self.effect_opacity = 0.15;
@@ -1143,6 +1148,7 @@ impl Backdrop {
     ///
     /// Good for hero sections or splash screens where visual impact matters.
     /// Uses 50% effect opacity with a subtle vignette.
+    #[must_use]
     #[inline]
     pub fn vibrant(mut self) -> Self {
         self.effect_opacity = 0.50;

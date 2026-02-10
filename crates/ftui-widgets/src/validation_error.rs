@@ -167,7 +167,7 @@ impl ValidationErrorDisplay {
     }
 
     /// Get the error code, if any.
-    #[must_use]
+    #[must_use = "use the error code (if any) for telemetry/diagnostics"]
     pub fn error_code(&self) -> Option<&'static str> {
         self.error_code
     }

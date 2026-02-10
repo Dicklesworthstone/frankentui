@@ -204,6 +204,7 @@ impl FenwickTree {
     /// Returns `None` if all prefix sums exceed `target` (i.e., `values[0] > target`).
     /// This is useful for binary-search-by-offset in virtualized lists.
     /// O(log n), zero alloc.
+    #[must_use = "use the found index (if any)"]
     pub fn find_prefix(&self, target: u32) -> Option<usize> {
         if self.n == 0 {
             return None;

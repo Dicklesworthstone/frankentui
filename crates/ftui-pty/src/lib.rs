@@ -80,6 +80,7 @@ impl Default for PtyConfig {
 
 impl PtyConfig {
     /// Override PTY dimensions.
+    #[must_use]
     pub fn with_size(mut self, cols: u16, rows: u16) -> Self {
         self.cols = cols;
         self.rows = rows;
@@ -87,24 +88,28 @@ impl PtyConfig {
     }
 
     /// Override TERM in the child.
+    #[must_use]
     pub fn with_term(mut self, term: impl Into<String>) -> Self {
         self.term = Some(term.into());
         self
     }
 
     /// Add an environment variable in the child.
+    #[must_use]
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));
         self
     }
 
     /// Attach a test name for logging context.
+    #[must_use]
     pub fn with_test_name(mut self, name: impl Into<String>) -> Self {
         self.test_name = Some(name.into());
         self
     }
 
     /// Enable or disable log output.
+    #[must_use]
     pub fn logging(mut self, enabled: bool) -> Self {
         self.log_events = enabled;
         self
@@ -145,18 +150,21 @@ impl ReadUntilOptions {
     }
 
     /// Set maximum retries on transient errors.
+    #[must_use]
     pub fn retries(mut self, count: u32) -> Self {
         self.max_retries = count;
         self
     }
 
     /// Set delay between retries.
+    #[must_use]
     pub fn retry_delay(mut self, delay: Duration) -> Self {
         self.retry_delay = delay;
         self
     }
 
     /// Set minimum bytes to collect before matching.
+    #[must_use]
     pub fn min_bytes(mut self, bytes: usize) -> Self {
         self.min_bytes = bytes;
         self

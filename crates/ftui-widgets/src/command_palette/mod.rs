@@ -145,18 +145,21 @@ impl ActionItem {
     }
 
     /// Set description (builder).
+    #[must_use]
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
     }
 
     /// Set tags (builder).
+    #[must_use]
     pub fn with_tags(mut self, tags: &[&str]) -> Self {
         self.tags = tags.iter().map(|s| (*s).to_string()).collect();
         self
     }
 
     /// Set category (builder).
+    #[must_use]
     pub fn with_category(mut self, cat: impl Into<String>) -> Self {
         self.category = Some(cat.into());
         self
@@ -401,12 +404,14 @@ impl CommandPalette {
     }
 
     /// Set the visual style (builder).
+    #[must_use]
     pub fn with_style(mut self, style: PaletteStyle) -> Self {
         self.style = style;
         self
     }
 
     /// Set max visible results (builder).
+    #[must_use]
     pub fn with_max_visible(mut self, n: usize) -> Self {
         self.max_visible = n;
         self
@@ -589,6 +594,7 @@ impl CommandPalette {
     }
 
     /// Get the currently selected action, if any.
+    #[must_use = "use the selected action (if any)"]
     pub fn selected_action(&self) -> Option<&ActionItem> {
         self.filtered
             .get(self.selected)
@@ -596,6 +602,7 @@ impl CommandPalette {
     }
 
     /// Read-only access to the selected match (action + result).
+    #[must_use = "use the selected match (if any)"]
     pub fn selected_match(&self) -> Option<PaletteMatch<'_>> {
         self.filtered.get(self.selected).map(|si| PaletteMatch {
             action: &self.actions[si.action_index],
@@ -634,6 +641,7 @@ impl CommandPalette {
     ///
     /// Returns `None` if the event was consumed but no action was triggered,
     /// or if the palette is not visible.
+    #[must_use = "use the returned action (if any) to execute or dismiss"]
     pub fn handle_event(&mut self, event: &Event) -> Option<PaletteAction> {
         if !self.visible {
             // Check for open shortcut (Ctrl+P)

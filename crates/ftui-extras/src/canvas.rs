@@ -794,6 +794,7 @@ impl Canvas {
     }
 
     /// Set the base style (foreground color for lit pixels, background for unlit).
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
@@ -810,6 +811,7 @@ impl<'a> CanvasRef<'a> {
     }
 
     /// Set the base style (foreground color for lit pixels, background for unlit).
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self

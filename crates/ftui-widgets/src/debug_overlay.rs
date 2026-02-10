@@ -120,6 +120,7 @@ impl DebugOverlayState {
     }
 
     /// Update hover position from a mouse event.
+    #[must_use = "use the returned hover position (if any)"]
     pub fn update_hover_from_event(&self, event: &Event) -> Option<(u16, u16)> {
         let Event::Mouse(mouse) = event else {
             return self.hover_position();
@@ -131,7 +132,7 @@ impl DebugOverlayState {
         self.hover_position()
     }
 
-    #[must_use]
+    #[must_use = "use the returned hover position (if any)"]
     pub fn hover_position(&self) -> Option<(u16, u16)> {
         self.hover.lock().ok().and_then(|hover| *hover)
     }
@@ -318,12 +319,14 @@ impl<W> DebugOverlayStateful<W> {
         }
     }
 
+    #[must_use]
     pub fn track_render_time(mut self, enabled: bool) -> Self {
         self.track_render_time = enabled;
         self
     }
 
     /// Provide static hit areas for overlay visualization.
+    #[must_use]
     pub fn hit_areas(mut self, areas: Vec<Rect>) -> Self {
         self.hit_areas = areas;
         self

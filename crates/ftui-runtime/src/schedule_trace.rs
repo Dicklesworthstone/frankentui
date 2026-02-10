@@ -640,12 +640,14 @@ impl IsomorphismProof {
     }
 
     /// Add a preserved invariant.
+    #[must_use]
     pub fn with_invariant(mut self, invariant: impl Into<String>) -> Self {
         self.preserved_invariants.push(invariant.into());
         self
     }
 
     /// Add justification.
+    #[must_use]
     pub fn with_justification(mut self, justification: impl Into<String>) -> Self {
         self.justification = justification.into();
         self

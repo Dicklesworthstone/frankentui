@@ -174,24 +174,28 @@ impl Default for StormConfig {
 
 impl StormConfig {
     /// Set the random seed.
+    #[must_use]
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         self
     }
 
     /// Set the storm pattern.
+    #[must_use]
     pub fn with_pattern(mut self, pattern: StormPattern) -> Self {
         self.pattern = pattern;
         self
     }
 
     /// Set the initial terminal size.
+    #[must_use]
     pub fn with_initial_size(mut self, width: u16, height: u16) -> Self {
         self.initial_size = (width, height);
         self
     }
 
     /// Set delay range between resizes.
+    #[must_use]
     pub fn with_delay_range(mut self, min_ms: u64, max_ms: u64) -> Self {
         self.min_delay_ms = min_ms;
         self.max_delay_ms = max_ms;
@@ -199,6 +203,7 @@ impl StormConfig {
     }
 
     /// Set size bounds.
+    #[must_use]
     pub fn with_size_bounds(
         mut self,
         min_width: u16,
@@ -214,12 +219,14 @@ impl StormConfig {
     }
 
     /// Set the test case name.
+    #[must_use]
     pub fn with_case_name(mut self, name: impl Into<String>) -> Self {
         self.case_name = name.into();
         self
     }
 
     /// Enable or disable logging.
+    #[must_use]
     pub fn with_logging(mut self, enabled: bool) -> Self {
         self.logging_enabled = enabled;
         self

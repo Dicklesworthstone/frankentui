@@ -111,6 +111,7 @@ impl VoiDebugOverlay {
     }
 
     /// Override styling for the overlay.
+    #[must_use]
     pub fn with_style(mut self, style: VoiOverlayStyle) -> Self {
         self.style = style;
         self

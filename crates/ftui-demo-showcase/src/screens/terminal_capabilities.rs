@@ -231,27 +231,32 @@ impl DiagnosticEntry {
     }
 
     /// Add a detail key-value pair (builder pattern).
+    #[must_use]
     pub fn with_detail(mut self, key: &str, value: &str) -> Self {
         self.details.push((key.to_string(), value.to_string()));
         self
     }
 
     /// Add view mode detail.
+    #[must_use]
     pub fn with_view_mode(self, mode: ViewMode) -> Self {
         self.with_detail("view_mode", mode.label())
     }
 
     /// Add selected capability detail.
+    #[must_use]
     pub fn with_capability(self, name: &str) -> Self {
         self.with_detail("capability", name)
     }
 
     /// Add profile detail.
+    #[must_use]
     pub fn with_profile(self, profile: &str) -> Self {
         self.with_detail("profile", profile)
     }
 
     /// Add selection index detail.
+    #[must_use]
     pub fn with_selection(self, index: usize) -> Self {
         self.with_detail("selection", &index.to_string())
     }
@@ -360,12 +365,14 @@ impl DiagnosticLog {
     }
 
     /// Enable writing entries to stderr as JSONL.
+    #[must_use]
     pub fn with_stderr(mut self) -> Self {
         self.write_to_stderr = true;
         self
     }
 
     /// Set maximum number of entries to retain.
+    #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
         self

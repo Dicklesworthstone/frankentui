@@ -171,24 +171,28 @@ impl<'a> Sparkline<'a> {
         }
     }
 
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set explicit maximum value (otherwise auto-computed from data).
+    #[must_use]
     pub fn max(mut self, max: f64) -> Self {
         self.max = Some(max);
         self
     }
 
     /// Set explicit minimum value (otherwise auto-computed from data).
+    #[must_use]
     pub fn min(mut self, min: f64) -> Self {
         self.min = Some(min);
         self
     }
 
     /// Set a color gradient from low values to high values.
+    #[must_use]
     pub fn gradient(mut self, low: PackedRgba, high: PackedRgba) -> Self {
         self.low_color = Some(low);
         self.high_color = Some(high);
@@ -309,41 +313,49 @@ impl<'a> BarChart<'a> {
         }
     }
 
+    #[must_use]
     pub fn direction(mut self, direction: BarDirection) -> Self {
         self.direction = direction;
         self
     }
 
+    #[must_use]
     pub fn mode(mut self, mode: BarMode) -> Self {
         self.mode = mode;
         self
     }
 
+    #[must_use]
     pub fn bar_width(mut self, width: u16) -> Self {
         self.bar_width = width.max(1);
         self
     }
 
+    #[must_use]
     pub fn bar_gap(mut self, gap: u16) -> Self {
         self.bar_gap = gap;
         self
     }
 
+    #[must_use]
     pub fn group_gap(mut self, gap: u16) -> Self {
         self.group_gap = gap;
         self
     }
 
+    #[must_use]
     pub fn colors(mut self, colors: Vec<PackedRgba>) -> Self {
         self.colors = colors;
         self
     }
 
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    #[must_use]
     pub fn max(mut self, max: f64) -> Self {
         self.max = Some(max);
         self
@@ -628,6 +640,7 @@ impl<'a> Series<'a> {
         }
     }
 
+    #[must_use]
     pub fn markers(mut self, show: bool) -> Self {
         self.show_markers = show;
         self
@@ -662,31 +675,37 @@ impl<'a> LineChart<'a> {
         }
     }
 
+    #[must_use]
     pub fn x_bounds(mut self, min: f64, max: f64) -> Self {
         self.x_bounds = Some((min, max));
         self
     }
 
+    #[must_use]
     pub fn y_bounds(mut self, min: f64, max: f64) -> Self {
         self.y_bounds = Some((min, max));
         self
     }
 
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    #[must_use]
     pub fn x_labels(mut self, labels: Vec<&'a str>) -> Self {
         self.x_labels = labels;
         self
     }
 
+    #[must_use]
     pub fn y_labels(mut self, labels: Vec<&'a str>) -> Self {
         self.y_labels = labels;
         self
     }
 
+    #[must_use]
     pub fn legend(mut self, show: bool) -> Self {
         self.show_legend = show;
         self

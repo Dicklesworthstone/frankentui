@@ -841,7 +841,7 @@ fn snapshot_palette_results() {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&k);
+        let _ = palette.handle_event(&k);
     }
 
     let area = Rect::new(0, 0, 60, 10);
@@ -866,7 +866,7 @@ fn snapshot_palette_long_list() {
             modifiers: Modifiers::empty(),
             kind: KeyEventKind::Press,
         });
-        palette.handle_event(&down);
+        let _ = palette.handle_event(&down);
     }
 
     let area = Rect::new(0, 0, 40, 10); // Narrower/shorter to force scroll
@@ -888,7 +888,7 @@ fn snapshot_palette_no_results() {
         modifiers: Modifiers::empty(),
         kind: KeyEventKind::Press,
     });
-    palette.handle_event(&z);
+    let _ = palette.handle_event(&z);
 
     let area = Rect::new(0, 0, 60, 10);
     let mut pool = GraphemePool::new();
