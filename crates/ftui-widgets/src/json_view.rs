@@ -533,6 +533,253 @@ mod tests {
         assert_eq!(lines.len(), 1);
     }
 
+    // ─── Edge-case tests (bd-2agoi) ────────────────────────────────────
+
+    #[test]
+    fn whitespace_only_source() {
+        let view = JsonView::new("   \n\t  ");
+        assert!(view.formatted_lines().is_empty());
+    }
+
+    #[test]
+    fn deeply_nested_objects() {
+        // 35 levels deep — depth clamped at 32 for indent
+        let open: String = "{\"a\": ".repeat(35);
+        let close: String = "}".repeat(35);
+        let json = format!("{open}1{close}");
+        let view = JsonView::new(json);
+        let lines = view.formatted_lines();
+        // Should not panic and produce output
+        assert!(lines.len() > 10);
+    }
+
+    #[test]
+    fn scientific_notation_number() {
+        let view = JsonView::new(r#"{"x": 1.23e+10}"#);
+        let lines = view.formatted_lines();
+        let has_sci = lines.iter().any(|line| {
+            line.iter()
+                .any(|t| matches!(t, JsonToken::Number(s) if s.contains("e+")))
+        });
+        assert!(has_sci, "scientific notation should be Number: {lines:?}");
+    }
+
+    #[test]
+    fn empty_string_key_and_value() {
+        let view = JsonView::new(r#"{"": ""}"#);
+        let lines = view.formatted_lines();
+        let has_empty_key = lines.iter().any(|line| {
+            line.iter()
+                .any(|t| matches!(t, JsonToken::Key(s) if s == "\"\""))
+        });
+        assert!(has_empty_key, "empty key should be present: {lines:?}");
+    }
+
+    #[test]
+    fn unicode_in_strings() {
+        let view = JsonView::new(r#"{"emoji": "🎉🚀"}"#);
+        let lines = view.formatted_lines();
+        let has_emoji = lines.iter().any(|line| {
+            line.iter()
+                .any(|t| matches!(t, JsonToken::StringVal(s) if s.contains('🎉')))
+        });
+        assert!(has_emoji);
+    }
+
+    #[test]
+    fn unclosed_string() {
+        // Missing closing quote — tokenizer reads until EOF
+        let view = JsonView::new(r#"{"key": "val"#);
+        let lines = view.formatted_lines();
+        // Should not panic; produces some output
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn unclosed_object() {
+        let view = JsonView::new(r#"{"a": 1"#);
+        let lines = view.formatted_lines();
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn unclosed_array() {
+        let view = JsonView::new(r#"[1, 2, 3"#);
+        let lines = view.formatted_lines();
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn nested_empty_containers() {
+        let view = JsonView::new(r#"{"a": [], "b": {}}"#);
+        let lines = view.formatted_lines();
+        // [] and {} should appear compact
+        let flat = lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .filter_map(|t| match t {
+                        JsonToken::Punctuation(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .collect::<String>();
+        assert!(flat.contains("[]"), "empty array should be compact: {flat}");
+        assert!(
+            flat.contains("{}"),
+            "empty object should be compact: {flat}"
+        );
+    }
+
+    #[test]
+    fn array_of_mixed_types() {
+        let view = JsonView::new(r#"[1, "two", true, null]"#);
+        let lines = view.formatted_lines();
+        let all_tokens: Vec<&JsonToken> = lines.iter().flat_map(|l| l.iter()).collect();
+        assert!(all_tokens.iter().any(|t| matches!(t, JsonToken::Number(_))));
+        assert!(
+            all_tokens
+                .iter()
+                .any(|t| matches!(t, JsonToken::StringVal(_)))
+        );
+        assert!(
+            all_tokens
+                .iter()
+                .any(|t| matches!(t, JsonToken::Literal(s) if s == "true"))
+        );
+        assert!(
+            all_tokens
+                .iter()
+                .any(|t| matches!(t, JsonToken::Literal(s) if s == "null"))
+        );
+    }
+
+    #[test]
+    fn zero_indent_width() {
+        let view = JsonView::new(r#"{"a": 1}"#).with_indent(0);
+        let lines = view.formatted_lines();
+        // Indentation should be empty strings
+        for line in &lines {
+            for token in line {
+                if let JsonToken::Whitespace(s) = token {
+                    assert!(s.is_empty(), "zero indent should produce empty whitespace");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bare_string_top_level() {
+        let view = JsonView::new(r#""hello""#);
+        let lines = view.formatted_lines();
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0]
+                .iter()
+                .any(|t| matches!(t, JsonToken::StringVal(s) if s.contains("hello")))
+        );
+    }
+
+    #[test]
+    fn error_token_for_invalid_literal() {
+        let view = JsonView::new(r#"{"a": undefined}"#);
+        let lines = view.formatted_lines();
+        let has_error = lines
+            .iter()
+            .any(|line| line.iter().any(|t| matches!(t, JsonToken::Error(_))));
+        assert!(has_error, "undefined should produce Error token");
+    }
+
+    #[test]
+    fn clone_independence() {
+        let view = JsonView::new(r#"{"a": 1}"#);
+        let cloned = view.clone();
+        assert_eq!(view.source(), cloned.source());
+    }
+
+    #[test]
+    fn debug_format() {
+        let view = JsonView::new("{}");
+        let dbg = format!("{view:?}");
+        assert!(dbg.contains("JsonView"));
+    }
+
+    #[test]
+    fn style_builders_chain() {
+        let view = JsonView::new("{}")
+            .with_indent(4)
+            .with_key_style(Style::new().bold())
+            .with_string_style(Style::default())
+            .with_number_style(Style::default())
+            .with_literal_style(Style::default())
+            .with_punct_style(Style::default())
+            .with_error_style(Style::default());
+        assert_eq!(view.indent, 4);
+    }
+
+    #[test]
+    fn render_width_one() {
+        let view = JsonView::new(r#"{"a": 1}"#);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 10, &mut pool);
+        view.render(Rect::new(0, 0, 1, 10), &mut frame);
+        // Should render first char of each line without panic
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert_eq!(cell.content.as_char(), Some('{'));
+    }
+
+    #[test]
+    fn json_token_eq() {
+        assert_eq!(JsonToken::Key("a".into()), JsonToken::Key("a".into()));
+        assert_ne!(JsonToken::Key("a".into()), JsonToken::StringVal("a".into()));
+        assert_ne!(JsonToken::Newline, JsonToken::Whitespace("".into()));
+    }
+
+    #[test]
+    fn json_token_clone_and_debug() {
+        let tokens = vec![
+            JsonToken::Key("k".into()),
+            JsonToken::StringVal("s".into()),
+            JsonToken::Number("1".into()),
+            JsonToken::Literal("true".into()),
+            JsonToken::Punctuation("{".into()),
+            JsonToken::Whitespace("  ".into()),
+            JsonToken::Newline,
+            JsonToken::Error("bad".into()),
+        ];
+        for tok in &tokens {
+            let cloned = tok.clone();
+            assert_eq!(tok, &cloned);
+            let _ = format!("{tok:?}");
+        }
+    }
+
+    #[test]
+    fn classify_literal_empty_string() {
+        // Empty literal should be Error (not a number or keyword)
+        let result = classify_literal("");
+        assert!(matches!(result, JsonToken::Error(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn negative_number() {
+        assert_eq!(
+            classify_literal("-42"),
+            JsonToken::Number("-42".to_string())
+        );
+    }
+
+    #[test]
+    fn number_with_exponent() {
+        assert_eq!(
+            classify_literal("5E-3"),
+            JsonToken::Number("5E-3".to_string())
+        );
+    }
+
+    // ─── End edge-case tests (bd-2agoi) ──────────────────────────────
+
     #[test]
     fn classify_literal_types() {
         assert_eq!(
