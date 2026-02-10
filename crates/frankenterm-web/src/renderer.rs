@@ -681,7 +681,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 mix(glyph_meta_entry.uv_min.x, glyph_meta_entry.uv_max.x, local_uv.x),
                 mix(glyph_meta_entry.uv_min.y, glyph_meta_entry.uv_max.y, local_uv.y),
             );
-            glyph_alpha = textureSample(glyph_atlas, glyph_sampler, atlas_uv).r;
+            glyph_alpha = textureSampleLevel(glyph_atlas, glyph_sampler, atlas_uv, 0.0).r;
         }
     }
 

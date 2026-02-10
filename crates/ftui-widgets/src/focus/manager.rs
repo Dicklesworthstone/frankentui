@@ -104,6 +104,7 @@ impl FocusManager {
     }
 
     /// Set focus to widget, returns previous focus.
+    #[must_use]
     pub fn focus(&mut self, id: FocusId) -> Option<FocusId> {
         if !self.can_focus(id) || !self.allowed_by_trap(id) {
             return None;
@@ -117,6 +118,7 @@ impl FocusManager {
     }
 
     /// Remove focus from current widget.
+    #[must_use]
     pub fn blur(&mut self) -> Option<FocusId> {
         let prev = self.current.take();
         if let Some(id) = prev {
@@ -275,6 +277,7 @@ impl FocusManager {
     }
 
     /// Take and clear the last focus event.
+    #[must_use]
     pub fn take_focus_event(&mut self) -> Option<FocusEvent> {
         self.last_event.take()
     }
