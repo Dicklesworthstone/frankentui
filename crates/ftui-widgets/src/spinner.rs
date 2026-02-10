@@ -35,24 +35,28 @@ impl<'a> Spinner<'a> {
     }
 
     /// Wrap the spinner in a [`Block`] container.
+    #[must_use]
     pub fn block(mut self, block: Block<'a>) -> Self {
         self.block = Some(block);
         self
     }
 
     /// Set the base style for the spinner.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set the animation frame characters.
+    #[must_use]
     pub fn frames(mut self, frames: &'a [&'a str]) -> Self {
         self.frames = frames;
         self
     }
 
     /// Set a text label displayed next to the spinner.
+    #[must_use]
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
         self

@@ -707,12 +707,14 @@ impl ToastContent {
     }
 
     /// Set the icon.
+    #[must_use]
     pub fn with_icon(mut self, icon: ToastIcon) -> Self {
         self.icon = Some(icon);
         self
     }
 
     /// Set the title.
+    #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
@@ -847,72 +849,84 @@ impl Toast {
     // --- Builder methods ---
 
     /// Set the toast icon.
+    #[must_use]
     pub fn icon(mut self, icon: ToastIcon) -> Self {
         self.content.icon = Some(icon);
         self
     }
 
     /// Set the toast title.
+    #[must_use]
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.content.title = Some(title.into());
         self
     }
 
     /// Set the toast position.
+    #[must_use]
     pub fn position(mut self, position: ToastPosition) -> Self {
         self.config.position = position;
         self
     }
 
     /// Set the auto-dismiss duration.
+    #[must_use]
     pub fn duration(mut self, duration: Duration) -> Self {
         self.config.duration = Some(duration);
         self
     }
 
     /// Make the toast persistent (no auto-dismiss).
+    #[must_use]
     pub fn persistent(mut self) -> Self {
         self.config.duration = None;
         self
     }
 
     /// Set the style variant.
+    #[must_use]
     pub fn style_variant(mut self, variant: ToastStyle) -> Self {
         self.config.style_variant = variant;
         self
     }
 
     /// Set the maximum width.
+    #[must_use]
     pub fn max_width(mut self, width: u16) -> Self {
         self.config.max_width = width;
         self
     }
 
     /// Set the margin from screen edges.
+    #[must_use]
     pub fn margin(mut self, margin: u16) -> Self {
         self.config.margin = margin;
         self
     }
 
     /// Set whether the toast is dismissable.
+    #[must_use]
     pub fn dismissable(mut self, dismissable: bool) -> Self {
         self.config.dismissable = dismissable;
         self
     }
 
     /// Set the base style.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set the icon style.
+    #[must_use]
     pub fn with_icon_style(mut self, style: Style) -> Self {
         self.icon_style = style;
         self
     }
 
     /// Set the title style.
+    #[must_use]
     pub fn with_title_style(mut self, style: Style) -> Self {
         self.title_style = style;
         self
@@ -921,36 +935,42 @@ impl Toast {
     // --- Animation builder methods ---
 
     /// Set the entrance animation.
+    #[must_use]
     pub fn entrance_animation(mut self, animation: ToastEntranceAnimation) -> Self {
         self.config.animation.entrance = animation;
         self
     }
 
     /// Set the exit animation.
+    #[must_use]
     pub fn exit_animation(mut self, animation: ToastExitAnimation) -> Self {
         self.config.animation.exit = animation;
         self
     }
 
     /// Set the entrance animation duration.
+    #[must_use]
     pub fn entrance_duration(mut self, duration: Duration) -> Self {
         self.config.animation.entrance_duration = duration;
         self
     }
 
     /// Set the exit animation duration.
+    #[must_use]
     pub fn exit_duration(mut self, duration: Duration) -> Self {
         self.config.animation.exit_duration = duration;
         self
     }
 
     /// Set the entrance easing function.
+    #[must_use]
     pub fn entrance_easing(mut self, easing: ToastEasing) -> Self {
         self.config.animation.entrance_easing = easing;
         self
     }
 
     /// Set the exit easing function.
+    #[must_use]
     pub fn exit_easing(mut self, easing: ToastEasing) -> Self {
         self.config.animation.exit_easing = easing;
         self
@@ -959,30 +979,35 @@ impl Toast {
     // --- Action builder methods ---
 
     /// Add a single action button to the toast.
+    #[must_use]
     pub fn action(mut self, action: ToastAction) -> Self {
         self.actions.push(action);
         self
     }
 
     /// Set all action buttons at once.
+    #[must_use]
     pub fn actions(mut self, actions: Vec<ToastAction>) -> Self {
         self.actions = actions;
         self
     }
 
     /// Set the style for action buttons.
+    #[must_use]
     pub fn with_action_style(mut self, style: Style) -> Self {
         self.action_style = style;
         self
     }
 
     /// Set the style for the focused action button.
+    #[must_use]
     pub fn with_action_focus_style(mut self, style: Style) -> Self {
         self.action_focus_style = style;
         self
     }
 
     /// Disable all animations.
+    #[must_use]
     pub fn no_animation(mut self) -> Self {
         self.config.animation = ToastAnimationConfig::none();
         self.state.animation = ToastAnimationState {
@@ -994,6 +1019,7 @@ impl Toast {
     }
 
     /// Enable reduced motion mode (skips animations).
+    #[must_use]
     pub fn reduced_motion(mut self, enabled: bool) -> Self {
         self.config.animation.respect_reduced_motion = enabled;
         if enabled {

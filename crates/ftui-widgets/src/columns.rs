@@ -35,12 +35,14 @@ impl<'a> Column<'a> {
     }
 
     /// Set the column padding.
+    #[must_use]
     pub fn padding(mut self, padding: Sides) -> Self {
         self.padding = padding;
         self
     }
 
     /// Set the column constraint.
+    #[must_use]
     pub fn constraint(mut self, constraint: Constraint) -> Self {
         self.constraint = constraint;
         self
@@ -61,24 +63,28 @@ impl<'a> Columns<'a> {
     }
 
     /// Set the gap between columns.
+    #[must_use]
     pub fn gap(mut self, gap: u16) -> Self {
         self.gap = gap;
         self
     }
 
     /// Add a column definition.
+    #[must_use]
     pub fn push(mut self, column: Column<'a>) -> Self {
         self.columns.push(column);
         self
     }
 
     /// Add a column with a widget and constraint.
+    #[must_use]
     pub fn column(mut self, widget: impl Widget + 'a, constraint: Constraint) -> Self {
         self.columns.push(Column::new(widget, constraint));
         self
     }
 
     /// Add a column with equal ratio sizing.
+    #[must_use]
     #[allow(clippy::should_implement_trait)] // Builder pattern, not std::ops::Add
     pub fn add(mut self, widget: impl Widget + 'a) -> Self {
         self.columns

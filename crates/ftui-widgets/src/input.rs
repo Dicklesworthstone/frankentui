@@ -56,6 +56,7 @@ impl TextInput {
     // --- Builder methods ---
 
     /// Set the text value (builder).
+    #[must_use]
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
         self.cursor = self.value.graphemes(true).count();
@@ -64,42 +65,49 @@ impl TextInput {
     }
 
     /// Set the placeholder text (builder).
+    #[must_use]
     pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
     /// Set password mode with mask character (builder).
+    #[must_use]
     pub fn with_mask(mut self, mask: char) -> Self {
         self.mask_char = Some(mask);
         self
     }
 
     /// Set maximum length in graphemes (builder).
+    #[must_use]
     pub fn with_max_length(mut self, max: usize) -> Self {
         self.max_length = Some(max);
         self
     }
 
     /// Set base style (builder).
+    #[must_use]
     pub fn with_style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set cursor style (builder).
+    #[must_use]
     pub fn with_cursor_style(mut self, style: Style) -> Self {
         self.cursor_style = style;
         self
     }
 
     /// Set placeholder style (builder).
+    #[must_use]
     pub fn with_placeholder_style(mut self, style: Style) -> Self {
         self.placeholder_style = style;
         self
     }
 
     /// Set selection style (builder).
+    #[must_use]
     pub fn with_selection_style(mut self, style: Style) -> Self {
         self.selection_style = style;
         self

@@ -63,24 +63,28 @@ impl<W> Align<W> {
     }
 
     /// Set horizontal alignment.
+    #[must_use]
     pub fn horizontal(mut self, alignment: Alignment) -> Self {
         self.horizontal = alignment;
         self
     }
 
     /// Set vertical alignment.
+    #[must_use]
     pub fn vertical(mut self, alignment: VerticalAlignment) -> Self {
         self.vertical = alignment;
         self
     }
 
     /// Set the child's width. If `None`, the child uses the full parent width.
+    #[must_use]
     pub fn child_width(mut self, width: u16) -> Self {
         self.child_width = Some(width);
         self
     }
 
     /// Set the child's height. If `None`, the child uses the full parent height.
+    #[must_use]
     pub fn child_height(mut self, height: u16) -> Self {
         self.child_height = Some(height);
         self

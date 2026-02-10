@@ -273,48 +273,56 @@ impl MiniBar {
     }
 
     /// Override the value (clamped to 0.0..=1.0).
+    #[must_use]
     pub fn value(mut self, value: f64) -> Self {
         self.value = value;
         self
     }
 
     /// Override the displayed width.
+    #[must_use]
     pub fn width(mut self, width: u16) -> Self {
         self.width = width;
         self
     }
 
     /// Enable or disable percentage text.
+    #[must_use]
     pub fn show_percent(mut self, show: bool) -> Self {
         self.show_percent = show;
         self
     }
 
     /// Set the base style for the bar.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Override the filled block character.
+    #[must_use]
     pub fn filled_char(mut self, ch: char) -> Self {
         self.filled_char = ch;
         self
     }
 
     /// Override the empty block character.
+    #[must_use]
     pub fn empty_char(mut self, ch: char) -> Self {
         self.empty_char = ch;
         self
     }
 
     /// Override the color thresholds.
+    #[must_use]
     pub fn thresholds(mut self, thresholds: MiniBarThresholds) -> Self {
         self.thresholds = thresholds;
         self
     }
 
     /// Override the color palette.
+    #[must_use]
     pub fn colors(mut self, colors: MiniBarColors) -> Self {
         self.colors = colors;
         self

@@ -157,6 +157,7 @@ impl<W: Widget> ErrorBoundary<W> {
     }
 
     /// Set maximum recovery attempts before permanent fallback.
+    #[must_use]
     pub fn max_recovery_attempts(mut self, max: u32) -> Self {
         self.max_recovery_attempts = max;
         self
@@ -382,6 +383,7 @@ impl FallbackWidget {
     }
 
     /// Disable the retry hint.
+    #[must_use]
     pub fn without_retry_hint(mut self) -> Self {
         self.show_retry_hint = false;
         self
@@ -450,6 +452,7 @@ impl<W: Widget> CustomErrorBoundary<W> {
     }
 
     /// Set the fallback factory.
+    #[must_use]
     pub fn fallback_factory(
         mut self,
         factory: impl Fn(&CapturedError) -> FallbackWidget + Send + Sync + 'static,
@@ -459,6 +462,7 @@ impl<W: Widget> CustomErrorBoundary<W> {
     }
 
     /// Set maximum recovery attempts.
+    #[must_use]
     pub fn max_recovery_attempts(mut self, max: u32) -> Self {
         self.max_recovery_attempts = max;
         self

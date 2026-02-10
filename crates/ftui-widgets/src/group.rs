@@ -43,12 +43,14 @@ impl<'a> Group<'a> {
     }
 
     /// Add a widget to the group.
+    #[must_use]
     pub fn push<W: Widget + 'a>(mut self, widget: W) -> Self {
         self.children.push(Box::new(widget));
         self
     }
 
     /// Add a boxed widget to the group.
+    #[must_use]
     pub fn push_boxed(mut self, widget: Box<dyn Widget + 'a>) -> Self {
         self.children.push(widget);
         self

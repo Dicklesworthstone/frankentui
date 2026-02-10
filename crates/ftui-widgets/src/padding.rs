@@ -25,6 +25,7 @@ impl<W> Padding<W> {
     }
 
     /// Set the padding (builder-style).
+    #[must_use]
     pub const fn padding(mut self, padding: Sides) -> Self {
         self.padding = padding;
         self
