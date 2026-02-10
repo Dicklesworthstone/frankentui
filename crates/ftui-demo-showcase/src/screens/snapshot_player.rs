@@ -1351,7 +1351,7 @@ impl SnapshotPlayer {
                 theme::fg::DISABLED
             };
             let cell = Cell::from_char(ch).with_fg(fg_color.into());
-            frame.buffer.set(inner.x + x, inner.y, cell);
+            frame.buffer.set_fast(inner.x + x, inner.y, cell);
         }
 
         // Draw markers
@@ -1363,7 +1363,7 @@ impl SnapshotPlayer {
             };
             if marker_x < inner.width {
                 let cell = Cell::from_char('▼').with_fg(theme::accent::WARNING.into());
-                frame.buffer.set(inner.x + marker_x, inner.y, cell);
+                frame.buffer.set_fast(inner.x + marker_x, inner.y, cell);
             }
         }
 
@@ -1382,12 +1382,12 @@ impl SnapshotPlayer {
                 let b_x = frame_to_x(b_idx).min(inner.width.saturating_sub(1));
                 if a_x == b_x {
                     let cell = Cell::from_char('◆').with_fg(theme::accent::INFO.into());
-                    frame.buffer.set(inner.x + a_x, inner.y, cell);
+                    frame.buffer.set_fast(inner.x + a_x, inner.y, cell);
                 } else {
                     let a_cell = Cell::from_char('A').with_fg(theme::accent::INFO.into());
                     let b_cell = Cell::from_char('B').with_fg(theme::accent::WARNING.into());
-                    frame.buffer.set(inner.x + a_x, inner.y, a_cell);
-                    frame.buffer.set(inner.x + b_x, inner.y, b_cell);
+                    frame.buffer.set_fast(inner.x + a_x, inner.y, a_cell);
+                    frame.buffer.set_fast(inner.x + b_x, inner.y, b_cell);
                 }
             }
         }

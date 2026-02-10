@@ -1499,7 +1499,7 @@ impl MousePlayground {
             let h_end = (area.x + area.width).min(x.saturating_add(20));
             for hx in h_start..h_end {
                 if hx != x {
-                    frame.buffer.set(hx, y, horiz_cell);
+                    frame.buffer.set_fast(hx, y, horiz_cell);
                 }
             }
 
@@ -1508,12 +1508,12 @@ impl MousePlayground {
             let v_end = (area.y + area.height).min(y.saturating_add(10));
             for vy in v_start..v_end {
                 if vy != y {
-                    frame.buffer.set(x, vy, vert_cell);
+                    frame.buffer.set_fast(x, vy, vert_cell);
                 }
             }
 
             // Center marker
-            frame.buffer.set(x, y, center_cell);
+            frame.buffer.set_fast(x, y, center_cell);
         }
     }
 }

@@ -661,7 +661,7 @@ mod tests {
             vec![
                 TracebackFrame::new("run", 3)
                     .filename("lib.rs")
-                    .source_context("fn run() {\n    let x = 1;\n    panic!(\"oops\");\n}", 1),
+                    .source_context("fn run() {\n    let x = 1;\n    panic(\"oops\");\n}", 1),
             ],
             "PanicError",
             "oops",
@@ -684,8 +684,8 @@ mod tests {
 
         let line4 = read_line(&frame.buffer, 4, 60);
         assert!(
-            line4.contains("panic!"),
-            "Error line should contain panic: {line4}"
+            line4.contains("panic("),
+            "Error line should contain panic call: {line4}"
         );
         assert!(
             line4.contains("❱"),
