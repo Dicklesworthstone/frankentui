@@ -831,4 +831,538 @@ mod tests {
         assert_eq!(over.true_color, cloned.true_color);
         assert_eq!(over.in_tmux, cloned.in_tmux);
     }
+
+    // ── is_empty per-field ────────────────────────────────────────────
+
+    #[test]
+    fn is_empty_false_for_colors_256() {
+        assert!(!CapabilityOverride::new().colors_256(Some(true)).is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_for_unicode_box_drawing() {
+        assert!(
+            !CapabilityOverride::new()
+                .unicode_box_drawing(Some(false))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_unicode_emoji() {
+        assert!(
+            !CapabilityOverride::new()
+                .unicode_emoji(Some(true))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_double_width() {
+        assert!(
+            !CapabilityOverride::new()
+                .double_width(Some(true))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_sync_output() {
+        assert!(
+            !CapabilityOverride::new()
+                .sync_output(Some(false))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_osc8_hyperlinks() {
+        assert!(
+            !CapabilityOverride::new()
+                .osc8_hyperlinks(Some(true))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_scroll_region() {
+        assert!(
+            !CapabilityOverride::new()
+                .scroll_region(Some(true))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_in_tmux() {
+        assert!(!CapabilityOverride::new().in_tmux(Some(true)).is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_for_in_screen() {
+        assert!(!CapabilityOverride::new().in_screen(Some(true)).is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_for_in_zellij() {
+        assert!(!CapabilityOverride::new().in_zellij(Some(true)).is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_for_kitty_keyboard() {
+        assert!(
+            !CapabilityOverride::new()
+                .kitty_keyboard(Some(true))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_focus_events() {
+        assert!(
+            !CapabilityOverride::new()
+                .focus_events(Some(false))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_bracketed_paste() {
+        assert!(
+            !CapabilityOverride::new()
+                .bracketed_paste(Some(true))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_empty_false_for_mouse_sgr() {
+        assert!(!CapabilityOverride::new().mouse_sgr(Some(true)).is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_for_osc52_clipboard() {
+        assert!(
+            !CapabilityOverride::new()
+                .osc52_clipboard(Some(false))
+                .is_empty()
+        );
+    }
+
+    // ── apply_to remaining fields ─────────────────────────────────────
+
+    #[test]
+    fn apply_to_covers_unicode_emoji() {
+        let base = TerminalCapabilities::dumb();
+        let result = CapabilityOverride::new()
+            .unicode_emoji(Some(true))
+            .apply_to(base);
+        assert!(result.unicode_emoji);
+    }
+
+    #[test]
+    fn apply_to_covers_double_width() {
+        let base = TerminalCapabilities::dumb();
+        let result = CapabilityOverride::new()
+            .double_width(Some(true))
+            .apply_to(base);
+        assert!(result.double_width);
+    }
+
+    #[test]
+    fn apply_to_covers_sync_output() {
+        let base = TerminalCapabilities::dumb();
+        let result = CapabilityOverride::new()
+            .sync_output(Some(true))
+            .apply_to(base);
+        assert!(result.sync_output);
+    }
+
+    #[test]
+    fn apply_to_covers_osc8_hyperlinks() {
+        let base = TerminalCapabilities::dumb();
+        let result = CapabilityOverride::new()
+            .osc8_hyperlinks(Some(true))
+            .apply_to(base);
+        assert!(result.osc8_hyperlinks);
+    }
+
+    #[test]
+    fn apply_to_covers_scroll_region() {
+        let base = TerminalCapabilities::dumb();
+        let result = CapabilityOverride::new()
+            .scroll_region(Some(true))
+            .apply_to(base);
+        assert!(result.scroll_region);
+    }
+
+    #[test]
+    fn apply_to_covers_mouse_sgr() {
+        let base = TerminalCapabilities::dumb();
+        let result = CapabilityOverride::new()
+            .mouse_sgr(Some(true))
+            .apply_to(base);
+        assert!(result.mouse_sgr);
+    }
+
+    // ── apply_to with presets ─────────────────────────────────────────
+
+    #[test]
+    fn dumb_override_disables_all_on_modern_base() {
+        let base = TerminalCapabilities::modern();
+        let result = CapabilityOverride::dumb().apply_to(base);
+        assert!(!result.true_color);
+        assert!(!result.colors_256);
+        assert!(!result.unicode_box_drawing);
+        assert!(!result.unicode_emoji);
+        assert!(!result.double_width);
+        assert!(!result.sync_output);
+        assert!(!result.osc8_hyperlinks);
+        assert!(!result.scroll_region);
+        assert!(!result.in_tmux);
+        assert!(!result.in_screen);
+        assert!(!result.in_zellij);
+        assert!(!result.kitty_keyboard);
+        assert!(!result.focus_events);
+        assert!(!result.bracketed_paste);
+        assert!(!result.mouse_sgr);
+        assert!(!result.osc52_clipboard);
+    }
+
+    #[test]
+    fn modern_override_enables_features_on_dumb_base() {
+        let base = TerminalCapabilities::dumb();
+        let result = CapabilityOverride::modern().apply_to(base);
+        assert!(result.true_color);
+        assert!(result.colors_256);
+        assert!(result.unicode_box_drawing);
+        assert!(result.unicode_emoji);
+        assert!(result.double_width);
+        assert!(result.sync_output);
+        assert!(result.osc8_hyperlinks);
+        assert!(result.scroll_region);
+        // mux flags disabled by modern preset
+        assert!(!result.in_tmux);
+        assert!(!result.in_screen);
+        assert!(!result.in_zellij);
+        assert!(result.kitty_keyboard);
+        assert!(result.focus_events);
+        assert!(result.bracketed_paste);
+        assert!(result.mouse_sgr);
+        assert!(result.osc52_clipboard);
+    }
+
+    // ── tmux None fields ──────────────────────────────────────────────
+
+    #[test]
+    fn tmux_none_fields_passthrough() {
+        let over = CapabilityOverride::tmux();
+        assert!(over.true_color.is_none());
+        assert!(over.unicode_box_drawing.is_none());
+        assert!(over.unicode_emoji.is_none());
+        assert!(over.double_width.is_none());
+    }
+
+    // ── builder remaining methods ─────────────────────────────────────
+
+    #[test]
+    fn builder_in_tmux_individually() {
+        let over = CapabilityOverride::new().in_tmux(Some(true));
+        assert_eq!(over.in_tmux, Some(true));
+        assert!(over.true_color.is_none()); // other fields unchanged
+    }
+
+    #[test]
+    fn builder_sync_output_individually() {
+        let over = CapabilityOverride::new().sync_output(Some(false));
+        assert_eq!(over.sync_output, Some(false));
+        assert!(over.colors_256.is_none());
+    }
+
+    // ── builder overwrite to None ─────────────────────────────────────
+
+    #[test]
+    fn builder_overwrite_field_to_none() {
+        let over = CapabilityOverride::new()
+            .true_color(Some(true))
+            .true_color(None);
+        assert!(over.true_color.is_none());
+        assert!(over.is_empty());
+    }
+
+    #[test]
+    fn builder_overwrite_dumb_field_to_none() {
+        let over = CapabilityOverride::dumb().true_color(None);
+        assert!(over.true_color.is_none());
+        assert!(!over.is_empty()); // other fields still set
+    }
+
+    // ── guard drop after clear_all is safe ────────────────────────────
+
+    #[test]
+    fn guard_drop_after_clear_all_is_noop() {
+        clear_all_overrides();
+
+        let guard = push_override(CapabilityOverride::dumb());
+        assert_eq!(override_depth(), 1);
+
+        clear_all_overrides();
+        assert_eq!(override_depth(), 0);
+
+        // Drop guard after clear - should be silent noop (pop on empty)
+        drop(guard);
+        assert_eq!(override_depth(), 0);
+    }
+
+    #[test]
+    fn multiple_guards_drop_after_clear_all() {
+        clear_all_overrides();
+
+        let g1 = push_override(CapabilityOverride::dumb());
+        let g2 = push_override(CapabilityOverride::modern());
+        assert_eq!(override_depth(), 2);
+
+        clear_all_overrides();
+        assert_eq!(override_depth(), 0);
+
+        // Both guards drop on empty stack
+        drop(g2);
+        drop(g1);
+        assert_eq!(override_depth(), 0);
+    }
+
+    // ── 3-level deep nesting ──────────────────────────────────────────
+
+    #[test]
+    fn three_level_nesting_innermost_wins() {
+        clear_all_overrides();
+
+        let _l1 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _l2 = push_override(CapabilityOverride::new().true_color(Some(false)));
+        let _l3 = push_override(CapabilityOverride::new().true_color(Some(true)));
+
+        assert_eq!(override_depth(), 3);
+        let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
+        assert!(caps.true_color); // l3 wins
+
+        clear_all_overrides();
+    }
+
+    #[test]
+    fn three_level_nesting_partial_overrides() {
+        clear_all_overrides();
+
+        let _l1 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let _l2 = push_override(CapabilityOverride::new().mouse_sgr(Some(true)));
+        let _l3 = push_override(CapabilityOverride::new().colors_256(Some(true)));
+
+        let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
+        assert!(caps.true_color); // l1
+        assert!(caps.mouse_sgr); // l2
+        assert!(caps.colors_256); // l3
+        assert!(!caps.sync_output); // base dumb
+
+        clear_all_overrides();
+    }
+
+    // ── with_overrides_from method ────────────────────────────────────
+
+    #[test]
+    fn with_overrides_from_applies_stack() {
+        clear_all_overrides();
+
+        let base = TerminalCapabilities::dumb();
+        let _g = push_override(CapabilityOverride::new().true_color(Some(true)));
+
+        // with_overrides_from uses current_capabilities_with_base
+        let caps = base.with_overrides_from(base);
+        assert!(caps.true_color);
+        assert!(!caps.colors_256); // base dumb
+
+        clear_all_overrides();
+    }
+
+    #[test]
+    fn with_overrides_from_without_active_overrides() {
+        clear_all_overrides();
+
+        let base = TerminalCapabilities::modern();
+        let caps = base.with_overrides_from(base);
+        // No overrides active, should equal base
+        assert_eq!(caps.true_color, base.true_color);
+        assert_eq!(caps.mouse_sgr, base.mouse_sgr);
+    }
+
+    // ── with_capability_override panic cleanup ────────────────────────
+
+    #[test]
+    fn with_capability_override_cleans_up_on_panic() {
+        clear_all_overrides();
+
+        let result = std::panic::catch_unwind(|| {
+            with_capability_override(CapabilityOverride::dumb(), || {
+                assert!(has_active_overrides());
+                panic!("deliberate panic");
+            });
+        });
+
+        assert!(result.is_err());
+        // Guard should have been dropped during unwind
+        assert!(!has_active_overrides());
+        assert_eq!(override_depth(), 0);
+    }
+
+    // ── Debug formatting ──────────────────────────────────────────────
+
+    #[test]
+    fn debug_format_contains_field_names() {
+        let over = CapabilityOverride::new().true_color(Some(true));
+        let dbg = format!("{over:?}");
+        assert!(dbg.contains("true_color"));
+        assert!(dbg.contains("Some(true)"));
+    }
+
+    #[test]
+    fn debug_format_empty_override() {
+        let over = CapabilityOverride::new();
+        let dbg = format!("{over:?}");
+        assert!(dbg.contains("CapabilityOverride"));
+        assert!(dbg.contains("None"));
+    }
+
+    // ── clear_all then push resumes ───────────────────────────────────
+
+    #[test]
+    fn clear_all_then_push_resumes_normally() {
+        clear_all_overrides();
+
+        let _g1 = push_override(CapabilityOverride::dumb());
+        clear_all_overrides();
+        assert_eq!(override_depth(), 0);
+
+        // Push again should work normally
+        let _g2 = push_override(CapabilityOverride::modern());
+        assert_eq!(override_depth(), 1);
+        assert!(has_active_overrides());
+
+        let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
+        assert!(caps.true_color);
+
+        clear_all_overrides();
+    }
+
+    // ── current_capabilities with override ────────────────────────────
+
+    #[test]
+    fn current_capabilities_uses_detect_as_base() {
+        clear_all_overrides();
+
+        // Force a known state via dumb override
+        let _g = push_override(CapabilityOverride::dumb());
+        let caps = current_capabilities();
+        assert!(!caps.true_color);
+        assert!(!caps.mouse_sgr);
+
+        clear_all_overrides();
+    }
+
+    // ── with_overrides method ─────────────────────────────────────────
+
+    #[test]
+    fn with_overrides_integrates_full_stack() {
+        clear_all_overrides();
+
+        let _g = push_override(CapabilityOverride::modern());
+        let caps = TerminalCapabilities::with_overrides();
+        assert!(caps.true_color);
+        assert!(caps.kitty_keyboard);
+        assert!(!caps.in_tmux); // modern disables mux
+
+        clear_all_overrides();
+    }
+
+    // ── multiple guards drop ordering ─────────────────────────────────
+
+    #[test]
+    fn second_guard_dropped_first_still_active() {
+        clear_all_overrides();
+
+        let g1 = push_override(CapabilityOverride::new().true_color(Some(true)));
+        let g2 = push_override(CapabilityOverride::new().true_color(Some(false)));
+
+        // Drop g2 first (LIFO order)
+        drop(g2);
+        assert_eq!(override_depth(), 1);
+        let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
+        assert!(caps.true_color); // g1 still active
+
+        drop(g1);
+        assert_eq!(override_depth(), 0);
+    }
+
+    // ── with_capability_override return value propagation ─────────────
+
+    #[test]
+    fn with_capability_override_returns_string() {
+        clear_all_overrides();
+
+        let val = with_capability_override(CapabilityOverride::dumb(), || {
+            String::from("computed value")
+        });
+        assert_eq!(val, "computed value");
+    }
+
+    #[test]
+    fn with_capability_override_returns_tuple() {
+        clear_all_overrides();
+
+        let (a, b) = with_capability_override(CapabilityOverride::modern(), || {
+            let caps = current_capabilities_with_base(TerminalCapabilities::dumb());
+            (caps.true_color, caps.mouse_sgr)
+        });
+        assert!(a);
+        assert!(b);
+    }
+
+    // ── apply_to flips true to false ──────────────────────────────────
+
+    #[test]
+    fn apply_to_disables_on_modern_base() {
+        let base = TerminalCapabilities::modern();
+        let result = CapabilityOverride::new()
+            .true_color(Some(false))
+            .kitty_keyboard(Some(false))
+            .apply_to(base);
+        assert!(!result.true_color);
+        assert!(!result.kitty_keyboard);
+        // Others still modern
+        assert!(result.colors_256);
+        assert!(result.unicode_box_drawing);
+    }
+
+    // ── empty override stack returns base unchanged ───────────────────
+
+    #[test]
+    fn current_capabilities_with_base_no_overrides_returns_base() {
+        clear_all_overrides();
+
+        let base = TerminalCapabilities::modern();
+        let caps = current_capabilities_with_base(base);
+        assert_eq!(caps.true_color, base.true_color);
+        assert_eq!(caps.colors_256, base.colors_256);
+        assert_eq!(caps.unicode_box_drawing, base.unicode_box_drawing);
+        assert_eq!(caps.unicode_emoji, base.unicode_emoji);
+        assert_eq!(caps.double_width, base.double_width);
+        assert_eq!(caps.sync_output, base.sync_output);
+        assert_eq!(caps.osc8_hyperlinks, base.osc8_hyperlinks);
+        assert_eq!(caps.scroll_region, base.scroll_region);
+        assert_eq!(caps.in_tmux, base.in_tmux);
+        assert_eq!(caps.in_screen, base.in_screen);
+        assert_eq!(caps.in_zellij, base.in_zellij);
+        assert_eq!(caps.kitty_keyboard, base.kitty_keyboard);
+        assert_eq!(caps.focus_events, base.focus_events);
+        assert_eq!(caps.bracketed_paste, base.bracketed_paste);
+        assert_eq!(caps.mouse_sgr, base.mouse_sgr);
+        assert_eq!(caps.osc52_clipboard, base.osc52_clipboard);
+    }
 }
