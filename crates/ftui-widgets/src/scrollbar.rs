@@ -335,7 +335,9 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
                 let x = match self.orientation {
                     // For VerticalRight, position so the symbol (including wide chars) fits in the area
                     ScrollbarOrientation::VerticalRight => {
-                        area.right().saturating_sub(symbol_width.max(1) as u16)
+                        area.right()
+                            .saturating_sub(symbol_width.max(1) as u16)
+                            .max(area.left())
                     }
                     ScrollbarOrientation::VerticalLeft => area.left(),
                     _ => unreachable!(),
@@ -733,6 +735,44 @@ mod tests {
         let outside = frame.buffer.get(3, 0).unwrap();
         assert!(outside.is_empty(), "cell outside area should remain empty");
         assert!(frame.hit_test(3, 0).is_none(), "no hit outside area");
+    }
+
+    #[test]
+    fn scrollbar_wide_symbol_vertical_clips_drawing_and_hits_to_area() {
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalLeft)
+            .symbols("🔴", "👍", None, None)
+            .hit_id(HitId::new(1));
+        let area = Rect::new(0, 0, 1, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(2, 2, &mut pool);
+        let mut state = ScrollbarState::new(10, 0, 10); // Thumb fills the track.
+
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
+
+        // x=1 is outside the widget area (area.right() == 1). It must remain untouched.
+        let outside = frame.buffer.get(1, 0).unwrap();
+        assert!(outside.is_empty(), "cell outside area should remain empty");
+        assert!(frame.hit_test(1, 0).is_none(), "no hit outside area");
+    }
+
+    #[test]
+    fn scrollbar_vertical_right_never_draws_left_of_area_for_wide_symbols() {
+        // Regression: when the area is narrower than the symbol, VerticalRight must not
+        // shift the draw position left of the widget area.
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .symbols("🔴", "👍", None, None)
+            .hit_id(HitId::new(1));
+        let area = Rect::new(2, 0, 1, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(4, 2, &mut pool);
+        let mut state = ScrollbarState::new(10, 0, 10);
+
+        StatefulWidget::render(&sb, area, &mut frame, &mut state);
+
+        // x=1 is left of the widget area (area.left() == 2). It must remain untouched.
+        let outside = frame.buffer.get(1, 0).unwrap();
+        assert!(outside.is_empty(), "cell left of area should remain empty");
+        assert!(frame.hit_test(1, 0).is_none(), "no hit left of area");
     }
 
     // --- Mouse handling tests ---

@@ -195,7 +195,7 @@ impl Atlas {
         self.free_slots.push(slot);
     }
 
-    fn alloc_slot(&mut self, w: u16, h: u16) -> Option<AtlasRect> {
+    fn alloc_slot(&mut self, w: u16, h: u16) -> Option<(AtlasRect, bool)> {
         // Best-fit reuse from the free list first (avoids fragmentation churn).
         if let Some((idx, _best)) = self
             .free_slots
@@ -204,7 +204,7 @@ impl Atlas {
             .filter(|(_, r)| r.w >= w && r.h >= h)
             .min_by_key(|(_, r)| (r.w as u32) * (r.h as u32))
         {
-            return Some(self.free_slots.swap_remove(idx));
+            return Some((self.free_slots.swap_remove(idx), true));
         }
 
         // Shelf allocation.
@@ -225,7 +225,37 @@ impl Atlas {
         };
         self.cursor_x = self.cursor_x.saturating_add(w);
         self.row_h = self.row_h.max(h);
-        Some(slot)
+        Some((slot, false))
+    }
+
+    fn clear_r8(&mut self, rect: AtlasRect) {
+        if rect.w == 0 || rect.h == 0 {
+            return;
+        }
+        if rect.x >= self.width || rect.y >= self.height {
+            return;
+        }
+
+        let x1 = rect.x.saturating_add(rect.w).min(self.width);
+        let y1 = rect.y.saturating_add(rect.h).min(self.height);
+        let w = x1.saturating_sub(rect.x);
+        let h = y1.saturating_sub(rect.y);
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let atlas_w = self.width as usize;
+        for row in rect.y as usize..y1 as usize {
+            let start = row * atlas_w + rect.x as usize;
+            let end = row * atlas_w + x1 as usize;
+            self.pixels[start..end].fill(0);
+        }
+        self.dirty.push(AtlasRect {
+            x: rect.x,
+            y: rect.y,
+            w,
+            h,
+        });
     }
 
     fn write_r8(
@@ -234,6 +264,7 @@ impl Atlas {
         src_w: u16,
         src_h: u16,
         src: &[u8],
+        mark_dirty: bool,
     ) -> Result<(), GlyphCacheError> {
         if (src_w as usize) * (src_h as usize) != src.len() {
             return Err(GlyphCacheError::InvalidRaster);
@@ -249,12 +280,14 @@ impl Atlas {
             self.pixels[dst_row..dst_row + (src_w as usize)]
                 .copy_from_slice(&src[src_row..src_row + (src_w as usize)]);
         }
-        self.dirty.push(AtlasRect {
-            x: dst.x,
-            y: dst.y,
-            w: src_w,
-            h: src_h,
-        });
+        if mark_dirty {
+            self.dirty.push(AtlasRect {
+                x: dst.x,
+                y: dst.y,
+                w: src_w,
+                h: src_h,
+            });
+        }
         Ok(())
     }
 }
@@ -432,7 +465,7 @@ impl GlyphAtlasCache {
         let slot_bytes_req = (slot_w as usize) * (slot_h as usize);
         self.evict_until_within_budget(slot_bytes_req);
 
-        let slot = self.alloc_slot_with_eviction(slot_w, slot_h)?;
+        let (slot, reused) = self.alloc_slot_with_eviction(slot_w, slot_h)?;
         let slot_bytes = slot.area_bytes();
         self.evict_until_within_budget(slot_bytes);
 
@@ -442,7 +475,14 @@ impl GlyphAtlasCache {
             w: width,
             h: height,
         };
-        self.atlas.write_r8(draw, width, height, &pixels)?;
+        // If we reused an evicted slot, clear the full allocated slot before writing.
+        // Otherwise, stale pixels outside `draw` can become padding for a smaller
+        // glyph and bleed under linear sampling.
+        if reused {
+            self.atlas.clear_r8(slot);
+        }
+        self.atlas
+            .write_r8(draw, width, height, &pixels, !reused)?;
 
         let id = glyph_id(key);
         let placement = GlyphPlacement {
@@ -501,7 +541,11 @@ impl GlyphAtlasCache {
         }
     }
 
-    fn alloc_slot_with_eviction(&mut self, w: u16, h: u16) -> Result<AtlasRect, GlyphCacheError> {
+    fn alloc_slot_with_eviction(
+        &mut self,
+        w: u16,
+        h: u16,
+    ) -> Result<(AtlasRect, bool), GlyphCacheError> {
         // Fast path: available slot (either free list or shelf).
         if let Some(r) = self.atlas.alloc_slot(w, h) {
             return Ok(r);
@@ -724,6 +768,69 @@ mod tests {
         // Reuse returns the full freed slot (which can be larger than the
         // requested allocation); cache accounting must reflect the actual slot.
         assert_eq!(cache.stats().bytes_cached, p3.slot.area_bytes() as u64);
+    }
+
+    #[test]
+    fn reused_slot_is_cleared_before_write() {
+        // Insert a large glyph, then force eviction and reuse its (larger) slot for
+        // a smaller glyph. The area outside the new draw rect must be cleared to 0
+        // so stale pixels cannot bleed under linear sampling.
+        let mut cache = GlyphAtlasCache::new(32, 32, 12 * 12);
+        let k_large = GlyphKey::from_char('a', 16);
+        let k_small = GlyphKey::from_char('b', 16);
+
+        let p_large = cache
+            .get_or_insert_with(k_large, |_| GlyphRaster {
+                width: 10,
+                height: 10,
+                pixels: vec![0xAA; 10usize * 10usize],
+                metrics: GlyphMetrics::default(),
+            })
+            .expect("large insert");
+        let _ = cache.take_dirty_rects(); // isolate the reuse insertion's dirty list
+
+        let p_small = cache
+            .get_or_insert_with(k_small, |_| GlyphRaster {
+                width: 6,
+                height: 6,
+                pixels: vec![0x55; 6usize * 6usize],
+                metrics: GlyphMetrics::default(),
+            })
+            .expect("small insert");
+
+        assert_eq!(
+            p_small.slot, p_large.slot,
+            "small glyph should reuse the large glyph's freed slot"
+        );
+
+        let dirty = cache.take_dirty_rects();
+        assert_eq!(
+            dirty,
+            vec![p_small.slot],
+            "reused slot should be fully dirtied for upload"
+        );
+
+        let pixels = cache.atlas_pixels();
+        let atlas_w = cache.atlas_dims().0 as usize;
+        let slot_x1 = p_small.slot.x.saturating_add(p_small.slot.w);
+        let slot_y1 = p_small.slot.y.saturating_add(p_small.slot.h);
+        let draw_x1 = p_small.draw.x.saturating_add(p_small.draw.w);
+        let draw_y1 = p_small.draw.y.saturating_add(p_small.draw.h);
+
+        for y in p_small.slot.y..slot_y1 {
+            for x in p_small.slot.x..slot_x1 {
+                let idx = (y as usize) * atlas_w + (x as usize);
+                let in_draw = x >= p_small.draw.x
+                    && x < draw_x1
+                    && y >= p_small.draw.y
+                    && y < draw_y1;
+                let expected = if in_draw { 0x55 } else { 0x00 };
+                assert_eq!(
+                    pixels[idx], expected,
+                    "pixel at ({x},{y}) was not cleared correctly on reuse"
+                );
+            }
+        }
     }
 
     #[test]
