@@ -2055,12 +2055,12 @@ fn parse_text_shaping_config(
         return Ok(config);
     };
 
-    if let Some(v) = get_bool(options, "enabled")?
+    let enabled_override = get_bool(options, "enabled")?
         .or(get_bool(options, "shapingEnabled")?)
         .or(get_bool(options, "shaping_enabled")?)
         .or(get_bool(options, "textShaping")?)
-        .or(get_bool(options, "text_shaping")?)
-    {
+        .or(get_bool(options, "text_shaping")?);
+    if let Some(v) = enabled_override {
         config.enabled = v;
     }
 
@@ -2068,16 +2068,24 @@ fn parse_text_shaping_config(
         .or(get_string_opt(options, "shapingEngine")?)
         .or(get_string_opt(options, "shaping_engine")?)
     {
-        let engine_key = v.trim().to_ascii_lowercase();
-        config.engine = match engine_key.as_str() {
-            "none" => TextShapingEngine::None,
-            "harfbuzz" => TextShapingEngine::Harfbuzz,
-            _ => {
-                return Err(JsValue::from_str(
-                    "field engine must be one of: none, harfbuzz",
-                ));
-            }
-        };
+        // If this update explicitly disables shaping, ignore engine hints.
+        if enabled_override != Some(false) {
+            let engine_key = v.trim().to_ascii_lowercase();
+            config.engine = match engine_key.as_str() {
+                "none" => TextShapingEngine::None,
+                "harfbuzz" => TextShapingEngine::Harfbuzz,
+                _ => {
+                    return Err(JsValue::from_str(
+                        "field engine must be one of: none, harfbuzz",
+                    ));
+                }
+            };
+        }
+    }
+
+    // Canonical state: disabled shaping always reports "none" engine.
+    if !config.enabled {
+        config.engine = TextShapingEngine::None;
     }
 
     Ok(config)
@@ -3281,6 +3289,15 @@ mod tests {
             Some("harfbuzz")
         );
 
+        let disable = Object::new();
+        let _ = Reflect::set(
+            &disable,
+            &JsValue::from_str("enabled"),
+            &JsValue::from_bool(false),
+        );
+        assert!(term.set_text_shaping(disable.into()).is_ok());
+        assert_eq!(term.text_shaping, TextShapingConfig::default());
+
         let invalid = Object::new();
         let _ = Reflect::set(
             &invalid,
@@ -3288,6 +3305,40 @@ mod tests {
             &JsValue::from_str("icu"),
         );
         assert!(term.set_text_shaping(invalid.into()).is_err());
+    }
+
+    #[test]
+    fn set_text_shaping_ignores_engine_when_disabled() {
+        let mut term = FrankenTermWeb::new();
+
+        let cfg = Object::new();
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("enabled"),
+            &JsValue::from_bool(false),
+        );
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("engine"),
+            &JsValue::from_str("icu"),
+        );
+        assert!(term.set_text_shaping(cfg.into()).is_ok());
+        assert_eq!(term.text_shaping, TextShapingConfig::default());
+
+        let state = term.text_shaping_state();
+        assert_eq!(
+            Reflect::get(&state, &JsValue::from_str("enabled"))
+                .expect("text_shaping_state should contain enabled key")
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            Reflect::get(&state, &JsValue::from_str("engine"))
+                .expect("text_shaping_state should contain engine key")
+                .as_string()
+                .as_deref(),
+            Some("none")
+        );
     }
 
     #[test]
