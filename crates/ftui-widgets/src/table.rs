@@ -498,7 +498,10 @@ impl TableState {
     ///
     /// Clamps so that the last row can still appear at the top of the viewport.
     pub fn scroll_down(&mut self, lines: usize, row_count: usize) {
-        self.offset = (self.offset + lines).min(row_count.saturating_sub(1));
+        self.offset = self
+            .offset
+            .saturating_add(lines)
+            .min(row_count.saturating_sub(1));
     }
 }
 
@@ -1167,6 +1170,17 @@ mod tests {
         state.select(None);
         assert_eq!(state.selected, None);
         assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn table_state_scroll_down_is_overflow_safe() {
+        // Ensure `scroll_down` cannot wrap on invalid persisted offsets.
+        let mut state = TableState {
+            offset: usize::MAX - 1,
+            ..Default::default()
+        };
+        state.scroll_down(10, 100);
+        assert_eq!(state.offset, 99);
     }
 
     // --- Table rendering tests ---
