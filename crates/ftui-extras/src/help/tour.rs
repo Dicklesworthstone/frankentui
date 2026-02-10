@@ -743,4 +743,210 @@ mod tests {
         assert!(state.navigate(TourAction::Complete));
         assert!(state.is_action_completed());
     }
+
+    // --- Additional edge case tests (bd-m3gnl) ---
+
+    #[test]
+    fn tour_step_debug_clone() {
+        let step = TourStep::new("Dbg").content("body").metadata("meta");
+        let cloned = step.clone();
+        assert_eq!(cloned.title, "Dbg");
+        assert_eq!(cloned.metadata, Some("meta".into()));
+        assert!(!format!("{:?}", step).is_empty());
+    }
+
+    #[test]
+    fn tour_debug_clone() {
+        let tour = sample_tour();
+        let cloned = tour.clone();
+        assert_eq!(cloned.id, "test-tour");
+        assert_eq!(cloned.step_count(), 3);
+        assert!(!format!("{:?}", tour).is_empty());
+    }
+
+    #[test]
+    fn tour_get_step_valid_and_oob() {
+        let tour = sample_tour();
+        assert!(tour.get_step(0).is_some());
+        assert_eq!(tour.get_step(0).unwrap().title, "Step 1");
+        assert!(tour.get_step(2).is_some());
+        assert!(tour.get_step(3).is_none());
+        assert!(tour.get_step(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn completion_status_debug_clone_copy_eq() {
+        let status = CompletionStatus::Completed;
+        let copied = status;
+        assert_eq!(status, copied);
+        assert_ne!(CompletionStatus::Completed, CompletionStatus::Skipped);
+        assert_ne!(CompletionStatus::InProgress, CompletionStatus::NotStarted);
+        assert!(!format!("{:?}", status).is_empty());
+    }
+
+    #[test]
+    fn tour_action_debug_clone_copy_eq() {
+        let action = TourAction::Next;
+        let copied = action;
+        assert_eq!(action, copied);
+        assert_ne!(TourAction::Next, TourAction::Back);
+        assert_ne!(TourAction::Skip, TourAction::Complete);
+        assert!(!format!("{:?}", action).is_empty());
+    }
+
+    #[test]
+    fn tour_event_debug_clone_eq() {
+        let event = TourEvent::Started {
+            tour_id: "t".into(),
+        };
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
+        assert_ne!(
+            TourEvent::Started {
+                tour_id: "a".into()
+            },
+            TourEvent::Completed {
+                tour_id: "a".into()
+            }
+        );
+        assert!(!format!("{:?}", event).is_empty());
+    }
+
+    #[test]
+    fn tour_completion_debug_clone_default() {
+        let comp = TourCompletion::default();
+        let cloned = comp.clone();
+        assert_eq!(cloned.status("x"), CompletionStatus::NotStarted);
+        assert!(!format!("{:?}", comp).is_empty());
+    }
+
+    #[test]
+    fn tour_state_default_equals_new() {
+        let a = TourState::default();
+        let b = TourState::new();
+        assert!(!a.is_active());
+        assert!(!b.is_active());
+        assert_eq!(a.current_step_index(), b.current_step_index());
+    }
+
+    #[test]
+    fn tour_state_debug_clone() {
+        let mut state = TourState::new();
+        state.start(sample_tour());
+        let cloned = state.clone();
+        assert!(cloned.is_active());
+        assert!(!format!("{:?}", state).is_empty());
+    }
+
+    #[test]
+    fn tour_state_tour_returns_ref() {
+        let mut state = TourState::new();
+        assert!(state.tour().is_none());
+        state.start(sample_tour());
+        let tour_ref = state.tour().unwrap();
+        assert_eq!(tour_ref.id, "test-tour");
+    }
+
+    #[test]
+    fn current_step_at_different_indices() {
+        let mut state = TourState::new();
+        state.start(sample_tour());
+        assert_eq!(state.current_step().unwrap().title, "Step 1");
+
+        state.navigate(TourAction::Next);
+        assert_eq!(state.current_step().unwrap().title, "Step 2");
+
+        state.navigate(TourAction::Next);
+        assert_eq!(state.current_step().unwrap().title, "Step 3");
+    }
+
+    #[test]
+    fn can_go_next_no_action_required() {
+        let mut state = TourState::new();
+        state.start(sample_tour());
+        assert!(
+            state.can_go_next(),
+            "should be able to go next without action requirement"
+        );
+    }
+
+    #[test]
+    fn can_go_next_no_tour_returns_false() {
+        let state = TourState::new();
+        assert!(!state.can_go_next());
+    }
+
+    #[test]
+    fn action_completed_resets_on_step_change() {
+        let tour = Tour::new("t")
+            .add_step(TourStep::new("S1").requires_action(true))
+            .add_step(TourStep::new("S2").requires_action(true));
+        let mut state = TourState::new();
+        state.start(tour);
+        state.take_event();
+
+        state.complete_action();
+        assert!(state.is_action_completed());
+
+        state.navigate(TourAction::Next);
+        assert!(
+            !state.is_action_completed(),
+            "action_completed should reset on step change"
+        );
+    }
+
+    #[test]
+    fn single_step_tour_completes_on_next() {
+        let tour = Tour::new("single").add_step(TourStep::new("Only"));
+        let mut state = TourState::new();
+        state.start(tour);
+        state.take_event();
+
+        assert!(state.navigate(TourAction::Next));
+        assert!(!state.is_active());
+        assert_eq!(
+            state.take_event(),
+            Some(TourEvent::Completed {
+                tour_id: "single".into()
+            })
+        );
+    }
+
+    #[test]
+    fn mark_completed_removes_from_skipped() {
+        let mut comp = TourCompletion::new();
+        comp.mark_skipped("t");
+        assert_eq!(comp.status("t"), CompletionStatus::Skipped);
+
+        comp.mark_completed("t");
+        assert_eq!(comp.status("t"), CompletionStatus::Completed);
+    }
+
+    #[test]
+    fn reset_nonexistent_tour_is_noop() {
+        let mut comp = TourCompletion::new();
+        comp.reset("nonexistent"); // Should not panic
+        assert_eq!(comp.status("nonexistent"), CompletionStatus::NotStarted);
+    }
+
+    #[test]
+    fn restart_replaces_active_tour() {
+        let mut state = TourState::new();
+        state.start(sample_tour());
+        state.navigate(TourAction::Next);
+
+        // Start a different tour
+        let tour2 = Tour::new("tour2").add_step(TourStep::new("New"));
+        state.start(tour2);
+        assert_eq!(state.current_step_index(), 0);
+        assert_eq!(state.tour().unwrap().id, "tour2");
+    }
+
+    #[test]
+    fn take_event_clears_pending() {
+        let mut state = TourState::new();
+        state.start(sample_tour());
+        assert!(state.take_event().is_some());
+        assert!(state.take_event().is_none(), "event should be consumed");
+    }
 }
