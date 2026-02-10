@@ -2069,4 +2069,523 @@ mod tests {
         state.scroll_up(5);
         assert_eq!(state.offset, 0);
     }
+
+    // ============================================================================
+    // Edge-Case Tests (bd-2rvwb)
+    // ============================================================================
+
+    #[test]
+    fn row_with_fewer_cells_than_columns() {
+        // Row has 1 cell but table declares 3 columns — extra columns should be empty
+        let table = Table::new(
+            [Row::new(["A"])],
+            [
+                Constraint::Fixed(3),
+                Constraint::Fixed(3),
+                Constraint::Fixed(3),
+            ],
+        );
+        let area = Rect::new(0, 0, 12, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+        // Columns 2 and 3 should not contain data characters
+        assert_ne!(cell_char(&frame.buffer, 4, 0), Some('A'));
+    }
+
+    #[test]
+    fn column_spacing_zero() {
+        // No gap between columns — cells should be adjacent
+        let table = Table::new(
+            [Row::new(["AB", "CD"])],
+            [Constraint::Fixed(2), Constraint::Fixed(2)],
+        )
+        .column_spacing(0);
+
+        let area = Rect::new(0, 0, 4, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+        assert_eq!(cell_char(&frame.buffer, 1, 0), Some('B'));
+        assert_eq!(cell_char(&frame.buffer, 2, 0), Some('C'));
+        assert_eq!(cell_char(&frame.buffer, 3, 0), Some('D'));
+    }
+
+    #[test]
+    fn render_with_nonzero_origin() {
+        // Table rendered at offset position, not (0,0)
+        let table = Table::new([Row::new(["X"])], [Constraint::Fixed(3)]);
+        let area = Rect::new(5, 3, 3, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 6, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 5, 3), Some('X'));
+        // Nothing at (0,0)
+        assert_ne!(cell_char(&frame.buffer, 0, 0), Some('X'));
+    }
+
+    #[test]
+    fn single_row_height_exceeds_area() {
+        // Row is taller than the viewport — should be clipped via scissor
+        let table = Table::new([Row::new(["T"]).height(10)], [Constraint::Fixed(3)]);
+        let area = Rect::new(0, 0, 3, 2);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 2, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // First line of the row should still render
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('T'));
+    }
+
+    #[test]
+    fn selection_and_hover_on_same_row() {
+        // Both selected and hovered on same row — both styles should merge
+        let selected_fg = PackedRgba::rgb(100, 0, 0);
+        let hovered_fg = PackedRgba::rgb(0, 100, 0);
+        let highlight_fg = PackedRgba::rgb(0, 0, 100);
+
+        let mut theme = TableTheme::default();
+        theme.row_selected = Style::new().fg(selected_fg);
+        theme.row_hover = Style::new().fg(hovered_fg);
+
+        let table = Table::new([Row::new(["X"])], [Constraint::Fixed(3)])
+            .highlight_style(Style::new().fg(highlight_fg))
+            .theme(theme);
+
+        let area = Rect::new(0, 0, 3, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 1, &mut pool);
+        let mut state = TableState {
+            selected: Some(0),
+            hovered: Some(0),
+            ..Default::default()
+        };
+
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+        // Highlight style wins (applied last in merge chain)
+        assert_eq!(cell_fg(&frame.buffer, 0, 0), Some(highlight_fg));
+    }
+
+    #[test]
+    fn alternating_row_styles() {
+        // Even/odd rows should get different theme styles
+        let even_fg = PackedRgba::rgb(10, 10, 10);
+        let odd_fg = PackedRgba::rgb(20, 20, 20);
+        let mut theme = TableTheme::default();
+        theme.row = Style::new().fg(even_fg);
+        theme.row_alt = Style::new().fg(odd_fg);
+
+        let table = Table::new(
+            [Row::new(["E"]), Row::new(["O"]), Row::new(["E2"])],
+            [Constraint::Fixed(3)],
+        )
+        .theme(theme);
+
+        let area = Rect::new(0, 0, 3, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // Row 0 is even, row 1 is odd, row 2 is even
+        assert_eq!(cell_fg(&frame.buffer, 0, 0), Some(even_fg));
+        assert_eq!(cell_fg(&frame.buffer, 0, 1), Some(odd_fg));
+        assert_eq!(cell_fg(&frame.buffer, 0, 2), Some(even_fg));
+    }
+
+    #[test]
+    fn scroll_up_from_zero_stays_zero() {
+        let mut state = TableState::default();
+        state.scroll_up(10);
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn scroll_down_with_zero_rows() {
+        let mut state = TableState::default();
+        state.scroll_down(5, 0);
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn scroll_down_with_single_row() {
+        let mut state = TableState::default();
+        state.scroll_down(5, 1);
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn mouse_click_on_row_exceeding_row_count() {
+        // Hit data row index >= row_count should be ignored
+        let mut state = TableState::default();
+        let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 0, 0);
+        let hit = Some((HitId::new(1), HitRegion::Content, 100u64));
+        let result = state.handle_mouse(&event, hit, HitId::new(1), 5);
+        assert_eq!(result, MouseResult::Ignored);
+        assert_eq!(state.selected, None);
+    }
+
+    #[test]
+    fn mouse_right_click_ignored() {
+        let mut state = TableState::default();
+        let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Right), 0, 0);
+        let hit = Some((HitId::new(1), HitRegion::Content, 2u64));
+        let result = state.handle_mouse(&event, hit, HitId::new(1), 5);
+        assert_eq!(result, MouseResult::Ignored);
+    }
+
+    #[test]
+    fn mouse_hover_on_row_exceeding_row_count() {
+        let mut state = TableState::default();
+        let event = MouseEvent::new(MouseEventKind::Moved, 0, 0);
+        let hit = Some((HitId::new(1), HitRegion::Content, 100u64));
+        let result = state.handle_mouse(&event, hit, HitId::new(1), 5);
+        // Moves off widget, hover cleared (was None, stays None)
+        assert_eq!(result, MouseResult::Ignored);
+        assert_eq!(state.hovered, None);
+    }
+
+    #[test]
+    fn select_deselect_resets_offset_then_reselect() {
+        let mut state = TableState::default();
+        state.offset = 15;
+        state.select(Some(20));
+        assert_eq!(state.selected, Some(20));
+        assert_eq!(state.offset, 15); // offset not reset on select
+
+        state.select(None);
+        assert_eq!(state.offset, 0); // reset on deselect
+
+        state.select(Some(3));
+        assert_eq!(state.selected, Some(3));
+        assert_eq!(state.offset, 0); // still 0 after reselect
+    }
+
+    #[test]
+    fn offset_clamped_when_rows_empty() {
+        let table = Table::new(Vec::<Row>::new(), [Constraint::Fixed(5)]);
+        let area = Rect::new(0, 0, 5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+        let mut state = TableState {
+            offset: 999,
+            ..Default::default()
+        };
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn selection_clamps_when_rows_empty() {
+        let table = Table::new(Vec::<Row>::new(), [Constraint::Fixed(5)]);
+        let area = Rect::new(0, 0, 5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+        let mut state = TableState {
+            selected: Some(5),
+            ..Default::default()
+        };
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+        assert_eq!(state.selected, None);
+    }
+
+    #[test]
+    fn header_with_bottom_margin_offsets_rows() {
+        let header = Row::new(["H"]).bottom_margin(2);
+        let table = Table::new([Row::new(["D"])], [Constraint::Fixed(3)]).header(header);
+
+        let area = Rect::new(0, 0, 3, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 5, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // Header at y=0, margin of 2, data at y=3
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('H'));
+        assert_eq!(cell_char(&frame.buffer, 0, 3), Some('D'));
+    }
+
+    #[test]
+    fn block_plus_header_fill_entire_area() {
+        // Block takes 2 rows (top/bottom border), header takes 1 row — 3 rows total.
+        // With area height=3, no data rows should render.
+        let header = Row::new(["H"]);
+        let table = Table::new([Row::new(["X"])], [Constraint::Fixed(3)])
+            .block(Block::bordered())
+            .header(header);
+
+        let area = Rect::new(0, 0, 5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 3, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // Header should render at (1,1) inside the border
+        assert_eq!(cell_char(&frame.buffer, 1, 1), Some('H'));
+        // Data row "X" should NOT appear (no room)
+        let data_rendered =
+            (0..5).any(|x| (0..3).any(|y| cell_char(&frame.buffer, x, y) == Some('X')));
+        assert!(!data_rendered);
+    }
+
+    #[test]
+    fn min_constraint_measure() {
+        let table = Table::new([Row::new(["AB"])], [Constraint::Min(10)]);
+        let c = table.measure(Size::MAX);
+        // Preferred width based on content, not the constraint minimum
+        assert_eq!(c.preferred.width, 2);
+        assert_eq!(c.preferred.height, 1);
+    }
+
+    #[test]
+    fn percentage_constraint_render() {
+        // Percentage constraints should not panic and produce reasonable layout
+        let table = Table::new(
+            [Row::new(["A", "B"])],
+            [Constraint::Percentage(50.0), Constraint::Percentage(50.0)],
+        );
+        let area = Rect::new(0, 0, 20, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+    }
+
+    #[test]
+    fn fit_content_constraint_measure() {
+        let table = Table::new(
+            [Row::new(["Hello", "World"])],
+            [Constraint::FitContent, Constraint::FitContent],
+        )
+        .column_spacing(1);
+
+        let c = table.measure(Size::MAX);
+        // "Hello" = 5, "World" = 5, spacing = 1 → 11
+        assert_eq!(c.preferred.width, 11);
+    }
+
+    #[test]
+    fn measure_with_block_adds_overhead() {
+        let table_no_block = Table::new([Row::new(["X"])], [Constraint::Fixed(3)]);
+        let table_with_block =
+            Table::new([Row::new(["X"])], [Constraint::Fixed(3)]).block(Block::bordered());
+
+        let c_no = table_no_block.measure(Size::MAX);
+        let c_with = table_with_block.measure(Size::MAX);
+
+        // Block border adds 2 to width and 2 to height
+        assert_eq!(c_with.preferred.width, c_no.preferred.width + 2);
+        assert_eq!(c_with.preferred.height, c_no.preferred.height + 2);
+    }
+
+    #[test]
+    fn variable_height_rows_selection_scrolls_down() {
+        // Rows: height 1, 1, 5, 1, 1. Viewport=4 rows.
+        // Select row 4 (past the tall row) should adjust offset.
+        let rows = vec![
+            Row::new(["A"]),
+            Row::new(["B"]),
+            Row::new(["C"]).height(5),
+            Row::new(["D"]),
+            Row::new(["E"]),
+        ];
+        let table = Table::new(rows, [Constraint::Fixed(5)]);
+        let area = Rect::new(0, 0, 5, 4);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 4, &mut pool);
+        let mut state = TableState {
+            selected: Some(4),
+            ..Default::default()
+        };
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        // Selection should be visible; offset adjusted
+        assert!(state.offset > 0);
+        assert_eq!(state.selected, Some(4));
+    }
+
+    #[test]
+    fn many_rows_with_margins_viewport_clamping() {
+        // 20 rows each with bottom_margin=1, viewport=5 lines.
+        // Each row occupies 2 lines (1 content + 1 margin). Max 2 rows visible.
+        let rows: Vec<Row> = (0..20)
+            .map(|i| Row::new([format!("R{i}")]).bottom_margin(1))
+            .collect();
+        let table = Table::new(rows, [Constraint::Fixed(5)]);
+        let area = Rect::new(0, 0, 5, 5);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(5, 5, &mut pool);
+        let mut state = TableState {
+            offset: 19,
+            ..Default::default()
+        };
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        // Offset should be clamped back to fill viewport
+        assert!(state.offset < 19);
+    }
+
+    #[test]
+    fn render_area_width_one() {
+        // Extremely narrow area — should not panic
+        let table = Table::new([Row::new(["Hello"])], [Constraint::Fixed(5)]);
+        let area = Rect::new(0, 0, 1, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(1, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('H'));
+    }
+
+    #[test]
+    fn render_area_height_one() {
+        // Minimal height — should show first row
+        let table = Table::new([Row::new(["A"]), Row::new(["B"])], [Constraint::Fixed(3)]);
+        let area = Rect::new(0, 0, 3, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(3, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        assert_eq!(cell_char(&frame.buffer, 0, 0), Some('A'));
+    }
+
+    #[test]
+    fn hit_regions_with_offset() {
+        // When scrolled, hit data should still encode logical row index
+        let table = Table::new(
+            (0..10).map(|i| Row::new([format!("R{i}")])),
+            [Constraint::Fixed(5)],
+        )
+        .hit_id(HitId::new(42));
+
+        let area = Rect::new(0, 0, 5, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(5, 3, &mut pool);
+        let mut state = TableState {
+            offset: 5,
+            ..Default::default()
+        };
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        // Row at y=0 should be logical row 5
+        let hit0 = frame.hit_test(2, 0);
+        assert_eq!(hit0, Some((HitId::new(42), HitRegion::Content, 5)));
+
+        let hit1 = frame.hit_test(2, 1);
+        assert_eq!(hit1, Some((HitId::new(42), HitRegion::Content, 6)));
+    }
+
+    #[test]
+    fn table_state_sort_defaults() {
+        let state = TableState::default();
+        assert_eq!(state.sort_column(), None);
+        assert!(!state.sort_ascending());
+        assert!(state.filter().is_empty());
+    }
+
+    #[test]
+    fn table_state_set_sort_toggle() {
+        let mut state = TableState::default();
+        state.set_sort(Some(0), true);
+        assert_eq!(state.sort_column(), Some(0));
+        assert!(state.sort_ascending());
+
+        // Toggle direction
+        state.set_sort(Some(0), false);
+        assert!(!state.sort_ascending());
+
+        // Change column
+        state.set_sort(Some(3), true);
+        assert_eq!(state.sort_column(), Some(3));
+
+        // Clear sort
+        state.set_sort(None, false);
+        assert_eq!(state.sort_column(), None);
+    }
+
+    #[test]
+    fn table_persist_round_trip_preserves_hovered_none() {
+        let mut state = TableState::default().with_persistence_id("t");
+        state.select(Some(3));
+        state.hovered = Some(7);
+        state.offset = 2;
+
+        let saved = state.save_state();
+        state.restore_state(saved);
+
+        // hovered is deliberately NOT persisted (transient state)
+        assert_eq!(state.hovered, None);
+        assert_eq!(state.selected, Some(3));
+        assert_eq!(state.offset, 2);
+    }
+
+    #[test]
+    fn undo_snapshot_clears_hovered() {
+        let mut state = TableState::default();
+        state.select(Some(2));
+        state.hovered = Some(5);
+
+        let snap = state.create_snapshot();
+
+        // Modify
+        state.select(Some(9));
+        state.hovered = Some(8);
+
+        // Restore
+        assert!(state.restore_snapshot(&*snap));
+        assert_eq!(state.selected, Some(2));
+        // hovered is cleared on restore (not preserved in snapshot)
+        assert_eq!(state.hovered, None);
+    }
+
+    #[test]
+    fn wide_chars_in_render() {
+        // CJK characters are 2 cells wide — should clip correctly.
+        // Wide chars are stored in the grapheme pool, so as_char() returns None.
+        // We verify the cell at (0,0) is not blank (the default space).
+        let table = Table::new([Row::new(["界界界"])], [Constraint::Fixed(4)]);
+        let area = Rect::new(0, 0, 4, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+
+        // "界界界" needs 6 cells but only 4 available — first two wide chars fit
+        let cell = frame.buffer.get(0, 0).unwrap();
+        assert!(
+            !cell.content.is_default(),
+            "first cell should contain content, not be blank"
+        );
+    }
+
+    #[test]
+    fn empty_row_cells() {
+        // Row with empty strings — should render without panic
+        let table = Table::new(
+            [Row::new(["", "", ""])],
+            [
+                Constraint::Fixed(3),
+                Constraint::Fixed(3),
+                Constraint::Fixed(3),
+            ],
+        );
+        let area = Rect::new(0, 0, 11, 1);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(11, 1, &mut pool);
+        Widget::render(&table, area, &mut frame);
+        // Should not panic; cells empty
+    }
+
+    #[test]
+    fn measure_with_many_rows_saturates() {
+        // Height computation should use saturating arithmetic
+        let rows: Vec<Row> = (0..10000).map(|_| Row::new(["X"]).height(100)).collect();
+        let table = Table::new(rows, [Constraint::Fixed(3)]);
+        let c = table.measure(Size::MAX);
+
+        // Should not overflow — saturates at u16::MAX
+        assert!(c.preferred.height > 0);
+    }
 }
