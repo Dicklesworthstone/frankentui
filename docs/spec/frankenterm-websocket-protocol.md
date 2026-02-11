@@ -679,6 +679,75 @@ Client                                  Server
   │──── WebSocket Close (1000) ─────────>│
 ```
 
+### 5.1.1 Deterministic Browser Attach State Machine
+
+The browser client MUST implement an explicit deterministic attach lifecycle
+state machine. Hidden retry loops are forbidden.
+
+Canonical states:
+
+| State | Meaning |
+|-------|---------|
+| `detached` | No active transport/session; initial baseline. |
+| `connecting_transport` | Host is opening websocket transport. |
+| `awaiting_handshake_ack` | Transport open; handshake sent; waiting for `HandshakeAck`. |
+| `active` | Session fully attached; bidirectional I/O allowed. |
+| `backing_off` | Waiting for deterministic retry timer before re-open. |
+| `closing` | Graceful close in progress (`SessionEnd` + transport close). |
+| `closed` | Orderly terminal close completed. |
+| `failed` | Terminal failure state (fatal protocol/transport condition). |
+
+Canonical event classes:
+- `connect_requested`
+- `transport_opened`
+- `handshake_ack`
+- `transport_closed`
+- `protocol_error`
+- `session_ended`
+- `close_requested`
+- `tick`
+- `reset_requested`
+
+Deterministic transition policy:
+- `detached|closed|failed + connect_requested -> connecting_transport` (emit `open_transport`).
+- `connecting_transport + transport_opened -> awaiting_handshake_ack` (emit `send_handshake` and handshake timeout deadline).
+- `awaiting_handshake_ack + handshake_ack -> active`.
+- `awaiting_handshake_ack + handshake timeout -> backing_off|failed` (emit `close_transport`; retry iff retries remain).
+- `active + close_requested|session_ended -> closing` (emit close actions).
+- `closing + transport_closed -> closed`.
+- `active|awaiting_handshake_ack|connecting_transport + retryable transport/protocol failure -> backing_off`.
+- `backing_off + tick(deadline reached) -> connecting_transport` (emit `open_transport`).
+- `reset_requested` returns to `detached` from any state.
+
+Retry backoff MUST be deterministic, no jitter:
+
+```
+delay_ms = min(backoff_max_ms, backoff_base_ms * 2^(attempt - 2))
+```
+
+Where `attempt=2` is the first retry after initial attempt `1`.
+
+### 5.1.2 Required Attach Transition Telemetry
+
+Every state transition MUST emit JSONL event `attach_state_transition` with:
+- `run_id`
+- `ts_ms`
+- `transition_seq`
+- `attach_event`
+- `from_state`
+- `to_state`
+- `attempt`
+- `handshake_deadline_ms` (nullable)
+- `retry_deadline_ms` (nullable)
+- `session_id` (nullable)
+- `close_code` / `clean_close` (nullable)
+- `reason` / `failure_code` (nullable)
+- `actions` (ordered list)
+
+Minimum integrated E2E coverage for this lifecycle:
+- `tests/e2e/scripts/test_remote_resize_storm.sh`
+- `tests/e2e/scripts/test_remote_all.sh`
+
 ### 5.2 Reconnection
 
 If the WebSocket connection drops unexpectedly:

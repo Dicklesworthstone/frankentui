@@ -17,6 +17,13 @@ use serde::{Deserialize, Serialize};
 /// Current pane tree schema version.
 pub const PANE_TREE_SCHEMA_VERSION: u16 = 1;
 
+/// Current schema version for semantic pane interaction events.
+///
+/// Versioning policy:
+/// - Additive metadata can be carried in `extensions` without a version bump.
+/// - Breaking field/semantic changes must bump this version.
+pub const PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION: u16 = 1;
+
 /// Stable identifier for pane nodes.
 ///
 /// `0` is reserved/invalid so IDs are always non-zero.
@@ -478,6 +485,227 @@ impl PanePlacement {
         }
     }
 }
+
+/// Pointer button for pane interaction events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanePointerButton {
+    Primary,
+    Secondary,
+    Middle,
+}
+
+/// Normalized interaction position in pane-local coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanePointerPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl PanePointerPosition {
+    #[must_use]
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
+
+/// Snapshot of active modifiers captured with one semantic event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneModifierSnapshot {
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
+    pub meta: bool,
+}
+
+impl PaneModifierSnapshot {
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            shift: false,
+            alt: false,
+            ctrl: false,
+            meta: false,
+        }
+    }
+}
+
+impl Default for PaneModifierSnapshot {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+/// Canonical resize target for semantic pane input events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneResizeTarget {
+    pub split_id: PaneId,
+    pub axis: SplitAxis,
+}
+
+/// Direction for semantic resize commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneResizeDirection {
+    Increase,
+    Decrease,
+}
+
+/// Canonical cancel reasons for pane interaction state machines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneCancelReason {
+    EscapeKey,
+    PointerCancel,
+    FocusLost,
+    Blur,
+    Programmatic,
+}
+
+/// Versioned semantic pane interaction event kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum PaneSemanticInputEventKind {
+    PointerDown {
+        target: PaneResizeTarget,
+        pointer_id: u32,
+        button: PanePointerButton,
+        position: PanePointerPosition,
+    },
+    PointerMove {
+        target: PaneResizeTarget,
+        pointer_id: u32,
+        position: PanePointerPosition,
+        delta_x: i32,
+        delta_y: i32,
+    },
+    PointerUp {
+        target: PaneResizeTarget,
+        pointer_id: u32,
+        button: PanePointerButton,
+        position: PanePointerPosition,
+    },
+    WheelNudge {
+        target: PaneResizeTarget,
+        lines: i16,
+    },
+    KeyboardResize {
+        target: PaneResizeTarget,
+        direction: PaneResizeDirection,
+        units: u16,
+    },
+    Cancel {
+        target: Option<PaneResizeTarget>,
+        reason: PaneCancelReason,
+    },
+    Blur {
+        target: Option<PaneResizeTarget>,
+    },
+}
+
+/// Versioned semantic pane interaction event consumed by pane-core and emitted
+/// by host adapters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSemanticInputEvent {
+    #[serde(default = "default_pane_semantic_input_event_schema_version")]
+    pub schema_version: u16,
+    pub sequence: u64,
+    #[serde(default)]
+    pub modifiers: PaneModifierSnapshot,
+    #[serde(flatten)]
+    pub kind: PaneSemanticInputEventKind,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, String>,
+}
+
+fn default_pane_semantic_input_event_schema_version() -> u16 {
+    PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION
+}
+
+impl PaneSemanticInputEvent {
+    /// Build a schema-versioned semantic pane input event.
+    #[must_use]
+    pub fn new(sequence: u64, kind: PaneSemanticInputEventKind) -> Self {
+        Self {
+            schema_version: PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION,
+            sequence,
+            modifiers: PaneModifierSnapshot::default(),
+            kind,
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    /// Validate event invariants required for deterministic replay.
+    pub fn validate(&self) -> Result<(), PaneSemanticInputEventError> {
+        if self.schema_version != PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION {
+            return Err(PaneSemanticInputEventError::UnsupportedSchemaVersion {
+                version: self.schema_version,
+                expected: PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION,
+            });
+        }
+        if self.sequence == 0 {
+            return Err(PaneSemanticInputEventError::ZeroSequence);
+        }
+
+        match self.kind {
+            PaneSemanticInputEventKind::PointerDown { pointer_id, .. }
+            | PaneSemanticInputEventKind::PointerMove { pointer_id, .. }
+            | PaneSemanticInputEventKind::PointerUp { pointer_id, .. } => {
+                if pointer_id == 0 {
+                    return Err(PaneSemanticInputEventError::ZeroPointerId);
+                }
+            }
+            PaneSemanticInputEventKind::WheelNudge { lines, .. } => {
+                if lines == 0 {
+                    return Err(PaneSemanticInputEventError::ZeroWheelLines);
+                }
+            }
+            PaneSemanticInputEventKind::KeyboardResize { units, .. } => {
+                if units == 0 {
+                    return Err(PaneSemanticInputEventError::ZeroResizeUnits);
+                }
+            }
+            PaneSemanticInputEventKind::Cancel { .. } | PaneSemanticInputEventKind::Blur { .. } => {
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Validation failures for semantic pane input events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneSemanticInputEventError {
+    UnsupportedSchemaVersion { version: u16, expected: u16 },
+    ZeroSequence,
+    ZeroPointerId,
+    ZeroWheelLines,
+    ZeroResizeUnits,
+}
+
+impl fmt::Display for PaneSemanticInputEventError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedSchemaVersion { version, expected } => write!(
+                f,
+                "unsupported pane semantic input schema version {version} (expected {expected})"
+            ),
+            Self::ZeroSequence => write!(f, "semantic pane input event sequence must be non-zero"),
+            Self::ZeroPointerId => {
+                write!(
+                    f,
+                    "semantic pane pointer events require non-zero pointer_id"
+                )
+            }
+            Self::ZeroWheelLines => write!(f, "semantic pane wheel nudge must be non-zero"),
+            Self::ZeroResizeUnits => {
+                write!(f, "semantic pane keyboard resize units must be non-zero")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PaneSemanticInputEventError {}
 
 /// Supported structural pane operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3518,6 +3746,189 @@ mod tests {
         assert_eq!(first.tree.state_hash(), second.tree.state_hash());
         assert_eq!(first.actions, second.actions);
         assert_eq!(first.report_after, second.report_after);
+    }
+
+    fn default_target() -> PaneResizeTarget {
+        PaneResizeTarget {
+            split_id: id(7),
+            axis: SplitAxis::Horizontal,
+        }
+    }
+
+    #[test]
+    fn semantic_input_event_fixture_round_trip_covers_all_variants() {
+        let mut pointer_down = PaneSemanticInputEvent::new(
+            1,
+            PaneSemanticInputEventKind::PointerDown {
+                target: default_target(),
+                pointer_id: 11,
+                button: PanePointerButton::Primary,
+                position: PanePointerPosition::new(42, 9),
+            },
+        );
+        pointer_down.modifiers = PaneModifierSnapshot {
+            shift: true,
+            alt: false,
+            ctrl: true,
+            meta: false,
+        };
+        let pointer_down_fixture = r#"{"schema_version":1,"sequence":1,"modifiers":{"shift":true,"alt":false,"ctrl":true,"meta":false},"event":"pointer_down","target":{"split_id":7,"axis":"horizontal"},"pointer_id":11,"button":"primary","position":{"x":42,"y":9},"extensions":{}}"#;
+
+        let pointer_move = PaneSemanticInputEvent::new(
+            2,
+            PaneSemanticInputEventKind::PointerMove {
+                target: default_target(),
+                pointer_id: 11,
+                position: PanePointerPosition::new(45, 8),
+                delta_x: 3,
+                delta_y: -1,
+            },
+        );
+        let pointer_move_fixture = r#"{"schema_version":1,"sequence":2,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"pointer_move","target":{"split_id":7,"axis":"horizontal"},"pointer_id":11,"position":{"x":45,"y":8},"delta_x":3,"delta_y":-1,"extensions":{}}"#;
+
+        let pointer_up = PaneSemanticInputEvent::new(
+            3,
+            PaneSemanticInputEventKind::PointerUp {
+                target: default_target(),
+                pointer_id: 11,
+                button: PanePointerButton::Primary,
+                position: PanePointerPosition::new(45, 8),
+            },
+        );
+        let pointer_up_fixture = r#"{"schema_version":1,"sequence":3,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"pointer_up","target":{"split_id":7,"axis":"horizontal"},"pointer_id":11,"button":"primary","position":{"x":45,"y":8},"extensions":{}}"#;
+
+        let wheel_nudge = PaneSemanticInputEvent::new(
+            4,
+            PaneSemanticInputEventKind::WheelNudge {
+                target: default_target(),
+                lines: -2,
+            },
+        );
+        let wheel_nudge_fixture = r#"{"schema_version":1,"sequence":4,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"wheel_nudge","target":{"split_id":7,"axis":"horizontal"},"lines":-2,"extensions":{}}"#;
+
+        let keyboard_resize = PaneSemanticInputEvent::new(
+            5,
+            PaneSemanticInputEventKind::KeyboardResize {
+                target: default_target(),
+                direction: PaneResizeDirection::Increase,
+                units: 3,
+            },
+        );
+        let keyboard_resize_fixture = r#"{"schema_version":1,"sequence":5,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"keyboard_resize","target":{"split_id":7,"axis":"horizontal"},"direction":"increase","units":3,"extensions":{}}"#;
+
+        let cancel = PaneSemanticInputEvent::new(
+            6,
+            PaneSemanticInputEventKind::Cancel {
+                target: Some(default_target()),
+                reason: PaneCancelReason::PointerCancel,
+            },
+        );
+        let cancel_fixture = r#"{"schema_version":1,"sequence":6,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"cancel","target":{"split_id":7,"axis":"horizontal"},"reason":"pointer_cancel","extensions":{}}"#;
+
+        let blur =
+            PaneSemanticInputEvent::new(7, PaneSemanticInputEventKind::Blur { target: None });
+        let blur_fixture = r#"{"schema_version":1,"sequence":7,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"blur","target":null,"extensions":{}}"#;
+
+        let fixtures = [
+            ("pointer_down", pointer_down_fixture, pointer_down),
+            ("pointer_move", pointer_move_fixture, pointer_move),
+            ("pointer_up", pointer_up_fixture, pointer_up),
+            ("wheel_nudge", wheel_nudge_fixture, wheel_nudge),
+            ("keyboard_resize", keyboard_resize_fixture, keyboard_resize),
+            ("cancel", cancel_fixture, cancel),
+            ("blur", blur_fixture, blur),
+        ];
+
+        for (name, fixture, expected) in fixtures {
+            let parsed: PaneSemanticInputEvent =
+                serde_json::from_str(fixture).expect("fixture should parse");
+            assert_eq!(
+                parsed, expected,
+                "{name} fixture should match expected shape"
+            );
+            parsed.validate().expect("fixture should validate");
+            let encoded = serde_json::to_string(&parsed).expect("event should encode");
+            assert_eq!(encoded, fixture, "{name} fixture should be canonical");
+        }
+    }
+
+    #[test]
+    fn semantic_input_event_defaults_schema_version_to_current() {
+        let fixture = r#"{"sequence":9,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"blur","target":null,"extensions":{}}"#;
+        let parsed: PaneSemanticInputEvent =
+            serde_json::from_str(fixture).expect("fixture should parse");
+        assert_eq!(
+            parsed.schema_version,
+            PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION
+        );
+        parsed.validate().expect("defaulted event should validate");
+    }
+
+    #[test]
+    fn semantic_input_event_rejects_invalid_invariants() {
+        let target = default_target();
+
+        let mut schema_version = PaneSemanticInputEvent::new(
+            1,
+            PaneSemanticInputEventKind::Blur {
+                target: Some(target),
+            },
+        );
+        schema_version.schema_version = 99;
+        assert_eq!(
+            schema_version.validate(),
+            Err(PaneSemanticInputEventError::UnsupportedSchemaVersion {
+                version: 99,
+                expected: PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION
+            })
+        );
+
+        let sequence = PaneSemanticInputEvent::new(
+            0,
+            PaneSemanticInputEventKind::Blur {
+                target: Some(target),
+            },
+        );
+        assert_eq!(
+            sequence.validate(),
+            Err(PaneSemanticInputEventError::ZeroSequence)
+        );
+
+        let pointer = PaneSemanticInputEvent::new(
+            2,
+            PaneSemanticInputEventKind::PointerDown {
+                target,
+                pointer_id: 0,
+                button: PanePointerButton::Primary,
+                position: PanePointerPosition::new(0, 0),
+            },
+        );
+        assert_eq!(
+            pointer.validate(),
+            Err(PaneSemanticInputEventError::ZeroPointerId)
+        );
+
+        let wheel = PaneSemanticInputEvent::new(
+            3,
+            PaneSemanticInputEventKind::WheelNudge { target, lines: 0 },
+        );
+        assert_eq!(
+            wheel.validate(),
+            Err(PaneSemanticInputEventError::ZeroWheelLines)
+        );
+
+        let keyboard = PaneSemanticInputEvent::new(
+            4,
+            PaneSemanticInputEventKind::KeyboardResize {
+                target,
+                direction: PaneResizeDirection::Decrease,
+                units: 0,
+            },
+        );
+        assert_eq!(
+            keyboard.validate(),
+            Err(PaneSemanticInputEventError::ZeroResizeUnits)
+        );
     }
 
     proptest! {

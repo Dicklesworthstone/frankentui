@@ -57,13 +57,15 @@ pub use direction::{FlowDirection, LogicalAlignment, LogicalSides, mirror_rects_
 pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};
 pub use pane::{
-    PANE_TREE_SCHEMA_VERSION, PaneConstraints, PaneId, PaneIdAllocator, PaneInvariantCode,
-    PaneInvariantIssue, PaneInvariantReport, PaneInvariantSeverity, PaneLayout, PaneLeaf,
-    PaneModelError, PaneNodeKind, PaneNodeRecord, PaneOperation, PaneOperationError,
+    PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION, PANE_TREE_SCHEMA_VERSION, PaneCancelReason,
+    PaneConstraints, PaneId, PaneIdAllocator, PaneInvariantCode, PaneInvariantIssue,
+    PaneInvariantReport, PaneInvariantSeverity, PaneLayout, PaneLeaf, PaneModelError,
+    PaneModifierSnapshot, PaneNodeKind, PaneNodeRecord, PaneOperation, PaneOperationError,
     PaneOperationFailure, PaneOperationJournalEntry, PaneOperationJournalResult, PaneOperationKind,
-    PaneOperationOutcome, PanePlacement, PaneRepairAction, PaneRepairError, PaneRepairFailure,
-    PaneRepairOutcome, PaneSplit, PaneSplitRatio, PaneTransaction, PaneTransactionOutcome,
-    PaneTree, PaneTreeSnapshot, SplitAxis,
+    PaneOperationOutcome, PanePlacement, PanePointerButton, PanePointerPosition, PaneRepairAction,
+    PaneRepairError, PaneRepairFailure, PaneRepairOutcome, PaneResizeDirection, PaneResizeTarget,
+    PaneSemanticInputEvent, PaneSemanticInputEventError, PaneSemanticInputEventKind, PaneSplit,
+    PaneSplitRatio, PaneTransaction, PaneTransactionOutcome, PaneTree, PaneTreeSnapshot, SplitAxis,
 };
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};
