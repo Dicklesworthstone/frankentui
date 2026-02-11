@@ -14,6 +14,12 @@ use ftui_web::{WebFlatPatchBatch, WebPatchStats};
 /// Platform-independent showcase runner wrapping `StepProgram<AppModel>`.
 pub struct RunnerCore {
     inner: StepProgram<AppModel>,
+    /// Cached patch hash from the last `take_flat_patches()` call.
+    cached_patch_hash: Option<String>,
+    /// Cached patch stats from the last `take_flat_patches()` call.
+    cached_patch_stats: Option<WebPatchStats>,
+    /// Cached logs from the last `take_flat_patches()` call.
+    cached_logs: Vec<String>,
 }
 
 impl RunnerCore {
@@ -22,6 +28,9 @@ impl RunnerCore {
         let model = AppModel::default();
         Self {
             inner: StepProgram::new(model, cols, rows),
+            cached_patch_hash: None,
+            cached_patch_stats: None,
+            cached_logs: Vec::new(),
         }
     }
 
@@ -71,25 +80,31 @@ impl RunnerCore {
     }
 
     /// Take the flat patch batch for GPU upload.
+    ///
+    /// Also caches patch hash, stats, and logs so they can be read
+    /// via `patch_hash()`, `patch_stats()`, and `take_logs()` after
+    /// the outputs have been drained.
     pub fn take_flat_patches(&mut self) -> WebFlatPatchBatch {
         let outputs = self.inner.take_outputs();
+        self.cached_patch_hash = outputs.last_patch_hash.clone();
+        self.cached_patch_stats = outputs.last_patch_stats;
+        self.cached_logs = outputs.logs.clone();
         outputs.flatten_patches_u32()
     }
 
-    /// Take accumulated log lines.
+    /// Take accumulated log lines (from the last `take_flat_patches` call).
     pub fn take_logs(&mut self) -> Vec<String> {
-        let outputs = self.inner.take_outputs();
-        outputs.logs
+        std::mem::take(&mut self.cached_logs)
     }
 
     /// FNV-1a hash of the last patch batch.
     pub fn patch_hash(&self) -> Option<String> {
-        self.inner.outputs().last_patch_hash.clone()
+        self.cached_patch_hash.clone()
     }
 
     /// Patch upload stats.
     pub fn patch_stats(&self) -> Option<WebPatchStats> {
-        self.inner.outputs().last_patch_stats
+        self.cached_patch_stats
     }
 
     /// Current frame index (monotonic, 0-based).

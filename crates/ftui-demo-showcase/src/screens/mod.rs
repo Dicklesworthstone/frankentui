@@ -596,10 +596,10 @@ pub fn screen_registry() -> &'static [ScreenMeta] {
     }
 }
 
-/// Lazily computed ordered screen IDs (derived from the registry).
+/// Lazily computed ordered screen IDs (derived from the filtered registry).
 pub fn screen_ids() -> &'static [ScreenId] {
     static IDS: OnceLock<Vec<ScreenId>> = OnceLock::new();
-    IDS.get_or_init(|| SCREEN_REGISTRY.iter().map(|meta| meta.id).collect())
+    IDS.get_or_init(|| screen_registry().iter().map(|meta| meta.id).collect())
 }
 
 /// Lookup a screen by ID in the registry.
@@ -625,9 +625,9 @@ pub fn screen_tab_label(id: ScreenId) -> &'static str {
     screen_meta(id).short_label
 }
 
-/// Index of a screen in the registry.
+/// Index of a screen in the filtered registry.
 pub fn screen_index(id: ScreenId) -> usize {
-    SCREEN_REGISTRY
+    screen_registry()
         .iter()
         .position(|meta| meta.id == id)
         .unwrap_or(0)
@@ -635,7 +635,7 @@ pub fn screen_index(id: ScreenId) -> usize {
 
 /// Iterate screens in a given category, preserving registry order.
 pub fn screens_in_category(category: ScreenCategory) -> impl Iterator<Item = &'static ScreenMeta> {
-    SCREEN_REGISTRY
+    screen_registry()
         .iter()
         .filter(move |meta| meta.category == category)
 }
