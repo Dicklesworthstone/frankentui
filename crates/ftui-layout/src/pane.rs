@@ -1019,6 +1019,290 @@ fn to_i32(value: i64) -> Result<i32, PaneCoordinateNormalizationError> {
 /// `Armed` to `Dragging`.
 pub const PANE_DRAG_RESIZE_DEFAULT_THRESHOLD: u16 = 2;
 
+/// Default minimum move distance (in coordinate units) required to emit a
+/// `DragUpdated` transition while dragging.
+pub const PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS: u16 = 2;
+
+/// Default snapping interval expressed in basis points (0..=10_000).
+pub const PANE_SNAP_DEFAULT_STEP_BPS: u16 = 500;
+
+/// Default snap stickiness window in basis points.
+pub const PANE_SNAP_DEFAULT_HYSTERESIS_BPS: u16 = 125;
+
+/// Precision mode derived from modifier snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanePrecisionMode {
+    Normal,
+    Fine,
+    Coarse,
+}
+
+/// Modifier-derived precision/axis-lock policy for drag updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanePrecisionPolicy {
+    pub mode: PanePrecisionMode,
+    pub axis_lock: Option<SplitAxis>,
+    pub scale: PaneScaleFactor,
+}
+
+impl PanePrecisionPolicy {
+    /// Build precision policy from modifiers for a target split axis.
+    #[must_use]
+    pub fn from_modifiers(modifiers: PaneModifierSnapshot, target_axis: SplitAxis) -> Self {
+        let mode = if modifiers.alt {
+            PanePrecisionMode::Fine
+        } else if modifiers.ctrl {
+            PanePrecisionMode::Coarse
+        } else {
+            PanePrecisionMode::Normal
+        };
+        let axis_lock = modifiers.shift.then_some(target_axis);
+        let scale = match mode {
+            PanePrecisionMode::Normal => PaneScaleFactor::ONE,
+            PanePrecisionMode::Fine => PaneScaleFactor {
+                numerator: 1,
+                denominator: 2,
+            },
+            PanePrecisionMode::Coarse => PaneScaleFactor {
+                numerator: 2,
+                denominator: 1,
+            },
+        };
+        Self {
+            mode,
+            axis_lock,
+            scale,
+        }
+    }
+
+    /// Apply precision mode and optional axis-lock to an interaction delta.
+    pub fn apply_delta(
+        &self,
+        raw_delta_x: i32,
+        raw_delta_y: i32,
+    ) -> Result<(i32, i32), PaneInteractionPolicyError> {
+        let (locked_x, locked_y) = match self.axis_lock {
+            Some(SplitAxis::Horizontal) => (raw_delta_x, 0),
+            Some(SplitAxis::Vertical) => (0, raw_delta_y),
+            None => (raw_delta_x, raw_delta_y),
+        };
+
+        let scaled_x = scale_delta_by_factor(locked_x, self.scale)?;
+        let scaled_y = scale_delta_by_factor(locked_y, self.scale)?;
+        Ok((scaled_x, scaled_y))
+    }
+}
+
+/// Deterministic snapping policy for pane split ratios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSnapTuning {
+    pub step_bps: u16,
+    pub hysteresis_bps: u16,
+}
+
+impl PaneSnapTuning {
+    pub fn new(step_bps: u16, hysteresis_bps: u16) -> Result<Self, PaneInteractionPolicyError> {
+        let tuning = Self {
+            step_bps,
+            hysteresis_bps,
+        };
+        tuning.validate()?;
+        Ok(tuning)
+    }
+
+    pub fn validate(self) -> Result<(), PaneInteractionPolicyError> {
+        if self.step_bps == 0 || self.step_bps > 10_000 {
+            return Err(PaneInteractionPolicyError::InvalidSnapTuning {
+                step_bps: self.step_bps,
+                hysteresis_bps: self.hysteresis_bps,
+            });
+        }
+        Ok(())
+    }
+
+    /// Decide whether to snap an input ratio using deterministic tie-breaking.
+    #[must_use]
+    pub fn decide(self, ratio_bps: u16, previous_snap: Option<u16>) -> PaneSnapDecision {
+        let step = u32::from(self.step_bps);
+        let ratio = u32::from(ratio_bps).min(10_000);
+        let low = ((ratio / step) * step).min(10_000);
+        let high = (low + step).min(10_000);
+
+        let distance_low = ratio.abs_diff(low);
+        let distance_high = ratio.abs_diff(high);
+
+        let (nearest, nearest_distance) = if distance_low <= distance_high {
+            (low as u16, distance_low as u16)
+        } else {
+            (high as u16, distance_high as u16)
+        };
+
+        if let Some(previous) = previous_snap {
+            let distance_previous = ratio.abs_diff(u32::from(previous));
+            if distance_previous <= u32::from(self.hysteresis_bps) {
+                return PaneSnapDecision {
+                    input_ratio_bps: ratio_bps,
+                    snapped_ratio_bps: Some(previous),
+                    nearest_ratio_bps: nearest,
+                    nearest_distance_bps: nearest_distance,
+                    reason: PaneSnapReason::RetainedPrevious,
+                };
+            }
+        }
+
+        if nearest_distance <= self.hysteresis_bps {
+            PaneSnapDecision {
+                input_ratio_bps: ratio_bps,
+                snapped_ratio_bps: Some(nearest),
+                nearest_ratio_bps: nearest,
+                nearest_distance_bps: nearest_distance,
+                reason: PaneSnapReason::SnappedNearest,
+            }
+        } else {
+            PaneSnapDecision {
+                input_ratio_bps: ratio_bps,
+                snapped_ratio_bps: None,
+                nearest_ratio_bps: nearest,
+                nearest_distance_bps: nearest_distance,
+                reason: PaneSnapReason::UnsnapOutsideWindow,
+            }
+        }
+    }
+}
+
+impl Default for PaneSnapTuning {
+    fn default() -> Self {
+        Self {
+            step_bps: PANE_SNAP_DEFAULT_STEP_BPS,
+            hysteresis_bps: PANE_SNAP_DEFAULT_HYSTERESIS_BPS,
+        }
+    }
+}
+
+/// Combined drag behavior tuning constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneDragBehaviorTuning {
+    pub activation_threshold: u16,
+    pub update_hysteresis: u16,
+    pub snap: PaneSnapTuning,
+}
+
+impl PaneDragBehaviorTuning {
+    pub fn new(
+        activation_threshold: u16,
+        update_hysteresis: u16,
+        snap: PaneSnapTuning,
+    ) -> Result<Self, PaneInteractionPolicyError> {
+        if activation_threshold == 0 {
+            return Err(PaneInteractionPolicyError::InvalidThreshold {
+                field: "activation_threshold",
+                value: activation_threshold,
+            });
+        }
+        if update_hysteresis == 0 {
+            return Err(PaneInteractionPolicyError::InvalidThreshold {
+                field: "update_hysteresis",
+                value: update_hysteresis,
+            });
+        }
+        snap.validate()?;
+        Ok(Self {
+            activation_threshold,
+            update_hysteresis,
+            snap,
+        })
+    }
+
+    #[must_use]
+    pub fn should_start_drag(
+        self,
+        origin: PanePointerPosition,
+        current: PanePointerPosition,
+    ) -> bool {
+        crossed_drag_threshold(origin, current, self.activation_threshold)
+    }
+
+    #[must_use]
+    pub fn should_emit_drag_update(
+        self,
+        previous: PanePointerPosition,
+        current: PanePointerPosition,
+    ) -> bool {
+        crossed_drag_threshold(previous, current, self.update_hysteresis)
+    }
+}
+
+impl Default for PaneDragBehaviorTuning {
+    fn default() -> Self {
+        Self {
+            activation_threshold: PANE_DRAG_RESIZE_DEFAULT_THRESHOLD,
+            update_hysteresis: PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS,
+            snap: PaneSnapTuning::default(),
+        }
+    }
+}
+
+/// Deterministic snap decision categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneSnapReason {
+    RetainedPrevious,
+    SnappedNearest,
+    UnsnapOutsideWindow,
+}
+
+/// Output of snap-decision evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSnapDecision {
+    pub input_ratio_bps: u16,
+    pub snapped_ratio_bps: Option<u16>,
+    pub nearest_ratio_bps: u16,
+    pub nearest_distance_bps: u16,
+    pub reason: PaneSnapReason,
+}
+
+/// Tuning/policy validation errors for pane interaction behavior controls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneInteractionPolicyError {
+    InvalidThreshold { field: &'static str, value: u16 },
+    InvalidSnapTuning { step_bps: u16, hysteresis_bps: u16 },
+    DeltaOverflow,
+}
+
+impl fmt::Display for PaneInteractionPolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidThreshold { field, value } => {
+                write!(f, "invalid {field} value {value} (must be > 0)")
+            }
+            Self::InvalidSnapTuning {
+                step_bps,
+                hysteresis_bps,
+            } => {
+                write!(
+                    f,
+                    "invalid snap tuning step_bps={step_bps} hysteresis_bps={hysteresis_bps}"
+                )
+            }
+            Self::DeltaOverflow => write!(f, "delta scaling overflow"),
+        }
+    }
+}
+
+impl std::error::Error for PaneInteractionPolicyError {}
+
+fn scale_delta_by_factor(
+    delta: i32,
+    factor: PaneScaleFactor,
+) -> Result<i32, PaneInteractionPolicyError> {
+    let scaled = i64::from(delta)
+        .checked_mul(i64::from(factor.numerator()))
+        .ok_or(PaneInteractionPolicyError::DeltaOverflow)?;
+    let normalized = scaled / i64::from(factor.denominator());
+    i32::try_from(normalized).map_err(|_| PaneInteractionPolicyError::DeltaOverflow)
+}
+
 /// Deterministic pane drag/resize lifecycle state.
 ///
 /// ```text
@@ -1056,6 +1340,7 @@ pub enum PaneDragResizeNoopReason {
     TargetMismatch,
     ActiveStateDisallowsDiscreteInput,
     ThresholdNotReached,
+    BelowHysteresis,
 }
 
 /// Transition effect emitted by one lifecycle step.
@@ -1127,6 +1412,7 @@ pub struct PaneDragResizeTransition {
 pub struct PaneDragResizeMachine {
     state: PaneDragResizeState,
     drag_threshold: u16,
+    update_hysteresis: u16,
     transition_counter: u64,
 }
 
@@ -1135,6 +1421,7 @@ impl Default for PaneDragResizeMachine {
         Self {
             state: PaneDragResizeState::Idle,
             drag_threshold: PANE_DRAG_RESIZE_DEFAULT_THRESHOLD,
+            update_hysteresis: PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS,
             transition_counter: 0,
         }
     }
@@ -1143,14 +1430,29 @@ impl Default for PaneDragResizeMachine {
 impl PaneDragResizeMachine {
     /// Construct a drag/resize lifecycle machine with explicit threshold.
     pub fn new(drag_threshold: u16) -> Result<Self, PaneDragResizeMachineError> {
+        Self::new_with_hysteresis(drag_threshold, PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS)
+    }
+
+    /// Construct a drag/resize lifecycle machine with explicit threshold and
+    /// drag-update hysteresis.
+    pub fn new_with_hysteresis(
+        drag_threshold: u16,
+        update_hysteresis: u16,
+    ) -> Result<Self, PaneDragResizeMachineError> {
         if drag_threshold == 0 {
             return Err(PaneDragResizeMachineError::InvalidDragThreshold {
                 threshold: drag_threshold,
             });
         }
+        if update_hysteresis == 0 {
+            return Err(PaneDragResizeMachineError::InvalidUpdateHysteresis {
+                hysteresis: update_hysteresis,
+            });
+        }
         Ok(Self {
             state: PaneDragResizeState::Idle,
             drag_threshold,
+            update_hysteresis,
             transition_counter: 0,
         })
     }
@@ -1165,6 +1467,12 @@ impl PaneDragResizeMachine {
     #[must_use]
     pub const fn drag_threshold(&self) -> u16 {
         self.drag_threshold
+    }
+
+    /// Configured drag-update hysteresis threshold.
+    #[must_use]
+    pub const fn update_hysteresis(&self) -> u16 {
+        self.update_hysteresis
     }
 
     /// Apply one semantic pane input event and emit deterministic transition
@@ -1395,25 +1703,31 @@ impl PaneDragResizeMachine {
                     }
                 } else {
                     let previous = current;
-                    let (delta_x, delta_y) = delta(previous, *position);
-                    let (total_delta_x, total_delta_y) = delta(origin, *position);
-                    self.state = PaneDragResizeState::Dragging {
-                        target,
-                        pointer_id,
-                        origin,
-                        current: *position,
-                        started_sequence,
-                        drag_started_sequence,
-                    };
-                    PaneDragResizeEffect::DragUpdated {
-                        target,
-                        pointer_id,
-                        previous,
-                        current: *position,
-                        delta_x,
-                        delta_y,
-                        total_delta_x,
-                        total_delta_y,
+                    if !crossed_drag_threshold(previous, *position, self.update_hysteresis) {
+                        PaneDragResizeEffect::Noop {
+                            reason: PaneDragResizeNoopReason::BelowHysteresis,
+                        }
+                    } else {
+                        let (delta_x, delta_y) = delta(previous, *position);
+                        let (total_delta_x, total_delta_y) = delta(origin, *position);
+                        self.state = PaneDragResizeState::Dragging {
+                            target,
+                            pointer_id,
+                            origin,
+                            current: *position,
+                            started_sequence,
+                            drag_started_sequence,
+                        };
+                        PaneDragResizeEffect::DragUpdated {
+                            target,
+                            pointer_id,
+                            previous,
+                            current: *position,
+                            delta_x,
+                            delta_y,
+                            total_delta_x,
+                            total_delta_y,
+                        }
                     }
                 }
             }
@@ -1525,6 +1839,7 @@ impl PaneDragResizeMachine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneDragResizeMachineError {
     InvalidDragThreshold { threshold: u16 },
+    InvalidUpdateHysteresis { hysteresis: u16 },
     InvalidEvent(PaneSemanticInputEventError),
 }
 
@@ -1533,6 +1848,9 @@ impl fmt::Display for PaneDragResizeMachineError {
         match self {
             Self::InvalidDragThreshold { threshold } => {
                 write!(f, "drag threshold must be > 0 (got {threshold})")
+            }
+            Self::InvalidUpdateHysteresis { hysteresis } => {
+                write!(f, "update hysteresis must be > 0 (got {hysteresis})")
             }
             Self::InvalidEvent(error) => write!(f, "invalid semantic pane input event: {error}"),
         }
@@ -4965,6 +5283,101 @@ mod tests {
         }
     }
 
+    #[test]
+    fn snap_tuning_is_deterministic_with_tie_breaks_and_hysteresis() {
+        let tuning = PaneSnapTuning::default();
+
+        let tie = tuning.decide(3_250, None);
+        assert_eq!(tie.nearest_ratio_bps, 3_000);
+        assert_eq!(tie.snapped_ratio_bps, None);
+        assert_eq!(tie.reason, PaneSnapReason::UnsnapOutsideWindow);
+
+        let snap = tuning.decide(3_499, None);
+        assert_eq!(snap.nearest_ratio_bps, 3_500);
+        assert_eq!(snap.snapped_ratio_bps, Some(3_500));
+        assert_eq!(snap.reason, PaneSnapReason::SnappedNearest);
+
+        let retain = tuning.decide(3_390, Some(3_500));
+        assert_eq!(retain.snapped_ratio_bps, Some(3_500));
+        assert_eq!(retain.reason, PaneSnapReason::RetainedPrevious);
+
+        assert_eq!(
+            PaneSnapTuning::new(0, 125).expect_err("step=0 must fail"),
+            PaneInteractionPolicyError::InvalidSnapTuning {
+                step_bps: 0,
+                hysteresis_bps: 125
+            }
+        );
+    }
+
+    #[test]
+    fn precision_policy_applies_axis_lock_and_mode_scaling() {
+        let fine = PanePrecisionPolicy::from_modifiers(
+            PaneModifierSnapshot {
+                shift: true,
+                alt: true,
+                ctrl: false,
+                meta: false,
+            },
+            SplitAxis::Horizontal,
+        );
+        assert_eq!(fine.mode, PanePrecisionMode::Fine);
+        assert_eq!(fine.axis_lock, Some(SplitAxis::Horizontal));
+        assert_eq!(fine.apply_delta(5, 3).expect("fine delta"), (2, 0));
+
+        let coarse = PanePrecisionPolicy::from_modifiers(
+            PaneModifierSnapshot {
+                shift: false,
+                alt: false,
+                ctrl: true,
+                meta: false,
+            },
+            SplitAxis::Vertical,
+        );
+        assert_eq!(coarse.mode, PanePrecisionMode::Coarse);
+        assert_eq!(coarse.axis_lock, None);
+        assert_eq!(coarse.apply_delta(2, -3).expect("coarse delta"), (4, -6));
+    }
+
+    #[test]
+    fn drag_behavior_tuning_validates_and_threshold_helpers_are_stable() {
+        let tuning = PaneDragBehaviorTuning::new(3, 2, PaneSnapTuning::default())
+            .expect("valid tuning should construct");
+        assert!(tuning.should_start_drag(
+            PanePointerPosition::new(0, 0),
+            PanePointerPosition::new(3, 0)
+        ));
+        assert!(!tuning.should_start_drag(
+            PanePointerPosition::new(0, 0),
+            PanePointerPosition::new(2, 0)
+        ));
+        assert!(tuning.should_emit_drag_update(
+            PanePointerPosition::new(10, 10),
+            PanePointerPosition::new(12, 10)
+        ));
+        assert!(!tuning.should_emit_drag_update(
+            PanePointerPosition::new(10, 10),
+            PanePointerPosition::new(11, 10)
+        ));
+
+        assert_eq!(
+            PaneDragBehaviorTuning::new(0, 2, PaneSnapTuning::default())
+                .expect_err("activation threshold=0 must fail"),
+            PaneInteractionPolicyError::InvalidThreshold {
+                field: "activation_threshold",
+                value: 0
+            }
+        );
+        assert_eq!(
+            PaneDragBehaviorTuning::new(2, 0, PaneSnapTuning::default())
+                .expect_err("hysteresis=0 must fail"),
+            PaneInteractionPolicyError::InvalidThreshold {
+                field: "update_hysteresis",
+                value: 0
+            }
+        );
+    }
+
     fn pointer_down_event(
         sequence: u64,
         target: PaneResizeTarget,
@@ -5249,6 +5662,42 @@ mod tests {
         assert_eq!(
             PaneDragResizeMachine::new(0).expect_err("zero threshold should fail"),
             PaneDragResizeMachineError::InvalidDragThreshold { threshold: 0 }
+        );
+    }
+
+    #[test]
+    fn drag_resize_machine_hysteresis_suppresses_micro_jitter() {
+        let target = default_target();
+        let mut machine = PaneDragResizeMachine::new_with_hysteresis(2, 2)
+            .expect("explicit machine tuning should construct");
+        machine
+            .apply_event(&pointer_down_event(1, target, 22, 0, 0))
+            .expect("down should arm");
+        machine
+            .apply_event(&pointer_move_event(2, target, 22, 2, 0))
+            .expect("move should start dragging");
+
+        let jitter = machine
+            .apply_event(&pointer_move_event(3, target, 22, 3, 0))
+            .expect("small move should be ignored");
+        assert_eq!(
+            jitter.effect,
+            PaneDragResizeEffect::Noop {
+                reason: PaneDragResizeNoopReason::BelowHysteresis
+            }
+        );
+
+        let update = machine
+            .apply_event(&pointer_move_event(4, target, 22, 4, 0))
+            .expect("larger move should update drag");
+        assert!(matches!(
+            update.effect,
+            PaneDragResizeEffect::DragUpdated { .. }
+        ));
+        assert_eq!(
+            PaneDragResizeMachine::new_with_hysteresis(2, 0)
+                .expect_err("zero hysteresis must fail"),
+            PaneDragResizeMachineError::InvalidUpdateHysteresis { hysteresis: 0 }
         );
     }
 
