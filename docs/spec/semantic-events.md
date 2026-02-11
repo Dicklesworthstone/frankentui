@@ -4,6 +4,9 @@ This spec defines the semantic (gesture-level) event system for FrankenTUI.
 It establishes the API surface, invariants, and test plan for converting raw
 terminal events into consistent, high-level input signals.
 
+For the browser SDK (`FrankenTermWeb`) host-facing event taxonomy and strict
+ordering contract, see `docs/spec/frankenterm-web-api.md`.
+
 ---
 
 ## 1) Goals

@@ -96,6 +96,13 @@ export function TerminalCanvas() {
 
       term = new FrankenTermWeb();
       await term.init(canvasRef.current, undefined);
+
+      // Contract guardrail: pin to the stable FrankenTermJS API line.
+      const contract = term.apiContract();
+      if (contract.apiLine !== "frankenterm-js" || !String(contract.apiVersion).startsWith("1.")) {
+        throw new Error(`Unsupported FrankenTerm API: ${contract.apiLine}@${contract.apiVersion}`);
+      }
+
       term.resize(120, 40);
       term.render();
     })();

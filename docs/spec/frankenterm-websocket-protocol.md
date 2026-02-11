@@ -20,6 +20,10 @@ Design constraints (inherited from the FrankenTerm architecture spec):
 - **Bounded memory**: no unbounded queues; explicit backpressure policy.
 - **Audit-friendly**: every session emits structured JSONL logs.
 
+Related specs:
+
+- `docs/spec/frankenterm-web-api.md` (stable browser SDK API contract)
+
 ## 1. Transport Layer
 
 ### 1.1 WebSocket Endpoint

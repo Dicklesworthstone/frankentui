@@ -19,6 +19,12 @@ use crate::renderer::{
     WebGpuRenderer, cell_attr_link_id, cell_patches_from_flat_u32,
 };
 use crate::scroll::{ScrollState, SearchConfig, SearchIndex, ViewportSnapshot};
+use crate::{
+    FRANKENTERM_JS_API_LINE, FRANKENTERM_JS_API_VERSION, FRANKENTERM_JS_EVENT_BUFFER_POLICY,
+    FRANKENTERM_JS_EVENT_ORDERING_RULES, FRANKENTERM_JS_EVENT_SCHEMA_VERSION,
+    FRANKENTERM_JS_EVENT_TYPES, FRANKENTERM_JS_PROTOCOL_VERSION, FRANKENTERM_JS_PUBLIC_METHODS,
+    FRANKENTERM_JS_VERSIONING_POLICY,
+};
 use frankenterm_core::{ScrollbackWindow, TerminalEngine};
 use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
 use std::collections::HashMap;
@@ -31,9 +37,29 @@ const AUTO_LINK_ID_BASE: u32 = 0x00F0_0001;
 const AUTO_LINK_ID_MAX: u32 = 0x00FF_FFFE;
 /// Max decoded clipboard paste payload (matches websocket-protocol limits).
 const MAX_PASTE_BYTES: usize = 768 * 1024;
+/// Bounded queue limits for host-drained event streams.
+const MAX_ENCODED_INPUT_EVENTS: usize = 4096;
+const MAX_ENCODED_INPUT_BYTE_CHUNKS: usize = 4096;
+const MAX_LINK_CLICKS: usize = 2048;
 
 fn empty_search_index(config: SearchConfig) -> SearchIndex {
     SearchIndex::build(std::iter::empty::<&str>(), "", config)
+}
+
+fn js_array_from_strings(items: &[&str]) -> Array {
+    let arr = Array::new_with_length(items.len() as u32);
+    for (idx, item) in items.iter().enumerate() {
+        arr.set(idx as u32, JsValue::from_str(item));
+    }
+    arr
+}
+
+fn push_bounded<T>(queue: &mut Vec<T>, item: T, limit: usize) {
+    if queue.len() >= limit {
+        let overflow = queue.len() - limit + 1;
+        queue.drain(..overflow);
+    }
+    queue.push(item);
 }
 
 /// Web/WASM terminal surface.
@@ -333,6 +359,74 @@ impl FrankenTermWeb {
             engine: None,
             renderer: None,
         }
+    }
+
+    /// Stable FrankenTermJS API semver for host-side compatibility checks.
+    ///
+    /// This is intentionally distinct from crate/package semver.
+    #[wasm_bindgen(js_name = apiVersion)]
+    pub fn api_version(&self) -> String {
+        FRANKENTERM_JS_API_VERSION.to_owned()
+    }
+
+    /// Canonical API contract snapshot for deterministic host validation.
+    ///
+    /// Shape:
+    /// `{ apiLine, apiVersion, packageName, packageVersion, protocolVersion,
+    ///    methods, versioningPolicy, eventSchemaVersion, eventTypes,
+    ///    eventOrdering, eventBufferPolicy }`
+    #[wasm_bindgen(js_name = apiContract)]
+    pub fn api_contract(&self) -> JsValue {
+        let obj = Object::new();
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("apiLine"),
+            &JsValue::from_str(FRANKENTERM_JS_API_LINE),
+        );
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("apiVersion"),
+            &JsValue::from_str(FRANKENTERM_JS_API_VERSION),
+        );
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("packageName"),
+            &JsValue::from_str(env!("CARGO_PKG_NAME")),
+        );
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("packageVersion"),
+            &JsValue::from_str(env!("CARGO_PKG_VERSION")),
+        );
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("protocolVersion"),
+            &JsValue::from_str(FRANKENTERM_JS_PROTOCOL_VERSION),
+        );
+        let methods = js_array_from_strings(&FRANKENTERM_JS_PUBLIC_METHODS);
+        let _ = Reflect::set(&obj, &JsValue::from_str("methods"), &methods);
+        let versioning_policy = js_array_from_strings(&FRANKENTERM_JS_VERSIONING_POLICY);
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("versioningPolicy"),
+            &versioning_policy,
+        );
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("eventSchemaVersion"),
+            &JsValue::from_str(FRANKENTERM_JS_EVENT_SCHEMA_VERSION),
+        );
+        let event_types = js_array_from_strings(&FRANKENTERM_JS_EVENT_TYPES);
+        let _ = Reflect::set(&obj, &JsValue::from_str("eventTypes"), &event_types);
+        let event_ordering = js_array_from_strings(&FRANKENTERM_JS_EVENT_ORDERING_RULES);
+        let _ = Reflect::set(&obj, &JsValue::from_str("eventOrdering"), &event_ordering);
+        let event_buffer_policy = js_array_from_strings(&FRANKENTERM_JS_EVENT_BUFFER_POLICY);
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("eventBufferPolicy"),
+            &event_buffer_policy,
+        );
+        obj.into()
     }
 
     /// Initialize the terminal surface with an existing `<canvas>`.
@@ -1671,11 +1765,15 @@ impl FrankenTermWeb {
         let json = ev
             .to_json_string()
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
-        self.encoded_inputs.push(json);
+        push_bounded(&mut self.encoded_inputs, json, MAX_ENCODED_INPUT_EVENTS);
 
         let vt = encode_vt_input_event(&ev, self.encoder_features);
         if !vt.is_empty() {
-            self.encoded_input_bytes.push(vt);
+            push_bounded(
+                &mut self.encoded_input_bytes,
+                vt,
+                MAX_ENCODED_INPUT_BYTE_CHUNKS,
+            );
         }
         Ok(())
     }
@@ -2106,12 +2204,16 @@ impl FrankenTermWeb {
         if mouse.phase == MousePhase::Down {
             let link_id = self.link_id_at_xy(mouse.x, mouse.y);
             if link_id != 0 {
-                self.link_clicks.push(LinkClickEvent {
-                    x: mouse.x,
-                    y: mouse.y,
-                    button: mouse.button,
-                    link_id,
-                });
+                push_bounded(
+                    &mut self.link_clicks,
+                    LinkClickEvent {
+                        x: mouse.x,
+                        y: mouse.y,
+                        button: mouse.button,
+                        link_id,
+                    },
+                    MAX_LINK_CLICKS,
+                );
             }
         }
     }
@@ -4497,6 +4599,67 @@ mod tests {
         assert_eq!(parsed["event_idx"], 0);
         assert_eq!(parsed["open_allowed"], true);
         assert_eq!(parsed["url"], "https://example.test");
+    }
+
+    #[test]
+    fn encoded_input_queues_drop_oldest_on_overflow() {
+        let mut term = FrankenTermWeb::new();
+        let total = MAX_ENCODED_INPUT_EVENTS + 3;
+
+        for idx in 0..total {
+            let event = InputEvent::Paste(PasteInput {
+                data: format!("evt-{idx}").into_boxed_str(),
+            });
+            assert!(term.queue_input_event(event).is_ok());
+        }
+
+        assert_eq!(term.encoded_inputs.len(), MAX_ENCODED_INPUT_EVENTS);
+        assert_eq!(
+            term.encoded_input_bytes.len(),
+            MAX_ENCODED_INPUT_BYTE_CHUNKS.min(total)
+        );
+
+        let drained = term.drain_encoded_inputs();
+        assert_eq!(drained.length(), MAX_ENCODED_INPUT_EVENTS as u32);
+
+        let first = drained
+            .get(0)
+            .as_string()
+            .expect("drained encoded input should be a string");
+        assert!(first.contains("\"evt-3\""));
+
+        let last = drained
+            .get(MAX_ENCODED_INPUT_EVENTS as u32 - 1)
+            .as_string()
+            .expect("drained encoded input should be a string");
+        assert!(last.contains(&format!("\"evt-{}\"", total - 1)));
+    }
+
+    #[test]
+    fn link_click_queue_drops_oldest_on_overflow() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 1;
+        term.rows = 1;
+        term.shadow_cells = vec![CellData::EMPTY];
+        term.auto_link_ids = vec![123];
+        term.auto_link_urls
+            .insert(123, "https://example.test".to_string());
+
+        for _ in 0..(MAX_LINK_CLICKS + 5) {
+            assert!(
+                term.queue_input_event(InputEvent::Mouse(MouseInput {
+                    phase: MousePhase::Down,
+                    button: Some(MouseButton::Left),
+                    x: 0,
+                    y: 0,
+                    mods: Modifiers::default(),
+                }))
+                .is_ok()
+            );
+        }
+
+        assert_eq!(term.link_clicks.len(), MAX_LINK_CLICKS);
+        assert_eq!(term.drain_link_clicks().length(), MAX_LINK_CLICKS as u32);
     }
 
     fn drain_uint8_chunks(chunks: Array) -> Vec<Vec<u8>> {

@@ -304,6 +304,8 @@ pub struct TerminalPatch {
 ```typescript
 // TypeScript-facing API
 interface FrankenTermWeb {
+  apiVersion(): string;              // Stable JS API semver line
+  apiContract(): ApiContract;        // Canonical method + policy snapshot
   init(canvas: HTMLCanvasElement, options?: TermOptions): Promise<void>;
   resize(cols: number, rows: number): void;
   input(event: InputEvent): void;     // Keyboard/mouse from DOM
@@ -313,6 +315,9 @@ interface FrankenTermWeb {
   destroy(): void;
 }
 ```
+
+See `docs/spec/frankenterm-web-api.md` for the full stable method surface and
+versioning policy contract.
 
 **Invariants**:
 - No partial frames visible (double-buffered WebGPU presentation)
