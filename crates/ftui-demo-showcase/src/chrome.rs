@@ -4,6 +4,7 @@
 
 use ftui_core::geometry::Rect;
 use ftui_render::frame::{Frame, HitId};
+use ftui_runtime::MouseCapturePolicy;
 use ftui_style::{Style, StyleFlags};
 use ftui_text::{Line, Span, Text, WrapMode, display_width};
 use ftui_widgets::Widget;
@@ -564,6 +565,8 @@ pub struct StatusBarState<'a> {
     pub inline_mode: bool,
     /// Whether terminal mouse capture is currently enabled.
     pub mouse_capture_enabled: bool,
+    /// Mouse capture policy driving this state.
+    pub mouse_capture_policy: MouseCapturePolicy,
     pub a11y_high_contrast: bool,
     pub a11y_reduced_motion: bool,
     pub a11y_large_text: bool,
@@ -649,21 +652,23 @@ pub fn render_status_bar(state: &StatusBarState<'_>, frame: &mut Frame, area: Re
     );
 
     // Mouse capture indicator (bd-iuvb.17.1)
-    let mouse_label_compact = if state.mouse_capture_enabled {
-        "  Mouse:ON".to_string()
-    } else {
-        "  Mouse:OFF".to_string()
+    let mouse_label_compact = match state.mouse_capture_policy {
+        MouseCapturePolicy::Auto => "  Mouse:AUTO".to_string(),
+        MouseCapturePolicy::On => "  Mouse:ON".to_string(),
+        MouseCapturePolicy::Off => "  Mouse:OFF".to_string(),
     };
-    let mouse_label_full = if state.inline_mode {
-        if state.mouse_capture_enabled {
-            "  Mouse: ON (UI scroll)".to_string()
-        } else {
-            "  Mouse: OFF (scrollback)".to_string()
+    let mouse_label_full = match state.mouse_capture_policy {
+        MouseCapturePolicy::Auto => {
+            let mode = if state.inline_mode { "inline" } else { "alt" };
+            let active = if state.mouse_capture_enabled {
+                "ON"
+            } else {
+                "OFF"
+            };
+            format!("  Mouse: AUTO ({mode}:{active})")
         }
-    } else if state.mouse_capture_enabled {
-        "  Mouse: ON".to_string()
-    } else {
-        "  Mouse: OFF".to_string()
+        MouseCapturePolicy::On => "  Mouse: ON (forced)".to_string(),
+        MouseCapturePolicy::Off => "  Mouse: OFF (forced)".to_string(),
     };
     let mut mouse_label = mouse_label_full;
 
@@ -683,20 +688,22 @@ pub fn render_status_bar(state: &StatusBarState<'_>, frame: &mut Frame, area: Re
             .fg(theme::fg::MUTED)
             .attrs(StyleFlags::DIM),
     );
-    let mouse_style = if state.mouse_capture_enabled {
-        theme::apply_large_text(
+    let mouse_style = match state.mouse_capture_policy {
+        MouseCapturePolicy::On => theme::apply_large_text(
             Style::new()
                 .bg(bg_color)
                 .fg(theme::accent::INFO)
                 .attrs(StyleFlags::BOLD),
-        )
-    } else {
-        theme::apply_large_text(
+        ),
+        MouseCapturePolicy::Off => theme::apply_large_text(
             Style::new()
                 .bg(bg_color)
                 .fg(theme::fg::MUTED)
                 .attrs(StyleFlags::DIM),
-        )
+        ),
+        MouseCapturePolicy::Auto => {
+            theme::apply_large_text(Style::new().bg(bg_color).fg(theme::accent::SECONDARY))
+        }
     };
     let toggle_active_style = theme::apply_large_text(
         Style::new()
@@ -1407,6 +1414,7 @@ mod tests {
             theme_name: "default",
             inline_mode: false,
             mouse_capture_enabled: true,
+            mouse_capture_policy: MouseCapturePolicy::Auto,
             help_visible: false,
             palette_visible: false,
             perf_hud_visible: false,
@@ -1582,6 +1590,7 @@ mod tests {
             theme_name: "default",
             inline_mode: false,
             mouse_capture_enabled: true,
+            mouse_capture_policy: MouseCapturePolicy::Auto,
             help_visible: false,
             palette_visible: false,
             perf_hud_visible: false,
@@ -1665,6 +1674,31 @@ mod tests {
         assert!(
             rendered.contains("[D]"),
             "Should show active debug toggle: {rendered}"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_auto_mouse_policy_indicator() {
+        let (rendered, _frame) = render_status_bar_test(220, |s| {
+            s.mouse_capture_policy = MouseCapturePolicy::Auto;
+            s.inline_mode = true;
+            s.mouse_capture_enabled = false;
+        });
+        assert!(
+            rendered.contains("Mouse: AUTO"),
+            "Should show explicit AUTO mouse policy: {rendered}"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_forced_mouse_policy_indicator() {
+        let (rendered, _frame) = render_status_bar_test(220, |s| {
+            s.mouse_capture_policy = MouseCapturePolicy::On;
+            s.mouse_capture_enabled = true;
+        });
+        assert!(
+            rendered.contains("Mouse: ON (forced)"),
+            "Should show forced mouse policy label: {rendered}"
         );
     }
 

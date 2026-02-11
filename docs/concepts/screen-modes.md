@@ -88,6 +88,28 @@ fn main() {
 | Classic TUI feel | No | Yes |
 | Best for agent harness | Yes | No |
 
+## Mouse Capture Policy
+
+Mouse capture policy is explicit in `ProgramConfig`:
+
+- `MouseCapturePolicy::Auto` (default): `AltScreen => ON`, `Inline/InlineAuto => OFF`
+- `MouseCapturePolicy::On`: always ON
+- `MouseCapturePolicy::Off`: always OFF
+
+This keeps inline mode scrollback-safe by default while preserving classic
+full-screen mouse behavior in alt-screen mode.
+
+```rust
+use ftui_runtime::{MouseCapturePolicy, ProgramConfig, ScreenMode};
+
+let config = ProgramConfig::default()
+    .with_mouse_capture_policy(MouseCapturePolicy::Auto)
+    .with_mouse_enabled(false); // force OFF if needed
+
+assert!(!config.resolved_mouse_capture()); // default inline => off
+assert!(ProgramConfig::fullscreen().resolved_mouse_capture()); // auto alt => on
+```
+
 ## When to Use Inline Mode
 
 Use inline mode when:

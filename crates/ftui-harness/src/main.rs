@@ -53,8 +53,8 @@ use ftui_render::frame::{Frame, HitId, HitRegion, WidgetSignal};
 use ftui_runtime::TelemetryConfig;
 use ftui_runtime::locale::{Locale, LocaleContext, detect_system_locale, set_locale};
 use ftui_runtime::{
-    Cmd, ConformalConfig, Every, EvidenceSinkConfig, Model, Program, ProgramConfig,
-    RenderTraceConfig, ScreenMode, Subscription, TaskSpec,
+    Cmd, ConformalConfig, Every, EvidenceSinkConfig, Model, MouseCapturePolicy, Program,
+    ProgramConfig, RenderTraceConfig, ScreenMode, Subscription, TaskSpec,
 };
 use ftui_style::Style;
 use ftui_text::WrapMode;
@@ -1897,7 +1897,11 @@ fn main() -> std::io::Result<()> {
 
     let mut config = ProgramConfig {
         screen_mode,
-        mouse: enable_mouse,
+        mouse_capture_policy: if enable_mouse {
+            MouseCapturePolicy::On
+        } else {
+            MouseCapturePolicy::Off
+        },
         focus_reporting: enable_focus,
         kitty_keyboard: enable_kitty_keyboard,
         ..Default::default()

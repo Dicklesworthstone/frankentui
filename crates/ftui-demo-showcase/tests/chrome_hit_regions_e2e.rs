@@ -10,6 +10,7 @@ use ftui_demo_showcase::chrome::{
 };
 use ftui_render::frame::{Frame, HitId};
 use ftui_render::grapheme_pool::GraphemePool;
+use ftui_runtime::MouseCapturePolicy;
 
 #[test]
 fn status_bar_registers_mouse_toggle_hit_region() {
@@ -29,6 +30,7 @@ fn status_bar_registers_mouse_toggle_hit_region() {
         theme_name: "Neon",
         inline_mode: false,
         mouse_capture_enabled: true,
+        mouse_capture_policy: MouseCapturePolicy::Auto,
         help_visible: false,
         palette_visible: false,
         perf_hud_visible: false,

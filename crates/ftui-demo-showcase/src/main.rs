@@ -8,7 +8,9 @@ use ftui_demo_showcase::app::{MermaidHarnessConfig, MermaidHarnessModel};
 use ftui_demo_showcase::cli;
 use ftui_demo_showcase::screens;
 use ftui_render::budget::{FrameBudgetConfig, PhaseBudgets};
-use ftui_runtime::{EvidenceSinkConfig, FrameTimingConfig, Program, ProgramConfig, ScreenMode};
+use ftui_runtime::{
+    EvidenceSinkConfig, FrameTimingConfig, MouseCapturePolicy, Program, ProgramConfig, ScreenMode,
+};
 use std::time::Duration;
 
 fn main() {
@@ -24,6 +26,7 @@ fn main() {
         },
         _ => ScreenMode::AltScreen,
     };
+    let mouse_policy = opts.mouse_capture_policy();
 
     if opts.vfx_harness {
         let budget = FrameBudgetConfig {
@@ -60,7 +63,7 @@ fn main() {
         let frame_timing = model.perf_logger().map(FrameTimingConfig::new);
         let config = ProgramConfig {
             screen_mode,
-            mouse: opts.resolve_mouse_enabled(matches!(screen_mode, ScreenMode::AltScreen)),
+            mouse_capture_policy: mouse_policy,
             budget,
             frame_timing,
             forced_size: Some((opts.vfx_cols.max(1), opts.vfx_rows.max(1))),
@@ -105,7 +108,7 @@ fn main() {
         };
         let config = ProgramConfig {
             screen_mode,
-            mouse: false,
+            mouse_capture_policy: MouseCapturePolicy::Off,
             budget,
             forced_size: Some((opts.mermaid_cols.max(1), opts.mermaid_rows.max(1))),
             ..ProgramConfig::default()
@@ -133,7 +136,8 @@ fn main() {
         screen_mode,
         ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
     );
-    model.mouse_capture_enabled = opts.resolve_mouse_enabled(!model.inline_mode);
+    model.mouse_capture_policy = mouse_policy;
+    model.mouse_capture_enabled = mouse_policy.resolve(screen_mode);
     model.current_screen = start_screen;
     model.exit_after_ms = opts.exit_after_ms;
     if opts.tour || start_screen == ScreenId::GuidedTour {
@@ -157,7 +161,7 @@ fn main() {
 
     let config = ProgramConfig {
         screen_mode,
-        mouse: opts.resolve_mouse_enabled(matches!(screen_mode, ScreenMode::AltScreen)),
+        mouse_capture_policy: mouse_policy,
         budget,
         ..ProgramConfig::default()
     };

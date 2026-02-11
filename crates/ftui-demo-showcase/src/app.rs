@@ -37,7 +37,7 @@ use ftui_render::frame::{Frame, HitGrid, HitId};
 use ftui_runtime::Every;
 use ftui_runtime::render_trace::checksum_buffer;
 use ftui_runtime::undo::HistoryManager;
-use ftui_runtime::{Cmd, FrameTiming, FrameTimingSink, Model, Subscription};
+use ftui_runtime::{Cmd, FrameTiming, FrameTimingSink, Model, MouseCapturePolicy, Subscription};
 use ftui_style::Style;
 use ftui_text::{Line, Span, Text, WrapMode};
 use ftui_widgets::Widget;
@@ -2565,6 +2565,8 @@ pub struct AppModel {
     pub inline_mode: bool,
     /// Whether terminal mouse capture is currently enabled.
     pub mouse_capture_enabled: bool,
+    /// Mouse capture policy in effect (`auto`, `on`, `off`).
+    pub mouse_capture_policy: MouseCapturePolicy,
     /// Accessibility settings (high contrast, reduced motion, large text).
     pub a11y: theme::A11ySettings,
     /// Whether the accessibility panel is visible.
@@ -2654,6 +2656,7 @@ impl AppModel {
             evidence_ledger_visible: false,
             inline_mode: false,
             mouse_capture_enabled: true,
+            mouse_capture_policy: MouseCapturePolicy::Auto,
             a11y: theme::A11ySettings::default(),
             a11y_panel_visible: false,
             base_theme,
@@ -3208,6 +3211,11 @@ impl AppModel {
 
             AppMsg::ToggleMouseCapture => {
                 self.mouse_capture_enabled = !self.mouse_capture_enabled;
+                self.mouse_capture_policy = if self.mouse_capture_enabled {
+                    MouseCapturePolicy::On
+                } else {
+                    MouseCapturePolicy::Off
+                };
                 let state = if self.mouse_capture_enabled {
                     "on"
                 } else {
@@ -3985,6 +3993,7 @@ impl Model for AppModel {
             theme_name: theme::current_theme_name(),
             inline_mode: self.inline_mode,
             mouse_capture_enabled: self.mouse_capture_enabled,
+            mouse_capture_policy: self.mouse_capture_policy,
             help_visible: self.help_visible,
             palette_visible: self.command_palette.is_visible(),
             perf_hud_visible: self.perf_hud_visible,
@@ -4565,6 +4574,11 @@ impl AppModel {
             }
             chrome::STATUS_MOUSE_TOGGLE => {
                 self.mouse_capture_enabled = !self.mouse_capture_enabled;
+                self.mouse_capture_policy = if self.mouse_capture_enabled {
+                    MouseCapturePolicy::On
+                } else {
+                    MouseCapturePolicy::Off
+                };
                 "status_toggle_mouse"
             }
             _ => "status_unknown",
@@ -7286,6 +7300,7 @@ mod tests {
         app.terminal_width = 200;
         app.terminal_height = 40;
         let initial_capture = app.mouse_capture_enabled;
+        let initial_policy = app.mouse_capture_policy;
 
         let mut pool = GraphemePool::new();
         let mut frame = ftui_render::frame::Frame::with_hit_grid(200, 40, &mut pool);
@@ -7318,6 +7333,10 @@ mod tests {
             assert_ne!(
                 app.mouse_capture_enabled, initial_capture,
                 "Mouse capture should toggle"
+            );
+            assert_ne!(
+                app.mouse_capture_policy, initial_policy,
+                "Mouse policy should switch to explicit user override"
             );
         }
     }

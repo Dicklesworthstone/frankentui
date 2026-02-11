@@ -20,7 +20,18 @@ mod runner_core;
 
 #[cfg(test)]
 mod tests {
-    use crate::runner_core::RunnerCore;
+    use crate::runner_core::{PaneDispatchOutcome, RunnerCore};
+    use ftui_layout::{
+        PaneId, PaneModifierSnapshot, PanePointerButton, PaneResizeTarget, SplitAxis,
+    };
+    use ftui_web::pane_pointer_capture::{PanePointerCaptureCommand, PanePointerIgnoredReason};
+
+    fn test_target() -> PaneResizeTarget {
+        PaneResizeTarget {
+            split_id: PaneId::MIN,
+            axis: SplitAxis::Horizontal,
+        }
+    }
 
     #[test]
     fn runner_core_creates_and_inits() {
@@ -145,5 +156,97 @@ mod tests {
         let stats = stats.unwrap();
         assert_eq!(stats.dirty_cells, 20);
         assert_eq!(stats.patch_count, 1);
+    }
+
+    #[test]
+    fn runner_core_pane_pointer_lifecycle_emits_capture_commands() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        let modifiers = PaneModifierSnapshot::default();
+
+        let down = core.pane_pointer_down(
+            test_target(),
+            9,
+            PanePointerButton::Primary,
+            4,
+            6,
+            modifiers,
+        );
+        assert!(down.accepted());
+        assert_eq!(
+            down.capture_command,
+            Some(PanePointerCaptureCommand::Acquire { pointer_id: 9 })
+        );
+        assert!(matches!(
+            down.outcome,
+            PaneDispatchOutcome::SemanticForwarded
+        ));
+        assert_eq!(core.pane_active_pointer_id(), Some(9));
+
+        let acquired = core.pane_capture_acquired(9);
+        assert!(acquired.accepted());
+        assert_eq!(acquired.capture_command, None);
+        assert!(matches!(
+            acquired.outcome,
+            PaneDispatchOutcome::CaptureStateUpdated
+        ));
+        assert_eq!(core.pane_active_pointer_id(), Some(9));
+
+        let up = core.pane_pointer_up(9, PanePointerButton::Primary, 10, 6, modifiers);
+        assert!(up.accepted());
+        assert_eq!(
+            up.capture_command,
+            Some(PanePointerCaptureCommand::Release { pointer_id: 9 })
+        );
+        assert!(matches!(up.outcome, PaneDispatchOutcome::SemanticForwarded));
+        assert_eq!(core.pane_active_pointer_id(), None);
+    }
+
+    #[test]
+    fn runner_core_pane_pointer_mismatch_is_ignored() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+
+        let down = core.pane_pointer_down(
+            test_target(),
+            41,
+            PanePointerButton::Primary,
+            5,
+            2,
+            PaneModifierSnapshot::default(),
+        );
+        assert!(down.accepted());
+
+        let mismatch = core.pane_pointer_move(88, 9, 2, PaneModifierSnapshot::default());
+        assert!(!mismatch.accepted());
+        assert!(matches!(
+            mismatch.outcome,
+            PaneDispatchOutcome::Ignored(PanePointerIgnoredReason::PointerMismatch)
+        ));
+        assert_eq!(core.pane_active_pointer_id(), Some(41));
+    }
+
+    #[test]
+    fn runner_core_pane_logs_are_drained_with_take_logs() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        let _ = core.pane_pointer_down(
+            test_target(),
+            7,
+            PanePointerButton::Primary,
+            1,
+            1,
+            PaneModifierSnapshot::default(),
+        );
+
+        let logs = core.take_logs();
+        assert!(
+            logs.iter().any(|line| {
+                line.contains("pane_pointer")
+                    && line.contains("phase=pointer_down")
+                    && line.contains("outcome=semantic_forwarded")
+            }),
+            "expected pane pointer lifecycle log entry, got: {logs:?}"
+        );
     }
 }

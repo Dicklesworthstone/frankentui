@@ -87,8 +87,8 @@ pub use log_sink::LogSink;
 pub use program::CrosstermEventSource;
 pub use program::{
     App, AppBuilder, BatchController, Cmd, EffectQueueConfig, FrameTiming, FrameTimingConfig,
-    FrameTimingSink, HeadlessEventSource, InlineAutoRemeasureConfig, Model, PersistenceConfig,
-    Program, ProgramConfig, ResizeBehavior, TaskSpec, WidgetRefreshConfig,
+    FrameTimingSink, HeadlessEventSource, InlineAutoRemeasureConfig, Model, MouseCapturePolicy,
+    PersistenceConfig, Program, ProgramConfig, ResizeBehavior, TaskSpec, WidgetRefreshConfig,
 };
 pub use render_trace::{
     RenderTraceConfig, RenderTraceContext, RenderTraceFrame, RenderTraceRecorder,

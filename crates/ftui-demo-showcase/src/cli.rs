@@ -8,6 +8,8 @@
 use std::env;
 use std::process;
 
+use ftui_runtime::MouseCapturePolicy;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const HELP_TEXT: &str = "\
@@ -642,6 +644,16 @@ impl Opts {
 }
 
 impl Opts {
+    /// Resolve mouse capture policy enum from parsed mode.
+    #[must_use]
+    pub fn mouse_capture_policy(&self) -> MouseCapturePolicy {
+        match self.mouse_mode.as_str() {
+            "on" => MouseCapturePolicy::On,
+            "off" => MouseCapturePolicy::Off,
+            _ => MouseCapturePolicy::Auto,
+        }
+    }
+
     /// Resolve whether mouse capture should be initially enabled based on the
     /// mouse mode setting and the active screen mode.
     ///
@@ -649,10 +661,10 @@ impl Opts {
     /// - `"off"` → always disabled
     /// - `"auto"` → enabled for AltScreen, disabled for Inline/InlineAuto
     pub fn resolve_mouse_enabled(&self, is_alt_screen: bool) -> bool {
-        match self.mouse_mode.as_str() {
-            "on" => true,
-            "off" => false,
-            _ => is_alt_screen,
+        match self.mouse_capture_policy() {
+            MouseCapturePolicy::On => true,
+            MouseCapturePolicy::Off => false,
+            MouseCapturePolicy::Auto => is_alt_screen,
         }
     }
 }
@@ -1052,5 +1064,24 @@ mod tests {
         };
         assert!(!opts.resolve_mouse_enabled(false));
         assert!(!opts.resolve_mouse_enabled(true));
+    }
+
+    #[test]
+    fn mouse_capture_policy_mapping() {
+        let on = Opts {
+            mouse_mode: "on".into(),
+            ..Opts::default()
+        };
+        let off = Opts {
+            mouse_mode: "off".into(),
+            ..Opts::default()
+        };
+        let auto = Opts {
+            mouse_mode: "auto".into(),
+            ..Opts::default()
+        };
+        assert_eq!(on.mouse_capture_policy(), MouseCapturePolicy::On);
+        assert_eq!(off.mouse_capture_policy(), MouseCapturePolicy::Off);
+        assert_eq!(auto.mouse_capture_policy(), MouseCapturePolicy::Auto);
     }
 }
