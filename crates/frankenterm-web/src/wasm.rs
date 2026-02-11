@@ -68,6 +68,7 @@ pub struct FrankenTermWeb {
     focused: bool,
     live_announcements: Vec<String>,
     shadow_cells: Vec<CellData>,
+    next_auto_link_id: u32,
     renderer: Option<WebGpuRenderer>,
 }
 
@@ -307,6 +308,7 @@ impl FrankenTermWeb {
             focused: false,
             live_announcements: Vec::new(),
             shadow_cells: Vec::new(),
+            next_auto_link_id: AUTO_LINK_ID_BASE,
             renderer: None,
         }
     }
@@ -594,19 +596,30 @@ impl FrankenTermWeb {
     }
 
     fn apply_cell_patches(&mut self, patches: &[CellPatch]) {
-        let max = usize::from(self.cols) * usize::from(self.rows);
+        let cols = usize::from(self.cols);
+        let max = cols * usize::from(self.rows);
         self.shadow_cells.resize(max, CellData::EMPTY);
         self.auto_link_ids.resize(max, 0);
 
+        let mut dirty_rows = Vec::new();
         for patch in patches {
             let start = usize::try_from(patch.offset).unwrap_or(max).min(max);
             let count = patch.cells.len().min(max.saturating_sub(start));
             for (i, cell) in patch.cells.iter().take(count).enumerate() {
                 self.shadow_cells[start + i] = *cell;
             }
+            if cols > 0 && count > 0 {
+                let first_row = start / cols;
+                let last_row = (start + count - 1) / cols;
+                for r in first_row..=last_row {
+                    dirty_rows.push(r);
+                }
+            }
         }
+        dirty_rows.sort_unstable();
+        dirty_rows.dedup();
 
-        self.recompute_auto_links();
+        self.recompute_auto_links_for_rows(&dirty_rows);
         if !self.search_query.is_empty() {
             self.refresh_search_after_buffer_change();
         }
