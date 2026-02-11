@@ -43,6 +43,7 @@ pub mod cache;
 pub mod debug;
 pub mod direction;
 pub mod grid;
+pub mod pane;
 #[cfg(test)]
 mod repro_max_constraint;
 #[cfg(test)]
@@ -55,6 +56,13 @@ pub use cache::{CoherenceCache, CoherenceId, LayoutCache, LayoutCacheKey, Layout
 pub use direction::{FlowDirection, LogicalAlignment, LogicalSides, mirror_rects_horizontal};
 pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};
+pub use pane::{
+    PANE_TREE_SCHEMA_VERSION, PaneConstraints, PaneId, PaneIdAllocator, PaneLayout, PaneLeaf,
+    PaneModelError, PaneNodeKind, PaneNodeRecord, PaneOperation, PaneOperationError,
+    PaneOperationFailure, PaneOperationJournalEntry, PaneOperationJournalResult, PaneOperationKind,
+    PaneOperationOutcome, PanePlacement, PaneSplit, PaneSplitRatio, PaneTransaction,
+    PaneTransactionOutcome, PaneTree, PaneTreeSnapshot, SplitAxis,
+};
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};
 use std::cmp::min;

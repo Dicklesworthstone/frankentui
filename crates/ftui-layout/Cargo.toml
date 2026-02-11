@@ -12,10 +12,12 @@ readme = "../../README.md"
 [dependencies]
 ftui-core = { path = "../ftui-core", version = "0.1.1" }
 rustc-hash = "2.1"
+serde = { version = "1.0.227", features = ["derive"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.7.0"
+serde_json = "1.0.145"
 
 [[bench]]
 name = "layout_bench"
