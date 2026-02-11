@@ -2094,21 +2094,23 @@ impl<'t> RenderState<'t> {
     }
 
     fn flush_code_block(&mut self) {
-        let mut code = std::mem::take(&mut self.code_block_lines).join("");
+        let code = std::mem::take(&mut self.code_block_lines).join("");
         let lang = self.code_block_lang.take();
         let style = self.theme.code_block;
         let lang_lower = lang.as_ref().map(|value| value.to_ascii_lowercase());
 
         #[cfg(feature = "diagram")]
-        {
+        let code = {
             let is_excluded = matches!(
                 lang_lower.as_deref(),
                 Some("mermaid" | "math" | "latex" | "tex")
             );
             if !is_excluded && diagram::is_likely_diagram(&code) {
-                code = diagram::correct_diagram(&code);
+                diagram::correct_diagram(&code)
+            } else {
+                code
             }
-        }
+        };
 
         // Handle special languages
         if let Some(ref lang_str) = lang {

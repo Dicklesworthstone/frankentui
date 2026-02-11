@@ -682,53 +682,81 @@ fn draw_double_junction(canvas: &mut Canvas, arms: Arms, w: u16, h: u16) {
 // ---------------------------------------------------------------------------
 
 fn draw_rounded_corner(canvas: &mut Canvas, quadrant: Quadrant, w: u16, h: u16) {
-    let cx = w / 2;
-    let cy = h / 2;
+    let cx_f = f32::from(w) / 2.0;
+    let cy_f = f32::from(h) / 2.0;
     let stroke = light_stroke(w.min(h));
-    let radius = f32::from(cx.min(cy));
     let stroke_f = f32::from(stroke);
 
-    // Arc center is at the corner of the cell quadrant, and the arc curves
-    // from the center-of-cell to the edge.
+    // Generous radius for a visually satisfying curve. Uses the full half-cell
+    // dimension so the arc sweeps all the way to the cell edge.
+    let r = cx_f.min(cy_f);
+
+    // Tangent-circle approach: the arc center is placed diagonally opposite the
+    // curve, at (cx ± r, cy ± r). The quarter-circle is tangent to both arms
+    // at their innermost points, giving a seamless connection.
     let (arc_cx, arc_cy) = match quadrant {
-        Quadrant::TopLeft => (f32::from(cx) + 0.5, f32::from(cy) + 0.5),
-        Quadrant::TopRight => (f32::from(cx) - 0.5, f32::from(cy) + 0.5),
-        Quadrant::BottomLeft => (f32::from(cx) + 0.5, f32::from(cy) - 0.5),
-        Quadrant::BottomRight => (f32::from(cx) - 0.5, f32::from(cy) - 0.5),
+        Quadrant::TopLeft => (cx_f + r, cy_f + r),
+        Quadrant::TopRight => (cx_f - r, cy_f + r),
+        Quadrant::BottomLeft => (cx_f + r, cy_f - r),
+        Quadrant::BottomRight => (cx_f - r, cy_f - r),
     };
 
-    // The arc connects two straight-line stubs extending from the center to cell edges.
-    // First draw the straight stubs, then the arc connecting them.
+    // Tangent points: where the arc meets the straight arms.
+    // If the tangent point is inside the cell, draw a straight stub from it
+    // to the cell edge. If it's at the cell edge already (r == cx or cy),
+    // the arc alone reaches the edge — no stub needed.
+    let cx = w / 2;
+    let cy = h / 2;
+    let r_i = r as u16;
 
-    // For rounded corners, the arc center is at the "outside" corner relative
-    // to the cell center, and arms extend from the arc endpoints to cell edges.
     match quadrant {
         Quadrant::TopLeft => {
-            // ╭ : from right edge of cell to bottom edge, curving at top-left
-            // Horizontal stub: from arc endpoint to right edge at cy
-            canvas.draw_h_segment(cy, cx, w.saturating_sub(1), stroke);
-            // Vertical stub: from arc endpoint to bottom edge at cx
-            canvas.draw_v_segment(cx, cy, h.saturating_sub(1), stroke);
+            // ╭ : arms go right and down, curve in top-left
+            let h_tangent_x = cx + r_i; // horizontal tangent x
+            if h_tangent_x < w {
+                canvas.draw_h_segment(cy, h_tangent_x, w.saturating_sub(1), stroke);
+            }
+            let v_tangent_y = cy + r_i; // vertical tangent y
+            if v_tangent_y < h {
+                canvas.draw_v_segment(cx, v_tangent_y, h.saturating_sub(1), stroke);
+            }
         }
         Quadrant::TopRight => {
-            // ╮ : from left edge to bottom edge, curving at top-right
-            canvas.draw_h_segment(cy, 0, cx, stroke);
-            canvas.draw_v_segment(cx, cy, h.saturating_sub(1), stroke);
+            // ╮ : arms go left and down, curve in top-right
+            let h_tangent_x = cx.saturating_sub(r_i);
+            if h_tangent_x > 0 {
+                canvas.draw_h_segment(cy, 0, h_tangent_x, stroke);
+            }
+            let v_tangent_y = cy + r_i;
+            if v_tangent_y < h {
+                canvas.draw_v_segment(cx, v_tangent_y, h.saturating_sub(1), stroke);
+            }
         }
         Quadrant::BottomRight => {
-            // ╯ : from left edge to top edge, curving at bottom-right
-            canvas.draw_h_segment(cy, 0, cx, stroke);
-            canvas.draw_v_segment(cx, 0, cy, stroke);
+            // ╯ : arms go left and up, curve in bottom-right
+            let h_tangent_x = cx.saturating_sub(r_i);
+            if h_tangent_x > 0 {
+                canvas.draw_h_segment(cy, 0, h_tangent_x, stroke);
+            }
+            let v_tangent_y = cy.saturating_sub(r_i);
+            if v_tangent_y > 0 {
+                canvas.draw_v_segment(cx, 0, v_tangent_y, stroke);
+            }
         }
         Quadrant::BottomLeft => {
-            // ╰ : from right edge to top edge, curving at bottom-left
-            canvas.draw_h_segment(cy, cx, w.saturating_sub(1), stroke);
-            canvas.draw_v_segment(cx, 0, cy, stroke);
+            // ╰ : arms go right and up, curve in bottom-left
+            let h_tangent_x = cx + r_i;
+            if h_tangent_x < w {
+                canvas.draw_h_segment(cy, h_tangent_x, w.saturating_sub(1), stroke);
+            }
+            let v_tangent_y = cy.saturating_sub(r_i);
+            if v_tangent_y > 0 {
+                canvas.draw_v_segment(cx, 0, v_tangent_y, stroke);
+            }
         }
     }
 
-    // Draw the arc to round the corner.
-    canvas.draw_arc(arc_cx, arc_cy, radius, stroke_f, quadrant);
+    canvas.draw_arc(arc_cx, arc_cy, r, stroke_f, quadrant);
 }
 
 // ---------------------------------------------------------------------------

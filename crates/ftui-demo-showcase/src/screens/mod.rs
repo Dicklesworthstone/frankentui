@@ -31,12 +31,15 @@ pub mod log_search;
 pub mod macro_recorder;
 pub mod markdown_live_editor;
 pub mod markdown_rich_text;
+#[cfg(feature = "screen-mermaid")]
 pub mod mermaid_mega_showcase;
+#[cfg(feature = "screen-mermaid")]
 pub mod mermaid_showcase;
 pub mod mouse_playground;
 pub mod notifications;
 pub mod performance;
 pub mod performance_hud;
+#[cfg(feature = "screen-doom")]
 pub mod quake;
 pub mod responsive_demo;
 pub mod shakespeare;

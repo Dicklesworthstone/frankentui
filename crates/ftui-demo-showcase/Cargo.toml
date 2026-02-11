@@ -23,8 +23,6 @@ ftui-extras = { path = "../ftui-extras", version = "0.1.1", features = [
     "canvas",
     "charts",
     "console",
-    "doom",
-    "quake",
     "export",
     "filesize",
     "filepicker",
@@ -56,7 +54,11 @@ crossterm-compat = ["ftui-runtime/crossterm-compat"]
 clipboard = ["ftui-extras/clipboard"]
 image = ["ftui-extras/image"]
 logging = ["ftui-extras/logging"]
-default = ["caps-probe", "native-backend", "clipboard", "image", "logging"]
+# Mermaid/diagram screens (mermaid_showcase, mermaid_mega_showcase).
+screen-mermaid = ["ftui-extras/markdown-diagram"]
+# Doom/Quake engine screens and VFX effects.
+screen-doom = ["ftui-extras/doom", "ftui-extras/quake"]
+default = ["caps-probe", "native-backend", "clipboard", "image", "logging", "screen-mermaid", "screen-doom"]
 # Enable test-support to expose test infrastructure (locks, guards) to integration tests
 test-support = []
 
