@@ -445,6 +445,34 @@ impl ResizeBehavior {
     }
 }
 
+/// Policy controlling when terminal mouse capture is enabled.
+///
+/// Mouse capture can steal normal scrollback interaction in inline mode.
+/// `Auto` keeps inline mode scrollback-safe while still enabling mouse in
+/// alt-screen mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseCapturePolicy {
+    /// Enable in alt-screen mode, disable in inline modes.
+    #[default]
+    Auto,
+    /// Always enable mouse capture.
+    On,
+    /// Always disable mouse capture.
+    Off,
+}
+
+impl MouseCapturePolicy {
+    /// Resolve the policy to a concrete mouse-capture toggle.
+    #[must_use]
+    pub const fn resolve(self, screen_mode: ScreenMode) -> bool {
+        match self {
+            Self::Auto => matches!(screen_mode, ScreenMode::AltScreen),
+            Self::On => true,
+            Self::Off => false,
+        }
+    }
+}
+
 /// Configuration for state persistence in the program runtime.
 ///
 /// Controls when and how widget state is saved/restored.
@@ -651,8 +679,10 @@ pub struct ProgramConfig {
     pub resize_behavior: ResizeBehavior,
     /// Forced terminal size override (when set, resize events are ignored).
     pub forced_size: Option<(u16, u16)>,
-    /// Enable mouse support.
-    pub mouse: bool,
+    /// Mouse capture policy (`Auto`, `On`, `Off`).
+    ///
+    /// `Auto` is inline-safe: off in inline modes, on in alt-screen mode.
+    pub mouse_capture_policy: MouseCapturePolicy,
     /// Enable bracketed paste.
     pub bracketed_paste: bool,
     /// Enable focus reporting.
@@ -685,7 +715,7 @@ impl Default for ProgramConfig {
             resize_coalescer: CoalescerConfig::default(),
             resize_behavior: ResizeBehavior::Throttled,
             forced_size: None,
-            mouse: false,
+            mouse_capture_policy: MouseCapturePolicy::Auto,
             bracketed_paste: true,
             focus_reporting: false,
             kitty_keyboard: false,
@@ -729,8 +759,32 @@ impl ProgramConfig {
     /// Enable mouse support.
     #[must_use]
     pub fn with_mouse(mut self) -> Self {
-        self.mouse = true;
+        self.mouse_capture_policy = MouseCapturePolicy::On;
         self
+    }
+
+    /// Set mouse capture policy.
+    #[must_use]
+    pub fn with_mouse_capture_policy(mut self, policy: MouseCapturePolicy) -> Self {
+        self.mouse_capture_policy = policy;
+        self
+    }
+
+    /// Force mouse capture enabled/disabled regardless of screen mode.
+    #[must_use]
+    pub fn with_mouse_enabled(mut self, enabled: bool) -> Self {
+        self.mouse_capture_policy = if enabled {
+            MouseCapturePolicy::On
+        } else {
+            MouseCapturePolicy::Off
+        };
+        self
+    }
+
+    /// Resolve mouse capture using the configured policy and screen mode.
+    #[must_use]
+    pub const fn resolved_mouse_capture(&self) -> bool {
+        self.mouse_capture_policy.resolve(self.screen_mode)
     }
 
     /// Set the budget configuration.
@@ -1757,8 +1811,9 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
         M::Message: Send + 'static,
     {
         let capabilities = TerminalCapabilities::with_overrides();
+        let mouse_capture = config.resolved_mouse_capture();
         let initial_features = BackendFeatures {
-            mouse_capture: config.mouse,
+            mouse_capture,
             bracketed_paste: config.bracketed_paste,
             focus_events: config.focus_reporting,
             kitty_keyboard: config.kitty_keyboard,
@@ -2009,8 +2064,9 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
     where
         M::Message: Send + 'static,
     {
+        let mouse_capture = config.resolved_mouse_capture();
         let features = BackendFeatures {
-            mouse_capture: config.mouse,
+            mouse_capture,
             bracketed_paste: config.bracketed_paste,
             focus_events: config.focus_reporting,
             kitty_keyboard: config.kitty_keyboard,
@@ -3208,9 +3264,25 @@ impl<M: Model> AppBuilder<M> {
         self
     }
 
-    /// Enable mouse support.
+    /// Force mouse capture on.
     pub fn with_mouse(mut self) -> Self {
-        self.config.mouse = true;
+        self.config.mouse_capture_policy = MouseCapturePolicy::On;
+        self
+    }
+
+    /// Set mouse capture policy for this app.
+    pub fn with_mouse_capture_policy(mut self, policy: MouseCapturePolicy) -> Self {
+        self.config.mouse_capture_policy = policy;
+        self
+    }
+
+    /// Force mouse capture enabled/disabled for this app.
+    pub fn with_mouse_enabled(mut self, enabled: bool) -> Self {
+        self.config.mouse_capture_policy = if enabled {
+            MouseCapturePolicy::On
+        } else {
+            MouseCapturePolicy::Off
+        };
         self
     }
 
@@ -3653,7 +3725,8 @@ mod tests {
     fn program_config_default() {
         let config = ProgramConfig::default();
         assert!(matches!(config.screen_mode, ScreenMode::Inline { .. }));
-        assert!(!config.mouse);
+        assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::Auto);
+        assert!(!config.resolved_mouse_capture());
         assert!(config.bracketed_paste);
         assert_eq!(config.resize_behavior, ResizeBehavior::Throttled);
         assert!(config.inline_auto_remeasure.is_none());
@@ -3699,7 +3772,29 @@ mod tests {
     #[test]
     fn program_config_with_mouse() {
         let config = ProgramConfig::default().with_mouse();
-        assert!(config.mouse);
+        assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::On);
+        assert!(config.resolved_mouse_capture());
+    }
+
+    #[test]
+    fn program_config_mouse_policy_auto_altscreen() {
+        let config = ProgramConfig::fullscreen();
+        assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::Auto);
+        assert!(config.resolved_mouse_capture());
+    }
+
+    #[test]
+    fn program_config_mouse_policy_force_off() {
+        let config = ProgramConfig::fullscreen().with_mouse_capture_policy(MouseCapturePolicy::Off);
+        assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::Off);
+        assert!(!config.resolved_mouse_capture());
+    }
+
+    #[test]
+    fn program_config_mouse_policy_force_on_inline() {
+        let config = ProgramConfig::inline(6).with_mouse_enabled(true);
+        assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::On);
+        assert!(config.resolved_mouse_capture());
     }
 
     #[test]
@@ -5343,8 +5438,9 @@ mod tests {
         let height = height.max(1);
         writer.set_size(width, height);
 
+        let mouse_capture = config.resolved_mouse_capture();
         let initial_features = BackendFeatures {
-            mouse_capture: config.mouse,
+            mouse_capture,
             bracketed_paste: config.bracketed_paste,
             focus_events: config.focus_reporting,
             kitty_keyboard: config.kitty_keyboard,

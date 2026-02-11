@@ -518,7 +518,7 @@ impl Cell {
     /// The combining marks attached to this cell's base character.
     #[inline]
     pub fn combining_marks(&self) -> &[char] {
-        // SAFETY: combining_len is always <= MAX_COMBINING and indices are valid
+        // Invariant: combining_len is always <= MAX_COMBINING
         &self.combining[..self.combining_len as usize]
     }
 
