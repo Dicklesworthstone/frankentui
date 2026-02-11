@@ -36,7 +36,7 @@ use core::time::Duration;
 
 use ftui_backend::{BackendClock, BackendEventSource, BackendPresenter};
 use ftui_core::event::Event;
-use ftui_render::buffer::Buffer;
+use ftui_render::buffer::{Buffer, DoubleBuffer};
 use ftui_render::diff::BufferDiff;
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
@@ -84,7 +84,8 @@ pub struct StepProgram<M: Model> {
     last_tick: Duration,
     width: u16,
     height: u16,
-    prev_buffer: Option<Buffer>,
+    /// Double-buffered render target: O(1) swap instead of O(w*h) clone.
+    dbl_buf: Option<DoubleBuffer>,
 }
 
 impl<M: Model> StepProgram<M> {
@@ -103,7 +104,7 @@ impl<M: Model> StepProgram<M> {
             last_tick: Duration::ZERO,
             width,
             height,
-            prev_buffer: None,
+            dbl_buf: None,
         }
     }
 
@@ -123,7 +124,7 @@ impl<M: Model> StepProgram<M> {
             last_tick: Duration::ZERO,
             width,
             height,
-            prev_buffer: None,
+            dbl_buf: None,
         }
     }
 
@@ -309,7 +310,7 @@ impl<M: Model> StepProgram<M> {
             self.width = *width;
             self.height = *height;
             // Invalidate diff baseline — sizes may differ.
-            self.prev_buffer = None;
+            self.dbl_buf = None;
         }
         let msg = M::Message::from(event);
         let cmd = self.model.update(msg);
@@ -318,28 +319,53 @@ impl<M: Model> StepProgram<M> {
     }
 
     fn render_frame(&mut self) -> Result<(), WebBackendError> {
-        let mut frame = Frame::new(self.width, self.height, &mut self.pool);
+        // Ensure double buffer exists; first frame triggers allocation.
+        let full_repaint = self.dbl_buf.is_none();
+        if self.dbl_buf.is_none() {
+            self.dbl_buf = Some(DoubleBuffer::new(self.width, self.height));
+        }
+
+        // Swap: previous current becomes the diff baseline, current is cleared.
+        {
+            let dbl = self.dbl_buf.as_mut().unwrap();
+            dbl.swap();
+            dbl.current_mut().clear();
+        }
+
+        // Take the cleared buffer out for Frame construction (avoids per-frame
+        // allocation). The 1×1 placeholder is trivially cheap.
+        let render_buf = std::mem::replace(
+            self.dbl_buf.as_mut().unwrap().current_mut(),
+            Buffer::new(1, 1),
+        );
+        let mut frame = Frame::from_buffer(render_buf, &mut self.pool);
         self.model.view(&mut frame);
 
-        let buf = frame.buffer;
-        let diff = self
-            .prev_buffer
-            .as_ref()
-            .map(|prev| BufferDiff::compute(prev, &buf));
-        let full_repaint = self.prev_buffer.is_none();
+        // Move rendered buffer back into the double buffer's current slot.
+        *self.dbl_buf.as_mut().unwrap().current_mut() = frame.buffer;
 
-        // Clone buf into prev_buffer for next frame's diff, then move the
-        // original into the presenter's owned path (avoids a second clone).
-        self.prev_buffer = Some(buf.clone());
+        // Compute diff and present.
+        let dbl = self.dbl_buf.as_ref().unwrap();
+        let diff = if full_repaint {
+            None
+        } else {
+            Some(BufferDiff::compute(dbl.previous(), dbl.current()))
+        };
+        let buf = dbl.current().clone();
+
         self.backend
             .presenter_mut()
             .present_ui_owned(buf, diff.as_ref(), full_repaint);
 
         self.dirty = false;
         self.frame_idx += 1;
+
+        // Periodic grapheme-pool GC. Destructure to satisfy the borrow
+        // checker: pool and dbl_buf are disjoint fields.
         if self.frame_idx.is_multiple_of(POOL_GC_INTERVAL_FRAMES) {
-            let buffers: Vec<&Buffer> = self.prev_buffer.iter().collect();
-            self.pool.gc(&buffers);
+            let Self { dbl_buf, pool, .. } = self;
+            let dbl = dbl_buf.as_ref().unwrap();
+            pool.gc(&[dbl.current(), dbl.previous()]);
         }
         Ok(())
     }

@@ -160,10 +160,25 @@ pub struct WebOutputs {
     pub last_patches: Vec<WebPatchRun>,
     /// Aggregate patch upload accounting for the last present.
     pub last_patch_stats: Option<WebPatchStats>,
-    /// Deterministic hash of the last patch batch (row-major run order).
+    /// Deterministic hash of the last patch batch (lazy — computed on first read).
     pub last_patch_hash: Option<String>,
     /// Whether the last present requested a full repaint.
     pub last_full_repaint_hint: bool,
+    /// Whether the hash has been computed for the current patches.
+    hash_computed: bool,
+}
+
+impl WebOutputs {
+    /// Compute and return the patch hash, caching the result.
+    ///
+    /// The hash is computed lazily on first call and cached for subsequent reads.
+    pub fn compute_patch_hash(&mut self) -> Option<&str> {
+        if !self.hash_computed && !self.last_patches.is_empty() {
+            self.last_patch_hash = Some(patch_batch_hash(&self.last_patches));
+            self.hash_computed = true;
+        }
+        self.last_patch_hash.as_deref()
+    }
 }
 
 impl WebOutputs {
@@ -266,6 +281,47 @@ impl WebPresenter {
         std::mem::take(&mut self.outputs)
     }
 
+    /// Flatten patch runs into caller-provided reusable buffers.
+    ///
+    /// Clears and refills the provided `cells` and `spans` Vecs, reusing
+    /// their heap capacity across frames to avoid per-frame allocation.
+    pub fn flatten_patches_into(&self, cells: &mut Vec<u32>, spans: &mut Vec<u32>) {
+        cells.clear();
+        spans.clear();
+
+        let total_cells = self
+            .outputs
+            .last_patches
+            .iter()
+            .map(|p| p.cells.len())
+            .sum::<usize>();
+        cells.reserve(
+            total_cells
+                .saturating_mul(4)
+                .saturating_sub(cells.capacity()),
+        );
+        spans.reserve(
+            self.outputs
+                .last_patches
+                .len()
+                .saturating_mul(2)
+                .saturating_sub(spans.capacity()),
+        );
+
+        for patch in &self.outputs.last_patches {
+            spans.push(patch.offset);
+            let len = patch.cells.len().min(u32::MAX as usize) as u32;
+            spans.push(len);
+
+            for cell in &patch.cells {
+                cells.push(cell.bg);
+                cells.push(cell.fg);
+                cells.push(cell.glyph);
+                cells.push(cell.attrs);
+            }
+        }
+    }
+
     /// Present a frame, taking ownership of the buffer to avoid cloning.
     ///
     /// This is the zero-copy fast path for callers that can give up ownership
@@ -279,11 +335,11 @@ impl WebPresenter {
     ) {
         let patches = build_patch_runs(&buf, diff, full_repaint_hint);
         let stats = patch_batch_stats(&patches);
-        let patch_hash = patch_batch_hash(&patches);
         self.outputs.last_buffer = Some(buf);
         self.outputs.last_patches = patches;
         self.outputs.last_patch_stats = Some(stats);
-        self.outputs.last_patch_hash = Some(patch_hash);
+        self.outputs.last_patch_hash = None;
+        self.outputs.hash_computed = false;
         self.outputs.last_full_repaint_hint = full_repaint_hint;
     }
 }
@@ -314,11 +370,11 @@ impl BackendPresenter for WebPresenter {
     ) -> Result<(), Self::Error> {
         let patches = build_patch_runs(buf, diff, full_repaint_hint);
         let stats = patch_batch_stats(&patches);
-        let patch_hash = patch_batch_hash(&patches);
         self.outputs.last_buffer = Some(buf.clone());
         self.outputs.last_patches = patches;
         self.outputs.last_patch_stats = Some(stats);
-        self.outputs.last_patch_hash = Some(patch_hash);
+        self.outputs.last_patch_hash = None;
+        self.outputs.hash_computed = false;
         self.outputs.last_full_repaint_hint = full_repaint_hint;
         Ok(())
     }
@@ -454,15 +510,19 @@ fn patch_batch_hash(patches: &[WebPatchRun]) -> String {
     let patch_count = u64::try_from(patches.len()).unwrap_or(u64::MAX);
     hash = fnv1a64_extend(hash, &patch_count.to_le_bytes());
 
+    // Pre-allocate a 16-byte buffer for batching cell fields into a single
+    // fnv1a64_extend call (4× fewer function calls per cell).
+    let mut cell_bytes = [0u8; 16];
     for patch in patches {
         let cell_count = u64::try_from(patch.cells.len()).unwrap_or(u64::MAX);
         hash = fnv1a64_extend(hash, &patch.offset.to_le_bytes());
         hash = fnv1a64_extend(hash, &cell_count.to_le_bytes());
         for cell in &patch.cells {
-            hash = fnv1a64_extend(hash, &cell.bg.to_le_bytes());
-            hash = fnv1a64_extend(hash, &cell.fg.to_le_bytes());
-            hash = fnv1a64_extend(hash, &cell.glyph.to_le_bytes());
-            hash = fnv1a64_extend(hash, &cell.attrs.to_le_bytes());
+            cell_bytes[0..4].copy_from_slice(&cell.bg.to_le_bytes());
+            cell_bytes[4..8].copy_from_slice(&cell.fg.to_le_bytes());
+            cell_bytes[8..12].copy_from_slice(&cell.glyph.to_le_bytes());
+            cell_bytes[12..16].copy_from_slice(&cell.attrs.to_le_bytes());
+            hash = fnv1a64_extend(hash, &cell_bytes);
         }
     }
 
@@ -586,16 +646,18 @@ mod tests {
         let buf = Buffer::new(2, 2);
         p.present_ui(&buf, None, true).unwrap();
 
-        let outputs = p.take_outputs();
+        let mut outputs = p.take_outputs();
         assert_eq!(outputs.logs, vec!["hello", "world"]);
         assert_eq!(outputs.last_full_repaint_hint, true);
-        assert_eq!(outputs.last_buffer.unwrap().width(), 2);
+        assert_eq!(outputs.last_buffer.as_ref().unwrap().width(), 2);
         assert_eq!(outputs.last_patches.len(), 1);
         let stats = outputs.last_patch_stats.expect("stats should be present");
         assert_eq!(stats.patch_count, 1);
         assert_eq!(stats.dirty_cells, 4);
         assert_eq!(stats.bytes_uploaded, 64);
-        let hash = outputs.last_patch_hash.expect("hash should be present");
+        let hash = outputs
+            .compute_patch_hash()
+            .expect("hash should be present");
         assert!(hash.starts_with("fnv1a64:"));
     }
 
@@ -612,7 +674,7 @@ mod tests {
         let diff = BufferDiff::compute(&old, &next);
         presenter.present_ui(&next, Some(&diff), false).unwrap();
 
-        let outputs = presenter.take_outputs();
+        let mut outputs = presenter.take_outputs();
         assert_eq!(outputs.last_full_repaint_hint, false);
         assert_eq!(outputs.last_patches.len(), 2);
         assert_eq!(outputs.last_patches[0].offset, 2);
@@ -623,7 +685,9 @@ mod tests {
         assert_eq!(stats.patch_count, 2);
         assert_eq!(stats.dirty_cells, 3);
         assert_eq!(stats.bytes_uploaded, 48);
-        let hash = outputs.last_patch_hash.expect("hash should be present");
+        let hash = outputs
+            .compute_patch_hash()
+            .expect("hash should be present");
         assert!(hash.starts_with("fnv1a64:"));
     }
 
@@ -886,12 +950,12 @@ mod tests {
         let buf = Buffer::new(3, 2);
         p.present_ui_owned(buf, None, true);
 
-        let out = p.take_outputs();
+        let mut out = p.take_outputs();
         assert!(out.last_full_repaint_hint);
-        assert_eq!(out.last_buffer.unwrap().width(), 3);
+        assert_eq!(out.last_buffer.as_ref().unwrap().width(), 3);
         assert_eq!(out.last_patches.len(), 1);
         assert!(out.last_patch_stats.is_some());
-        assert!(out.last_patch_hash.is_some());
+        assert!(out.compute_patch_hash().is_some());
     }
 
     // --- WebBackend ---
