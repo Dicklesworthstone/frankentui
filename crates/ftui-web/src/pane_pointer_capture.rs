@@ -45,6 +45,12 @@ enum CaptureState {
     Acquired,
 }
 
+impl CaptureState {
+    const fn is_acquired(self) -> bool {
+        matches!(self, Self::Acquired)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActivePointerCapture {
     pointer_id: u32,
@@ -414,7 +420,10 @@ impl PanePointerCaptureAdapter {
             },
             kind,
             modifiers,
-            Some(PanePointerCaptureCommand::Release { pointer_id }),
+            active
+                .capture_state
+                .is_acquired()
+                .then_some(PanePointerCaptureCommand::Release { pointer_id }),
         );
         if dispatch.transition.is_some() {
             self.active = None;
@@ -496,9 +505,12 @@ impl PanePointerCaptureAdapter {
             },
             kind,
             PaneModifierSnapshot::default(),
-            Some(PanePointerCaptureCommand::Release {
-                pointer_id: active.pointer_id,
-            }),
+            active
+                .capture_state
+                .is_acquired()
+                .then_some(PanePointerCaptureCommand::Release {
+                    pointer_id: active.pointer_id,
+                }),
         );
         if dispatch.transition.is_some() {
             self.active = None;
@@ -558,13 +570,11 @@ impl PanePointerCaptureAdapter {
             target: Some(active.target),
             reason,
         };
-        let command = if release_capture {
-            Some(PanePointerCaptureCommand::Release {
+        let command = (release_capture && active.capture_state.is_acquired()).then_some(
+            PanePointerCaptureCommand::Release {
                 pointer_id: active.pointer_id,
-            })
-        } else {
-            None
-        };
+            },
+        );
         let dispatch = self.forward_semantic(
             DispatchContext {
                 phase,
@@ -734,6 +744,8 @@ mod tests {
             pos(1, 1),
             PaneModifierSnapshot::default(),
         );
+        let ack = adapter.capture_acquired(9);
+        assert_eq!(ack.log.outcome, PanePointerLogOutcome::CaptureStateUpdated);
         let dispatch = adapter.pointer_up(
             9,
             PanePointerButton::Primary,
@@ -789,6 +801,8 @@ mod tests {
             pos(0, 0),
             PaneModifierSnapshot::default(),
         );
+        let ack = adapter.capture_acquired(6);
+        assert_eq!(ack.log.outcome, PanePointerLogOutcome::CaptureStateUpdated);
         let dispatch = adapter.blur();
         assert_eq!(dispatch.log.phase, PanePointerLifecyclePhase::Blur);
         assert!(matches!(
@@ -817,6 +831,8 @@ mod tests {
             pos(5, 2),
             PaneModifierSnapshot::default(),
         );
+        let ack = adapter.capture_acquired(8);
+        assert_eq!(ack.log.outcome, PanePointerLogOutcome::CaptureStateUpdated);
         let dispatch = adapter.visibility_hidden();
         assert!(matches!(
             dispatch
@@ -885,9 +901,38 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(dispatch.capture_command, None);
+        assert_eq!(adapter.active_pointer_id(), None);
+    }
+
+    #[test]
+    fn pointer_leave_after_capture_ack_releases_and_cancels() {
+        let mut adapter = adapter();
+        adapter.pointer_down(
+            target(),
+            39,
+            PanePointerButton::Primary,
+            pos(3, 3),
+            PaneModifierSnapshot::default(),
+        );
+        let ack = adapter.capture_acquired(39);
+        assert_eq!(ack.log.outcome, PanePointerLogOutcome::CaptureStateUpdated);
+
+        let dispatch = adapter.pointer_cancel(Some(39));
+        assert!(matches!(
+            dispatch
+                .semantic_event
+                .as_ref()
+                .expect("semantic event expected")
+                .kind,
+            PaneSemanticInputEventKind::Cancel {
+                reason: PaneCancelReason::PointerCancel,
+                ..
+            }
+        ));
         assert_eq!(
             dispatch.capture_command,
-            Some(PanePointerCaptureCommand::Release { pointer_id: 31 })
+            Some(PanePointerCaptureCommand::Release { pointer_id: 39 })
         );
         assert_eq!(adapter.active_pointer_id(), None);
     }
