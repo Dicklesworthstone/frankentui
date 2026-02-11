@@ -33,9 +33,11 @@ use ftui_extras::mermaid::MermaidConfig;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::Cell as RenderCell;
 use ftui_render::frame::{Frame, HitGrid, HitId};
+#[cfg(not(target_arch = "wasm32"))]
+use ftui_runtime::Every;
 use ftui_runtime::render_trace::checksum_buffer;
 use ftui_runtime::undo::HistoryManager;
-use ftui_runtime::{Cmd, Every, FrameTiming, FrameTimingSink, Model, Subscription};
+use ftui_runtime::{Cmd, FrameTiming, FrameTimingSink, Model, Subscription};
 use ftui_style::Style;
 use ftui_text::{Line, Span, Text, WrapMode};
 use ftui_widgets::Widget;
@@ -1561,11 +1563,14 @@ enum EventSource {
 
 impl From<Event> for AppMsg {
     fn from(event: Event) -> Self {
-        if let Event::Resize { width, height } = event {
-            return Self::Resize { width, height };
+        match event {
+            Event::Resize { width, height } => Self::Resize { width, height },
+            #[cfg(target_arch = "wasm32")]
+            Event::Tick => Self::Tick,
+            #[cfg(not(target_arch = "wasm32"))]
+            Event::Tick => Self::ScreenEvent(Event::Tick),
+            other => Self::ScreenEvent(other),
         }
-
-        Self::ScreenEvent(event)
     }
 }
 
@@ -3840,10 +3845,10 @@ impl Model for AppModel {
             let ticks = (self.exit_after_ms + tick_ms.saturating_sub(1)) / tick_ms;
             self.exit_after_ticks = Some(ticks.max(1));
         }
-        if self.exit_after_ticks.is_some() {
-            return Cmd::None;
-        }
-        if self.exit_after_ms > 0 {
+
+        let base_cmd = if self.exit_after_ticks.is_some() {
+            Cmd::None
+        } else if self.exit_after_ms > 0 {
             let ms = self.exit_after_ms;
             Cmd::task_named("demo_exit_after", move || {
                 std::thread::sleep(Duration::from_millis(ms));
@@ -3851,11 +3856,33 @@ impl Model for AppModel {
             })
         } else {
             Cmd::None
+        };
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            // WASM uses `StepProgram`, which does not evaluate `subscriptions()`.
+            // Schedule ticks via `Cmd::Tick` so animations and periodic logic run.
+            let tick_ms = self.tick_interval_ms().max(1);
+            Cmd::batch(vec![base_cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            base_cmd
         }
     }
 
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
-        self.handle_msg(msg, EventSource::User)
+        let cmd = self.handle_msg(msg, EventSource::User);
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Keep tick rate in sync with the current screen/mode (tour/vfx/etc).
+            let tick_ms = self.tick_interval_ms().max(1);
+            Cmd::batch(vec![cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            cmd
+        }
     }
 
     fn view(&self, frame: &mut Frame) {
@@ -3981,10 +4008,17 @@ impl Model for AppModel {
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
-        let tick_ms = self.tick_interval_ms();
-        vec![Box::new(Every::new(Duration::from_millis(tick_ms), || {
-            AppMsg::Tick
-        }))]
+        #[cfg(target_arch = "wasm32")]
+        {
+            Vec::new()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let tick_ms = self.tick_interval_ms();
+            vec![Box::new(Every::new(Duration::from_millis(tick_ms), || {
+                AppMsg::Tick
+            }))]
+        }
     }
 }
 

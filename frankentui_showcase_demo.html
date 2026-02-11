@@ -90,7 +90,8 @@ const CELL_WIDTH      = parseInt(params.get("cellWidth"), 10) || 8;
 const CELL_HEIGHT     = parseInt(params.get("cellHeight"), 10) || 16;
 const START_SCREEN    = parseInt(params.get("screen"), 10) || 0;
 const URL_ZOOM        = parseFloat(params.get("zoom")) || 0;
-const LOG_JSONL       = true;   // Emit JSONL evidence to console
+// Console JSONL is extremely expensive at 60fps; enable only when debugging.
+const LOG_JSONL       = params.get("jsonl") === "1";
 const LOG_PERF        = false;  // Per-frame timing in console
 // Bump when deploying to bypass Cloudflare/browser caches for JS/WASM artifacts.
 const ASSET_VERSION = "2026-02-10.7";

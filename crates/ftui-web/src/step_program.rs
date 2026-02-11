@@ -176,8 +176,18 @@ impl<M: Model> StepProgram<M> {
             && let Some(rate) = self.tick_rate
         {
             let now = self.backend.clock.now_mono();
-            if now.saturating_sub(self.last_tick) >= rate {
-                self.last_tick = now;
+            let delta = now.saturating_sub(self.last_tick);
+            let should_tick = if rate.is_zero() { true } else { delta >= rate };
+            if should_tick {
+                // Preserve remainder when running on high-refresh displays:
+                // snapping `last_tick` to the nearest boundary avoids drift and under-ticking.
+                if rate.is_zero() {
+                    self.last_tick = now;
+                } else {
+                    let rem_ns = delta.as_nanos() % rate.as_nanos();
+                    let rem = Duration::from_nanos(rem_ns as u64);
+                    self.last_tick = now.saturating_sub(rem);
+                }
                 let msg = M::Message::from(Event::Tick);
                 let cmd = self.model.update(msg);
                 self.dirty = true;

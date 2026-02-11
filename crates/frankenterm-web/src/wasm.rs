@@ -607,7 +607,9 @@ impl FrankenTermWeb {
         }
 
         self.recompute_auto_links();
-        self.refresh_search_after_buffer_change();
+        if !self.search_query.is_empty() {
+            self.refresh_search_after_buffer_change();
+        }
         if self.hovered_link_id != 0 && !self.link_id_present(self.hovered_link_id) {
             self.hovered_link_id = 0;
             self.sync_renderer_interaction_state();
