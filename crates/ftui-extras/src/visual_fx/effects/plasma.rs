@@ -2441,4 +2441,872 @@ mod tests {
             }
         }
     }
+
+    // =========================================================================
+    // Lerp Edge Cases (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn lerp_rgb_same_values_returns_identity() {
+        let a = (128, 64, 200);
+        let mid = PlasmaPalette::lerp_rgb(a, a, 0.5);
+        // With same endpoints, any t should return (approximately) the same value.
+        // Allow +/- 1 for fixed-point rounding.
+        assert!((mid.0 as i32 - a.0 as i32).abs() <= 1);
+        assert!((mid.1 as i32 - a.1 as i32).abs() <= 1);
+        assert!((mid.2 as i32 - a.2 as i32).abs() <= 1);
+    }
+
+    #[test]
+    fn lerp_color_same_values_returns_identity() {
+        let c = PackedRgba::rgb(77, 155, 233);
+        let mid = PlasmaPalette::lerp_color(c, c, 0.5);
+        assert!((mid.r() as i32 - c.r() as i32).abs() <= 1);
+        assert!((mid.g() as i32 - c.g() as i32).abs() <= 1);
+        assert!((mid.b() as i32 - c.b() as i32).abs() <= 1);
+    }
+
+    #[test]
+    fn lerp_rgb_max_values() {
+        let white = (255, 255, 255);
+        let black = (0, 0, 0);
+        let mid = PlasmaPalette::lerp_rgb(black, white, 0.5);
+        // Should be near 127-128
+        assert!((mid.0 as i32 - 127).abs() <= 1);
+        assert!((mid.1 as i32 - 127).abs() <= 1);
+        assert!((mid.2 as i32 - 127).abs() <= 1);
+
+        // White to white should stay white
+        let ww = PlasmaPalette::lerp_rgb(white, white, 0.5);
+        assert!((ww.0 as i32 - 255).abs() <= 1);
+    }
+
+    #[test]
+    fn lerp_rgb_quarter_and_three_quarter() {
+        let a = (0, 0, 0);
+        let b = (200, 100, 40);
+        let q = PlasmaPalette::lerp_rgb(a, b, 0.25);
+        let tq = PlasmaPalette::lerp_rgb(a, b, 0.75);
+        // Quarter should be approximately 50, 25, 10
+        assert!((q.0 as i32 - 50).abs() <= 2);
+        assert!((q.1 as i32 - 25).abs() <= 2);
+        // Three-quarter should be approximately 150, 75, 30
+        assert!((tq.0 as i32 - 150).abs() <= 2);
+        assert!((tq.1 as i32 - 75).abs() <= 2);
+    }
+
+    // =========================================================================
+    // HSV Intermediate Values (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn hsv_partial_saturation_desaturates() {
+        // At S=0.5, V=1.0, red hue should have less vivid red
+        let full_sat = PlasmaPalette::hsv_to_rgb(0.0, 1.0, 1.0);
+        let half_sat = PlasmaPalette::hsv_to_rgb(0.0, 0.5, 1.0);
+        // Half saturation should have higher G and B than full saturation
+        assert!(
+            half_sat.g() > full_sat.g(),
+            "Half saturation should desaturate: half.g={} full.g={}",
+            half_sat.g(),
+            full_sat.g()
+        );
+        assert!(
+            half_sat.b() > full_sat.b(),
+            "Half saturation should desaturate: half.b={} full.b={}",
+            half_sat.b(),
+            full_sat.b()
+        );
+        // R should stay at 255 (V=1.0)
+        assert_eq!(half_sat.r(), 255);
+    }
+
+    #[test]
+    fn hsv_at_exact_sextant_edges() {
+        // Test at exact boundaries: 60, 120, 180, 240, 300
+        // Each should produce the well-known secondary colors.
+        let at_59 = PlasmaPalette::hsv_to_rgb(59.9, 1.0, 1.0);
+        let at_60 = PlasmaPalette::hsv_to_rgb(60.0, 1.0, 1.0);
+        // Both near yellow — should be close
+        assert!(
+            (at_59.r() as i32 - at_60.r() as i32).abs() <= 5,
+            "Sextant edge should be continuous"
+        );
+
+        let at_179 = PlasmaPalette::hsv_to_rgb(179.9, 1.0, 1.0);
+        let at_180 = PlasmaPalette::hsv_to_rgb(180.0, 1.0, 1.0);
+        assert!(
+            (at_179.g() as i32 - at_180.g() as i32).abs() <= 5,
+            "Sextant edge 180 should be continuous"
+        );
+    }
+
+    #[test]
+    fn hsv_partial_value_dims_color() {
+        // V=0.5 should produce half-brightness
+        let bright = PlasmaPalette::hsv_to_rgb(0.0, 1.0, 1.0);
+        let dim = PlasmaPalette::hsv_to_rgb(0.0, 1.0, 0.5);
+        // Dim red should be approximately half the bright red
+        assert!(
+            dim.r() < bright.r(),
+            "V=0.5 should be dimmer: dim.r={} bright.r={}",
+            dim.r(),
+            bright.r()
+        );
+        assert!((dim.r() as i32 - 127).abs() <= 2);
+    }
+
+    // =========================================================================
+    // Wave Function Properties (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn plasma_wave_differs_from_plasma_wave_low() {
+        // Full and low wave functions use different numbers of components,
+        // so they should generally produce different values.
+        let mut any_differ = false;
+        for i in 0..20 {
+            let nx = i as f64 / 20.0;
+            let ny = (20 - i) as f64 / 20.0;
+            let full = plasma_wave(nx, ny, 1.0);
+            let low = plasma_wave_low(nx, ny, 1.0);
+            if (full - low).abs() > 1e-10 {
+                any_differ = true;
+                break;
+            }
+        }
+        assert!(
+            any_differ,
+            "plasma_wave and plasma_wave_low should differ for at least some inputs"
+        );
+    }
+
+    #[test]
+    fn plasma_wave_at_time_zero() {
+        // At time=0, the breathing envelope is 0.85 + 0.15*sin(0) = 0.85.
+        // Verify this affects the output range.
+        let v = plasma_wave(0.5, 0.5, 0.0);
+        assert!((0.0..=1.0).contains(&v));
+        // With breath=0.85, the wave is compressed: ((value * 0.85) + 1.0) / 2.0
+        // Range is [((-1*0.85)+1)/2, ((1*0.85)+1)/2] = [0.075, 0.925]
+        assert!(
+            v >= 0.05 && v <= 0.95,
+            "At time=0, breath=0.85 constrains range: {v}"
+        );
+    }
+
+    #[test]
+    fn wave_continuity_nearby_inputs_similar() {
+        // Nearby spatial inputs should produce nearby outputs (wave is smooth).
+        let time = 1.0;
+        let base = plasma_wave(0.5, 0.5, time);
+        let nearby = plasma_wave(0.501, 0.501, time);
+        let diff = (base - nearby).abs();
+        // The wave function is continuous, so small input changes → small output changes.
+        assert!(
+            diff < 0.05,
+            "Nearby inputs should produce similar values: base={base} nearby={nearby} diff={diff}"
+        );
+    }
+
+    #[test]
+    fn wave_varies_over_time() {
+        // The wave should not be constant over time at a fixed spatial point.
+        let v0 = plasma_wave(0.5, 0.5, 0.0);
+        let v1 = plasma_wave(0.5, 0.5, 1.0);
+        let v2 = plasma_wave(0.5, 0.5, 2.0);
+        // At least one pair should differ
+        assert!(
+            v0 != v1 || v1 != v2,
+            "Wave should vary over time: v0={v0} v1={v1} v2={v2}"
+        );
+    }
+
+    // =========================================================================
+    // Theme Gradient Segment Boundaries (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn theme_gradient_exact_boundaries() {
+        // At t=0.0, should be near bg_surface. At t=1.0, should be near fg_primary.
+        // Allow +/- 1 for fixed-point lerp rounding at endpoints.
+        let theme = ThemeInputs::default_dark();
+
+        let at_0 = PlasmaPalette::ThemeAccents.color_at(0.0, &theme);
+        assert!((at_0.r() as i32 - theme.bg_surface.r() as i32).abs() <= 1);
+        assert!((at_0.g() as i32 - theme.bg_surface.g() as i32).abs() <= 1);
+
+        let at_1 = PlasmaPalette::ThemeAccents.color_at(1.0, &theme);
+        assert!((at_1.r() as i32 - theme.fg_primary.r() as i32).abs() <= 1);
+        assert!((at_1.g() as i32 - theme.fg_primary.g() as i32).abs() <= 1);
+    }
+
+    #[test]
+    fn theme_gradient_continuity_at_segment_edges() {
+        // Values just below and above segment edges should be close.
+        let theme = ThemeInputs::default_dark();
+        let ta = PlasmaPalette::ThemeAccents;
+
+        let just_below_033 = ta.color_at(0.329, &theme);
+        let just_above_033 = ta.color_at(0.331, &theme);
+        // Should be very close (continuity at the boundary)
+        assert!(
+            (just_below_033.r() as i32 - just_above_033.r() as i32).abs() <= 5,
+            "Segment boundary at 0.33 should be continuous: {} vs {}",
+            just_below_033.r(),
+            just_above_033.r()
+        );
+
+        let just_below_066 = ta.color_at(0.659, &theme);
+        let just_above_066 = ta.color_at(0.661, &theme);
+        assert!(
+            (just_below_066.r() as i32 - just_above_066.r() as i32).abs() <= 5,
+            "Segment boundary at 0.66 should be continuous: {} vs {}",
+            just_below_066.r(),
+            just_above_066.r()
+        );
+    }
+
+    // =========================================================================
+    // Palette Midpoint Transitions (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn cyberpunk_midpoint_is_purple() {
+        let theme = ThemeInputs::default_dark();
+        let mid = PlasmaPalette::Cyberpunk.color_at(0.5, &theme);
+        // At t=0.5, it's the boundary between hot pink->purple and purple->cyan
+        // Should be at or near the purple stop (150, 50, 200)
+        assert!(
+            mid.r() > 100 && mid.b() > 100,
+            "Cyberpunk midpoint should be purple-ish: r={} g={} b={}",
+            mid.r(),
+            mid.g(),
+            mid.b()
+        );
+    }
+
+    #[test]
+    fn sunset_midpoint_is_pinkish_orange() {
+        let theme = ThemeInputs::default_dark();
+        let mid = PlasmaPalette::Sunset.color_at(0.5, &theme);
+        // At t=0.5, between hot pink and orange
+        assert!(
+            mid.r() > 200,
+            "Sunset midpoint should have high R: r={}",
+            mid.r()
+        );
+    }
+
+    #[test]
+    fn ocean_midpoint_is_cyan() {
+        let theme = ThemeInputs::default_dark();
+        let mid = PlasmaPalette::Ocean.color_at(0.5, &theme);
+        // At t=0.5, exactly at the cyan stop (30, 180, 220)
+        assert!(
+            mid.g() > 100 && mid.b() > 150,
+            "Ocean midpoint should be cyan: r={} g={} b={}",
+            mid.r(),
+            mid.g(),
+            mid.b()
+        );
+    }
+
+    // =========================================================================
+    // Fire Palette Intermediate Segments (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn fire_intermediate_segments_color_progression() {
+        let theme = ThemeInputs::default_dark();
+        let fire = PlasmaPalette::Fire;
+
+        // t=0.1 should be in the first segment (black → dark red): low R
+        let early = fire.color_at(0.1, &theme);
+        assert!(
+            early.r() < 80 && early.g() < 20,
+            "Fire at 0.1 should be very dark: r={} g={}",
+            early.r(),
+            early.g()
+        );
+
+        // t=0.3 should be in second segment (dark red → orange): moderate R
+        let mid_early = fire.color_at(0.3, &theme);
+        assert!(
+            mid_early.r() > early.r(),
+            "Fire at 0.3 should be brighter than 0.1: {} vs {}",
+            mid_early.r(),
+            early.r()
+        );
+
+        // t=0.5 should be in third segment (orange → yellow-ish): higher R, some G
+        let mid = fire.color_at(0.5, &theme);
+        assert!(
+            mid.r() > 150,
+            "Fire at 0.5 should have strong R: {}",
+            mid.r()
+        );
+
+        // t=0.7 should be in fourth segment: high R, notable G
+        let mid_late = fire.color_at(0.7, &theme);
+        assert!(
+            mid_late.g() > mid.g(),
+            "Fire at 0.7 should have more G: {} vs {}",
+            mid_late.g(),
+            mid.g()
+        );
+    }
+
+    // =========================================================================
+    // Galaxy 4th Segment (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn galaxy_fourth_segment_bright_stars() {
+        // Galaxy segment 4 is t=0.85..1.0: light lavender → warm white
+        let theme = ThemeInputs::default_dark();
+        let galaxy = PlasmaPalette::Galaxy;
+
+        let at_085 = galaxy.color_at(0.85, &theme);
+        let at_092 = galaxy.color_at(0.92, &theme);
+        let at_100 = galaxy.color_at(1.0, &theme);
+
+        // All should be bright
+        let lum_085 = at_085.r() as u32 + at_085.g() as u32 + at_085.b() as u32;
+        let lum_100 = at_100.r() as u32 + at_100.g() as u32 + at_100.b() as u32;
+        assert!(lum_085 > 400, "Galaxy at 0.85 should be bright: {lum_085}");
+        assert!(lum_100 > lum_085, "Galaxy should get brighter toward 1.0");
+
+        // Intermediate should be between endpoints
+        assert!(
+            at_092.r() >= at_085.r() && at_092.r() <= at_100.r(),
+            "Galaxy 4th segment R should be monotonic"
+        );
+    }
+
+    // =========================================================================
+    // Render Edge Cases (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn render_single_column() {
+        // Width=1 should render without panic
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::new(PlasmaPalette::Ocean);
+        let ctx = FxContext {
+            width: 1,
+            height: 10,
+            frame: 0,
+            time_seconds: 1.0,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+        let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+        fx.render(ctx, &mut out);
+        let filled = out
+            .iter()
+            .filter(|c| **c != PackedRgba::TRANSPARENT)
+            .count();
+        assert!(filled > 0, "Single column should produce output");
+    }
+
+    #[test]
+    fn render_single_row() {
+        // Height=1 should render without panic
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::new(PlasmaPalette::Fire);
+        let ctx = FxContext {
+            width: 20,
+            height: 1,
+            frame: 0,
+            time_seconds: 1.0,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+        let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+        fx.render(ctx, &mut out);
+        let filled = out
+            .iter()
+            .filter(|c| **c != PackedRgba::TRANSPARENT)
+            .count();
+        assert!(filled > 0, "Single row should produce output");
+    }
+
+    #[test]
+    fn render_large_dimensions() {
+        // Stress test: 100x60 should work without panic or excessive memory
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::new(PlasmaPalette::Sunset);
+        let ctx = FxContext {
+            width: 100,
+            height: 60,
+            frame: 0,
+            time_seconds: 1.5,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+        let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+        fx.render(ctx, &mut out);
+        let filled = out
+            .iter()
+            .filter(|c| **c != PackedRgba::TRANSPARENT)
+            .count();
+        assert_eq!(filled, 6000, "All 6000 pixels should be filled");
+    }
+
+    #[test]
+    fn render_at_time_zero() {
+        // Time=0 is a common initial state; verify it works for all quality tiers
+        let theme = ThemeInputs::default_dark();
+        for quality in [FxQuality::Full, FxQuality::Reduced, FxQuality::Minimal] {
+            let mut fx = PlasmaFx::new(PlasmaPalette::ThemeAccents);
+            let ctx = FxContext {
+                width: 8,
+                height: 8,
+                frame: 0,
+                time_seconds: 0.0,
+                quality,
+                theme: &theme,
+            };
+            let mut out = vec![PackedRgba::TRANSPARENT; 64];
+            fx.render(ctx, &mut out);
+            let filled = out
+                .iter()
+                .filter(|c| **c != PackedRgba::TRANSPARENT)
+                .count();
+            assert!(filled > 0, "{:?} at time=0 should produce output", quality);
+        }
+    }
+
+    // =========================================================================
+    // Palette Switching (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn set_palette_changes_render_output() {
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::new(PlasmaPalette::Sunset);
+        let ctx = FxContext {
+            width: 8,
+            height: 8,
+            frame: 0,
+            time_seconds: 1.0,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+
+        let mut out_sunset = vec![PackedRgba::TRANSPARENT; 64];
+        fx.render(ctx, &mut out_sunset);
+
+        fx.set_palette(PlasmaPalette::Ocean);
+        let mut out_ocean = vec![PackedRgba::TRANSPARENT; 64];
+        fx.render(ctx, &mut out_ocean);
+
+        assert_ne!(
+            out_sunset, out_ocean,
+            "Different palettes should produce different output"
+        );
+    }
+
+    // =========================================================================
+    // Multiple Successive Resizes (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn scratch_handles_multiple_resizes() {
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::new(PlasmaPalette::Sunset);
+
+        // Cycle through multiple sizes
+        let sizes = [(4, 4), (8, 6), (3, 10), (16, 2), (4, 4)];
+        for &(w, h) in &sizes {
+            let ctx = FxContext {
+                width: w,
+                height: h,
+                frame: 0,
+                time_seconds: 1.0,
+                quality: FxQuality::Full,
+                theme: &theme,
+            };
+            let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+            fx.render(ctx, &mut out);
+            let filled = out
+                .iter()
+                .filter(|c| **c != PackedRgba::TRANSPARENT)
+                .count();
+            assert_eq!(
+                filled,
+                (w * h) as usize,
+                "All pixels should be filled at {w}x{h}"
+            );
+        }
+    }
+
+    #[test]
+    fn scratch_resize_preserves_determinism() {
+        // After resizing, re-rendering at original size should still match.
+        let theme = ThemeInputs::default_dark();
+        let mut fx = PlasmaFx::new(PlasmaPalette::Neon);
+
+        let ctx_orig = FxContext {
+            width: 6,
+            height: 4,
+            frame: 0,
+            time_seconds: 2.0,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+        let mut out_orig = vec![PackedRgba::TRANSPARENT; ctx_orig.len()];
+        fx.render(ctx_orig, &mut out_orig);
+
+        // Resize to different size
+        let ctx_big = FxContext {
+            width: 20,
+            height: 15,
+            frame: 0,
+            time_seconds: 2.0,
+            quality: FxQuality::Full,
+            theme: &theme,
+        };
+        let mut out_big = vec![PackedRgba::TRANSPARENT; ctx_big.len()];
+        fx.render(ctx_big, &mut out_big);
+
+        // Back to original
+        let mut out_again = vec![PackedRgba::TRANSPARENT; ctx_orig.len()];
+        fx.render(ctx_orig, &mut out_again);
+        assert_eq!(
+            out_orig, out_again,
+            "Returning to original size should produce same output"
+        );
+    }
+
+    // =========================================================================
+    // Individual Fixed Palette Render (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn each_fixed_palette_produces_distinct_output() {
+        // Each fixed palette should produce visually distinct output.
+        let theme = ThemeInputs::default_dark();
+        let fixed_palettes = [
+            PlasmaPalette::Sunset,
+            PlasmaPalette::Ocean,
+            PlasmaPalette::Fire,
+            PlasmaPalette::Neon,
+            PlasmaPalette::Cyberpunk,
+            PlasmaPalette::Galaxy,
+        ];
+
+        let mut outputs = Vec::new();
+        for palette in &fixed_palettes {
+            let mut fx = PlasmaFx::new(*palette);
+            let ctx = FxContext {
+                width: 8,
+                height: 8,
+                frame: 0,
+                time_seconds: 1.0,
+                quality: FxQuality::Full,
+                theme: &theme,
+            };
+            let mut out = vec![PackedRgba::TRANSPARENT; 64];
+            fx.render(ctx, &mut out);
+            outputs.push(out);
+        }
+
+        // Every pair should differ
+        for i in 0..outputs.len() {
+            for j in (i + 1)..outputs.len() {
+                assert_ne!(
+                    outputs[i], outputs[j],
+                    "{:?} and {:?} should produce different output",
+                    fixed_palettes[i], fixed_palettes[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_theme_palette_produces_distinct_output() {
+        // Each theme-derived palette should produce distinct output.
+        let theme = ThemeInputs::default_dark();
+        let theme_palettes = [
+            PlasmaPalette::ThemeAccents,
+            PlasmaPalette::Aurora,
+            PlasmaPalette::Ember,
+            PlasmaPalette::Subtle,
+            PlasmaPalette::Monochrome,
+        ];
+
+        let mut outputs = Vec::new();
+        for palette in &theme_palettes {
+            let mut fx = PlasmaFx::new(*palette);
+            let ctx = FxContext {
+                width: 8,
+                height: 8,
+                frame: 0,
+                time_seconds: 1.0,
+                quality: FxQuality::Full,
+                theme: &theme,
+            };
+            let mut out = vec![PackedRgba::TRANSPARENT; 64];
+            fx.render(ctx, &mut out);
+            outputs.push(out);
+        }
+
+        for i in 0..outputs.len() {
+            for j in (i + 1)..outputs.len() {
+                assert_ne!(
+                    outputs[i], outputs[j],
+                    "{:?} and {:?} should produce different output",
+                    theme_palettes[i], theme_palettes[j]
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // Monochrome Gradient Linearity (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn monochrome_midpoint_is_average() {
+        let theme = ThemeInputs::default_dark();
+        let mid = PlasmaPalette::Monochrome.color_at(0.5, &theme);
+        let expected_r = (theme.bg_base.r() as i32 + theme.fg_primary.r() as i32) / 2;
+        let expected_g = (theme.bg_base.g() as i32 + theme.fg_primary.g() as i32) / 2;
+        // Allow +/- 1 for fixed-point rounding
+        assert!(
+            (mid.r() as i32 - expected_r).abs() <= 1,
+            "Monochrome midpoint R: got {} expected ~{}",
+            mid.r(),
+            expected_r
+        );
+        assert!(
+            (mid.g() as i32 - expected_g).abs() <= 1,
+            "Monochrome midpoint G: got {} expected ~{}",
+            mid.g(),
+            expected_g
+        );
+    }
+
+    #[test]
+    fn monochrome_is_linear_blend_of_bg_and_fg() {
+        // Monochrome linearly blends bg_base → fg_primary.
+        // Verify the blend is monotonic across all channels.
+        let theme = ThemeInputs::default_dark();
+        let at_0 = PlasmaPalette::Monochrome.color_at(0.0, &theme);
+        let at_05 = PlasmaPalette::Monochrome.color_at(0.5, &theme);
+        let at_1 = PlasmaPalette::Monochrome.color_at(1.0, &theme);
+
+        // Midpoint should be between endpoints (or equal) for each channel.
+        for (ch_name, lo, mid, hi) in [
+            ("R", at_0.r(), at_05.r(), at_1.r()),
+            ("G", at_0.g(), at_05.g(), at_1.g()),
+            ("B", at_0.b(), at_05.b(), at_1.b()),
+        ] {
+            let (min_ep, max_ep) = (lo.min(hi), lo.max(hi));
+            // Allow +/- 1 for rounding
+            assert!(
+                (mid as i32) >= (min_ep as i32 - 1) && (mid as i32) <= (max_ep as i32 + 1),
+                "Monochrome midpoint {ch_name}={mid} should be between {min_ep} and {max_ep}"
+            );
+        }
+    }
+
+    // =========================================================================
+    // Subtle Palette with Different Themes (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn subtle_output_changes_with_theme() {
+        let dark_theme = ThemeInputs::default_dark();
+        let dark_mid = PlasmaPalette::Subtle.color_at(0.5, &dark_theme);
+
+        // Create a lighter theme by modifying bg colors
+        let mut light_theme = ThemeInputs::default_dark();
+        light_theme.bg_base = PackedRgba::rgb(240, 240, 240);
+        light_theme.bg_surface = PackedRgba::rgb(250, 250, 250);
+        light_theme.bg_overlay = PackedRgba::rgb(230, 230, 235);
+        let light_mid = PlasmaPalette::Subtle.color_at(0.5, &light_theme);
+
+        assert_ne!(dark_mid, light_mid, "Subtle palette should adapt to theme");
+        // Light theme version should be brighter
+        assert!(
+            light_mid.r() > dark_mid.r(),
+            "Light subtle should be brighter: light.r={} dark.r={}",
+            light_mid.r(),
+            dark_mid.r()
+        );
+    }
+
+    // =========================================================================
+    // Neon Palette Intermediate Values (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn neon_at_intermediate_hues() {
+        let theme = ThemeInputs::default_dark();
+        let neon = PlasmaPalette::Neon;
+
+        // t=1/6 ≈ yellow (hue=60)
+        let yellow = neon.color_at(1.0 / 6.0, &theme);
+        assert!(
+            yellow.r() > 200 && yellow.g() > 200 && yellow.b() < 50,
+            "Neon at t=1/6 should be yellow: r={} g={} b={}",
+            yellow.r(),
+            yellow.g(),
+            yellow.b()
+        );
+
+        // t=1/2 ≈ cyan (hue=180)
+        let cyan = neon.color_at(0.5, &theme);
+        assert!(
+            cyan.r() < 30 && cyan.g() > 200 && cyan.b() > 200,
+            "Neon at t=0.5 should be cyan: r={} g={} b={}",
+            cyan.r(),
+            cyan.g(),
+            cyan.b()
+        );
+
+        // t=5/6 ≈ magenta (hue=300)
+        let magenta = neon.color_at(5.0 / 6.0, &theme);
+        assert!(
+            magenta.r() > 200 && magenta.g() < 30 && magenta.b() > 200,
+            "Neon at t=5/6 should be magenta: r={} g={} b={}",
+            magenta.r(),
+            magenta.g(),
+            magenta.b()
+        );
+    }
+
+    // =========================================================================
+    // Reduced Quality Render Paths (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn reduced_quality_renders_each_palette() {
+        // Reduced quality has a distinct render path; verify it works for all palettes.
+        let theme = ThemeInputs::default_dark();
+        for palette in [
+            PlasmaPalette::ThemeAccents,
+            PlasmaPalette::Aurora,
+            PlasmaPalette::Ember,
+            PlasmaPalette::Subtle,
+            PlasmaPalette::Monochrome,
+            PlasmaPalette::Sunset,
+            PlasmaPalette::Ocean,
+            PlasmaPalette::Fire,
+            PlasmaPalette::Neon,
+            PlasmaPalette::Cyberpunk,
+            PlasmaPalette::Galaxy,
+        ] {
+            let mut fx = PlasmaFx::new(palette);
+            let ctx = FxContext {
+                width: 6,
+                height: 4,
+                frame: 0,
+                time_seconds: 1.5,
+                quality: FxQuality::Reduced,
+                theme: &theme,
+            };
+            let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+            fx.render(ctx, &mut out);
+            let filled = out
+                .iter()
+                .filter(|c| **c != PackedRgba::TRANSPARENT)
+                .count();
+            assert!(
+                filled > 0,
+                "{:?} Reduced quality should produce output",
+                palette
+            );
+        }
+    }
+
+    #[test]
+    fn minimal_quality_renders_each_palette() {
+        // Minimal quality has a distinct render path; verify it works for all palettes.
+        let theme = ThemeInputs::default_dark();
+        for palette in [
+            PlasmaPalette::ThemeAccents,
+            PlasmaPalette::Aurora,
+            PlasmaPalette::Ember,
+            PlasmaPalette::Subtle,
+            PlasmaPalette::Monochrome,
+            PlasmaPalette::Sunset,
+            PlasmaPalette::Ocean,
+            PlasmaPalette::Fire,
+            PlasmaPalette::Neon,
+            PlasmaPalette::Cyberpunk,
+            PlasmaPalette::Galaxy,
+        ] {
+            let mut fx = PlasmaFx::new(palette);
+            let ctx = FxContext {
+                width: 6,
+                height: 4,
+                frame: 0,
+                time_seconds: 1.5,
+                quality: FxQuality::Minimal,
+                theme: &theme,
+            };
+            let mut out = vec![PackedRgba::TRANSPARENT; ctx.len()];
+            fx.render(ctx, &mut out);
+            let filled = out
+                .iter()
+                .filter(|c| **c != PackedRgba::TRANSPARENT)
+                .count();
+            assert!(
+                filled > 0,
+                "{:?} Minimal quality should produce output",
+                palette
+            );
+        }
+    }
+
+    // =========================================================================
+    // Aurora Fallback Path Completeness (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn aurora_fallback_produces_cool_gradient() {
+        // With transparent accent_slots, Aurora should fall back to blue/cyan.
+        let mut theme = ThemeInputs::default_dark();
+        theme.accent_slots[0] = PackedRgba::TRANSPARENT;
+        theme.accent_slots[1] = PackedRgba::TRANSPARENT;
+
+        // Sample across the full range
+        let mut seen_blue_bias = false;
+        for i in 1..10 {
+            let t = i as f64 / 10.0;
+            let c = PlasmaPalette::Aurora.color_at(t, &theme);
+            if c.b() > c.r() {
+                seen_blue_bias = true;
+            }
+        }
+        assert!(
+            seen_blue_bias,
+            "Aurora fallback should have at least some cool/blue tones"
+        );
+    }
+
+    // =========================================================================
+    // PlasmaFx Eq and Hash Derive (bd-17wlv)
+    // =========================================================================
+
+    #[test]
+    fn palette_eq_and_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(PlasmaPalette::Sunset);
+        set.insert(PlasmaPalette::Ocean);
+        set.insert(PlasmaPalette::Sunset); // duplicate
+        assert_eq!(set.len(), 2, "HashSet should deduplicate palettes");
+    }
+
+    #[test]
+    fn palette_copy() {
+        let p = PlasmaPalette::Galaxy;
+        let q = p; // Copy
+        assert_eq!(p, q);
+    }
 }
