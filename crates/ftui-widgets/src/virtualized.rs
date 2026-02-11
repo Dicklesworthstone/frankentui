@@ -35,18 +35,11 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::time::Duration;
 
-// Imports for future rendering support (currently unused but planned)
-#[allow(unused_imports)]
 use crate::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
-#[allow(unused_imports)]
 use crate::{StatefulWidget, set_style_area};
-#[allow(unused_imports)]
 use ftui_core::geometry::Rect;
-#[allow(unused_imports)]
 use ftui_render::cell::Cell;
-#[allow(unused_imports)]
 use ftui_render::frame::Frame;
-#[allow(unused_imports)]
 use ftui_style::Style;
 
 /// A virtualized content container that tracks scroll state and computes visible ranges.
