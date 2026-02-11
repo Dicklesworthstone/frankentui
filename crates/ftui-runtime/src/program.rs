@@ -69,15 +69,24 @@ use crate::terminal_writer::{RuntimeDiffConfig, ScreenMode, TerminalWriter, UiAn
 use crate::voi_sampling::{VoiConfig, VoiSampler};
 use crate::{BucketKey, ConformalConfig, ConformalPrediction, ConformalPredictor};
 use ftui_backend::{BackendEventSource, BackendFeatures};
-use ftui_core::event::Event;
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 #[cfg(feature = "crossterm-compat")]
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 #[cfg(feature = "crossterm-compat")]
 use ftui_core::terminal_session::{SessionOptions, TerminalSession};
+use ftui_layout::{
+    PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS, PANE_DRAG_RESIZE_DEFAULT_THRESHOLD, PaneCancelReason,
+    PaneDragResizeMachine, PaneDragResizeMachineError, PaneDragResizeState,
+    PaneDragResizeTransition, PaneLayout, PaneModifierSnapshot, PaneNodeKind, PanePointerButton,
+    PanePointerPosition, PaneResizeDirection, PaneResizeTarget, PaneSemanticInputEvent,
+    PaneSemanticInputEventKind, PaneTree, Rect, SplitAxis,
+};
 use ftui_render::budget::{BudgetDecision, DegradationLevel, FrameBudgetConfig, RenderBudget};
 use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
-use ftui_render::frame::{Frame, WidgetBudget, WidgetSignal};
+use ftui_render::frame::{Frame, HitData, HitId, HitRegion, WidgetBudget, WidgetSignal};
 use ftui_render::sanitize::sanitize;
 use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
@@ -470,6 +479,925 @@ impl MouseCapturePolicy {
             Self::On => true,
             Self::Off => false,
         }
+    }
+}
+
+const PANE_TERMINAL_DEFAULT_HIT_THICKNESS: u16 = 3;
+const PANE_TERMINAL_TARGET_AXIS_MASK: u64 = 0b1;
+
+/// One splitter handle region in terminal cell-space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneTerminalSplitterHandle {
+    /// Semantic resize target represented by this handle.
+    pub target: PaneResizeTarget,
+    /// Cell-space hit rectangle for this handle.
+    pub rect: Rect,
+    /// Split boundary coordinate used for deterministic nearest-target ranking.
+    pub boundary: i32,
+}
+
+/// Build deterministic splitter handle regions for terminal hit-testing.
+///
+/// Handles are emitted in split-id order and are clamped to the split rect.
+#[must_use]
+pub fn pane_terminal_splitter_handles(
+    tree: &PaneTree,
+    layout: &PaneLayout,
+    hit_thickness: u16,
+) -> Vec<PaneTerminalSplitterHandle> {
+    let thickness = if hit_thickness == 0 {
+        PANE_TERMINAL_DEFAULT_HIT_THICKNESS
+    } else {
+        hit_thickness
+    };
+    let mut handles = Vec::new();
+    for node in tree.nodes() {
+        let PaneNodeKind::Split(split) = &node.kind else {
+            continue;
+        };
+        let Some(split_rect) = layout.rect(node.id) else {
+            continue;
+        };
+        if split_rect.is_empty() {
+            continue;
+        }
+        let Some(first_rect) = layout.rect(split.first) else {
+            continue;
+        };
+        let Some(second_rect) = layout.rect(split.second) else {
+            continue;
+        };
+
+        let boundary_u16 = match split.axis {
+            SplitAxis::Horizontal => {
+                // Horizontal split => left/right panes => vertical splitter line.
+                if second_rect.x == split_rect.x {
+                    first_rect.right()
+                } else {
+                    second_rect.x
+                }
+            }
+            SplitAxis::Vertical => {
+                // Vertical split => top/bottom panes => horizontal splitter line.
+                if second_rect.y == split_rect.y {
+                    first_rect.bottom()
+                } else {
+                    second_rect.y
+                }
+            }
+        };
+        let Some(rect) = splitter_hit_rect(split.axis, split_rect, boundary_u16, thickness) else {
+            continue;
+        };
+        handles.push(PaneTerminalSplitterHandle {
+            target: PaneResizeTarget {
+                split_id: node.id,
+                axis: split.axis,
+            },
+            rect,
+            boundary: i32::from(boundary_u16),
+        });
+    }
+    handles
+}
+
+/// Resolve a semantic splitter target from a terminal cell position.
+///
+/// If multiple handles overlap, chooses deterministically by:
+/// 1) smallest distance to the splitter boundary, then
+/// 2) smaller split_id, then
+/// 3) horizontal axis before vertical axis.
+#[must_use]
+pub fn pane_terminal_resolve_splitter_target(
+    handles: &[PaneTerminalSplitterHandle],
+    x: u16,
+    y: u16,
+) -> Option<PaneResizeTarget> {
+    let px = i32::from(x);
+    let py = i32::from(y);
+    let mut best: Option<((u32, u64, u8), PaneResizeTarget)> = None;
+
+    for handle in handles {
+        if !rect_contains_cell(handle.rect, x, y) {
+            continue;
+        }
+        let distance = match handle.target.axis {
+            SplitAxis::Horizontal => px.abs_diff(handle.boundary),
+            SplitAxis::Vertical => py.abs_diff(handle.boundary),
+        };
+        let axis_rank = match handle.target.axis {
+            SplitAxis::Horizontal => 0,
+            SplitAxis::Vertical => 1,
+        };
+        let key = (distance, handle.target.split_id.get(), axis_rank);
+        if best.as_ref().is_none_or(|(best_key, _)| key < *best_key) {
+            best = Some((key, handle.target));
+        }
+    }
+
+    best.map(|(_, target)| target)
+}
+
+/// Register pane splitter handles into the frame hit-grid.
+///
+/// Each handle is registered as `HitRegion::Handle` with encoded target data.
+/// Returns number of successfully-registered regions.
+pub fn register_pane_terminal_splitter_hits(
+    frame: &mut Frame,
+    handles: &[PaneTerminalSplitterHandle],
+    hit_id_base: u32,
+) -> usize {
+    let mut registered = 0usize;
+    for (idx, handle) in handles.iter().enumerate() {
+        let Ok(offset) = u32::try_from(idx) else {
+            break;
+        };
+        let hit_id = HitId::new(hit_id_base.saturating_add(offset));
+        if frame.register_hit(
+            handle.rect,
+            hit_id,
+            HitRegion::Handle,
+            encode_pane_resize_target(handle.target),
+        ) {
+            registered = registered.saturating_add(1);
+        }
+    }
+    registered
+}
+
+/// Decode pane resize target from a hit-grid tuple produced by pane handle registration.
+#[must_use]
+pub fn pane_terminal_target_from_hit(hit: (HitId, HitRegion, HitData)) -> Option<PaneResizeTarget> {
+    let (_, region, data) = hit;
+    if region != HitRegion::Handle {
+        return None;
+    }
+    decode_pane_resize_target(data)
+}
+
+fn splitter_hit_rect(
+    axis: SplitAxis,
+    split_rect: Rect,
+    boundary: u16,
+    thickness: u16,
+) -> Option<Rect> {
+    let half = thickness.saturating_sub(1) / 2;
+    match axis {
+        SplitAxis::Horizontal => {
+            let start = boundary.saturating_sub(half).max(split_rect.x);
+            let end = boundary
+                .saturating_add(thickness.saturating_sub(half))
+                .min(split_rect.right());
+            let width = end.saturating_sub(start);
+            (width > 0 && split_rect.height > 0).then_some(Rect::new(
+                start,
+                split_rect.y,
+                width,
+                split_rect.height,
+            ))
+        }
+        SplitAxis::Vertical => {
+            let start = boundary.saturating_sub(half).max(split_rect.y);
+            let end = boundary
+                .saturating_add(thickness.saturating_sub(half))
+                .min(split_rect.bottom());
+            let height = end.saturating_sub(start);
+            (height > 0 && split_rect.width > 0).then_some(Rect::new(
+                split_rect.x,
+                start,
+                split_rect.width,
+                height,
+            ))
+        }
+    }
+}
+
+fn rect_contains_cell(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
+}
+
+fn encode_pane_resize_target(target: PaneResizeTarget) -> HitData {
+    let axis = match target.axis {
+        SplitAxis::Horizontal => 0_u64,
+        SplitAxis::Vertical => PANE_TERMINAL_TARGET_AXIS_MASK,
+    };
+    (target.split_id.get() << 1) | axis
+}
+
+fn decode_pane_resize_target(data: HitData) -> Option<PaneResizeTarget> {
+    let axis = if data & PANE_TERMINAL_TARGET_AXIS_MASK == 0 {
+        SplitAxis::Horizontal
+    } else {
+        SplitAxis::Vertical
+    };
+    let split_id = ftui_layout::PaneId::new(data >> 1).ok()?;
+    Some(PaneResizeTarget { split_id, axis })
+}
+
+/// Configuration for terminal-to-pane semantic input translation.
+///
+/// This adapter normalizes terminal `Event` streams into
+/// `PaneSemanticInputEvent` values accepted by `PaneDragResizeMachine`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneTerminalAdapterConfig {
+    /// Drag start threshold in pane-local units.
+    pub drag_threshold: u16,
+    /// Drag update hysteresis threshold in pane-local units.
+    pub update_hysteresis: u16,
+    /// Mouse button required to begin a drag sequence.
+    pub activation_button: PanePointerButton,
+    /// Minimum drag delta (Manhattan distance, cells) before forwarding
+    /// updates while already in the dragging state.
+    pub drag_update_coalesce_distance: u16,
+    /// Cancel active interactions on focus loss.
+    pub cancel_on_focus_lost: bool,
+    /// Cancel active interactions on terminal resize.
+    pub cancel_on_resize: bool,
+}
+
+impl Default for PaneTerminalAdapterConfig {
+    fn default() -> Self {
+        Self {
+            drag_threshold: PANE_DRAG_RESIZE_DEFAULT_THRESHOLD,
+            update_hysteresis: PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS,
+            activation_button: PanePointerButton::Primary,
+            drag_update_coalesce_distance: 2,
+            cancel_on_focus_lost: true,
+            cancel_on_resize: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PaneTerminalActivePointer {
+    pointer_id: u32,
+    target: PaneResizeTarget,
+    button: PanePointerButton,
+    last_position: PanePointerPosition,
+}
+
+/// Lifecycle phase observed while translating a terminal event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneTerminalLifecyclePhase {
+    MouseDown,
+    MouseDrag,
+    MouseMove,
+    MouseUp,
+    MouseScroll,
+    KeyResize,
+    KeyCancel,
+    FocusLoss,
+    ResizeInterrupt,
+    Other,
+}
+
+/// Deterministic reason a terminal event did not map to pane semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneTerminalIgnoredReason {
+    MissingTarget,
+    NoActivePointer,
+    PointerButtonMismatch,
+    ActivationButtonRequired,
+    UnsupportedKey,
+    FocusGainNoop,
+    ResizeNoop,
+    DragCoalesced,
+    NonSemanticEvent,
+    MachineRejectedEvent,
+}
+
+/// Translation outcome for one raw terminal event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneTerminalLogOutcome {
+    SemanticForwarded,
+    SemanticForwardedAfterRecovery,
+    Ignored(PaneTerminalIgnoredReason),
+}
+
+/// Structured translation log entry for one raw terminal event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneTerminalLogEntry {
+    pub phase: PaneTerminalLifecyclePhase,
+    pub sequence: Option<u64>,
+    pub pointer_id: Option<u32>,
+    pub target: Option<PaneResizeTarget>,
+    pub recovery_cancel_sequence: Option<u64>,
+    pub outcome: PaneTerminalLogOutcome,
+}
+
+/// Output of one terminal event translation step.
+///
+/// `recovery_*` fields are populated when the adapter first emits an internal
+/// cancel (for stale/missing mouse-up recovery) and then forwards the incoming
+/// event as a fresh semantic event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneTerminalDispatch {
+    pub primary_event: Option<PaneSemanticInputEvent>,
+    pub primary_transition: Option<PaneDragResizeTransition>,
+    pub recovery_event: Option<PaneSemanticInputEvent>,
+    pub recovery_transition: Option<PaneDragResizeTransition>,
+    pub log: PaneTerminalLogEntry,
+}
+
+impl PaneTerminalDispatch {
+    fn ignored(
+        phase: PaneTerminalLifecyclePhase,
+        reason: PaneTerminalIgnoredReason,
+        pointer_id: Option<u32>,
+        target: Option<PaneResizeTarget>,
+    ) -> Self {
+        Self {
+            primary_event: None,
+            primary_transition: None,
+            recovery_event: None,
+            recovery_transition: None,
+            log: PaneTerminalLogEntry {
+                phase,
+                sequence: None,
+                pointer_id,
+                target,
+                recovery_cancel_sequence: None,
+                outcome: PaneTerminalLogOutcome::Ignored(reason),
+            },
+        }
+    }
+
+    fn forwarded(
+        phase: PaneTerminalLifecyclePhase,
+        pointer_id: Option<u32>,
+        target: Option<PaneResizeTarget>,
+        event: PaneSemanticInputEvent,
+        transition: PaneDragResizeTransition,
+    ) -> Self {
+        let sequence = Some(event.sequence);
+        Self {
+            primary_event: Some(event),
+            primary_transition: Some(transition),
+            recovery_event: None,
+            recovery_transition: None,
+            log: PaneTerminalLogEntry {
+                phase,
+                sequence,
+                pointer_id,
+                target,
+                recovery_cancel_sequence: None,
+                outcome: PaneTerminalLogOutcome::SemanticForwarded,
+            },
+        }
+    }
+}
+
+/// Deterministic terminal adapter mapping raw `Event` values into
+/// schema-validated pane semantic interaction events.
+#[derive(Debug, Clone)]
+pub struct PaneTerminalAdapter {
+    machine: PaneDragResizeMachine,
+    config: PaneTerminalAdapterConfig,
+    active: Option<PaneTerminalActivePointer>,
+    next_sequence: u64,
+}
+
+impl PaneTerminalAdapter {
+    /// Construct a new adapter with validated drag thresholds.
+    pub fn new(config: PaneTerminalAdapterConfig) -> Result<Self, PaneDragResizeMachineError> {
+        let config = PaneTerminalAdapterConfig {
+            drag_update_coalesce_distance: config.drag_update_coalesce_distance.max(1),
+            ..config
+        };
+        let machine = PaneDragResizeMachine::new_with_hysteresis(
+            config.drag_threshold,
+            config.update_hysteresis,
+        )?;
+        Ok(Self {
+            machine,
+            config,
+            active: None,
+            next_sequence: 1,
+        })
+    }
+
+    /// Adapter configuration.
+    #[must_use]
+    pub const fn config(&self) -> PaneTerminalAdapterConfig {
+        self.config
+    }
+
+    /// Active pointer id currently tracked by the adapter, if any.
+    #[must_use]
+    pub fn active_pointer_id(&self) -> Option<u32> {
+        self.active.map(|active| active.pointer_id)
+    }
+
+    /// Current pane drag/resize machine state.
+    #[must_use]
+    pub const fn machine_state(&self) -> PaneDragResizeState {
+        self.machine.state()
+    }
+
+    /// Translate one raw terminal event into pane semantic event(s).
+    ///
+    /// `target_hint` is provided by host hit-testing (upcoming pane-terminal
+    /// tasks). Pointer drag/move/up reuse active target continuity once armed.
+    pub fn translate(
+        &mut self,
+        event: &Event,
+        target_hint: Option<PaneResizeTarget>,
+    ) -> PaneTerminalDispatch {
+        match event {
+            Event::Mouse(mouse) => self.translate_mouse(*mouse, target_hint),
+            Event::Key(key) => self.translate_key(*key, target_hint),
+            Event::Focus(focused) => self.translate_focus(*focused),
+            Event::Resize { .. } => self.translate_resize(),
+            _ => PaneTerminalDispatch::ignored(
+                PaneTerminalLifecyclePhase::Other,
+                PaneTerminalIgnoredReason::NonSemanticEvent,
+                None,
+                target_hint,
+            ),
+        }
+    }
+
+    /// Translate one raw terminal event while resolving splitter targets from
+    /// terminal hit regions.
+    ///
+    /// This is a convenience wrapper for host code that already has splitter
+    /// handle regions from [`pane_terminal_splitter_handles`].
+    pub fn translate_with_handles(
+        &mut self,
+        event: &Event,
+        handles: &[PaneTerminalSplitterHandle],
+    ) -> PaneTerminalDispatch {
+        let active_target = self.active.map(|active| active.target);
+        let target_hint = match event {
+            Event::Mouse(mouse) => {
+                let resolved = pane_terminal_resolve_splitter_target(handles, mouse.x, mouse.y);
+                match mouse.kind {
+                    MouseEventKind::Down(_)
+                    | MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+                    | MouseEventKind::ScrollLeft
+                    | MouseEventKind::ScrollRight => resolved,
+                    MouseEventKind::Drag(_) | MouseEventKind::Moved | MouseEventKind::Up(_) => {
+                        resolved.or(active_target)
+                    }
+                }
+            }
+            Event::Key(_) => active_target,
+            _ => None,
+        };
+        self.translate(event, target_hint)
+    }
+
+    fn translate_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        target_hint: Option<PaneResizeTarget>,
+    ) -> PaneTerminalDispatch {
+        let position = mouse_position(mouse);
+        let modifiers = pane_modifiers(mouse.modifiers);
+        match mouse.kind {
+            MouseEventKind::Down(button) => {
+                let pane_button = pane_button(button);
+                if pane_button != self.config.activation_button {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseDown,
+                        PaneTerminalIgnoredReason::ActivationButtonRequired,
+                        Some(pointer_id_for_button(pane_button)),
+                        target_hint,
+                    );
+                }
+                let Some(target) = target_hint else {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseDown,
+                        PaneTerminalIgnoredReason::MissingTarget,
+                        Some(pointer_id_for_button(pane_button)),
+                        None,
+                    );
+                };
+
+                let recovery = self.cancel_active_internal(PaneCancelReason::PointerCancel);
+                let pointer_id = pointer_id_for_button(pane_button);
+                let kind = PaneSemanticInputEventKind::PointerDown {
+                    target,
+                    pointer_id,
+                    button: pane_button,
+                    position,
+                };
+                let mut dispatch = self.forward_semantic(
+                    PaneTerminalLifecyclePhase::MouseDown,
+                    Some(pointer_id),
+                    Some(target),
+                    kind,
+                    modifiers,
+                );
+                if dispatch.primary_transition.is_some() {
+                    self.active = Some(PaneTerminalActivePointer {
+                        pointer_id,
+                        target,
+                        button: pane_button,
+                        last_position: position,
+                    });
+                }
+                if let Some((cancel_event, cancel_transition)) = recovery {
+                    dispatch.recovery_event = Some(cancel_event);
+                    dispatch.recovery_transition = Some(cancel_transition);
+                    dispatch.log.recovery_cancel_sequence =
+                        dispatch.recovery_event.as_ref().map(|event| event.sequence);
+                    if matches!(
+                        dispatch.log.outcome,
+                        PaneTerminalLogOutcome::SemanticForwarded
+                    ) {
+                        dispatch.log.outcome =
+                            PaneTerminalLogOutcome::SemanticForwardedAfterRecovery;
+                    }
+                }
+                dispatch
+            }
+            MouseEventKind::Drag(button) => {
+                let pane_button = pane_button(button);
+                let Some(mut active) = self.active else {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseDrag,
+                        PaneTerminalIgnoredReason::NoActivePointer,
+                        Some(pointer_id_for_button(pane_button)),
+                        target_hint,
+                    );
+                };
+                if active.button != pane_button {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseDrag,
+                        PaneTerminalIgnoredReason::PointerButtonMismatch,
+                        Some(pointer_id_for_button(pane_button)),
+                        Some(active.target),
+                    );
+                }
+                let delta_x = position.x.saturating_sub(active.last_position.x);
+                let delta_y = position.y.saturating_sub(active.last_position.y);
+                if self.should_coalesce_drag(delta_x, delta_y) {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseDrag,
+                        PaneTerminalIgnoredReason::DragCoalesced,
+                        Some(active.pointer_id),
+                        Some(active.target),
+                    );
+                }
+                let kind = PaneSemanticInputEventKind::PointerMove {
+                    target: active.target,
+                    pointer_id: active.pointer_id,
+                    position,
+                    delta_x,
+                    delta_y,
+                };
+                let dispatch = self.forward_semantic(
+                    PaneTerminalLifecyclePhase::MouseDrag,
+                    Some(active.pointer_id),
+                    Some(active.target),
+                    kind,
+                    modifiers,
+                );
+                if dispatch.primary_transition.is_some() {
+                    active.last_position = position;
+                    self.active = Some(active);
+                }
+                dispatch
+            }
+            MouseEventKind::Moved => {
+                let Some(mut active) = self.active else {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseMove,
+                        PaneTerminalIgnoredReason::NoActivePointer,
+                        None,
+                        target_hint,
+                    );
+                };
+                let delta_x = position.x.saturating_sub(active.last_position.x);
+                let delta_y = position.y.saturating_sub(active.last_position.y);
+                if self.should_coalesce_drag(delta_x, delta_y) {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseMove,
+                        PaneTerminalIgnoredReason::DragCoalesced,
+                        Some(active.pointer_id),
+                        Some(active.target),
+                    );
+                }
+                let kind = PaneSemanticInputEventKind::PointerMove {
+                    target: active.target,
+                    pointer_id: active.pointer_id,
+                    position,
+                    delta_x,
+                    delta_y,
+                };
+                let dispatch = self.forward_semantic(
+                    PaneTerminalLifecyclePhase::MouseMove,
+                    Some(active.pointer_id),
+                    Some(active.target),
+                    kind,
+                    modifiers,
+                );
+                if dispatch.primary_transition.is_some() {
+                    active.last_position = position;
+                    self.active = Some(active);
+                }
+                dispatch
+            }
+            MouseEventKind::Up(button) => {
+                let pane_button = pane_button(button);
+                let Some(active) = self.active else {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseUp,
+                        PaneTerminalIgnoredReason::NoActivePointer,
+                        Some(pointer_id_for_button(pane_button)),
+                        target_hint,
+                    );
+                };
+                if active.button != pane_button {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseUp,
+                        PaneTerminalIgnoredReason::PointerButtonMismatch,
+                        Some(pointer_id_for_button(pane_button)),
+                        Some(active.target),
+                    );
+                }
+                let kind = PaneSemanticInputEventKind::PointerUp {
+                    target: active.target,
+                    pointer_id: active.pointer_id,
+                    button: active.button,
+                    position,
+                };
+                let dispatch = self.forward_semantic(
+                    PaneTerminalLifecyclePhase::MouseUp,
+                    Some(active.pointer_id),
+                    Some(active.target),
+                    kind,
+                    modifiers,
+                );
+                if dispatch.primary_transition.is_some() {
+                    self.active = None;
+                }
+                dispatch
+            }
+            MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => {
+                let target = target_hint.or(self.active.map(|active| active.target));
+                let Some(target) = target else {
+                    return PaneTerminalDispatch::ignored(
+                        PaneTerminalLifecyclePhase::MouseScroll,
+                        PaneTerminalIgnoredReason::MissingTarget,
+                        None,
+                        None,
+                    );
+                };
+                let lines = match mouse.kind {
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => -1,
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => 1,
+                    _ => unreachable!("handled by outer match"),
+                };
+                let kind = PaneSemanticInputEventKind::WheelNudge { target, lines };
+                self.forward_semantic(
+                    PaneTerminalLifecyclePhase::MouseScroll,
+                    None,
+                    Some(target),
+                    kind,
+                    modifiers,
+                )
+            }
+        }
+    }
+
+    fn translate_key(
+        &mut self,
+        key: KeyEvent,
+        target_hint: Option<PaneResizeTarget>,
+    ) -> PaneTerminalDispatch {
+        if key.kind == KeyEventKind::Release {
+            return PaneTerminalDispatch::ignored(
+                PaneTerminalLifecyclePhase::Other,
+                PaneTerminalIgnoredReason::UnsupportedKey,
+                None,
+                target_hint,
+            );
+        }
+        if matches!(key.code, KeyCode::Escape) {
+            return self.cancel_active_dispatch(
+                PaneTerminalLifecyclePhase::KeyCancel,
+                PaneCancelReason::EscapeKey,
+                PaneTerminalIgnoredReason::NoActivePointer,
+            );
+        }
+        let target = target_hint.or(self.active.map(|active| active.target));
+        let Some(target) = target else {
+            return PaneTerminalDispatch::ignored(
+                PaneTerminalLifecyclePhase::KeyResize,
+                PaneTerminalIgnoredReason::MissingTarget,
+                None,
+                None,
+            );
+        };
+        let Some(direction) = keyboard_resize_direction(key.code, target.axis) else {
+            return PaneTerminalDispatch::ignored(
+                PaneTerminalLifecyclePhase::KeyResize,
+                PaneTerminalIgnoredReason::UnsupportedKey,
+                None,
+                Some(target),
+            );
+        };
+        let units = keyboard_resize_units(key.modifiers);
+        let kind = PaneSemanticInputEventKind::KeyboardResize {
+            target,
+            direction,
+            units,
+        };
+        self.forward_semantic(
+            PaneTerminalLifecyclePhase::KeyResize,
+            self.active_pointer_id(),
+            Some(target),
+            kind,
+            pane_modifiers(key.modifiers),
+        )
+    }
+
+    fn translate_focus(&mut self, focused: bool) -> PaneTerminalDispatch {
+        if focused {
+            return PaneTerminalDispatch::ignored(
+                PaneTerminalLifecyclePhase::Other,
+                PaneTerminalIgnoredReason::FocusGainNoop,
+                self.active_pointer_id(),
+                self.active.map(|active| active.target),
+            );
+        }
+        if !self.config.cancel_on_focus_lost {
+            return PaneTerminalDispatch::ignored(
+                PaneTerminalLifecyclePhase::FocusLoss,
+                PaneTerminalIgnoredReason::ResizeNoop,
+                self.active_pointer_id(),
+                self.active.map(|active| active.target),
+            );
+        }
+        self.cancel_active_dispatch(
+            PaneTerminalLifecyclePhase::FocusLoss,
+            PaneCancelReason::FocusLost,
+            PaneTerminalIgnoredReason::NoActivePointer,
+        )
+    }
+
+    fn translate_resize(&mut self) -> PaneTerminalDispatch {
+        if !self.config.cancel_on_resize {
+            return PaneTerminalDispatch::ignored(
+                PaneTerminalLifecyclePhase::ResizeInterrupt,
+                PaneTerminalIgnoredReason::ResizeNoop,
+                self.active_pointer_id(),
+                self.active.map(|active| active.target),
+            );
+        }
+        self.cancel_active_dispatch(
+            PaneTerminalLifecyclePhase::ResizeInterrupt,
+            PaneCancelReason::Programmatic,
+            PaneTerminalIgnoredReason::ResizeNoop,
+        )
+    }
+
+    fn cancel_active_dispatch(
+        &mut self,
+        phase: PaneTerminalLifecyclePhase,
+        reason: PaneCancelReason,
+        no_active_reason: PaneTerminalIgnoredReason,
+    ) -> PaneTerminalDispatch {
+        let Some(active) = self.active else {
+            return PaneTerminalDispatch::ignored(phase, no_active_reason, None, None);
+        };
+        let kind = PaneSemanticInputEventKind::Cancel {
+            target: Some(active.target),
+            reason,
+        };
+        let dispatch = self.forward_semantic(
+            phase,
+            Some(active.pointer_id),
+            Some(active.target),
+            kind,
+            PaneModifierSnapshot::default(),
+        );
+        if dispatch.primary_transition.is_some() {
+            self.active = None;
+        }
+        dispatch
+    }
+
+    fn cancel_active_internal(
+        &mut self,
+        reason: PaneCancelReason,
+    ) -> Option<(PaneSemanticInputEvent, PaneDragResizeTransition)> {
+        let active = self.active?;
+        let kind = PaneSemanticInputEventKind::Cancel {
+            target: Some(active.target),
+            reason,
+        };
+        let result = self
+            .apply_semantic(kind, PaneModifierSnapshot::default())
+            .ok();
+        if result.is_some() {
+            self.active = None;
+        }
+        result
+    }
+
+    fn forward_semantic(
+        &mut self,
+        phase: PaneTerminalLifecyclePhase,
+        pointer_id: Option<u32>,
+        target: Option<PaneResizeTarget>,
+        kind: PaneSemanticInputEventKind,
+        modifiers: PaneModifierSnapshot,
+    ) -> PaneTerminalDispatch {
+        match self.apply_semantic(kind, modifiers) {
+            Ok((event, transition)) => {
+                PaneTerminalDispatch::forwarded(phase, pointer_id, target, event, transition)
+            }
+            Err(_) => PaneTerminalDispatch::ignored(
+                phase,
+                PaneTerminalIgnoredReason::MachineRejectedEvent,
+                pointer_id,
+                target,
+            ),
+        }
+    }
+
+    fn apply_semantic(
+        &mut self,
+        kind: PaneSemanticInputEventKind,
+        modifiers: PaneModifierSnapshot,
+    ) -> Result<(PaneSemanticInputEvent, PaneDragResizeTransition), PaneDragResizeMachineError>
+    {
+        let mut event = PaneSemanticInputEvent::new(self.next_sequence(), kind);
+        event.modifiers = modifiers;
+        let transition = self.machine.apply_event(&event)?;
+        Ok((event, transition))
+    }
+
+    fn next_sequence(&mut self) -> u64 {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        sequence
+    }
+
+    fn should_coalesce_drag(&self, delta_x: i32, delta_y: i32) -> bool {
+        if !matches!(self.machine.state(), PaneDragResizeState::Dragging { .. }) {
+            return false;
+        }
+        let movement = delta_x
+            .unsigned_abs()
+            .saturating_add(delta_y.unsigned_abs());
+        movement < u32::from(self.config.drag_update_coalesce_distance)
+    }
+}
+
+fn pane_button(button: MouseButton) -> PanePointerButton {
+    match button {
+        MouseButton::Left => PanePointerButton::Primary,
+        MouseButton::Right => PanePointerButton::Secondary,
+        MouseButton::Middle => PanePointerButton::Middle,
+    }
+}
+
+fn pointer_id_for_button(button: PanePointerButton) -> u32 {
+    match button {
+        PanePointerButton::Primary => 1,
+        PanePointerButton::Secondary => 2,
+        PanePointerButton::Middle => 3,
+    }
+}
+
+fn mouse_position(mouse: MouseEvent) -> PanePointerPosition {
+    PanePointerPosition::new(i32::from(mouse.x), i32::from(mouse.y))
+}
+
+fn pane_modifiers(modifiers: Modifiers) -> PaneModifierSnapshot {
+    PaneModifierSnapshot {
+        shift: modifiers.contains(Modifiers::SHIFT),
+        alt: modifiers.contains(Modifiers::ALT),
+        ctrl: modifiers.contains(Modifiers::CTRL),
+        meta: modifiers.contains(Modifiers::SUPER),
+    }
+}
+
+fn keyboard_resize_direction(code: KeyCode, axis: SplitAxis) -> Option<PaneResizeDirection> {
+    match (axis, code) {
+        (SplitAxis::Horizontal, KeyCode::Left) => Some(PaneResizeDirection::Decrease),
+        (SplitAxis::Horizontal, KeyCode::Right) => Some(PaneResizeDirection::Increase),
+        (SplitAxis::Vertical, KeyCode::Up) => Some(PaneResizeDirection::Decrease),
+        (SplitAxis::Vertical, KeyCode::Down) => Some(PaneResizeDirection::Increase),
+        (_, KeyCode::Char('-')) => Some(PaneResizeDirection::Decrease),
+        (_, KeyCode::Char('+') | KeyCode::Char('=')) => Some(PaneResizeDirection::Increase),
+        _ => None,
+    }
+}
+
+fn keyboard_resize_units(modifiers: Modifiers) -> u16 {
+    if modifiers.contains(Modifiers::SHIFT) {
+        5
+    } else {
+        1
     }
 }
 
@@ -3795,6 +4723,422 @@ mod tests {
         let config = ProgramConfig::inline(6).with_mouse_enabled(true);
         assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::On);
         assert!(config.resolved_mouse_capture());
+    }
+
+    fn pane_target(axis: SplitAxis) -> PaneResizeTarget {
+        PaneResizeTarget {
+            split_id: ftui_layout::PaneId::MIN,
+            axis,
+        }
+    }
+
+    fn pane_id(raw: u64) -> ftui_layout::PaneId {
+        ftui_layout::PaneId::new(raw).expect("test pane id must be non-zero")
+    }
+
+    fn nested_pane_tree() -> ftui_layout::PaneTree {
+        let root = pane_id(1);
+        let left = pane_id(2);
+        let right_split = pane_id(3);
+        let right_top = pane_id(4);
+        let right_bottom = pane_id(5);
+        let snapshot = ftui_layout::PaneTreeSnapshot {
+            schema_version: ftui_layout::PANE_TREE_SCHEMA_VERSION,
+            root,
+            next_id: pane_id(6),
+            nodes: vec![
+                ftui_layout::PaneNodeRecord::split(
+                    root,
+                    None,
+                    ftui_layout::PaneSplit {
+                        axis: SplitAxis::Horizontal,
+                        ratio: ftui_layout::PaneSplitRatio::new(1, 1).expect("valid ratio"),
+                        first: left,
+                        second: right_split,
+                    },
+                ),
+                ftui_layout::PaneNodeRecord::leaf(
+                    left,
+                    Some(root),
+                    ftui_layout::PaneLeaf::new("left"),
+                ),
+                ftui_layout::PaneNodeRecord::split(
+                    right_split,
+                    Some(root),
+                    ftui_layout::PaneSplit {
+                        axis: SplitAxis::Vertical,
+                        ratio: ftui_layout::PaneSplitRatio::new(1, 1).expect("valid ratio"),
+                        first: right_top,
+                        second: right_bottom,
+                    },
+                ),
+                ftui_layout::PaneNodeRecord::leaf(
+                    right_top,
+                    Some(right_split),
+                    ftui_layout::PaneLeaf::new("right_top"),
+                ),
+                ftui_layout::PaneNodeRecord::leaf(
+                    right_bottom,
+                    Some(right_split),
+                    ftui_layout::PaneLeaf::new("right_bottom"),
+                ),
+            ],
+            extensions: std::collections::BTreeMap::new(),
+        };
+        ftui_layout::PaneTree::from_snapshot(snapshot).expect("valid nested pane tree")
+    }
+
+    #[test]
+    fn pane_terminal_splitter_resolution_is_deterministic() {
+        let tree = nested_pane_tree();
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 50, 20))
+            .expect("layout should solve");
+        let handles = pane_terminal_splitter_handles(&tree, &layout, 3);
+        assert_eq!(handles.len(), 2);
+
+        // Intersection between root vertical splitter and right-side horizontal
+        // splitter deterministically resolves to smaller split ID.
+        let overlap = pane_terminal_resolve_splitter_target(&handles, 25, 10)
+            .expect("overlap cell should resolve");
+        assert_eq!(overlap.split_id, pane_id(1));
+        assert_eq!(overlap.axis, SplitAxis::Horizontal);
+
+        let right_only = pane_terminal_resolve_splitter_target(&handles, 40, 10)
+            .expect("right split should resolve");
+        assert_eq!(right_only.split_id, pane_id(3));
+        assert_eq!(right_only.axis, SplitAxis::Vertical);
+    }
+
+    #[test]
+    fn pane_terminal_splitter_hits_register_and_decode_target() {
+        let tree = nested_pane_tree();
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 50, 20))
+            .expect("layout should solve");
+        let handles = pane_terminal_splitter_handles(&tree, &layout, 3);
+
+        let mut pool = ftui_render::grapheme_pool::GraphemePool::new();
+        let mut frame = Frame::with_hit_grid(50, 20, &mut pool);
+        let registered = register_pane_terminal_splitter_hits(&mut frame, &handles, 9_000);
+        assert_eq!(registered, handles.len());
+
+        let root_hit = frame
+            .hit_test(25, 2)
+            .expect("root splitter should be hittable");
+        assert_eq!(root_hit.1, HitRegion::Handle);
+        let root_target = pane_terminal_target_from_hit(root_hit).expect("target from hit");
+        assert_eq!(root_target.split_id, pane_id(1));
+        assert_eq!(root_target.axis, SplitAxis::Horizontal);
+
+        let right_hit = frame
+            .hit_test(40, 10)
+            .expect("right splitter should be hittable");
+        assert_eq!(right_hit.1, HitRegion::Handle);
+        let right_target = pane_terminal_target_from_hit(right_hit).expect("target from hit");
+        assert_eq!(right_target.split_id, pane_id(3));
+        assert_eq!(right_target.axis, SplitAxis::Vertical);
+    }
+
+    #[test]
+    fn pane_terminal_adapter_maps_basic_drag_lifecycle() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            4,
+        ));
+        let down_dispatch = adapter.translate(&down, Some(target));
+        let down_event = down_dispatch
+            .primary_event
+            .as_ref()
+            .expect("pointer down semantic event");
+        assert_eq!(down_event.sequence, 1);
+        assert!(matches!(
+            down_event.kind,
+            PaneSemanticInputEventKind::PointerDown {
+                target: actual_target,
+                pointer_id: 1,
+                button: PanePointerButton::Primary,
+                position
+            } if actual_target == target && position == PanePointerPosition::new(10, 4)
+        ));
+        assert!(down_event.validate().is_ok());
+
+        let drag = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            14,
+            4,
+        ));
+        let drag_dispatch = adapter.translate(&drag, None);
+        let drag_event = drag_dispatch
+            .primary_event
+            .as_ref()
+            .expect("pointer move semantic event");
+        assert_eq!(drag_event.sequence, 2);
+        assert!(matches!(
+            drag_event.kind,
+            PaneSemanticInputEventKind::PointerMove {
+                target: actual_target,
+                pointer_id: 1,
+                position,
+                delta_x: 4,
+                delta_y: 0
+            } if actual_target == target && position == PanePointerPosition::new(14, 4)
+        ));
+
+        let up = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            14,
+            4,
+        ));
+        let up_dispatch = adapter.translate(&up, None);
+        let up_event = up_dispatch
+            .primary_event
+            .as_ref()
+            .expect("pointer up semantic event");
+        assert_eq!(up_event.sequence, 3);
+        assert!(matches!(
+            up_event.kind,
+            PaneSemanticInputEventKind::PointerUp {
+                target: actual_target,
+                pointer_id: 1,
+                button: PanePointerButton::Primary,
+                position
+            } if actual_target == target && position == PanePointerPosition::new(14, 4)
+        ));
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn pane_terminal_adapter_focus_loss_emits_cancel() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Vertical);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            3,
+            9,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+        assert_eq!(adapter.active_pointer_id(), Some(1));
+
+        let cancel_dispatch = adapter.translate(&Event::Focus(false), None);
+        let cancel_event = cancel_dispatch
+            .primary_event
+            .as_ref()
+            .expect("focus-loss cancel event");
+        assert!(matches!(
+            cancel_event.kind,
+            PaneSemanticInputEventKind::Cancel {
+                target: Some(actual_target),
+                reason: PaneCancelReason::FocusLost
+            } if actual_target == target
+        ));
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn pane_terminal_adapter_recovers_missing_mouse_up() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let first_target = pane_target(SplitAxis::Horizontal);
+        let second_target = pane_target(SplitAxis::Vertical);
+
+        let first_down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&first_down, Some(first_target));
+
+        let second_down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            8,
+            11,
+        ));
+        let dispatch = adapter.translate(&second_down, Some(second_target));
+        let recovery = dispatch
+            .recovery_event
+            .as_ref()
+            .expect("recovery cancel expected");
+        assert!(matches!(
+            recovery.kind,
+            PaneSemanticInputEventKind::Cancel {
+                target: Some(actual_target),
+                reason: PaneCancelReason::PointerCancel
+            } if actual_target == first_target
+        ));
+        let primary = dispatch
+            .primary_event
+            .as_ref()
+            .expect("second pointer down expected");
+        assert!(matches!(
+            primary.kind,
+            PaneSemanticInputEventKind::PointerDown {
+                target: actual_target,
+                pointer_id: 1,
+                button: PanePointerButton::Primary,
+                position
+            } if actual_target == second_target && position == PanePointerPosition::new(8, 11)
+        ));
+        assert_eq!(recovery.sequence, 2);
+        assert_eq!(primary.sequence, 3);
+        assert!(matches!(
+            dispatch.log.outcome,
+            PaneTerminalLogOutcome::SemanticForwardedAfterRecovery
+        ));
+        assert_eq!(dispatch.log.recovery_cancel_sequence, Some(2));
+    }
+
+    #[test]
+    fn pane_terminal_adapter_modifier_parity() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let mouse = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 1, 2)
+            .with_modifiers(Modifiers::SHIFT | Modifiers::ALT | Modifiers::CTRL | Modifiers::SUPER);
+        let dispatch = adapter.translate(&Event::Mouse(mouse), Some(target));
+        let event = dispatch.primary_event.expect("semantic event");
+        assert!(event.modifiers.shift);
+        assert!(event.modifiers.alt);
+        assert!(event.modifiers.ctrl);
+        assert!(event.modifiers.meta);
+    }
+
+    #[test]
+    fn pane_terminal_adapter_keyboard_resize_mapping() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let key = KeyEvent::new(KeyCode::Right);
+        let dispatch = adapter.translate(&Event::Key(key), Some(target));
+        let event = dispatch.primary_event.expect("keyboard resize event");
+        assert!(matches!(
+            event.kind,
+            PaneSemanticInputEventKind::KeyboardResize {
+                target: actual_target,
+                direction: PaneResizeDirection::Increase,
+                units: 1
+            } if actual_target == target
+        ));
+
+        let shifted = KeyEvent::new(KeyCode::Right).with_modifiers(Modifiers::SHIFT);
+        let shifted_dispatch = adapter.translate(&Event::Key(shifted), Some(target));
+        let shifted_event = shifted_dispatch
+            .primary_event
+            .expect("shifted resize event");
+        assert!(matches!(
+            shifted_event.kind,
+            PaneSemanticInputEventKind::KeyboardResize {
+                direction: PaneResizeDirection::Increase,
+                units: 5,
+                ..
+            }
+        ));
+        assert!(shifted_event.modifiers.shift);
+    }
+
+    #[test]
+    fn pane_terminal_adapter_drag_updates_are_coalesced() {
+        let mut adapter = PaneTerminalAdapter::new(PaneTerminalAdapterConfig {
+            drag_update_coalesce_distance: 2,
+            ..PaneTerminalAdapterConfig::default()
+        })
+        .expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            4,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let drag_start = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            14,
+            4,
+        ));
+        let started = adapter.translate(&drag_start, None);
+        assert!(started.primary_event.is_some());
+        assert!(matches!(
+            adapter.machine_state(),
+            PaneDragResizeState::Dragging { .. }
+        ));
+
+        let coalesced = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            15,
+            4,
+        ));
+        let coalesced_dispatch = adapter.translate(&coalesced, None);
+        assert!(coalesced_dispatch.primary_event.is_none());
+        assert!(matches!(
+            coalesced_dispatch.log.outcome,
+            PaneTerminalLogOutcome::Ignored(PaneTerminalIgnoredReason::DragCoalesced)
+        ));
+
+        let forwarded = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            16,
+            4,
+        ));
+        let forwarded_dispatch = adapter.translate(&forwarded, None);
+        let forwarded_event = forwarded_dispatch
+            .primary_event
+            .as_ref()
+            .expect("coalesced movement should flush once threshold reached");
+        assert!(matches!(
+            forwarded_event.kind,
+            PaneSemanticInputEventKind::PointerMove {
+                delta_x: 2,
+                delta_y: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pane_terminal_adapter_translate_with_handles_resolves_target() {
+        let tree = nested_pane_tree();
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 50, 20))
+            .expect("layout should solve");
+        let handles =
+            pane_terminal_splitter_handles(&tree, &layout, PANE_TERMINAL_DEFAULT_HIT_THICKNESS);
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            25,
+            10,
+        ));
+        let dispatch = adapter.translate_with_handles(&down, &handles);
+        let event = dispatch
+            .primary_event
+            .as_ref()
+            .expect("pointer down should be routed from handles");
+        assert!(matches!(
+            event.kind,
+            PaneSemanticInputEventKind::PointerDown {
+                target:
+                    PaneResizeTarget {
+                        split_id,
+                        axis: SplitAxis::Horizontal
+                    },
+                ..
+            } if split_id == pane_id(1)
+        ));
     }
 
     #[test]

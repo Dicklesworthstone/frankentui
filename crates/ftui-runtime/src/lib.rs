@@ -88,7 +88,12 @@ pub use program::CrosstermEventSource;
 pub use program::{
     App, AppBuilder, BatchController, Cmd, EffectQueueConfig, FrameTiming, FrameTimingConfig,
     FrameTimingSink, HeadlessEventSource, InlineAutoRemeasureConfig, Model, MouseCapturePolicy,
-    PersistenceConfig, Program, ProgramConfig, ResizeBehavior, TaskSpec, WidgetRefreshConfig,
+    PaneTerminalAdapter, PaneTerminalAdapterConfig, PaneTerminalDispatch,
+    PaneTerminalIgnoredReason, PaneTerminalLifecyclePhase, PaneTerminalLogEntry,
+    PaneTerminalLogOutcome, PaneTerminalSplitterHandle, PersistenceConfig, Program, ProgramConfig,
+    ResizeBehavior, TaskSpec, WidgetRefreshConfig, pane_terminal_resolve_splitter_target,
+    pane_terminal_splitter_handles, pane_terminal_target_from_hit,
+    register_pane_terminal_splitter_hits,
 };
 pub use render_trace::{
     RenderTraceConfig, RenderTraceContext, RenderTraceFrame, RenderTraceRecorder,
