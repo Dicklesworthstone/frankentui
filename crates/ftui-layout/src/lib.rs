@@ -57,11 +57,13 @@ pub use direction::{FlowDirection, LogicalAlignment, LogicalSides, mirror_rects_
 pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};
 pub use pane::{
-    PANE_TREE_SCHEMA_VERSION, PaneConstraints, PaneId, PaneIdAllocator, PaneLayout, PaneLeaf,
+    PANE_TREE_SCHEMA_VERSION, PaneConstraints, PaneId, PaneIdAllocator, PaneInvariantCode,
+    PaneInvariantIssue, PaneInvariantReport, PaneInvariantSeverity, PaneLayout, PaneLeaf,
     PaneModelError, PaneNodeKind, PaneNodeRecord, PaneOperation, PaneOperationError,
     PaneOperationFailure, PaneOperationJournalEntry, PaneOperationJournalResult, PaneOperationKind,
-    PaneOperationOutcome, PanePlacement, PaneSplit, PaneSplitRatio, PaneTransaction,
-    PaneTransactionOutcome, PaneTree, PaneTreeSnapshot, SplitAxis,
+    PaneOperationOutcome, PanePlacement, PaneRepairAction, PaneRepairError, PaneRepairFailure,
+    PaneRepairOutcome, PaneSplit, PaneSplitRatio, PaneTransaction, PaneTransactionOutcome,
+    PaneTree, PaneTreeSnapshot, SplitAxis,
 };
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};

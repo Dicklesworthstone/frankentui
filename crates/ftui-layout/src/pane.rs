@@ -264,6 +264,182 @@ impl PaneTreeSnapshot {
     pub fn canonicalize(&mut self) {
         self.nodes.sort_by_key(|node| node.id);
     }
+
+    /// Deterministic hash for diagnostics over serialized tree state.
+    #[must_use]
+    pub fn state_hash(&self) -> u64 {
+        snapshot_state_hash(self)
+    }
+
+    /// Inspect invariants and emit a structured diagnostics report.
+    #[must_use]
+    pub fn invariant_report(&self) -> PaneInvariantReport {
+        build_invariant_report(self)
+    }
+
+    /// Attempt deterministic safe repairs for recoverable invariant issues.
+    ///
+    /// Safety guardrail: any unrepairable error in the pre-repair report causes
+    /// this method to fail without modifying topology.
+    pub fn repair_safe(self) -> Result<PaneRepairOutcome, PaneRepairError> {
+        repair_snapshot_safe(self)
+    }
+}
+
+/// Severity for one invariant finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneInvariantSeverity {
+    Error,
+    Warning,
+}
+
+/// Stable code for invariant findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneInvariantCode {
+    UnsupportedSchemaVersion,
+    DuplicateNodeId,
+    MissingRoot,
+    RootHasParent,
+    MissingParent,
+    MissingChild,
+    MultipleParents,
+    ParentMismatch,
+    SelfReferentialSplit,
+    DuplicateSplitChildren,
+    InvalidSplitRatio,
+    InvalidConstraint,
+    CycleDetected,
+    UnreachableNode,
+    NextIdNotGreaterThanExisting,
+}
+
+/// One actionable invariant finding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneInvariantIssue {
+    pub code: PaneInvariantCode,
+    pub severity: PaneInvariantSeverity,
+    pub repairable: bool,
+    pub node_id: Option<PaneId>,
+    pub related_node: Option<PaneId>,
+    pub message: String,
+}
+
+/// Structured invariant report over a pane tree snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneInvariantReport {
+    pub snapshot_hash: u64,
+    pub issues: Vec<PaneInvariantIssue>,
+}
+
+impl PaneInvariantReport {
+    /// Return true if any error-level finding exists.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.issues
+            .iter()
+            .any(|issue| issue.severity == PaneInvariantSeverity::Error)
+    }
+
+    /// Return true if any unrepairable error-level finding exists.
+    #[must_use]
+    pub fn has_unrepairable_errors(&self) -> bool {
+        self.issues
+            .iter()
+            .any(|issue| issue.severity == PaneInvariantSeverity::Error && !issue.repairable)
+    }
+}
+
+/// One deterministic repair action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum PaneRepairAction {
+    ReparentNode {
+        node_id: PaneId,
+        before_parent: Option<PaneId>,
+        after_parent: Option<PaneId>,
+    },
+    NormalizeRatio {
+        node_id: PaneId,
+        before_numerator: u32,
+        before_denominator: u32,
+        after_numerator: u32,
+        after_denominator: u32,
+    },
+    RemoveOrphanNode {
+        node_id: PaneId,
+    },
+    BumpNextId {
+        before: PaneId,
+        after: PaneId,
+    },
+}
+
+/// Outcome from successful safe repair pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneRepairOutcome {
+    pub before_hash: u64,
+    pub after_hash: u64,
+    pub report_before: PaneInvariantReport,
+    pub report_after: PaneInvariantReport,
+    pub actions: Vec<PaneRepairAction>,
+    pub tree: PaneTree,
+}
+
+/// Failure reason for safe repair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneRepairFailure {
+    UnsafeIssuesPresent { codes: Vec<PaneInvariantCode> },
+    ValidationFailed { error: PaneModelError },
+}
+
+impl fmt::Display for PaneRepairFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsafeIssuesPresent { codes } => {
+                write!(f, "snapshot contains unsafe invariant issues: {codes:?}")
+            }
+            Self::ValidationFailed { error } => {
+                write!(f, "repaired snapshot failed validation: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PaneRepairFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Self::ValidationFailed { error } = self {
+            return Some(error);
+        }
+        None
+    }
+}
+
+/// Error payload for repair attempts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneRepairError {
+    pub before_hash: u64,
+    pub report: PaneInvariantReport,
+    pub reason: PaneRepairFailure,
+}
+
+impl fmt::Display for PaneRepairError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "pane repair failed: {} (before_hash={:#x}, issues={})",
+            self.reason,
+            self.before_hash,
+            self.report.issues.len()
+        )
+    }
+}
+
+impl std::error::Error for PaneRepairError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.reason)
+    }
 }
 
 /// Concrete layout result for a solved pane tree.
@@ -774,6 +950,12 @@ impl PaneTree {
     /// Validate internal invariants.
     pub fn validate(&self) -> Result<(), PaneModelError> {
         validate_tree(self.root, self.next_id, &self.nodes)
+    }
+
+    /// Structured invariant diagnostics for the current tree snapshot.
+    #[must_use]
+    pub fn invariant_report(&self) -> PaneInvariantReport {
+        self.to_snapshot().invariant_report()
     }
 
     /// Deterministic structural hash of the current tree state.
@@ -1772,6 +1954,580 @@ impl fmt::Display for PaneModelError {
 
 impl std::error::Error for PaneModelError {}
 
+fn snapshot_state_hash(snapshot: &PaneTreeSnapshot) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0001_0000_01b3;
+
+    fn mix(hash: &mut u64, byte: u8) {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(PRIME);
+    }
+
+    fn mix_bytes(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            mix(hash, *byte);
+        }
+    }
+
+    fn mix_u16(hash: &mut u64, value: u16) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_u32(hash: &mut u64, value: u32) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_u64(hash: &mut u64, value: u64) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_bool(hash: &mut u64, value: bool) {
+        mix(hash, u8::from(value));
+    }
+
+    fn mix_opt_u16(hash: &mut u64, value: Option<u16>) {
+        match value {
+            Some(value) => {
+                mix(hash, 1);
+                mix_u16(hash, value);
+            }
+            None => mix(hash, 0),
+        }
+    }
+
+    fn mix_opt_pane_id(hash: &mut u64, value: Option<PaneId>) {
+        match value {
+            Some(value) => {
+                mix(hash, 1);
+                mix_u64(hash, value.get());
+            }
+            None => mix(hash, 0),
+        }
+    }
+
+    fn mix_str(hash: &mut u64, value: &str) {
+        mix_u64(hash, value.len() as u64);
+        mix_bytes(hash, value.as_bytes());
+    }
+
+    fn mix_extensions(hash: &mut u64, extensions: &BTreeMap<String, String>) {
+        mix_u64(hash, extensions.len() as u64);
+        for (key, value) in extensions {
+            mix_str(hash, key);
+            mix_str(hash, value);
+        }
+    }
+
+    let mut canonical = snapshot.clone();
+    canonical.canonicalize();
+
+    let mut hash = OFFSET_BASIS;
+    mix_u16(&mut hash, canonical.schema_version);
+    mix_u64(&mut hash, canonical.root.get());
+    mix_u64(&mut hash, canonical.next_id.get());
+    mix_extensions(&mut hash, &canonical.extensions);
+    mix_u64(&mut hash, canonical.nodes.len() as u64);
+
+    for node in &canonical.nodes {
+        mix_u64(&mut hash, node.id.get());
+        mix_opt_pane_id(&mut hash, node.parent);
+        mix_u16(&mut hash, node.constraints.min_width);
+        mix_u16(&mut hash, node.constraints.min_height);
+        mix_opt_u16(&mut hash, node.constraints.max_width);
+        mix_opt_u16(&mut hash, node.constraints.max_height);
+        mix_bool(&mut hash, node.constraints.collapsible);
+        mix_extensions(&mut hash, &node.extensions);
+
+        match &node.kind {
+            PaneNodeKind::Leaf(leaf) => {
+                mix(&mut hash, 1);
+                mix_str(&mut hash, &leaf.surface_key);
+                mix_extensions(&mut hash, &leaf.extensions);
+            }
+            PaneNodeKind::Split(split) => {
+                mix(&mut hash, 2);
+                let axis_byte = match split.axis {
+                    SplitAxis::Horizontal => 1,
+                    SplitAxis::Vertical => 2,
+                };
+                mix(&mut hash, axis_byte);
+                mix_u32(&mut hash, split.ratio.numerator());
+                mix_u32(&mut hash, split.ratio.denominator());
+                mix_u64(&mut hash, split.first.get());
+                mix_u64(&mut hash, split.second.get());
+            }
+        }
+    }
+
+    hash
+}
+
+fn push_invariant_issue(
+    issues: &mut Vec<PaneInvariantIssue>,
+    code: PaneInvariantCode,
+    repairable: bool,
+    node_id: Option<PaneId>,
+    related_node: Option<PaneId>,
+    message: impl Into<String>,
+) {
+    issues.push(PaneInvariantIssue {
+        code,
+        severity: PaneInvariantSeverity::Error,
+        repairable,
+        node_id,
+        related_node,
+        message: message.into(),
+    });
+}
+
+fn dfs_collect_cycles_and_reachable(
+    node_id: PaneId,
+    nodes: &BTreeMap<PaneId, PaneNodeRecord>,
+    visiting: &mut BTreeSet<PaneId>,
+    visited: &mut BTreeSet<PaneId>,
+    cycle_nodes: &mut BTreeSet<PaneId>,
+) {
+    if visiting.contains(&node_id) {
+        let _ = cycle_nodes.insert(node_id);
+        return;
+    }
+    if !visited.insert(node_id) {
+        return;
+    }
+
+    let _ = visiting.insert(node_id);
+    if let Some(node) = nodes.get(&node_id)
+        && let PaneNodeKind::Split(split) = &node.kind
+    {
+        for child in [split.first, split.second] {
+            if nodes.contains_key(&child) {
+                dfs_collect_cycles_and_reachable(child, nodes, visiting, visited, cycle_nodes);
+            }
+        }
+    }
+    let _ = visiting.remove(&node_id);
+}
+
+fn build_invariant_report(snapshot: &PaneTreeSnapshot) -> PaneInvariantReport {
+    let mut issues = Vec::new();
+
+    if snapshot.schema_version != PANE_TREE_SCHEMA_VERSION {
+        push_invariant_issue(
+            &mut issues,
+            PaneInvariantCode::UnsupportedSchemaVersion,
+            false,
+            None,
+            None,
+            format!(
+                "unsupported schema version {} (expected {})",
+                snapshot.schema_version, PANE_TREE_SCHEMA_VERSION
+            ),
+        );
+    }
+
+    let mut nodes = BTreeMap::new();
+    for node in &snapshot.nodes {
+        if nodes.insert(node.id, node.clone()).is_some() {
+            push_invariant_issue(
+                &mut issues,
+                PaneInvariantCode::DuplicateNodeId,
+                false,
+                Some(node.id),
+                None,
+                format!("duplicate node id {}", node.id.get()),
+            );
+        }
+    }
+
+    if let Some(max_existing) = nodes.keys().next_back().copied()
+        && snapshot.next_id <= max_existing
+    {
+        push_invariant_issue(
+            &mut issues,
+            PaneInvariantCode::NextIdNotGreaterThanExisting,
+            true,
+            Some(snapshot.next_id),
+            Some(max_existing),
+            format!(
+                "next_id {} must be greater than max node id {}",
+                snapshot.next_id.get(),
+                max_existing.get()
+            ),
+        );
+    }
+
+    if !nodes.contains_key(&snapshot.root) {
+        push_invariant_issue(
+            &mut issues,
+            PaneInvariantCode::MissingRoot,
+            false,
+            Some(snapshot.root),
+            None,
+            format!("root node {} is missing", snapshot.root.get()),
+        );
+    }
+
+    let mut expected_parents = BTreeMap::new();
+    for node in nodes.values() {
+        if let Err(err) = node.constraints.validate(node.id) {
+            push_invariant_issue(
+                &mut issues,
+                PaneInvariantCode::InvalidConstraint,
+                false,
+                Some(node.id),
+                None,
+                err.to_string(),
+            );
+        }
+
+        if let Some(parent) = node.parent
+            && !nodes.contains_key(&parent)
+        {
+            push_invariant_issue(
+                &mut issues,
+                PaneInvariantCode::MissingParent,
+                true,
+                Some(node.id),
+                Some(parent),
+                format!(
+                    "node {} references missing parent {}",
+                    node.id.get(),
+                    parent.get()
+                ),
+            );
+        }
+
+        if let PaneNodeKind::Split(split) = &node.kind {
+            if split.ratio.numerator() == 0 || split.ratio.denominator() == 0 {
+                push_invariant_issue(
+                    &mut issues,
+                    PaneInvariantCode::InvalidSplitRatio,
+                    false,
+                    Some(node.id),
+                    None,
+                    format!(
+                        "split node {} has invalid ratio {}/{}",
+                        node.id.get(),
+                        split.ratio.numerator(),
+                        split.ratio.denominator()
+                    ),
+                );
+            }
+
+            if split.first == node.id || split.second == node.id {
+                push_invariant_issue(
+                    &mut issues,
+                    PaneInvariantCode::SelfReferentialSplit,
+                    false,
+                    Some(node.id),
+                    None,
+                    format!("split node {} references itself", node.id.get()),
+                );
+            }
+
+            if split.first == split.second {
+                push_invariant_issue(
+                    &mut issues,
+                    PaneInvariantCode::DuplicateSplitChildren,
+                    false,
+                    Some(node.id),
+                    Some(split.first),
+                    format!(
+                        "split node {} references child {} twice",
+                        node.id.get(),
+                        split.first.get()
+                    ),
+                );
+            }
+
+            for child in [split.first, split.second] {
+                if !nodes.contains_key(&child) {
+                    push_invariant_issue(
+                        &mut issues,
+                        PaneInvariantCode::MissingChild,
+                        false,
+                        Some(node.id),
+                        Some(child),
+                        format!(
+                            "split node {} references missing child {}",
+                            node.id.get(),
+                            child.get()
+                        ),
+                    );
+                    continue;
+                }
+
+                if let Some(first_parent) = expected_parents.insert(child, node.id)
+                    && first_parent != node.id
+                {
+                    push_invariant_issue(
+                        &mut issues,
+                        PaneInvariantCode::MultipleParents,
+                        false,
+                        Some(child),
+                        Some(node.id),
+                        format!(
+                            "node {} has multiple split parents {} and {}",
+                            child.get(),
+                            first_parent.get(),
+                            node.id.get()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(root_node) = nodes.get(&snapshot.root)
+        && let Some(parent) = root_node.parent
+    {
+        push_invariant_issue(
+            &mut issues,
+            PaneInvariantCode::RootHasParent,
+            true,
+            Some(snapshot.root),
+            Some(parent),
+            format!(
+                "root node {} must not have parent {}",
+                snapshot.root.get(),
+                parent.get()
+            ),
+        );
+    }
+
+    for node in nodes.values() {
+        let expected_parent = if node.id == snapshot.root {
+            None
+        } else {
+            expected_parents.get(&node.id).copied()
+        };
+
+        if node.parent != expected_parent {
+            push_invariant_issue(
+                &mut issues,
+                PaneInvariantCode::ParentMismatch,
+                true,
+                Some(node.id),
+                expected_parent,
+                format!(
+                    "node {} parent mismatch: expected {:?}, got {:?}",
+                    node.id.get(),
+                    expected_parent.map(PaneId::get),
+                    node.parent.map(PaneId::get)
+                ),
+            );
+        }
+    }
+
+    if nodes.contains_key(&snapshot.root) {
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        let mut cycle_nodes = BTreeSet::new();
+        dfs_collect_cycles_and_reachable(
+            snapshot.root,
+            &nodes,
+            &mut visiting,
+            &mut visited,
+            &mut cycle_nodes,
+        );
+
+        for node_id in cycle_nodes {
+            push_invariant_issue(
+                &mut issues,
+                PaneInvariantCode::CycleDetected,
+                false,
+                Some(node_id),
+                None,
+                format!("cycle detected at node {}", node_id.get()),
+            );
+        }
+
+        for node_id in nodes.keys() {
+            if !visited.contains(node_id) {
+                push_invariant_issue(
+                    &mut issues,
+                    PaneInvariantCode::UnreachableNode,
+                    true,
+                    Some(*node_id),
+                    None,
+                    format!("node {} is unreachable from root", node_id.get()),
+                );
+            }
+        }
+    }
+
+    issues.sort_by(|left, right| {
+        (
+            left.code,
+            left.node_id.is_none(),
+            left.node_id,
+            left.related_node.is_none(),
+            left.related_node,
+            &left.message,
+        )
+            .cmp(&(
+                right.code,
+                right.node_id.is_none(),
+                right.node_id,
+                right.related_node.is_none(),
+                right.related_node,
+                &right.message,
+            ))
+    });
+
+    PaneInvariantReport {
+        snapshot_hash: snapshot_state_hash(snapshot),
+        issues,
+    }
+}
+
+fn repair_snapshot_safe(
+    mut snapshot: PaneTreeSnapshot,
+) -> Result<PaneRepairOutcome, PaneRepairError> {
+    snapshot.canonicalize();
+
+    let before_hash = snapshot_state_hash(&snapshot);
+    let report_before = build_invariant_report(&snapshot);
+    let mut unsafe_codes = report_before
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == PaneInvariantSeverity::Error && !issue.repairable)
+        .map(|issue| issue.code)
+        .collect::<Vec<_>>();
+    unsafe_codes.sort();
+    unsafe_codes.dedup();
+
+    if !unsafe_codes.is_empty() {
+        return Err(PaneRepairError {
+            before_hash,
+            report: report_before,
+            reason: PaneRepairFailure::UnsafeIssuesPresent {
+                codes: unsafe_codes,
+            },
+        });
+    }
+
+    let mut nodes = BTreeMap::new();
+    for node in snapshot.nodes {
+        let _ = nodes.entry(node.id).or_insert(node);
+    }
+
+    let mut actions = Vec::new();
+    let mut expected_parents = BTreeMap::new();
+    for node in nodes.values() {
+        if let PaneNodeKind::Split(split) = &node.kind {
+            for child in [split.first, split.second] {
+                let _ = expected_parents.entry(child).or_insert(node.id);
+            }
+        }
+    }
+
+    for node in nodes.values_mut() {
+        let expected_parent = if node.id == snapshot.root {
+            None
+        } else {
+            expected_parents.get(&node.id).copied()
+        };
+        if node.parent != expected_parent {
+            actions.push(PaneRepairAction::ReparentNode {
+                node_id: node.id,
+                before_parent: node.parent,
+                after_parent: expected_parent,
+            });
+            node.parent = expected_parent;
+        }
+
+        if let PaneNodeKind::Split(split) = &mut node.kind {
+            let normalized =
+                PaneSplitRatio::new(split.ratio.numerator(), split.ratio.denominator()).map_err(
+                    |error| PaneRepairError {
+                        before_hash,
+                        report: report_before.clone(),
+                        reason: PaneRepairFailure::ValidationFailed { error },
+                    },
+                )?;
+            if split.ratio != normalized {
+                actions.push(PaneRepairAction::NormalizeRatio {
+                    node_id: node.id,
+                    before_numerator: split.ratio.numerator(),
+                    before_denominator: split.ratio.denominator(),
+                    after_numerator: normalized.numerator(),
+                    after_denominator: normalized.denominator(),
+                });
+                split.ratio = normalized;
+            }
+        }
+    }
+
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut cycle_nodes = BTreeSet::new();
+    if nodes.contains_key(&snapshot.root) {
+        dfs_collect_cycles_and_reachable(
+            snapshot.root,
+            &nodes,
+            &mut visiting,
+            &mut visited,
+            &mut cycle_nodes,
+        );
+    }
+    if !cycle_nodes.is_empty() {
+        let mut codes = vec![PaneInvariantCode::CycleDetected];
+        codes.sort();
+        codes.dedup();
+        return Err(PaneRepairError {
+            before_hash,
+            report: report_before,
+            reason: PaneRepairFailure::UnsafeIssuesPresent { codes },
+        });
+    }
+
+    let all_node_ids = nodes.keys().copied().collect::<Vec<_>>();
+    for node_id in all_node_ids {
+        if !visited.contains(&node_id) {
+            let _ = nodes.remove(&node_id);
+            actions.push(PaneRepairAction::RemoveOrphanNode { node_id });
+        }
+    }
+
+    if let Some(max_existing) = nodes.keys().next_back().copied()
+        && snapshot.next_id <= max_existing
+    {
+        let after = max_existing
+            .checked_next()
+            .map_err(|error| PaneRepairError {
+                before_hash,
+                report: report_before.clone(),
+                reason: PaneRepairFailure::ValidationFailed { error },
+            })?;
+        actions.push(PaneRepairAction::BumpNextId {
+            before: snapshot.next_id,
+            after,
+        });
+        snapshot.next_id = after;
+    }
+
+    snapshot.nodes = nodes.into_values().collect();
+    snapshot.canonicalize();
+
+    let tree = PaneTree::from_snapshot(snapshot).map_err(|error| PaneRepairError {
+        before_hash,
+        report: report_before.clone(),
+        reason: PaneRepairFailure::ValidationFailed { error },
+    })?;
+    let report_after = tree.invariant_report();
+    let after_hash = tree.state_hash();
+
+    Ok(PaneRepairOutcome {
+        before_hash,
+        after_hash,
+        report_before,
+        report_after,
+        actions,
+        tree,
+    })
+}
+
 fn validate_tree(
     root: PaneId,
     next_id: PaneId,
@@ -2643,6 +3399,127 @@ mod tests {
         assert_eq!(first.journal, second.journal);
     }
 
+    #[test]
+    fn invariant_report_detects_parent_mismatch_and_orphan() {
+        let mut snapshot = make_valid_snapshot();
+        for node in &mut snapshot.nodes {
+            if node.id == id(2) {
+                node.parent = Some(id(3));
+            }
+        }
+        snapshot
+            .nodes
+            .push(PaneNodeRecord::leaf(id(10), None, PaneLeaf::new("orphan")));
+        snapshot.next_id = id(11);
+
+        let report = snapshot.invariant_report();
+        assert!(report.has_errors());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == PaneInvariantCode::ParentMismatch)
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == PaneInvariantCode::UnreachableNode)
+        );
+    }
+
+    #[test]
+    fn repair_safe_normalizes_ratio_repairs_parents_and_removes_orphans() {
+        let mut snapshot = make_valid_snapshot();
+        for node in &mut snapshot.nodes {
+            if node.id == id(1) {
+                node.parent = Some(id(3));
+                let PaneNodeKind::Split(split) = &mut node.kind else {
+                    unreachable!("root should be split");
+                };
+                split.ratio = PaneSplitRatio {
+                    numerator: 12,
+                    denominator: 8,
+                };
+            }
+            if node.id == id(2) {
+                node.parent = Some(id(3));
+            }
+        }
+        snapshot
+            .nodes
+            .push(PaneNodeRecord::leaf(id(10), None, PaneLeaf::new("orphan")));
+        snapshot.next_id = id(11);
+
+        let repaired = snapshot.repair_safe().expect("repair should succeed");
+        assert_ne!(repaired.before_hash, repaired.after_hash);
+        assert!(repaired.tree.validate().is_ok());
+        assert!(!repaired.report_after.has_errors());
+        assert!(
+            repaired
+                .actions
+                .iter()
+                .any(|action| matches!(action, PaneRepairAction::NormalizeRatio { node_id, .. } if *node_id == id(1)))
+        );
+        assert!(
+            repaired
+                .actions
+                .iter()
+                .any(|action| matches!(action, PaneRepairAction::ReparentNode { node_id, .. } if *node_id == id(1)))
+        );
+        assert!(
+            repaired
+                .actions
+                .iter()
+                .any(|action| matches!(action, PaneRepairAction::RemoveOrphanNode { node_id } if *node_id == id(10)))
+        );
+    }
+
+    #[test]
+    fn repair_safe_rejects_unsafe_topology() {
+        let mut snapshot = make_valid_snapshot();
+        snapshot.nodes.retain(|node| node.id != id(3));
+
+        let err = snapshot
+            .repair_safe()
+            .expect_err("missing-child topology must be rejected");
+        assert!(matches!(
+            err.reason,
+            PaneRepairFailure::UnsafeIssuesPresent { .. }
+        ));
+        let PaneRepairFailure::UnsafeIssuesPresent { codes } = err.reason else {
+            unreachable!("expected unsafe issue failure");
+        };
+        assert!(codes.contains(&PaneInvariantCode::MissingChild));
+    }
+
+    #[test]
+    fn repair_safe_is_deterministic_for_equivalent_snapshot() {
+        let mut snapshot = make_valid_snapshot();
+        for node in &mut snapshot.nodes {
+            if node.id == id(1) {
+                let PaneNodeKind::Split(split) = &mut node.kind else {
+                    unreachable!("root should be split");
+                };
+                split.ratio = PaneSplitRatio {
+                    numerator: 12,
+                    denominator: 8,
+                };
+            }
+        }
+        snapshot
+            .nodes
+            .push(PaneNodeRecord::leaf(id(10), None, PaneLeaf::new("orphan")));
+        snapshot.next_id = id(11);
+
+        let first = snapshot.clone().repair_safe().expect("first repair");
+        let second = snapshot.repair_safe().expect("second repair");
+
+        assert_eq!(first.tree.state_hash(), second.tree.state_hash());
+        assert_eq!(first.actions, second.actions);
+        assert_eq!(first.report_after, second.report_after);
+    }
+
     proptest! {
         #[test]
         fn ratio_is_always_reduced(numerator in 1u32..100_000, denominator in 1u32..100_000) {
@@ -2767,6 +3644,43 @@ mod tests {
             prop_assert_eq!(rolled_back.tree.state_hash(), initial_hash);
             prop_assert_eq!(rolled_back.tree.root(), id(1));
             prop_assert!(rolled_back.tree.validate().is_ok());
+        }
+
+        #[test]
+        fn repair_safe_is_deterministic_under_recoverable_damage(
+            numerator in 1u32..32,
+            denominator in 1u32..32,
+            add_orphan in any::<bool>(),
+            mismatch_parent in any::<bool>(),
+        ) {
+            let mut snapshot = make_valid_snapshot();
+            for node in &mut snapshot.nodes {
+                if node.id == id(1) {
+                    let PaneNodeKind::Split(split) = &mut node.kind else {
+                        unreachable!("root should be split");
+                    };
+                    split.ratio = PaneSplitRatio {
+                        numerator: numerator.saturating_mul(2),
+                        denominator: denominator.saturating_mul(2),
+                    };
+                }
+                if mismatch_parent && node.id == id(2) {
+                    node.parent = Some(id(3));
+                }
+            }
+            if add_orphan {
+                snapshot
+                    .nodes
+                    .push(PaneNodeRecord::leaf(id(10), None, PaneLeaf::new("orphan")));
+                snapshot.next_id = id(11);
+            }
+
+            let first = snapshot.clone().repair_safe().expect("first repair should succeed");
+            let second = snapshot.repair_safe().expect("second repair should succeed");
+
+            prop_assert_eq!(first.tree.state_hash(), second.tree.state_hash());
+            prop_assert_eq!(first.actions, second.actions);
+            prop_assert_eq!(first.report_after, second.report_after);
         }
     }
 }
