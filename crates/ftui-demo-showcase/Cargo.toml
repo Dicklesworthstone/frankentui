@@ -22,7 +22,6 @@ tracing = "0.1.41"
 ftui-extras = { path = "../ftui-extras", version = "0.1.1", features = [
     "canvas",
     "charts",
-    "clipboard",
     "console",
     "doom",
     "quake",
@@ -30,9 +29,7 @@ ftui-extras = { path = "../ftui-extras", version = "0.1.1", features = [
     "filesize",
     "filepicker",
     "forms",
-    "image",
     "live",
-    "logging",
     "markdown",
     "stopwatch",
     "syntax",
@@ -55,7 +52,11 @@ caps-probe = ["ftui-core/caps-probe"]
 native-backend = ["ftui-runtime/native-backend"]
 # Legacy Crossterm backend (fallback when native-backend is disabled).
 crossterm-compat = ["ftui-runtime/crossterm-compat"]
-default = ["caps-probe", "native-backend"]
+# Heavy optional features (excluded from WASM builds for binary size).
+clipboard = ["ftui-extras/clipboard"]
+image = ["ftui-extras/image"]
+logging = ["ftui-extras/logging"]
+default = ["caps-probe", "native-backend", "clipboard", "image", "logging"]
 # Enable test-support to expose test infrastructure (locks, guards) to integration tests
 test-support = []
 

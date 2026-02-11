@@ -21,3 +21,6 @@ repro_ratio.rs
 repro_ratio_overflow.rs
 repro_rope.rs
 repro_timetravel_bug.rs
+
+# False-positive hardcoded-secret heuristic: ValidationToken is not a credential.
+crates/ftui-extras/src/validation/async_validation.rs

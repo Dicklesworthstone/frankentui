@@ -18,6 +18,7 @@
 //! as the reference for snapshots and visual regression tests.
 
 pub mod app;
+pub mod assets;
 pub mod chrome;
 pub mod cli;
 pub mod data;

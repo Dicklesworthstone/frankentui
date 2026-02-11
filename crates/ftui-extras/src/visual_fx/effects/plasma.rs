@@ -2590,7 +2590,7 @@ mod tests {
         // With breath=0.85, the wave is compressed: ((value * 0.85) + 1.0) / 2.0
         // Range is [((-1*0.85)+1)/2, ((1*0.85)+1)/2] = [0.075, 0.925]
         assert!(
-            v >= 0.05 && v <= 0.95,
+            (0.05..=0.95).contains(&v),
             "At time=0, breath=0.85 constrains range: {v}"
         );
     }

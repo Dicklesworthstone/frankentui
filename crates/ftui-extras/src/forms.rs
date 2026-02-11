@@ -1549,6 +1549,7 @@ fn grapheme_byte_offset(s: &str, grapheme_idx: usize) -> usize {
 mod tests {
     use super::*;
     use ftui_core::event::{KeyEvent, KeyEventKind};
+    use ftui_render::cell::PackedRgba;
     use ftui_render::grapheme_pool::GraphemePool;
 
     fn row_to_string(buffer: &Buffer, y: u16, width: u16) -> String {
@@ -2739,5 +2740,353 @@ mod tests {
         state.handle_event(&mut form, &press(KeyCode::Down));
         assert!(state.is_touched(0));
         assert_eq!(state.focused, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper function tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ascii_display_width_printable() {
+        assert_eq!(super::ascii_display_width("hello"), 5);
+        assert_eq!(super::ascii_display_width(""), 0);
+        assert_eq!(super::ascii_display_width(" "), 1);
+    }
+
+    #[test]
+    fn ascii_display_width_control_chars() {
+        // Tab, newline, CR each count as 1
+        assert_eq!(super::ascii_display_width("\t"), 1);
+        assert_eq!(super::ascii_display_width("\n"), 1);
+        assert_eq!(super::ascii_display_width("\r"), 1);
+        assert_eq!(super::ascii_display_width("\t\n\r"), 3);
+    }
+
+    #[test]
+    fn ascii_display_width_skips_non_printable() {
+        // Bytes outside the printable+whitespace set are skipped (width 0)
+        assert_eq!(super::ascii_display_width("\x01\x02\x03"), 0);
+        assert_eq!(super::ascii_display_width("a\x01b"), 2);
+    }
+
+    #[test]
+    fn is_zero_width_c0_control() {
+        assert!(super::is_zero_width_codepoint('\x00'));
+        assert!(super::is_zero_width_codepoint('\x1F'));
+        assert!(super::is_zero_width_codepoint('\x7F')); // DEL
+    }
+
+    #[test]
+    fn is_zero_width_combining_marks() {
+        // U+0300 COMBINING GRAVE ACCENT
+        assert!(super::is_zero_width_codepoint('\u{0300}'));
+        assert!(super::is_zero_width_codepoint('\u{036F}'));
+    }
+
+    #[test]
+    fn is_zero_width_variation_selectors() {
+        // U+FE00..FE0F are variation selectors
+        assert!(super::is_zero_width_codepoint('\u{FE00}'));
+        assert!(super::is_zero_width_codepoint('\u{FE0F}'));
+    }
+
+    #[test]
+    fn is_zero_width_zwsp_and_friends() {
+        assert!(super::is_zero_width_codepoint('\u{200B}')); // ZERO WIDTH SPACE
+        assert!(super::is_zero_width_codepoint('\u{200D}')); // ZWJ
+        assert!(super::is_zero_width_codepoint('\u{FEFF}')); // BOM
+        assert!(super::is_zero_width_codepoint('\u{2060}')); // WORD JOINER
+    }
+
+    #[test]
+    fn is_zero_width_bidi_controls() {
+        assert!(super::is_zero_width_codepoint('\u{202A}')); // LRE
+        assert!(super::is_zero_width_codepoint('\u{202E}')); // RLO
+        assert!(super::is_zero_width_codepoint('\u{2066}')); // LRI
+        assert!(super::is_zero_width_codepoint('\u{2069}')); // PDI
+    }
+
+    #[test]
+    fn is_zero_width_normal_chars_are_not() {
+        assert!(!super::is_zero_width_codepoint('a'));
+        assert!(!super::is_zero_width_codepoint(' '));
+        assert!(!super::is_zero_width_codepoint('Z'));
+    }
+
+    #[test]
+    fn display_width_pure_ascii_printable() {
+        // Fast path: all bytes in 0x20..=0x7E
+        assert_eq!(super::display_width("hello world"), 11);
+        assert_eq!(super::display_width(""), 0);
+    }
+
+    #[test]
+    fn display_width_ascii_with_control_chars() {
+        // ASCII but has control chars → ascii_display_width path
+        assert_eq!(super::display_width("a\tb"), 3);
+        assert_eq!(super::display_width("\n"), 1);
+    }
+
+    #[test]
+    fn display_width_cjk_wide_chars() {
+        // CJK ideographs are 2 cells wide
+        assert_eq!(super::display_width("\u{4E16}\u{754C}"), 4); // 世界
+    }
+
+    #[test]
+    fn display_width_mixed_with_zero_width() {
+        // Combining accent after 'a' → grapheme cluster "a\u{0300}" still 1 cell
+        let s = "a\u{0300}";
+        assert_eq!(super::display_width(s), 1);
+    }
+
+    #[test]
+    fn grapheme_width_ascii() {
+        assert_eq!(super::grapheme_width("a"), 1);
+        assert_eq!(super::grapheme_width(" "), 1);
+    }
+
+    #[test]
+    fn grapheme_width_combining_only() {
+        // A grapheme that is only combining marks → zero width
+        assert_eq!(super::grapheme_width("\u{0300}"), 0);
+    }
+
+    #[test]
+    fn grapheme_display_width_counts_first_n() {
+        let s = "abcdef";
+        assert_eq!(super::grapheme_display_width(s, 3), 3);
+        assert_eq!(super::grapheme_display_width(s, 0), 0);
+        assert_eq!(super::grapheme_display_width(s, 100), 6); // clamps
+    }
+
+    #[test]
+    fn grapheme_display_width_wide_chars() {
+        // Two CJK chars, take 1 grapheme → width 2
+        let s = "\u{4E16}\u{754C}";
+        assert_eq!(super::grapheme_display_width(s, 1), 2);
+        assert_eq!(super::grapheme_display_width(s, 2), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Builder method tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn style_builder_sets_base_style() {
+        let s = Style::default().fg(PackedRgba::rgb(255, 0, 0));
+        let form = Form::new(vec![FormField::text("X")]).style(s);
+        assert_eq!(form.style, s);
+    }
+
+    #[test]
+    fn label_style_builder() {
+        let s = Style::default().fg(PackedRgba::rgb(0, 0, 255));
+        let form = Form::new(vec![FormField::text("X")]).label_style(s);
+        assert_eq!(form.label_style, s);
+    }
+
+    #[test]
+    fn focused_style_builder() {
+        let s = Style::default().fg(PackedRgba::rgb(0, 255, 0));
+        let form = Form::new(vec![FormField::text("X")]).focused_style(s);
+        assert_eq!(form.focused_style, s);
+    }
+
+    #[test]
+    fn error_style_builder() {
+        let s = Style::default().fg(PackedRgba::rgb(255, 0, 0));
+        let form = Form::new(vec![FormField::text("X")]).error_style(s);
+        assert_eq!(form.error_style, s);
+    }
+
+    #[test]
+    fn success_style_builder() {
+        let s = Style::default().fg(PackedRgba::rgb(0, 255, 0));
+        let form = Form::new(vec![FormField::text("X")]).success_style(s);
+        assert_eq!(form.success_style, s);
+    }
+
+    #[test]
+    fn disabled_style_builder() {
+        let s = Style::default().fg(PackedRgba::rgb(128, 128, 128));
+        let form = Form::new(vec![FormField::text("X")]).disabled_style(s);
+        assert_eq!(form.disabled_style, s);
+    }
+
+    #[test]
+    fn required_style_builder() {
+        let s = Style::default().fg(PackedRgba::rgb(255, 255, 0));
+        let form = Form::new(vec![FormField::text("X")]).required_style(s);
+        assert_eq!(form.required_style, s);
+    }
+
+    #[test]
+    fn set_style_in_place() {
+        let s = Style::default().fg(PackedRgba::rgb(255, 0, 0));
+        let mut form = Form::new(vec![FormField::text("X")]);
+        form.set_style(s);
+        assert_eq!(form.style, s);
+    }
+
+    #[test]
+    fn set_label_style_in_place() {
+        let s = Style::default().fg(PackedRgba::rgb(0, 0, 255));
+        let mut form = Form::new(vec![FormField::text("X")]);
+        form.set_label_style(s);
+        assert_eq!(form.label_style, s);
+    }
+
+    #[test]
+    fn set_focused_style_in_place() {
+        let s = Style::default().fg(PackedRgba::rgb(0, 255, 0));
+        let mut form = Form::new(vec![FormField::text("X")]);
+        form.set_focused_style(s);
+        assert_eq!(form.focused_style, s);
+    }
+
+    #[test]
+    fn set_error_style_in_place() {
+        let s = Style::default().fg(PackedRgba::rgb(255, 0, 0));
+        let mut form = Form::new(vec![FormField::text("X")]);
+        form.set_error_style(s);
+        assert_eq!(form.error_style, s);
+    }
+
+    #[test]
+    fn set_success_style_in_place() {
+        let s = Style::default().fg(PackedRgba::rgb(0, 255, 0));
+        let mut form = Form::new(vec![FormField::text("X")]);
+        form.set_success_style(s);
+        assert_eq!(form.success_style, s);
+    }
+
+    #[test]
+    fn set_disabled_style_in_place() {
+        let s = Style::default().fg(PackedRgba::rgb(128, 128, 128));
+        let mut form = Form::new(vec![FormField::text("X")]);
+        form.set_disabled_style(s);
+        assert_eq!(form.disabled_style, s);
+    }
+
+    #[test]
+    fn set_required_style_in_place() {
+        let s = Style::default().fg(PackedRgba::rgb(255, 255, 0));
+        let mut form = Form::new(vec![FormField::text("X")]);
+        form.set_required_style(s);
+        assert_eq!(form.required_style, s);
+    }
+
+    #[test]
+    fn label_width_builder() {
+        let form = Form::new(vec![FormField::text("X")]).label_width(20);
+        assert_eq!(form.label_width, 20);
+    }
+
+    #[test]
+    fn disabled_builder_chain() {
+        let form = Form::new(vec![FormField::text("A"), FormField::text("B")]).disabled(1, true);
+        assert!(!form.is_disabled(0));
+        assert!(form.is_disabled(1));
+    }
+
+    #[test]
+    fn required_builder_chain() {
+        let form = Form::new(vec![FormField::text("A"), FormField::text("B")]).required(0, true);
+        assert!(form.is_required(0));
+        assert!(!form.is_required(1));
+    }
+
+    #[test]
+    fn set_required_out_of_bounds_noop() {
+        let mut form = Form::new(vec![FormField::text("A")]);
+        form.set_required(99, true); // should not panic
+        assert!(!form.is_required(99));
+    }
+
+    #[test]
+    fn set_disabled_out_of_bounds_noop() {
+        let mut form = Form::new(vec![FormField::text("A")]);
+        form.set_disabled(99, true); // should not panic
+        assert!(!form.is_disabled(99));
+    }
+
+    #[test]
+    fn validate_all_skips_disabled_field() {
+        let form = Form::new(vec![FormField::text("Name")])
+            .validate(0, Box::new(|_| Some("required".into())))
+            .disabled(0, true);
+        assert!(form.validate_all().is_empty());
+    }
+
+    #[test]
+    fn validate_builder_out_of_bounds_noop() {
+        let form =
+            Form::new(vec![FormField::text("A")]).validate(99, Box::new(|_| Some("err".into())));
+        // No panic, and validate_all only checks existing fields
+        assert!(form.validate_all().is_empty());
+    }
+
+    #[test]
+    fn form_data_select_field() {
+        let form = Form::new(vec![FormField::select(
+            "Color",
+            vec!["Red".into(), "Blue".into()],
+        )]);
+        let data = form.data();
+        assert_eq!(
+            data.get("Color"),
+            Some(&FormValue::Choice {
+                index: 0,
+                label: "Red".into()
+            })
+        );
+    }
+
+    #[test]
+    fn form_data_number_field() {
+        let form = Form::new(vec![FormField::number("Count", 42)]);
+        let data = form.data();
+        assert_eq!(data.get("Count"), Some(&FormValue::Number(42)));
+    }
+
+    #[test]
+    fn form_data_checkbox_field() {
+        let form = Form::new(vec![FormField::checkbox("Agree", true)]);
+        let data = form.data();
+        assert_eq!(data.get("Agree"), Some(&FormValue::Bool(true)));
+    }
+
+    #[test]
+    fn field_label_accessor() {
+        assert_eq!(FormField::text("Name").label(), "Name");
+        assert_eq!(FormField::checkbox("Accept", false).label(), "Accept");
+        assert_eq!(
+            FormField::radio("Size", vec!["S".into(), "M".into()]).label(),
+            "Size"
+        );
+        assert_eq!(
+            FormField::select("Color", vec!["R".into()]).label(),
+            "Color"
+        );
+        assert_eq!(FormField::number("Count", 0).label(), "Count");
+    }
+
+    #[test]
+    fn number_bounded_step_default() {
+        if let FormField::Number { step, min, max, .. } = FormField::number_bounded("N", 5, 0, 10) {
+            assert_eq!(step, 1);
+            assert_eq!(min, Some(0));
+            assert_eq!(max, Some(10));
+        } else {
+            panic!("expected Number variant");
+        }
+    }
+
+    #[test]
+    fn effective_label_width_with_required() {
+        let form = Form::new(vec![FormField::text("AB")]).required(0, true);
+        // "AB" = 2, + " *" = 2, + ": " = 2 → 6
+        assert_eq!(form.effective_label_width(), 6);
     }
 }

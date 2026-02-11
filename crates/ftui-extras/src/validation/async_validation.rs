@@ -1156,4 +1156,513 @@ mod tests {
         let result = coordinator.current_result().unwrap();
         assert!(!result.is_valid());
     }
+
+    // =====================================================================
+    // Edge-case tests added for bd-e95ux
+    // =====================================================================
+
+    // -- ValidationToken edge cases --
+
+    #[test]
+    fn token_default_is_none() {
+        let token: ValidationToken = Default::default();
+        assert!(token.is_none());
+        assert_eq!(token, ValidationToken::NONE);
+    }
+
+    #[test]
+    fn token_display_none() {
+        assert_eq!(format!("{}", ValidationToken::NONE), "Token(0)");
+    }
+
+    #[test]
+    fn token_hash_consistent() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(ValidationToken::from_raw(1));
+        set.insert(ValidationToken::from_raw(1));
+        assert_eq!(set.len(), 1, "same token should hash to same bucket");
+        set.insert(ValidationToken::from_raw(2));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn token_equality() {
+        assert_eq!(ValidationToken::from_raw(42), ValidationToken::from_raw(42));
+        assert_ne!(ValidationToken::from_raw(1), ValidationToken::from_raw(2));
+    }
+
+    #[test]
+    fn token_none_is_less_than_any_real() {
+        assert!(ValidationToken::NONE < ValidationToken::from_raw(1));
+    }
+
+    // -- ValidationEvent edge cases --
+
+    #[test]
+    fn event_clone() {
+        let event = ValidationEvent::Started {
+            token: ValidationToken::from_raw(1),
+            elapsed_ns: 100,
+        };
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
+    }
+
+    #[test]
+    fn event_token_extraction_all_variants() {
+        let t = ValidationToken::from_raw(7);
+        let events = [
+            ValidationEvent::Started {
+                token: t,
+                elapsed_ns: 0,
+            },
+            ValidationEvent::Cancelled {
+                token: t,
+                superseded_by: ValidationToken::from_raw(8),
+                elapsed_ns: 0,
+            },
+            ValidationEvent::Completed {
+                token: t,
+                is_valid: true,
+                duration_ns: 0,
+                elapsed_ns: 0,
+            },
+            ValidationEvent::Applied {
+                token: t,
+                is_valid: false,
+                elapsed_ns: 0,
+            },
+            ValidationEvent::StaleDiscarded {
+                token: t,
+                current_token: ValidationToken::from_raw(10),
+                elapsed_ns: 0,
+            },
+        ];
+        for event in &events {
+            assert_eq!(event.token(), t, "token extraction for {:?}", event);
+        }
+    }
+
+    #[test]
+    fn event_hash_differs_by_variant() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let t = ValidationToken::from_raw(1);
+        let started = ValidationEvent::Started {
+            token: t,
+            elapsed_ns: 0,
+        };
+        let applied = ValidationEvent::Applied {
+            token: t,
+            is_valid: true,
+            elapsed_ns: 0,
+        };
+        let mut h1 = DefaultHasher::new();
+        started.hash(&mut h1);
+        let mut h2 = DefaultHasher::new();
+        applied.hash(&mut h2);
+        assert_ne!(
+            h1.finish(),
+            h2.finish(),
+            "different variants should hash differently"
+        );
+    }
+
+    // -- ValidationTrace edge cases --
+
+    #[test]
+    fn trace_verify_invariants_empty_is_clean() {
+        let trace = ValidationTrace::new();
+        assert!(trace.verify_invariants().is_empty());
+    }
+
+    #[test]
+    fn trace_verify_invariants_non_monotonic_start() {
+        let mut trace = ValidationTrace::new();
+        trace.push(ValidationEvent::Started {
+            token: ValidationToken::from_raw(5),
+            elapsed_ns: 0,
+        });
+        trace.push(ValidationEvent::Started {
+            token: ValidationToken::from_raw(3), // non-monotonic!
+            elapsed_ns: 100,
+        });
+        let violations = trace.verify_invariants();
+        assert!(!violations.is_empty(), "should detect non-monotonic tokens");
+        assert!(
+            violations[0].contains("Non-monotonic"),
+            "violation: {}",
+            violations[0]
+        );
+    }
+
+    #[test]
+    fn trace_verify_invariants_stale_discarded_non_stale() {
+        let mut trace = ValidationTrace::new();
+        trace.push(ValidationEvent::StaleDiscarded {
+            token: ValidationToken::from_raw(5),
+            current_token: ValidationToken::from_raw(3), // token >= current (bad!)
+            elapsed_ns: 0,
+        });
+        let violations = trace.verify_invariants();
+        assert!(
+            !violations.is_empty(),
+            "should detect non-stale StaleDiscarded"
+        );
+        assert!(violations[0].contains("non-stale"));
+    }
+
+    #[test]
+    fn trace_checksum_empty_deterministic() {
+        let t1 = ValidationTrace::new();
+        let t2 = ValidationTrace::new();
+        assert_eq!(t1.checksum(), t2.checksum());
+    }
+
+    #[test]
+    fn trace_checksum_changes_after_push() {
+        let mut trace = ValidationTrace::new();
+        let empty_checksum = trace.checksum();
+        trace.push(ValidationEvent::Started {
+            token: ValidationToken::from_raw(1),
+            elapsed_ns: 0,
+        });
+        assert_ne!(trace.checksum(), empty_checksum);
+    }
+
+    #[test]
+    fn trace_clone_is_independent() {
+        let mut trace = ValidationTrace::new();
+        trace.push(ValidationEvent::Started {
+            token: ValidationToken::from_raw(1),
+            elapsed_ns: 0,
+        });
+        let cloned = trace.clone();
+        trace.clear();
+        assert!(trace.is_empty());
+        assert_eq!(cloned.len(), 1, "clone should be independent");
+    }
+
+    #[test]
+    fn trace_contains_event_type_returns_false_for_missing() {
+        let trace = ValidationTrace::new();
+        assert!(!trace.contains_event_type(ValidationToken::from_raw(1), "started"));
+    }
+
+    #[test]
+    fn trace_events_for_nonexistent_token() {
+        let trace = ValidationTrace::new();
+        let events = trace.events_for_token(ValidationToken::from_raw(99));
+        assert!(events.is_empty());
+    }
+
+    // -- AsyncValidationCoordinator edge cases --
+
+    #[test]
+    fn coordinator_debug_format() {
+        let coordinator = AsyncValidationCoordinator::new();
+        let debug = format!("{coordinator:?}");
+        assert!(debug.contains("AsyncValidationCoordinator"));
+        assert!(debug.contains("current_token"));
+    }
+
+    #[test]
+    fn coordinator_default_trait() {
+        let coordinator: AsyncValidationCoordinator = Default::default();
+        assert_eq!(coordinator.current_token(), ValidationToken::NONE);
+        assert!(!coordinator.has_in_flight());
+    }
+
+    #[test]
+    fn coordinator_multiple_rapid_starts_cancel_all_previous() {
+        let clock = Arc::new(AtomicU64::new(0));
+        let mut coordinator = AsyncValidationCoordinator::with_fixed_clock(clock.clone());
+
+        clock.store(1000, Ordering::SeqCst);
+        let t1 = coordinator.start_validation();
+        clock.store(2000, Ordering::SeqCst);
+        let t2 = coordinator.start_validation();
+        clock.store(3000, Ordering::SeqCst);
+        let _t3 = coordinator.start_validation();
+
+        // t1 should be cancelled when t2 started, t2 cancelled when t3 started
+        let trace = coordinator.trace();
+        assert!(trace.contains_event_type(t1, "cancelled"));
+        assert!(trace.contains_event_type(t2, "cancelled"));
+    }
+
+    #[test]
+    fn coordinator_in_flight_count_after_multiple_starts() {
+        let mut coordinator = AsyncValidationCoordinator::new();
+
+        // Each start cancels all previous, so in_flight should always be 1
+        coordinator.start_validation();
+        assert_eq!(coordinator.in_flight_count(), 1);
+        coordinator.start_validation();
+        assert_eq!(coordinator.in_flight_count(), 1);
+        coordinator.start_validation();
+        assert_eq!(coordinator.in_flight_count(), 1);
+    }
+
+    #[test]
+    fn coordinator_apply_stale_then_current() {
+        let clock = Arc::new(AtomicU64::new(0));
+        let mut coordinator = AsyncValidationCoordinator::with_fixed_clock(clock.clone());
+
+        clock.store(1000, Ordering::SeqCst);
+        let t1 = coordinator.start_validation();
+        clock.store(2000, Ordering::SeqCst);
+        let t2 = coordinator.start_validation();
+
+        // Apply stale t1 — should fail
+        clock.store(3000, Ordering::SeqCst);
+        assert!(!coordinator.try_apply_result(
+            t1,
+            ValidationResult::Valid,
+            Duration::from_millis(100),
+        ));
+
+        // Apply current t2 — should succeed
+        clock.store(4000, Ordering::SeqCst);
+        assert!(coordinator.try_apply_result(
+            t2,
+            ValidationResult::Valid,
+            Duration::from_millis(50),
+        ));
+
+        // In-flight should be empty
+        assert_eq!(coordinator.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn coordinator_result_replaced_by_newer() {
+        let mut coordinator = AsyncValidationCoordinator::new();
+
+        let t1 = coordinator.start_validation();
+        coordinator.try_apply_result(
+            t1,
+            ValidationResult::Invalid(ValidationError::new("code", "first")),
+            Duration::from_millis(10),
+        );
+        assert!(!coordinator.current_result().unwrap().is_valid());
+
+        let t2 = coordinator.start_validation();
+        coordinator.try_apply_result(t2, ValidationResult::Valid, Duration::from_millis(10));
+        assert!(coordinator.current_result().unwrap().is_valid());
+    }
+
+    #[test]
+    fn coordinator_apply_same_token_twice() {
+        let clock = Arc::new(AtomicU64::new(0));
+        let mut coordinator = AsyncValidationCoordinator::with_fixed_clock(clock.clone());
+
+        clock.store(1000, Ordering::SeqCst);
+        let token = coordinator.start_validation();
+
+        // First apply
+        clock.store(2000, Ordering::SeqCst);
+        let first =
+            coordinator.try_apply_result(token, ValidationResult::Valid, Duration::from_millis(50));
+        assert!(first);
+
+        // Second apply of same token — should still succeed since token == current_token
+        clock.store(3000, Ordering::SeqCst);
+        let second = coordinator.try_apply_result(
+            token,
+            ValidationResult::Invalid(ValidationError::new("code", "err")),
+            Duration::from_millis(50),
+        );
+        assert!(second, "same token applied again should succeed");
+    }
+
+    #[test]
+    fn coordinator_verify_trace_after_full_lifecycle() {
+        let clock = Arc::new(AtomicU64::new(0));
+        let mut coordinator = AsyncValidationCoordinator::with_fixed_clock(clock.clone());
+
+        for i in 0..5 {
+            clock.store(i * 2000, Ordering::SeqCst);
+            let token = coordinator.start_validation();
+            clock.store(i * 2000 + 1000, Ordering::SeqCst);
+            coordinator.try_apply_result(token, ValidationResult::Valid, Duration::from_millis(50));
+        }
+
+        assert!(coordinator.verify_trace().is_ok());
+    }
+
+    #[test]
+    fn coordinator_elapsed_ns_uses_fixed_clock() {
+        let clock = Arc::new(AtomicU64::new(42_000));
+        let mut coordinator = AsyncValidationCoordinator::with_fixed_clock(clock.clone());
+
+        let token = coordinator.start_validation();
+        let trace = coordinator.trace();
+        let first = &trace.events()[0];
+        if let ValidationEvent::Started { elapsed_ns, .. } = first {
+            assert_eq!(*elapsed_ns, 42_000);
+        } else {
+            assert!(
+                matches!(first, ValidationEvent::Started { .. }),
+                "expected Started event, got: {first:?}"
+            );
+        }
+
+        // Advance clock
+        clock.store(99_000, Ordering::SeqCst);
+        coordinator.try_apply_result(token, ValidationResult::Valid, Duration::from_millis(10));
+        let events = coordinator.trace().events();
+        let last = events.last().unwrap();
+        if let ValidationEvent::Applied { elapsed_ns, .. } = last {
+            assert_eq!(*elapsed_ns, 99_000);
+        } else {
+            assert!(
+                matches!(last, ValidationEvent::Applied { .. }),
+                "expected Applied event, got: {last:?}"
+            );
+        }
+    }
+
+    // -- SharedValidationCoordinator edge cases --
+
+    #[test]
+    fn shared_coordinator_default_trait() {
+        let coord: SharedValidationCoordinator = Default::default();
+        assert_eq!(coord.current_token(), ValidationToken::NONE);
+    }
+
+    #[test]
+    fn shared_coordinator_with_fixed_clock() {
+        let clock = Arc::new(AtomicU64::new(5000));
+        let coordinator = SharedValidationCoordinator::with_fixed_clock(clock);
+        let token = coordinator.start_validation();
+        let trace = coordinator.trace();
+        let first = &trace.events()[0];
+        if let ValidationEvent::Started { elapsed_ns, .. } = first {
+            assert_eq!(*elapsed_ns, 5000);
+        } else {
+            assert!(
+                matches!(first, ValidationEvent::Started { .. }),
+                "expected Started event, got: {first:?}"
+            );
+        }
+        coordinator.try_apply_result(token, ValidationResult::Valid, Duration::from_millis(10));
+    }
+
+    #[test]
+    fn shared_coordinator_verify_trace() {
+        let coordinator = SharedValidationCoordinator::new();
+        let t = coordinator.start_validation();
+        coordinator.try_apply_result(t, ValidationResult::Valid, Duration::from_millis(10));
+        assert!(coordinator.verify_trace().is_ok());
+    }
+
+    #[test]
+    fn shared_coordinator_multiple_threads_unique_tokens() {
+        let coordinator = SharedValidationCoordinator::new();
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let c = coordinator.clone();
+            handles.push(thread::spawn(move || c.start_validation()));
+        }
+        let tokens: Vec<ValidationToken> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let mut sorted = tokens.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            tokens.len(),
+            "all tokens from concurrent threads should be unique"
+        );
+    }
+
+    // -- InFlightValidation --
+
+    #[test]
+    fn in_flight_validation_debug() {
+        let v = InFlightValidation {
+            token: ValidationToken::from_raw(3),
+            started_at: Instant::now(),
+        };
+        let debug = format!("{v:?}");
+        assert!(debug.contains("InFlightValidation"));
+        assert!(debug.contains("token"));
+    }
+
+    #[test]
+    fn in_flight_validation_clone() {
+        let v = InFlightValidation {
+            token: ValidationToken::from_raw(5),
+            started_at: Instant::now(),
+        };
+        let cloned = v.clone();
+        assert_eq!(cloned.token, v.token);
+    }
+
+    // -- AsyncValidator trait --
+
+    #[test]
+    fn async_validator_estimated_duration_default() {
+        struct TestValidator;
+        impl AsyncValidator<str> for TestValidator {
+            fn validate(&self, _value: &str) -> ValidationResult {
+                ValidationResult::Valid
+            }
+            fn error_message(&self) -> &str {
+                "test error"
+            }
+        }
+        let v = TestValidator;
+        assert_eq!(v.estimated_duration(), Duration::from_millis(100));
+        assert_eq!(v.error_message(), "test error");
+        assert!(v.validate("anything").is_valid());
+    }
+
+    #[test]
+    fn async_validator_custom_estimated_duration() {
+        struct SlowValidator;
+        impl AsyncValidator<str> for SlowValidator {
+            fn validate(&self, _value: &str) -> ValidationResult {
+                ValidationResult::Valid
+            }
+            fn error_message(&self) -> &str {
+                "slow"
+            }
+            fn estimated_duration(&self) -> Duration {
+                Duration::from_secs(5)
+            }
+        }
+        let v = SlowValidator;
+        assert_eq!(v.estimated_duration(), Duration::from_secs(5));
+    }
+
+    // -- Coordinator with zero-duration results --
+
+    #[test]
+    fn coordinator_zero_duration_result() {
+        let mut coordinator = AsyncValidationCoordinator::new();
+        let token = coordinator.start_validation();
+        let applied = coordinator.try_apply_result(token, ValidationResult::Valid, Duration::ZERO);
+        assert!(applied);
+    }
+
+    // -- Trace with many events --
+
+    #[test]
+    fn trace_many_events() {
+        let clock = Arc::new(AtomicU64::new(0));
+        let mut coordinator = AsyncValidationCoordinator::with_fixed_clock(clock.clone());
+
+        for i in 0..100 {
+            clock.store(i * 100, Ordering::SeqCst);
+            let token = coordinator.start_validation();
+            clock.store(i * 100 + 50, Ordering::SeqCst);
+            coordinator.try_apply_result(token, ValidationResult::Valid, Duration::from_millis(1));
+        }
+
+        let trace = coordinator.trace();
+        // Each iteration: started + completed + applied = 3
+        // (try_apply_result clears in-flight, so next start has nothing to cancel)
+        assert_eq!(trace.len(), 100 * 3);
+        assert!(coordinator.verify_trace().is_ok());
+    }
 }

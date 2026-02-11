@@ -246,6 +246,35 @@ impl Default for FrankenTermWeb {
 
 #[wasm_bindgen]
 impl FrankenTermWeb {
+    fn sync_canvas_css_size(&self, geometry: GridGeometry) {
+        let Some(canvas) = self.canvas.as_ref() else {
+            return;
+        };
+
+        // Avoid CSS stretching. The renderer configures the WebGPU surface in device pixels
+        // (`geometry.pixel_width/height`). If the canvas is stretched by CSS, browsers will
+        // scale the rendered output, which looks garbled (seams/pixelation) and can be slow.
+        let dpr = geometry.dpr.max(0.0001);
+        let css_w = ((geometry.pixel_width as f32) / dpr).round().max(1.0) as u32;
+        let css_h = ((geometry.pixel_height as f32) / dpr).round().max(1.0) as u32;
+
+        // Avoid relying on web-sys `HtmlElement::style()` feature flags; set via reflection.
+        let style = match Reflect::get(canvas.as_ref(), &JsValue::from_str("style")) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = Reflect::set(
+            &style,
+            &JsValue::from_str("width"),
+            &JsValue::from_str(&format!("{css_w}px")),
+        );
+        let _ = Reflect::set(
+            &style,
+            &JsValue::from_str("height"),
+            &JsValue::from_str(&format!("{css_h}px")),
+        );
+    }
+
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
@@ -308,6 +337,7 @@ impl FrankenTermWeb {
         let renderer = WebGpuRenderer::init(canvas.clone(), cols, rows, &config)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let geometry = renderer.current_geometry();
 
         self.cols = cols;
         self.rows = rows;
@@ -331,6 +361,7 @@ impl FrankenTermWeb {
         self.text_shaping =
             parse_text_shaping_config(options.as_ref(), TextShapingConfig::default())?;
         self.initialized = true;
+        self.sync_canvas_css_size(geometry);
         Ok(())
     }
 
@@ -346,6 +377,8 @@ impl FrankenTermWeb {
         self.refresh_search_after_buffer_change();
         if let Some(r) = self.renderer.as_mut() {
             r.resize(cols, rows);
+            let geometry = r.current_geometry();
+            self.sync_canvas_css_size(geometry);
         }
         self.sync_renderer_interaction_state();
     }
@@ -361,6 +394,7 @@ impl FrankenTermWeb {
         };
         renderer.set_scale(dpr, zoom);
         let geometry = renderer.current_geometry();
+        self.sync_canvas_css_size(geometry);
         Ok(geometry_to_js(geometry))
     }
 
@@ -373,6 +407,7 @@ impl FrankenTermWeb {
         let dpr = renderer.dpr();
         renderer.set_scale(dpr, zoom);
         let geometry = renderer.current_geometry();
+        self.sync_canvas_css_size(geometry);
         Ok(geometry_to_js(geometry))
     }
 
@@ -404,6 +439,7 @@ impl FrankenTermWeb {
             .resize(usize::from(geometry.cols) * usize::from(geometry.rows), 0);
         self.auto_link_urls.clear();
         self.refresh_search_after_buffer_change();
+        self.sync_canvas_css_size(geometry);
         Ok(geometry_to_js(geometry))
     }
 

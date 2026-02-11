@@ -25,11 +25,9 @@ use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use super::{HelpEntry, Screen, line_contains_ignore_case};
 use crate::app::ScreenId;
+use crate::assets;
 use crate::chrome;
 use crate::theme;
-
-/// Embedded complete works of Shakespeare.
-const SHAKESPEARE_TEXT: &str = include_str!("../../data/shakespeare.txt");
 
 /// A table-of-contents entry (play/section title and its line number).
 struct TocEntry {
@@ -86,7 +84,9 @@ impl Default for Shakespeare {
 
 impl Shakespeare {
     pub fn new() -> Self {
-        let lines: Vec<&'static str> = SHAKESPEARE_TEXT.lines().collect();
+        let lines: Vec<&'static str> = assets::shakespeare_text()
+            .map(|t| t.lines().collect())
+            .unwrap_or_default();
 
         let mut state = Self {
             lines,
@@ -121,6 +121,25 @@ impl Shakespeare {
         state.apply_theme();
         state.update_match_density();
         state
+    }
+
+    fn try_load_assets(&mut self) {
+        if !self.lines.is_empty() {
+            return;
+        }
+        let Some(text) = assets::shakespeare_text() else {
+            return;
+        };
+
+        self.lines = text.lines().collect();
+        // Derived caches depend on `lines`.
+        self.toc_entries = OnceCell::new();
+        self.toc_selected = 0;
+        self.toc_scroll.set(0);
+        self.scroll_offset = 0;
+        self.search_matches.clear();
+        self.current_match = 0;
+        self.update_match_density();
     }
 
     pub fn apply_theme(&mut self) {
@@ -421,6 +440,11 @@ impl Screen for Shakespeare {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        self.try_load_assets();
+        if self.lines.is_empty() {
+            return Cmd::None;
+        }
+
         if let Event::Mouse(mouse) = event {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -593,6 +617,19 @@ impl Screen for Shakespeare {
             return;
         }
 
+        if self.lines.is_empty() {
+            let block = Block::bordered()
+                .title("Shakespeare")
+                .border_type(BorderType::Rounded)
+                .border_style(theme::muted())
+                .style(Style::new().bg(theme::alpha::SURFACE));
+            block.render(area, frame);
+            Paragraph::new("Loading large text assets...")
+                .style(theme::muted())
+                .render(block.inner(area), frame);
+            return;
+        }
+
         // Vertical layout: search bar (if active) + body + status
         let v_chunks = Flex::vertical()
             .constraints(if self.search_active {
@@ -739,6 +776,7 @@ impl Screen for Shakespeare {
     }
 
     fn tick(&mut self, tick_count: u64) {
+        self.try_load_assets();
         self.tick_count = tick_count;
         self.time = tick_count as f64 * 0.1;
     }

@@ -1545,4 +1545,131 @@ mod tests {
         assert!((x).abs() < 0.01);
         assert!((y).abs() < 0.01);
     }
+
+    // --- Additional coverage: game_tick, minimap edge cases, multi-tick ---
+
+    #[test]
+    fn game_tick_with_no_map_is_noop() {
+        let mut engine = DoomEngine::new(); // no map
+        engine.player.mom_x = 10.0;
+        let old_x = engine.player.x;
+        // Trigger enough updates for multiple game ticks
+        engine.update(DOOM_TICK_SECS * 3.0);
+        // Without map, game_tick does nothing → player doesn't move
+        assert_eq!(engine.player.x, old_x, "no map means no tick processing");
+    }
+
+    #[test]
+    fn multiple_game_ticks_in_single_update() {
+        let mut engine = DoomEngine::default();
+        engine.player.mom_x = 10.0;
+        let old_x = engine.player.x;
+        // Pass enough time for ~3 ticks
+        engine.update(DOOM_TICK_SECS * 3.5);
+        // Player should have moved due to multiple ticks
+        assert!(
+            (engine.player.x - old_x).abs() > 1.0,
+            "multiple ticks should move player, dx={}",
+            engine.player.x - old_x
+        );
+    }
+
+    #[test]
+    fn render_all_overlays_simultaneously() {
+        let mut engine = DoomEngine {
+            show_crosshair: true,
+            show_minimap: true,
+            ..Default::default()
+        };
+        engine.fire();
+        let mut painter = Painter::new(480, 320, crate::canvas::Mode::Braille);
+        engine.render(&mut painter, 240, 80, 1);
+        assert_eq!(engine.frame, 1);
+    }
+
+    #[test]
+    fn test_map_sky_ceiling_sector() {
+        let map = generate_test_map();
+        // Sector 2 (north room) has F_SKY1 ceiling
+        assert!(
+            map.sectors[2].is_sky_ceiling(),
+            "sector 2 should have sky ceiling"
+        );
+        assert!(
+            !map.sectors[0].is_sky_ceiling(),
+            "sector 0 should not have sky ceiling"
+        );
+    }
+
+    #[test]
+    fn test_map_two_sided_linedefs_present() {
+        let map = generate_test_map();
+        let two_sided_count = map.linedefs.iter().filter(|l| l.is_two_sided()).count();
+        assert!(
+            two_sided_count >= 3,
+            "test map should have at least 3 two-sided linedefs, got {two_sided_count}"
+        );
+    }
+
+    #[test]
+    fn test_map_subsector_seg_ranges_valid() {
+        let map = generate_test_map();
+        for ss in &map.subsectors {
+            let end = ss.first_seg + ss.num_segs as usize;
+            assert!(
+                end <= map.segs.len(),
+                "subsector seg range {}-{} exceeds segs len {}",
+                ss.first_seg,
+                end,
+                map.segs.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_map_node_children_valid() {
+        let map = generate_test_map();
+        for (i, node) in map.nodes.iter().enumerate() {
+            match node.right_child {
+                map::NodeChild::Node(n) => assert!(
+                    n < map.nodes.len(),
+                    "node {i} right child node index {n} out of bounds"
+                ),
+                map::NodeChild::SubSector(s) => assert!(
+                    s < map.subsectors.len(),
+                    "node {i} right child subsector index {s} out of bounds"
+                ),
+            }
+            match node.left_child {
+                map::NodeChild::Node(n) => assert!(
+                    n < map.nodes.len(),
+                    "node {i} left child node index {n} out of bounds"
+                ),
+                map::NodeChild::SubSector(s) => assert!(
+                    s < map.subsectors.len(),
+                    "node {i} left child subsector index {s} out of bounds"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn render_player_rotation_no_crash() {
+        let mut engine = DoomEngine::default();
+        let mut painter = Painter::new(240, 160, crate::canvas::Mode::Braille);
+        // Render at various player angles
+        for angle in [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            engine.player.angle = angle;
+            engine.render(&mut painter, 120, 40, 1);
+        }
+        assert_eq!(engine.frame, 7);
+    }
+
+    #[test]
+    fn engine_debug_impl() {
+        let engine = DoomEngine::default();
+        let debug_str = format!("{:?}", engine);
+        assert!(!debug_str.is_empty());
+        assert!(debug_str.contains("DoomEngine"));
+    }
 }

@@ -31,11 +31,9 @@ use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use super::{HelpEntry, Screen, line_contains_ignore_case};
 use crate::app::ScreenId;
+use crate::assets;
 use crate::chrome;
 use crate::theme;
-
-/// Embedded SQLite amalgamation source.
-const SQLITE_SOURCE: &str = include_str!("../../data/sqlite3.c");
 
 struct Hotspot {
     label: &'static str,
@@ -231,6 +229,8 @@ fn c_tokenizer() -> GenericTokenizer {
 pub struct CodeExplorer {
     /// All source lines.
     lines: Vec<&'static str>,
+    /// Total byte length of the source text.
+    source_bytes: u64,
     /// Current scroll offset (top visible line).
     scroll_offset: usize,
     /// Viewport height in lines.
@@ -286,11 +286,14 @@ impl Default for CodeExplorer {
 
 impl CodeExplorer {
     pub fn new() -> Self {
-        let lines: Vec<&'static str> = SQLITE_SOURCE.lines().collect();
+        let (lines, source_bytes): (Vec<&'static str>, u64) = assets::sqlite_source()
+            .map(|src| (src.lines().collect(), src.len() as u64))
+            .unwrap_or_default();
         let hotspots = Self::build_hotspots(&lines);
 
         Self {
             lines,
+            source_bytes,
             scroll_offset: 0,
             viewport_height: Cell::new(30),
             highlighter: OnceCell::new(),
@@ -334,6 +337,24 @@ impl CodeExplorer {
         }
     }
 
+    fn try_load_assets(&mut self) {
+        if !self.lines.is_empty() {
+            return;
+        }
+        let Some(src) = assets::sqlite_source() else {
+            return;
+        };
+
+        self.source_bytes = src.len() as u64;
+        self.lines = src.lines().collect();
+        self.hotspots = Self::build_hotspots(&self.lines);
+        self.current_hotspot = 0;
+        self.search_matches.clear();
+        self.current_match = 0;
+        self.match_density.clear();
+        self.metadata_json = OnceCell::new();
+    }
+
     pub fn apply_theme(&mut self) {
         if let Some(highlighter) = self.highlighter.get_mut() {
             highlighter.set_theme(theme::syntax_theme());
@@ -365,7 +386,7 @@ impl CodeExplorer {
 
     fn metadata_json(&self) -> &str {
         self.metadata_json
-            .get_or_init(|| Self::build_metadata_json(self.lines.len(), SQLITE_SOURCE.len() as u64))
+            .get_or_init(|| Self::build_metadata_json(self.lines.len(), self.source_bytes))
             .as_str()
     }
 
@@ -700,6 +721,11 @@ impl Screen for CodeExplorer {
     type Message = Event;
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        self.try_load_assets();
+        if self.lines.is_empty() {
+            return Cmd::None;
+        }
+
         if let Event::Mouse(mouse) = event {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -870,6 +896,19 @@ impl Screen for CodeExplorer {
             return;
         }
 
+        if self.lines.is_empty() {
+            let block = Block::bordered()
+                .title("Code Explorer")
+                .border_type(BorderType::Rounded)
+                .border_style(theme::muted())
+                .style(Style::new().bg(theme::alpha::SURFACE));
+            block.render(area, frame);
+            Paragraph::new("Loading large text assets...")
+                .style(theme::muted())
+                .render(block.inner(area), frame);
+            return;
+        }
+
         // Vertical: search/goto bar (optional) + body + status
         let v_constraints = if self.search_active || self.goto_active {
             vec![
@@ -995,6 +1034,7 @@ impl Screen for CodeExplorer {
     }
 
     fn tick(&mut self, tick_count: u64) {
+        self.try_load_assets();
         self.tick_count = tick_count;
         self.time = tick_count as f64 * 0.1;
         if tick_count.is_multiple_of(40) {
@@ -2168,7 +2208,7 @@ impl CodeExplorer {
         let total = self.total_lines();
         let pos = self.scroll_offset + 1;
         let pct = (self.scroll_offset * 100).checked_div(total).unwrap_or(0);
-        let size = filesize::decimal(SQLITE_SOURCE.len() as u64);
+        let size = filesize::decimal(self.source_bytes);
 
         let status = format!(
             " Mode: {} · Line {pos}/{total} ({pct}%) · Matches: {} | {size} | C",
@@ -2311,7 +2351,7 @@ mod tests {
     fn code_explorer_line_numbers() {
         let ce = CodeExplorer::new();
         // Verify line count matches actual file
-        let actual_lines = SQLITE_SOURCE.lines().count();
+        let actual_lines = assets::sqlite_source().unwrap().lines().count();
         assert_eq!(ce.total_lines(), actual_lines);
     }
 

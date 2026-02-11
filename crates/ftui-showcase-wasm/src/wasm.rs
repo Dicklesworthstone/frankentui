@@ -72,6 +72,24 @@ impl ShowcaseRunner {
         }
     }
 
+    /// Provide the Shakespeare text blob for the `Shakespeare` screen.
+    ///
+    /// For WASM builds we avoid embedding multi-megabyte strings in the module.
+    /// The host should call this once during startup (or early in the session).
+    #[wasm_bindgen(js_name = setShakespeareText)]
+    pub fn set_shakespeare_text(&mut self, text: String) -> bool {
+        ftui_demo_showcase::assets::set_shakespeare_text(text)
+    }
+
+    /// Provide the SQLite amalgamation source for the `CodeExplorer` screen.
+    ///
+    /// For WASM builds we avoid embedding multi-megabyte strings in the module.
+    /// The host should call this once during startup (or early in the session).
+    #[wasm_bindgen(js_name = setSqliteSource)]
+    pub fn set_sqlite_source(&mut self, text: String) -> bool {
+        ftui_demo_showcase::assets::set_sqlite_source(text)
+    }
+
     /// Initialize the model and render the first frame. Call exactly once.
     pub fn init(&mut self) {
         self.inner.init();

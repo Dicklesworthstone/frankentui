@@ -893,4 +893,635 @@ mod tests {
             "y momentum should converge to 0 after many ticks"
         );
     }
+
+    // --- Additional edge case tests (bd-ea2l4) ---
+
+    #[test]
+    fn player_debug_clone() {
+        let p = Player::default();
+        let cloned = p.clone();
+        assert_eq!(cloned.health, p.health);
+        assert!(!format!("{:?}", p).is_empty());
+    }
+
+    #[test]
+    fn thrust_at_45_degrees() {
+        let mut p = Player::default();
+        let angle = std::f32::consts::FRAC_PI_4; // 45 degrees
+        p.thrust(angle, 10.0);
+        // At 45 degrees, x and y components should be equal
+        assert!(
+            (p.mom_x - p.mom_y).abs() < 0.01,
+            "45-degree thrust should have equal x/y, got x={} y={}",
+            p.mom_x,
+            p.mom_y
+        );
+    }
+
+    #[test]
+    fn thrust_at_180_degrees() {
+        let mut p = Player::default();
+        p.thrust(std::f32::consts::PI, 5.0);
+        assert!(p.mom_x < 0.0, "180-degree thrust should push -X");
+        assert!(p.mom_y.abs() < 0.01, "180-degree thrust should have ~0 Y");
+    }
+
+    #[test]
+    fn move_forward_zero_no_change() {
+        let mut p = Player::default();
+        p.move_forward(0.0);
+        assert_eq!(p.mom_x, 0.0);
+        assert_eq!(p.mom_y, 0.0);
+    }
+
+    #[test]
+    fn strafe_zero_no_change() {
+        let mut p = Player::default();
+        p.strafe(0.0);
+        assert_eq!(p.mom_x, 0.0);
+        assert_eq!(p.mom_y, 0.0);
+    }
+
+    #[test]
+    fn look_yaw_and_pitch_simultaneously() {
+        let mut p = Player::default();
+        p.look(1.0, 0.5);
+        assert!((p.angle - 1.0).abs() < 0.01);
+        assert!((p.pitch - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn bob_offset_specific_calculation() {
+        let p = Player {
+            bob_amount: 0.5,
+            bob_phase: 0.0,
+            ..Default::default()
+        };
+        // bob_offset = 0.5 * sin(0.0 * 2.0) * 2.0 = 0.5 * sin(0) * 2 = 0
+        assert_eq!(p.bob_offset(), 0.0);
+
+        let p2 = Player {
+            bob_amount: 1.0,
+            bob_phase: std::f32::consts::FRAC_PI_4,
+            ..Default::default()
+        };
+        // bob_offset = 1.0 * sin(PI/4 * 2.0) * 2.0 = 1.0 * sin(PI/2) * 2.0 = 2.0
+        assert!((p2.bob_offset() - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn tick_airborne_no_bob_increase() {
+        let map = empty_map();
+        let mut p = Player {
+            on_ground: false,
+            view_z: PLAYER_VIEW_HEIGHT + 100.0,
+            mom_x: 10.0,
+            bob_amount: 0.0,
+            ..Player::default()
+        };
+        p.tick(&map);
+        // Airborne: speed > 0.5 but NOT on_ground → bob_amount decays (stays 0)
+        assert!(
+            p.bob_amount <= 0.0 + f32::EPSILON,
+            "bob should not increase while airborne"
+        );
+    }
+
+    #[test]
+    fn spawn_resets_bob_amount() {
+        let mut p = Player {
+            bob_amount: 0.9,
+            ..Default::default()
+        };
+        p.spawn(0.0, 0.0, 0.0);
+        assert_eq!(p.bob_amount, 0.0);
+    }
+
+    #[test]
+    fn tick_zero_momentum_stays_put() {
+        let map = empty_map();
+        let mut p = Player::default();
+        let (x0, y0) = (p.x, p.y);
+        p.tick(&map);
+        assert_eq!(p.x, x0);
+        assert_eq!(p.y, y0);
+    }
+
+    #[test]
+    fn multiple_spawns_last_wins() {
+        let mut p = Player::default();
+        p.spawn(10.0, 20.0, 0.5);
+        p.spawn(50.0, 60.0, 2.0);
+        assert!((p.x - 50.0).abs() < 0.01);
+        assert!((p.y - 60.0).abs() < 0.01);
+        assert!((p.angle - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn thrust_accumulates() {
+        let mut p = Player::default();
+        p.thrust(0.0, 3.0);
+        p.thrust(0.0, 2.0);
+        assert!((p.mom_x - 5.0).abs() < 0.01, "thrust should accumulate");
+    }
+
+    // --- Two-sided linedef collision tests ---
+
+    /// Build a map with two rooms separated by a two-sided linedef.
+    /// The dividing line runs along x=128 from y=0 to y=256.
+    /// Front sector: floor=0, ceil=128. Back sector: floor=step_h, ceil=back_ceil.
+    fn two_room_map(back_floor: f32, back_ceil: f32) -> DoomMap {
+        use super::super::map::*;
+        use super::super::wad_types::{ML_BLOCKING, ML_TWOSIDED};
+        let vertices = vec![
+            Vertex { x: 0.0, y: 0.0 },     // 0: bottom-left
+            Vertex { x: 128.0, y: 0.0 },   // 1: bottom-mid
+            Vertex { x: 256.0, y: 0.0 },   // 2: bottom-right
+            Vertex { x: 256.0, y: 256.0 }, // 3: top-right
+            Vertex { x: 128.0, y: 256.0 }, // 4: top-mid
+            Vertex { x: 0.0, y: 256.0 },   // 5: top-left
+        ];
+        let sectors = vec![
+            Sector {
+                floor_height: 0.0,
+                ceiling_height: 128.0,
+                floor_texture: "F".into(),
+                ceiling_texture: "C".into(),
+                light_level: 200,
+                special: 0,
+                tag: 0,
+            },
+            Sector {
+                floor_height: back_floor,
+                ceiling_height: back_ceil,
+                floor_texture: "F".into(),
+                ceiling_texture: "C".into(),
+                light_level: 200,
+                special: 0,
+                tag: 0,
+            },
+        ];
+        let sidedefs = vec![
+            SideDef {
+                x_offset: 0.0,
+                y_offset: 0.0,
+                upper_texture: "-".into(),
+                lower_texture: "-".into(),
+                middle_texture: "W".into(),
+                sector: 0,
+            },
+            SideDef {
+                x_offset: 0.0,
+                y_offset: 0.0,
+                upper_texture: "-".into(),
+                lower_texture: "-".into(),
+                middle_texture: "-".into(),
+                sector: 1,
+            },
+        ];
+        // Outer walls (blocking, one-sided)
+        let mut linedefs = vec![
+            LineDef {
+                v1: 0,
+                v2: 1,
+                flags: ML_BLOCKING,
+                special: 0,
+                tag: 0,
+                front_sidedef: Some(0),
+                back_sidedef: None,
+            },
+            LineDef {
+                v1: 1,
+                v2: 2,
+                flags: ML_BLOCKING,
+                special: 0,
+                tag: 0,
+                front_sidedef: Some(0),
+                back_sidedef: None,
+            },
+            LineDef {
+                v1: 2,
+                v2: 3,
+                flags: ML_BLOCKING,
+                special: 0,
+                tag: 0,
+                front_sidedef: Some(1),
+                back_sidedef: None,
+            },
+            LineDef {
+                v1: 3,
+                v2: 4,
+                flags: ML_BLOCKING,
+                special: 0,
+                tag: 0,
+                front_sidedef: Some(1),
+                back_sidedef: None,
+            },
+            LineDef {
+                v1: 4,
+                v2: 5,
+                flags: ML_BLOCKING,
+                special: 0,
+                tag: 0,
+                front_sidedef: Some(0),
+                back_sidedef: None,
+            },
+            LineDef {
+                v1: 5,
+                v2: 0,
+                flags: ML_BLOCKING,
+                special: 0,
+                tag: 0,
+                front_sidedef: Some(0),
+                back_sidedef: None,
+            },
+        ];
+        // Dividing line: two-sided, not blocking
+        linedefs.push(LineDef {
+            v1: 1,
+            v2: 4,
+            flags: ML_TWOSIDED,
+            special: 0,
+            tag: 0,
+            front_sidedef: Some(0),
+            back_sidedef: Some(1),
+        });
+        DoomMap {
+            name: "TWOROOM".into(),
+            vertices,
+            linedefs,
+            sidedefs,
+            sectors,
+            segs: vec![],
+            subsectors: vec![SubSector {
+                num_segs: 0,
+                first_seg: 0,
+            }],
+            nodes: vec![],
+            things: vec![],
+        }
+    }
+
+    #[test]
+    fn two_sided_passable_step_allows_crossing() {
+        // Back floor is 10 (< PLAYER_STEP_HEIGHT=24), ceil is 128 → passable
+        let map = two_room_map(10.0, 128.0);
+        let mut p = Player {
+            x: 100.0,
+            y: 128.0,
+            mom_x: 50.0,
+            ..Player::default()
+        };
+        p.tick(&map);
+        // Should cross the dividing line (step < 24, gap > PLAYER_HEIGHT)
+        assert!(
+            p.x > 128.0,
+            "player should cross passable two-sided line, x={}",
+            p.x
+        );
+    }
+
+    #[test]
+    fn two_sided_impassable_step_blocks_x() {
+        // Back floor is 30 (> PLAYER_STEP_HEIGHT=24) → impassable
+        let map = two_room_map(30.0, 128.0);
+        let mut p = Player {
+            x: 100.0,
+            y: 128.0,
+            mom_x: 50.0,
+            ..Player::default()
+        };
+        let old_y = p.y;
+        p.tick(&map);
+        // X movement should be blocked by impassable step
+        assert!(
+            p.x <= 128.0,
+            "impassable step should block x movement, x={}",
+            p.x
+        );
+        // Y should be unchanged (no Y momentum)
+        assert!(
+            (p.y - old_y).abs() < 0.01,
+            "y should not change with no y momentum"
+        );
+    }
+
+    #[test]
+    fn two_sided_low_ceiling_blocks() {
+        // Back ceiling is 20, which means gap (20 - 0) = 20 < PLAYER_HEIGHT=56 → impassable
+        let map = two_room_map(0.0, 20.0);
+        let mut p = Player {
+            x: 100.0,
+            y: 128.0,
+            mom_x: 50.0,
+            ..Player::default()
+        };
+        p.tick(&map);
+        assert!(p.x <= 128.0, "low ceiling should block crossing, x={}", p.x);
+    }
+
+    // --- Wall sliding tests ---
+
+    #[test]
+    fn wall_slide_blocked_x_free_y() {
+        let map = boxed_room_map();
+        // Player near right wall (x=256), moving into it diagonally
+        let mut p = Player {
+            x: 256.0 - PLAYER_RADIUS - 2.0,
+            y: 128.0,
+            mom_x: 20.0,
+            mom_y: 10.0,
+            ..Player::default()
+        };
+        let old_y = p.y;
+        p.tick(&map);
+        // X should be blocked by wall, Y should slide
+        let dy = (p.y - old_y).abs();
+        assert!(
+            dy > 1.0,
+            "player should slide along Y when X is blocked, dy={dy}"
+        );
+    }
+
+    #[test]
+    fn wall_slide_blocked_y_free_x() {
+        let map = boxed_room_map();
+        // Player near bottom wall (y=0), moving into it diagonally
+        let mut p = Player {
+            x: 128.0,
+            y: PLAYER_RADIUS + 2.0,
+            mom_x: 10.0,
+            mom_y: -20.0,
+            ..Player::default()
+        };
+        let old_x = p.x;
+        p.tick(&map);
+        let dx = (p.x - old_x).abs();
+        assert!(
+            dx > 1.0,
+            "player should slide along X when Y is blocked, dx={dx}"
+        );
+    }
+
+    // --- Sector floor tracking ---
+
+    /// Build a map where point_sector returns a sector with a given floor height.
+    fn map_with_floor(floor_h: f32) -> DoomMap {
+        use super::super::map::*;
+        let sectors = vec![Sector {
+            floor_height: floor_h,
+            ceiling_height: 128.0,
+            floor_texture: "F".into(),
+            ceiling_texture: "C".into(),
+            light_level: 200,
+            special: 0,
+            tag: 0,
+        }];
+        let sidedefs = vec![SideDef {
+            x_offset: 0.0,
+            y_offset: 0.0,
+            upper_texture: "-".into(),
+            lower_texture: "-".into(),
+            middle_texture: "W".into(),
+            sector: 0,
+        }];
+        let linedefs = vec![LineDef {
+            v1: 0,
+            v2: 1,
+            flags: 0,
+            special: 0,
+            tag: 0,
+            front_sidedef: Some(0),
+            back_sidedef: None,
+        }];
+        let segs = vec![Seg {
+            v1: 0,
+            v2: 1,
+            angle: 0.0,
+            linedef: 0,
+            direction: 0,
+            offset: 0.0,
+        }];
+        DoomMap {
+            name: "FLOOR".into(),
+            vertices: vec![Vertex { x: 0.0, y: 0.0 }, Vertex { x: 256.0, y: 0.0 }],
+            linedefs,
+            sidedefs,
+            sectors,
+            segs,
+            subsectors: vec![SubSector {
+                num_segs: 1,
+                first_seg: 0,
+            }],
+            nodes: vec![],
+            things: vec![],
+        }
+    }
+
+    #[test]
+    fn tick_steps_up_small_floor_change() {
+        let map = map_with_floor(10.0);
+        let mut p = Player::default();
+        // Player on ground, sector floor is 10 (step height 10 < 24)
+        p.tick(&map);
+        assert!(
+            (p.floor_z - 10.0).abs() < 0.01,
+            "floor_z should step up to sector floor, got {}",
+            p.floor_z
+        );
+    }
+
+    #[test]
+    fn tick_ignores_large_floor_drop_when_grounded() {
+        // When player is on ground and sector floor is much lower, only step down
+        // because the condition is: on_ground OR floor_z > target + STEP_HEIGHT
+        let map = map_with_floor(-50.0);
+        let mut p = Player::default(); // floor_z=0, on_ground=true
+        p.tick(&map);
+        // Condition: on_ground=true, target_floor=-50, step=|-50-0|=50 > 24
+        // BUT: target_floor (-50) <= floor_z + STEP_HEIGHT (0+24=24)? -50 <= 24 → true
+        // So floor_z should update to -50
+        assert!(
+            (p.floor_z - (-50.0)).abs() < 0.01,
+            "grounded player should follow floor down, got {}",
+            p.floor_z
+        );
+    }
+
+    #[test]
+    fn tick_floor_step_up_limited_by_step_height() {
+        let map = map_with_floor(30.0); // > PLAYER_STEP_HEIGHT (24)
+        let mut p = Player::default(); // floor_z=0, on_ground=true
+        p.tick(&map);
+        // on_ground=true so first condition met
+        // target_floor=30, floor_z=0, step_height=24
+        // target_floor (30) <= floor_z + STEP_HEIGHT (24)? 30 <= 24 → FALSE
+        // So floor_z should NOT update
+        assert!(
+            (p.floor_z - 0.0).abs() < 0.01,
+            "floor_z should not step up beyond STEP_HEIGHT, got {}",
+            p.floor_z
+        );
+    }
+
+    // --- Airborne multi-tick landing ---
+
+    #[test]
+    fn airborne_player_falls_and_lands_over_ticks() {
+        let map = empty_map();
+        let mut p = Player {
+            on_ground: false,
+            view_z: PLAYER_VIEW_HEIGHT + 20.0,
+            mom_z: 0.0,
+            ..Player::default()
+        };
+        let mut landed = false;
+        for _ in 0..100 {
+            p.tick(&map);
+            if p.on_ground {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "airborne player should eventually land");
+        assert!(
+            (p.view_z - (p.floor_z + PLAYER_VIEW_HEIGHT)).abs() < 0.01,
+            "landed player view_z should be at floor + view height"
+        );
+    }
+
+    // --- Strafe at non-default angles ---
+
+    #[test]
+    fn strafe_at_pi_half() {
+        let mut p = Player {
+            angle: std::f32::consts::FRAC_PI_2, // facing up (+Y)
+            ..Default::default()
+        };
+        p.strafe(1.0); // strafe right when facing up → should push +X
+        assert!(
+            p.mom_x.abs() > p.mom_y.abs(),
+            "strafing at pi/2 should mostly push X, got x={} y={}",
+            p.mom_x,
+            p.mom_y
+        );
+    }
+
+    #[test]
+    fn strafe_at_pi() {
+        let mut p = Player {
+            angle: std::f32::consts::PI, // facing left (-X)
+            ..Default::default()
+        };
+        p.strafe(1.0); // strafe right when facing left → should push +Y
+        assert!(
+            p.mom_y.abs() > p.mom_x.abs(),
+            "strafing at pi should mostly push Y, got x={} y={}",
+            p.mom_x,
+            p.mom_y
+        );
+    }
+
+    // --- Thrust edge cases ---
+
+    #[test]
+    fn thrust_at_270_degrees() {
+        let mut p = Player::default();
+        let angle = 3.0 * std::f32::consts::FRAC_PI_2;
+        p.thrust(angle, 5.0);
+        assert!(p.mom_y < 0.0, "270-degree thrust should push -Y");
+        assert!(p.mom_x.abs() < 0.01, "270-degree thrust should have ~0 X");
+    }
+
+    #[test]
+    fn thrust_zero_speed_no_change() {
+        let mut p = Player::default();
+        p.thrust(1.0, 0.0);
+        assert_eq!(p.mom_x, 0.0);
+        assert_eq!(p.mom_y, 0.0);
+    }
+
+    // --- Collision with non-blocking, non-two-sided lines ---
+
+    #[test]
+    fn non_blocking_one_sided_line_ignored() {
+        use super::super::map::*;
+        // A map with a single non-blocking, one-sided linedef
+        let map = DoomMap {
+            name: "NB".into(),
+            vertices: vec![Vertex { x: 0.0, y: 0.0 }, Vertex { x: 256.0, y: 0.0 }],
+            linedefs: vec![LineDef {
+                v1: 0,
+                v2: 1,
+                flags: 0, // not blocking, not two-sided
+                special: 0,
+                tag: 0,
+                front_sidedef: Some(0),
+                back_sidedef: None,
+            }],
+            sidedefs: vec![SideDef {
+                x_offset: 0.0,
+                y_offset: 0.0,
+                upper_texture: "-".into(),
+                lower_texture: "-".into(),
+                middle_texture: "W".into(),
+                sector: 0,
+            }],
+            sectors: vec![],
+            segs: vec![],
+            subsectors: vec![SubSector {
+                num_segs: 0,
+                first_seg: 0,
+            }],
+            nodes: vec![],
+            things: vec![],
+        };
+        let mut p = Player {
+            x: 128.0,
+            y: 5.0,
+            mom_y: -20.0,
+            ..Player::default()
+        };
+        p.tick(&map);
+        // Non-blocking line should not stop movement
+        assert!(p.y < 0.0, "non-blocking line should not block, y={}", p.y);
+    }
+
+    // --- Running toggle interaction with thrust ---
+
+    #[test]
+    fn move_forward_running_vs_walking() {
+        let mut p_walk = Player::default();
+        let mut p_run = Player {
+            running: true,
+            ..Default::default()
+        };
+        p_walk.move_forward(1.0);
+        p_run.move_forward(1.0);
+        assert!(
+            p_run.mom_x > p_walk.mom_x,
+            "running forward should be faster"
+        );
+        assert!(
+            (p_run.mom_x / p_walk.mom_x - PLAYER_RUN_MULT).abs() < 0.01,
+            "should differ by run multiplier"
+        );
+    }
+
+    #[test]
+    fn strafe_running_vs_walking() {
+        let mut p_walk = Player::default();
+        let mut p_run = Player {
+            running: true,
+            ..Default::default()
+        };
+        p_walk.strafe(1.0);
+        p_run.strafe(1.0);
+        let walk_speed = (p_walk.mom_x * p_walk.mom_x + p_walk.mom_y * p_walk.mom_y).sqrt();
+        let run_speed = (p_run.mom_x * p_run.mom_x + p_run.mom_y * p_run.mom_y).sqrt();
+        assert!(
+            (run_speed / walk_speed - PLAYER_RUN_MULT).abs() < 0.01,
+            "running strafe should differ by run multiplier"
+        );
+    }
 }

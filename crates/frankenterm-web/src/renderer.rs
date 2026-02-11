@@ -222,6 +222,9 @@ fn glyph_meta_to_bytes(meta: &[GlyphMetaEntry]) -> Vec<u8> {
 
 #[cfg(target_arch = "wasm32")]
 fn rasterize_procedural_glyph(codepoint: u32, width: u16, height: u16) -> GlyphRaster {
+    if let Some(r) = crate::builtin_font::rasterize_builtin(codepoint, width, height) {
+        return r;
+    }
     let w = width.max(1);
     let h = height.max(1);
     let mut pixels = vec![0u8; (w as usize) * (h as usize)];
@@ -792,13 +795,25 @@ mod gpu {
         fn ensure_canvas_size(&mut self, width: u16, height: u16) {
             let w = width.max(1);
             let h = height.max(1);
+            let mut resized = false;
             if self.canvas_width != w {
                 self.canvas.set_width(u32::from(w));
                 self.canvas_width = w;
+                resized = true;
             }
             if self.canvas_height != h {
                 self.canvas.set_height(u32::from(h));
                 self.canvas_height = h;
+                resized = true;
+            }
+            // Canvas dimension changes reset context state (per HTML spec).
+            // Re-apply text rendering properties that were set in the constructor.
+            if resized {
+                self.context.set_text_baseline("top");
+                self.context.set_text_align("left");
+                self.context.set_image_smoothing_enabled(false);
+                // Force font re-application on next rasterize call.
+                self.cached_font_height = 0;
             }
         }
 
@@ -815,6 +830,9 @@ mod gpu {
         }
 
         fn rasterize(&mut self, codepoint: u32, width: u16, height: u16) -> GlyphRaster {
+            if let Some(r) = crate::builtin_font::rasterize_builtin(codepoint, width, height) {
+                return r;
+            }
             let Some(ch) = char::from_u32(codepoint) else {
                 return rasterize_procedural_glyph(codepoint, width, height);
             };

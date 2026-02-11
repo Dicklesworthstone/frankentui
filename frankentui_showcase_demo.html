@@ -56,7 +56,7 @@ const CELL_HEIGHT  = 16;
 const LOG_JSONL    = true;   // Emit JSONL evidence to console
 const LOG_PERF     = false;  // Per-frame timing in console
 // Bump when deploying to bypass Cloudflare/browser caches for JS/WASM artifacts.
-const ASSET_VERSION = "2026-02-10.5";
+const ASSET_VERSION = "2026-02-10.6";
 
 // ── DOM refs ───────────────────────────────────────────────────────────
 const canvas   = document.getElementById("terminal-canvas");
@@ -79,6 +79,30 @@ const fontsReady = (async () => {
     await document.fonts.ready;
   } catch (e) {
     console.warn("[ShowcaseDemo] Font load failed; continuing with fallback.", e);
+  }
+})();
+
+// ── Large text assets (loaded out-of-band to keep WASM small) ────────────
+// These blobs are huge (multiple MB). Embedding them in WASM bloats downloads
+// and, worse, slows instantiation due to large data-segment memcpy.
+const largeAssetsPromise = (async () => {
+  try {
+    const shakespeareUrl = `./crates/ftui-demo-showcase/data/shakespeare.txt?v=${ASSET_VERSION}`;
+    const sqliteUrl      = `./crates/ftui-demo-showcase/data/sqlite3.c?v=${ASSET_VERSION}`;
+    const [shakespeare, sqlite] = await Promise.all([
+      fetch(shakespeareUrl).then((r) => {
+        if (!r.ok) throw new Error(`GET ${shakespeareUrl} -> ${r.status}`);
+        return r.text();
+      }),
+      fetch(sqliteUrl).then((r) => {
+        if (!r.ok) throw new Error(`GET ${sqliteUrl} -> ${r.status}`);
+        return r.text();
+      }),
+    ]);
+    return { shakespeare, sqlite };
+  } catch (e) {
+    console.warn("[ShowcaseDemo] Failed to fetch large assets; some screens may be unavailable.", e);
+    return null;
   }
 })();
 
@@ -152,6 +176,24 @@ if (initPatches.cells.length > 0) {
 }
 term.render();
 status.textContent = `${cols}×${rows} — running`;
+
+// Inject large text assets after first frame so startup work is not blocked.
+largeAssetsPromise.then((assets) => {
+  if (!assets) return;
+  try {
+    const okA = runner.setShakespeareText(assets.shakespeare);
+    const okB = runner.setSqliteSource(assets.sqlite);
+    jsonl({
+      event: "assets_loaded",
+      shakespeare_bytes: assets.shakespeare.length,
+      sqlite_bytes: assets.sqlite.length,
+      ok: Boolean(okA && okB),
+      ts: Date.now(),
+    });
+  } catch (e) {
+    console.warn("[ShowcaseDemo] Failed to inject large assets into WASM runner.", e);
+  }
+});
 
 // ── JSONL logger ───────────────────────────────────────────────────────
 function jsonl(obj) {

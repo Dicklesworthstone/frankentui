@@ -789,7 +789,6 @@ impl<T: ?Sized> Default for ValidatorBuilder<T> {
 
 impl<T: ?Sized> ValidatorBuilder<T> {
     /// Create a new empty validator builder.
-    #[must_use]
     pub fn new() -> Self {
         Self {
             validators: Vec::new(),
@@ -798,7 +797,6 @@ impl<T: ?Sized> ValidatorBuilder<T> {
     }
 
     /// Add a custom validator.
-    #[must_use]
     pub fn custom(mut self, validator: impl Validator<T> + 'static) -> Self {
         self.validators.push(Box::new(validator));
         self
@@ -813,37 +811,31 @@ impl<T: ?Sized> ValidatorBuilder<T> {
 
 impl ValidatorBuilder<str> {
     /// Add a `Required` validator.
-    #[must_use]
     pub fn required(self) -> Self {
         self.custom(Required::new())
     }
 
     /// Add a `MinLength` validator.
-    #[must_use]
     pub fn min_length(self, min: usize) -> Self {
         self.custom(MinLength::new(min))
     }
 
     /// Add a `MaxLength` validator.
-    #[must_use]
     pub fn max_length(self, max: usize) -> Self {
         self.custom(MaxLength::new(max))
     }
 
     /// Add an `Email` validator.
-    #[must_use]
     pub fn email(self) -> Self {
         self.custom(Email::new())
     }
 
     /// Add a `Url` validator.
-    #[must_use]
     pub fn url(self) -> Self {
         self.custom(Url::new())
     }
 
     /// Add a pattern contains check.
-    #[must_use]
     pub fn contains(self, pattern: impl Into<String>) -> Self {
         self.custom(Pattern::contains(pattern))
     }
@@ -995,11 +987,14 @@ mod tests {
     fn min_length_error_params() {
         let v = MinLength::new(5);
         let result = v.validate("ab");
-        if let ValidationResult::Invalid(err) = result {
-            assert_eq!(err.params.get("min"), Some(&"5".to_string()));
-            assert_eq!(err.params.get("actual"), Some(&"2".to_string()));
-        } else {
-            panic!("Expected invalid result");
+        match result {
+            ValidationResult::Invalid(err) => {
+                assert_eq!(err.params.get("min"), Some(&"5".to_string()));
+                assert_eq!(err.params.get("actual"), Some(&"2".to_string()));
+            }
+            other => {
+                assert!(other.is_invalid(), "Expected invalid result");
+            }
         }
     }
 

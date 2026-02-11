@@ -144,10 +144,47 @@ mod tests {
     }
 
     #[test]
+    fn i32_le_min_max() {
+        for val in [i32::MIN, i32::MAX] {
+            let bytes = val.to_le_bytes();
+            assert_eq!(i32_le(&bytes, 0), val);
+        }
+    }
+
+    #[test]
+    fn i32_le_is_little_endian() {
+        let val: i32 = 0x0102_0304;
+        assert_ne!(i32_le(&val.to_be_bytes(), 0), val);
+        assert_eq!(i32_le(&val.to_le_bytes(), 0), val);
+    }
+
+    #[test]
     fn f32_le_roundtrip() {
         let val: f32 = std::f32::consts::PI;
         let bytes = val.to_le_bytes();
         assert!((f32_le(&bytes, 0) - val).abs() < 1e-6);
+    }
+
+    #[test]
+    fn f32_le_preserves_infinities() {
+        for val in [f32::INFINITY, f32::NEG_INFINITY] {
+            let bytes = val.to_le_bytes();
+            assert_eq!(f32_le(&bytes, 0).to_bits(), val.to_bits());
+        }
+    }
+
+    #[test]
+    fn f32_le_preserves_nan() {
+        let val = f32::NAN;
+        let bytes = val.to_le_bytes();
+        assert!(f32_le(&bytes, 0).is_nan());
+    }
+
+    #[test]
+    fn f32_le_preserves_negative_zero_bits() {
+        let val: f32 = -0.0;
+        let bytes = val.to_le_bytes();
+        assert_eq!(f32_le(&bytes, 0).to_bits(), val.to_bits());
     }
 
     #[test]
@@ -158,10 +195,41 @@ mod tests {
     }
 
     #[test]
+    fn u16_le_is_little_endian() {
+        let val: u16 = 0x0102;
+        assert_ne!(u16_le(&val.to_be_bytes(), 0), val);
+        assert_eq!(u16_le(&val.to_le_bytes(), 0), val);
+    }
+
+    #[test]
+    fn u16_le_at_offset() {
+        let mut buf = [0u8; 6];
+        let val: u16 = 0xCAFE;
+        buf[4..6].copy_from_slice(&val.to_le_bytes());
+        assert_eq!(u16_le(&buf, 4), val);
+    }
+
+    #[test]
     fn i16_le_roundtrip() {
         let val: i16 = -4321;
         let bytes = val.to_le_bytes();
         assert_eq!(i16_le(&bytes, 0), val);
+    }
+
+    #[test]
+    fn i16_le_min_max() {
+        for val in [i16::MIN, i16::MAX] {
+            let bytes = val.to_le_bytes();
+            assert_eq!(i16_le(&bytes, 0), val);
+        }
+    }
+
+    #[test]
+    fn i16_le_at_offset() {
+        let mut buf = [0u8; 6];
+        let val: i16 = -1234;
+        buf[4..6].copy_from_slice(&val.to_le_bytes());
+        assert_eq!(i16_le(&buf, 4), val);
     }
 
     #[test]
@@ -178,6 +246,20 @@ mod tests {
         let val: f32 = -2.5;
         buf[4..8].copy_from_slice(&val.to_le_bytes());
         assert!((f32_le(&buf, 4) - val).abs() < 1e-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn i32_le_panics_on_truncated_buffer() {
+        let buf = [0u8; 3];
+        let _ = i32_le(&buf, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn u16_le_panics_when_offset_out_of_range() {
+        let buf = [0u8; 2];
+        let _ = u16_le(&buf, 1);
     }
 
     #[test]
@@ -232,6 +314,26 @@ mod tests {
         // Negative child means -(leaf+1), so -1 is leaf 0
         assert!(n.children[0] < 0);
         assert!(n.children[1] >= 0);
+    }
+
+    #[test]
+    fn dnode_negative_child_leaf_index_decoding() {
+        for (child, expected_leaf) in [(-1_i16, 0_i16), (-2_i16, 1_i16), (-5_i16, 4_i16)] {
+            let decoded = -(child + 1);
+            assert_eq!(decoded, expected_leaf);
+        }
+    }
+
+    #[test]
+    fn bsp_header_has_expected_lump_count() {
+        let header = BspHeader {
+            version: 29,
+            lumps: [Lump {
+                offset: 0,
+                length: 0,
+            }; super::super::constants::HEADER_LUMPS],
+        };
+        assert_eq!(header.lumps.len(), super::super::constants::HEADER_LUMPS);
     }
 
     #[test]
