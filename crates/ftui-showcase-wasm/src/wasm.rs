@@ -141,11 +141,13 @@ impl ShowcaseRunner {
 
     /// Take flat patch batch for GPU upload.
     /// Returns `{ cells: Uint32Array, spans: Uint32Array }`.
+    ///
+    /// Uses reusable internal buffers to avoid per-frame Vec allocation.
     #[wasm_bindgen(js_name = takeFlatPatches)]
     pub fn take_flat_patches(&mut self) -> JsValue {
-        let flat = self.inner.take_flat_patches();
-        let cells = Uint32Array::from(flat.cells.as_slice());
-        let spans = Uint32Array::from(flat.spans.as_slice());
+        self.inner.prepare_flat_patches();
+        let cells = Uint32Array::from(self.inner.flat_cells());
+        let spans = Uint32Array::from(self.inner.flat_spans());
         let obj = Object::new();
         let _ = Reflect::set(&obj, &"cells".into(), &cells.into());
         let _ = Reflect::set(&obj, &"spans".into(), &spans.into());

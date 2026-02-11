@@ -20,6 +20,12 @@ pub struct RunnerCore {
     cached_patch_stats: Option<WebPatchStats>,
     /// Cached logs from the last `take_flat_patches()` call.
     cached_logs: Vec<String>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Reusable cell buffer for flat patch output (avoids per-frame allocation).
+    flat_cells_buf: Vec<u32>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Reusable span buffer for flat patch output (avoids per-frame allocation).
+    flat_spans_buf: Vec<u32>,
 }
 
 impl RunnerCore {
@@ -31,6 +37,8 @@ impl RunnerCore {
             cached_patch_hash: None,
             cached_patch_stats: None,
             cached_logs: Vec::new(),
+            flat_cells_buf: Vec::new(),
+            flat_spans_buf: Vec::new(),
         }
     }
 
@@ -39,6 +47,7 @@ impl RunnerCore {
         self.inner
             .init()
             .expect("StepProgram init should not fail on WebBackend");
+        self.refresh_cached_patch_meta_from_live_outputs();
     }
 
     /// Advance the deterministic clock by `dt_ms` milliseconds.
@@ -74,9 +83,14 @@ impl RunnerCore {
 
     /// Process pending events and render if dirty.
     pub fn step(&mut self) -> StepResult {
-        self.inner
+        let result = self
+            .inner
             .step()
-            .expect("StepProgram step should not fail on WebBackend")
+            .expect("StepProgram step should not fail on WebBackend");
+        if result.rendered {
+            self.refresh_cached_patch_meta_from_live_outputs();
+        }
+        result
     }
 
     /// Take the flat patch batch for GPU upload.
@@ -85,11 +99,45 @@ impl RunnerCore {
     /// via `patch_hash()`, `patch_stats()`, and `take_logs()` after
     /// the outputs have been drained.
     pub fn take_flat_patches(&mut self) -> WebFlatPatchBatch {
-        let outputs = self.inner.take_outputs();
-        self.cached_patch_hash = outputs.last_patch_hash.clone();
+        let mut outputs = self.inner.take_outputs();
+        self.cached_patch_hash = outputs.compute_patch_hash().map(str::to_owned);
         self.cached_patch_stats = outputs.last_patch_stats;
-        self.cached_logs = outputs.logs.clone();
-        outputs.flatten_patches_u32()
+        let flat = outputs.flatten_patches_u32();
+        self.cached_logs = outputs.logs;
+        flat
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Prepare flat patch data into reusable internal buffers.
+    ///
+    /// Call this instead of [`take_flat_patches`](Self::take_flat_patches)
+    /// when you want to avoid per-frame Vec allocation. Access the results
+    /// via [`flat_cells`](Self::flat_cells) and [`flat_spans`](Self::flat_spans).
+    pub fn prepare_flat_patches(&mut self) {
+        // Flatten into reusable buffers before draining outputs.
+        self.inner
+            .backend_mut()
+            .presenter_mut()
+            .flatten_patches_into(&mut self.flat_cells_buf, &mut self.flat_spans_buf);
+
+        // Cache metadata, then drain outputs.
+        // Hash is lazy: compute it now so it survives the drain.
+        let mut outputs = self.inner.take_outputs();
+        self.cached_patch_hash = outputs.compute_patch_hash().map(str::to_owned);
+        self.cached_patch_stats = outputs.last_patch_stats;
+        self.cached_logs = outputs.logs;
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Flat cell payload from the last [`prepare_flat_patches`](Self::prepare_flat_patches) call.
+    pub fn flat_cells(&self) -> &[u32] {
+        &self.flat_cells_buf
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Flat span payload from the last [`prepare_flat_patches`](Self::prepare_flat_patches) call.
+    pub fn flat_spans(&self) -> &[u32] {
+        &self.flat_spans_buf
     }
 
     /// Take accumulated log lines (from the last `take_flat_patches` call).
@@ -99,12 +147,15 @@ impl RunnerCore {
 
     /// FNV-1a hash of the last patch batch.
     pub fn patch_hash(&self) -> Option<String> {
-        self.cached_patch_hash.clone()
+        self.cached_patch_hash
+            .clone()
+            .or_else(|| self.inner.outputs().last_patch_hash.clone())
     }
 
     /// Patch upload stats.
     pub fn patch_stats(&self) -> Option<WebPatchStats> {
         self.cached_patch_stats
+            .or(self.inner.outputs().last_patch_stats)
     }
 
     /// Current frame index (monotonic, 0-based).
@@ -115,5 +166,11 @@ impl RunnerCore {
     /// Whether the program is still running.
     pub fn is_running(&self) -> bool {
         self.inner.is_running()
+    }
+
+    fn refresh_cached_patch_meta_from_live_outputs(&mut self) {
+        let outputs = self.inner.backend_mut().presenter_mut().outputs_mut();
+        self.cached_patch_hash = outputs.compute_patch_hash().map(str::to_owned);
+        self.cached_patch_stats = outputs.last_patch_stats;
     }
 }

@@ -1361,6 +1361,7 @@ impl FrankenTermWeb {
         self.auto_link_ids.resize(max, 0);
         self.auto_link_ids.fill(0);
         self.auto_link_urls.clear();
+        self.next_auto_link_id = AUTO_LINK_ID_BASE;
 
         if self.cols == 0 || self.rows == 0 {
             return;
@@ -1368,42 +1369,77 @@ impl FrankenTermWeb {
 
         let cols = usize::from(self.cols);
         let rows = usize::from(self.rows);
-        let mut next_id = AUTO_LINK_ID_BASE;
 
         for row in 0..rows {
+            self.scan_row_for_auto_links(row, cols);
+        }
+    }
+
+    /// Recompute auto-links only for the specified dirty rows.
+    ///
+    /// For each dirty row, clears existing auto-link IDs and removes their
+    /// URL entries, then rescans only those rows for URLs. Clean rows are
+    /// left untouched — O(cols × dirty_rows) instead of O(cols × rows).
+    fn recompute_auto_links_for_rows(&mut self, dirty_rows: &[usize]) {
+        if self.cols == 0 || self.rows == 0 {
+            return;
+        }
+
+        let cols = usize::from(self.cols);
+
+        // Clear auto-link state for dirty rows and remove their URL entries.
+        for &row in dirty_rows {
             let row_start = row.saturating_mul(cols);
-            let row_end = row_start.saturating_add(cols).min(self.shadow_cells.len());
-            if row_start >= row_end {
-                break;
-            }
-
-            let mut row_chars = Vec::with_capacity(row_end - row_start);
+            let row_end = row_start.saturating_add(cols).min(self.auto_link_ids.len());
             for idx in row_start..row_end {
-                let glyph_id = self.shadow_cells[idx].glyph_id;
-                let ch = if glyph_id == 0 {
-                    ' '
-                } else {
-                    char::from_u32(glyph_id).unwrap_or(' ')
-                };
-                row_chars.push(ch);
-            }
-
-            for detected in detect_auto_urls_in_row(&row_chars) {
-                if next_id > AUTO_LINK_ID_MAX {
-                    return;
+                let old_id = self.auto_link_ids[idx];
+                if old_id != 0 {
+                    self.auto_link_urls.remove(&old_id);
+                    self.auto_link_ids[idx] = 0;
                 }
-                let link_id = next_id;
-                next_id = next_id.saturating_add(1);
-                self.auto_link_urls.insert(link_id, detected.url);
+            }
+        }
 
-                for col in detected.start_col..detected.end_col {
-                    let idx = row_start + col;
-                    if idx >= row_end {
-                        break;
-                    }
-                    if cell_attr_link_id(self.shadow_cells[idx].attrs) == 0 {
-                        self.auto_link_ids[idx] = link_id;
-                    }
+        // Rescan only dirty rows.
+        for &row in dirty_rows {
+            self.scan_row_for_auto_links(row, cols);
+        }
+    }
+
+    /// Scan a single row for auto-detected URLs and assign link IDs.
+    fn scan_row_for_auto_links(&mut self, row: usize, cols: usize) {
+        let row_start = row.saturating_mul(cols);
+        let row_end = row_start.saturating_add(cols).min(self.shadow_cells.len());
+        if row_start >= row_end {
+            return;
+        }
+
+        let mut row_chars = Vec::with_capacity(row_end - row_start);
+        for idx in row_start..row_end {
+            let glyph_id = self.shadow_cells[idx].glyph_id;
+            let ch = if glyph_id == 0 {
+                ' '
+            } else {
+                char::from_u32(glyph_id).unwrap_or(' ')
+            };
+            row_chars.push(ch);
+        }
+
+        for detected in detect_auto_urls_in_row(&row_chars) {
+            if self.next_auto_link_id > AUTO_LINK_ID_MAX {
+                return;
+            }
+            let link_id = self.next_auto_link_id;
+            self.next_auto_link_id = self.next_auto_link_id.saturating_add(1);
+            self.auto_link_urls.insert(link_id, detected.url);
+
+            for col in detected.start_col..detected.end_col {
+                let idx = row_start + col;
+                if idx >= row_end {
+                    break;
+                }
+                if cell_attr_link_id(self.shadow_cells[idx].attrs) == 0 {
+                    self.auto_link_ids[idx] = link_id;
                 }
             }
         }
