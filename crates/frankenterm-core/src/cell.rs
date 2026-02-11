@@ -1,6 +1,7 @@
 //! Terminal cell: the fundamental unit of the grid.
 //!
-//! Each cell stores a character (or grapheme cluster) and its SGR attributes.
+//! Each cell stores a base character plus up to [`MAX_COMBINING`] inline
+//! combining marks, forming a grapheme cluster, along with SGR attributes.
 //! This is intentionally simpler than `ftui-render::Cell` — it models the
 //! terminal's internal state rather than the rendering pipeline.
 
@@ -37,8 +38,16 @@ bitflags! {
         /// This cell is the trailing (right) continuation of a wide character.
         /// Its content is meaningless; rendering uses the leading cell.
         const WIDE_CONTINUATION = 1 << 1;
+        /// This cell has one or more combining marks attached to its base character.
+        const HAS_COMBINING = 1 << 2;
     }
 }
+
+/// Maximum number of combining marks stored inline per cell.
+///
+/// Two marks cover the vast majority of real-world grapheme clusters
+/// (e.g. base + accent + second diacritic). Excess marks are silently dropped.
+pub const MAX_COMBINING: usize = 2;
 
 /// Color representation for terminal cells.
 ///
@@ -361,6 +370,10 @@ pub struct Cell {
     pub attrs: SgrAttrs,
     /// Hyperlink ID (0 = no link).
     pub hyperlink: HyperlinkId,
+    /// Inline storage for combining marks (accents, ZWJ, etc.).
+    combining: [char; MAX_COMBINING],
+    /// Number of combining marks actually stored (0..=MAX_COMBINING).
+    combining_len: u8,
 }
 
 impl Default for Cell {
@@ -371,6 +384,8 @@ impl Default for Cell {
             flags: CellFlags::empty(),
             attrs: SgrAttrs::default(),
             hyperlink: 0,
+            combining: ['\0'; MAX_COMBINING],
+            combining_len: 0,
         }
     }
 }
@@ -384,6 +399,8 @@ impl Cell {
             flags: CellFlags::empty(),
             attrs: SgrAttrs::default(),
             hyperlink: 0,
+            combining: ['\0'; MAX_COMBINING],
+            combining_len: 0,
         }
     }
 
@@ -395,6 +412,8 @@ impl Cell {
             flags: CellFlags::empty(),
             attrs,
             hyperlink: 0,
+            combining: ['\0'; MAX_COMBINING],
+            combining_len: 0,
         }
     }
 
@@ -409,6 +428,8 @@ impl Cell {
             flags: CellFlags::WIDE_CHAR,
             attrs,
             hyperlink: 0,
+            combining: ['\0'; MAX_COMBINING],
+            combining_len: 0,
         };
         let continuation = Self {
             content: ' ',
@@ -416,6 +437,8 @@ impl Cell {
             flags: CellFlags::WIDE_CONTINUATION,
             attrs,
             hyperlink: 0,
+            combining: ['\0'; MAX_COMBINING],
+            combining_len: 0,
         };
         (leading, continuation)
     }
@@ -448,9 +471,10 @@ impl Cell {
     pub fn set_content(&mut self, ch: char, width: u8) {
         self.content = ch;
         self.width = width;
-        // Clear wide flags when replacing content.
+        // Clear wide and combining flags when replacing content.
         self.flags
-            .remove(CellFlags::WIDE_CHAR | CellFlags::WIDE_CONTINUATION);
+            .remove(CellFlags::WIDE_CHAR | CellFlags::WIDE_CONTINUATION | CellFlags::HAS_COMBINING);
+        self.combining_len = 0;
     }
 
     /// Reset this cell to a blank space with the given background attributes.
@@ -466,11 +490,42 @@ impl Cell {
             ..SgrAttrs::default()
         };
         self.hyperlink = 0;
+        self.combining_len = 0;
     }
 
     /// Reset this cell to a blank space with default attributes.
     pub fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    // ── Combining mark support ────────────────────────────────────────
+
+    /// Append a combining mark to this cell's grapheme cluster.
+    ///
+    /// Returns `true` if the mark was stored, `false` if the inline buffer
+    /// is full (excess marks are silently dropped).
+    pub fn push_combining(&mut self, mark: char) -> bool {
+        let len = self.combining_len as usize;
+        if len >= MAX_COMBINING {
+            return false;
+        }
+        self.combining[len] = mark;
+        self.combining_len += 1;
+        self.flags.insert(CellFlags::HAS_COMBINING);
+        true
+    }
+
+    /// The combining marks attached to this cell's base character.
+    #[inline]
+    pub fn combining_marks(&self) -> &[char] {
+        // SAFETY: combining_len is always <= MAX_COMBINING and indices are valid
+        &self.combining[..self.combining_len as usize]
+    }
+
+    /// Whether this cell has any combining marks.
+    #[inline]
+    pub fn has_combining(&self) -> bool {
+        self.combining_len > 0
     }
 
     /// Compute terminal display width for a single Unicode scalar.
@@ -990,5 +1045,84 @@ mod tests {
 
         // A should be gone after all references were released.
         assert_eq!(reg.get(id_a), None);
+    }
+
+    // ── Combining mark support ────────────────────────────────────────
+
+    #[test]
+    fn push_combining_stores_mark() {
+        let mut cell = Cell::new('e');
+        assert!(!cell.has_combining());
+        assert!(cell.combining_marks().is_empty());
+
+        assert!(cell.push_combining('\u{0301}')); // combining acute accent
+        assert!(cell.has_combining());
+        assert_eq!(cell.combining_marks(), &['\u{0301}']);
+        assert!(cell.flags.contains(CellFlags::HAS_COMBINING));
+    }
+
+    #[test]
+    fn push_combining_multiple_marks() {
+        let mut cell = Cell::new('a');
+        assert!(cell.push_combining('\u{0300}')); // combining grave
+        assert!(cell.push_combining('\u{0301}')); // combining acute
+        assert_eq!(cell.combining_marks(), &['\u{0300}', '\u{0301}']);
+    }
+
+    #[test]
+    fn push_combining_overflow_returns_false() {
+        let mut cell = Cell::new('a');
+        for i in 0..MAX_COMBINING {
+            assert!(cell.push_combining(char::from(0x0300u16 + i as u16)));
+        }
+        // Buffer full — next push returns false.
+        assert!(!cell.push_combining('\u{0302}'));
+        assert_eq!(cell.combining_marks().len(), MAX_COMBINING);
+    }
+
+    #[test]
+    fn set_content_clears_combining() {
+        let mut cell = Cell::new('e');
+        cell.push_combining('\u{0301}');
+        assert!(cell.has_combining());
+
+        cell.set_content('x', 1);
+        assert!(!cell.has_combining());
+        assert!(cell.combining_marks().is_empty());
+        assert!(!cell.flags.contains(CellFlags::HAS_COMBINING));
+    }
+
+    #[test]
+    fn erase_clears_combining() {
+        let mut cell = Cell::new('e');
+        cell.push_combining('\u{0301}');
+        cell.erase(Color::Default);
+        assert!(!cell.has_combining());
+        assert!(cell.combining_marks().is_empty());
+    }
+
+    #[test]
+    fn clear_clears_combining() {
+        let mut cell = Cell::new('e');
+        cell.push_combining('\u{0301}');
+        cell.clear();
+        assert!(!cell.has_combining());
+        assert_eq!(cell, Cell::default());
+    }
+
+    #[test]
+    fn combining_on_wide_char() {
+        let (mut lead, _) = Cell::wide('中', SgrAttrs::default());
+        assert!(lead.push_combining('\u{0300}'));
+        assert_eq!(lead.combining_marks(), &['\u{0300}']);
+        assert_eq!(lead.content(), '中');
+        assert!(lead.is_wide());
+    }
+
+    #[test]
+    fn default_cell_has_no_combining() {
+        let cell = Cell::default();
+        assert!(!cell.has_combining());
+        assert!(cell.combining_marks().is_empty());
     }
 }

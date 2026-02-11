@@ -58,12 +58,12 @@ pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};
 pub use pane::{
     PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS, PANE_DRAG_RESIZE_DEFAULT_THRESHOLD,
-    PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION, PANE_SNAP_DEFAULT_HYSTERESIS_BPS,
-    PANE_SNAP_DEFAULT_STEP_BPS, PANE_TREE_SCHEMA_VERSION, PaneCancelReason, PaneConstraints,
-    PaneCoordinateNormalizationError, PaneCoordinateNormalizer, PaneCoordinateRoundingPolicy,
-    PaneDragBehaviorTuning, PaneDragResizeEffect, PaneDragResizeMachine,
-    PaneDragResizeMachineError, PaneDragResizeNoopReason, PaneDragResizeState,
-    PaneDragResizeTransition, PaneId, PaneIdAllocator, PaneInputCoordinate,
+    PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION, PANE_SEMANTIC_INPUT_TRACE_SCHEMA_VERSION,
+    PANE_SNAP_DEFAULT_HYSTERESIS_BPS, PANE_SNAP_DEFAULT_STEP_BPS, PANE_TREE_SCHEMA_VERSION,
+    PaneCancelReason, PaneConstraints, PaneCoordinateNormalizationError, PaneCoordinateNormalizer,
+    PaneCoordinateRoundingPolicy, PaneDragBehaviorTuning, PaneDragResizeEffect,
+    PaneDragResizeMachine, PaneDragResizeMachineError, PaneDragResizeNoopReason,
+    PaneDragResizeState, PaneDragResizeTransition, PaneId, PaneIdAllocator, PaneInputCoordinate,
     PaneInteractionPolicyError, PaneInvariantCode, PaneInvariantIssue, PaneInvariantReport,
     PaneInvariantSeverity, PaneLayout, PaneLeaf, PaneModelError, PaneModifierSnapshot,
     PaneNodeKind, PaneNodeRecord, PaneNormalizedCoordinate, PaneOperation, PaneOperationError,
@@ -71,9 +71,12 @@ pub use pane::{
     PaneOperationOutcome, PanePlacement, PanePointerButton, PanePointerPosition, PanePrecisionMode,
     PanePrecisionPolicy, PaneRepairAction, PaneRepairError, PaneRepairFailure, PaneRepairOutcome,
     PaneResizeDirection, PaneResizeTarget, PaneScaleFactor, PaneSemanticInputEvent,
-    PaneSemanticInputEventError, PaneSemanticInputEventKind, PaneSnapDecision, PaneSnapReason,
-    PaneSnapTuning, PaneSplit, PaneSplitRatio, PaneTransaction, PaneTransactionOutcome, PaneTree,
-    PaneTreeSnapshot, SplitAxis,
+    PaneSemanticInputEventError, PaneSemanticInputEventKind, PaneSemanticInputTrace,
+    PaneSemanticInputTraceError, PaneSemanticInputTraceMetadata,
+    PaneSemanticReplayConformanceArtifact, PaneSemanticReplayDiffArtifact,
+    PaneSemanticReplayDiffKind, PaneSemanticReplayError, PaneSemanticReplayFixture,
+    PaneSemanticReplayOutcome, PaneSnapDecision, PaneSnapReason, PaneSnapTuning, PaneSplit,
+    PaneSplitRatio, PaneTransaction, PaneTransactionOutcome, PaneTree, PaneTreeSnapshot, SplitAxis,
 };
 pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};

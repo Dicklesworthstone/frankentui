@@ -35,7 +35,9 @@ pub mod selection;
 pub mod terminal_engine;
 pub mod width_policy;
 
-pub use cell::{Cell, CellFlags, Color, HyperlinkId, HyperlinkRegistry, SgrAttrs, SgrFlags};
+pub use cell::{
+    Cell, CellFlags, Color, HyperlinkId, HyperlinkRegistry, MAX_COMBINING, SgrAttrs, SgrFlags,
+};
 pub use cursor::{Cursor, SavedCursor, translate_charset};
 pub use flow_control::{
     ActionLoss, BackpressureAction, DecisionReason, FlowControlConfig, FlowControlDecision,

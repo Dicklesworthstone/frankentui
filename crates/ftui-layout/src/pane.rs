@@ -24,6 +24,9 @@ pub const PANE_TREE_SCHEMA_VERSION: u16 = 1;
 /// - Breaking field/semantic changes must bump this version.
 pub const PANE_SEMANTIC_INPUT_EVENT_SCHEMA_VERSION: u16 = 1;
 
+/// Current schema version for semantic pane replay traces.
+pub const PANE_SEMANTIC_INPUT_TRACE_SCHEMA_VERSION: u16 = 1;
+
 /// Stable identifier for pane nodes.
 ///
 /// `0` is reserved/invalid so IDs are always non-zero.
@@ -706,6 +709,522 @@ impl fmt::Display for PaneSemanticInputEventError {
 }
 
 impl std::error::Error for PaneSemanticInputEventError {}
+
+/// Metadata carried alongside semantic replay traces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSemanticInputTraceMetadata {
+    #[serde(default = "default_pane_semantic_input_trace_schema_version")]
+    pub schema_version: u16,
+    pub seed: u64,
+    pub start_unix_ms: u64,
+    #[serde(default)]
+    pub host: String,
+    pub checksum: u64,
+}
+
+fn default_pane_semantic_input_trace_schema_version() -> u16 {
+    PANE_SEMANTIC_INPUT_TRACE_SCHEMA_VERSION
+}
+
+/// Canonical replay trace for semantic pane input streams.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSemanticInputTrace {
+    pub metadata: PaneSemanticInputTraceMetadata,
+    #[serde(default)]
+    pub events: Vec<PaneSemanticInputEvent>,
+}
+
+impl PaneSemanticInputTrace {
+    /// Build a canonical semantic input trace and compute its checksum.
+    pub fn new(
+        seed: u64,
+        start_unix_ms: u64,
+        host: impl Into<String>,
+        events: Vec<PaneSemanticInputEvent>,
+    ) -> Result<Self, PaneSemanticInputTraceError> {
+        let mut trace = Self {
+            metadata: PaneSemanticInputTraceMetadata {
+                schema_version: PANE_SEMANTIC_INPUT_TRACE_SCHEMA_VERSION,
+                seed,
+                start_unix_ms,
+                host: host.into(),
+                checksum: 0,
+            },
+            events,
+        };
+        trace.metadata.checksum = trace.recompute_checksum();
+        trace.validate()?;
+        Ok(trace)
+    }
+
+    /// Deterministically recompute the checksum over trace payload fields.
+    #[must_use]
+    pub fn recompute_checksum(&self) -> u64 {
+        pane_semantic_input_trace_checksum_payload(&self.metadata, &self.events)
+    }
+
+    /// Validate schema/version, event ordering, and checksum invariants.
+    pub fn validate(&self) -> Result<(), PaneSemanticInputTraceError> {
+        if self.metadata.schema_version != PANE_SEMANTIC_INPUT_TRACE_SCHEMA_VERSION {
+            return Err(PaneSemanticInputTraceError::UnsupportedSchemaVersion {
+                version: self.metadata.schema_version,
+                expected: PANE_SEMANTIC_INPUT_TRACE_SCHEMA_VERSION,
+            });
+        }
+        if self.events.is_empty() {
+            return Err(PaneSemanticInputTraceError::EmptyEvents);
+        }
+
+        let mut previous_sequence = 0_u64;
+        for (index, event) in self.events.iter().enumerate() {
+            event
+                .validate()
+                .map_err(|source| PaneSemanticInputTraceError::InvalidEvent { index, source })?;
+
+            if index > 0 && event.sequence <= previous_sequence {
+                return Err(PaneSemanticInputTraceError::SequenceOutOfOrder {
+                    index,
+                    previous: previous_sequence,
+                    current: event.sequence,
+                });
+            }
+            previous_sequence = event.sequence;
+        }
+
+        let computed = self.recompute_checksum();
+        if self.metadata.checksum != computed {
+            return Err(PaneSemanticInputTraceError::ChecksumMismatch {
+                recorded: self.metadata.checksum,
+                computed,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Replay a semantic trace through a drag/resize machine.
+    pub fn replay(
+        &self,
+        machine: &mut PaneDragResizeMachine,
+    ) -> Result<PaneSemanticReplayOutcome, PaneSemanticReplayError> {
+        self.validate()
+            .map_err(PaneSemanticReplayError::InvalidTrace)?;
+
+        let mut transitions = Vec::with_capacity(self.events.len());
+        for event in &self.events {
+            let transition = machine
+                .apply_event(event)
+                .map_err(PaneSemanticReplayError::Machine)?;
+            transitions.push(transition);
+        }
+
+        Ok(PaneSemanticReplayOutcome {
+            trace_checksum: self.metadata.checksum,
+            transitions,
+            final_state: machine.state(),
+        })
+    }
+}
+
+/// Validation failures for semantic replay trace payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneSemanticInputTraceError {
+    UnsupportedSchemaVersion {
+        version: u16,
+        expected: u16,
+    },
+    EmptyEvents,
+    SequenceOutOfOrder {
+        index: usize,
+        previous: u64,
+        current: u64,
+    },
+    InvalidEvent {
+        index: usize,
+        source: PaneSemanticInputEventError,
+    },
+    ChecksumMismatch {
+        recorded: u64,
+        computed: u64,
+    },
+}
+
+impl fmt::Display for PaneSemanticInputTraceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedSchemaVersion { version, expected } => write!(
+                f,
+                "unsupported pane semantic input trace schema version {version} (expected {expected})"
+            ),
+            Self::EmptyEvents => write!(
+                f,
+                "semantic pane input trace must contain at least one event"
+            ),
+            Self::SequenceOutOfOrder {
+                index,
+                previous,
+                current,
+            } => write!(
+                f,
+                "semantic pane input trace sequence out of order at index {index} ({current} <= {previous})"
+            ),
+            Self::InvalidEvent { index, source } => {
+                write!(
+                    f,
+                    "semantic pane input trace contains invalid event at index {index}: {source}"
+                )
+            }
+            Self::ChecksumMismatch { recorded, computed } => write!(
+                f,
+                "semantic pane input trace checksum mismatch (recorded={recorded:#x}, computed={computed:#x})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PaneSemanticInputTraceError {}
+
+/// Replay output from running one trace through a pane interaction machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSemanticReplayOutcome {
+    pub trace_checksum: u64,
+    pub transitions: Vec<PaneDragResizeTransition>,
+    pub final_state: PaneDragResizeState,
+}
+
+/// Classification for replay conformance differences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneSemanticReplayDiffKind {
+    TransitionMismatch,
+    MissingExpectedTransition,
+    UnexpectedTransition,
+    FinalStateMismatch,
+}
+
+/// One structured replay conformance difference artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSemanticReplayDiffArtifact {
+    pub kind: PaneSemanticReplayDiffKind,
+    pub index: Option<usize>,
+    pub expected_transition: Option<PaneDragResizeTransition>,
+    pub actual_transition: Option<PaneDragResizeTransition>,
+    pub expected_final_state: Option<PaneDragResizeState>,
+    pub actual_final_state: Option<PaneDragResizeState>,
+}
+
+/// Conformance comparison output for replay fixtures.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSemanticReplayConformanceArtifact {
+    pub trace_checksum: u64,
+    pub passed: bool,
+    pub diffs: Vec<PaneSemanticReplayDiffArtifact>,
+}
+
+impl PaneSemanticReplayConformanceArtifact {
+    /// Compare replay output against expected transitions/final state.
+    #[must_use]
+    pub fn compare(
+        outcome: &PaneSemanticReplayOutcome,
+        expected_transitions: &[PaneDragResizeTransition],
+        expected_final_state: PaneDragResizeState,
+    ) -> Self {
+        let mut diffs = Vec::new();
+        let max_len = expected_transitions.len().max(outcome.transitions.len());
+
+        for index in 0..max_len {
+            let expected = expected_transitions.get(index);
+            let actual = outcome.transitions.get(index);
+
+            match (expected, actual) {
+                (Some(expected_transition), Some(actual_transition))
+                    if expected_transition != actual_transition =>
+                {
+                    diffs.push(PaneSemanticReplayDiffArtifact {
+                        kind: PaneSemanticReplayDiffKind::TransitionMismatch,
+                        index: Some(index),
+                        expected_transition: Some(expected_transition.clone()),
+                        actual_transition: Some(actual_transition.clone()),
+                        expected_final_state: None,
+                        actual_final_state: None,
+                    });
+                }
+                (Some(expected_transition), None) => {
+                    diffs.push(PaneSemanticReplayDiffArtifact {
+                        kind: PaneSemanticReplayDiffKind::MissingExpectedTransition,
+                        index: Some(index),
+                        expected_transition: Some(expected_transition.clone()),
+                        actual_transition: None,
+                        expected_final_state: None,
+                        actual_final_state: None,
+                    });
+                }
+                (None, Some(actual_transition)) => {
+                    diffs.push(PaneSemanticReplayDiffArtifact {
+                        kind: PaneSemanticReplayDiffKind::UnexpectedTransition,
+                        index: Some(index),
+                        expected_transition: None,
+                        actual_transition: Some(actual_transition.clone()),
+                        expected_final_state: None,
+                        actual_final_state: None,
+                    });
+                }
+                (Some(_), Some(_)) | (None, None) => {}
+            }
+        }
+
+        if outcome.final_state != expected_final_state {
+            diffs.push(PaneSemanticReplayDiffArtifact {
+                kind: PaneSemanticReplayDiffKind::FinalStateMismatch,
+                index: None,
+                expected_transition: None,
+                actual_transition: None,
+                expected_final_state: Some(expected_final_state),
+                actual_final_state: Some(outcome.final_state),
+            });
+        }
+
+        Self {
+            trace_checksum: outcome.trace_checksum,
+            passed: diffs.is_empty(),
+            diffs,
+        }
+    }
+}
+
+/// Golden fixture shape for replay conformance runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSemanticReplayFixture {
+    pub trace: PaneSemanticInputTrace,
+    #[serde(default)]
+    pub expected_transitions: Vec<PaneDragResizeTransition>,
+    pub expected_final_state: PaneDragResizeState,
+}
+
+impl PaneSemanticReplayFixture {
+    /// Run one replay fixture and emit structured conformance artifacts.
+    pub fn run(
+        &self,
+        machine: &mut PaneDragResizeMachine,
+    ) -> Result<PaneSemanticReplayConformanceArtifact, PaneSemanticReplayError> {
+        let outcome = self.trace.replay(machine)?;
+        Ok(PaneSemanticReplayConformanceArtifact::compare(
+            &outcome,
+            &self.expected_transitions,
+            self.expected_final_state,
+        ))
+    }
+}
+
+/// Replay runner failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneSemanticReplayError {
+    InvalidTrace(PaneSemanticInputTraceError),
+    Machine(PaneDragResizeMachineError),
+}
+
+impl fmt::Display for PaneSemanticReplayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidTrace(source) => write!(f, "invalid semantic replay trace: {source}"),
+            Self::Machine(source) => write!(f, "pane drag/resize machine replay failed: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for PaneSemanticReplayError {}
+
+fn pane_semantic_input_trace_checksum_payload(
+    metadata: &PaneSemanticInputTraceMetadata,
+    events: &[PaneSemanticInputEvent],
+) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0001_0000_01b3;
+
+    fn mix(hash: &mut u64, byte: u8) {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(PRIME);
+    }
+
+    fn mix_bytes(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            mix(hash, *byte);
+        }
+    }
+
+    fn mix_u16(hash: &mut u64, value: u16) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_u32(hash: &mut u64, value: u32) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_i32(hash: &mut u64, value: i32) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_u64(hash: &mut u64, value: u64) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_i16(hash: &mut u64, value: i16) {
+        mix_bytes(hash, &value.to_le_bytes());
+    }
+
+    fn mix_bool(hash: &mut u64, value: bool) {
+        mix(hash, u8::from(value));
+    }
+
+    fn mix_str(hash: &mut u64, value: &str) {
+        mix_u64(hash, value.len() as u64);
+        mix_bytes(hash, value.as_bytes());
+    }
+
+    fn mix_extensions(hash: &mut u64, extensions: &BTreeMap<String, String>) {
+        mix_u64(hash, extensions.len() as u64);
+        for (key, value) in extensions {
+            mix_str(hash, key);
+            mix_str(hash, value);
+        }
+    }
+
+    fn mix_target(hash: &mut u64, target: PaneResizeTarget) {
+        mix_u64(hash, target.split_id.get());
+        let axis = match target.axis {
+            SplitAxis::Horizontal => 1,
+            SplitAxis::Vertical => 2,
+        };
+        mix(hash, axis);
+    }
+
+    fn mix_position(hash: &mut u64, position: PanePointerPosition) {
+        mix_i32(hash, position.x);
+        mix_i32(hash, position.y);
+    }
+
+    fn mix_optional_target(hash: &mut u64, target: Option<PaneResizeTarget>) {
+        match target {
+            Some(target) => {
+                mix(hash, 1);
+                mix_target(hash, target);
+            }
+            None => mix(hash, 0),
+        }
+    }
+
+    fn mix_pointer_button(hash: &mut u64, button: PanePointerButton) {
+        let value = match button {
+            PanePointerButton::Primary => 1,
+            PanePointerButton::Secondary => 2,
+            PanePointerButton::Middle => 3,
+        };
+        mix(hash, value);
+    }
+
+    fn mix_resize_direction(hash: &mut u64, direction: PaneResizeDirection) {
+        let value = match direction {
+            PaneResizeDirection::Increase => 1,
+            PaneResizeDirection::Decrease => 2,
+        };
+        mix(hash, value);
+    }
+
+    fn mix_cancel_reason(hash: &mut u64, reason: PaneCancelReason) {
+        let value = match reason {
+            PaneCancelReason::EscapeKey => 1,
+            PaneCancelReason::PointerCancel => 2,
+            PaneCancelReason::FocusLost => 3,
+            PaneCancelReason::Blur => 4,
+            PaneCancelReason::Programmatic => 5,
+        };
+        mix(hash, value);
+    }
+
+    let mut hash = OFFSET_BASIS;
+    mix_u16(&mut hash, metadata.schema_version);
+    mix_u64(&mut hash, metadata.seed);
+    mix_u64(&mut hash, metadata.start_unix_ms);
+    mix_str(&mut hash, &metadata.host);
+    mix_u64(&mut hash, events.len() as u64);
+
+    for event in events {
+        mix_u16(&mut hash, event.schema_version);
+        mix_u64(&mut hash, event.sequence);
+        mix_bool(&mut hash, event.modifiers.shift);
+        mix_bool(&mut hash, event.modifiers.alt);
+        mix_bool(&mut hash, event.modifiers.ctrl);
+        mix_bool(&mut hash, event.modifiers.meta);
+        mix_extensions(&mut hash, &event.extensions);
+
+        match event.kind {
+            PaneSemanticInputEventKind::PointerDown {
+                target,
+                pointer_id,
+                button,
+                position,
+            } => {
+                mix(&mut hash, 1);
+                mix_target(&mut hash, target);
+                mix_u32(&mut hash, pointer_id);
+                mix_pointer_button(&mut hash, button);
+                mix_position(&mut hash, position);
+            }
+            PaneSemanticInputEventKind::PointerMove {
+                target,
+                pointer_id,
+                position,
+                delta_x,
+                delta_y,
+            } => {
+                mix(&mut hash, 2);
+                mix_target(&mut hash, target);
+                mix_u32(&mut hash, pointer_id);
+                mix_position(&mut hash, position);
+                mix_i32(&mut hash, delta_x);
+                mix_i32(&mut hash, delta_y);
+            }
+            PaneSemanticInputEventKind::PointerUp {
+                target,
+                pointer_id,
+                button,
+                position,
+            } => {
+                mix(&mut hash, 3);
+                mix_target(&mut hash, target);
+                mix_u32(&mut hash, pointer_id);
+                mix_pointer_button(&mut hash, button);
+                mix_position(&mut hash, position);
+            }
+            PaneSemanticInputEventKind::WheelNudge { target, lines } => {
+                mix(&mut hash, 4);
+                mix_target(&mut hash, target);
+                mix_i16(&mut hash, lines);
+            }
+            PaneSemanticInputEventKind::KeyboardResize {
+                target,
+                direction,
+                units,
+            } => {
+                mix(&mut hash, 5);
+                mix_target(&mut hash, target);
+                mix_resize_direction(&mut hash, direction);
+                mix_u16(&mut hash, units);
+            }
+            PaneSemanticInputEventKind::Cancel { target, reason } => {
+                mix(&mut hash, 6);
+                mix_optional_target(&mut hash, target);
+                mix_cancel_reason(&mut hash, reason);
+            }
+            PaneSemanticInputEventKind::Blur { target } => {
+                mix(&mut hash, 7);
+                mix_optional_target(&mut hash, target);
+            }
+        }
+    }
+
+    hash
+}
 
 /// Rational scale factor used for deterministic coordinate transforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5106,6 +5625,180 @@ mod tests {
         assert_eq!(
             keyboard.validate(),
             Err(PaneSemanticInputEventError::ZeroResizeUnits)
+        );
+    }
+
+    #[test]
+    fn semantic_input_trace_fixture_round_trip_and_checksum_validation() {
+        let fixture = r#"{"metadata":{"schema_version":1,"seed":7,"start_unix_ms":1700000000000,"host":"terminal","checksum":0},"events":[{"schema_version":1,"sequence":1,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"pointer_down","target":{"split_id":7,"axis":"horizontal"},"pointer_id":11,"button":"primary","position":{"x":10,"y":4},"extensions":{}},{"schema_version":1,"sequence":2,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"pointer_move","target":{"split_id":7,"axis":"horizontal"},"pointer_id":11,"position":{"x":13,"y":4},"delta_x":0,"delta_y":0,"extensions":{}},{"schema_version":1,"sequence":3,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"pointer_move","target":{"split_id":7,"axis":"horizontal"},"pointer_id":11,"position":{"x":15,"y":6},"delta_x":0,"delta_y":0,"extensions":{}},{"schema_version":1,"sequence":4,"modifiers":{"shift":false,"alt":false,"ctrl":false,"meta":false},"event":"pointer_up","target":{"split_id":7,"axis":"horizontal"},"pointer_id":11,"button":"primary","position":{"x":16,"y":6},"extensions":{}}]}"#;
+
+        let parsed: PaneSemanticInputTrace =
+            serde_json::from_str(fixture).expect("trace fixture should parse");
+        let checksum_mismatch = parsed
+            .validate()
+            .expect_err("fixture checksum=0 should fail validation");
+        assert!(matches!(
+            checksum_mismatch,
+            PaneSemanticInputTraceError::ChecksumMismatch { recorded: 0, .. }
+        ));
+
+        let mut canonical = parsed;
+        canonical.metadata.checksum = canonical.recompute_checksum();
+        canonical
+            .validate()
+            .expect("canonicalized fixture should validate");
+        let encoded = serde_json::to_string(&canonical).expect("trace should encode");
+        let reparsed: PaneSemanticInputTrace =
+            serde_json::from_str(&encoded).expect("encoded fixture should parse");
+        assert_eq!(reparsed, canonical);
+        assert_eq!(reparsed.metadata.checksum, reparsed.recompute_checksum());
+    }
+
+    #[test]
+    fn semantic_input_trace_rejects_out_of_order_sequence() {
+        let target = default_target();
+        let mut trace = PaneSemanticInputTrace::new(
+            42,
+            1_700_000_000_111,
+            "web",
+            vec![
+                PaneSemanticInputEvent::new(
+                    1,
+                    PaneSemanticInputEventKind::PointerDown {
+                        target,
+                        pointer_id: 9,
+                        button: PanePointerButton::Primary,
+                        position: PanePointerPosition::new(0, 0),
+                    },
+                ),
+                PaneSemanticInputEvent::new(
+                    2,
+                    PaneSemanticInputEventKind::PointerMove {
+                        target,
+                        pointer_id: 9,
+                        position: PanePointerPosition::new(2, 0),
+                        delta_x: 0,
+                        delta_y: 0,
+                    },
+                ),
+                PaneSemanticInputEvent::new(
+                    3,
+                    PaneSemanticInputEventKind::PointerUp {
+                        target,
+                        pointer_id: 9,
+                        button: PanePointerButton::Primary,
+                        position: PanePointerPosition::new(2, 0),
+                    },
+                ),
+            ],
+        )
+        .expect("trace should construct");
+
+        trace.events[2].sequence = 2;
+        trace.metadata.checksum = trace.recompute_checksum();
+        assert_eq!(
+            trace.validate(),
+            Err(PaneSemanticInputTraceError::SequenceOutOfOrder {
+                index: 2,
+                previous: 2,
+                current: 2
+            })
+        );
+    }
+
+    #[test]
+    fn semantic_replay_fixture_runner_produces_diff_artifacts() {
+        let target = default_target();
+        let trace = PaneSemanticInputTrace::new(
+            99,
+            1_700_000_000_222,
+            "terminal",
+            vec![
+                PaneSemanticInputEvent::new(
+                    1,
+                    PaneSemanticInputEventKind::PointerDown {
+                        target,
+                        pointer_id: 11,
+                        button: PanePointerButton::Primary,
+                        position: PanePointerPosition::new(10, 4),
+                    },
+                ),
+                PaneSemanticInputEvent::new(
+                    2,
+                    PaneSemanticInputEventKind::PointerMove {
+                        target,
+                        pointer_id: 11,
+                        position: PanePointerPosition::new(13, 4),
+                        delta_x: 0,
+                        delta_y: 0,
+                    },
+                ),
+                PaneSemanticInputEvent::new(
+                    3,
+                    PaneSemanticInputEventKind::PointerMove {
+                        target,
+                        pointer_id: 11,
+                        position: PanePointerPosition::new(15, 6),
+                        delta_x: 0,
+                        delta_y: 0,
+                    },
+                ),
+                PaneSemanticInputEvent::new(
+                    4,
+                    PaneSemanticInputEventKind::PointerUp {
+                        target,
+                        pointer_id: 11,
+                        button: PanePointerButton::Primary,
+                        position: PanePointerPosition::new(16, 6),
+                    },
+                ),
+            ],
+        )
+        .expect("trace should construct");
+
+        let mut baseline_machine = PaneDragResizeMachine::default();
+        let baseline = trace
+            .replay(&mut baseline_machine)
+            .expect("baseline replay should pass");
+        let fixture = PaneSemanticReplayFixture {
+            trace: trace.clone(),
+            expected_transitions: baseline.transitions.clone(),
+            expected_final_state: baseline.final_state,
+        };
+
+        let mut pass_machine = PaneDragResizeMachine::default();
+        let pass_report = fixture
+            .run(&mut pass_machine)
+            .expect("fixture replay should succeed");
+        assert!(pass_report.passed);
+        assert!(pass_report.diffs.is_empty());
+
+        let mut mismatch_fixture = fixture.clone();
+        mismatch_fixture.expected_transitions[1].transition_id += 77;
+        mismatch_fixture.expected_final_state = PaneDragResizeState::Armed {
+            target,
+            pointer_id: 11,
+            origin: PanePointerPosition::new(10, 4),
+            current: PanePointerPosition::new(10, 4),
+            started_sequence: 1,
+        };
+
+        let mut mismatch_machine = PaneDragResizeMachine::default();
+        let mismatch_report = mismatch_fixture
+            .run(&mut mismatch_machine)
+            .expect("mismatch replay should still execute");
+        assert!(!mismatch_report.passed);
+        assert!(
+            mismatch_report
+                .diffs
+                .iter()
+                .any(|diff| diff.kind == PaneSemanticReplayDiffKind::TransitionMismatch)
+        );
+        assert!(
+            mismatch_report
+                .diffs
+                .iter()
+                .any(|diff| diff.kind == PaneSemanticReplayDiffKind::FinalStateMismatch)
         );
     }
 

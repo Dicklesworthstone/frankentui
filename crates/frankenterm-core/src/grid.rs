@@ -604,6 +604,19 @@ impl Grid {
         }
     }
 
+    // ── Combining mark support ──────────────────────────────────────
+
+    /// Append a combining mark to the cell at `(row, col)`.
+    ///
+    /// Returns `true` if the mark was stored, `false` if the cell is out of
+    /// bounds or its inline combining buffer is full.
+    pub fn push_combining_mark(&mut self, row: u16, col: u16, mark: char) -> bool {
+        match self.cell_mut(row, col) {
+            Some(cell) => cell.push_combining(mark),
+            None => false,
+        }
+    }
+
     // ── Resize ──────────────────────────────────────────────────────
 
     /// Resize the grid to new dimensions.
