@@ -1778,4 +1778,640 @@ mod tests {
             "Should not render every pixel when skip paths trigger"
         );
     }
+
+    // =========================================================================
+    // plasma_sunset_color_at — gradient segment coverage
+    // =========================================================================
+
+    #[test]
+    fn plasma_sunset_color_at_first_segment() {
+        // t=0.0 should be start of first segment (80, 20, 120)
+        let c = plasma_sunset_color_at(0.0);
+        assert_eq!(c.r(), 80);
+        assert_eq!(c.g(), 20);
+        assert_eq!(c.b(), 120);
+    }
+
+    #[test]
+    fn plasma_sunset_color_at_first_boundary() {
+        // t=0.33 should hit the end of the first segment (255, 50, 120)
+        let c = plasma_sunset_color_at(0.33);
+        assert_eq!(c.r(), 255);
+        assert_eq!(c.g(), 50);
+        assert_eq!(c.b(), 120);
+    }
+
+    #[test]
+    fn plasma_sunset_color_at_second_segment_midpoint() {
+        // t=0.5 is approximately midway through the second segment
+        let c = plasma_sunset_color_at(0.5);
+        // Should be between (255,50,120) and (255,150,50) — r stays ~255
+        assert!(c.r() >= 200, "r should be high in second segment");
+    }
+
+    #[test]
+    fn plasma_sunset_color_at_second_boundary() {
+        // t=0.66 should hit the end of the second segment (255, 150, 50)
+        let c = plasma_sunset_color_at(0.66);
+        assert_eq!(c.r(), 255);
+        assert_eq!(c.g(), 150);
+        assert_eq!(c.b(), 50);
+    }
+
+    #[test]
+    fn plasma_sunset_color_at_end() {
+        // t=1.0 should be end of third segment, near (255, 255, 150)
+        // Fixed-point lerp (>>8) may round by 1, so allow ±1 tolerance
+        let c = plasma_sunset_color_at(1.0);
+        assert!(c.r() >= 254, "r={} expected ~255", c.r());
+        assert!(c.g() >= 254, "g={} expected ~255", c.g());
+        assert!(c.b() >= 149 && c.b() <= 151, "b={} expected ~150", c.b());
+    }
+
+    #[test]
+    fn plasma_sunset_color_at_clamps_out_of_range() {
+        // t < 0 should clamp to 0
+        let under = plasma_sunset_color_at(-1.0);
+        let at_zero = plasma_sunset_color_at(0.0);
+        assert_eq!(under.r(), at_zero.r());
+        assert_eq!(under.g(), at_zero.g());
+        assert_eq!(under.b(), at_zero.b());
+
+        // t > 1 should clamp to 1
+        let over = plasma_sunset_color_at(2.0);
+        let at_one = plasma_sunset_color_at(1.0);
+        assert_eq!(over.r(), at_one.r());
+        assert_eq!(over.g(), at_one.g());
+        assert_eq!(over.b(), at_one.b());
+    }
+
+    // =========================================================================
+    // plasma_lerp_rgb_fixed — fixed-point color interpolation
+    // =========================================================================
+
+    #[test]
+    fn plasma_lerp_rgb_fixed_at_zero() {
+        let c = plasma_lerp_rgb_fixed((100, 150, 200), (200, 50, 10), 0.0);
+        assert_eq!(c.r(), 100);
+        assert_eq!(c.g(), 150);
+        assert_eq!(c.b(), 200);
+    }
+
+    #[test]
+    fn plasma_lerp_rgb_fixed_at_one() {
+        let c = plasma_lerp_rgb_fixed((100, 150, 200), (200, 50, 10), 1.0);
+        assert_eq!(c.r(), 200);
+        assert_eq!(c.g(), 50);
+        assert_eq!(c.b(), 10);
+    }
+
+    #[test]
+    fn plasma_lerp_rgb_fixed_clamps_negative() {
+        let c = plasma_lerp_rgb_fixed((100, 150, 200), (200, 50, 10), -0.5);
+        assert_eq!(c.r(), 100);
+    }
+
+    #[test]
+    fn plasma_lerp_rgb_fixed_clamps_above_one() {
+        let c = plasma_lerp_rgb_fixed((100, 150, 200), (200, 50, 10), 1.5);
+        assert_eq!(c.r(), 200);
+    }
+
+    // =========================================================================
+    // gradient_color — intermediate stop interpolation
+    // =========================================================================
+
+    #[test]
+    fn gradient_color_at_one_third() {
+        // t=1/3 should be exactly at stop[1]
+        let stops = [
+            PackedRgba::rgb(0, 0, 0),
+            PackedRgba::rgb(100, 100, 100),
+            PackedRgba::rgb(200, 200, 200),
+            PackedRgba::rgb(255, 255, 255),
+        ];
+        let c = gradient_color(&stops, 1.0 / 3.0);
+        assert_eq!(c.r(), 100);
+        assert_eq!(c.g(), 100);
+    }
+
+    #[test]
+    fn gradient_color_at_two_thirds() {
+        // t=2/3 should be exactly at stop[2]
+        let stops = [
+            PackedRgba::rgb(0, 0, 0),
+            PackedRgba::rgb(100, 100, 100),
+            PackedRgba::rgb(200, 200, 200),
+            PackedRgba::rgb(255, 255, 255),
+        ];
+        let c = gradient_color(&stops, 2.0 / 3.0);
+        assert_eq!(c.r(), 200);
+        assert_eq!(c.g(), 200);
+    }
+
+    #[test]
+    fn gradient_color_interpolates_between_stops() {
+        let stops = [
+            PackedRgba::rgb(0, 0, 0),
+            PackedRgba::rgb(255, 0, 0),
+            PackedRgba::rgb(0, 255, 0),
+            PackedRgba::rgb(0, 0, 255),
+        ];
+        // t=1/6 is midpoint between stop 0 and stop 1
+        let c = gradient_color(&stops, 1.0 / 6.0);
+        // r should be ~127
+        assert!(c.r() >= 120 && c.r() <= 135, "r={} expected ~127", c.r());
+        assert_eq!(c.g(), 0);
+    }
+
+    // =========================================================================
+    // color_at_with_stops — integration with theme and gradient
+    // =========================================================================
+
+    #[test]
+    fn color_at_with_stops_intensity_zero_returns_bg() {
+        let theme = default_theme();
+        let stops = [
+            PackedRgba::rgb(255, 0, 0),
+            PackedRgba::rgb(0, 255, 0),
+            PackedRgba::rgb(0, 0, 255),
+            PackedRgba::rgb(255, 255, 0),
+        ];
+        let c = color_at_with_stops(&stops, 0.5, 0.0, &theme);
+        assert_eq!(c.r(), theme.bg_base.r());
+        assert_eq!(c.g(), theme.bg_base.g());
+        assert_eq!(c.b(), theme.bg_base.b());
+    }
+
+    #[test]
+    fn color_at_with_stops_intensity_one_returns_gradient() {
+        let theme = default_theme();
+        let stops = [
+            PackedRgba::rgb(255, 0, 0),
+            PackedRgba::rgb(0, 255, 0),
+            PackedRgba::rgb(0, 0, 255),
+            PackedRgba::rgb(255, 255, 0),
+        ];
+        let pure = gradient_color(&stops, 0.0);
+        let c = color_at_with_stops(&stops, 0.0, 1.0, &theme);
+        assert_eq!(c.r(), pure.r());
+        assert_eq!(c.g(), pure.g());
+        assert_eq!(c.b(), pure.b());
+    }
+
+    // =========================================================================
+    // Metaballs fill_frame convenience method
+    // =========================================================================
+
+    #[test]
+    fn metaballs_fill_frame_combines_prepare_and_fill() {
+        let theme = default_theme();
+        let mut adapter = MetaballsCanvasAdapter::new();
+        let mut painter = Painter::new(10, 8, Mode::Braille);
+        adapter.fill_frame(&mut painter, 1.0, FxQuality::Full, &theme);
+
+        let (w, h) = painter.size();
+        let mut count = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if painter.get(x as i32, y as i32) {
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0, "fill_frame should produce pixels");
+    }
+
+    #[test]
+    fn metaballs_fill_frame_at_different_times() {
+        let theme = default_theme();
+        let mut adapter = MetaballsCanvasAdapter::new();
+
+        for time in [0.0, 0.5, 1.0, 5.0] {
+            let mut painter = Painter::new(8, 8, Mode::Braille);
+            adapter.fill_frame(&mut painter, time, FxQuality::Full, &theme);
+            // Should not panic at any time value
+        }
+    }
+
+    // =========================================================================
+    // Non-4-aligned widths (scalar tail path)
+    // =========================================================================
+
+    #[test]
+    fn metaballs_non_aligned_width_exercises_scalar_tail() {
+        let theme = default_theme();
+        // Width=7 → 1 full block (4) + 3 scalar tail pixels
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(0.0, FxQuality::Full);
+        let mut painter = Painter::new(7, 5, Mode::Braille);
+        adapter.fill(&mut painter, FxQuality::Full, &theme);
+
+        let (w, h) = painter.size();
+        let mut count = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if painter.get(x as i32, y as i32) {
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0, "Non-aligned width should still render");
+    }
+
+    #[test]
+    fn metaballs_width_less_than_four_all_scalar() {
+        let theme = default_theme();
+        // Width=3 → 0 full blocks, all scalar processing
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(0.0, FxQuality::Full);
+        let mut painter = Painter::new(3, 3, Mode::Braille);
+        adapter.fill(&mut painter, FxQuality::Full, &theme);
+        // Should not panic
+    }
+
+    #[test]
+    fn metaballs_width_exactly_four_no_scalar_tail() {
+        let theme = default_theme();
+        // Width=4 → exactly 1 full block, 0 tail
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(0.0, FxQuality::Full);
+        let mut painter = Painter::new(4, 4, Mode::Braille);
+        adapter.fill(&mut painter, FxQuality::Full, &theme);
+        // Should not panic
+    }
+
+    // =========================================================================
+    // Plasma cache invalidation on size change
+    // =========================================================================
+
+    #[test]
+    fn plasma_cache_invalidates_on_width_change() {
+        let theme = default_theme();
+        let mut adapter = PlasmaCanvasAdapter::theme();
+
+        // First fill at 10x8
+        let mut p1 = Painter::new(10, 8, Mode::Braille);
+        adapter.fill(&mut p1, 1.0, FxQuality::Full, &theme);
+        assert_eq!(adapter.cache_width, p1.size().0);
+
+        // Fill at 20x8 — cache should update
+        let mut p2 = Painter::new(20, 8, Mode::Braille);
+        adapter.fill(&mut p2, 1.0, FxQuality::Full, &theme);
+        assert_eq!(adapter.cache_width, p2.size().0);
+        assert_eq!(adapter.cache_height, p2.size().1);
+    }
+
+    #[test]
+    fn plasma_cache_invalidates_on_height_change() {
+        let theme = default_theme();
+        let mut adapter = PlasmaCanvasAdapter::theme();
+
+        let mut p1 = Painter::new(10, 8, Mode::Braille);
+        adapter.fill(&mut p1, 1.0, FxQuality::Full, &theme);
+
+        let mut p2 = Painter::new(10, 16, Mode::Braille);
+        adapter.fill(&mut p2, 1.0, FxQuality::Full, &theme);
+        assert_eq!(adapter.cache_height, p2.size().1);
+    }
+
+    #[test]
+    fn plasma_cache_reuses_on_same_size() {
+        let theme = default_theme();
+        let mut adapter = PlasmaCanvasAdapter::theme();
+
+        let mut p = Painter::new(10, 8, Mode::Braille);
+        adapter.fill(&mut p, 1.0, FxQuality::Full, &theme);
+        let cached_w = adapter.cache_width;
+        let cached_h = adapter.cache_height;
+
+        // Second fill with same-sized painter
+        let mut p2 = Painter::new(10, 8, Mode::Braille);
+        adapter.fill(&mut p2, 2.0, FxQuality::Full, &theme);
+        assert_eq!(adapter.cache_width, cached_w);
+        assert_eq!(adapter.cache_height, cached_h);
+    }
+
+    // =========================================================================
+    // ping_pong edge cases
+    // =========================================================================
+
+    #[test]
+    fn ping_pong_at_exact_min() {
+        let v = ping_pong(0.0, 0.0, 1.0);
+        assert!((v - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ping_pong_at_exact_max() {
+        let v = ping_pong(1.0, 0.0, 1.0);
+        assert!((v - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ping_pong_near_equal_min_max() {
+        // min ~= max should not panic (range clamped to 0.0001)
+        let v = ping_pong(0.5, 1.0, 1.0);
+        assert!(v.is_finite());
+    }
+
+    #[test]
+    fn ping_pong_double_period() {
+        // value = 2.0 in [0, 1]: period=2, 2.0 % 2.0 = 0.0 → result=0.0
+        let v = ping_pong(2.0, 0.0, 1.0);
+        assert!((v - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ping_pong_non_zero_base() {
+        // value=5.5 in [2, 4]: range=2, period=4
+        // (5.5-2) % 4 = 3.5 > 2.0, so 4.0-3.5 = 0.5 → result = 2 + 0.5 = 2.5
+        let v = ping_pong(5.5, 2.0, 4.0);
+        assert!((v - 2.5).abs() < 1e-6);
+    }
+
+    // =========================================================================
+    // ensure_active_indices step transitions
+    // =========================================================================
+
+    #[test]
+    fn ensure_active_indices_step_two() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.ensure_active_indices(2, 8);
+        assert_eq!(adapter.active_indices, vec![0, 2, 4, 6]);
+        assert_eq!(adapter.active_step, 2);
+        assert_eq!(adapter.active_len, 8);
+    }
+
+    #[test]
+    fn ensure_active_indices_step_four() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.ensure_active_indices(4, 12);
+        assert_eq!(adapter.active_indices, vec![0, 4, 8]);
+    }
+
+    #[test]
+    fn ensure_active_indices_caches_on_repeat_call() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.ensure_active_indices(2, 6);
+        let first = adapter.active_indices.clone();
+        adapter.ensure_active_indices(2, 6);
+        assert_eq!(adapter.active_indices, first, "Should reuse cached indices");
+    }
+
+    #[test]
+    fn ensure_active_indices_recomputes_on_step_change() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.ensure_active_indices(2, 8);
+        assert_eq!(adapter.active_indices.len(), 4);
+
+        adapter.ensure_active_indices(4, 8);
+        assert_eq!(adapter.active_indices, vec![0, 4]);
+    }
+
+    #[test]
+    fn ensure_active_indices_recomputes_on_len_change() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.ensure_active_indices(2, 6);
+        assert_eq!(adapter.active_indices, vec![0, 2, 4]);
+
+        adapter.ensure_active_indices(2, 10);
+        assert_eq!(adapter.active_indices, vec![0, 2, 4, 6, 8]);
+    }
+
+    // =========================================================================
+    // palette_stops — all MetaballsPalette variants
+    // =========================================================================
+
+    #[test]
+    fn palette_stops_all_variants_produce_four_stops() {
+        use crate::visual_fx::effects::metaballs::MetaballsPalette;
+        let theme = default_theme();
+
+        for variant in [
+            MetaballsPalette::ThemeAccents,
+            MetaballsPalette::Aurora,
+            MetaballsPalette::Lava,
+            MetaballsPalette::Ocean,
+        ] {
+            let stops = palette_stops(variant, &theme);
+            assert_eq!(stops.len(), 4, "All palettes should produce 4 stops");
+        }
+    }
+
+    #[test]
+    fn palette_stops_theme_accents_uses_bg_surface() {
+        use crate::visual_fx::effects::metaballs::MetaballsPalette;
+        let theme = default_theme();
+        let stops = palette_stops(MetaballsPalette::ThemeAccents, &theme);
+        assert_eq!(stops[0].r(), theme.bg_surface.r());
+        assert_eq!(stops[0].g(), theme.bg_surface.g());
+        assert_eq!(stops[0].b(), theme.bg_surface.b());
+    }
+
+    // =========================================================================
+    // Metaballs prepare — ball position invariants
+    // =========================================================================
+
+    #[test]
+    fn metaballs_prepare_ball_positions_within_bounds() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(10.0, FxQuality::Full);
+
+        let (bmin, bmax) = ordered_pair(adapter.params().bounds_min, adapter.params().bounds_max);
+        for ball in &adapter.ball_cache {
+            assert!(
+                ball.x >= bmin - 0.01 && ball.x <= bmax + 0.01,
+                "Ball x={} out of bounds [{}, {}]",
+                ball.x,
+                bmin,
+                bmax
+            );
+            assert!(
+                ball.y >= bmin - 0.01 && ball.y <= bmax + 0.01,
+                "Ball y={} out of bounds [{}, {}]",
+                ball.y,
+                bmin,
+                bmax
+            );
+        }
+    }
+
+    #[test]
+    fn metaballs_prepare_r2_always_positive() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(3.0, FxQuality::Full);
+        for ball in &adapter.ball_cache {
+            assert!(ball.r2 > 0.0, "Ball r2 should always be positive");
+        }
+    }
+
+    #[test]
+    fn metaballs_prepare_hue_in_unit_range() {
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(7.0, FxQuality::Full);
+        for ball in &adapter.ball_cache {
+            assert!(
+                ball.hue >= 0.0 && ball.hue < 1.0,
+                "Hue {} not in [0, 1)",
+                ball.hue
+            );
+        }
+    }
+
+    // =========================================================================
+    // Plasma zero-size painter edge cases
+    // =========================================================================
+
+    #[test]
+    fn plasma_zero_width_painter_noop() {
+        let theme = default_theme();
+        let mut adapter = PlasmaCanvasAdapter::theme();
+        let mut painter = Painter::new(0, 10, Mode::Braille);
+        adapter.fill(&mut painter, 1.0, FxQuality::Full, &theme);
+        // Should not panic
+    }
+
+    #[test]
+    fn plasma_zero_height_painter_noop() {
+        let theme = default_theme();
+        let mut adapter = PlasmaCanvasAdapter::theme();
+        let mut painter = Painter::new(10, 0, Mode::Braille);
+        adapter.fill(&mut painter, 1.0, FxQuality::Full, &theme);
+        // Should not panic
+    }
+
+    // =========================================================================
+    // Metaballs zero-size and empty balls
+    // =========================================================================
+
+    #[test]
+    fn metaballs_zero_width_painter_noop() {
+        let theme = default_theme();
+        let mut adapter = MetaballsCanvasAdapter::new();
+        adapter.prepare(0.0, FxQuality::Full);
+        let mut painter = Painter::new(0, 10, Mode::Braille);
+        adapter.fill(&mut painter, FxQuality::Full, &theme);
+        // Should not panic
+    }
+
+    #[test]
+    fn metaballs_empty_balls_noop() {
+        let theme = default_theme();
+        let mut params = MetaballsParams::default();
+        params.balls.clear();
+        let mut adapter = MetaballsCanvasAdapter::with_params(params);
+        adapter.prepare(0.0, FxQuality::Full);
+        assert!(adapter.ball_cache.is_empty());
+        let mut painter = Painter::new(8, 8, Mode::Braille);
+        adapter.fill(&mut painter, FxQuality::Full, &theme);
+        // Should not paint anything
+        let (w, h) = painter.size();
+        for y in 0..h {
+            for x in 0..w {
+                assert!(
+                    !painter.get(x as i32, y as i32),
+                    "No pixels should be set with empty balls"
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // Determinism — same inputs produce same outputs
+    // =========================================================================
+
+    #[test]
+    fn plasma_fill_is_deterministic() {
+        let theme = default_theme();
+
+        let mut a1 = PlasmaCanvasAdapter::theme();
+        let mut p1 = Painter::new(12, 8, Mode::Braille);
+        a1.fill(&mut p1, 1.0, FxQuality::Full, &theme);
+
+        let mut a2 = PlasmaCanvasAdapter::theme();
+        let mut p2 = Painter::new(12, 8, Mode::Braille);
+        a2.fill(&mut p2, 1.0, FxQuality::Full, &theme);
+
+        let (w, h) = p1.size();
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(
+                    p1.get(x as i32, y as i32),
+                    p2.get(x as i32, y as i32),
+                    "Plasma must be deterministic at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn metaballs_fill_is_deterministic() {
+        let theme = default_theme();
+
+        let mut a1 = MetaballsCanvasAdapter::new();
+        let mut p1 = Painter::new(10, 8, Mode::Braille);
+        a1.fill_frame(&mut p1, 1.0, FxQuality::Full, &theme);
+
+        let mut a2 = MetaballsCanvasAdapter::new();
+        let mut p2 = Painter::new(10, 8, Mode::Braille);
+        a2.fill_frame(&mut p2, 1.0, FxQuality::Full, &theme);
+
+        let (w, h) = p1.size();
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(
+                    p1.get(x as i32, y as i32),
+                    p2.get(x as i32, y as i32),
+                    "Metaballs must be deterministic at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // Metaballs reduced/minimal quality with active_indices via fill_frame
+    // =========================================================================
+
+    #[test]
+    fn metaballs_fill_frame_reduced_and_minimal() {
+        let theme = default_theme();
+
+        for quality in [FxQuality::Reduced, FxQuality::Minimal] {
+            let mut adapter = MetaballsCanvasAdapter::new();
+            let mut painter = Painter::new(12, 10, Mode::Braille);
+            adapter.fill_frame(&mut painter, 0.5, quality, &theme);
+
+            let (w, h) = painter.size();
+            let mut count = 0;
+            for y in 0..h {
+                for x in 0..w {
+                    if painter.get(x as i32, y as i32) {
+                        count += 1;
+                    }
+                }
+            }
+            assert!(count > 0, "fill_frame {quality:?} should produce pixels");
+        }
+    }
+
+    // =========================================================================
+    // Plasma with all palette variants
+    // =========================================================================
+
+    #[test]
+    fn plasma_all_palette_variants() {
+        let theme = default_theme();
+        for palette in [
+            PlasmaPalette::Neon,
+            PlasmaPalette::Ocean,
+            PlasmaPalette::Sunset,
+            PlasmaPalette::ThemeAccents,
+        ] {
+            let mut adapter = PlasmaCanvasAdapter::new(palette);
+            let mut painter = Painter::new(8, 8, Mode::Braille);
+            adapter.fill(&mut painter, 1.0, FxQuality::Full, &theme);
+            // Should not panic for any palette
+        }
+    }
 }
