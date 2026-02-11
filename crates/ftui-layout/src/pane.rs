@@ -920,7 +920,7 @@ impl PaneDragResizeMachine {
                     target,
                     pointer_id,
                     origin,
-                    current,
+                    current: _,
                     started_sequence,
                 },
                 PaneSemanticInputEventKind::PointerMove {
@@ -1061,9 +1061,6 @@ impl PaneDragResizeMachine {
             ) => PaneDragResizeEffect::Noop {
                 reason: PaneDragResizeNoopReason::ActiveStateDisallowsDiscreteInput,
             },
-            (PaneDragResizeState::Armed { .. }, _) => PaneDragResizeEffect::Noop {
-                reason: PaneDragResizeNoopReason::IdleWithoutActiveDrag,
-            },
             (
                 PaneDragResizeState::Dragging {
                     target,
@@ -1202,9 +1199,6 @@ impl PaneDragResizeMachine {
                 | PaneSemanticInputEventKind::WheelNudge { .. },
             ) => PaneDragResizeEffect::Noop {
                 reason: PaneDragResizeNoopReason::ActiveStateDisallowsDiscreteInput,
-            },
-            (PaneDragResizeState::Dragging { .. }, _) => PaneDragResizeEffect::Noop {
-                reason: PaneDragResizeNoopReason::IdleWithoutActiveDrag,
             },
         };
 
