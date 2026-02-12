@@ -3780,7 +3780,9 @@ impl AppModel {
                             }
                         }
                         // Tab cycling (Tab/BackTab, or Shift+H/Shift+L for Vim users)
-                        (KeyCode::Tab, Modifiers::NONE) => {
+                        // Guarded so Tab/BackTab reach FormState for field navigation
+                        // when a text input or form is active.
+                        (KeyCode::Tab, Modifiers::NONE) if !text_input_active => {
                             let target = self.display_screen().next();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "tab_next");
@@ -3788,7 +3790,7 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        (KeyCode::BackTab, _) => {
+                        (KeyCode::BackTab, _) if !text_input_active => {
                             let target = self.display_screen().prev();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "tab_prev");
