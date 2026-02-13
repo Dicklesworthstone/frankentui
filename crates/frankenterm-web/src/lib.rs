@@ -14,6 +14,7 @@
 
 pub mod attach;
 pub mod builtin_font;
+pub mod coordinate_guard;
 pub mod frame_harness;
 pub mod glyph_atlas;
 pub mod input;
