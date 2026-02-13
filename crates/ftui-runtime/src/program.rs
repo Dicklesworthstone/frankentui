@@ -694,6 +694,190 @@ fn decode_pane_resize_target(data: HitData) -> Option<PaneResizeTarget> {
     Some(PaneResizeTarget { split_id, axis })
 }
 
+// ============================================================================
+// Pane capability matrix for multiplexer / terminal compat (bd-6u66i)
+// ============================================================================
+
+/// Which multiplexer environment the terminal is running inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaneMuxEnvironment {
+    /// No multiplexer detected — direct terminal access.
+    None,
+    /// tmux (TMUX env var set, or DA2 terminal type 84).
+    Tmux,
+    /// GNU Screen (STY env var set, or DA2 terminal type 83).
+    Screen,
+    /// Zellij (ZELLIJ env var set).
+    Zellij,
+}
+
+/// Resolved capability matrix describing which pane interaction features
+/// are available in the current terminal + multiplexer environment.
+///
+/// Derived from [`TerminalCapabilities`] via [`PaneCapabilityMatrix::from_capabilities`].
+/// The adapter uses this to decide which code-paths are safe and which
+/// need deterministic fallbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneCapabilityMatrix {
+    /// Detected multiplexer environment.
+    pub mux: PaneMuxEnvironment,
+
+    // --- Mouse input capabilities ---
+    /// SGR (1006) extended mouse protocol available.
+    /// Without this, mouse coordinates are limited to 223 columns/rows.
+    pub mouse_sgr: bool,
+    /// Mouse drag events are reliably delivered.
+    /// False in some screen versions where drag tracking is incomplete.
+    pub mouse_drag_reliable: bool,
+    /// Mouse button events include correct button identity on release.
+    /// X10/normal mode sends button 3 for all releases; SGR preserves it.
+    pub mouse_button_discrimination: bool,
+
+    // --- Focus / lifecycle ---
+    /// Terminal delivers CSI I / CSI O focus events.
+    pub focus_events: bool,
+    /// Bracketed paste mode available (affects interaction cancel heuristics).
+    pub bracketed_paste: bool,
+
+    // --- Rendering affordances ---
+    /// Unicode box-drawing glyphs available for splitter rendering.
+    pub unicode_box_drawing: bool,
+    /// True-color support for splitter highlight/drag feedback.
+    pub true_color: bool,
+
+    // --- Fallback summary ---
+    /// One or more pane features are degraded due to environment constraints.
+    pub degraded: bool,
+}
+
+/// Human-readable description of a known limitation and its fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneCapabilityLimitation {
+    /// Short identifier (e.g. `"mouse_drag_unreliable"`).
+    pub id: &'static str,
+    /// What the limitation is.
+    pub description: &'static str,
+    /// What the adapter does instead.
+    pub fallback: &'static str,
+}
+
+impl PaneCapabilityMatrix {
+    /// Derive the pane capability matrix from terminal capabilities.
+    ///
+    /// This is the single source of truth for which pane features are
+    /// available. All fallback decisions flow from this matrix.
+    #[must_use]
+    pub fn from_capabilities(
+        caps: &ftui_core::terminal_capabilities::TerminalCapabilities,
+    ) -> Self {
+        let mux = if caps.in_tmux {
+            PaneMuxEnvironment::Tmux
+        } else if caps.in_screen {
+            PaneMuxEnvironment::Screen
+        } else if caps.in_zellij {
+            PaneMuxEnvironment::Zellij
+        } else {
+            PaneMuxEnvironment::None
+        };
+
+        let mouse_sgr = caps.mouse_sgr;
+
+        // GNU Screen has historically unreliable drag event delivery.
+        // tmux and zellij forward drags correctly in modern versions.
+        let mouse_drag_reliable = !matches!(mux, PaneMuxEnvironment::Screen);
+
+        // Button discrimination requires SGR mouse protocol.
+        // Without it, X10/normal mode reports button 3 for all releases.
+        let mouse_button_discrimination = mouse_sgr;
+
+        // Focus events: available if the terminal supports them and the
+        // multiplexer passes them through. Screen does not.
+        let focus_events = match mux {
+            PaneMuxEnvironment::Screen => false,
+            _ => caps.focus_events,
+        };
+
+        let bracketed_paste = caps.bracketed_paste;
+        let unicode_box_drawing = caps.unicode_box_drawing;
+        let true_color = caps.true_color;
+
+        let degraded =
+            !mouse_sgr || !mouse_drag_reliable || !mouse_button_discrimination || !focus_events;
+
+        Self {
+            mux,
+            mouse_sgr,
+            mouse_drag_reliable,
+            mouse_button_discrimination,
+            focus_events,
+            bracketed_paste,
+            unicode_box_drawing,
+            true_color,
+            degraded,
+        }
+    }
+
+    /// Whether pane drag interactions should be enabled at all.
+    ///
+    /// Drag requires at minimum mouse event support. If drag events
+    /// are unreliable (e.g. GNU Screen), drag is disabled and the
+    /// adapter falls back to keyboard-only resize.
+    #[must_use]
+    pub const fn drag_enabled(&self) -> bool {
+        self.mouse_drag_reliable
+    }
+
+    /// Whether focus-loss auto-cancel is effective.
+    ///
+    /// When focus events are unavailable, the adapter cannot detect
+    /// window blur — interactions must rely on timeout or explicit
+    /// keyboard cancel instead.
+    #[must_use]
+    pub const fn focus_cancel_effective(&self) -> bool {
+        self.focus_events
+    }
+
+    /// Collect all active limitations with their fallback descriptions.
+    #[must_use]
+    pub fn limitations(&self) -> Vec<PaneCapabilityLimitation> {
+        let mut out = Vec::new();
+
+        if !self.mouse_sgr {
+            out.push(PaneCapabilityLimitation {
+                id: "no_sgr_mouse",
+                description: "SGR mouse protocol not available; coordinates limited to 223 columns/rows",
+                fallback: "Pane splitters beyond column 223 are unreachable by mouse; use keyboard resize",
+            });
+        }
+
+        if !self.mouse_drag_reliable {
+            out.push(PaneCapabilityLimitation {
+                id: "mouse_drag_unreliable",
+                description: "Mouse drag events are unreliably delivered (e.g. GNU Screen)",
+                fallback: "Mouse drag disabled; use keyboard arrow keys to resize panes",
+            });
+        }
+
+        if !self.mouse_button_discrimination {
+            out.push(PaneCapabilityLimitation {
+                id: "no_button_discrimination",
+                description: "Mouse release events do not identify which button was released",
+                fallback: "Any mouse release cancels the active drag; multi-button interactions unavailable",
+            });
+        }
+
+        if !self.focus_events {
+            out.push(PaneCapabilityLimitation {
+                id: "no_focus_events",
+                description: "Terminal does not deliver focus-in/focus-out events",
+                fallback: "Focus-loss auto-cancel disabled; use Escape key to cancel active drag",
+            });
+        }
+
+        out
+    }
+}
+
 /// Configuration for terminal-to-pane semantic input translation.
 ///
 /// This adapter normalizes terminal `Event` streams into
@@ -9007,5 +9191,140 @@ mod tests {
         // guard is consumed by finish(), so drop doesn't double-cancel
         // This test proves the API is safe: finish() takes `self` not `&mut self`
         assert_eq!(adapter.active_pointer_id(), None);
+    }
+
+    // =========================================================================
+    // PaneCapabilityMatrix (bd-6u66i)
+    // =========================================================================
+
+    fn caps_modern() -> TerminalCapabilities {
+        TerminalCapabilities::modern()
+    }
+
+    fn caps_with_mux(
+        mux: PaneMuxEnvironment,
+    ) -> ftui_core::terminal_capabilities::TerminalCapabilities {
+        let mut caps = TerminalCapabilities::modern();
+        match mux {
+            PaneMuxEnvironment::Tmux => caps.in_tmux = true,
+            PaneMuxEnvironment::Screen => caps.in_screen = true,
+            PaneMuxEnvironment::Zellij => caps.in_zellij = true,
+            PaneMuxEnvironment::None => {}
+        }
+        caps
+    }
+
+    #[test]
+    fn capability_matrix_bare_terminal_modern() {
+        let caps = caps_modern();
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::None);
+        assert!(mat.mouse_sgr);
+        assert!(mat.mouse_drag_reliable);
+        assert!(mat.mouse_button_discrimination);
+        assert!(mat.focus_events);
+        assert!(mat.unicode_box_drawing);
+        assert!(mat.true_color);
+        assert!(!mat.degraded);
+        assert!(mat.drag_enabled());
+        assert!(mat.focus_cancel_effective());
+        assert!(mat.limitations().is_empty());
+    }
+
+    #[test]
+    fn capability_matrix_tmux() {
+        let caps = caps_with_mux(PaneMuxEnvironment::Tmux);
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::Tmux);
+        // tmux forwards mouse drags and focus events correctly
+        assert!(mat.mouse_drag_reliable);
+        assert!(mat.focus_events);
+        assert!(mat.drag_enabled());
+        assert!(mat.focus_cancel_effective());
+    }
+
+    #[test]
+    fn capability_matrix_screen_degrades_drag() {
+        let caps = caps_with_mux(PaneMuxEnvironment::Screen);
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::Screen);
+        assert!(!mat.mouse_drag_reliable);
+        assert!(!mat.focus_events);
+        assert!(!mat.drag_enabled());
+        assert!(!mat.focus_cancel_effective());
+        assert!(mat.degraded);
+
+        let lims = mat.limitations();
+        assert!(lims.iter().any(|l| l.id == "mouse_drag_unreliable"));
+        assert!(lims.iter().any(|l| l.id == "no_focus_events"));
+    }
+
+    #[test]
+    fn capability_matrix_zellij() {
+        let caps = caps_with_mux(PaneMuxEnvironment::Zellij);
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::Zellij);
+        assert!(mat.mouse_drag_reliable);
+        assert!(mat.focus_events);
+        assert!(mat.drag_enabled());
+    }
+
+    #[test]
+    fn capability_matrix_no_sgr_mouse() {
+        let mut caps = caps_modern();
+        caps.mouse_sgr = false;
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert!(!mat.mouse_sgr);
+        assert!(!mat.mouse_button_discrimination);
+        assert!(mat.degraded);
+
+        let lims = mat.limitations();
+        assert!(lims.iter().any(|l| l.id == "no_sgr_mouse"));
+        assert!(lims.iter().any(|l| l.id == "no_button_discrimination"));
+    }
+
+    #[test]
+    fn capability_matrix_no_focus_events() {
+        let mut caps = caps_modern();
+        caps.focus_events = false;
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert!(!mat.focus_events);
+        assert!(!mat.focus_cancel_effective());
+        assert!(mat.degraded);
+
+        let lims = mat.limitations();
+        assert!(lims.iter().any(|l| l.id == "no_focus_events"));
+    }
+
+    #[test]
+    fn capability_matrix_dumb_terminal() {
+        let caps = TerminalCapabilities::dumb();
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::None);
+        assert!(!mat.mouse_sgr);
+        assert!(!mat.focus_events);
+        assert!(!mat.unicode_box_drawing);
+        assert!(!mat.true_color);
+        assert!(mat.degraded);
+        assert!(mat.limitations().len() >= 3);
+    }
+
+    #[test]
+    fn capability_matrix_limitations_have_fallbacks() {
+        let caps = TerminalCapabilities::dumb();
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        for lim in mat.limitations() {
+            assert!(!lim.id.is_empty());
+            assert!(!lim.description.is_empty());
+            assert!(!lim.fallback.is_empty());
+        }
     }
 }
