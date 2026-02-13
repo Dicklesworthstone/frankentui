@@ -356,9 +356,9 @@ pub const ENGLISH_PATTERNS_MINI: &[&str] = &[
     "wh2", "wr2", // Syllable boundary patterns
     "ber3", "cial4", "ful3", "gy5n", "ing1", "ment3", "ness3", "tion5", "sion5", "tu4al", "able3",
     "ible3", "ment1a", "ment1i", // Consonant cluster patterns
-    "n2kl", "n2gl", "n4gri", "mp3t", "nk3i", "ns2", "nt2", "nc2", "nd2", "ng2", "nf2", "ct2", "pt2",
-    "ps2", "ld2", "lf2", "lk2", "lm2", "lt2", "lv2", "rb2", "rc2", "rd2", "rf2", "rg2", "rk2",
-    "rl2", "rm2", "rn2", "rp2", "rs2", "rt2", "rv2", "rw2", // Word-end patterns
+    "n2kl", "n2gl", "n4gri", "mp3t", "nk3i", "ns2", "nt2", "nc2", "nd2", "ng2", "nf2", "ct2",
+    "pt2", "ps2", "ld2", "lf2", "lk2", "lm2", "lt2", "lv2", "rb2", "rc2", "rd2", "rf2", "rg2",
+    "rk2", "rl2", "rm2", "rn2", "rp2", "rs2", "rt2", "rv2", "rw2", // Word-end patterns
     "4ism.", "4ist.", "4ment.", "4ness.", "5tion.", "5sion.", "3ful.", "3less.", "3ous.", "3ive.",
     "3able.", "3ible.", "3ment.", "3ness.",
 ];
