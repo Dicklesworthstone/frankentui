@@ -856,6 +856,347 @@ pub fn wrap_text_optimal(text: &str, width: usize) -> Vec<String> {
     result
 }
 
+// =============================================================================
+// Formal Paragraph Objective (bd-2vr05.15.2.1)
+// =============================================================================
+//
+// Extends the basic Knuth-Plass badness model with:
+// - Configurable penalty and demerit weights
+// - Adjacency penalties (consecutive tight/loose lines, consecutive hyphens)
+// - Readability constraints (stretch/compress bounds, widow/orphan guards)
+// - Formal demerit computation as specified in The TeXbook Chapter 14
+//
+// # Demerit Formula (TeX-standard)
+//
+//   demerit(line) = (linepenalty + badness)^2 + penalty^2
+//                   + adjacency_demerit
+//
+// Where `adjacency_demerit` detects:
+// - Consecutive flagged breaks (e.g. two hyphens in a row)
+// - Fitness class transitions (tight→loose or vice-versa)
+//
+// # Fitness Classes (TeX §851)
+//
+//   0: tight     (adjustment_ratio < -0.5)
+//   1: normal    (-0.5 ≤ r < 0.5)
+//   2: loose     (0.5 ≤ r < 1.0)
+//   3: very loose (r ≥ 1.0)
+//
+// Transitions between non-adjacent classes incur `fitness_demerit`.
+
+/// Fitness class for a line based on its adjustment ratio.
+///
+/// The adjustment ratio `r = slack / stretch` (or `slack / shrink` for
+/// negative slack) determines how much a line differs from its natural width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum FitnessClass {
+    /// r < -0.5 (compressed line).
+    Tight = 0,
+    /// -0.5 ≤ r < 0.5 (well-set line).
+    Normal = 1,
+    /// 0.5 ≤ r < 1.0 (somewhat loose line).
+    Loose = 2,
+    /// r ≥ 1.0 (very loose line).
+    VeryLoose = 3,
+}
+
+impl FitnessClass {
+    /// Classify a line's fitness from its adjustment ratio.
+    ///
+    /// The ratio is `slack / width` for positive slack (stretch)
+    /// or `slack / width` for negative slack (shrink).
+    #[must_use]
+    pub fn from_ratio(ratio: f64) -> Self {
+        if ratio < -0.5 {
+            FitnessClass::Tight
+        } else if ratio < 0.5 {
+            FitnessClass::Normal
+        } else if ratio < 1.0 {
+            FitnessClass::Loose
+        } else {
+            FitnessClass::VeryLoose
+        }
+    }
+
+    /// Whether two consecutive fitness classes are incompatible
+    /// (differ by more than one level), warranting a fitness demerit.
+    #[must_use]
+    pub const fn incompatible(self, other: Self) -> bool {
+        let a = self as i8;
+        let b = other as i8;
+        // abs(a - b) > 1
+        (a - b > 1) || (b - a > 1)
+    }
+}
+
+/// Type of break point in the paragraph item stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreakKind {
+    /// Break at inter-word space (penalty = 0 by default).
+    Space,
+    /// Break at explicit hyphenation point (flagged break).
+    Hyphen,
+    /// Forced break (e.g. `\n`, end of paragraph).
+    Forced,
+    /// Emergency break mid-word when no feasible break exists.
+    Emergency,
+}
+
+/// Penalty value for a break point.
+///
+/// Penalties influence where breaks occur:
+/// - Negative penalty attracts breaks (e.g. after punctuation).
+/// - Positive penalty repels breaks (e.g. avoid breaking before "I").
+/// - `PENALTY_FORBIDDEN` (`i64::MAX`) makes the break infeasible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BreakPenalty {
+    /// The penalty value. Higher = less desirable break.
+    pub value: i64,
+    /// Whether this is a flagged break (e.g. hyphenation).
+    /// Two consecutive flagged breaks incur `double_hyphen_demerit`.
+    pub flagged: bool,
+}
+
+impl BreakPenalty {
+    /// Standard inter-word break (penalty 0, not flagged).
+    pub const SPACE: Self = Self {
+        value: 0,
+        flagged: false,
+    };
+
+    /// Hyphenation break (moderate penalty, flagged).
+    pub const HYPHEN: Self = Self {
+        value: 50,
+        flagged: true,
+    };
+
+    /// Forced break (negative infinity — must break here).
+    pub const FORCED: Self = Self {
+        value: i64::MIN,
+        flagged: false,
+    };
+
+    /// Emergency mid-word break (high penalty, not flagged).
+    pub const EMERGENCY: Self = Self {
+        value: 5000,
+        flagged: false,
+    };
+}
+
+/// Configuration for the paragraph objective function.
+///
+/// All weight values are in the same "demerit" unit space. Higher values
+/// mean stronger penalties. The TeX defaults are provided by `Default`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParagraphObjective {
+    /// Base penalty added to every line's badness before squaring (TeX `\linepenalty`).
+    /// Higher values prefer fewer lines.
+    /// Default: 10 (TeX standard).
+    pub line_penalty: u64,
+
+    /// Additional demerit when consecutive lines have incompatible fitness classes.
+    /// Default: 100 (TeX `\adjdemerits`).
+    pub fitness_demerit: u64,
+
+    /// Additional demerit when two consecutive lines both end with flagged breaks
+    /// (typically hyphens). Default: 100 (TeX `\doublehyphendemerits`).
+    pub double_hyphen_demerit: u64,
+
+    /// Additional demerit when the penultimate line has a flagged break and the
+    /// last line is short. Default: 100 (TeX `\finalhyphendemerits`).
+    pub final_hyphen_demerit: u64,
+
+    /// Maximum allowed adjustment ratio before the line is considered infeasible.
+    /// Lines looser than this threshold get `BADNESS_INF`.
+    /// Default: 2.0 (generous for terminal rendering).
+    pub max_adjustment_ratio: f64,
+
+    /// Minimum allowed adjustment ratio (negative = compression).
+    /// Default: -1.0 (allow moderate compression).
+    pub min_adjustment_ratio: f64,
+
+    /// Widow penalty: extra demerit if the last line of a paragraph has
+    /// fewer than `widow_threshold` characters.
+    /// Default: 150.
+    pub widow_demerit: u64,
+
+    /// Character count below which the last line triggers `widow_demerit`.
+    /// Default: 15 (approximately one short word).
+    pub widow_threshold: usize,
+
+    /// Orphan penalty: extra demerit if the first line of a paragraph
+    /// followed by a break has fewer than `orphan_threshold` characters.
+    /// Default: 150.
+    pub orphan_demerit: u64,
+
+    /// Character count below which a first-line break triggers `orphan_demerit`.
+    /// Default: 20.
+    pub orphan_threshold: usize,
+
+    /// Scale factor for badness computation. Matches TeX convention.
+    /// Default: 10_000.
+    pub badness_scale: u64,
+}
+
+impl Default for ParagraphObjective {
+    fn default() -> Self {
+        Self {
+            line_penalty: 10,
+            fitness_demerit: 100,
+            double_hyphen_demerit: 100,
+            final_hyphen_demerit: 100,
+            max_adjustment_ratio: 2.0,
+            min_adjustment_ratio: -1.0,
+            widow_demerit: 150,
+            widow_threshold: 15,
+            orphan_demerit: 150,
+            orphan_threshold: 20,
+            badness_scale: BADNESS_SCALE,
+        }
+    }
+}
+
+impl ParagraphObjective {
+    /// Preset optimized for terminal rendering where cells are monospaced
+    /// and compression is not possible (no inter-character stretch).
+    #[must_use]
+    pub fn terminal() -> Self {
+        Self {
+            // Higher line penalty: terminals prefer fewer lines
+            line_penalty: 20,
+            // Lower fitness demerit: monospace can't adjust spacing
+            fitness_demerit: 50,
+            // No compression possible in monospace
+            min_adjustment_ratio: 0.0,
+            // Wider tolerance for loose lines
+            max_adjustment_ratio: 3.0,
+            // Relaxed widow/orphan since terminal is not print
+            widow_demerit: 50,
+            orphan_demerit: 50,
+            ..Self::default()
+        }
+    }
+
+    /// Preset for high-quality proportional typography (closest to TeX defaults).
+    #[must_use]
+    pub fn typographic() -> Self {
+        Self::default()
+    }
+
+    /// Compute the badness of a line with the given slack and target width.
+    ///
+    /// Badness is `(|ratio|^3) * badness_scale` where `ratio = slack / width`.
+    /// Returns `None` if the line is infeasible (ratio outside bounds).
+    #[must_use]
+    pub fn badness(&self, slack: i64, width: usize) -> Option<u64> {
+        if width == 0 {
+            return if slack == 0 { Some(0) } else { None };
+        }
+
+        let ratio = slack as f64 / width as f64;
+
+        // Check feasibility against adjustment bounds
+        if ratio < self.min_adjustment_ratio || ratio > self.max_adjustment_ratio {
+            return None; // infeasible
+        }
+
+        let abs_ratio = ratio.abs();
+        let badness = (abs_ratio * abs_ratio * abs_ratio * self.badness_scale as f64) as u64;
+        Some(badness)
+    }
+
+    /// Compute the adjustment ratio for a line.
+    #[must_use]
+    pub fn adjustment_ratio(&self, slack: i64, width: usize) -> f64 {
+        if width == 0 {
+            return 0.0;
+        }
+        slack as f64 / width as f64
+    }
+
+    /// Compute demerits for a single break point.
+    ///
+    /// This is the full TeX demerit formula:
+    ///   demerit = (line_penalty + badness)^2 + penalty^2
+    ///
+    /// For forced breaks (negative penalty), the formula becomes:
+    ///   demerit = (line_penalty + badness)^2 - penalty^2
+    ///
+    /// Returns `None` if the line is infeasible.
+    #[must_use]
+    pub fn demerits(&self, slack: i64, width: usize, penalty: &BreakPenalty) -> Option<u64> {
+        let badness = self.badness(slack, width)?;
+
+        let base = self.line_penalty.saturating_add(badness);
+        let base_sq = base.saturating_mul(base);
+
+        let pen_sq = (penalty.value.unsigned_abs()).saturating_mul(penalty.value.unsigned_abs());
+
+        if penalty.value >= 0 {
+            Some(base_sq.saturating_add(pen_sq))
+        } else if penalty.value > i64::MIN {
+            // Forced/attractive break: subtract penalty²
+            Some(base_sq.saturating_sub(pen_sq))
+        } else {
+            // Forced break: just base²
+            Some(base_sq)
+        }
+    }
+
+    /// Compute adjacency demerits between two consecutive line breaks.
+    ///
+    /// Returns the additional demerit to add when `prev` and `curr` are
+    /// consecutive break points.
+    #[must_use]
+    pub fn adjacency_demerits(
+        &self,
+        prev_fitness: FitnessClass,
+        curr_fitness: FitnessClass,
+        prev_flagged: bool,
+        curr_flagged: bool,
+    ) -> u64 {
+        let mut extra = 0u64;
+
+        // Fitness class incompatibility
+        if prev_fitness.incompatible(curr_fitness) {
+            extra = extra.saturating_add(self.fitness_demerit);
+        }
+
+        // Double flagged break (consecutive hyphens)
+        if prev_flagged && curr_flagged {
+            extra = extra.saturating_add(self.double_hyphen_demerit);
+        }
+
+        extra
+    }
+
+    /// Check if the last line triggers widow penalty.
+    ///
+    /// A "widow" here means the last line of a paragraph is very short,
+    /// leaving a visually orphaned fragment.
+    #[must_use]
+    pub fn widow_demerits(&self, last_line_chars: usize) -> u64 {
+        if last_line_chars < self.widow_threshold {
+            self.widow_demerit
+        } else {
+            0
+        }
+    }
+
+    /// Check if the first line triggers orphan penalty.
+    ///
+    /// An "orphan" here means the first line before a break is very short.
+    #[must_use]
+    pub fn orphan_demerits(&self, first_line_chars: usize) -> u64 {
+        if first_line_chars < self.orphan_threshold {
+            self.orphan_demerit
+        } else {
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 trait TestWidth {
     fn width(&self) -> usize;
@@ -2202,5 +2543,197 @@ mod proptests {
                 "DP should preserve all words"
             );
         }
+    }
+
+    // ======================================================================
+    // ParagraphObjective tests (bd-2vr05.15.2.1)
+    // ======================================================================
+
+    #[test]
+    fn fitness_class_from_ratio() {
+        assert_eq!(FitnessClass::from_ratio(-0.8), FitnessClass::Tight);
+        assert_eq!(FitnessClass::from_ratio(-0.5), FitnessClass::Normal);
+        assert_eq!(FitnessClass::from_ratio(0.0), FitnessClass::Normal);
+        assert_eq!(FitnessClass::from_ratio(0.49), FitnessClass::Normal);
+        assert_eq!(FitnessClass::from_ratio(0.5), FitnessClass::Loose);
+        assert_eq!(FitnessClass::from_ratio(0.99), FitnessClass::Loose);
+        assert_eq!(FitnessClass::from_ratio(1.0), FitnessClass::VeryLoose);
+        assert_eq!(FitnessClass::from_ratio(2.0), FitnessClass::VeryLoose);
+    }
+
+    #[test]
+    fn fitness_class_incompatible() {
+        assert!(!FitnessClass::Tight.incompatible(FitnessClass::Tight));
+        assert!(!FitnessClass::Tight.incompatible(FitnessClass::Normal));
+        assert!(FitnessClass::Tight.incompatible(FitnessClass::Loose));
+        assert!(FitnessClass::Tight.incompatible(FitnessClass::VeryLoose));
+        assert!(!FitnessClass::Normal.incompatible(FitnessClass::Loose));
+        assert!(FitnessClass::Normal.incompatible(FitnessClass::VeryLoose));
+    }
+
+    #[test]
+    fn objective_default_is_tex_standard() {
+        let obj = ParagraphObjective::default();
+        assert_eq!(obj.line_penalty, 10);
+        assert_eq!(obj.fitness_demerit, 100);
+        assert_eq!(obj.double_hyphen_demerit, 100);
+        assert_eq!(obj.badness_scale, BADNESS_SCALE);
+    }
+
+    #[test]
+    fn objective_terminal_preset() {
+        let obj = ParagraphObjective::terminal();
+        assert_eq!(obj.line_penalty, 20);
+        assert_eq!(obj.min_adjustment_ratio, 0.0);
+        assert!(obj.max_adjustment_ratio > 2.0);
+    }
+
+    #[test]
+    fn badness_zero_slack_is_zero() {
+        let obj = ParagraphObjective::default();
+        assert_eq!(obj.badness(0, 80), Some(0));
+    }
+
+    #[test]
+    fn badness_moderate_slack() {
+        let obj = ParagraphObjective::default();
+        // 10 cells slack on 80-wide line: ratio = 0.125
+        // badness = (0.125)^3 * 10000 ≈ 19
+        let b = obj.badness(10, 80).unwrap();
+        assert!(b > 0 && b < 100, "badness = {b}");
+    }
+
+    #[test]
+    fn badness_excessive_slack_infeasible() {
+        let obj = ParagraphObjective::default();
+        // ratio = 3.0, exceeds max_adjustment_ratio of 2.0
+        assert!(obj.badness(240, 80).is_none());
+    }
+
+    #[test]
+    fn badness_negative_slack_within_bounds() {
+        let obj = ParagraphObjective::default();
+        // -40 slack on 80-wide: ratio = -0.5, within min_adjustment_ratio of -1.0
+        let b = obj.badness(-40, 80);
+        assert!(b.is_some());
+    }
+
+    #[test]
+    fn badness_negative_slack_beyond_bounds() {
+        let obj = ParagraphObjective::default();
+        // -100 slack on 80-wide: ratio = -1.25, exceeds min_adjustment_ratio of -1.0
+        assert!(obj.badness(-100, 80).is_none());
+    }
+
+    #[test]
+    fn badness_terminal_no_compression() {
+        let obj = ParagraphObjective::terminal();
+        // Terminal preset: min_adjustment_ratio = 0.0, no compression
+        assert!(obj.badness(-1, 80).is_none());
+    }
+
+    #[test]
+    fn demerits_space_break() {
+        let obj = ParagraphObjective::default();
+        let d = obj.demerits(10, 80, &BreakPenalty::SPACE).unwrap();
+        // (line_penalty + badness)^2 + 0^2
+        let badness = obj.badness(10, 80).unwrap();
+        let expected = (obj.line_penalty + badness).pow(2);
+        assert_eq!(d, expected);
+    }
+
+    #[test]
+    fn demerits_hyphen_break() {
+        let obj = ParagraphObjective::default();
+        let d_space = obj.demerits(10, 80, &BreakPenalty::SPACE).unwrap();
+        let d_hyphen = obj.demerits(10, 80, &BreakPenalty::HYPHEN).unwrap();
+        // Hyphen break should cost more than space break
+        assert!(d_hyphen > d_space);
+    }
+
+    #[test]
+    fn demerits_forced_break() {
+        let obj = ParagraphObjective::default();
+        let d = obj.demerits(0, 80, &BreakPenalty::FORCED).unwrap();
+        // Forced break: just (line_penalty + 0)^2
+        assert_eq!(d, obj.line_penalty.pow(2));
+    }
+
+    #[test]
+    fn demerits_infeasible_returns_none() {
+        let obj = ParagraphObjective::default();
+        // Slack beyond bounds
+        assert!(obj.demerits(300, 80, &BreakPenalty::SPACE).is_none());
+    }
+
+    #[test]
+    fn adjacency_fitness_incompatible() {
+        let obj = ParagraphObjective::default();
+        let d = obj.adjacency_demerits(FitnessClass::Tight, FitnessClass::Loose, false, false);
+        assert_eq!(d, obj.fitness_demerit);
+    }
+
+    #[test]
+    fn adjacency_fitness_compatible() {
+        let obj = ParagraphObjective::default();
+        let d = obj.adjacency_demerits(FitnessClass::Normal, FitnessClass::Loose, false, false);
+        assert_eq!(d, 0);
+    }
+
+    #[test]
+    fn adjacency_double_hyphen() {
+        let obj = ParagraphObjective::default();
+        let d = obj.adjacency_demerits(FitnessClass::Normal, FitnessClass::Normal, true, true);
+        assert_eq!(d, obj.double_hyphen_demerit);
+    }
+
+    #[test]
+    fn adjacency_double_hyphen_plus_fitness() {
+        let obj = ParagraphObjective::default();
+        let d = obj.adjacency_demerits(FitnessClass::Tight, FitnessClass::VeryLoose, true, true);
+        assert_eq!(d, obj.fitness_demerit + obj.double_hyphen_demerit);
+    }
+
+    #[test]
+    fn widow_penalty_short_last_line() {
+        let obj = ParagraphObjective::default();
+        assert_eq!(obj.widow_demerits(5), obj.widow_demerit);
+        assert_eq!(obj.widow_demerits(14), obj.widow_demerit);
+        assert_eq!(obj.widow_demerits(15), 0);
+        assert_eq!(obj.widow_demerits(80), 0);
+    }
+
+    #[test]
+    fn orphan_penalty_short_first_line() {
+        let obj = ParagraphObjective::default();
+        assert_eq!(obj.orphan_demerits(10), obj.orphan_demerit);
+        assert_eq!(obj.orphan_demerits(19), obj.orphan_demerit);
+        assert_eq!(obj.orphan_demerits(20), 0);
+        assert_eq!(obj.orphan_demerits(80), 0);
+    }
+
+    #[test]
+    fn adjustment_ratio_computation() {
+        let obj = ParagraphObjective::default();
+        let r = obj.adjustment_ratio(10, 80);
+        assert!((r - 0.125).abs() < 1e-10);
+    }
+
+    #[test]
+    fn adjustment_ratio_zero_width() {
+        let obj = ParagraphObjective::default();
+        assert_eq!(obj.adjustment_ratio(5, 0), 0.0);
+    }
+
+    #[test]
+    fn badness_zero_width_zero_slack() {
+        let obj = ParagraphObjective::default();
+        assert_eq!(obj.badness(0, 0), Some(0));
+    }
+
+    #[test]
+    fn badness_zero_width_nonzero_slack() {
+        let obj = ParagraphObjective::default();
+        assert!(obj.badness(5, 0).is_none());
     }
 }
