@@ -24,6 +24,7 @@
 
 pub mod cell;
 pub mod cursor;
+pub mod export;
 pub mod flow_control;
 pub mod grid;
 pub mod modes;
@@ -41,6 +42,10 @@ pub use cell::{
     Cell, CellFlags, Color, HyperlinkId, HyperlinkRegistry, MAX_COMBINING, SgrAttrs, SgrFlags,
 };
 pub use cursor::{Cursor, SavedCursor, translate_charset};
+pub use export::{
+    AnsiExportOptions, ColorDepth, ExportContext, ExportRange, ExportRow, HtmlExportOptions,
+    LineEnding, TextExportOptions, export_ansi, export_html, export_text,
+};
 pub use flow_control::{
     ActionLoss, BackpressureAction, DecisionReason, FlowControlConfig, FlowControlDecision,
     FlowControlPolicy, FlowControlSnapshot, InputEventClass, LatencyWindowMs, LossWeights,
