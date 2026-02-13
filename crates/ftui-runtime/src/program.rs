@@ -1350,6 +1350,102 @@ impl PaneTerminalAdapter {
             .saturating_add(delta_y.unsigned_abs());
         movement < u32::from(self.config.drag_update_coalesce_distance)
     }
+
+    /// Force-cancel any active pane interaction and return diagnostic info.
+    ///
+    /// This is the safety-valve for cleanup paths (RAII guard drops, signal
+    /// handlers, panic hooks) where constructing a proper semantic event is
+    /// not feasible. It resets both the underlying drag/resize state machine
+    /// and the adapter's active-pointer tracking.
+    ///
+    /// Returns `None` if no interaction was active.
+    pub fn force_cancel_all(&mut self) -> Option<PaneCleanupDiagnostics> {
+        let was_active = self.active.is_some();
+        let machine_state_before = self.machine.state();
+        let machine_transition = self.machine.force_cancel();
+        let active_pointer = self.active.take();
+        if !was_active && machine_transition.is_none() {
+            return None;
+        }
+        Some(PaneCleanupDiagnostics {
+            had_active_pointer: was_active,
+            active_pointer_id: active_pointer.map(|a| a.pointer_id),
+            machine_state_before,
+            machine_transition,
+        })
+    }
+}
+
+/// Structured diagnostics emitted when pane interaction state is force-cleaned.
+///
+/// Fields mirror the pane layout types which are already `Serialize`/`Deserialize`,
+/// so callers can convert this struct to JSON for evidence logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneCleanupDiagnostics {
+    /// Whether the adapter had an active pointer tracker when cleanup ran.
+    pub had_active_pointer: bool,
+    /// The pointer ID that was active (if any).
+    pub active_pointer_id: Option<u32>,
+    /// The machine state before force-cancel was applied.
+    pub machine_state_before: PaneDragResizeState,
+    /// The transition produced by force-cancel, or `None` if the machine
+    /// was already idle.
+    pub machine_transition: Option<PaneDragResizeTransition>,
+}
+
+/// RAII guard that ensures pane interaction state is cleanly canceled on drop.
+///
+/// When a pane interaction session is active and the guard drops (due to
+/// panic, scope exit, or any other unwind), it force-cancels any in-progress
+/// drag/resize and collects cleanup diagnostics.
+///
+/// # Usage
+///
+/// ```ignore
+/// let guard = PaneInteractionGuard::new(&mut adapter);
+/// // ... pane interaction event loop ...
+/// // If this scope panics, guard's Drop will force-cancel the drag machine
+/// let diagnostics = guard.finish(); // explicit clean finish
+/// ```
+pub struct PaneInteractionGuard<'a> {
+    adapter: &'a mut PaneTerminalAdapter,
+    finished: bool,
+    diagnostics: Option<PaneCleanupDiagnostics>,
+}
+
+impl<'a> PaneInteractionGuard<'a> {
+    /// Create a new guard wrapping the given adapter.
+    pub fn new(adapter: &'a mut PaneTerminalAdapter) -> Self {
+        Self {
+            adapter,
+            finished: false,
+            diagnostics: None,
+        }
+    }
+
+    /// Access the wrapped adapter for normal event translation.
+    pub fn adapter(&mut self) -> &mut PaneTerminalAdapter {
+        self.adapter
+    }
+
+    /// Explicitly finish the guard, returning any cleanup diagnostics.
+    ///
+    /// Calling `finish()` is optional — the guard will also clean up on drop.
+    /// However, `finish()` gives the caller access to the diagnostics.
+    pub fn finish(mut self) -> Option<PaneCleanupDiagnostics> {
+        self.finished = true;
+        let diagnostics = self.adapter.force_cancel_all();
+        self.diagnostics = diagnostics.clone();
+        diagnostics
+    }
+}
+
+impl Drop for PaneInteractionGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.diagnostics = self.adapter.force_cancel_all();
+        }
+    }
 }
 
 fn pane_button(button: MouseButton) -> PanePointerButton {
@@ -4525,6 +4621,7 @@ impl Default for BatchController {
 mod tests {
     use super::*;
     use ftui_core::terminal_capabilities::TerminalCapabilities;
+    use ftui_layout::PaneDragResizeEffect;
     use ftui_render::buffer::Buffer;
     use ftui_render::cell::Cell;
     use ftui_render::diff_strategy::DiffStrategy;
@@ -8717,5 +8814,198 @@ mod tests {
         // Zero dimensions should be clamped to 1
         assert_eq!(program.width, 1);
         assert_eq!(program.height, 1);
+    }
+
+    // =========================================================================
+    // PaneTerminalAdapter::force_cancel_all (bd-24v9m)
+    // =========================================================================
+
+    #[test]
+    fn force_cancel_all_idle_returns_none() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        assert!(adapter.force_cancel_all().is_none());
+    }
+
+    #[test]
+    fn force_cancel_all_after_pointer_down_returns_diagnostics() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+        assert!(adapter.active_pointer_id().is_some());
+
+        let diag = adapter
+            .force_cancel_all()
+            .expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+        assert_eq!(diag.active_pointer_id, Some(1));
+        assert!(diag.machine_transition.is_some());
+
+        // Adapter should be fully idle afterwards
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn force_cancel_all_during_drag_returns_diagnostics() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Vertical);
+
+        // Down → arm
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            3,
+            3,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        // Drag → transition to Dragging
+        let drag = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            8,
+            3,
+        ));
+        let _ = adapter.translate(&drag, None);
+
+        let diag = adapter
+            .force_cancel_all()
+            .expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+        assert!(diag.machine_transition.is_some());
+        let transition = diag.machine_transition.unwrap();
+        assert!(matches!(
+            transition.effect,
+            PaneDragResizeEffect::Canceled {
+                reason: PaneCancelReason::Programmatic,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn force_cancel_all_is_idempotent() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let first = adapter.force_cancel_all();
+        assert!(first.is_some());
+
+        let second = adapter.force_cancel_all();
+        assert!(second.is_none());
+    }
+
+    // =========================================================================
+    // PaneInteractionGuard (bd-24v9m)
+    // =========================================================================
+
+    #[test]
+    fn pane_interaction_guard_finish_when_idle() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let guard = PaneInteractionGuard::new(&mut adapter);
+        let diag = guard.finish();
+        assert!(diag.is_none());
+    }
+
+    #[test]
+    fn pane_interaction_guard_finish_returns_diagnostics() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        // Start a drag interaction through the adapter directly
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let guard = PaneInteractionGuard::new(&mut adapter);
+        let diag = guard.finish().expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+        assert_eq!(diag.active_pointer_id, Some(1));
+    }
+
+    #[test]
+    fn pane_interaction_guard_drop_cancels_active_interaction() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Vertical);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            7,
+            7,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+        assert!(adapter.active_pointer_id().is_some());
+
+        {
+            let _guard = PaneInteractionGuard::new(&mut adapter);
+            // guard drops here without finish()
+        }
+
+        // After guard drop, adapter should be idle
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn pane_interaction_guard_adapter_access_works() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let mut guard = PaneInteractionGuard::new(&mut adapter);
+
+        // Use the adapter through the guard
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let dispatch = guard.adapter().translate(&down, Some(target));
+        assert!(dispatch.primary_event.is_some());
+
+        // finish should clean up the interaction started through the guard
+        let diag = guard.finish().expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+    }
+
+    #[test]
+    fn pane_interaction_guard_finish_then_drop_is_safe() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let guard = PaneInteractionGuard::new(&mut adapter);
+        let _diag = guard.finish();
+        // guard is consumed by finish(), so drop doesn't double-cancel
+        // This test proves the API is safe: finish() takes `self` not `&mut self`
+        assert_eq!(adapter.active_pointer_id(), None);
     }
 }

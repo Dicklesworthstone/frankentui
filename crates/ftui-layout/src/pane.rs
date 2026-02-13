@@ -1994,6 +1994,48 @@ impl PaneDragResizeMachine {
         self.update_hysteresis
     }
 
+    /// Whether the machine is in a non-idle state (Armed or Dragging).
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        !matches!(self.state, PaneDragResizeState::Idle)
+    }
+
+    /// Unconditionally reset the machine to Idle, returning a diagnostic
+    /// transition if the machine was in an active state.
+    ///
+    /// This is a safety valve for RAII cleanup paths (panic, signal, guard
+    /// drop) where constructing a valid `PaneSemanticInputEvent` is not
+    /// possible. The returned transition carries `PaneCancelReason::Programmatic`
+    /// and a `Canceled` effect.
+    ///
+    /// If the machine is already Idle, returns `None` (no-op).
+    pub fn force_cancel(&mut self) -> Option<PaneDragResizeTransition> {
+        let from = self.state;
+        match from {
+            PaneDragResizeState::Idle => None,
+            PaneDragResizeState::Armed {
+                target, pointer_id, ..
+            }
+            | PaneDragResizeState::Dragging {
+                target, pointer_id, ..
+            } => {
+                self.state = PaneDragResizeState::Idle;
+                self.transition_counter = self.transition_counter.saturating_add(1);
+                Some(PaneDragResizeTransition {
+                    transition_id: self.transition_counter,
+                    sequence: 0,
+                    from,
+                    to: PaneDragResizeState::Idle,
+                    effect: PaneDragResizeEffect::Canceled {
+                        target: Some(target),
+                        pointer_id: Some(pointer_id),
+                        reason: PaneCancelReason::Programmatic,
+                    },
+                })
+            }
+        }
+    }
+
     /// Apply one semantic pane input event and emit deterministic transition
     /// diagnostics.
     pub fn apply_event(
@@ -6392,6 +6434,148 @@ mod tests {
                 .expect_err("zero hysteresis must fail"),
             PaneDragResizeMachineError::InvalidUpdateHysteresis { hysteresis: 0 }
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // force_cancel lifecycle robustness (bd-24v9m)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn force_cancel_idle_is_noop() {
+        let mut machine = PaneDragResizeMachine::default();
+        assert!(!machine.is_active());
+        assert!(machine.force_cancel().is_none());
+        assert_eq!(machine.state(), PaneDragResizeState::Idle);
+    }
+
+    #[test]
+    fn force_cancel_from_armed_resets_to_idle() {
+        let target = default_target();
+        let mut machine = PaneDragResizeMachine::default();
+        machine
+            .apply_event(&pointer_down_event(1, target, 22, 5, 5))
+            .expect("down should arm");
+        assert!(machine.is_active());
+
+        let transition = machine
+            .force_cancel()
+            .expect("armed machine should produce transition");
+        assert_eq!(transition.to, PaneDragResizeState::Idle);
+        assert!(matches!(
+            transition.effect,
+            PaneDragResizeEffect::Canceled {
+                reason: PaneCancelReason::Programmatic,
+                ..
+            }
+        ));
+        assert!(!machine.is_active());
+        assert_eq!(machine.state(), PaneDragResizeState::Idle);
+    }
+
+    #[test]
+    fn force_cancel_from_dragging_resets_to_idle() {
+        let target = default_target();
+        let mut machine = PaneDragResizeMachine::default();
+        machine
+            .apply_event(&pointer_down_event(1, target, 22, 0, 0))
+            .expect("down");
+        machine
+            .apply_event(&pointer_move_event(2, target, 22, 5, 0))
+            .expect("move past threshold to start drag");
+        assert!(matches!(
+            machine.state(),
+            PaneDragResizeState::Dragging { .. }
+        ));
+        assert!(machine.is_active());
+
+        let transition = machine
+            .force_cancel()
+            .expect("dragging machine should produce transition");
+        assert_eq!(transition.to, PaneDragResizeState::Idle);
+        assert!(matches!(
+            transition.effect,
+            PaneDragResizeEffect::Canceled {
+                target: Some(_),
+                pointer_id: Some(22),
+                reason: PaneCancelReason::Programmatic,
+            }
+        ));
+        assert!(!machine.is_active());
+    }
+
+    #[test]
+    fn force_cancel_is_idempotent() {
+        let target = default_target();
+        let mut machine = PaneDragResizeMachine::default();
+        machine
+            .apply_event(&pointer_down_event(1, target, 22, 5, 5))
+            .expect("down should arm");
+
+        let first = machine.force_cancel();
+        assert!(first.is_some());
+        let second = machine.force_cancel();
+        assert!(second.is_none());
+        assert_eq!(machine.state(), PaneDragResizeState::Idle);
+    }
+
+    #[test]
+    fn force_cancel_preserves_transition_counter_monotonicity() {
+        let target = default_target();
+        let mut machine = PaneDragResizeMachine::default();
+
+        let t1 = machine
+            .apply_event(&pointer_down_event(1, target, 22, 0, 0))
+            .expect("arm");
+        let t2 = machine.force_cancel().expect("force cancel from armed");
+        assert!(t2.transition_id > t1.transition_id);
+
+        // Re-arm and force cancel again to confirm counter keeps incrementing
+        let t3 = machine
+            .apply_event(&pointer_down_event(2, target, 22, 10, 10))
+            .expect("re-arm");
+        let t4 = machine.force_cancel().expect("second force cancel");
+        assert!(t3.transition_id > t2.transition_id);
+        assert!(t4.transition_id > t3.transition_id);
+    }
+
+    #[test]
+    fn force_cancel_records_prior_state_in_from_field() {
+        let target = default_target();
+        let mut machine = PaneDragResizeMachine::default();
+        machine
+            .apply_event(&pointer_down_event(1, target, 22, 0, 0))
+            .expect("arm");
+
+        let armed_state = machine.state();
+        let transition = machine.force_cancel().expect("force cancel");
+        assert_eq!(transition.from, armed_state);
+    }
+
+    #[test]
+    fn machine_usable_after_force_cancel() {
+        let target = default_target();
+        let mut machine = PaneDragResizeMachine::default();
+
+        // Full lifecycle: arm → force cancel → arm again → normal commit
+        machine
+            .apply_event(&pointer_down_event(1, target, 22, 0, 0))
+            .expect("arm");
+        machine.force_cancel();
+
+        machine
+            .apply_event(&pointer_down_event(2, target, 22, 10, 10))
+            .expect("re-arm after force cancel");
+        machine
+            .apply_event(&pointer_move_event(3, target, 22, 15, 10))
+            .expect("move to drag");
+        let commit = machine
+            .apply_event(&pointer_up_event(4, target, 22, 15, 10))
+            .expect("commit");
+        assert!(matches!(
+            commit.effect,
+            PaneDragResizeEffect::Committed { .. }
+        ));
+        assert_eq!(machine.state(), PaneDragResizeState::Idle);
     }
 
     proptest! {

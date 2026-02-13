@@ -207,8 +207,10 @@ fn run_single_session(
     let mut exit_code = None;
     let mut exit_signal: Option<String> = None;
 
-    let mut fc_state: Option<FlowControlBridgeState> =
-        config.flow_control.as_ref().map(FlowControlBridgeState::new);
+    let mut fc_state: Option<FlowControlBridgeState> = config
+        .flow_control
+        .as_ref()
+        .map(FlowControlBridgeState::new);
 
     if let Some(ref fc_config) = config.flow_control {
         telemetry.write(
@@ -240,12 +242,7 @@ fn run_single_session(
                         if let Some(ref fc) = fc_state {
                             telemetry.write("flow_control_summary", fc.summary_json())?;
                         }
-                        return Ok(make_summary(
-                            session_id,
-                            &counters,
-                            exit_code,
-                            exit_signal,
-                        ));
+                        return Ok(make_summary(session_id, &counters, exit_code, exit_signal));
                     }
                 }
                 Err(WsError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -253,12 +250,7 @@ fn run_single_session(
                     if let Some(ref fc) = fc_state {
                         telemetry.write("flow_control_summary", fc.summary_json())?;
                     }
-                    return Ok(make_summary(
-                        session_id,
-                        &counters,
-                        exit_code,
-                        exit_signal,
-                    ));
+                    return Ok(make_summary(session_id, &counters, exit_code, exit_signal));
                 }
                 Err(error) => {
                     return Err(io::Error::other(format!("websocket read failed: {error}")));
@@ -363,18 +355,14 @@ fn run_single_session(
                         if !remaining.is_empty() {
                             counters.ws_out_bytes = counters
                                 .ws_out_bytes
-                                .saturating_add(
-                                    u64::try_from(remaining.len()).unwrap_or(u64::MAX),
-                                );
+                                .saturating_add(u64::try_from(remaining.len()).unwrap_or(u64::MAX));
                             send_ws_message(&mut websocket, Message::binary(remaining))?;
                         }
                     }
                     None => {
                         counters.ws_out_bytes = counters
                             .ws_out_bytes
-                            .saturating_add(
-                                u64::try_from(trailing.len()).unwrap_or(u64::MAX),
-                            );
+                            .saturating_add(u64::try_from(trailing.len()).unwrap_or(u64::MAX));
                         send_ws_message(&mut websocket, Message::binary(trailing))?;
                     }
                 }
@@ -430,8 +418,7 @@ fn handle_ws_message(
                     // Interactive events are never dropped by policy, so this
                     // branch is unreachable for Interactive. Kept for symmetry
                     // with future NonInteractive classification.
-                    fc.fc_counters.input_drops =
-                        fc.fc_counters.input_drops.saturating_add(1);
+                    fc.fc_counters.input_drops = fc.fc_counters.input_drops.saturating_add(1);
                     telemetry.write(
                         "flow_control_input_drop",
                         json!({
@@ -466,8 +453,7 @@ fn handle_ws_message(
                     None => {
                         pty.resize(cols, rows)?;
                         counters.resize_events = counters.resize_events.saturating_add(1);
-                        telemetry
-                            .write("bridge_resize", json!({ "cols": cols, "rows": rows }))?;
+                        telemetry.write("bridge_resize", json!({ "cols": cols, "rows": rows }))?;
                     }
                 }
                 Ok(false)
@@ -814,8 +800,7 @@ impl FlowControlBridgeState {
     /// Drain up to `budget` bytes from the output queue, respecting credit window.
     fn drain_output(&mut self, budget: u32) -> Vec<u8> {
         let queue_available = self.output_queue.len().min(budget as usize);
-        let window_available =
-            self.output_window.saturating_sub(self.output_consumed) as usize;
+        let window_available = self.output_window.saturating_sub(self.output_consumed) as usize;
         let to_drain = queue_available.min(window_available);
         if to_drain == 0 {
             return Vec::new();
@@ -922,8 +907,7 @@ impl FlowControlBridgeState {
         let was_paused = self.pty_reads_paused;
         self.pty_reads_paused = decision.should_pause_pty_reads;
         if decision.should_pause_pty_reads && !was_paused {
-            self.fc_counters.pty_read_pauses =
-                self.fc_counters.pty_read_pauses.saturating_add(1);
+            self.fc_counters.pty_read_pauses = self.fc_counters.pty_read_pauses.saturating_add(1);
         }
 
         if decision.chosen_action.is_some() {
@@ -2165,9 +2149,7 @@ mod tests {
             .windows(b"fc-echo-test".len())
             .any(|window| window == b"fc-echo-test");
 
-        if let Err(err) =
-            client.send(Message::Text(r#"{"type":"close"}"#.to_string().into()))
-        {
+        if let Err(err) = client.send(Message::Text(r#"{"type":"close"}"#.to_string().into())) {
             if last_error.is_none() {
                 last_error = Some(err);
             }
