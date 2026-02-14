@@ -63,6 +63,20 @@ impl Event {
     pub fn from_crossterm(event: cte::Event) -> Option<Self> {
         map_crossterm_event_internal(event)
     }
+
+    /// Return a static label for the event type (for metrics/tracing).
+    #[must_use]
+    pub const fn event_type_label(&self) -> &'static str {
+        match self {
+            Event::Key(_) => "key",
+            Event::Mouse(_) => "mouse",
+            Event::Resize { .. } => "resize",
+            Event::Paste(_) => "paste",
+            Event::Focus(_) => "focus",
+            Event::Clipboard(_) => "clipboard",
+            Event::Tick => "tick",
+        }
+    }
 }
 
 /// A keyboard event.

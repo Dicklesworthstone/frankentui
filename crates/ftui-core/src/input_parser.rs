@@ -28,6 +28,12 @@ use crate::event::{
     MouseButton, MouseEvent, MouseEventKind, PasteEvent,
 };
 
+// Import tracing macros (no-op when tracing feature is disabled).
+#[cfg(feature = "tracing")]
+use crate::logging::{debug, debug_span, trace};
+#[cfg(not(feature = "tracing"))]
+use crate::{debug, debug_span, trace};
+
 /// DoS protection: maximum CSI sequence length.
 const MAX_CSI_LEN: usize = 256;
 
@@ -137,11 +143,17 @@ impl InputParser {
     where
         F: FnMut(Event),
     {
+        let span = debug_span!("event.normalize", raw_byte_count = input.len());
+        let _guard = span.enter();
+        trace!("raw input bytes: {} bytes", input.len());
+
         for &byte in input {
             if let Some(event) = self.process_byte(byte) {
+                debug!(event_type = event.event_type_label(), "normalized event");
                 emit(event);
             }
             if let Some(pending) = self.pending_event.take() {
+                debug!(event_type = pending.event_type_label(), "normalized event");
                 emit(pending);
             }
         }
