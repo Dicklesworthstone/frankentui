@@ -4,6 +4,12 @@
 
 ---
 
+## RULE 0 - THE FUNDAMENTAL OVERRIDE PREROGATIVE
+
+If I tell you to do something, even if it goes against what follows below, YOU MUST LISTEN TO ME. I AM IN CHARGE, NOT YOU.
+
+---
+
 ## RULE NUMBER 1: NO FILE DELETION
 
 **YOU ARE NEVER ALLOWED TO DELETE A FILE WITHOUT EXPRESS PERMISSION.** Even a new file that you yourself created, such as a test code file. You have a horrible track record of deleting critically important files or otherwise throwing away tons of expensive work. As a result, you have permanently lost any and all rights to determine that a file or folder should be deleted.
@@ -22,13 +28,30 @@
 
 ---
 
+## Git Branch: ONLY Use `main`, NEVER `master`
+
+**The default branch is `main`. The `master` branch exists only for legacy URL compatibility.**
+
+- **All work happens on `main`** — commits, PRs, feature branches all merge to `main`
+- **Never reference `master` in code or docs** — if you see `master` anywhere, it's a bug that needs fixing
+- **The `master` branch must stay synchronized with `main`** — after pushing to `main`, also push to `master`:
+  ```bash
+  git push origin main:master
+  ```
+
+**If you see `master` referenced anywhere:**
+1. Update it to `main`
+2. Ensure `master` is synchronized: `git push origin main:master`
+
+---
+
 ## Toolchain: Rust & Cargo
 
 We only use **Cargo** in this project, NEVER any other package manager.
 
 - **Edition:** Rust 2024 (nightly required — see `rust-toolchain.toml`)
 - **Dependency versions:** Explicit versions for stability
-- **Configuration:** Cargo.toml only
+- **Configuration:** Cargo.toml workspace with `workspace = true` pattern
 - **Unsafe code:** Forbidden (`#![forbid(unsafe_code)]`)
 
 ### Key Dependencies
@@ -43,15 +66,20 @@ We only use **Cargo** in this project, NEVER any other package manager.
 
 ### Release Profile
 
-The release build optimizes for size:
+The release build optimizes for size (lean binary for distribution):
 
 ```toml
 [profile.release]
-opt-level = "z"     # Optimize for size (lean binary for distribution)
+opt-level = "z"     # Optimize for size
 lto = true          # Link-time optimization
 codegen-units = 1   # Single codegen unit for better optimization
 panic = "abort"     # Smaller binary, no unwinding overhead
 strip = true        # Remove debug symbols
+
+# VFX-heavy crate: prefer speed over binary size so the rasterizer
+# inner loops benefit from SIMD, loop unrolling, and aggressive inlining.
+[profile.release.package.ftui-extras]
+opt-level = 3
 ```
 
 ---
@@ -94,11 +122,11 @@ We do not care about backwards compatibility—we're in early development with n
 **After any substantive code changes, you MUST verify no errors were introduced:**
 
 ```bash
-# Check for compiler errors and warnings
-cargo check --all-targets
+# Check for compiler errors and warnings (workspace-wide)
+cargo check --workspace --all-targets
 
 # Check for clippy lints (pedantic + nursery are enabled)
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Verify formatting
 cargo fmt --check
@@ -110,23 +138,51 @@ If you see errors, **carefully understand and resolve each issue**. Read suffici
 
 ## Testing
 
+### Testing Policy
+
+Every component crate includes inline `#[cfg(test)]` unit tests alongside the implementation. Tests must cover:
+- Happy path
+- Edge cases (empty input, max values, boundary conditions)
+- Error conditions
+
+Cross-component integration tests live in the workspace `tests/` directory.
+
 ### Unit Tests
 
-The workspace includes comprehensive tests across all crates:
-
 ```bash
-# Run all tests
-cargo test
+# Run all tests across the workspace
+cargo test --workspace
 
 # Run with output
-cargo test -- --nocapture
+cargo test --workspace -- --nocapture
 
-# Run specific crate tests
+# Run tests for a specific crate
 cargo test -p ftui-core
 cargo test -p ftui-render
-cargo test -p ftui-widgets
+cargo test -p ftui-style
+cargo test -p ftui-text
+cargo test -p ftui-layout
 cargo test -p ftui-runtime
+cargo test -p ftui-widgets
+cargo test -p ftui-extras
+cargo test -p ftui-harness
 ```
+
+### Test Categories
+
+| Crate | Focus Areas |
+|-------|-------------|
+| `ftui-core` | Terminal lifecycle, event parsing, capabilities |
+| `ftui-render` | Buffer operations, diff computation, ANSI emission |
+| `ftui-style` | Style + theme system |
+| `ftui-text` | Unicode width, text wrapping, grapheme handling |
+| `ftui-layout` | Constraint solving, flex/grid layout |
+| `ftui-widgets` | Widget rendering, state management |
+| `ftui-runtime` | Event loop, command execution, subscriptions |
+| `ftui-extras` | Feature-gated add-ons, VFX rasterizer |
+| `ftui-demo-showcase` | Snapshot tests for all demo screens |
+| `ftui-harness` | Test utilities + snapshot framework |
+| `tests/` (workspace) | Cross-component integration, E2E viewport tests |
 
 ### Snapshot Testing
 
@@ -149,76 +205,17 @@ cargo insta review
 # Run E2E test scripts
 ./scripts/e2e_test.sh
 ./scripts/widget_api_e2e.sh
+./scripts/demo_showcase_e2e.sh
 
 # Run the demo showcase manually
 cargo run -p ftui-demo-showcase
 ```
 
-### Test Categories
-
-| Crate | Focus |
-|-------|-------|
-| `ftui-core` | Terminal lifecycle, event parsing, capabilities |
-| `ftui-render` | Buffer operations, diff computation, ANSI emission |
-| `ftui-layout` | Constraint solving, flex/grid layout |
-| `ftui-text` | Unicode width, text wrapping, grapheme handling |
-| `ftui-widgets` | Widget rendering, state management |
-| `ftui-runtime` | Event loop, command execution, subscriptions |
-| `ftui-demo-showcase` | Snapshot tests for all demo screens |
-
----
-
-## CI/CD Pipeline
-
-### Jobs Overview
-
-| Job | Trigger | Purpose | Blocking |
-|-----|---------|---------|----------|
-| `check` | PR, push | Format, clippy, tests | Yes |
-| `coverage` | PR, push | Coverage thresholds | Yes |
-| `snapshots` | PR, push | Visual regression testing | Yes |
-| `benchmarks` | push to master | Performance budgets | Warn only |
-| `e2e` | PR, push | End-to-end harness tests | Yes |
-
-### Check Job
-
-Runs format, clippy, and unit tests. Includes:
-- `cargo fmt --check` - Code formatting
-- `cargo clippy --all-targets -- -D warnings` - Lints (pedantic + nursery enabled)
-- `cargo nextest run` - Full test suite with JUnit XML report
-
-### Coverage Job
-
-Runs `cargo llvm-cov` and enforces thresholds:
-- **Overall:** ≥ 70%
-- **ftui-render:** ≥ 80%
-- **ftui-core:** ≥ 80%
-
-### Snapshot Testing
-
-Visual regression tests ensure rendering consistency:
-- All demo screens tested at multiple sizes (80x24, 120x40)
-- BLESS=1 to update baselines
-- Changes require review before merge
-
-### Debugging CI Failures
-
-#### Snapshot Test Failure
-1. Download snapshot artifacts
-2. Compare expected vs actual renders
-3. Run `BLESS=1 cargo test` locally if changes are intentional
-4. Review visual diff before committing
-
-#### Coverage Threshold Failure
-1. Check which file(s) dropped below threshold in CI output
-2. Run `cargo llvm-cov --html` locally to see uncovered lines
-3. Add tests for uncovered code paths
-
 ---
 
 ## Third-Party Library Usage
 
-If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to find the latest documentation and mid-2025 best practices.
+If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to find the latest documentation and current best practices.
 
 ---
 
@@ -226,13 +223,9 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 **This is the project you're working on.** FrankenTUI is a minimal, high-performance terminal UI kernel focused on correctness, determinism, and clean architecture.
 
-### Design Philosophy
+### What It Does
 
-1. **Correctness over cleverness** — predictable terminal state is non-negotiable
-2. **Deterministic output** — buffer diffs and explicit presentation over ad-hoc writes
-3. **Inline first** — preserve scrollback while keeping chrome stable
-4. **Layered architecture** — core → render → runtime → widgets, no cyclic dependencies
-5. **Zero-surprise teardown** — RAII cleanup, even when apps crash
+Provides a layered terminal UI framework with an Elm/Bubbletea-style runtime, deterministic buffer-diff rendering, RAII terminal lifecycle management, and a library of 37+ widgets. Supports both inline (scrollback-preserving) and alt-screen modes.
 
 ### Architecture
 
@@ -261,138 +254,83 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Workspace Crates
+### Workspace Structure
 
-| Crate | Purpose |
-|-------|---------|
-| `ftui` | Public facade + prelude |
-| `ftui-core` | Terminal lifecycle, events, capabilities |
-| `ftui-render` | Buffer, diff, ANSI presenter |
-| `ftui-style` | Style + theme system |
-| `ftui-text` | Spans, segments, rope editor |
-| `ftui-layout` | Flex + Grid solvers |
-| `ftui-runtime` | Elm/Bubbletea runtime |
-| `ftui-widgets` | Core widget library (37 widgets) |
-| `ftui-extras` | Feature-gated add-ons |
-| `ftui-demo-showcase` | Reference app + snapshots |
-| `ftui-harness` | Test utilities + snapshot framework |
-| `ftui-pty` | PTY test utilities |
+```
+frankentui/
+├── Cargo.toml                         # Workspace root
+├── crates/
+│   ├── ftui/                          # Public facade + prelude
+│   ├── ftui-core/                     # Terminal lifecycle, events, capabilities
+│   ├── ftui-render/                   # Buffer, diff, ANSI presenter
+│   ├── ftui-style/                    # Style + theme system
+│   ├── ftui-text/                     # Spans, segments, rope editor
+│   ├── ftui-layout/                   # Flex + Grid solvers
+│   ├── ftui-runtime/                  # Elm/Bubbletea runtime
+│   ├── ftui-widgets/                  # Core widget library (37 widgets)
+│   ├── ftui-extras/                   # Feature-gated add-ons (VFX, opt-level=3)
+│   ├── ftui-harness/                  # Test utilities + snapshot framework
+│   ├── ftui-i18n/                     # Internationalization support
+│   ├── ftui-pty/                      # PTY test utilities
+│   ├── ftui-simd/                     # SIMD acceleration
+│   ├── ftui-backend/                  # Backend abstraction
+│   ├── ftui-tty/                      # TTY backend
+│   ├── ftui-web/                      # Web backend
+│   ├── ftui-showcase-wasm/            # WASM showcase build
+│   ├── ftui-demo-showcase/            # Reference app + snapshots
+│   ├── frankenterm-core/              # Terminal emulator core
+│   └── frankenterm-web/               # Terminal emulator web frontend
+├── scripts/                           # E2E test scripts + benchmarks
+├── tests/                             # Cross-component integration tests
+└── fuzz/                              # Fuzz testing (excluded from workspace)
+```
 
 ### Key Files
 
-| File | Purpose |
+| Crate | Key Files | Purpose |
+|-------|-----------|---------|
+| `ftui-core` | `src/terminal_session.rs` | RAII terminal lifecycle |
+| `ftui-render` | `src/buffer.rs` | 2D cell buffer with scissor stacks |
+| `ftui-render` | `src/cell.rs` | 16-byte cache-optimized Cell |
+| `ftui-render` | `src/diff.rs` | Efficient buffer diff computation |
+| `ftui-render` | `src/presenter.rs` | State-tracked ANSI emitter |
+| `ftui-runtime` | `src/program.rs` | Main event loop (Elm architecture) |
+| `ftui-runtime` | `src/terminal_writer.rs` | One-writer rule enforcement |
+| `ftui-widgets` | `src/lib.rs` | Widget trait + 37 implementations |
+| `ftui-demo-showcase` | `src/app.rs` | Demo application model |
+
+### Core Types Quick Reference
+
+| Type | Purpose |
 |------|---------|
-| `crates/ftui-core/src/terminal_session.rs` | RAII terminal lifecycle |
-| `crates/ftui-render/src/buffer.rs` | 2D cell buffer with scissor stacks |
-| `crates/ftui-render/src/cell.rs` | 16-byte cache-optimized Cell |
-| `crates/ftui-render/src/diff.rs` | Efficient buffer diff computation |
-| `crates/ftui-render/src/presenter.rs` | State-tracked ANSI emitter |
-| `crates/ftui-runtime/src/program.rs` | Main event loop (Elm architecture) |
-| `crates/ftui-runtime/src/terminal_writer.rs` | One-writer rule enforcement |
-| `crates/ftui-widgets/src/lib.rs` | Widget trait + 37 implementations |
-| `crates/ftui-demo-showcase/src/app.rs` | Demo application model |
+| `Cell` | 16-byte cache-optimized terminal cell (content, fg, bg, attrs) |
+| `Buffer` | 2D grid with scissor/opacity stacks, row-major layout |
+| `BufferDiff` | Efficient diff between two buffers for minimal ANSI output |
+| `Presenter` | State-tracked ANSI emitter (avoids redundant escape sequences) |
+| `Frame` | Per-render-cycle drawing context wrapping a Buffer |
+| `TerminalSession` | RAII terminal lifecycle (raw mode, alt-screen, cleanup) |
+| `TerminalWriter` | One-writer rule enforcer for terminal output |
+| `Model` | Elm/Bubbletea trait: `init()`, `update()`, `view()`, `subscriptions()` |
+| `Cmd<M>` | Command returned from update — async side effects |
+| `Event` | Parsed terminal event (key, mouse, resize, focus) |
+| `Widget` | Stateless widget trait: `render(&self, area, frame)` |
+| `StatefulWidget` | Stateful widget trait: `render(&self, area, frame, state)` |
+| `Rect` | Layout rectangle (x, y, width, height) |
+| `ScreenMode` | `Inline { ui_height }` or `AltScreen` |
 
-### Core Abstractions
+### Key Design Decisions
 
-**Cell (16 bytes)** — Cache-line optimized for SIMD comparisons:
-```rust
-Cell {
-    content: CellContent,  // 4 bytes - char or GraphemeId
-    fg: PackedRgba,        // 4 bytes - foreground RGBA
-    bg: PackedRgba,        // 4 bytes - background RGBA
-    attrs: CellAttrs,      // 4 bytes - style flags + link ID
-}
-```
-
-**Buffer** — 2D grid with scissor/opacity stacks:
-```rust
-Buffer {
-    width: u16,
-    height: u16,
-    cells: Vec<Cell>,           // Row-major layout
-    scissor_stack: Vec<Rect>,   // Clipping regions
-    opacity_stack: Vec<f32>,    // Compositing opacity
-}
-```
-
-**Model Trait** — Elm/Bubbletea architecture:
-```rust
-pub trait Model: Sized {
-    type Message: From<Event> + Send;
-
-    fn init(&mut self) -> Cmd<Self::Message>;
-    fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message>;
-    fn view(&self, frame: &mut Frame);
-    fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>>;
-}
-```
-
-### Key Invariants
-
-1. **One-Writer Rule**: Only one owner of terminal output (enforced via `TerminalWriter`)
-2. **Terminal State Restoration**: Guaranteed on any exit path via RAII
-3. **Cell Size Fixed at 16 Bytes**: Non-negotiable for cache efficiency
-4. **Buffer Dimensions Immutable**: Once created, width/height never change
-5. **Scissor Stack Monotonic Intersection**: Each push intersects with current
-
-### Screen Modes
-
-**Inline Mode** — Preserves scrollback:
-```rust
-ScreenMode::Inline { ui_height: 12 }
-```
-- UI rendered at bottom of terminal
-- Logs scroll normally above UI
-- Uses cursor save/restore (DEC 7/8)
-
-**AltScreen Mode** — Full-screen UI:
-```rust
-ScreenMode::AltScreen
-```
-- Takes over entire terminal
-- No scrollback preservation
-
-### Performance Requirements
-
-- 16-byte Cell for SIMD comparisons
-- Row-major buffer layout for cache prefetching
-- State tracking in Presenter (avoid redundant escape sequences)
-- 64KB buffered output (one write per frame)
-- Budget system for graceful degradation
-
-### Running the Demo
-
-```bash
-# Default (alt-screen mode)
-cargo run -p ftui-demo-showcase
-
-# Inline mode
-FTUI_HARNESS_SCREEN_MODE=inline FTUI_HARNESS_UI_HEIGHT=12 cargo run -p ftui-demo-showcase
-
-# Specific demo screen
-FTUI_HARNESS_VIEW=dashboard cargo run -p ftui-demo-showcase
-FTUI_HARNESS_VIEW=visual_effects cargo run -p ftui-demo-showcase
-```
-
-### Adding New Widgets
-
-1. Create widget struct in `crates/ftui-widgets/src/`
-2. Implement `Widget` or `StatefulWidget` trait
-3. Add unit tests in same file
-4. Export from `lib.rs`
-5. Add snapshot tests in `ftui-demo-showcase`
-
-```rust
-pub trait Widget {
-    fn render(&self, area: Rect, frame: &mut Frame);
-    fn is_essential(&self) -> bool { false }  // Degradation support
-}
-
-pub trait StatefulWidget {
-    type State;
-    fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State);
-}
-```
+- **16-byte Cell** is non-negotiable for SIMD comparison efficiency and cache-line alignment
+- **Buffer dimensions immutable** — once created, width/height never change
+- **Scissor stack monotonic intersection** — each push intersects with current clip region
+- **One-writer rule** — only one owner of terminal output, enforced via `TerminalWriter`
+- **RAII terminal state restoration** — guaranteed on any exit path, even crashes
+- **Row-major buffer layout** for cache prefetching during sequential rendering
+- **State tracking in Presenter** — avoids redundant escape sequences (64KB buffered output, one write per frame)
+- **Elm/Bubbletea architecture** — Model trait with init/update/view/subscriptions
+- **Inline mode first** — preserve scrollback while keeping chrome stable
+- **Deterministic output** — buffer diffs and explicit presentation over ad-hoc writes
+- **ftui-extras at opt-level=3** — VFX rasterizer inner loops need SIMD, loop unrolling, and aggressive inlining
 
 ---
 
@@ -447,9 +385,9 @@ A mail-like layer that lets coding agents coordinate asynchronously via MCP tool
 
 ## Beads (br) — Dependency-Aware Issue Tracking
 
-Beads provides a lightweight, dependency-aware issue database and CLI (`br`) for selecting "ready work," setting priorities, and tracking status. It complements MCP Agent Mail's messaging and file reservations.
+Beads provides a lightweight, dependency-aware issue database and CLI (`br` - beads_rust) for selecting "ready work," setting priorities, and tracking status. It complements MCP Agent Mail's messaging and file reservations.
 
-**Note:** br (beads_rust) is non-invasive and never executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/` and `git commit`.
+**Important:** `br` is non-invasive—it NEVER runs git commands automatically. You must manually commit changes after `br sync --flush-only`.
 
 ### Conventions
 
@@ -478,7 +416,8 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br`) for
 
 5. **Complete and release:**
    ```bash
-   br close br-123 --reason "Completed"
+   br close 123 --reason "Completed"
+   br sync --flush-only  # Export to JSONL (no git operations)
    ```
    ```
    release_file_reservations(project_key, agent_name, paths=["src/**"])
@@ -627,6 +566,33 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 
 ---
 
+## RCH — Remote Compilation Helper
+
+RCH offloads `cargo build`, `cargo test`, `cargo clippy`, and other compilation commands to a fleet of 8 remote Contabo VPS workers instead of building locally. This prevents compilation storms from overwhelming csd when many agents run simultaneously.
+
+**RCH is installed at `~/.local/bin/rch` and is hooked into Claude Code's PreToolUse automatically.** Most of the time you don't need to do anything if you are Claude Code — builds are intercepted and offloaded transparently.
+
+To manually offload a build:
+```bash
+rch exec -- cargo build --release
+rch exec -- cargo test
+rch exec -- cargo clippy
+```
+
+Quick commands:
+```bash
+rch doctor                    # Health check
+rch workers probe --all       # Test connectivity to all 8 workers
+rch status                    # Overview of current state
+rch queue                     # See active/waiting builds
+```
+
+If rch or its workers are unavailable, it fails open — builds run locally as normal.
+
+**Note for Codex/GPT-5.2:** Codex does not have the automatic PreToolUse hook, but you can (and should) still manually offload compute-intensive compilation commands using `rch exec -- <command>`. This avoids local resource contention when multiple agents are building simultaneously.
+
+---
+
 ## ast-grep vs ripgrep
 
 **Use `ast-grep` when structure matters.** It parses code and matches AST nodes, ignoring comments/strings, and can **safely rewrite** code.
@@ -686,7 +652,7 @@ rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
 
 ```
 mcp__morph-mcp__warp_grep(
-  repoPath: "/path/to/frankentui",
+  repoPath: "/dp/frankentui",
   query: "How does the buffer diff algorithm work?"
 )
 ```
@@ -705,7 +671,9 @@ Returns structured results with file paths, line ranges, and extracted code snip
 
 ## Beads Workflow Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+
+**Important:** `br` is non-invasive—it NEVER executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/ && git commit`.
 
 ### Essential Commands
 
@@ -719,9 +687,9 @@ br list --status=open # All open issues
 br show <id>          # Full issue details with dependencies
 br create --title="..." --type=task --priority=2
 br update <id> --status=in_progress
-br close <id> --reason="Completed"
+br close <id> --reason "Completed"
 br close <id1> <id2>  # Close multiple issues at once
-br sync --flush-only  # Flush changes to .beads/ (does NOT run git)
+br sync --flush-only  # Export to JSONL (NO git operations)
 ```
 
 ### Workflow Pattern
@@ -730,7 +698,7 @@ br sync --flush-only  # Flush changes to .beads/ (does NOT run git)
 2. **Claim**: Use `br update <id> --status=in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` then `git add .beads/ && git commit` at session end
+5. **Sync**: Run `br sync --flush-only` then manually commit
 
 ### Key Concepts
 
@@ -746,9 +714,9 @@ br sync --flush-only  # Flush changes to .beads/ (does NOT run git)
 ```bash
 git status              # Check what changed
 git add <files>         # Stage code changes
-br sync --flush-only    # Flush beads changes to .beads/
+br sync --flush-only    # Export beads to JSONL
 git add .beads/         # Stage beads changes
-git commit -m "..."     # Commit code and beads together
+git commit -m "..."     # Commit everything together
 git push                # Push to remote
 ```
 
@@ -758,37 +726,21 @@ git push                # Push to remote
 - Update status as you work (in_progress → closed)
 - Create new issues with `br create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
-- Always `br sync --flush-only` then `git add .beads/` before ending session
+- Always `br sync --flush-only && git add .beads/` before ending session
 
 <!-- end-bv-agent-instructions -->
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**When ending a work session**, you MUST complete ALL steps below.
 
 **MANDATORY WORKFLOW:**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   br sync --flush-only    # Flush beads changes to .beads/
-   git add .beads/         # Stage beads changes
-   git commit -m "Update beads" --allow-empty
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+4. **Sync beads** - `br sync --flush-only` to export to JSONL
+5. **Hand off** - Provide context for next session
 
 
 ---
@@ -809,4 +761,10 @@ Next steps (pick one)
 3. If you want a full suite run later, fix conformance/clippy blockers and re‑run cargo test --all.
 ```
 
-NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are changes created by the potentially dozen of other agents working on the project at the same time. This is not only a common occurence, it happens multiple times PER MINUTE. The way to deal with it is simple: you NEVER, under ANY CIRCUMSTANCE, stash, revert, overwrite, or otherwise disturb in ANY way the work of other agents. Just treat those changes identically to changes that you yourself made. Just fool yourself into think YOU made the changes and simply don't recall it for some reason.
+NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are changes created by the potentially dozen of other agents working on the project at the same time. This is not only a common occurence, it happens multiple times PER MINUTE. The way to deal with it is simple: you NEVER, under ANY CIRCUMSTANCE, stash, revert, overwrite, or otherwise disturb in ANY way the work of other agents. Just treat those changes identically to changes that you yourself made. Just fool yourself into thinking YOU made the changes and simply don't recall it for some reason.
+
+---
+
+## Note on Built-in TODO Functionality
+
+Also, if I ask you to explicitly use your built-in TODO functionality, don't complain about this and say you need to use beads. You can use built-in TODOs if I tell you specifically to do so. Always comply with such orders.
