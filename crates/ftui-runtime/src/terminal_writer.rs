@@ -62,7 +62,7 @@ use ftui_render::diff::{BufferDiff, TileDiffConfig, TileDiffFallback, TileDiffSt
 use ftui_render::diff_strategy::{DiffStrategy, DiffStrategyConfig, DiffStrategySelector};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
-use tracing::{debug_span, info_span, trace};
+use tracing::{debug_span, info, info_span, trace, warn};
 
 /// Size of the internal write buffer (64KB).
 const BUFFER_CAPACITY: usize = 64 * 1024;
@@ -156,6 +156,14 @@ fn diff_strategy_str(strategy: DiffStrategy) -> &'static str {
         DiffStrategy::Full => "full",
         DiffStrategy::DirtyRows => "dirty",
         DiffStrategy::FullRedraw => "redraw",
+    }
+}
+
+fn inline_strategy_str(strategy: InlineStrategy) -> &'static str {
+    match strategy {
+        InlineStrategy::ScrollRegion => "scroll_region",
+        InlineStrategy::OverlayRedraw => "overlay_redraw",
+        InlineStrategy::Hybrid => "hybrid",
     }
 }
 
@@ -591,6 +599,29 @@ impl<W: Write> TerminalWriter<W> {
         let inline_strategy = InlineStrategy::select(&capabilities);
         let auto_ui_height = None;
         let diff_strategy = DiffStrategySelector::new(diff_config.strategy_config.clone());
+
+        // Log inline mode activation.
+        match screen_mode {
+            ScreenMode::Inline { ui_height } => {
+                info!(
+                    inline_height = ui_height,
+                    render_mode = %inline_strategy_str(inline_strategy),
+                    "inline mode activated"
+                );
+            }
+            ScreenMode::InlineAuto {
+                min_height,
+                max_height,
+            } => {
+                info!(
+                    min_height,
+                    max_height,
+                    render_mode = %inline_strategy_str(inline_strategy),
+                    "inline auto mode activated"
+                );
+            }
+            ScreenMode::AltScreen => {}
+        }
         let mut diff_scratch = BufferDiff::new();
         diff_scratch
             .tile_config_mut()
@@ -1504,6 +1535,15 @@ impl<W: Write> TerminalWriter<W> {
         cursor: Option<(u16, u16)>,
         cursor_visible: bool,
     ) -> io::Result<FrameEmitStats> {
+        let render_mode = inline_strategy_str(self.inline_strategy);
+        let _inline_span = info_span!(
+            "inline.render",
+            inline_height = ui_height,
+            scrollback_preserved = tracing::field::Empty,
+            render_mode,
+        )
+        .entered();
+
         let result = (|| -> io::Result<FrameEmitStats> {
             let visible_height = ui_height.min(self.term_height);
             let ui_y_start = self.ui_start_row();
