@@ -27,6 +27,7 @@ pub mod error;
 // --- Core re-exports -------------------------------------------------------
 
 pub use ftui_core::cursor::{CursorManager, CursorSaveStrategy};
+pub use ftui_core::cx::{Cx, CxController, CxError, LabClock};
 pub use ftui_core::event::{
     ClipboardEvent, ClipboardSource, Event, KeyCode, KeyEvent, KeyEventKind, Modifiers,
     MouseButton, MouseEvent, MouseEventKind, PasteEvent,
@@ -74,8 +75,8 @@ pub mod prelude {
     #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
     pub use crate::TerminalSession;
     pub use crate::{
-        Buffer, Error, Event, Frame, KeyCode, KeyEvent, Modifiers, Result, Style, TablePresetId,
-        TableTheme, Theme,
+        Buffer, Cx, CxController, CxError, Error, Event, Frame, KeyCode, KeyEvent, LabClock,
+        Modifiers, Result, Style, TablePresetId, TableTheme, Theme,
     };
 
     #[cfg(feature = "runtime")]

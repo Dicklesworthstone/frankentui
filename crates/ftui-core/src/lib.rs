@@ -23,6 +23,7 @@
 pub mod animation;
 pub mod capability_override;
 pub mod cursor;
+pub mod cx;
 pub mod event;
 pub mod event_coalescer;
 pub mod geometry;
