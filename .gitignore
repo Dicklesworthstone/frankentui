@@ -35,8 +35,9 @@ perf_*.data
 # Flamegraph output
 flamegraph*.svg
 
-# Test checksums (ephemeral)
+# Test checksums and baselines (ephemeral, machine-dependent)
 golden_checksums.txt
+baseline_results.json
 
 # Local scratch DBs
 storage.sqlite3
