@@ -83,6 +83,7 @@ use ftui_layout::{
     PanePointerPosition, PaneResizeDirection, PaneResizeTarget, PaneSemanticInputEvent,
     PaneSemanticInputEventKind, PaneTree, Rect, SplitAxis,
 };
+use ftui_render::arena::FrameArena;
 use ftui_render::budget::{BudgetDecision, DegradationLevel, FrameBudgetConfig, RenderBudget};
 use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
@@ -3001,6 +3002,8 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     last_checkpoint: Instant,
     /// Inline auto UI height remeasurement state.
     inline_auto_remeasure: Option<InlineAutoRemeasureState>,
+    /// Per-frame bump arena for temporary render-path allocations.
+    frame_arena: FrameArena,
 }
 
 #[cfg(feature = "crossterm-compat")]
@@ -4096,6 +4099,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     }
 
     fn render_buffer(&mut self, frame_height: u16) -> (Buffer, Option<(u16, u16)>, bool) {
+        // Reset the per-frame arena so widgets get fresh scratch space.
+        self.frame_arena.reset();
+
         // Note: Frame borrows the pool and links from writer.
         // We scope it so it drops before we call present_ui (which needs exclusive writer access).
         let buffer = self.writer.take_render_buffer(self.width, frame_height);
@@ -4104,6 +4110,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         frame.set_degradation(self.budget.degradation());
         frame.set_links(links);
         frame.set_widget_budget(self.widget_refresh_plan.as_budget());
+        frame.set_arena(&self.frame_arena);
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -4159,9 +4166,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     }
 
     fn render_measure_buffer(&mut self, frame_height: u16) -> (Buffer, Option<(u16, u16)>) {
+        // Reset the per-frame arena for measurement pass.
+        self.frame_arena.reset();
+
         let pool = self.writer.pool_mut();
         let mut frame = Frame::new(self.width, frame_height, pool);
         frame.set_degradation(self.budget.degradation());
+        frame.set_arena(&self.frame_arena);
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -7124,6 +7135,7 @@ mod tests {
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            frame_arena: FrameArena::default(),
         }
     }
 

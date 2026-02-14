@@ -29,6 +29,7 @@
 //! frame.set_cursor(Some((2, 0)));
 //! ```
 
+use crate::arena::FrameArena;
 use crate::budget::DegradationLevel;
 use crate::buffer::Buffer;
 use crate::cell::{Cell, CellContent, GraphemeId};
@@ -385,6 +386,14 @@ pub struct Frame<'a> {
     /// budget is constrained (e.g., use ASCII borders instead of
     /// Unicode, skip decorative rendering, etc.).
     pub degradation: DegradationLevel,
+
+    /// Optional per-frame bump arena for temporary allocations.
+    ///
+    /// When set, widgets can use this arena for scratch allocations that
+    /// only live for the current frame (e.g., formatted strings, temporary
+    /// slices). The arena is reset at frame boundaries, eliminating
+    /// allocator churn on the hot render path.
+    arena: Option<&'a FrameArena>,
 }
 
 impl<'a> Frame<'a> {
@@ -402,6 +411,7 @@ impl<'a> Frame<'a> {
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
+            arena: None,
         }
     }
 
@@ -419,6 +429,7 @@ impl<'a> Frame<'a> {
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
+            arena: None,
         }
     }
 
@@ -442,6 +453,7 @@ impl<'a> Frame<'a> {
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
+            arena: None,
         }
     }
 
@@ -459,12 +471,29 @@ impl<'a> Frame<'a> {
             cursor_position: None,
             cursor_visible: true,
             degradation: DegradationLevel::Full,
+            arena: None,
         }
     }
 
     /// Set the link registry for this frame.
     pub fn set_links(&mut self, links: &'a mut LinkRegistry) {
         self.links = Some(links);
+    }
+
+    /// Set the per-frame bump arena for temporary allocations.
+    ///
+    /// Widgets can access the arena via [`arena()`](Self::arena) to
+    /// perform scratch allocations that only live for the current frame.
+    pub fn set_arena(&mut self, arena: &'a FrameArena) {
+        self.arena = Some(arena);
+    }
+
+    /// Returns the per-frame bump arena, if set.
+    ///
+    /// Widgets should use this for temporary allocations (formatted strings,
+    /// scratch slices) to avoid per-frame allocator churn.
+    pub fn arena(&self) -> Option<&FrameArena> {
+        self.arena
     }
 
     /// Register a hyperlink URL and return its ID.

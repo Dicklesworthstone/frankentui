@@ -23,6 +23,7 @@ memchr = "2.7.6"
 smallvec = "1.15.1"
 unicode-segmentation = "1.12.0"
 web-time = "1.1.0"
+bumpalo = "3.19.1"
 ftui-core = { path = "../ftui-core", version = "0.1.1" }
 tracing = { version = "0.1.41", optional = true }
 # Note: ftui-render is the core kernel and should not depend on ftui-style.
