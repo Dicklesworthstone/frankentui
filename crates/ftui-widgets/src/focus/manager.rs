@@ -1,11 +1,16 @@
 #![forbid(unsafe_code)]
 
 //! Focus manager coordinating focus traversal, history, and traps.
+//!
+//! The manager tracks the current focus, maintains a navigation history,
+//! and enforces focus traps for modal dialogs. It also provides a
+//! configurable [`FocusIndicator`] for styling the focused widget.
 
 use std::collections::HashMap;
 
 use ftui_core::event::KeyCode;
 
+use super::indicator::FocusIndicator;
 use super::spatial;
 use super::{FocusGraph, FocusId, NavDirection};
 
@@ -62,6 +67,9 @@ pub struct FocusTrap {
 }
 
 /// Central focus coordinator.
+///
+/// Tracks focus state, navigation history, focus traps (for modals),
+/// and focus indicator styling. Emits [`FocusEvent`]s on focus changes.
 #[derive(Debug, Default)]
 pub struct FocusManager {
     graph: FocusGraph,
@@ -70,6 +78,9 @@ pub struct FocusManager {
     trap_stack: Vec<FocusTrap>,
     groups: HashMap<u32, FocusGroup>,
     last_event: Option<FocusEvent>,
+    indicator: FocusIndicator,
+    /// Running count of focus changes for metrics.
+    focus_change_count: u64,
 }
 
 impl FocusManager {
@@ -120,7 +131,10 @@ impl FocusManager {
     pub fn blur(&mut self) -> Option<FocusId> {
         let prev = self.current.take();
         if let Some(id) = prev {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(from_widget = id, trigger = "blur", "focus.change");
             self.last_event = Some(FocusEvent::FocusLost { id });
+            self.focus_change_count += 1;
         }
         prev
     }
@@ -204,6 +218,12 @@ impl FocusManager {
     /// Push focus trap (for modals).
     pub fn push_trap(&mut self, group_id: u32) {
         let return_focus = self.current;
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            group_id,
+            return_focus = ?return_focus,
+            "focus.trap_push"
+        );
         self.trap_stack.push(FocusTrap {
             group_id,
             return_focus,
@@ -219,6 +239,12 @@ impl FocusManager {
         let Some(trap) = self.trap_stack.pop() else {
             return false;
         };
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            group_id = trap.group_id,
+            return_focus = ?trap.return_focus,
+            "focus.trap_pop"
+        );
 
         if let Some(id) = trap.return_focus
             && self.can_focus(id)
@@ -280,6 +306,25 @@ impl FocusManager {
         self.last_event.take()
     }
 
+    /// Get the focus indicator configuration.
+    #[inline]
+    #[must_use]
+    pub fn indicator(&self) -> &FocusIndicator {
+        &self.indicator
+    }
+
+    /// Set the focus indicator configuration.
+    pub fn set_indicator(&mut self, indicator: FocusIndicator) {
+        self.indicator = indicator;
+    }
+
+    /// Total number of focus changes since creation (for metrics).
+    #[inline]
+    #[must_use]
+    pub fn focus_change_count(&self) -> u64 {
+        self.focus_change_count
+    }
+
     fn set_focus(&mut self, id: FocusId) -> bool {
         if !self.can_focus(id) || !self.allowed_by_trap(id) {
             return false;
@@ -293,15 +338,26 @@ impl FocusManager {
             if Some(prev_id) != self.history.last().copied() {
                 self.history.push(prev_id);
             }
-            self.last_event = Some(FocusEvent::FocusMoved {
+            let event = FocusEvent::FocusMoved {
                 from: prev_id,
                 to: id,
-            });
+            };
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                from_widget = prev_id,
+                to_widget = id,
+                trigger = "navigate",
+                "focus.change"
+            );
+            self.last_event = Some(event);
         } else {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(to_widget = id, trigger = "initial", "focus.change");
             self.last_event = Some(FocusEvent::FocusGained { id });
         }
 
         self.current = Some(id);
+        self.focus_change_count += 1;
         true
     }
 
@@ -978,5 +1034,59 @@ mod tests {
         let mut fm = FocusManager::new();
         fm.graph_mut().insert(node(1, 0));
         assert!(fm.graph().get(1).is_some());
+    }
+
+    // --- Focus indicator ---
+
+    #[test]
+    fn default_indicator_is_reverse() {
+        let fm = FocusManager::new();
+        assert!(fm.indicator().is_visible());
+        assert_eq!(
+            fm.indicator().kind(),
+            crate::focus::FocusIndicatorKind::StyleOverlay
+        );
+    }
+
+    #[test]
+    fn set_indicator() {
+        let mut fm = FocusManager::new();
+        fm.set_indicator(crate::focus::FocusIndicator::underline());
+        assert_eq!(
+            fm.indicator().kind(),
+            crate::focus::FocusIndicatorKind::Underline
+        );
+    }
+
+    // --- Focus change count ---
+
+    #[test]
+    fn focus_change_count_increments() {
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(1, 0));
+        fm.graph_mut().insert(node(2, 1));
+
+        assert_eq!(fm.focus_change_count(), 0);
+
+        fm.focus(1);
+        assert_eq!(fm.focus_change_count(), 1);
+
+        fm.focus(2);
+        assert_eq!(fm.focus_change_count(), 2);
+
+        fm.blur();
+        assert_eq!(fm.focus_change_count(), 3);
+    }
+
+    #[test]
+    fn focus_change_count_zero_on_no_op() {
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(1, 0));
+        fm.focus(1);
+        assert_eq!(fm.focus_change_count(), 1);
+
+        // Focusing the same widget is a no-op
+        fm.focus(1);
+        assert_eq!(fm.focus_change_count(), 1);
     }
 }
