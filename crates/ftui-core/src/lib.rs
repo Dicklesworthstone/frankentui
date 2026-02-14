@@ -36,6 +36,7 @@ pub mod key_sequence;
 pub mod keybinding;
 pub mod logging;
 pub mod mux_passthrough;
+pub mod read_optimized;
 pub mod s3_fifo;
 pub mod semantic_event;
 pub mod terminal_capabilities;

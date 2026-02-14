@@ -1107,6 +1107,58 @@ impl TerminalCapabilities {
     }
 }
 
+// ============================================================================
+// SharedCapabilities — ArcSwap-backed concurrent access (bd-3l9qr.2)
+// ============================================================================
+
+/// Wait-free shared terminal capabilities for concurrent read/write.
+///
+/// Wraps [`TerminalCapabilities`] in an [`ArcSwapStore`] so that the render
+/// thread can read capabilities without locking while the main thread updates
+/// them on terminal reconfiguration or resize.
+///
+/// # Example
+///
+/// ```
+/// use ftui_core::terminal_capabilities::{TerminalCapabilities, SharedCapabilities};
+///
+/// let shared = SharedCapabilities::new(TerminalCapabilities::modern());
+/// assert!(shared.load().true_color);
+///
+/// // Update from main thread (e.g., after re-detection).
+/// shared.store(TerminalCapabilities::dumb());
+/// assert!(!shared.load().true_color);
+/// ```
+pub struct SharedCapabilities {
+    inner: crate::read_optimized::ArcSwapStore<TerminalCapabilities>,
+}
+
+impl SharedCapabilities {
+    /// Create shared capabilities from an initial detection.
+    pub fn new(caps: TerminalCapabilities) -> Self {
+        Self {
+            inner: crate::read_optimized::ArcSwapStore::new(caps),
+        }
+    }
+
+    /// Detect capabilities from the current environment and wrap them.
+    pub fn detect() -> Self {
+        Self::new(TerminalCapabilities::detect())
+    }
+
+    /// Wait-free read of current capabilities.
+    #[inline]
+    pub fn load(&self) -> TerminalCapabilities {
+        crate::read_optimized::ReadOptimized::load(&self.inner)
+    }
+
+    /// Atomically replace capabilities (e.g., after re-detection).
+    #[inline]
+    pub fn store(&self, caps: TerminalCapabilities) {
+        crate::read_optimized::ReadOptimized::store(&self.inner, caps);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2341,6 +2393,69 @@ mod tests {
                 "{}: expected {:?}, got {:?}",
                 case.name, case.expected, actual
             );
+        }
+    }
+
+    // ====== SharedCapabilities tests (bd-3l9qr.2) ======
+
+    #[test]
+    fn shared_caps_load_returns_initial() {
+        let shared = SharedCapabilities::new(TerminalCapabilities::modern());
+        assert!(shared.load().true_color);
+        assert!(shared.load().sync_output);
+    }
+
+    #[test]
+    fn shared_caps_store_replaces_value() {
+        let shared = SharedCapabilities::new(TerminalCapabilities::modern());
+        shared.store(TerminalCapabilities::dumb());
+        let loaded = shared.load();
+        assert!(!loaded.true_color);
+        assert!(!loaded.sync_output);
+    }
+
+    #[test]
+    fn shared_caps_concurrent_read_write() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let shared = Arc::new(SharedCapabilities::new(TerminalCapabilities::basic()));
+        let barrier = Arc::new(Barrier::new(5)); // 4 readers + 1 writer
+
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let s = Arc::clone(&shared);
+                let b = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    b.wait();
+                    for _ in 0..10_000 {
+                        let caps = s.load();
+                        // Must be a valid TerminalCapabilities (no torn reads).
+                        let _ = caps.use_sync_output();
+                        let _ = caps.true_color;
+                    }
+                })
+            })
+            .collect();
+
+        let writer = {
+            let s = Arc::clone(&shared);
+            let b = Arc::clone(&barrier);
+            thread::spawn(move || {
+                b.wait();
+                for i in 0..1_000 {
+                    if i % 2 == 0 {
+                        s.store(TerminalCapabilities::modern());
+                    } else {
+                        s.store(TerminalCapabilities::dumb());
+                    }
+                }
+            })
+        };
+
+        writer.join().unwrap();
+        for h in readers {
+            h.join().unwrap();
         }
     }
 }
