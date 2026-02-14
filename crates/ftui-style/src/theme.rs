@@ -642,6 +642,59 @@ pub mod themes {
     }
 }
 
+// ============================================================================
+// SharedResolvedTheme — ArcSwap-backed concurrent access (bd-3l9qr.2)
+// ============================================================================
+
+/// Wait-free shared resolved theme for concurrent read/write.
+///
+/// Wraps a [`ResolvedTheme`] in an [`arc_swap::ArcSwap`] so that the render
+/// thread can read theme colors without locking while the main thread updates
+/// them on theme switch or mode change.
+///
+/// # Example
+///
+/// ```
+/// use ftui_style::theme::{Theme, ResolvedTheme, SharedResolvedTheme};
+///
+/// let theme = Theme::default();
+/// let resolved = theme.resolve(true); // dark mode
+/// let shared = SharedResolvedTheme::new(resolved);
+///
+/// // Wait-free read from render thread
+/// let current = shared.load();
+/// assert_eq!(current.primary, resolved.primary);
+///
+/// // Update on theme switch
+/// let light = theme.resolve(false);
+/// shared.store(light);
+/// ```
+pub struct SharedResolvedTheme {
+    inner: arc_swap::ArcSwap<ResolvedTheme>,
+}
+
+impl SharedResolvedTheme {
+    /// Create shared theme from an initial resolved theme.
+    pub fn new(theme: ResolvedTheme) -> Self {
+        Self {
+            inner: arc_swap::ArcSwap::from_pointee(theme),
+        }
+    }
+
+    /// Wait-free read of current resolved theme.
+    #[inline]
+    pub fn load(&self) -> ResolvedTheme {
+        let guard = self.inner.load();
+        **guard
+    }
+
+    /// Atomically replace the resolved theme (e.g., on theme switch or mode change).
+    #[inline]
+    pub fn store(&self, theme: ResolvedTheme) {
+        self.inner.store(std::sync::Arc::new(theme));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,5 +1194,79 @@ mod tests {
         let resolved = themes::dark().resolve(true);
         let debug = format!("{:?}", resolved);
         assert!(debug.contains("ResolvedTheme"));
+    }
+
+    // ====== SharedResolvedTheme tests (bd-3l9qr.2) ======
+
+    #[test]
+    fn shared_theme_load_returns_initial() {
+        let dark = themes::dark().resolve(true);
+        let shared = SharedResolvedTheme::new(dark);
+        assert_eq!(shared.load(), dark);
+    }
+
+    #[test]
+    fn shared_theme_store_replaces_value() {
+        let original = themes::dark().resolve(true);
+        // Build a clearly different theme by mutating a field.
+        let mut updated = original;
+        updated.primary = Color::rgb(0, 0, 0);
+        assert_ne!(original.primary, updated.primary);
+
+        let shared = SharedResolvedTheme::new(original);
+        shared.store(updated);
+        assert_eq!(shared.load(), updated);
+        assert_ne!(shared.load(), original);
+    }
+
+    #[test]
+    fn shared_theme_concurrent_read_write() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dark = themes::dark().resolve(true);
+        let light = themes::dark().resolve(false);
+        let shared = Arc::new(SharedResolvedTheme::new(dark));
+        let barrier = Arc::new(Barrier::new(5));
+
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let s = Arc::clone(&shared);
+                let b = Arc::clone(&barrier);
+                let dark_copy = dark;
+                let light_copy = light;
+                thread::spawn(move || {
+                    b.wait();
+                    for _ in 0..10_000 {
+                        let theme = s.load();
+                        // Must be one of the two valid themes (no torn reads).
+                        assert!(
+                            theme == dark_copy || theme == light_copy,
+                            "torn read detected"
+                        );
+                    }
+                })
+            })
+            .collect();
+
+        let writer = {
+            let s = Arc::clone(&shared);
+            let b = Arc::clone(&barrier);
+            thread::spawn(move || {
+                b.wait();
+                for i in 0..1_000 {
+                    if i % 2 == 0 {
+                        s.store(light);
+                    } else {
+                        s.store(dark);
+                    }
+                }
+            })
+        };
+
+        writer.join().unwrap();
+        for h in readers {
+            h.join().unwrap();
+        }
     }
 }
