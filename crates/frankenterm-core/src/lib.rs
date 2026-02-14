@@ -33,6 +33,7 @@ pub mod patch;
 pub mod reply;
 pub mod scrollback;
 pub mod selection;
+pub mod selection_state;
 pub mod terminal_engine;
 pub mod width_policy;
 #[cfg(feature = "ws-codec")]
@@ -60,6 +61,7 @@ pub use reply::{
     reply_for_query_bytes,
 };
 pub use scrollback::{Scrollback, ScrollbackLine, ScrollbackWindow};
-pub use selection::{BufferPos, Selection};
+pub use selection::{BufferPos, CopyOptions, Selection};
+pub use selection_state::{SelectionGranularity, SelectionPhase, SelectionShape, SelectionState};
 pub use terminal_engine::{DEFAULT_SCROLLBACK_CAPACITY, TerminalEngine, TerminalEngineConfig};
 pub use width_policy::WidthPolicy;

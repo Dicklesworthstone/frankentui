@@ -27,7 +27,8 @@
 //! }
 //! ```
 
-use std::collections::{HashMap, VecDeque};
+use ahash::AHashMap;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use web_time::{Duration, Instant};
 
@@ -208,7 +209,7 @@ pub struct NotificationQueue {
     /// Deduplication window.
     dedup_window: Duration,
     /// Recent content hashes for deduplication.
-    recent_hashes: HashMap<u64, Instant>,
+    recent_hashes: AHashMap<u64, Instant>,
     /// Statistics.
     stats: QueueStats,
 }
@@ -268,7 +269,7 @@ impl NotificationQueue {
             visible: Vec::new(),
             config,
             dedup_window,
-            recent_hashes: HashMap::new(),
+            recent_hashes: AHashMap::new(),
             stats: QueueStats::default(),
         }
     }

@@ -25,8 +25,8 @@
 //! ```
 
 use crate::style::Style;
+use ahash::AHashMap;
 use ftui_render::cell::PackedRgba;
-use std::collections::HashMap;
 use std::sync::RwLock;
 
 /// Identifier for a named style in a StyleSheet.
@@ -81,7 +81,7 @@ impl AsRef<str> for StyleId {
 /// after initialization. Multiple readers can access styles concurrently.
 #[derive(Debug, Default)]
 pub struct StyleSheet {
-    styles: RwLock<HashMap<String, Style>>,
+    styles: RwLock<AHashMap<String, Style>>,
 }
 
 impl StyleSheet {
@@ -89,7 +89,7 @@ impl StyleSheet {
     #[inline]
     pub fn new() -> Self {
         Self {
-            styles: RwLock::new(HashMap::new()),
+            styles: RwLock::new(AHashMap::new()),
         }
     }
 

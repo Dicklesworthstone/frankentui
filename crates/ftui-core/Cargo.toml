@@ -24,6 +24,7 @@ caps-probe = []
 test-helpers = []
 
 [dependencies]
+ahash = "0.8"
 arc-swap = "1.8.2"
 bitflags = "2.10.0"
 unicode-display-width = "0.3.0"

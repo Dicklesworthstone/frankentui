@@ -15,7 +15,7 @@
 //! assert_eq!(registry.get(id), Some("https://example.com"));
 //! ```
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 const MAX_LINK_ID: u32 = 0x00FF_FFFF;
 
@@ -25,7 +25,7 @@ pub struct LinkRegistry {
     /// Link slots indexed by ID (0 reserved for "no link").
     links: Vec<Option<String>>,
     /// URL to ID lookup for deduplication.
-    lookup: HashMap<String, u32>,
+    lookup: AHashMap<String, u32>,
     /// Reusable IDs from removed links.
     free_list: Vec<u32>,
 }
@@ -35,7 +35,7 @@ impl LinkRegistry {
     pub fn new() -> Self {
         Self {
             links: vec![None],
-            lookup: HashMap::new(),
+            lookup: AHashMap::new(),
             free_list: Vec::new(),
         }
     }

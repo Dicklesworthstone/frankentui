@@ -879,6 +879,39 @@ fn bench_buffer_scissor(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Cells-per-second throughput (bd-1tssj)
+// ============================================================================
+
+/// Measure raw diff throughput in cells/second across varied change densities.
+fn bench_diff_cells_per_second(c: &mut Criterion) {
+    let mut group = c.benchmark_group("diff/cells_per_second");
+
+    for (w, h) in [(80u16, 24u16), (200, 60), (320, 90)] {
+        let cells = w as u64 * h as u64;
+        group.throughput(Throughput::Elements(cells));
+
+        for pct in [0.0, 5.0, 50.0, 100.0] {
+            let (old, new) = make_pair(w, h, pct);
+            let label = format!("{w}x{h}@{pct}%");
+
+            group.bench_with_input(
+                BenchmarkId::new("compute", &label),
+                &(&old, &new),
+                |b, (old, new)| b.iter(|| black_box(BufferDiff::compute(old, new))),
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("compute_dirty", &label),
+                &(&old, &new),
+                |b, (old, new)| b.iter(|| black_box(BufferDiff::compute_dirty(old, new))),
+            );
+        }
+    }
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().without_plots();
@@ -899,6 +932,8 @@ criterion_group! {
         bench_diff_tile_sparse_stats,
         bench_diff_tile_dense_regression,
         bench_diff_large_screen,
+        // Cells/second throughput (bd-1tssj)
+        bench_diff_cells_per_second,
         // Cell benchmarks
         bench_bits_eq,
         bench_cell_from_char,

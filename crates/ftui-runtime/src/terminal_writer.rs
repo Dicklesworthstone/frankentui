@@ -70,7 +70,7 @@ use crate::render_trace::{
 use ftui_core::inline_mode::InlineStrategy;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
-use ftui_render::diff::{BufferDiff, TileDiffConfig, TileDiffFallback, TileDiffStats};
+use ftui_render::diff::{BufferDiff, ChangeRun, TileDiffConfig, TileDiffFallback, TileDiffStats};
 use ftui_render::diff_strategy::{DiffStrategy, DiffStrategyConfig, DiffStrategySelector};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
@@ -500,6 +500,9 @@ pub struct TerminalWriter<W: Write> {
     prev_buffer: Option<Buffer>,
     /// Spare buffer for reuse as the next render target.
     spare_buffer: Option<Buffer>,
+    /// Pre-allocated buffer for zero-alloc clone in present_ui.
+    /// Part of a 3-buffer rotation: spare ← prev ← clone_buf ← spare.
+    clone_buf: Option<Buffer>,
     /// Grapheme pool for complex characters.
     pool: GraphemePool,
     /// Link registry for hyperlinks.
@@ -526,6 +529,8 @@ pub struct TerminalWriter<W: Write> {
     diff_strategy: DiffStrategySelector,
     /// Reusable diff buffer to avoid per-frame allocations.
     diff_scratch: BufferDiff,
+    /// Reusable runs buffer to avoid per-frame allocations in emit_diff.
+    runs_buf: Vec<ChangeRun>,
     /// Frames since last diff probe while in FullRedraw.
     full_redraw_probe: u64,
     /// Runtime diff configuration.
@@ -658,6 +663,7 @@ impl<W: Write> TerminalWriter<W> {
             ui_anchor,
             prev_buffer: None,
             spare_buffer: None,
+            clone_buf: None,
             pool: GraphemePool::new(),
             links: LinkRegistry::new(),
             capabilities,
@@ -671,6 +677,7 @@ impl<W: Write> TerminalWriter<W> {
             last_inline_region: None,
             diff_strategy,
             diff_scratch,
+            runs_buf: Vec::new(),
             full_redraw_probe: 0,
             diff_config,
             evidence_sink: None,
@@ -783,6 +790,7 @@ impl<W: Write> TerminalWriter<W> {
         // Clear prev_buffer to force full redraw after resize
         self.prev_buffer = None;
         self.spare_buffer = None;
+        self.clone_buf = None;
         self.reset_diff_on_resize();
         // Reset scroll region on resize; it will be re-established on next present
         if self.scroll_region_active {
@@ -1117,8 +1125,20 @@ impl<W: Write> TerminalWriter<W> {
         }
 
         if let Ok(stats) = result {
+            // 3-buffer rotation: reuse clone_buf's allocation to avoid per-frame alloc.
+            // Rotation: clone_buf ← spare ← prev ← new_copy.
+            let new_prev = match self.clone_buf.take() {
+                Some(mut buf)
+                    if buf.width() == buffer.width() && buf.height() == buffer.height() =>
+                {
+                    buf.clone_from(buffer);
+                    buf
+                }
+                _ => buffer.clone(),
+            };
+            self.clone_buf = self.spare_buffer.take();
             self.spare_buffer = self.prev_buffer.take();
-            self.prev_buffer = Some(buffer.clone());
+            self.prev_buffer = Some(new_prev);
 
             if let Some(ref mut trace) = self.render_trace {
                 let payload_info = match stats.diff_strategy {
@@ -1255,6 +1275,8 @@ impl<W: Write> TerminalWriter<W> {
                 let _ = trace.record_frame(frame, &buffer, &self.pool);
             }
 
+            // 3-buffer rotation: keep clone_buf populated for present_ui path.
+            self.clone_buf = self.spare_buffer.take();
             self.spare_buffer = self.prev_buffer.take();
             self.prev_buffer = Some(buffer);
             return Ok(());
@@ -1803,10 +1825,10 @@ impl<W: Write> TerminalWriter<W> {
     ) -> io::Result<EmitStats> {
         use ftui_render::cell::{Cell, CellAttrs, StyleFlags};
 
-        let runs = diff.runs();
-        let diff_runs = runs.len();
+        diff.runs_into(&mut self.runs_buf);
+        let diff_runs = self.runs_buf.len();
         let diff_cells = diff.len();
-        let _span = debug_span!("ftui.render.emit_diff", run_count = runs.len()).entered();
+        let _span = debug_span!("ftui.render.emit_diff", run_count = self.runs_buf.len()).entered();
 
         let mut current_style: Option<(
             ftui_render::cell::PackedRgba,
@@ -1819,7 +1841,7 @@ impl<W: Write> TerminalWriter<W> {
         // Borrow writer once
         let writer = self.writer.as_mut().expect("writer has been consumed");
 
-        for run in runs {
+        for run in &self.runs_buf {
             if let Some(limit) = max_height
                 && run.y >= limit
             {

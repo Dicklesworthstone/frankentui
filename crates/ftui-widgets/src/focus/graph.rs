@@ -23,8 +23,8 @@
 //! | navigate | O(1) |
 //! | find_cycle | O(V+E) |
 
+use ahash::AHashMap;
 use ftui_core::geometry::Rect;
-use std::collections::HashMap;
 
 /// Unique identifier for a focusable widget.
 pub type FocusId = u64;
@@ -110,9 +110,9 @@ impl FocusNode {
 /// The graph is sparse (most nodes have ≤6 outgoing edges).
 #[derive(Debug, Default)]
 pub struct FocusGraph {
-    nodes: HashMap<FocusId, FocusNode>,
+    nodes: AHashMap<FocusId, FocusNode>,
     /// Outgoing edges: (from, direction) → to.
-    edges: HashMap<(FocusId, NavDirection), FocusId>,
+    edges: AHashMap<(FocusId, NavDirection), FocusId>,
 }
 
 impl FocusGraph {

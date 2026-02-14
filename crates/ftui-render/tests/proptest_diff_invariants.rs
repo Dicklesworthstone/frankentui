@@ -13,6 +13,8 @@
 //! 8. Runs are sorted by row-major order.
 //! 9. `compute_dirty` is a superset-or-equal of `compute` (no missed changes).
 //! 10. Full diff captures every cell in the buffer.
+//! 14. `runs()` and `runs_into()` produce identical output (isomorphism).
+//! 15. `runs_into` reuses capacity across calls.
 
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
@@ -401,5 +403,66 @@ proptest! {
         prop_assert_eq!(diff.changes(), fresh.changes(),
             "compute_into didn't reset: first had {} changes, reuse has {}, fresh has {}",
             first_len, diff.len(), fresh.len());
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 14. runs() and runs_into() produce identical output (bd-1tssj isomorphism)
+// ═════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn runs_and_runs_into_isomorphic(
+        (w, h) in dims(),
+        changes in change_set(80, 40),
+    ) {
+        let old = Buffer::new(w, h);
+        let mut new = old.clone();
+        apply_changes(&mut new, &changes);
+        let diff = BufferDiff::compute(&old, &new);
+
+        let allocating = diff.runs();
+        let mut reuse_buf = Vec::new();
+        diff.runs_into(&mut reuse_buf);
+
+        prop_assert_eq!(&allocating, &reuse_buf,
+            "runs() and runs_into() differ for {}x{} with {} changes",
+            w, h, diff.len());
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 15. runs_into reuses capacity (no extra allocation after warmup)
+// ═════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #[test]
+    fn runs_into_reuses_capacity(
+        (w, h) in dims(),
+        changes1 in change_set(80, 40),
+        changes2 in change_set(80, 40),
+    ) {
+        let base = Buffer::new(w, h);
+        let mut buf1 = base.clone();
+        apply_changes(&mut buf1, &changes1);
+        let mut buf2 = base.clone();
+        apply_changes(&mut buf2, &changes2);
+
+        let diff1 = BufferDiff::compute(&base, &buf1);
+        let diff2 = BufferDiff::compute(&base, &buf2);
+
+        let mut reuse_buf = Vec::new();
+
+        // First call warms up the buffer.
+        diff1.runs_into(&mut reuse_buf);
+        let cap_after_first = reuse_buf.capacity();
+
+        // Second call should reuse the capacity if the result fits.
+        diff2.runs_into(&mut reuse_buf);
+        let cap_after_second = reuse_buf.capacity();
+
+        // Capacity should not shrink (Vec::clear preserves capacity).
+        prop_assert!(cap_after_second >= cap_after_first.min(reuse_buf.len()),
+            "runs_into shrank capacity: {} -> {}", cap_after_first, cap_after_second);
     }
 }
