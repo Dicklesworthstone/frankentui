@@ -63,6 +63,8 @@ pub mod view;
 pub mod width_cache;
 pub mod wrap;
 
+pub mod hyphenation;
+
 #[cfg(feature = "markup")]
 pub mod markup;
 
@@ -123,12 +125,17 @@ impl TextMeasurement {
 
 pub use cursor::{CursorNavigator, CursorPosition};
 pub use editor::{Editor, Selection};
+pub use hyphenation::{
+    HyphenBreakPoint, HyphenationDict, HyphenationPattern, PatternTrie, break_penalties,
+    compile_pattern, english_dict_mini,
+};
 pub use rope::Rope;
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
 pub use text::{Line, Span, Text};
 pub use view::{TextView, ViewLine, Viewport};
 pub use width_cache::{
-    CacheStats, CountMinSketch, DEFAULT_CACHE_CAPACITY, Doorkeeper, TinyLfuWidthCache, WidthCache,
+    CacheStats, CountMinSketch, DEFAULT_CACHE_CAPACITY, Doorkeeper, S3FifoWidthCache,
+    TinyLfuWidthCache, WidthCache,
 };
 pub use wrap::{
     KpBreakResult, WrapMode, WrapOptions, ascii_width, display_width, grapheme_count,

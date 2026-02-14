@@ -66,6 +66,7 @@ test-support = []
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
 
 [dev-dependencies]
+blake3 = "1.6"
 ftui-harness = { path = "../ftui-harness", version = "0.1.1" }
 ftui-pty = { path = "../ftui-pty", version = "0.1.1" }
 ftui-web = { path = "../ftui-web", version = "0.1.0" }

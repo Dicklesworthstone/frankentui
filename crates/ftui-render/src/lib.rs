@@ -21,6 +21,7 @@
 
 pub mod alloc_budget;
 pub mod ansi;
+pub mod arena;
 pub mod budget;
 pub mod buffer;
 pub mod cell;

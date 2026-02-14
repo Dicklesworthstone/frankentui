@@ -24,6 +24,7 @@
 
 pub mod cell;
 pub mod cursor;
+pub mod export;
 pub mod flow_control;
 pub mod grid;
 pub mod modes;
@@ -34,11 +35,17 @@ pub mod scrollback;
 pub mod selection;
 pub mod terminal_engine;
 pub mod width_policy;
+#[cfg(feature = "ws-codec")]
+pub mod ws_codec;
 
 pub use cell::{
     Cell, CellFlags, Color, HyperlinkId, HyperlinkRegistry, MAX_COMBINING, SgrAttrs, SgrFlags,
 };
 pub use cursor::{Cursor, SavedCursor, translate_charset};
+pub use export::{
+    AnsiExportOptions, ColorDepth, ExportContext, ExportRange, ExportRow, HtmlExportOptions,
+    LineEnding, TextExportOptions, export_ansi, export_html, export_text,
+};
 pub use flow_control::{
     ActionLoss, BackpressureAction, DecisionReason, FlowControlConfig, FlowControlDecision,
     FlowControlPolicy, FlowControlSnapshot, InputEventClass, LatencyWindowMs, LossWeights,

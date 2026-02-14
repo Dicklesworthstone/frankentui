@@ -744,6 +744,125 @@ impl DecisionEvidence {
 }
 
 // =============================================================================
+// Bayesian Evidence Ledger (bd-nv2fa.1)
+// =============================================================================
+//
+// Unified evidence accumulation framework for all Bayesian decision points.
+// Each decision is recorded as a `BayesianEvidence` entry that can be serialized
+// to JSONL for post-hoc analysis and debugging.
+
+/// Domain of a Bayesian decision point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DecisionDomain {
+    /// Diff strategy selection (full vs dirty vs incremental).
+    DiffStrategy,
+    /// Resize event coalescing.
+    ResizeCoalescing,
+    /// Frame budget allocation.
+    FrameBudget,
+    /// Graceful degradation level.
+    Degradation,
+    /// Value-of-information sampling.
+    VOISampling,
+    /// Hint ranking for type-ahead suggestions.
+    HintRanking,
+    /// Command palette scoring.
+    PaletteScoring,
+}
+
+impl DecisionDomain {
+    /// Domain name as a static string for JSONL output.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DiffStrategy => "diff_strategy",
+            Self::ResizeCoalescing => "resize_coalescing",
+            Self::FrameBudget => "frame_budget",
+            Self::Degradation => "degradation",
+            Self::VOISampling => "voi_sampling",
+            Self::HintRanking => "hint_ranking",
+            Self::PaletteScoring => "palette_scoring",
+        }
+    }
+}
+
+/// A single piece of evidence contributing to a Bayesian update.
+#[derive(Debug, Clone)]
+pub struct EvidenceTerm {
+    /// Human-readable label for this evidence source.
+    pub label: String,
+    /// Log-likelihood ratio (positive = supports hypothesis, negative = opposes).
+    pub log_likelihood_ratio: f64,
+}
+
+impl EvidenceTerm {
+    /// Create a new evidence term.
+    pub fn new(label: impl Into<String>, log_likelihood_ratio: f64) -> Self {
+        Self {
+            label: label.into(),
+            log_likelihood_ratio,
+        }
+    }
+}
+
+/// A complete Bayesian decision record.
+///
+/// Captures the prior, evidence terms, posterior, and action taken for a single
+/// decision point. Designed for JSONL serialization with one entry per line.
+#[derive(Debug, Clone)]
+pub struct BayesianEvidence {
+    /// Unique identifier for this decision instance.
+    pub decision_id: String,
+    /// Monotonic timestamp (nanoseconds from program start).
+    pub timestamp_ns: u64,
+    /// Which decision domain this belongs to.
+    pub domain: DecisionDomain,
+    /// Prior log-odds before observing evidence.
+    pub prior_log_odds: f64,
+    /// Evidence terms that were accumulated.
+    pub evidence_terms: Vec<EvidenceTerm>,
+    /// Posterior log-odds after accumulating evidence.
+    pub posterior_log_odds: f64,
+    /// Action taken based on the posterior.
+    pub action: String,
+    /// Expected loss of the chosen action.
+    pub expected_loss: f64,
+    /// Confidence level (0.0–1.0).
+    pub confidence_level: f64,
+    /// Whether a fallback was triggered due to low confidence.
+    pub fallback_triggered: bool,
+}
+
+impl BayesianEvidence {
+    /// Format this entry as a JSONL line (no trailing newline).
+    pub fn to_jsonl(&self) -> String {
+        let terms: Vec<String> = self
+            .evidence_terms
+            .iter()
+            .map(|t| {
+                format!(
+                    "{{\"label\":\"{}\",\"llr\":{:.6}}}",
+                    t.label.replace('"', "\\\""),
+                    t.log_likelihood_ratio
+                )
+            })
+            .collect();
+        format!(
+            "{{\"id\":\"{}\",\"ts_ns\":{},\"domain\":\"{}\",\"prior\":{:.6},\"evidence\":[{}],\"posterior\":{:.6},\"action\":\"{}\",\"loss\":{:.6},\"confidence\":{:.6},\"fallback\":{}}}",
+            self.decision_id.replace('"', "\\\""),
+            self.timestamp_ns,
+            self.domain.as_str(),
+            self.prior_log_odds,
+            terms.join(","),
+            self.posterior_log_odds,
+            self.action.replace('"', "\\\""),
+            self.expected_loss,
+            self.confidence_level,
+            self.fallback_triggered,
+        )
+    }
+}
+
+// =============================================================================
 // Event Schema: Span and Event Names
 // =============================================================================
 //

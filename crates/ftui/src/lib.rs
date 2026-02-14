@@ -22,7 +22,7 @@
 //!
 //! If you only depend on one crate in your application, it should be `ftui`.
 
-use std::fmt;
+pub mod error;
 
 // --- Core re-exports -------------------------------------------------------
 
@@ -63,34 +63,10 @@ pub use ftui_runtime::{
 
 // --- Errors ---------------------------------------------------------------
 
-/// Top-level error type for ftui apps.
-#[derive(Debug)]
-pub enum Error {
-    /// I/O failure during terminal operations.
-    Io(std::io::Error),
-    /// Terminal or runtime error with message.
-    Terminal(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "{err}"),
-            Self::Terminal(msg) => write!(f, "{msg}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Self::Io(err)
-    }
-}
-
-/// Standard result type for ftui APIs.
-pub type Result<T> = std::result::Result<T, Error>;
+pub use error::{
+    DegradationAction, Error, LayoutError, ProtocolError, RenderError, Result, TerminalError,
+    WidgetError,
+};
 
 // --- Prelude --------------------------------------------------------------
 
@@ -136,27 +112,27 @@ mod tests {
 
     #[test]
     fn error_terminal_display() {
-        let err = Error::Terminal("something broke".into());
-        assert_eq!(format!("{err}"), "something broke");
+        let err: Error = TerminalError::SessionSetup("something broke".into()).into();
+        assert!(format!("{err}").contains("something broke"));
     }
 
     #[test]
     fn error_io_display() {
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
         let err = Error::Io(io_err);
-        assert_eq!(format!("{err}"), "access denied");
+        assert!(format!("{err}").contains("access denied"));
     }
 
     #[test]
     fn error_debug() {
-        let err = Error::Terminal("test".into());
+        let err: Error = TerminalError::MissingCapability("test").into();
         let debug = format!("{err:?}");
         assert!(debug.contains("Terminal"));
     }
 
     #[test]
     fn error_is_std_error() {
-        let err = Error::Terminal("msg".into());
+        let err: Error = TerminalError::MissingCapability("msg").into();
         let _: &dyn std::error::Error = &err;
     }
 
@@ -167,7 +143,7 @@ mod tests {
         }
         assert_eq!(returns_ok().unwrap(), 42);
 
-        let err: Result<i32> = Err(Error::Terminal("fail".into()));
+        let err: Result<i32> = Err(TerminalError::SessionSetup("fail".into()).into());
         assert!(err.is_err());
     }
 

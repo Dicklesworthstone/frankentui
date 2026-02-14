@@ -1274,7 +1274,8 @@ mod tests {
         let stream = make_synced_frame(b"Flicker");
         let analysis = analyze_stream_with_id("golden", &stream);
         let checksum = compute_text_checksum(&analysis.jsonl);
-        const EXPECTED: &str = "sha256:985ca693598f4559";
+        const EXPECTED: &str =
+            "blake3:46aacd72daa5f665507a49c73ee81ca7842b64f109f9161b2e8d1a4f87b6535d";
         assert_eq!(checksum, EXPECTED, "golden JSONL checksum drifted");
     }
 

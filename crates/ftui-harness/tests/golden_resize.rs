@@ -265,10 +265,10 @@ fn golden_widget_block_80x24() {
 
     let checksum = compute_buffer_checksum(&frame.buffer);
     assert!(
-        checksum.starts_with("sha256:"),
+        checksum.starts_with("blake3:"),
         "Checksum should have prefix"
     );
-    assert_eq!(checksum.len(), 7 + 16, "Checksum should be 16 hex chars");
+    assert_eq!(checksum.len(), 7 + 64, "Checksum should be 64 hex chars");
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn golden_widget_paragraph_80x24() {
     para.render(Rect::new(0, 0, 80, 24), &mut frame);
 
     let checksum = compute_buffer_checksum(&frame.buffer);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 
     // Verify determinism
     let mut frame2 = Frame::new(80, 24, &mut pool);

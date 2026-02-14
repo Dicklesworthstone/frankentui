@@ -52,7 +52,9 @@ pub mod responsive;
 pub mod responsive_layout;
 pub mod visibility;
 
-pub use cache::{CoherenceCache, CoherenceId, LayoutCache, LayoutCacheKey, LayoutCacheStats};
+pub use cache::{
+    CoherenceCache, CoherenceId, LayoutCache, LayoutCacheKey, LayoutCacheStats, S3FifoLayoutCache,
+};
 pub use direction::{FlowDirection, LogicalAlignment, LogicalSides, mirror_rects_horizontal};
 pub use ftui_core::geometry::{Rect, Sides, Size};
 pub use grid::{Grid, GridArea, GridLayout};

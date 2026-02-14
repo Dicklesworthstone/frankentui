@@ -241,6 +241,29 @@ impl EvidenceLedger {
     }
 }
 
+impl EvidenceLedger {
+    /// Format this ledger as a JSONL line for structured logging.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        let entries_json: Vec<String> = self
+            .entries
+            .iter()
+            .map(|e| {
+                format!(
+                    r#"{{"kind":"{:?}","bf":{:.4},"desc":"{}"}}"#,
+                    e.kind, e.bayes_factor, e.description
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"schema":"palette-scoring-v1","entries":[{}],"combined_bf":{:.6},"posterior_prob":{:.6}}}"#,
+            entries_json.join(","),
+            self.combined_bayes_factor(),
+            self.posterior_probability(),
+        )
+    }
+}
+
 impl fmt::Display for EvidenceLedger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Evidence Ledger:")?;

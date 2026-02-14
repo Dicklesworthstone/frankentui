@@ -436,6 +436,30 @@ pub struct StrategyEvidence {
     pub hysteresis_ratio: f64,
 }
 
+impl StrategyEvidence {
+    /// Format this evidence entry as a JSONL line for structured logging.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"schema":"diff-strategy-v1","strategy":"{}","cost_full":{:.2},"cost_dirty":{:.2},"cost_redraw":{:.2},"posterior_mean":{:.6},"posterior_var":{:.8},"alpha":{:.4},"beta":{:.4},"dirty_rows":{},"total_rows":{},"total_cells":{},"guard":"{}","hysteresis":{},"hysteresis_ratio":{:.4}}}"#,
+            self.strategy,
+            self.cost_full,
+            self.cost_dirty,
+            self.cost_redraw,
+            self.posterior_mean,
+            self.posterior_variance,
+            self.alpha,
+            self.beta,
+            self.dirty_rows,
+            self.total_rows,
+            self.total_cells,
+            self.guard_reason,
+            self.hysteresis_applied,
+            self.hysteresis_ratio,
+        )
+    }
+}
+
 impl fmt::Display for StrategyEvidence {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Strategy: {}", self.strategy)?;

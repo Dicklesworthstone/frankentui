@@ -958,7 +958,7 @@ mod tests {
             &mut |profile, _caps| format!("profile:{}", profile.as_str()),
         );
         assert_eq!(outputs.len(), 2);
-        assert!(outputs.iter().all(|o| o.checksum.starts_with("sha256:")));
+        assert!(outputs.iter().all(|o| o.checksum.starts_with("blake3:")));
     }
 
     #[test]

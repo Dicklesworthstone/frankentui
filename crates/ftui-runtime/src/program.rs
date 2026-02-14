@@ -83,6 +83,7 @@ use ftui_layout::{
     PanePointerPosition, PaneResizeDirection, PaneResizeTarget, PaneSemanticInputEvent,
     PaneSemanticInputEventKind, PaneTree, Rect, SplitAxis,
 };
+use ftui_render::arena::FrameArena;
 use ftui_render::budget::{BudgetDecision, DegradationLevel, FrameBudgetConfig, RenderBudget};
 use ftui_render::buffer::Buffer;
 use ftui_render::diff_strategy::DiffStrategy;
@@ -692,6 +693,190 @@ fn decode_pane_resize_target(data: HitData) -> Option<PaneResizeTarget> {
     };
     let split_id = ftui_layout::PaneId::new(data >> 1).ok()?;
     Some(PaneResizeTarget { split_id, axis })
+}
+
+// ============================================================================
+// Pane capability matrix for multiplexer / terminal compat (bd-6u66i)
+// ============================================================================
+
+/// Which multiplexer environment the terminal is running inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaneMuxEnvironment {
+    /// No multiplexer detected — direct terminal access.
+    None,
+    /// tmux (TMUX env var set, or DA2 terminal type 84).
+    Tmux,
+    /// GNU Screen (STY env var set, or DA2 terminal type 83).
+    Screen,
+    /// Zellij (ZELLIJ env var set).
+    Zellij,
+}
+
+/// Resolved capability matrix describing which pane interaction features
+/// are available in the current terminal + multiplexer environment.
+///
+/// Derived from [`TerminalCapabilities`] via [`PaneCapabilityMatrix::from_capabilities`].
+/// The adapter uses this to decide which code-paths are safe and which
+/// need deterministic fallbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneCapabilityMatrix {
+    /// Detected multiplexer environment.
+    pub mux: PaneMuxEnvironment,
+
+    // --- Mouse input capabilities ---
+    /// SGR (1006) extended mouse protocol available.
+    /// Without this, mouse coordinates are limited to 223 columns/rows.
+    pub mouse_sgr: bool,
+    /// Mouse drag events are reliably delivered.
+    /// False in some screen versions where drag tracking is incomplete.
+    pub mouse_drag_reliable: bool,
+    /// Mouse button events include correct button identity on release.
+    /// X10/normal mode sends button 3 for all releases; SGR preserves it.
+    pub mouse_button_discrimination: bool,
+
+    // --- Focus / lifecycle ---
+    /// Terminal delivers CSI I / CSI O focus events.
+    pub focus_events: bool,
+    /// Bracketed paste mode available (affects interaction cancel heuristics).
+    pub bracketed_paste: bool,
+
+    // --- Rendering affordances ---
+    /// Unicode box-drawing glyphs available for splitter rendering.
+    pub unicode_box_drawing: bool,
+    /// True-color support for splitter highlight/drag feedback.
+    pub true_color: bool,
+
+    // --- Fallback summary ---
+    /// One or more pane features are degraded due to environment constraints.
+    pub degraded: bool,
+}
+
+/// Human-readable description of a known limitation and its fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneCapabilityLimitation {
+    /// Short identifier (e.g. `"mouse_drag_unreliable"`).
+    pub id: &'static str,
+    /// What the limitation is.
+    pub description: &'static str,
+    /// What the adapter does instead.
+    pub fallback: &'static str,
+}
+
+impl PaneCapabilityMatrix {
+    /// Derive the pane capability matrix from terminal capabilities.
+    ///
+    /// This is the single source of truth for which pane features are
+    /// available. All fallback decisions flow from this matrix.
+    #[must_use]
+    pub fn from_capabilities(
+        caps: &ftui_core::terminal_capabilities::TerminalCapabilities,
+    ) -> Self {
+        let mux = if caps.in_tmux {
+            PaneMuxEnvironment::Tmux
+        } else if caps.in_screen {
+            PaneMuxEnvironment::Screen
+        } else if caps.in_zellij {
+            PaneMuxEnvironment::Zellij
+        } else {
+            PaneMuxEnvironment::None
+        };
+
+        let mouse_sgr = caps.mouse_sgr;
+
+        // GNU Screen has historically unreliable drag event delivery.
+        // tmux and zellij forward drags correctly in modern versions.
+        let mouse_drag_reliable = !matches!(mux, PaneMuxEnvironment::Screen);
+
+        // Button discrimination requires SGR mouse protocol.
+        // Without it, X10/normal mode reports button 3 for all releases.
+        let mouse_button_discrimination = mouse_sgr;
+
+        // Focus events: available if the terminal supports them and the
+        // multiplexer passes them through. Screen does not.
+        let focus_events = match mux {
+            PaneMuxEnvironment::Screen => false,
+            _ => caps.focus_events,
+        };
+
+        let bracketed_paste = caps.bracketed_paste;
+        let unicode_box_drawing = caps.unicode_box_drawing;
+        let true_color = caps.true_color;
+
+        let degraded =
+            !mouse_sgr || !mouse_drag_reliable || !mouse_button_discrimination || !focus_events;
+
+        Self {
+            mux,
+            mouse_sgr,
+            mouse_drag_reliable,
+            mouse_button_discrimination,
+            focus_events,
+            bracketed_paste,
+            unicode_box_drawing,
+            true_color,
+            degraded,
+        }
+    }
+
+    /// Whether pane drag interactions should be enabled at all.
+    ///
+    /// Drag requires at minimum mouse event support. If drag events
+    /// are unreliable (e.g. GNU Screen), drag is disabled and the
+    /// adapter falls back to keyboard-only resize.
+    #[must_use]
+    pub const fn drag_enabled(&self) -> bool {
+        self.mouse_drag_reliable
+    }
+
+    /// Whether focus-loss auto-cancel is effective.
+    ///
+    /// When focus events are unavailable, the adapter cannot detect
+    /// window blur — interactions must rely on timeout or explicit
+    /// keyboard cancel instead.
+    #[must_use]
+    pub const fn focus_cancel_effective(&self) -> bool {
+        self.focus_events
+    }
+
+    /// Collect all active limitations with their fallback descriptions.
+    #[must_use]
+    pub fn limitations(&self) -> Vec<PaneCapabilityLimitation> {
+        let mut out = Vec::new();
+
+        if !self.mouse_sgr {
+            out.push(PaneCapabilityLimitation {
+                id: "no_sgr_mouse",
+                description: "SGR mouse protocol not available; coordinates limited to 223 columns/rows",
+                fallback: "Pane splitters beyond column 223 are unreachable by mouse; use keyboard resize",
+            });
+        }
+
+        if !self.mouse_drag_reliable {
+            out.push(PaneCapabilityLimitation {
+                id: "mouse_drag_unreliable",
+                description: "Mouse drag events are unreliably delivered (e.g. GNU Screen)",
+                fallback: "Mouse drag disabled; use keyboard arrow keys to resize panes",
+            });
+        }
+
+        if !self.mouse_button_discrimination {
+            out.push(PaneCapabilityLimitation {
+                id: "no_button_discrimination",
+                description: "Mouse release events do not identify which button was released",
+                fallback: "Any mouse release cancels the active drag; multi-button interactions unavailable",
+            });
+        }
+
+        if !self.focus_events {
+            out.push(PaneCapabilityLimitation {
+                id: "no_focus_events",
+                description: "Terminal does not deliver focus-in/focus-out events",
+                fallback: "Focus-loss auto-cancel disabled; use Escape key to cancel active drag",
+            });
+        }
+
+        out
+    }
 }
 
 /// Configuration for terminal-to-pane semantic input translation.
@@ -1349,6 +1534,102 @@ impl PaneTerminalAdapter {
             .unsigned_abs()
             .saturating_add(delta_y.unsigned_abs());
         movement < u32::from(self.config.drag_update_coalesce_distance)
+    }
+
+    /// Force-cancel any active pane interaction and return diagnostic info.
+    ///
+    /// This is the safety-valve for cleanup paths (RAII guard drops, signal
+    /// handlers, panic hooks) where constructing a proper semantic event is
+    /// not feasible. It resets both the underlying drag/resize state machine
+    /// and the adapter's active-pointer tracking.
+    ///
+    /// Returns `None` if no interaction was active.
+    pub fn force_cancel_all(&mut self) -> Option<PaneCleanupDiagnostics> {
+        let was_active = self.active.is_some();
+        let machine_state_before = self.machine.state();
+        let machine_transition = self.machine.force_cancel();
+        let active_pointer = self.active.take();
+        if !was_active && machine_transition.is_none() {
+            return None;
+        }
+        Some(PaneCleanupDiagnostics {
+            had_active_pointer: was_active,
+            active_pointer_id: active_pointer.map(|a| a.pointer_id),
+            machine_state_before,
+            machine_transition,
+        })
+    }
+}
+
+/// Structured diagnostics emitted when pane interaction state is force-cleaned.
+///
+/// Fields mirror the pane layout types which are already `Serialize`/`Deserialize`,
+/// so callers can convert this struct to JSON for evidence logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneCleanupDiagnostics {
+    /// Whether the adapter had an active pointer tracker when cleanup ran.
+    pub had_active_pointer: bool,
+    /// The pointer ID that was active (if any).
+    pub active_pointer_id: Option<u32>,
+    /// The machine state before force-cancel was applied.
+    pub machine_state_before: PaneDragResizeState,
+    /// The transition produced by force-cancel, or `None` if the machine
+    /// was already idle.
+    pub machine_transition: Option<PaneDragResizeTransition>,
+}
+
+/// RAII guard that ensures pane interaction state is cleanly canceled on drop.
+///
+/// When a pane interaction session is active and the guard drops (due to
+/// panic, scope exit, or any other unwind), it force-cancels any in-progress
+/// drag/resize and collects cleanup diagnostics.
+///
+/// # Usage
+///
+/// ```ignore
+/// let guard = PaneInteractionGuard::new(&mut adapter);
+/// // ... pane interaction event loop ...
+/// // If this scope panics, guard's Drop will force-cancel the drag machine
+/// let diagnostics = guard.finish(); // explicit clean finish
+/// ```
+pub struct PaneInteractionGuard<'a> {
+    adapter: &'a mut PaneTerminalAdapter,
+    finished: bool,
+    diagnostics: Option<PaneCleanupDiagnostics>,
+}
+
+impl<'a> PaneInteractionGuard<'a> {
+    /// Create a new guard wrapping the given adapter.
+    pub fn new(adapter: &'a mut PaneTerminalAdapter) -> Self {
+        Self {
+            adapter,
+            finished: false,
+            diagnostics: None,
+        }
+    }
+
+    /// Access the wrapped adapter for normal event translation.
+    pub fn adapter(&mut self) -> &mut PaneTerminalAdapter {
+        self.adapter
+    }
+
+    /// Explicitly finish the guard, returning any cleanup diagnostics.
+    ///
+    /// Calling `finish()` is optional — the guard will also clean up on drop.
+    /// However, `finish()` gives the caller access to the diagnostics.
+    pub fn finish(mut self) -> Option<PaneCleanupDiagnostics> {
+        self.finished = true;
+        let diagnostics = self.adapter.force_cancel_all();
+        self.diagnostics = diagnostics.clone();
+        diagnostics
+    }
+}
+
+impl Drop for PaneInteractionGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.diagnostics = self.adapter.force_cancel_all();
+        }
     }
 }
 
@@ -2721,6 +3002,8 @@ pub struct Program<M: Model, E: BackendEventSource<Error = io::Error>, W: Write 
     last_checkpoint: Instant,
     /// Inline auto UI height remeasurement state.
     inline_auto_remeasure: Option<InlineAutoRemeasureState>,
+    /// Per-frame bump arena for temporary render-path allocations.
+    frame_arena: FrameArena,
 }
 
 #[cfg(feature = "crossterm-compat")]
@@ -2857,6 +3140,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            frame_arena: FrameArena::default(),
         })
     }
 }
@@ -2973,6 +3257,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            frame_arena: FrameArena::default(),
         })
     }
 }
@@ -3816,6 +4101,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     }
 
     fn render_buffer(&mut self, frame_height: u16) -> (Buffer, Option<(u16, u16)>, bool) {
+        // Reset the per-frame arena so widgets get fresh scratch space.
+        self.frame_arena.reset();
+
         // Note: Frame borrows the pool and links from writer.
         // We scope it so it drops before we call present_ui (which needs exclusive writer access).
         let buffer = self.writer.take_render_buffer(self.width, frame_height);
@@ -3824,6 +4112,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
         frame.set_degradation(self.budget.degradation());
         frame.set_links(links);
         frame.set_widget_budget(self.widget_refresh_plan.as_budget());
+        frame.set_arena(&self.frame_arena);
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -3879,9 +4168,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
     }
 
     fn render_measure_buffer(&mut self, frame_height: u16) -> (Buffer, Option<(u16, u16)>) {
+        // Reset the per-frame arena for measurement pass.
+        self.frame_arena.reset();
+
         let pool = self.writer.pool_mut();
         let mut frame = Frame::new(self.width, frame_height, pool);
         frame.set_degradation(self.budget.degradation());
+        frame.set_arena(&self.frame_arena);
 
         let view_start = Instant::now();
         let _view_span = debug_span!(
@@ -4525,6 +4818,7 @@ impl Default for BatchController {
 mod tests {
     use super::*;
     use ftui_core::terminal_capabilities::TerminalCapabilities;
+    use ftui_layout::PaneDragResizeEffect;
     use ftui_render::buffer::Buffer;
     use ftui_render::cell::Cell;
     use ftui_render::diff_strategy::DiffStrategy;
@@ -6843,6 +7137,7 @@ mod tests {
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            frame_arena: FrameArena::default(),
         }
     }
 
@@ -8717,5 +9012,333 @@ mod tests {
         // Zero dimensions should be clamped to 1
         assert_eq!(program.width, 1);
         assert_eq!(program.height, 1);
+    }
+
+    // =========================================================================
+    // PaneTerminalAdapter::force_cancel_all (bd-24v9m)
+    // =========================================================================
+
+    #[test]
+    fn force_cancel_all_idle_returns_none() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        assert!(adapter.force_cancel_all().is_none());
+    }
+
+    #[test]
+    fn force_cancel_all_after_pointer_down_returns_diagnostics() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+        assert!(adapter.active_pointer_id().is_some());
+
+        let diag = adapter
+            .force_cancel_all()
+            .expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+        assert_eq!(diag.active_pointer_id, Some(1));
+        assert!(diag.machine_transition.is_some());
+
+        // Adapter should be fully idle afterwards
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn force_cancel_all_during_drag_returns_diagnostics() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Vertical);
+
+        // Down → arm
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            3,
+            3,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        // Drag → transition to Dragging
+        let drag = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            8,
+            3,
+        ));
+        let _ = adapter.translate(&drag, None);
+
+        let diag = adapter
+            .force_cancel_all()
+            .expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+        assert!(diag.machine_transition.is_some());
+        let transition = diag.machine_transition.unwrap();
+        assert!(matches!(
+            transition.effect,
+            PaneDragResizeEffect::Canceled {
+                reason: PaneCancelReason::Programmatic,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn force_cancel_all_is_idempotent() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let first = adapter.force_cancel_all();
+        assert!(first.is_some());
+
+        let second = adapter.force_cancel_all();
+        assert!(second.is_none());
+    }
+
+    // =========================================================================
+    // PaneInteractionGuard (bd-24v9m)
+    // =========================================================================
+
+    #[test]
+    fn pane_interaction_guard_finish_when_idle() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let guard = PaneInteractionGuard::new(&mut adapter);
+        let diag = guard.finish();
+        assert!(diag.is_none());
+    }
+
+    #[test]
+    fn pane_interaction_guard_finish_returns_diagnostics() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        // Start a drag interaction through the adapter directly
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let guard = PaneInteractionGuard::new(&mut adapter);
+        let diag = guard.finish().expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+        assert_eq!(diag.active_pointer_id, Some(1));
+    }
+
+    #[test]
+    fn pane_interaction_guard_drop_cancels_active_interaction() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Vertical);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            7,
+            7,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+        assert!(adapter.active_pointer_id().is_some());
+
+        {
+            let _guard = PaneInteractionGuard::new(&mut adapter);
+            // guard drops here without finish()
+        }
+
+        // After guard drop, adapter should be idle
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
+    }
+
+    #[test]
+    fn pane_interaction_guard_adapter_access_works() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let mut guard = PaneInteractionGuard::new(&mut adapter);
+
+        // Use the adapter through the guard
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let dispatch = guard.adapter().translate(&down, Some(target));
+        assert!(dispatch.primary_event.is_some());
+
+        // finish should clean up the interaction started through the guard
+        let diag = guard.finish().expect("should produce diagnostics");
+        assert!(diag.had_active_pointer);
+    }
+
+    #[test]
+    fn pane_interaction_guard_finish_then_drop_is_safe() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            5,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let guard = PaneInteractionGuard::new(&mut adapter);
+        let _diag = guard.finish();
+        // guard is consumed by finish(), so drop doesn't double-cancel
+        // This test proves the API is safe: finish() takes `self` not `&mut self`
+        assert_eq!(adapter.active_pointer_id(), None);
+    }
+
+    // =========================================================================
+    // PaneCapabilityMatrix (bd-6u66i)
+    // =========================================================================
+
+    fn caps_modern() -> TerminalCapabilities {
+        TerminalCapabilities::modern()
+    }
+
+    fn caps_with_mux(
+        mux: PaneMuxEnvironment,
+    ) -> ftui_core::terminal_capabilities::TerminalCapabilities {
+        let mut caps = TerminalCapabilities::modern();
+        match mux {
+            PaneMuxEnvironment::Tmux => caps.in_tmux = true,
+            PaneMuxEnvironment::Screen => caps.in_screen = true,
+            PaneMuxEnvironment::Zellij => caps.in_zellij = true,
+            PaneMuxEnvironment::None => {}
+        }
+        caps
+    }
+
+    #[test]
+    fn capability_matrix_bare_terminal_modern() {
+        let caps = caps_modern();
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::None);
+        assert!(mat.mouse_sgr);
+        assert!(mat.mouse_drag_reliable);
+        assert!(mat.mouse_button_discrimination);
+        assert!(mat.focus_events);
+        assert!(mat.unicode_box_drawing);
+        assert!(mat.true_color);
+        assert!(!mat.degraded);
+        assert!(mat.drag_enabled());
+        assert!(mat.focus_cancel_effective());
+        assert!(mat.limitations().is_empty());
+    }
+
+    #[test]
+    fn capability_matrix_tmux() {
+        let caps = caps_with_mux(PaneMuxEnvironment::Tmux);
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::Tmux);
+        // tmux forwards mouse drags and focus events correctly
+        assert!(mat.mouse_drag_reliable);
+        assert!(mat.focus_events);
+        assert!(mat.drag_enabled());
+        assert!(mat.focus_cancel_effective());
+    }
+
+    #[test]
+    fn capability_matrix_screen_degrades_drag() {
+        let caps = caps_with_mux(PaneMuxEnvironment::Screen);
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::Screen);
+        assert!(!mat.mouse_drag_reliable);
+        assert!(!mat.focus_events);
+        assert!(!mat.drag_enabled());
+        assert!(!mat.focus_cancel_effective());
+        assert!(mat.degraded);
+
+        let lims = mat.limitations();
+        assert!(lims.iter().any(|l| l.id == "mouse_drag_unreliable"));
+        assert!(lims.iter().any(|l| l.id == "no_focus_events"));
+    }
+
+    #[test]
+    fn capability_matrix_zellij() {
+        let caps = caps_with_mux(PaneMuxEnvironment::Zellij);
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::Zellij);
+        assert!(mat.mouse_drag_reliable);
+        assert!(mat.focus_events);
+        assert!(mat.drag_enabled());
+    }
+
+    #[test]
+    fn capability_matrix_no_sgr_mouse() {
+        let mut caps = caps_modern();
+        caps.mouse_sgr = false;
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert!(!mat.mouse_sgr);
+        assert!(!mat.mouse_button_discrimination);
+        assert!(mat.degraded);
+
+        let lims = mat.limitations();
+        assert!(lims.iter().any(|l| l.id == "no_sgr_mouse"));
+        assert!(lims.iter().any(|l| l.id == "no_button_discrimination"));
+    }
+
+    #[test]
+    fn capability_matrix_no_focus_events() {
+        let mut caps = caps_modern();
+        caps.focus_events = false;
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert!(!mat.focus_events);
+        assert!(!mat.focus_cancel_effective());
+        assert!(mat.degraded);
+
+        let lims = mat.limitations();
+        assert!(lims.iter().any(|l| l.id == "no_focus_events"));
+    }
+
+    #[test]
+    fn capability_matrix_dumb_terminal() {
+        let caps = TerminalCapabilities::dumb();
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::None);
+        assert!(!mat.mouse_sgr);
+        assert!(!mat.focus_events);
+        assert!(!mat.unicode_box_drawing);
+        assert!(!mat.true_color);
+        assert!(mat.degraded);
+        assert!(mat.limitations().len() >= 3);
+    }
+
+    #[test]
+    fn capability_matrix_limitations_have_fallbacks() {
+        let caps = TerminalCapabilities::dumb();
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        for lim in mat.limitations() {
+            assert!(!lim.id.is_empty());
+            assert!(!lim.description.is_empty());
+            assert!(!lim.fallback.is_empty());
+        }
     }
 }

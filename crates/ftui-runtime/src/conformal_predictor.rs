@@ -164,6 +164,27 @@ pub struct ConformalPrediction {
     pub budget_us: f64,
 }
 
+impl ConformalPrediction {
+    /// Format this prediction as a JSONL line for structured logging.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"schema":"conformal-v1","upper_us":{:.1},"risk":{},"confidence":{:.4},"bucket":"{}","samples":{},"quantile":{:.2},"fallback_level":{},"window":{},"resets":{},"y_hat":{:.1},"budget_us":{:.1}}}"#,
+            self.upper_us,
+            self.risk,
+            self.confidence,
+            self.bucket,
+            self.sample_count,
+            self.quantile,
+            self.fallback_level,
+            self.window_size,
+            self.reset_count,
+            self.y_hat,
+            self.budget_us,
+        )
+    }
+}
+
 /// Update metadata after observing a frame.
 #[derive(Debug, Clone)]
 pub struct ConformalUpdate {

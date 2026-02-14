@@ -478,6 +478,12 @@ jobs:
       - name: Run snapshot tests
         run: cargo test -p ftui-demo-showcase --test screen_snapshots
 
+      - name: Golden checksum verification (bd-3jlw5.2)
+        run: cargo test -p ftui-demo-showcase --test golden_checksums -- golden_checksums_verify golden_checksums_deterministic --nocapture
+
+      - name: Baseline benchmark capture (bd-3jlw5.1)
+        run: cargo test -p ftui-demo-showcase --test baseline_capture -- --nocapture
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

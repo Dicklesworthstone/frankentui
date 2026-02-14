@@ -1196,6 +1196,270 @@ impl TinyLfuWidthCache {
     }
 }
 
+// ── S3-FIFO Width Cache ────────────────────────────────────────────────
+
+/// Width cache backed by S3-FIFO eviction (bd-l6yba.2).
+///
+/// Drop-in replacement for [`WidthCache`] that uses the scan-resistant
+/// S3-FIFO eviction policy instead of LRU. This protects frequently-used
+/// width entries from being evicted by one-time scan patterns (e.g. when a
+/// large block of new text scrolls past).
+///
+/// Uses the same 64-bit FxHash keying as [`WidthCache`] with a secondary
+/// FNV fingerprint for collision detection.
+#[derive(Debug)]
+pub struct S3FifoWidthCache {
+    cache: ftui_core::s3_fifo::S3Fifo<u64, S3FifoEntry>,
+    hits: u64,
+    misses: u64,
+    total_capacity: usize,
+}
+
+/// Entry stored in the S3-FIFO width cache.
+#[derive(Debug, Clone, Copy)]
+struct S3FifoEntry {
+    width: usize,
+    fingerprint: u64,
+}
+
+impl S3FifoWidthCache {
+    /// Create a new S3-FIFO width cache with the given capacity.
+    pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(2);
+        Self {
+            cache: ftui_core::s3_fifo::S3Fifo::new(capacity),
+            hits: 0,
+            misses: 0,
+            total_capacity: capacity,
+        }
+    }
+
+    /// Create a new cache with the default capacity (4096 entries).
+    #[must_use]
+    pub fn with_default_capacity() -> Self {
+        Self::new(DEFAULT_CACHE_CAPACITY)
+    }
+
+    /// Get cached width or compute and cache it.
+    pub fn get_or_compute(&mut self, text: &str) -> usize {
+        self.get_or_compute_with(text, crate::display_width)
+    }
+
+    /// Get cached width or compute using a custom function.
+    pub fn get_or_compute_with<F>(&mut self, text: &str, compute: F) -> usize
+    where
+        F: FnOnce(&str) -> usize,
+    {
+        let hash = hash_text(text);
+        let fp = fingerprint_hash(text);
+
+        if let Some(entry) = self.cache.get(&hash) {
+            if entry.fingerprint == fp {
+                self.hits += 1;
+                return entry.width;
+            }
+            // Fingerprint mismatch: collision. Remove stale entry.
+            self.cache.remove(&hash);
+        }
+
+        // Cache miss: compute width.
+        self.misses += 1;
+        let width = compute(text);
+        self.cache.insert(
+            hash,
+            S3FifoEntry {
+                width,
+                fingerprint: fp,
+            },
+        );
+        width
+    }
+
+    /// Check if a key is in the cache.
+    pub fn contains(&self, text: &str) -> bool {
+        let hash = hash_text(text);
+        self.cache.contains_key(&hash)
+    }
+
+    /// Get cache statistics.
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits,
+            misses: self.misses,
+            size: self.cache.len(),
+            capacity: self.total_capacity,
+        }
+    }
+
+    /// Clear the cache.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    /// Reset statistics.
+    pub fn reset_stats(&mut self) {
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    /// Current number of cached entries.
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Check if cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+
+    /// Total capacity.
+    pub fn capacity(&self) -> usize {
+        self.total_capacity
+    }
+}
+
+impl Default for S3FifoWidthCache {
+    fn default() -> Self {
+        Self::with_default_capacity()
+    }
+}
+
+#[cfg(test)]
+mod s3_fifo_width_tests {
+    use super::*;
+
+    #[test]
+    fn s3fifo_new_cache_is_empty() {
+        let cache = S3FifoWidthCache::new(100);
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn s3fifo_get_or_compute_caches_value() {
+        let mut cache = S3FifoWidthCache::new(100);
+        let w1 = cache.get_or_compute("hello");
+        assert_eq!(w1, 5);
+        assert_eq!(cache.len(), 1);
+
+        let w2 = cache.get_or_compute("hello");
+        assert_eq!(w2, 5);
+        assert_eq!(cache.len(), 1);
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+    }
+
+    #[test]
+    fn s3fifo_different_strings() {
+        let mut cache = S3FifoWidthCache::new(100);
+        cache.get_or_compute("hello");
+        cache.get_or_compute("world");
+        cache.get_or_compute("foo");
+        assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn s3fifo_cjk_width() {
+        let mut cache = S3FifoWidthCache::new(100);
+        let w = cache.get_or_compute("你好");
+        assert_eq!(w, 4);
+    }
+
+    #[test]
+    fn s3fifo_contains() {
+        let mut cache = S3FifoWidthCache::new(100);
+        assert!(!cache.contains("hello"));
+        cache.get_or_compute("hello");
+        assert!(cache.contains("hello"));
+    }
+
+    #[test]
+    fn s3fifo_clear_resets() {
+        let mut cache = S3FifoWidthCache::new(100);
+        cache.get_or_compute("hello");
+        cache.get_or_compute("world");
+        cache.clear();
+        assert!(cache.is_empty());
+        assert!(!cache.contains("hello"));
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+    }
+
+    #[test]
+    fn s3fifo_produces_same_widths_as_lru() {
+        let mut lru = WidthCache::new(100);
+        let mut s3 = S3FifoWidthCache::new(100);
+
+        let texts = [
+            "hello",
+            "你好世界",
+            "abc",
+            "🎉🎉",
+            "",
+            " ",
+            "a\tb",
+            "mixed中english文",
+        ];
+
+        for text in &texts {
+            let lru_w = lru.get_or_compute(text);
+            let s3_w = s3.get_or_compute(text);
+            assert_eq!(lru_w, s3_w, "width mismatch for {:?}", text);
+        }
+    }
+
+    #[test]
+    fn s3fifo_scan_resistance_preserves_hot_set() {
+        let mut cache = S3FifoWidthCache::new(50);
+
+        // Build a hot set
+        let hot: Vec<String> = (0..20).map(|i| format!("hot_{i}")).collect();
+        for text in &hot {
+            cache.get_or_compute(text);
+            cache.get_or_compute(text); // access twice to set freq
+        }
+
+        // Scan through a large one-time set
+        for i in 0..200 {
+            cache.get_or_compute(&format!("scan_{i}"));
+        }
+
+        // Some hot items should survive
+        let mut survivors = 0;
+        for text in &hot {
+            if cache.contains(text) {
+                survivors += 1;
+            }
+        }
+        assert!(
+            survivors > 5,
+            "scan resistance: only {survivors}/20 hot items survived"
+        );
+    }
+
+    #[test]
+    fn s3fifo_default_capacity() {
+        let cache = S3FifoWidthCache::with_default_capacity();
+        assert_eq!(cache.capacity(), DEFAULT_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn s3fifo_reset_stats() {
+        let mut cache = S3FifoWidthCache::new(100);
+        cache.get_or_compute("a");
+        cache.get_or_compute("a");
+        cache.reset_stats();
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+    }
+}
+
 #[cfg(test)]
 mod proptests {
     use super::*;

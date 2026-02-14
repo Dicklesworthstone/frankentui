@@ -91,6 +91,7 @@
 
 pub mod command;
 pub mod history;
+pub mod snapshot_store;
 pub mod transaction;
 
 // Re-export commonly used types
@@ -99,4 +100,5 @@ pub use command::{
     TextDeleteCmd, TextInsertCmd, TextReplaceCmd, UndoableCmd, WidgetId,
 };
 pub use history::{HistoryConfig, HistoryManager};
+pub use snapshot_store::{SnapshotConfig, SnapshotStore};
 pub use transaction::{Transaction, TransactionScope};

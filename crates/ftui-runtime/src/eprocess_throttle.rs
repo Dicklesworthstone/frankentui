@@ -160,6 +160,40 @@ pub struct ThrottleLog {
     pub time_since_recompute_ms: f64,
 }
 
+impl ThrottleDecision {
+    /// Format this decision as a JSONL line for structured logging.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"schema":"eprocess-throttle-v1","should_recompute":{},"wealth":{:.6},"lambda":{:.6},"empirical_rate":{:.6},"forced_by_deadline":{},"obs_since_recompute":{}}}"#,
+            self.should_recompute,
+            self.wealth,
+            self.lambda,
+            self.empirical_rate,
+            self.forced_by_deadline,
+            self.observations_since_recompute,
+        )
+    }
+}
+
+impl ThrottleLog {
+    /// Format this log entry as a JSONL line for structured logging.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"schema":"eprocess-log-v1","obs_idx":{},"matched":{},"wealth_before":{:.6},"wealth_after":{:.6},"lambda":{:.6},"empirical_rate":{:.6},"action":"{}","time_since_recompute_ms":{:.3}}}"#,
+            self.observation_idx,
+            self.matched,
+            self.wealth_before,
+            self.wealth_after,
+            self.lambda,
+            self.empirical_rate,
+            self.action,
+            self.time_since_recompute_ms,
+        )
+    }
+}
+
 /// Aggregate statistics for the throttle.
 #[derive(Debug, Clone)]
 pub struct ThrottleStats {

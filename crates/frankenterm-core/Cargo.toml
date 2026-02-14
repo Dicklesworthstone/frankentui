@@ -11,9 +11,12 @@ readme = "../../README.md"
 
 [features]
 default = []
+ws-codec = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 bitflags = "2.10.0"
+serde = { version = "1.0.227", features = ["derive"], optional = true }
+serde_json = { version = "1.0.145", optional = true }
 smallvec = "1.15.0"
 unicode-width = "0.2.2"
 

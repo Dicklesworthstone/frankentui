@@ -45,3 +45,7 @@ harness = false
 [[bench]]
 name = "search_bench"
 harness = false
+
+[[bench]]
+name = "cache_bench"
+harness = false

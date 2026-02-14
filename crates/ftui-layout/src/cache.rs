@@ -391,6 +391,132 @@ impl Default for LayoutCache {
 }
 
 // ---------------------------------------------------------------------------
+// S3-FIFO Layout Cache (bd-l6yba.3)
+// ---------------------------------------------------------------------------
+
+/// Layout cache backed by S3-FIFO eviction.
+///
+/// Drop-in replacement for [`LayoutCache`] that uses the scan-resistant
+/// S3-FIFO eviction policy instead of the HashMap-based LRU. This protects
+/// frequently-accessed layout computations from being evicted by transient
+/// layouts (e.g. popup menus or tooltips that appear once).
+///
+/// Supports the same generation-based invalidation as [`LayoutCache`].
+#[derive(Debug)]
+pub struct S3FifoLayoutCache {
+    cache: ftui_core::s3_fifo::S3Fifo<LayoutCacheKey, CachedLayoutEntry>,
+    generation: u64,
+    max_entries: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl S3FifoLayoutCache {
+    /// Create a new S3-FIFO layout cache with the given capacity.
+    #[inline]
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            cache: ftui_core::s3_fifo::S3Fifo::new(max_entries.max(2)),
+            generation: 0,
+            max_entries: max_entries.max(2),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Get cached layout or compute and cache a new one.
+    ///
+    /// Same semantics as [`LayoutCache::get_or_compute`]: entries from
+    /// a previous generation are treated as misses.
+    pub fn get_or_compute<F>(&mut self, key: LayoutCacheKey, compute: F) -> Vec<Rect>
+    where
+        F: FnOnce() -> Vec<Rect>,
+    {
+        if let Some(entry) = self.cache.get(&key) {
+            if entry.generation == self.generation {
+                self.hits += 1;
+                return entry.chunks.clone();
+            }
+            // Stale entry (old generation) — remove and recompute.
+            self.cache.remove(&key);
+        }
+
+        self.misses += 1;
+        let chunks = compute();
+
+        self.cache.insert(
+            key,
+            CachedLayoutEntry {
+                chunks: chunks.clone(),
+                generation: self.generation,
+                access_count: 1,
+            },
+        );
+
+        chunks
+    }
+
+    /// Invalidate all entries by bumping the generation (O(1)).
+    #[inline]
+    pub fn invalidate_all(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Get current cache statistics.
+    pub fn stats(&self) -> LayoutCacheStats {
+        let total = self.hits + self.misses;
+        LayoutCacheStats {
+            entries: self.cache.len(),
+            hits: self.hits,
+            misses: self.misses,
+            hit_rate: if total > 0 {
+                self.hits as f64 / total as f64
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// Reset statistics counters.
+    #[inline]
+    pub fn reset_stats(&mut self) {
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    /// Clear all entries.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.cache.clear();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Current number of entries.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Whether the cache is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+
+    /// Maximum capacity.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.max_entries
+    }
+}
+
+impl Default for S3FifoLayoutCache {
+    fn default() -> Self {
+        Self::new(64)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Coherence Cache: Temporal Stability for Layout Rounding
 // ---------------------------------------------------------------------------
 
@@ -1186,5 +1312,105 @@ mod tests {
     fn default_coherence_cache_capacity_is_64() {
         let cc = CoherenceCache::default();
         assert_eq!(cc.max_entries, 64);
+    }
+
+    // ── S3-FIFO Layout Cache ────────────────────────────────────────
+
+    fn s3_fifo_test_key(x: u16, w: u16) -> LayoutCacheKey {
+        LayoutCacheKey {
+            area_x: x,
+            area_y: 0,
+            area_width: w,
+            area_height: 24,
+            constraints_hash: 42,
+            direction: Direction::Horizontal,
+            intrinsics_hash: None,
+        }
+    }
+
+    #[test]
+    fn s3fifo_layout_new_is_empty() {
+        let cache = S3FifoLayoutCache::new(64);
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.capacity(), 64);
+    }
+
+    #[test]
+    fn s3fifo_layout_default_capacity() {
+        let cache = S3FifoLayoutCache::default();
+        assert_eq!(cache.capacity(), 64);
+    }
+
+    #[test]
+    fn s3fifo_layout_get_or_compute_caches() {
+        let mut cache = S3FifoLayoutCache::new(64);
+        let key = s3_fifo_test_key(0, 80);
+        let rects1 = cache.get_or_compute(key, || vec![Rect::new(0, 0, 40, 24)]);
+        let rects2 = cache.get_or_compute(key, || panic!("should not recompute"));
+        assert_eq!(rects1, rects2);
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+    }
+
+    #[test]
+    fn s3fifo_layout_generation_invalidation() {
+        let mut cache = S3FifoLayoutCache::new(64);
+        let key = s3_fifo_test_key(0, 80);
+        cache.get_or_compute(key, || vec![Rect::new(0, 0, 40, 24)]);
+
+        cache.invalidate_all();
+
+        // After invalidation, should recompute
+        let rects = cache.get_or_compute(key, || vec![Rect::new(0, 0, 80, 24)]);
+        assert_eq!(rects, vec![Rect::new(0, 0, 80, 24)]);
+        let stats = cache.stats();
+        assert_eq!(stats.misses, 2);
+    }
+
+    #[test]
+    fn s3fifo_layout_clear() {
+        let mut cache = S3FifoLayoutCache::new(64);
+        let key = s3_fifo_test_key(0, 80);
+        cache.get_or_compute(key, || vec![Rect::new(0, 0, 40, 24)]);
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn s3fifo_layout_different_keys() {
+        let mut cache = S3FifoLayoutCache::new(64);
+        let k1 = s3_fifo_test_key(0, 80);
+        let k2 = s3_fifo_test_key(0, 120);
+        cache.get_or_compute(k1, || vec![Rect::new(0, 0, 40, 24)]);
+        cache.get_or_compute(k2, || vec![Rect::new(0, 0, 60, 24)]);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn s3fifo_layout_reset_stats() {
+        let mut cache = S3FifoLayoutCache::new(64);
+        let key = s3_fifo_test_key(0, 80);
+        cache.get_or_compute(key, || vec![]);
+        cache.get_or_compute(key, || vec![]);
+        cache.reset_stats();
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+    }
+
+    #[test]
+    fn s3fifo_layout_produces_same_results_as_lru() {
+        let mut lru = LayoutCache::new(64);
+        let mut s3 = S3FifoLayoutCache::new(64);
+
+        for w in [80, 100, 120, 160, 200] {
+            let key = s3_fifo_test_key(0, w);
+            let expected = vec![Rect::new(0, 0, w / 2, 24)];
+            let lru_r = lru.get_or_compute(key, || expected.clone());
+            let s3_r = s3.get_or_compute(key, || expected.clone());
+            assert_eq!(lru_r, s3_r, "mismatch for width={w}");
+        }
     }
 }
