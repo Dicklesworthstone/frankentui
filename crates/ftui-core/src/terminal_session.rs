@@ -77,10 +77,63 @@
 use std::env;
 use std::io::{self, Write};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::event::Event;
+
+// Import tracing macros (no-op when tracing feature is disabled).
+#[cfg(feature = "tracing")]
+use crate::logging::{info_span, warn};
+#[cfg(not(feature = "tracing"))]
+use crate::{info_span, warn};
+
+// ─── Metrics counters ────────────────────────────────────────────────────────
+
+static IO_READ_DURATION_SUM_US: AtomicU64 = AtomicU64::new(0);
+static IO_READ_COUNT: AtomicU64 = AtomicU64::new(0);
+static IO_WRITE_DURATION_SUM_US: AtomicU64 = AtomicU64::new(0);
+static IO_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
+static IO_FLUSH_DURATION_SUM_US: AtomicU64 = AtomicU64::new(0);
+static IO_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Returns (sum_us, count) for read I/O operations.
+pub fn terminal_io_read_stats() -> (u64, u64) {
+    (
+        IO_READ_DURATION_SUM_US.load(Ordering::Relaxed),
+        IO_READ_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Returns (sum_us, count) for write I/O operations.
+pub fn terminal_io_write_stats() -> (u64, u64) {
+    (
+        IO_WRITE_DURATION_SUM_US.load(Ordering::Relaxed),
+        IO_WRITE_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Returns (sum_us, count) for flush I/O operations.
+pub fn terminal_io_flush_stats() -> (u64, u64) {
+    (
+        IO_FLUSH_DURATION_SUM_US.load(Ordering::Relaxed),
+        IO_FLUSH_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Convert `web_time::Duration` to `std::time::Duration`, clamping to avoid
+/// overflow on the `as_micros() -> u64` conversion.
+fn to_std_duration(d: web_time::Duration) -> Duration {
+    Duration::from_micros(d.as_micros().min(u64::MAX as u128) as u64)
+}
+
+/// Compute remaining microseconds for Cx, or `u64::MAX` if no deadline.
+#[cfg_attr(not(feature = "tracing"), allow(dead_code))]
+fn cx_deadline_remaining_us(cx: &crate::cx::Cx) -> u64 {
+    cx.remaining()
+        .map(|r| r.as_micros().min(u64::MAX as u128) as u64)
+        .unwrap_or(u64::MAX)
+}
 
 const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
 const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
@@ -387,6 +440,42 @@ impl TerminalSession {
         crossterm::event::poll(timeout)
     }
 
+    /// Poll for an event, respecting the [`Cx`] deadline and cancellation.
+    ///
+    /// The effective timeout is `min(timeout, cx.remaining())`. Returns
+    /// `Ok(false)` immediately if the context is cancelled or expired.
+    ///
+    /// Emits a `terminal.io` tracing span with `op_type="poll"`.
+    pub fn poll_event_cx(
+        &self,
+        timeout: std::time::Duration,
+        cx: &crate::cx::Cx,
+    ) -> io::Result<bool> {
+        let _span = info_span!(
+            "terminal.io",
+            op_type = "poll",
+            cx_deadline_remaining_us = cx_deadline_remaining_us(cx),
+            cx_cancelled = cx.is_cancelled()
+        );
+        let _guard = _span.enter();
+        if cx.is_done() {
+            return Ok(false);
+        }
+        let effective = match cx.remaining() {
+            Some(rem) => timeout.min(to_std_duration(rem)),
+            None => timeout,
+        };
+        let start = web_time::Instant::now();
+        let result = crossterm::event::poll(effective);
+        let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        IO_READ_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
+        IO_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+        if cx.is_done() {
+            warn!("terminal.io poll completed after Cx deadline/cancellation");
+        }
+        result
+    }
+
     /// Read the next event (blocking until available).
     ///
     /// Returns `Ok(None)` if the event cannot be represented by the
@@ -396,14 +485,100 @@ impl TerminalSession {
         Ok(Event::from_crossterm(event))
     }
 
+    /// Read the next event, respecting the [`Cx`] deadline and cancellation.
+    ///
+    /// Polls with the context's remaining deadline, then reads if available.
+    /// Returns `Ok(None)` if the context is cancelled, expired, or the poll
+    /// times out before an event arrives.
+    ///
+    /// Emits a `terminal.io` tracing span with `op_type="read"`.
+    pub fn read_event_cx(&self, cx: &crate::cx::Cx) -> io::Result<Option<Event>> {
+        let _span = info_span!(
+            "terminal.io",
+            op_type = "read",
+            cx_deadline_remaining_us = cx_deadline_remaining_us(cx),
+            cx_cancelled = cx.is_cancelled()
+        );
+        let _guard = _span.enter();
+        if cx.is_done() {
+            return Ok(None);
+        }
+        let remaining = cx.remaining().unwrap_or(web_time::Duration::from_secs(60));
+        let timeout = to_std_duration(remaining);
+        let start = web_time::Instant::now();
+        let result = if crossterm::event::poll(timeout)? {
+            let event = crossterm::event::read()?;
+            Ok(Event::from_crossterm(event))
+        } else {
+            Ok(None)
+        };
+        let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        IO_READ_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
+        IO_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+        if cx.is_done() {
+            warn!("terminal.io read completed after Cx deadline/cancellation");
+        }
+        result
+    }
+
     /// Show the cursor.
     pub fn show_cursor(&self) -> io::Result<()> {
         crossterm::execute!(io::stdout(), crossterm::cursor::Show)
     }
 
+    /// Show the cursor, respecting the [`Cx`] deadline and cancellation.
+    ///
+    /// Returns `Ok(())` without writing if the context is already done.
+    pub fn show_cursor_cx(&self, cx: &crate::cx::Cx) -> io::Result<()> {
+        let _span = info_span!(
+            "terminal.io",
+            op_type = "write",
+            cx_deadline_remaining_us = cx_deadline_remaining_us(cx),
+            cx_cancelled = cx.is_cancelled()
+        );
+        let _guard = _span.enter();
+        if cx.is_done() {
+            return Ok(());
+        }
+        let start = web_time::Instant::now();
+        let result = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+        let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        IO_WRITE_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
+        IO_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+        if cx.is_done() {
+            warn!("terminal.io show_cursor completed after Cx deadline/cancellation");
+        }
+        result
+    }
+
     /// Hide the cursor.
     pub fn hide_cursor(&self) -> io::Result<()> {
         crossterm::execute!(io::stdout(), crossterm::cursor::Hide)
+    }
+
+    /// Hide the cursor, respecting the [`Cx`] deadline and cancellation.
+    ///
+    /// Returns `Ok(())` without writing if the context is already done.
+    pub fn hide_cursor_cx(&self, cx: &crate::cx::Cx) -> io::Result<()> {
+        let _span = info_span!(
+            "terminal.io",
+            op_type = "write",
+            cx_deadline_remaining_us = cx_deadline_remaining_us(cx),
+            cx_cancelled = cx.is_cancelled()
+        );
+        let _guard = _span.enter();
+        if cx.is_done() {
+            return Ok(());
+        }
+        let start = web_time::Instant::now();
+        let result = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
+        let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        IO_WRITE_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
+        IO_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+        if cx.is_done() {
+            warn!("terminal.io hide_cursor completed after Cx deadline/cancellation");
+        }
+        result
     }
 
     /// Return whether mouse capture is currently enabled for this session.
@@ -445,6 +620,116 @@ impl TerminalSession {
         }
 
         Ok(())
+    }
+
+    /// Enable or disable terminal mouse capture, respecting the [`Cx`] deadline.
+    ///
+    /// Returns `Ok(())` without writing if the context is already done.
+    pub fn set_mouse_capture_cx(&mut self, enabled: bool, cx: &crate::cx::Cx) -> io::Result<()> {
+        let _span = info_span!(
+            "terminal.io",
+            op_type = "write",
+            cx_deadline_remaining_us = cx_deadline_remaining_us(cx),
+            cx_cancelled = cx.is_cancelled()
+        );
+        let _guard = _span.enter();
+        if cx.is_done() {
+            return Ok(());
+        }
+        if enabled == self.mouse_enabled {
+            self.options.mouse_capture = enabled;
+            return Ok(());
+        }
+        let start = web_time::Instant::now();
+        let mut stdout = io::stdout();
+        let result = if enabled {
+            let r = crossterm::execute!(stdout, crossterm::event::EnableMouseCapture);
+            if r.is_ok() {
+                self.mouse_enabled = true;
+                self.options.mouse_capture = true;
+            }
+            r
+        } else {
+            let r = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+            if r.is_ok() {
+                self.mouse_enabled = false;
+                self.options.mouse_capture = false;
+            }
+            r
+        };
+        let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        IO_WRITE_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
+        IO_WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+        if cx.is_done() {
+            warn!("terminal.io set_mouse_capture completed after Cx deadline/cancellation");
+        }
+        result
+    }
+
+    /// Query terminal size, respecting the [`Cx`] deadline and cancellation.
+    ///
+    /// Skips the retry-with-delay fallback if the context is done.
+    pub fn size_cx(&self, cx: &crate::cx::Cx) -> io::Result<(u16, u16)> {
+        let _span = info_span!(
+            "terminal.io",
+            op_type = "read",
+            cx_deadline_remaining_us = cx_deadline_remaining_us(cx),
+            cx_cancelled = cx.is_cancelled()
+        );
+        let _guard = _span.enter();
+        if cx.is_done() {
+            // Return env fallback or minimum viable size.
+            if let Some(env_size) = size_from_env() {
+                return Ok(env_size);
+            }
+            return Ok((2, 2));
+        }
+        let start = web_time::Instant::now();
+        let (w, h) = crossterm::terminal::size()?;
+        let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        IO_READ_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
+        IO_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+        if w > 1 && h > 1 {
+            return Ok((w, h));
+        }
+        if let Some((env_w, env_h)) = size_from_env() {
+            return Ok((env_w, env_h));
+        }
+        // Skip retry delay if Cx is running out of time.
+        if cx.is_done() {
+            return Ok((w.max(2), h.max(2)));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        let (w2, h2) = crossterm::terminal::size()?;
+        if w2 > 1 && h2 > 1 {
+            return Ok((w2, h2));
+        }
+        Ok((w.max(2), h.max(2)))
+    }
+
+    /// Flush stdout, respecting the [`Cx`] deadline and cancellation.
+    ///
+    /// Returns `Ok(())` without flushing if the context is already done.
+    pub fn flush_cx(&self, cx: &crate::cx::Cx) -> io::Result<()> {
+        let _span = info_span!(
+            "terminal.io",
+            op_type = "flush",
+            cx_deadline_remaining_us = cx_deadline_remaining_us(cx),
+            cx_cancelled = cx.is_cancelled()
+        );
+        let _guard = _span.enter();
+        if cx.is_done() {
+            return Ok(());
+        }
+        let start = web_time::Instant::now();
+        let result = io::stdout().flush();
+        let elapsed_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        IO_FLUSH_DURATION_SUM_US.fetch_add(elapsed_us, Ordering::Relaxed);
+        IO_FLUSH_COUNT.fetch_add(1, Ordering::Relaxed);
+        if cx.is_done() {
+            warn!("terminal.io flush completed after Cx deadline/cancellation");
+        }
+        result
     }
 
     /// Get the session options.
@@ -1250,5 +1535,207 @@ mod tests {
             captured.windows(MARKER.len()).any(|w| w == MARKER),
             "expected marker in PTY output"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cx helper function tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn to_std_duration_converts_correctly() {
+        let d = web_time::Duration::from_millis(1234);
+        let std_d = super::to_std_duration(d);
+        assert_eq!(std_d, Duration::from_millis(1234));
+    }
+
+    #[test]
+    fn to_std_duration_zero() {
+        let d = web_time::Duration::from_secs(0);
+        let std_d = super::to_std_duration(d);
+        assert_eq!(std_d, Duration::ZERO);
+    }
+
+    #[test]
+    fn to_std_duration_large_value() {
+        let d = web_time::Duration::from_secs(86400);
+        let std_d = super::to_std_duration(d);
+        assert_eq!(std_d, Duration::from_secs(86400));
+    }
+
+    #[test]
+    fn cx_deadline_remaining_us_no_deadline() {
+        let (cx, _ctrl) = crate::cx::Cx::background();
+        let remaining = super::cx_deadline_remaining_us(&cx);
+        assert_eq!(remaining, u64::MAX);
+    }
+
+    #[test]
+    fn cx_deadline_remaining_us_with_deadline() {
+        let (cx, _ctrl) = crate::cx::Cx::with_deadline(web_time::Duration::from_millis(500));
+        let remaining = super::cx_deadline_remaining_us(&cx);
+        // Should be approximately 500_000 us (allow some elapsed time)
+        assert!(remaining <= 500_000, "remaining={remaining}");
+        assert!(remaining > 400_000, "remaining={remaining}");
+    }
+
+    #[test]
+    fn cx_deadline_remaining_us_cancelled() {
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        // No deadline means u64::MAX even when cancelled (deadline is separate from cancellation)
+        assert_eq!(super::cx_deadline_remaining_us(&cx), u64::MAX);
+    }
+
+    #[test]
+    fn cx_deadline_remaining_us_expired() {
+        let (cx, _ctrl) = crate::cx::Cx::with_deadline(web_time::Duration::from_nanos(1));
+        std::thread::sleep(Duration::from_millis(2));
+        let remaining = super::cx_deadline_remaining_us(&cx);
+        assert_eq!(remaining, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Metrics function tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn terminal_io_stats_functions_return_tuples() {
+        // Verify the metric accessor functions return without panicking.
+        let (_sum, _count) = terminal_io_read_stats();
+        let (_sum_w, _count_w) = terminal_io_write_stats();
+        let (_sum_f, _count_f) = terminal_io_flush_stats();
+    }
+
+    #[test]
+    fn terminal_io_metrics_counters_are_monotonic() {
+        // Read initial state
+        let (_, count_before) = terminal_io_read_stats();
+        // Counters are global and shared across tests — just verify they don't decrease
+        let (_, count_after) = terminal_io_read_stats();
+        assert!(count_after >= count_before);
+    }
+
+    // -----------------------------------------------------------------------
+    // Cx-aware method tests (using test-helpers feature)
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn poll_event_cx_returns_false_when_cancelled() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        let result = session.poll_event_cx(Duration::from_secs(10), &cx);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "cancelled cx should return false immediately"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn poll_event_cx_returns_false_when_expired() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, _ctrl) = crate::cx::Cx::with_deadline(web_time::Duration::from_nanos(1));
+        std::thread::sleep(Duration::from_millis(2));
+        let result = session.poll_event_cx(Duration::from_secs(10), &cx);
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "expired cx should return false immediately"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn read_event_cx_returns_none_when_cancelled() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        let result = session.read_event_cx(&cx);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none(), "cancelled cx should return None");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn read_event_cx_returns_none_when_expired() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, _ctrl) = crate::cx::Cx::with_deadline(web_time::Duration::from_nanos(1));
+        std::thread::sleep(Duration::from_millis(2));
+        let result = session.read_event_cx(&cx);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none(), "expired cx should return None");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn show_cursor_cx_noop_when_cancelled() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        assert!(session.show_cursor_cx(&cx).is_ok());
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hide_cursor_cx_noop_when_cancelled() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        assert!(session.hide_cursor_cx(&cx).is_ok());
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn flush_cx_noop_when_cancelled() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        assert!(session.flush_cx(&cx).is_ok());
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn size_cx_returns_minimum_when_cancelled() {
+        let session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        let (w, h) = session.size_cx(&cx).unwrap();
+        assert!(w >= 2, "width={w}");
+        assert!(h >= 2, "height={h}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn set_mouse_capture_cx_noop_when_cancelled() {
+        let mut session = TerminalSession::new_for_tests(SessionOptions::default()).unwrap();
+        let (cx, ctrl) = crate::cx::Cx::background();
+        ctrl.cancel();
+        assert!(session.set_mouse_capture_cx(true, &cx).is_ok());
+        // Mouse should NOT be enabled since cx was cancelled
+        assert!(!session.mouse_capture_enabled());
+    }
+
+    // -----------------------------------------------------------------------
+    // Cx-aware methods with Lab clock (deterministic timing)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cx_lab_deadline_remaining_us_deterministic() {
+        let clock = crate::cx::LabClock::new();
+        let (cx, _ctrl) =
+            crate::cx::Cx::lab_with_deadline(&clock, web_time::Duration::from_millis(100));
+        // Lab clock hasn't advanced, so remaining should be ~100ms
+        let remaining = super::cx_deadline_remaining_us(&cx);
+        assert!(remaining <= 100_000, "remaining={remaining}");
+        assert!(remaining > 90_000, "remaining={remaining}");
+
+        // Advance clock by 50ms
+        clock.advance(web_time::Duration::from_millis(50));
+        let remaining = super::cx_deadline_remaining_us(&cx);
+        assert!(remaining <= 50_000, "remaining={remaining}");
+        assert!(remaining > 40_000, "remaining={remaining}");
     }
 }
