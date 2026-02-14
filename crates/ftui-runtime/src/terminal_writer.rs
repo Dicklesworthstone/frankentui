@@ -48,7 +48,19 @@
 //! ```
 
 use std::io::{self, BufWriter, Write};
+use std::sync::atomic::{AtomicU32, Ordering};
 use web_time::Instant;
+
+/// Global gauge: number of active inline-mode `TerminalWriter` instances.
+///
+/// Incremented when a writer is created in `Inline` or `InlineAuto` mode,
+/// decremented on drop. Read with [`inline_active_widgets`].
+static INLINE_ACTIVE_WIDGETS: AtomicU32 = AtomicU32::new(0);
+
+/// Read the current number of active inline-mode terminal writers.
+pub fn inline_active_widgets() -> u32 {
+    INLINE_ACTIVE_WIDGETS.load(Ordering::Relaxed)
+}
 
 use crate::evidence_sink::EvidenceSink;
 use crate::evidence_telemetry::{DiffDecisionSnapshot, set_diff_snapshot};
@@ -622,6 +634,16 @@ impl<W: Write> TerminalWriter<W> {
             }
             ScreenMode::AltScreen => {}
         }
+
+        // Bump the inline-active gauge.
+        let is_inline = matches!(
+            screen_mode,
+            ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+        );
+        if is_inline {
+            INLINE_ACTIVE_WIDGETS.fetch_add(1, Ordering::Relaxed);
+        }
+
         let mut diff_scratch = BufferDiff::new();
         diff_scratch
             .tile_config_mut()
@@ -1685,7 +1707,14 @@ impl<W: Write> TerminalWriter<W> {
         })();
 
         if result.is_err() {
+            _inline_span.record("scrollback_preserved", false);
+            warn!(
+                inline_height = ui_height,
+                render_mode, "scrollback preservation failed during inline render"
+            );
             self.best_effort_inline_cleanup();
+        } else {
+            _inline_span.record("scrollback_preserved", true);
         }
 
         result
@@ -2382,6 +2411,13 @@ impl<W: Write> TerminalWriter<W> {
 
 impl<W: Write> Drop for TerminalWriter<W> {
     fn drop(&mut self) {
+        // Decrement the inline-active gauge.
+        if matches!(
+            self.screen_mode,
+            ScreenMode::Inline { .. } | ScreenMode::InlineAuto { .. }
+        ) {
+            INLINE_ACTIVE_WIDGETS.fetch_sub(1, Ordering::Relaxed);
+        }
         self.cleanup();
     }
 }
@@ -4938,5 +4974,450 @@ mod tests {
         writer.spare_buffer = Some(Buffer::new(80, 24));
         writer.set_size(100, 30);
         assert!(writer.spare_buffer.is_none());
+    }
+
+    // =========================================================================
+    // Inline active widgets gauge tests (bd-1q5.15)
+    // =========================================================================
+
+    /// Mutex to serialize gauge tests against concurrent inline writer
+    /// creation/destruction in other tests.
+    static GAUGE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn inline_active_widgets_gauge_increments_for_inline_mode() {
+        let _lock = GAUGE_TEST_LOCK.lock().unwrap();
+        let before = inline_active_widgets();
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(
+            inline_active_widgets(),
+            before + 1,
+            "creating an inline writer should increment the gauge"
+        );
+        drop(writer);
+        assert_eq!(
+            inline_active_widgets(),
+            before,
+            "dropping an inline writer should decrement the gauge"
+        );
+    }
+
+    #[test]
+    fn inline_active_widgets_gauge_increments_for_inline_auto_mode() {
+        let _lock = GAUGE_TEST_LOCK.lock().unwrap();
+        let before = inline_active_widgets();
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::InlineAuto {
+                min_height: 2,
+                max_height: 10,
+            },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(inline_active_widgets(), before + 1);
+        drop(writer);
+        assert_eq!(inline_active_widgets(), before);
+    }
+
+    #[test]
+    fn inline_active_widgets_gauge_unchanged_for_altscreen() {
+        let _lock = GAUGE_TEST_LOCK.lock().unwrap();
+        let before = inline_active_widgets();
+        let writer = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::AltScreen,
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(
+            inline_active_widgets(),
+            before,
+            "altscreen writer should not affect the inline gauge"
+        );
+        drop(writer);
+    }
+
+    // =========================================================================
+    // Inline scrollback preservation tests (bd-1q5.16)
+    // =========================================================================
+
+    /// CSI ?1049h — the alternate-screen enter sequence that must NEVER appear
+    /// in inline mode output.
+    const ALTSCREEN_ENTER: &[u8] = b"\x1b[?1049h";
+
+    /// CSI ?1049l — the alternate-screen exit sequence.
+    const ALTSCREEN_EXIT: &[u8] = b"\x1b[?1049l";
+
+    /// Helper: returns true if `haystack` contains the byte subsequence `needle`.
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn inline_render_never_emits_altscreen_enter() {
+        // The defining contract of inline mode: CSI ?1049h must not appear.
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+            writer.write_log("hello\n").unwrap();
+            // Second present to exercise diff path
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_ENTER),
+            "inline mode must never emit CSI ?1049h (alternate screen enter)"
+        );
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_EXIT),
+            "inline mode must never emit CSI ?1049l (alternate screen exit)"
+        );
+    }
+
+    #[test]
+    fn inline_auto_render_never_emits_altscreen_enter() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::InlineAuto {
+                    min_height: 3,
+                    max_height: 10,
+                },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_ENTER),
+            "InlineAuto mode must never emit CSI ?1049h"
+        );
+    }
+
+    #[test]
+    fn inline_scrollback_preserved_after_present() {
+        // Scrollback preservation means log text written before present_ui
+        // survives the UI render pass. We verify the output buffer contains
+        // both the log text and cursor save/restore (the contract that
+        // guarantees scrollback isn't disturbed).
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+
+            writer.write_log("scrollback line A\n").unwrap();
+            writer.write_log("scrollback line B\n").unwrap();
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+
+            // Another log after render should also work
+            writer.write_log("scrollback line C\n").unwrap();
+        }
+
+        let text = String::from_utf8_lossy(&output);
+        assert!(text.contains("scrollback line A"), "first log must survive");
+        assert!(
+            text.contains("scrollback line B"),
+            "second log must survive"
+        );
+        assert!(
+            text.contains("scrollback line C"),
+            "post-render log must survive"
+        );
+
+        // Cursor save/restore must bracket the UI render to leave
+        // scrollback position untouched.
+        assert!(
+            contains_bytes(&output, CURSOR_SAVE),
+            "present_ui must save cursor to protect scrollback"
+        );
+        assert!(
+            contains_bytes(&output, CURSOR_RESTORE),
+            "present_ui must restore cursor to protect scrollback"
+        );
+    }
+
+    #[test]
+    fn multiple_inline_writers_coexist() {
+        // Two independent inline writers should each manage their own state
+        // without interfering. Uses owned Vec writers so each can be
+        // independently dropped and inspected.
+        let mut writer_a = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 3 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer_a.set_size(40, 12);
+
+        let mut writer_b = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        writer_b.set_size(80, 24);
+
+        // Both can render independently without panicking
+        let buf_a = Buffer::new(40, 3);
+        let buf_b = Buffer::new(80, 5);
+        writer_a.present_ui(&buf_a, None, true).unwrap();
+        writer_b.present_ui(&buf_b, None, true).unwrap();
+
+        // Second render pass (diff path) also works
+        writer_a.present_ui(&buf_a, None, true).unwrap();
+        writer_b.present_ui(&buf_b, None, true).unwrap();
+
+        // Both drop cleanly (no panic, no double-free)
+        drop(writer_a);
+        drop(writer_b);
+    }
+
+    #[test]
+    fn multiple_inline_writers_gauge_tracks_both() {
+        // Verify the gauge correctly tracks two simultaneous inline writers.
+        let _lock = GAUGE_TEST_LOCK.lock().unwrap();
+        let before = inline_active_widgets();
+
+        let writer_a = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 3 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(inline_active_widgets(), before + 1);
+
+        let writer_b = TerminalWriter::new(
+            Vec::new(),
+            ScreenMode::Inline { ui_height: 5 },
+            UiAnchor::Bottom,
+            basic_caps(),
+        );
+        assert_eq!(inline_active_widgets(), before + 2);
+
+        drop(writer_a);
+        assert_eq!(inline_active_widgets(), before + 1);
+
+        drop(writer_b);
+        assert_eq!(inline_active_widgets(), before);
+    }
+
+    #[test]
+    fn resize_during_inline_mode_preserves_scrollback() {
+        // Resize should re-anchor the UI region without emitting
+        // alternate screen sequences and should allow continued rendering.
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+
+            // Simulate resize
+            writer.set_size(100, 30);
+            assert_eq!(writer.ui_start_row(), 25); // 30 - 5
+
+            // Render again after resize
+            let buffer2 = Buffer::new(100, 5);
+            writer.present_ui(&buffer2, None, true).unwrap();
+
+            // Log still works after resize
+            writer.write_log("post-resize log\n").unwrap();
+        }
+
+        let text = String::from_utf8_lossy(&output);
+        assert!(text.contains("post-resize log"));
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_ENTER),
+            "resize must not trigger alternate screen"
+        );
+    }
+
+    #[test]
+    fn resize_shrink_during_inline_mode_clamps_correctly() {
+        // Shrinking the terminal so UI region overlaps should still work
+        // without alternate screen sequences.
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 10 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+            assert_eq!(writer.ui_start_row(), 14);
+
+            // Shrink terminal to smaller than UI height
+            writer.set_size(80, 8);
+            assert_eq!(writer.ui_start_row(), 0); // 8 - 10 would underflow, clamped to 0
+
+            // Rendering should still work (height clamped to terminal)
+            let buffer = Buffer::new(80, 8);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_ENTER),
+            "shrunken terminal must not switch to altscreen"
+        );
+    }
+
+    #[test]
+    fn inline_render_emits_tracing_span_fields() {
+        // Verify the inline.render span is entered during present_ui in inline
+        // mode by checking that the tracing infrastructure is invoked.
+        // We use a tracing subscriber to capture span creation.
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        struct SpanChecker {
+            saw_inline_render: Arc<AtomicBool>,
+        }
+
+        impl tracing::Subscriber for SpanChecker {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                if span.metadata().name() == "inline.render" {
+                    self.saw_inline_render
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+            fn event(&self, _event: &tracing::Event<'_>) {}
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        let saw_it = Arc::new(AtomicBool::new(false));
+        let subscriber = SpanChecker {
+            saw_inline_render: Arc::clone(&saw_it),
+        };
+
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            saw_it.load(std::sync::atomic::Ordering::SeqCst),
+            "present_ui in inline mode must emit an inline.render tracing span"
+        );
+    }
+
+    #[test]
+    fn inline_render_no_altscreen_with_scroll_region_strategy() {
+        // Even with scroll region caps, inline mode must not emit altscreen.
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                scroll_region_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_ENTER),
+            "scroll region strategy must never emit altscreen enter"
+        );
+    }
+
+    #[test]
+    fn inline_render_no_altscreen_with_hybrid_strategy() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                hybrid_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_ENTER),
+            "hybrid strategy must never emit altscreen enter"
+        );
+    }
+
+    #[test]
+    fn inline_render_no_altscreen_with_mux_strategy() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                mux_caps(),
+            );
+            writer.set_size(80, 24);
+
+            let buffer = Buffer::new(80, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !contains_bytes(&output, ALTSCREEN_ENTER),
+            "mux (overlay) strategy must never emit altscreen enter"
+        );
     }
 }
