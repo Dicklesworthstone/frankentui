@@ -1,9 +1,12 @@
-//! Golden output checksums for all demo screens (bd-3jlw5.9).
+//! Golden output checksums for all demo screens (bd-3jlw5.9, bd-3jlw5.2).
 //!
 //! Captures BLAKE3 checksums of the rendered buffer for every demo screen
 //! at two canonical sizes (80x24 and 120x40). The checksums are stored in
 //! `golden_checksums.txt` and serve as an isomorphism proof: any optimization
 //! must produce identical rendered output.
+//!
+//! On checksum mismatch, a visual cell diff is produced showing exactly which
+//! cells differ (row, column, expected vs actual content/style).
 //!
 //! ## Usage
 //!
@@ -17,11 +20,13 @@
 //! where LABEL is `{screen_slug}@{cols}x{rows}`.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use ftui_core::event::Event;
 use ftui_demo_showcase::app::{AppModel, ScreenId};
 use ftui_demo_showcase::screens;
+use ftui_render::buffer::Buffer;
 use ftui_render::cell::{CellAttrs, CellContent};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_web::step_program::StepProgram;
@@ -126,12 +131,101 @@ fn blake3_buffer(buf: &ftui_render::buffer::Buffer, pool: &GraphemePool) -> blak
     hasher.finalize()
 }
 
+/// Render a single screen at a given size and return a clone of the buffer.
+fn render_screen(screen: ScreenId, cols: u16, rows: u16) -> (Buffer, GraphemePool) {
+    let mut program = StepProgram::new(AppModel::new(), cols, rows);
+    program.init().unwrap();
+    program.model_mut().current_screen = screen;
+    stabilize_screen(&mut program, screen);
+    program.push_event(tick_event());
+    program.advance_time(Duration::from_millis(TICK_MS));
+    let step = program.step().unwrap();
+    assert!(step.rendered, "screen must render for {}", screen.title());
+    let outputs = program.outputs();
+    let buf = outputs.last_buffer.as_ref().unwrap().clone();
+    let pool = program.pool().clone();
+    (buf, pool)
+}
+
+/// Describe a cell's content and style for diagnostic output.
+fn describe_cell(cell: &ftui_render::cell::Cell, pool: &GraphemePool) -> String {
+    let ch = match cell.content {
+        CellContent::EMPTY => "<empty>".to_string(),
+        CellContent::CONTINUATION => "<cont>".to_string(),
+        content => {
+            if let Some(ch) = content.as_char() {
+                format!("{ch:?}")
+            } else if let Some(gid) = content.grapheme_id() {
+                let text = pool.get(gid).unwrap_or("?");
+                format!("g({text:?})")
+            } else {
+                format!("raw(0x{:08x})", content.raw())
+            }
+        }
+    };
+    let fg = cell.fg.0;
+    let bg = cell.bg.0;
+    format!("{ch} fg=0x{fg:08x} bg=0x{bg:08x}")
+}
+
+/// Produce a visual cell diff between two buffers, limited to first N differences.
+fn visual_cell_diff(a: &Buffer, pa: &GraphemePool, b: &Buffer, pb: &GraphemePool) -> String {
+    const MAX_DIFFS: usize = 20;
+    let mut out = String::new();
+    let mut count = 0;
+    let width = a.width().min(b.width());
+    let height = a.height().min(b.height());
+
+    if a.width() != b.width() || a.height() != b.height() {
+        let _ = writeln!(
+            out,
+            "  Size mismatch: golden={}x{}, current={}x{}",
+            a.width(),
+            a.height(),
+            b.width(),
+            b.height()
+        );
+    }
+
+    for y in 0..height {
+        for x in 0..width {
+            let ca = a.get_unchecked(x, y);
+            let cb = b.get_unchecked(x, y);
+            if ca.content != cb.content
+                || ca.fg != cb.fg
+                || ca.bg != cb.bg
+                || pack_attrs(ca.attrs) != pack_attrs(cb.attrs)
+            {
+                count += 1;
+                if count <= MAX_DIFFS {
+                    let _ = writeln!(out, "  [{x},{y}]:");
+                    let _ = writeln!(out, "    golden:  {}", describe_cell(ca, pa));
+                    let _ = writeln!(out, "    current: {}", describe_cell(cb, pb));
+                }
+            }
+        }
+    }
+
+    if count > MAX_DIFFS {
+        let _ = writeln!(out, "  ... and {} more differences", count - MAX_DIFFS);
+    }
+    let _ = writeln!(out, "  Total cells changed: {count}");
+    out
+}
+
+/// Sweep results including both checksums and screen metadata for diagnostics.
+struct SweepResult {
+    checksums: BTreeMap<String, String>,
+    screen_map: BTreeMap<String, (ScreenId, u16, u16)>,
+}
+
 /// Sweep all screens at the given terminal size, returning (slug@WxH, blake3_hex) pairs.
-fn sweep_checksums(cols: u16, rows: u16) -> BTreeMap<String, String> {
+fn sweep_checksums(cols: u16, rows: u16) -> SweepResult {
     let mut program = StepProgram::new(AppModel::new(), cols, rows);
     program.init().unwrap();
 
     let mut checksums = BTreeMap::new();
+    let mut screen_map = BTreeMap::new();
 
     for &screen in screens::screen_ids().iter() {
         program.model_mut().current_screen = screen;
@@ -153,10 +247,14 @@ fn sweep_checksums(cols: u16, rows: u16) -> BTreeMap<String, String> {
             .expect("rendered step must capture last buffer");
         let hash = blake3_buffer(buffer, program.pool());
         let label = format!("{}@{}x{}", screen_slug(screen), cols, rows);
-        checksums.insert(label, hash.to_hex().to_string());
+        checksums.insert(label.clone(), hash.to_hex().to_string());
+        screen_map.insert(label, (screen, cols, rows));
     }
 
-    checksums
+    SweepResult {
+        checksums,
+        screen_map,
+    }
 }
 
 /// Path to the golden checksums file (adjacent to the test source).
@@ -200,10 +298,17 @@ fn parse_checksums(content: &str) -> BTreeMap<String, String> {
 }
 
 /// Generate checksums for all screens at both canonical sizes.
-fn generate_all_checksums() -> BTreeMap<String, String> {
-    let mut all = sweep_checksums(80, 24);
-    all.extend(sweep_checksums(120, 40));
-    all
+fn generate_all_checksums() -> SweepResult {
+    let small = sweep_checksums(80, 24);
+    let large = sweep_checksums(120, 40);
+    let mut checksums = small.checksums;
+    checksums.extend(large.checksums);
+    let mut screen_map = small.screen_map;
+    screen_map.extend(large.screen_map);
+    SweepResult {
+        checksums,
+        screen_map,
+    }
 }
 
 /// Generate and write the golden checksums file (run with BLESS_GOLDEN=1).
@@ -214,29 +319,34 @@ fn golden_checksums_bless() {
         return;
     }
 
-    let checksums = generate_all_checksums();
-    let content = format_checksums(&checksums);
+    let result = generate_all_checksums();
+    let content = format_checksums(&result.checksums);
     std::fs::write(golden_path(), &content).expect("failed to write golden_checksums.txt");
 
     eprintln!(
         "Blessed {} golden checksums to {}",
-        checksums.len(),
+        result.checksums.len(),
         golden_path().display()
     );
 }
 
 /// Verify that current renders match the golden checksums file.
+///
+/// On checksum mismatch, re-renders the screen twice and produces a visual
+/// cell diff showing exactly which cells differ between the two runs.
+/// If the two fresh runs agree with each other but differ from golden,
+/// that means the rendering changed intentionally — update with BLESS_GOLDEN=1.
 #[test]
 fn golden_checksums_verify() {
     let path = golden_path();
     if !path.exists() {
         // First run: generate the golden file automatically.
-        let checksums = generate_all_checksums();
-        let content = format_checksums(&checksums);
+        let result = generate_all_checksums();
+        let content = format_checksums(&result.checksums);
         std::fs::write(&path, &content).expect("failed to write golden_checksums.txt");
         eprintln!(
             "Generated initial golden checksums ({} entries) at {}",
-            checksums.len(),
+            result.checksums.len(),
             path.display()
         );
         return;
@@ -253,12 +363,33 @@ fn golden_checksums_verify() {
     let mut missing_golden = Vec::new();
     let mut extra_golden = Vec::new();
 
-    for (label, current_hash) in &current {
+    for (label, current_hash) in &current.checksums {
         match golden.get(label) {
             Some(golden_hash) if golden_hash != current_hash => {
-                mismatches.push(format!(
-                    "  {label}:\n    golden:  {golden_hash}\n    current: {current_hash}"
-                ));
+                // Produce visual cell diff by re-rendering twice.
+                let mut diff_detail = format!(
+                    "  {label}:\n    golden:  {golden_hash}\n    current: {current_hash}\n"
+                );
+                if let Some(&(screen, cols, rows)) = current.screen_map.get(label) {
+                    let (buf_a, pool_a) = render_screen(screen, cols, rows);
+                    let (buf_b, pool_b) = render_screen(screen, cols, rows);
+                    let hash_a = blake3_buffer(&buf_a, &pool_a).to_hex().to_string();
+                    let hash_b = blake3_buffer(&buf_b, &pool_b).to_hex().to_string();
+                    if hash_a == hash_b {
+                        let _ = writeln!(
+                            diff_detail,
+                            "    (two fresh renders agree: rendering changed deterministically)"
+                        );
+                    } else {
+                        let _ = writeln!(
+                            diff_detail,
+                            "    WARNING: non-deterministic render detected!"
+                        );
+                        let _ = writeln!(diff_detail, "    Cell diff between two fresh renders:");
+                        diff_detail.push_str(&visual_cell_diff(&buf_a, &pool_a, &buf_b, &pool_b));
+                    }
+                }
+                mismatches.push(diff_detail);
             }
             None => {
                 missing_golden.push(format!("  {label}: {current_hash}"));
@@ -268,7 +399,7 @@ fn golden_checksums_verify() {
     }
 
     for label in golden.keys() {
-        if !current.contains_key(label) {
+        if !current.checksums.contains_key(label) {
             extra_golden.push(format!("  {label}"));
         }
     }
@@ -317,18 +448,44 @@ fn golden_checksums_verify() {
 
     eprintln!(
         "Golden checksum verification passed: {} screens verified",
-        current.len()
+        current.checksums.len()
     );
 }
 
 /// Verify that checksums are deterministic (two sweeps produce identical hashes).
+///
+/// On mismatch, produces a visual cell diff showing exactly which cells differ
+/// between the two runs for the non-deterministic screen.
 #[test]
 fn golden_checksums_deterministic() {
     let sweep_a = generate_all_checksums();
     let sweep_b = generate_all_checksums();
 
-    assert_eq!(
-        sweep_a, sweep_b,
-        "Golden checksums must be deterministic across runs"
-    );
+    let mut failures = Vec::new();
+    for (label, hash_a) in &sweep_a.checksums {
+        if let Some(hash_b) = sweep_b.checksums.get(label)
+            && hash_a != hash_b
+        {
+            let mut detail =
+                format!("{label}: hashes differ\n  run1: {hash_a}\n  run2: {hash_b}\n");
+            if let Some(&(screen, cols, rows)) = sweep_a.screen_map.get(label) {
+                let (buf_a, pool_a) = render_screen(screen, cols, rows);
+                let (buf_b, pool_b) = render_screen(screen, cols, rows);
+                detail.push_str(&visual_cell_diff(&buf_a, &pool_a, &buf_b, &pool_b));
+            }
+            failures.push(detail);
+        }
+    }
+
+    if !failures.is_empty() {
+        let mut msg = format!(
+            "Golden checksums are NOT deterministic ({} screens differ):\n\n",
+            failures.len()
+        );
+        for f in &failures {
+            msg.push_str(f);
+            msg.push('\n');
+        }
+        panic!("{msg}");
+    }
 }
