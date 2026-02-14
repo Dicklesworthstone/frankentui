@@ -912,6 +912,7 @@ impl StatefulWidget for Help {
                 cursor_position: None,
                 cursor_visible: true,
                 degradation: frame.buffer.degradation,
+                arena: None,
             };
 
             for idx in &state.dirty_indices {
@@ -1012,6 +1013,7 @@ fn rebuild_cache(
             cursor_position: None,
             cursor_visible: true,
             degradation: frame.buffer.degradation,
+            arena: None,
         };
         help.render_cached(layout_area, &mut cache_frame, &layout);
         buffer = cache_frame.buffer;

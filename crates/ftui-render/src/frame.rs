@@ -393,7 +393,7 @@ pub struct Frame<'a> {
     /// only live for the current frame (e.g., formatted strings, temporary
     /// slices). The arena is reset at frame boundaries, eliminating
     /// allocator churn on the hot render path.
-    arena: Option<&'a FrameArena>,
+    pub arena: Option<&'a FrameArena>,
 }
 
 impl<'a> Frame<'a> {

@@ -115,6 +115,23 @@ pub struct RankingEvidence {
     pub rank: usize,
 }
 
+impl RankingEvidence {
+    /// Format this evidence entry as a JSONL line for structured logging.
+    #[must_use]
+    pub fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"schema":"hint-ranking-v1","id":{},"label":"{}","expected_utility":{:.6},"cost":{:.4},"net_value":{:.6},"voi":{:.6},"rank":{}}}"#,
+            self.id,
+            self.label,
+            self.expected_utility,
+            self.cost,
+            self.net_value,
+            self.voi,
+            self.rank,
+        )
+    }
+}
+
 /// Configuration for the hint ranker.
 #[derive(Debug, Clone)]
 pub struct RankerConfig {

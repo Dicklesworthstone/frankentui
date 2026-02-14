@@ -3140,6 +3140,7 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            frame_arena: FrameArena::default(),
         })
     }
 }
@@ -3256,6 +3257,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             persistence_config: config.persistence,
             last_checkpoint: Instant::now(),
             inline_auto_remeasure,
+            frame_arena: FrameArena::default(),
         })
     }
 }
