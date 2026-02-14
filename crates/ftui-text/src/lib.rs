@@ -134,7 +134,8 @@ pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, s
 pub use text::{Line, Span, Text};
 pub use view::{TextView, ViewLine, Viewport};
 pub use width_cache::{
-    CacheStats, CountMinSketch, DEFAULT_CACHE_CAPACITY, Doorkeeper, TinyLfuWidthCache, WidthCache,
+    CacheStats, CountMinSketch, DEFAULT_CACHE_CAPACITY, Doorkeeper, S3FifoWidthCache,
+    TinyLfuWidthCache, WidthCache,
 };
 pub use wrap::{
     KpBreakResult, WrapMode, WrapOptions, ascii_width, display_width, grapheme_count,
