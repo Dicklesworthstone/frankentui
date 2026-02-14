@@ -128,7 +128,7 @@ fn reflow_multi_step_grow_shrink_grow() {
 
     // All should be valid checksums
     for cs in &checksums {
-        assert!(cs.starts_with("sha256:"));
+        assert!(cs.starts_with("blake3:"));
     }
 }
 
@@ -211,7 +211,7 @@ fn reflow_minimal_width_3x10() {
     let mut buf = Buffer::new(3, 10);
     render_content(&mut buf, "X");
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn reflow_minimal_height_80x3() {
     let mut buf = Buffer::new(80, 3);
     render_content(&mut buf, "Content in minimal height");
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn reflow_minimal_both_3x3() {
     let mut buf = Buffer::new(3, 3);
     render_content(&mut buf, "T");
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn reflow_width_2_boundary() {
     block.render(Rect::new(0, 0, 2, 5), &mut frame);
     buf = frame.buffer;
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn reflow_height_2_boundary() {
     block.render(Rect::new(0, 0, 80, 2), &mut frame);
     buf = frame.buffer;
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 // ============================================================================
@@ -266,7 +266,7 @@ fn reflow_extreme_width_500x24() {
     let mut buf = Buffer::new(500, 24);
     render_content(&mut buf, "Very wide terminal");
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn reflow_extreme_height_80x200() {
     let mut buf = Buffer::new(80, 200);
     render_content(&mut buf, "Very tall terminal\n".repeat(50).as_str());
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn reflow_extreme_both_300x100() {
     let mut buf = Buffer::new(300, 100);
     render_content(&mut buf, "Large terminal");
     let checksum = compute_buffer_checksum(&buf);
-    assert!(checksum.starts_with("sha256:"));
+    assert!(checksum.starts_with("blake3:"));
 }
 
 // ============================================================================
@@ -437,7 +437,7 @@ fn reflow_property_checksum_format_valid() {
         render_content(&mut buf, "Test");
         let checksum = compute_buffer_checksum(&buf);
 
-        assert!(checksum.starts_with("sha256:"), "Missing prefix");
+        assert!(checksum.starts_with("blake3:"), "Missing prefix");
         assert_eq!(
             checksum.len(),
             7 + 16,
@@ -499,7 +499,7 @@ fn reflow_empty_content() {
 
     // Empty content should still produce valid checksums
     for cs in &checksums {
-        assert!(cs.starts_with("sha256:"));
+        assert!(cs.starts_with("blake3:"));
     }
 }
 

@@ -4,7 +4,7 @@
 //!
 //! This module provides infrastructure for:
 //! - Generating golden (reference) outputs for resize scenarios
-//! - Computing SHA-256 checksums for isomorphism verification
+//! - Computing BLAKE3 checksums for isomorphism verification
 //! - JSONL logging with stable schema for CI/debugging
 //! - Deterministic mode with fixed seeds
 //!
@@ -14,10 +14,10 @@
 //!
 //! ```json
 //! {"event":"start","run_id":"...","case":"resize_80x24","env":{...},"seed":0,"timestamp":"..."}
-//! {"event":"frame","frame_id":0,"width":80,"height":24,"checksum":"sha256:...","timing_ms":12}
+//! {"event":"frame","frame_id":0,"width":80,"height":24,"checksum":"blake3:...","timing_ms":12}
 //! {"event":"resize","from":"80x24","to":"120x40","timing_ms":5}
-//! {"event":"frame","frame_id":1,"width":120,"height":40,"checksum":"sha256:...","timing_ms":14}
-//! {"event":"complete","outcome":"pass","checksums":["sha256:...","sha256:..."],"total_ms":42}
+//! {"event":"frame","frame_id":1,"width":120,"height":40,"checksum":"blake3:...","timing_ms":14}
+//! {"event":"complete","outcome":"pass","checksums":["blake3:...","blake3:..."],"total_ms":42}
 //! ```
 //!
 //! # Determinism
@@ -58,52 +58,44 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ftui_render::buffer::Buffer;
 
-/// SHA-256 checksum prefix for clarity in logs.
-const CHECKSUM_PREFIX: &str = "sha256:";
+/// BLAKE3 checksum prefix for clarity in logs.
+const CHECKSUM_PREFIX: &str = "blake3:";
 
 // ============================================================================
 // Checksum Computation
 // ============================================================================
 
-/// Compute SHA-256 checksum of buffer content (characters only, no styling).
+/// Compute BLAKE3 checksum of full buffer content (characters, colors, attributes).
 ///
-/// Returns a hex-encoded string prefixed with "sha256:".
+/// Returns a hex-encoded string prefixed with "blake3:".
 pub fn compute_buffer_checksum(buf: &Buffer) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    let mut hasher = blake3::Hasher::new();
 
-    // We use a deterministic hash of the buffer content.
-    // For true SHA-256, we'd need a crypto crate, but for isomorphism proofs
-    // a deterministic hash is sufficient. This can be upgraded later.
-    let mut hasher = DefaultHasher::new();
+    // Hash dimensions (little-endian for determinism)
+    hasher.update(&buf.width().to_le_bytes());
+    hasher.update(&buf.height().to_le_bytes());
 
-    // Hash dimensions
-    buf.width().hash(&mut hasher);
-    buf.height().hash(&mut hasher);
-
-    // Hash cell content (character values only for isomorphism)
+    // Hash every cell: content + fg + bg + attrs (full visual state)
     for y in 0..buf.height() {
         for x in 0..buf.width() {
             if let Some(cell) = buf.get(x, y) {
-                // Hash the content for determinism
-                cell.content.hash(&mut hasher);
+                hasher.update(&cell.content.raw().to_le_bytes());
+                hasher.update(&cell.fg.0.to_le_bytes());
+                hasher.update(&cell.bg.0.to_le_bytes());
+                hasher.update(&[cell.attrs.flags().bits()]);
+                hasher.update(&cell.attrs.link_id().to_le_bytes());
             }
         }
     }
 
-    let hash = hasher.finish();
-    format!("{CHECKSUM_PREFIX}{hash:016x}")
+    let hash = hasher.finalize();
+    format!("{CHECKSUM_PREFIX}{hash}")
 }
 
-/// Compute SHA-256 checksum of a text string.
+/// Compute BLAKE3 checksum of a text string.
 pub fn compute_text_checksum(text: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    let hash = hasher.finish();
-    format!("{CHECKSUM_PREFIX}{hash:016x}")
+    let hash = blake3::hash(text.as_bytes());
+    format!("{CHECKSUM_PREFIX}{hash}")
 }
 
 // ============================================================================
@@ -550,7 +542,8 @@ mod tests {
         let buf = Buffer::new(10, 5);
         let checksum = compute_buffer_checksum(&buf);
         assert!(checksum.starts_with(CHECKSUM_PREFIX));
-        assert_eq!(checksum.len(), CHECKSUM_PREFIX.len() + 16);
+        // BLAKE3 hex digest is 64 chars
+        assert_eq!(checksum.len(), CHECKSUM_PREFIX.len() + 64);
     }
 
     #[test]
@@ -615,8 +608,8 @@ mod tests {
 
     #[test]
     fn test_verify_checksums_pass() {
-        let actual = vec!["sha256:abc".to_string(), "sha256:def".to_string()];
-        let expected = vec!["sha256:abc".to_string(), "sha256:def".to_string()];
+        let actual = vec!["blake3:abc".to_string(), "blake3:def".to_string()];
+        let expected = vec!["blake3:abc".to_string(), "blake3:def".to_string()];
         let (outcome, idx) = verify_checksums(&actual, &expected);
         assert_eq!(outcome, GoldenOutcome::Pass);
         assert!(idx.is_none());
@@ -624,8 +617,8 @@ mod tests {
 
     #[test]
     fn test_verify_checksums_mismatch() {
-        let actual = vec!["sha256:abc".to_string(), "sha256:xyz".to_string()];
-        let expected = vec!["sha256:abc".to_string(), "sha256:def".to_string()];
+        let actual = vec!["blake3:abc".to_string(), "blake3:xyz".to_string()];
+        let expected = vec!["blake3:abc".to_string(), "blake3:def".to_string()];
         let (outcome, idx) = verify_checksums(&actual, &expected);
         assert_eq!(outcome, GoldenOutcome::Fail);
         assert_eq!(idx, Some(1));
@@ -633,8 +626,8 @@ mod tests {
 
     #[test]
     fn test_verify_checksums_length_mismatch() {
-        let actual = vec!["sha256:abc".to_string()];
-        let expected = vec!["sha256:abc".to_string(), "sha256:def".to_string()];
+        let actual = vec!["blake3:abc".to_string()];
+        let expected = vec!["blake3:abc".to_string(), "blake3:def".to_string()];
         let (outcome, idx) = verify_checksums(&actual, &expected);
         assert_eq!(outcome, GoldenOutcome::Fail);
         assert!(idx.is_none());
@@ -642,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_verify_checksums_empty_expected() {
-        let actual = vec!["sha256:abc".to_string()];
+        let actual = vec!["blake3:abc".to_string()];
         let expected: Vec<String> = vec![];
         let (outcome, _) = verify_checksums(&actual, &expected);
         assert_eq!(outcome, GoldenOutcome::Pass);
@@ -707,7 +700,7 @@ mod tests {
         let r = GoldenResult {
             scenario: "test".into(),
             outcome: GoldenOutcome::Fail,
-            checksums: vec!["sha256:abc".into()],
+            checksums: vec!["blake3:abc".into()],
             expected_checksums: vec![],
             mismatch_index: None,
             duration_ms: 0,
@@ -722,15 +715,15 @@ mod tests {
         let r = GoldenResult {
             scenario: "test".into(),
             outcome: GoldenOutcome::Fail,
-            checksums: vec!["sha256:abc".into(), "sha256:wrong".into()],
-            expected_checksums: vec!["sha256:abc".into(), "sha256:def".into()],
+            checksums: vec!["blake3:abc".into(), "blake3:wrong".into()],
+            expected_checksums: vec!["blake3:abc".into(), "blake3:def".into()],
             mismatch_index: Some(1),
             duration_ms: 0,
         };
         let s = r.format();
         assert!(s.contains("checksum mismatch at frame 1"), "{s}");
-        assert!(s.contains("sha256:def"), "expected: {s}");
-        assert!(s.contains("sha256:wrong"), "actual: {s}");
+        assert!(s.contains("blake3:def"), "expected: {s}");
+        assert!(s.contains("blake3:wrong"), "actual: {s}");
     }
 
     #[test]
@@ -738,8 +731,8 @@ mod tests {
         let r = GoldenResult {
             scenario: "test".into(),
             outcome: GoldenOutcome::Fail,
-            checksums: vec!["sha256:abc".into()],
-            expected_checksums: vec!["sha256:abc".into(), "sha256:def".into()],
+            checksums: vec!["blake3:abc".into()],
+            expected_checksums: vec!["blake3:abc".into(), "blake3:def".into()],
             mismatch_index: None,
             duration_ms: 0,
         };
@@ -767,11 +760,11 @@ mod tests {
         let mut logger = GoldenLogger::noop();
         let env = GoldenEnv::capture();
         logger.log_start("test_case", &env);
-        logger.log_frame(0, 80, 24, "sha256:abc", 10);
+        logger.log_frame(0, 80, 24, "blake3:abc", 10);
         logger.log_resize(80, 24, 120, 40, 5);
         logger.log_error("some error");
         logger.log_complete(GoldenOutcome::Pass);
-        assert_eq!(logger.checksums(), &["sha256:abc".to_string()]);
+        assert_eq!(logger.checksums(), &["blake3:abc".to_string()]);
     }
 
     #[test]
@@ -788,9 +781,9 @@ mod tests {
             let mut logger = GoldenLogger::new(&log_path).expect("create logger");
             let env = GoldenEnv::capture();
             logger.log_start("test", &env);
-            logger.log_frame(0, 80, 24, "sha256:aaa", 1);
+            logger.log_frame(0, 80, 24, "blake3:aaa", 1);
             logger.log_resize(80, 24, 120, 40, 2);
-            logger.log_frame(1, 120, 40, "sha256:bbb", 3);
+            logger.log_frame(1, 120, 40, "blake3:bbb", 3);
             logger.log_complete(GoldenOutcome::Pass);
         }
         let content = std::fs::read_to_string(&log_path).expect("read log");
@@ -817,7 +810,7 @@ mod tests {
                 .as_nanos()
         ));
         let path = dir.join("tests").join("golden").join("test.checksums");
-        let checksums = vec!["sha256:abc".to_string(), "sha256:def".to_string()];
+        let checksums = vec!["blake3:abc".to_string(), "blake3:def".to_string()];
         save_golden_checksums(&path, &checksums).expect("save");
         let loaded = load_golden_checksums(&path).expect("load");
         assert_eq!(loaded, checksums);
@@ -848,7 +841,7 @@ mod tests {
         )
         .unwrap();
         let loaded = load_golden_checksums(&path).expect("load");
-        assert_eq!(loaded, vec!["sha256:abc", "sha256:def"]);
+        assert_eq!(loaded, vec!["blake3:abc", "blake3:def"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -867,8 +860,8 @@ mod tests {
     #[test]
     fn resize_scenario_with_expected() {
         let scenario =
-            ResizeScenario::fixed("test", 80, 24).with_expected(vec!["sha256:abc".into()]);
-        assert_eq!(scenario.expected_checksums, vec!["sha256:abc"]);
+            ResizeScenario::fixed("test", 80, 24).with_expected(vec!["blake3:abc".into()]);
+        assert_eq!(scenario.expected_checksums, vec!["blake3:abc"]);
     }
 
     // ── GoldenEnv::to_json produces valid JSON ────────────────────────
