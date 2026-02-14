@@ -35,6 +35,7 @@ pub mod key_sequence;
 pub mod keybinding;
 pub mod logging;
 pub mod mux_passthrough;
+pub mod s3_fifo;
 pub mod semantic_event;
 pub mod terminal_capabilities;
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
