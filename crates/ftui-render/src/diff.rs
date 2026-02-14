@@ -46,13 +46,44 @@ use crate::cell::Cell;
 // =============================================================================
 
 /// Block size for vectorized comparison (4 cells = 64 bytes).
-/// Chosen to match common SIMD register width (256-bit / 512-bit).
+/// Chosen to match common SIMD register width (256-bit / 512-bit)
+/// and a single 64-byte cache line.
 const BLOCK_SIZE: usize = 4;
+
+// Compile-time: 4 cells must equal exactly one 64-byte cache line.
+const _: () = assert!(
+    core::mem::size_of::<Cell>() * BLOCK_SIZE == 64,
+    "BLOCK_SIZE * Cell must equal 64-byte cache line"
+);
+
+// Compile-time: Cell alignment must be at least 16 bytes so that
+// Vec<Cell> allocations are 16-byte aligned (SSE-friendly).
+const _: () = assert!(
+    core::mem::align_of::<Cell>() >= 16,
+    "Cell alignment must be >= 16 for SIMD access"
+);
 
 /// Row block size for coarse blockwise skip (32 cells = 512 bytes).
 /// This lets us skip large unchanged regions in sparse rows while
 /// preserving row-major iteration order.
 const ROW_BLOCK_SIZE: usize = 32;
+
+/// Cache-line-aligned block of 4 cells (64 bytes).
+///
+/// This type documents the alignment contract: each `BLOCK_SIZE` group
+/// of cells should ideally start on a 64-byte boundary for optimal
+/// SIMD and cache performance.
+#[repr(C, align(64))]
+#[allow(dead_code)]
+struct CacheLineBlock {
+    cells: [Cell; BLOCK_SIZE],
+}
+
+// Compile-time: CacheLineBlock must be exactly 64 bytes.
+const _: () = assert!(
+    core::mem::size_of::<CacheLineBlock>() == 64,
+    "CacheLineBlock must be exactly 64 bytes"
+);
 
 #[cfg(test)]
 fn span_diagnostics(buf: &Buffer) -> String {
@@ -86,7 +117,10 @@ fn span_diagnostics(buf: &Buffer) -> String {
 /// Scan a row slice for changed cells, appending positions to `changes`.
 ///
 /// `x_offset` is added to each recorded x coordinate.
-#[inline]
+///
+/// `#[inline(always)]` forces inlining into the blockwise caller so LLVM can
+/// see the full loop and apply auto-vectorization across the 4-cell block.
+#[inline(always)]
 fn scan_row_changes_range(
     old_row: &[Cell],
     new_row: &[Cell],

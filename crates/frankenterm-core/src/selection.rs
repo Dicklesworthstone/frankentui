@@ -219,6 +219,180 @@ impl Selection {
     }
 }
 
+/// Options controlling copy extraction semantics.
+///
+/// Configures how text is extracted from a selection for clipboard/copy
+/// operations, including combining mark inclusion, soft-wrap joining,
+/// and trailing whitespace handling.
+#[derive(Debug, Clone)]
+pub struct CopyOptions {
+    /// Include Unicode combining marks in extracted text.
+    ///
+    /// When `true`, combining marks (accents, diacritics) attached to
+    /// base characters are included in the output. When `false`, only
+    /// the base character is emitted.
+    pub include_combining: bool,
+    /// Trim trailing whitespace from each extracted line.
+    pub trim_trailing: bool,
+    /// Join soft-wrapped scrollback lines without inserting a newline.
+    ///
+    /// When `true`, consecutive lines where the next has `wrapped=true`
+    /// are joined directly. When `false`, every line boundary becomes
+    /// a newline regardless of wrap status.
+    pub join_soft_wraps: bool,
+}
+
+impl Default for CopyOptions {
+    fn default() -> Self {
+        Self {
+            include_combining: true,
+            trim_trailing: true,
+            join_soft_wraps: true,
+        }
+    }
+}
+
+impl Selection {
+    /// Extract text with configurable copy options.
+    ///
+    /// Enhanced version of [`extract_text`](Self::extract_text) that handles:
+    /// - Unicode combining marks (grapheme cluster preservation)
+    /// - Wide-character deduplication (continuation cells skipped)
+    /// - Soft-wrap joining (wrapped scrollback lines merged)
+    /// - Trailing whitespace trimming
+    #[must_use]
+    pub fn extract_copy(&self, grid: &Grid, scrollback: &Scrollback, opts: &CopyOptions) -> String {
+        let cols = grid.cols();
+        if cols == 0 {
+            return String::new();
+        }
+
+        let total = total_lines(grid, scrollback);
+        if total == 0 {
+            return String::new();
+        }
+
+        let sel = self.normalized();
+        let start_line = sel.start.line.min(total.saturating_sub(1));
+        let end_line = sel.end.line.min(total.saturating_sub(1));
+
+        let mut out = String::new();
+
+        for line in start_line..=end_line {
+            let sc = if line == start_line {
+                sel.start.col.min(cols.saturating_sub(1))
+            } else {
+                0
+            };
+            let ec = if line == end_line {
+                sel.end.col.min(cols.saturating_sub(1))
+            } else {
+                cols.saturating_sub(1)
+            };
+
+            let mut line_buf = String::new();
+            if sc <= ec {
+                for col in sc..=ec {
+                    if let Some(cell) = cell_at(line, col, grid, scrollback) {
+                        if cell.is_wide_continuation() {
+                            continue;
+                        }
+                        line_buf.push(cell.content());
+                        if opts.include_combining {
+                            for &mark in cell.combining_marks() {
+                                line_buf.push(mark);
+                            }
+                        }
+                    } else {
+                        line_buf.push(' ');
+                    }
+                }
+            }
+            if opts.trim_trailing {
+                trim_trailing_spaces(&mut line_buf);
+            }
+            out.push_str(&line_buf);
+
+            if line != end_line {
+                let insert_nl = if opts.join_soft_wraps {
+                    should_insert_newline(line + 1, scrollback)
+                } else {
+                    true
+                };
+                if insert_nl {
+                    out.push('\n');
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Extract text for a rectangular (block/column) selection.
+    ///
+    /// Each line contributes only the columns between min_col and max_col
+    /// of the normalized selection. Lines are always separated by newlines
+    /// (soft-wrap joining does not apply to rectangular selections since
+    /// the column slice semantics would be ambiguous across wrapped runs).
+    #[must_use]
+    pub fn extract_rect(&self, grid: &Grid, scrollback: &Scrollback, opts: &CopyOptions) -> String {
+        let cols = grid.cols();
+        if cols == 0 {
+            return String::new();
+        }
+
+        let total = total_lines(grid, scrollback);
+        if total == 0 {
+            return String::new();
+        }
+
+        let sel = self.normalized();
+        let start_line = sel.start.line.min(total.saturating_sub(1));
+        let end_line = sel.end.line.min(total.saturating_sub(1));
+        let min_col = sel.start.col.min(sel.end.col).min(cols.saturating_sub(1));
+        let max_col = sel.start.col.max(sel.end.col).min(cols.saturating_sub(1));
+
+        let mut out = String::new();
+
+        for line in start_line..=end_line {
+            let mut line_buf = String::new();
+            for col in min_col..=max_col {
+                if let Some(cell) = cell_at(line, col, grid, scrollback) {
+                    if cell.is_wide_continuation() {
+                        // If the leading cell is outside the rectangle, emit a
+                        // space placeholder to preserve column alignment.
+                        if col == min_col {
+                            line_buf.push(' ');
+                        }
+                        continue;
+                    }
+                    // If this is a wide char whose continuation falls outside
+                    // the rectangle, still emit the character (visual intent
+                    // is to include it since the leading cell is selected).
+                    line_buf.push(cell.content());
+                    if opts.include_combining {
+                        for &mark in cell.combining_marks() {
+                            line_buf.push(mark);
+                        }
+                    }
+                } else {
+                    line_buf.push(' ');
+                }
+            }
+            if opts.trim_trailing {
+                trim_trailing_spaces(&mut line_buf);
+            }
+            out.push_str(&line_buf);
+
+            if line != end_line {
+                out.push('\n');
+            }
+        }
+
+        out
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -745,5 +919,308 @@ mod tests {
         let mut s = String::from("   ");
         trim_trailing_spaces(&mut s);
         assert_eq!(s, "");
+    }
+
+    // ── CopyOptions default tests ────────────────────────────────────
+
+    #[test]
+    fn copy_options_default_values() {
+        let opts = CopyOptions::default();
+        assert!(opts.include_combining);
+        assert!(opts.trim_trailing);
+        assert!(opts.join_soft_wraps);
+    }
+
+    // ── extract_copy: combining marks ────────────────────────────────
+
+    #[test]
+    fn extract_copy_includes_combining_marks() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 1);
+        grid.cell_mut(0, 0).unwrap().set_content('e', 1);
+        grid.cell_mut(0, 0).unwrap().push_combining('\u{0301}'); // acute accent
+        grid.cell_mut(0, 1).unwrap().set_content('x', 1);
+
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 1));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "e\u{0301}x");
+    }
+
+    #[test]
+    fn extract_copy_excludes_combining_when_disabled() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 1);
+        grid.cell_mut(0, 0).unwrap().set_content('e', 1);
+        grid.cell_mut(0, 0).unwrap().push_combining('\u{0301}');
+        grid.cell_mut(0, 1).unwrap().set_content('x', 1);
+
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 1));
+        let opts = CopyOptions {
+            include_combining: false,
+            ..Default::default()
+        };
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "ex");
+    }
+
+    #[test]
+    fn extract_copy_multiple_combining_marks() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 1);
+        grid.cell_mut(0, 0).unwrap().set_content('o', 1);
+        grid.cell_mut(0, 0).unwrap().push_combining('\u{0308}'); // diaeresis
+        grid.cell_mut(0, 0).unwrap().push_combining('\u{0301}'); // acute
+
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 0));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "o\u{0308}\u{0301}");
+    }
+
+    // ── extract_copy: wide characters ────────────────────────────────
+
+    #[test]
+    fn extract_copy_wide_char_not_doubled() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 1);
+        let (lead, cont) = Cell::wide('漢', crate::cell::SgrAttrs::default());
+        *grid.cell_mut(0, 0).unwrap() = lead;
+        *grid.cell_mut(0, 1).unwrap() = cont;
+        grid.cell_mut(0, 2).unwrap().set_content('x', 1);
+
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 2));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "漢x");
+    }
+
+    #[test]
+    fn extract_copy_consecutive_wide_chars() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 1);
+        let (lead1, cont1) = Cell::wide('中', crate::cell::SgrAttrs::default());
+        let (lead2, cont2) = Cell::wide('文', crate::cell::SgrAttrs::default());
+        *grid.cell_mut(0, 0).unwrap() = lead1;
+        *grid.cell_mut(0, 1).unwrap() = cont1;
+        *grid.cell_mut(0, 2).unwrap() = lead2;
+        *grid.cell_mut(0, 3).unwrap() = cont2;
+
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 3));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "中文");
+    }
+
+    // ── extract_copy: soft-wrap joining ──────────────────────────────
+
+    #[test]
+    fn extract_copy_joins_soft_wrapped_lines() {
+        let sb = scrollback_from_lines(&[("hello", false), ("world", true)]);
+        let grid = grid_from_lines(10, &["end"]);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(1, 4));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "helloworld");
+    }
+
+    #[test]
+    fn extract_copy_no_join_when_disabled() {
+        let sb = scrollback_from_lines(&[("hello", false), ("world", true)]);
+        let grid = grid_from_lines(10, &["end"]);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(1, 4));
+        let opts = CopyOptions {
+            join_soft_wraps: false,
+            ..Default::default()
+        };
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "hello\nworld");
+    }
+
+    #[test]
+    fn extract_copy_hard_break_always_newline() {
+        let sb = scrollback_from_lines(&[("aaa", false), ("bbb", false)]);
+        let grid = grid_from_lines(10, &["ccc"]);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(2, 2));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "aaa\nbbb\nccc");
+    }
+
+    // ── extract_copy: trailing whitespace ────────────────────────────
+
+    #[test]
+    fn extract_copy_trims_trailing_by_default() {
+        let sb = Scrollback::new(0);
+        let grid = grid_from_lines(10, &["hi        "]);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 9));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "hi");
+    }
+
+    #[test]
+    fn extract_copy_preserves_trailing_when_disabled() {
+        let sb = Scrollback::new(0);
+        let grid = grid_from_lines(5, &["ab"]);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 4));
+        let opts = CopyOptions {
+            trim_trailing: false,
+            ..Default::default()
+        };
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "ab   ");
+    }
+
+    // ── extract_rect: rectangular selection ──────────────────────────
+
+    #[test]
+    fn extract_rect_basic_column_selection() {
+        let sb = Scrollback::new(0);
+        let grid = grid_from_lines(10, &["abcdef", "ghijkl", "mnopqr"]);
+        // Rectangle: cols 2..4 across rows 0..2
+        let sel = Selection::new(BufferPos::new(0, 2), BufferPos::new(2, 4));
+        let opts = CopyOptions::default();
+        let text = sel.extract_rect(&grid, &sb, &opts);
+        assert_eq!(text, "cde\nijk\nopr");
+    }
+
+    #[test]
+    fn extract_rect_single_column() {
+        let sb = Scrollback::new(0);
+        let grid = grid_from_lines(10, &["abc", "def", "ghi"]);
+        let sel = Selection::new(BufferPos::new(0, 1), BufferPos::new(2, 1));
+        let opts = CopyOptions::default();
+        let text = sel.extract_rect(&grid, &sb, &opts);
+        assert_eq!(text, "b\ne\nh");
+    }
+
+    #[test]
+    fn extract_rect_with_wide_char_leading_inside() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 2);
+        // Row 0: a + wide '中' at cols 1-2 + b at col 3
+        grid.cell_mut(0, 0).unwrap().set_content('a', 1);
+        let (lead, cont) = Cell::wide('中', crate::cell::SgrAttrs::default());
+        *grid.cell_mut(0, 1).unwrap() = lead;
+        *grid.cell_mut(0, 2).unwrap() = cont;
+        grid.cell_mut(0, 3).unwrap().set_content('b', 1);
+        // Row 1: x y z w
+        grid.cell_mut(1, 0).unwrap().set_content('x', 1);
+        grid.cell_mut(1, 1).unwrap().set_content('y', 1);
+        grid.cell_mut(1, 2).unwrap().set_content('z', 1);
+        grid.cell_mut(1, 3).unwrap().set_content('w', 1);
+
+        // Rectangle: cols 1..3 across rows 0..1
+        let sel = Selection::new(BufferPos::new(0, 1), BufferPos::new(1, 3));
+        let opts = CopyOptions::default();
+        let text = sel.extract_rect(&grid, &sb, &opts);
+        // Row 0: col 1 = wide lead '中', col 2 = continuation (skip), col 3 = 'b'
+        // Row 1: col 1 = 'y', col 2 = 'z', col 3 = 'w'
+        assert_eq!(text, "中b\nyzw");
+    }
+
+    #[test]
+    fn extract_rect_continuation_at_left_boundary() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 1);
+        // Wide char at cols 0-1, rect starts at col 1 (continuation)
+        let (lead, cont) = Cell::wide('漢', crate::cell::SgrAttrs::default());
+        *grid.cell_mut(0, 0).unwrap() = lead;
+        *grid.cell_mut(0, 1).unwrap() = cont;
+        grid.cell_mut(0, 2).unwrap().set_content('x', 1);
+
+        let sel = Selection::new(BufferPos::new(0, 1), BufferPos::new(0, 2));
+        let opts = CopyOptions::default();
+        let text = sel.extract_rect(&grid, &sb, &opts);
+        // Col 1 is continuation → space placeholder, col 2 = 'x'
+        // But trim_trailing is on, and the space is leading not trailing
+        assert_eq!(text, " x");
+    }
+
+    #[test]
+    fn extract_rect_trims_trailing_spaces() {
+        let sb = Scrollback::new(0);
+        let grid = grid_from_lines(10, &["ab        ", "cd        "]);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(1, 5));
+        let opts = CopyOptions::default();
+        let text = sel.extract_rect(&grid, &sb, &opts);
+        assert_eq!(text, "ab\ncd");
+    }
+
+    #[test]
+    fn extract_rect_with_combining_marks() {
+        let sb = Scrollback::new(0);
+        let mut grid = Grid::new(10, 2);
+        grid.cell_mut(0, 0).unwrap().set_content('e', 1);
+        grid.cell_mut(0, 0).unwrap().push_combining('\u{0301}');
+        grid.cell_mut(0, 1).unwrap().set_content('x', 1);
+        grid.cell_mut(1, 0).unwrap().set_content('a', 1);
+        grid.cell_mut(1, 1).unwrap().set_content('b', 1);
+
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(1, 1));
+        let opts = CopyOptions::default();
+        let text = sel.extract_rect(&grid, &sb, &opts);
+        assert_eq!(text, "e\u{0301}x\nab");
+    }
+
+    #[test]
+    fn extract_rect_no_soft_wrap_joining() {
+        // Rectangular selections always use newlines between lines,
+        // even when scrollback lines are soft-wrapped.
+        let sb = scrollback_from_lines(&[("abcdef", false), ("ghijkl", true)]);
+        let grid = grid_from_lines(10, &[""]);
+        let sel = Selection::new(BufferPos::new(0, 1), BufferPos::new(1, 3));
+        let opts = CopyOptions::default();
+        let text = sel.extract_rect(&grid, &sb, &opts);
+        assert_eq!(text, "bcd\nhij");
+    }
+
+    // ── extract_copy: edge cases ─────────────────────────────────────
+
+    #[test]
+    fn extract_copy_empty_grid() {
+        let sb = Scrollback::new(0);
+        let grid = Grid::new(0, 0);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 0));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "");
+    }
+
+    #[test]
+    fn extract_rect_empty_grid() {
+        let sb = Scrollback::new(0);
+        let grid = Grid::new(0, 0);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(0, 0));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_rect(&grid, &sb, &opts), "");
+    }
+
+    #[test]
+    fn extract_copy_reversed_selection() {
+        let sb = Scrollback::new(0);
+        let grid = grid_from_lines(10, &["abcdef"]);
+        let sel = Selection::new(BufferPos::new(0, 4), BufferPos::new(0, 1));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "bcde");
+    }
+
+    #[test]
+    fn extract_copy_single_cell() {
+        let sb = Scrollback::new(0);
+        let grid = grid_from_lines(5, &["hello"]);
+        let sel = Selection::new(BufferPos::new(0, 2), BufferPos::new(0, 2));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "l");
+    }
+
+    #[test]
+    fn extract_copy_scrollback_and_viewport() {
+        let sb = scrollback_from_lines(&[("sb0", false), ("sb1", false)]);
+        let grid = grid_from_lines(10, &["vp0", "vp1"]);
+        let sel = Selection::new(BufferPos::new(1, 0), BufferPos::new(3, 2));
+        let opts = CopyOptions::default();
+        assert_eq!(sel.extract_copy(&grid, &sb, &opts), "sb1\nvp0\nvp1");
+    }
+
+    #[test]
+    fn extract_copy_deterministic() {
+        let sb = scrollback_from_lines(&[("hello", false), ("world", true)]);
+        let grid = grid_from_lines(10, &["end"]);
+        let sel = Selection::new(BufferPos::new(0, 0), BufferPos::new(2, 2));
+        let opts = CopyOptions::default();
+        let a = sel.extract_copy(&grid, &sb, &opts);
+        let b = sel.extract_copy(&grid, &sb, &opts);
+        assert_eq!(a, b, "extract_copy must be deterministic");
     }
 }

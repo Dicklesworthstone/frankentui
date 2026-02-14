@@ -27,8 +27,8 @@
 //!   (mitigated by z-rank normalization on rebuild)
 
 use crate::frame::{HitData, HitId, HitRegion};
+use ahash::AHashMap;
 use ftui_core::geometry::Rect;
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -276,7 +276,7 @@ pub struct SpatialHitIndex {
     stats: CacheStats,
 
     /// Fast lookup from HitId to entry index.
-    id_to_entry: HashMap<HitId, u32>,
+    id_to_entry: AHashMap<HitId, u32>,
 }
 
 impl SpatialHitIndex {
@@ -299,7 +299,7 @@ impl SpatialHitIndex {
             cache: HoverCache::default(),
             dirty: DirtyTracker::default(),
             stats: CacheStats::default(),
-            id_to_entry: HashMap::with_capacity(256),
+            id_to_entry: AHashMap::with_capacity(256),
         }
     }
 

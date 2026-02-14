@@ -10,6 +10,7 @@ documentation = "https://docs.rs/ftui-style"
 readme = "../../README.md"
 
 [dependencies]
+ahash = "0.8"
 arc-swap = "1.8.2"
 ftui-render = { path = "../ftui-render", version = "0.1.1" }
 tracing = "0.1.41"

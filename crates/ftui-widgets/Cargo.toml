@@ -17,6 +17,7 @@ state-persistence = ["dep:serde"]
 tracing = ["dep:tracing", "ftui-render/tracing"]
 
 [dependencies]
+ahash = "0.8"
 bitflags = "2.10.0"
 ftui-core = { path = "../ftui-core", version = "0.1.1" }
 ftui-layout = { path = "../ftui-layout", version = "0.1.1" }
@@ -40,4 +41,8 @@ tracing-subscriber = { version = "0.3.20", features = ["registry"] }
 
 [[bench]]
 name = "widget_bench"
+harness = false
+
+[[bench]]
+name = "hashmap_bench"
 harness = false

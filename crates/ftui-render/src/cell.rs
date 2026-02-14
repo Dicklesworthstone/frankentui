@@ -367,7 +367,7 @@ impl Cell {
     /// four u32 comparisons are always evaluated. This avoids branch
     /// mispredictions in tight loops and allows LLVM to lower the check
     /// to a single 128-bit SIMD compare on supported targets.
-    #[inline]
+    #[inline(always)]
     pub fn bits_eq(&self, other: &Self) -> bool {
         (self.content.raw() == other.content.raw())
             & (self.fg == other.fg)

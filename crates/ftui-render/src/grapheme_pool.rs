@@ -45,7 +45,7 @@
 
 use crate::buffer::Buffer;
 use crate::cell::GraphemeId;
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 /// A slot in the grapheme pool.
 #[derive(Debug, Clone)]
@@ -68,7 +68,7 @@ pub struct GraphemePool {
     /// Slot storage. `None` indicates a free slot.
     slots: Vec<Option<GraphemeSlot>>,
     /// Lookup table for deduplication.
-    lookup: HashMap<String, GraphemeId>,
+    lookup: AHashMap<String, GraphemeId>,
     /// Free slot indices for reuse.
     free_list: Vec<u32>,
 }
@@ -78,7 +78,7 @@ impl GraphemePool {
     pub fn new() -> Self {
         Self {
             slots: Vec::new(),
-            lookup: HashMap::new(),
+            lookup: AHashMap::new(),
             free_list: Vec::new(),
         }
     }
@@ -87,7 +87,7 @@ impl GraphemePool {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
-            lookup: HashMap::with_capacity(capacity),
+            lookup: AHashMap::with_capacity(capacity),
             free_list: Vec::new(),
         }
     }

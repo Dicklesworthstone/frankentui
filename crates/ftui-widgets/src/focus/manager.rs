@@ -6,7 +6,7 @@
 //! and enforces focus traps for modal dialogs. It also provides a
 //! configurable [`FocusIndicator`] for styling the focused widget.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 use ftui_core::event::KeyCode;
 
@@ -76,7 +76,7 @@ pub struct FocusManager {
     current: Option<FocusId>,
     history: Vec<FocusId>,
     trap_stack: Vec<FocusTrap>,
-    groups: HashMap<u32, FocusGroup>,
+    groups: AHashMap<u32, FocusGroup>,
     last_event: Option<FocusEvent>,
     indicator: FocusIndicator,
     /// Running count of focus changes for metrics.

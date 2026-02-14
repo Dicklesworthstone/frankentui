@@ -80,7 +80,7 @@
 //! The cache uses LFU (Least Frequently Used) eviction when at capacity.
 //! Access count tracks usage; least-accessed entries are evicted first.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use ftui_core::geometry::Size;
@@ -187,7 +187,7 @@ pub struct CacheStats {
 /// [`invalidate_all()`]: MeasureCache::invalidate_all
 #[derive(Debug)]
 pub struct MeasureCache {
-    entries: HashMap<CacheKey, CacheEntry>,
+    entries: AHashMap<CacheKey, CacheEntry>,
     generation: u64,
     max_entries: usize,
     hits: u64,
@@ -211,7 +211,7 @@ impl MeasureCache {
     #[inline]
     pub fn new(max_entries: usize) -> Self {
         Self {
-            entries: HashMap::with_capacity(max_entries),
+            entries: AHashMap::with_capacity(max_entries),
             generation: 0,
             max_entries,
             hits: 0,

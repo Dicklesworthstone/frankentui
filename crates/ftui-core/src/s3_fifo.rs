@@ -26,7 +26,8 @@
 //! assert_eq!(cache.get(&"hello"), Some(&42));
 //! ```
 
-use std::collections::{HashMap, VecDeque};
+use ahash::AHashMap;
+use std::collections::VecDeque;
 use std::hash::Hash;
 
 /// A cache entry stored in the small or main queue.
@@ -39,7 +40,7 @@ struct Entry<K, V> {
 /// S3-FIFO cache with scan-resistant eviction.
 pub struct S3Fifo<K, V> {
     /// Index from key to location.
-    index: HashMap<K, Location>,
+    index: AHashMap<K, Location>,
     /// Small FIFO queue (~10% of capacity).
     small: VecDeque<Entry<K, V>>,
     /// Main FIFO queue (~90% of capacity).
@@ -96,7 +97,7 @@ where
         let ghost_cap = small_cap;
 
         Self {
-            index: HashMap::with_capacity(capacity),
+            index: AHashMap::with_capacity(capacity),
             small: VecDeque::with_capacity(small_cap),
             main: VecDeque::with_capacity(main_cap),
             ghost: VecDeque::with_capacity(ghost_cap),
