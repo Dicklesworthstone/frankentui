@@ -47,6 +47,7 @@ pub mod determinism;
 pub mod flicker_detection;
 pub mod golden;
 pub mod hdd;
+pub mod input_storm;
 pub mod resize_storm;
 pub mod terminal_model;
 pub mod time_travel;
