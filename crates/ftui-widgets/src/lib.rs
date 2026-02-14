@@ -267,7 +267,8 @@ pub use inspector::{
 
 // Focus management
 pub use focus::{
-    FocusEvent, FocusGraph, FocusGroup, FocusId, FocusManager, FocusNode, FocusTrap, NavDirection,
+    FocusEvent, FocusGraph, FocusGroup, FocusId, FocusIndicator, FocusIndicatorKind, FocusManager,
+    FocusNode, FocusTrap, NavDirection,
 };
 
 // Drag-and-drop protocol (source + target)

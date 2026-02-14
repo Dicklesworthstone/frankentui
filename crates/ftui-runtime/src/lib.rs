@@ -34,6 +34,7 @@ pub mod cost_model;
 pub mod debug_trace;
 pub mod diff_evidence;
 pub mod eprocess_throttle;
+pub mod evidence_bridges;
 pub mod evidence_sink;
 pub mod evidence_telemetry;
 pub mod flake_detector;
@@ -56,6 +57,7 @@ pub mod string_model;
 pub mod subscription;
 pub mod terminal_writer;
 pub mod undo;
+pub mod unified_evidence;
 pub mod validation_pipeline;
 pub mod voi_sampling;
 pub mod wasm_runner;
@@ -146,6 +148,10 @@ pub use undo::{
     CommandBatch, CommandError, CommandMetadata, CommandResult, CommandSource, HistoryConfig,
     HistoryManager, MergeConfig, TextDeleteCmd, TextInsertCmd, TextReplaceCmd, Transaction,
     TransactionScope, UndoableCmd, WidgetId,
+};
+pub use unified_evidence::{
+    DecisionDomain, DomainSummary, EmitsEvidence, EvidenceEntry, EvidenceEntryBuilder,
+    EvidenceTerm, LedgerSummary, UnifiedEvidenceLedger,
 };
 pub use validation_pipeline::{
     LedgerEntry, PipelineConfig, PipelineResult, PipelineSummary, ValidationOutcome,
