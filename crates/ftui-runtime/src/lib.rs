@@ -32,6 +32,7 @@ pub mod conformal_alert;
 pub mod conformal_predictor;
 pub mod cost_model;
 pub mod debug_trace;
+pub mod diff_evidence;
 pub mod eprocess_throttle;
 pub mod evidence_sink;
 pub mod evidence_telemetry;
@@ -66,6 +67,9 @@ pub mod telemetry;
 pub mod voi_telemetry;
 
 pub use asciicast::{AsciicastRecorder, AsciicastWriter};
+pub use diff_evidence::{
+    DiffEvidenceLedger, DiffRegime, DiffStrategyRecord, Observation, RegimeTransition,
+};
 pub use evidence_sink::{EvidenceSink, EvidenceSinkConfig, EvidenceSinkDestination};
 pub use evidence_telemetry::{
     BudgetDecisionSnapshot, ConformalSnapshot, DiffDecisionSnapshot, ResizeDecisionSnapshot,
