@@ -62,6 +62,9 @@ pub use reply::{
 };
 pub use scrollback::{Scrollback, ScrollbackLine, ScrollbackWindow};
 pub use selection::{BufferPos, CopyOptions, Selection};
-pub use selection_state::{SelectionGranularity, SelectionPhase, SelectionShape, SelectionState};
+pub use selection_state::{
+    AutoScrollHint, GestureConfig, SelectionDirection, SelectionGestureController,
+    SelectionGranularity, SelectionPhase, SelectionShape, SelectionState,
+};
 pub use terminal_engine::{DEFAULT_SCROLLBACK_CAPACITY, TerminalEngine, TerminalEngineConfig};
 pub use width_policy::WidthPolicy;
