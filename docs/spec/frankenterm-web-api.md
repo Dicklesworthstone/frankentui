@@ -126,7 +126,9 @@ The public browser contract uses semantic versioning:
 - `setSelectionRange`
 - `clearSelection`
 - `extractSelectionText`
+- `clipboardPolicy`
 - `copySelection`
+- `setClipboardPolicy`
 - `linkAt`
 - `linkUrlAt`
 - `drainLinkClicks`
@@ -209,10 +211,19 @@ Default host-facing security posture:
   - `allowedHosts=[]`
   - `blockedHosts=[]`
 - Clipboard writes are host-managed only:
+  - `clipboardPolicy()` defaults:
+    - `copyEnabled=true`
+    - `pasteEnabled=true`
+    - `maxPasteBytes=786432`
+    - `hostManagedClipboard=true`
   - `copySelection()` returns text but does not write clipboard directly.
   - Hosts are expected to use trusted user gestures for clipboard APIs.
+  - `setClipboardPolicy(...)` can tighten or disable copy/paste behavior per host policy.
 - Clipboard/paste payload is bounded:
   - `pasteText()` rejects payloads over `786432` UTF-8 bytes.
+- Link click drains include policy/audit fields for triage:
+  - `policyRule` / `actionOutcome`
+  - `auditUrl` / `auditUrlRedacted`
 
 ## Determinism and Logging Requirements
 

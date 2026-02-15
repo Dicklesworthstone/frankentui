@@ -29,6 +29,7 @@ use frankenterm_core::{ScrollbackWindow, TerminalEngine};
 use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
 use std::collections::HashMap;
 use std::time::Duration;
+use unicode_width::UnicodeWidthChar;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -62,6 +63,40 @@ fn push_bounded<T>(queue: &mut Vec<T>, item: T, limit: usize) {
     queue.push(item);
 }
 
+fn trim_trailing_spaces(line: &mut String) {
+    while line.ends_with(' ') {
+        line.pop();
+    }
+}
+
+fn infer_wide_continuations(cells: &[CellData], cols: usize) -> Vec<bool> {
+    if cols == 0 {
+        return vec![false; cells.len()];
+    }
+    let mut continuation = vec![false; cells.len()];
+    for row_start in (0..cells.len()).step_by(cols) {
+        let row_end = row_start.saturating_add(cols).min(cells.len());
+        let mut pending = 0usize;
+        for idx in row_start..row_end {
+            let glyph_id = cells[idx].glyph_id;
+            if pending > 0 {
+                if glyph_id == 0 {
+                    continuation[idx] = true;
+                    pending -= 1;
+                    continue;
+                }
+                pending = 0;
+            }
+            if glyph_id == 0 {
+                continue;
+            }
+            let ch = char::from_u32(glyph_id).unwrap_or('□');
+            pending = UnicodeWidthChar::width(ch).unwrap_or(1).saturating_sub(1);
+        }
+    }
+    continuation
+}
+
 /// Web/WASM terminal surface.
 ///
 /// This is the minimal JS-facing API surface. Implementation will evolve to:
@@ -84,6 +119,7 @@ pub struct FrankenTermWeb {
     auto_link_ids: Vec<u32>,
     auto_link_urls: HashMap<u32, String>,
     link_open_policy: LinkOpenPolicy,
+    clipboard_policy: ClipboardPolicy,
     text_shaping: TextShapingConfig,
     hovered_link_id: u32,
     cursor_offset: Option<u32>,
@@ -125,6 +161,10 @@ struct ResolvedLinkClick {
     click: LinkClickEvent,
     source: &'static str,
     url: Option<String>,
+    audit_url: Option<String>,
+    audit_url_redacted: bool,
+    policy_rule: &'static str,
+    action_outcome: &'static str,
     open_decision: LinkOpenDecision,
 }
 
@@ -148,6 +188,21 @@ impl LinkOpenDecision {
             reason: Some(reason),
         }
     }
+
+    const fn policy_rule(self) -> &'static str {
+        match self.reason {
+            Some(reason) => reason,
+            None => "allow_default",
+        }
+    }
+
+    const fn action_outcome(self) -> &'static str {
+        if self.allowed {
+            "allow_open"
+        } else {
+            "block_open"
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +211,13 @@ struct LinkOpenPolicy {
     allow_https: bool,
     allowed_hosts: Vec<String>,
     blocked_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ClipboardPolicy {
+    copy_enabled: bool,
+    paste_enabled: bool,
+    max_paste_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -227,6 +289,16 @@ impl LinkOpenPolicy {
         }
 
         LinkOpenDecision::allow()
+    }
+}
+
+impl Default for ClipboardPolicy {
+    fn default() -> Self {
+        Self {
+            copy_enabled: true,
+            paste_enabled: true,
+            max_paste_bytes: MAX_PASTE_BYTES,
+        }
     }
 }
 
@@ -333,6 +405,7 @@ impl FrankenTermWeb {
             auto_link_ids: Vec::new(),
             auto_link_urls: HashMap::new(),
             link_open_policy: LinkOpenPolicy::default(),
+            clipboard_policy: ClipboardPolicy::default(),
             text_shaping: TextShapingConfig::default(),
             hovered_link_id: 0,
             cursor_offset: None,
@@ -832,10 +905,14 @@ impl FrankenTermWeb {
         if text.is_empty() {
             return Ok(());
         }
-        if text.len() > MAX_PASTE_BYTES {
-            return Err(JsValue::from_str(
-                "paste payload too large (max 786432 UTF-8 bytes)",
-            ));
+        if !self.clipboard_policy.paste_enabled {
+            return Err(JsValue::from_str("paste disabled by clipboard policy"));
+        }
+        if text.len() > self.clipboard_policy.max_paste_bytes {
+            return Err(JsValue::from_str(&format!(
+                "paste payload too large (max {} UTF-8 bytes)",
+                self.clipboard_policy.max_paste_bytes
+            )));
         }
         self.queue_input_event(InputEvent::Paste(PasteInput { data: text.into() }))
     }
@@ -1360,6 +1437,29 @@ impl FrankenTermWeb {
                     .reason
                     .map_or(JsValue::NULL, JsValue::from_str),
             );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("policyRule"),
+                &JsValue::from_str(resolved.policy_rule),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("actionOutcome"),
+                &JsValue::from_str(resolved.action_outcome),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("auditUrl"),
+                &resolved
+                    .audit_url
+                    .as_ref()
+                    .map_or(JsValue::NULL, |url| JsValue::from_str(url)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("auditUrlRedacted"),
+                &JsValue::from_bool(resolved.audit_url_redacted),
+            );
             arr.push(&obj);
         }
         arr
@@ -1386,6 +1486,10 @@ impl FrankenTermWeb {
                 url: resolved.url,
                 open_allowed: resolved.open_decision.allowed,
                 open_reason: resolved.open_decision.reason.map(str::to_string),
+                policy_rule: resolved.policy_rule.to_string(),
+                action_outcome: resolved.action_outcome.to_string(),
+                audit_url: resolved.audit_url,
+                audit_url_redacted: resolved.audit_url_redacted,
             };
             let line = link_click_jsonl(&run_id, seed, &timestamp, event_idx as u64, &snapshot);
             out.push(&JsValue::from_str(&line));
@@ -1412,6 +1516,25 @@ impl FrankenTermWeb {
     #[wasm_bindgen(js_name = linkOpenPolicy)]
     pub fn link_open_policy_snapshot(&self) -> JsValue {
         link_open_policy_to_js(&self.link_open_policy)
+    }
+
+    /// Configure clipboard policy defaults.
+    ///
+    /// Supported keys:
+    /// - `copyEnabled` / `copy_enabled`: bool
+    /// - `pasteEnabled` / `paste_enabled`: bool
+    /// - `maxPasteBytes` / `max_paste_bytes`: number (1..=786432)
+    #[wasm_bindgen(js_name = setClipboardPolicy)]
+    pub fn set_clipboard_policy(&mut self, options: JsValue) -> Result<(), JsValue> {
+        self.clipboard_policy =
+            parse_clipboard_policy(Some(&options), self.clipboard_policy.clone())?;
+        Ok(())
+    }
+
+    /// Return current clipboard policy snapshot.
+    #[wasm_bindgen(js_name = clipboardPolicy)]
+    pub fn clipboard_policy_snapshot(&self) -> JsValue {
+        clipboard_policy_to_js(&self.clipboard_policy)
     }
 
     /// Configure text shaping / ligature behavior.
@@ -1444,16 +1567,25 @@ impl FrankenTermWeb {
         };
         let cols = usize::from(self.cols.max(1));
         let total = self.shadow_cells.len() as u32;
-        let mut out = String::new();
         let start = start.min(total);
         let end = end.min(total);
+        if start >= end {
+            return String::new();
+        }
+        let wide_continuation = infer_wide_continuations(&self.shadow_cells, cols);
+        let mut lines = Vec::new();
+        let mut line = String::new();
         for offset in start..end {
             let idx = usize::try_from(offset).unwrap_or(usize::MAX);
             if idx >= self.shadow_cells.len() {
                 break;
             }
             if offset > start && idx % cols == 0 {
-                out.push('\n');
+                trim_trailing_spaces(&mut line);
+                lines.push(std::mem::take(&mut line));
+            }
+            if wide_continuation[idx] {
+                continue;
             }
             let glyph_id = self.shadow_cells[idx].glyph_id;
             let ch = if glyph_id == 0 {
@@ -1461,9 +1593,11 @@ impl FrankenTermWeb {
             } else {
                 char::from_u32(glyph_id).unwrap_or('□')
             };
-            out.push(ch);
+            line.push(ch);
         }
-        out
+        trim_trailing_spaces(&mut line);
+        lines.push(line);
+        lines.join("\n")
     }
 
     /// Return selected text for host-managed clipboard writes.
@@ -1471,6 +1605,9 @@ impl FrankenTermWeb {
     /// Returns `None` when there is no active non-empty selection.
     #[wasm_bindgen(js_name = copySelection)]
     pub fn copy_selection(&self) -> Option<String> {
+        if !self.clipboard_policy.copy_enabled {
+            return None;
+        }
         let text = self.extract_selection_text();
         if text.is_empty() { None } else { Some(text) }
     }
@@ -1745,6 +1882,18 @@ impl FrankenTermWeb {
     }
 
     fn queue_input_event(&mut self, ev: InputEvent) -> Result<(), JsValue> {
+        if let InputEvent::Paste(paste) = &ev {
+            if !self.clipboard_policy.paste_enabled {
+                return Err(JsValue::from_str("paste disabled by clipboard policy"));
+            }
+            if paste.data.len() > self.clipboard_policy.max_paste_bytes {
+                return Err(JsValue::from_str(&format!(
+                    "paste payload too large (max {} UTF-8 bytes)",
+                    self.clipboard_policy.max_paste_bytes
+                )));
+            }
+        }
+
         // Guarantee no "stuck modifiers" after focus loss by treating focus
         // loss as an explicit modifier reset point.
         if let InputEvent::Focus(focus) = &ev {
@@ -1982,11 +2131,24 @@ impl FrankenTermWeb {
     fn resolve_link_click(&self, click: LinkClickEvent) -> ResolvedLinkClick {
         let url = self.auto_link_urls.get(&click.link_id).cloned();
         let source = if url.is_some() { "auto" } else { "osc8" };
-        let open_decision = self.link_open_policy.evaluate(url.as_deref());
+        // OSC-8 links without URL metadata in this host path are denied explicitly.
+        let open_decision = if source == "osc8" && url.is_none() {
+            LinkOpenDecision::deny("osc8_url_unavailable")
+        } else {
+            self.link_open_policy.evaluate(url.as_deref())
+        };
+        let audit_url = url.as_deref().and_then(redact_url_for_audit);
+        let audit_url_redacted = url
+            .as_deref()
+            .is_some_and(|raw| audit_url.as_deref() != Some(raw));
         ResolvedLinkClick {
             click,
             source,
             url,
+            audit_url,
+            audit_url_redacted,
+            policy_rule: open_decision.policy_rule(),
+            action_outcome: open_decision.action_outcome(),
             open_decision,
         }
     }
@@ -2630,6 +2792,20 @@ fn get_u32(obj: &JsValue, key: &str) -> Result<u32, JsValue> {
     u32::try_from(n_i64).map_err(|_| JsValue::from_str(&format!("field {key} out of range")))
 }
 
+fn get_u32_opt(obj: &JsValue, key: &str) -> Result<Option<u32>, JsValue> {
+    let v = Reflect::get(obj, &JsValue::from_str(key))?;
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    let Some(n) = v.as_f64() else {
+        return Err(JsValue::from_str(&format!("field {key} must be a number")));
+    };
+    let n_i64 = number_to_i64_exact(n, key)?;
+    let out = u32::try_from(n_i64)
+        .map_err(|_| JsValue::from_str(&format!("field {key} out of range")))?;
+    Ok(Some(out))
+}
+
 fn parse_cell_patch(patch: &JsValue) -> Result<CellPatch, JsValue> {
     let offset = get_u32(patch, "offset")?;
     let cells_val = Reflect::get(patch, &JsValue::from_str("cells"))?;
@@ -3055,6 +3231,37 @@ fn parse_link_open_policy(options: Option<&JsValue>) -> Result<LinkOpenPolicy, J
     Ok(policy)
 }
 
+fn parse_clipboard_policy(
+    options: Option<&JsValue>,
+    mut policy: ClipboardPolicy,
+) -> Result<ClipboardPolicy, JsValue> {
+    let Some(options) = options else {
+        return Ok(policy);
+    };
+
+    if let Some(v) = get_bool(options, "copyEnabled")?.or(get_bool(options, "copy_enabled")?) {
+        policy.copy_enabled = v;
+    }
+    if let Some(v) = get_bool(options, "pasteEnabled")?.or(get_bool(options, "paste_enabled")?) {
+        policy.paste_enabled = v;
+    }
+
+    if let Some(v) =
+        get_u32_opt(options, "maxPasteBytes")?.or(get_u32_opt(options, "max_paste_bytes")?)
+    {
+        let max = usize::try_from(v)
+            .map_err(|_| JsValue::from_str("field maxPasteBytes out of range"))?;
+        if max == 0 || max > MAX_PASTE_BYTES {
+            return Err(JsValue::from_str(&format!(
+                "field maxPasteBytes must be in 1..={MAX_PASTE_BYTES}"
+            )));
+        }
+        policy.max_paste_bytes = max;
+    }
+
+    Ok(policy)
+}
+
 fn parse_text_shaping_config(
     options: Option<&JsValue>,
     mut config: TextShapingConfig,
@@ -3146,6 +3353,11 @@ fn parse_http_url_scheme_and_host(url: &str) -> Option<(&'static str, String)> {
     Some((normalized_scheme, host))
 }
 
+fn redact_url_for_audit(url: &str) -> Option<String> {
+    let (scheme, host) = parse_http_url_scheme_and_host(url)?;
+    Some(format!("{scheme}://{host}"))
+}
+
 fn canonicalize_host(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
@@ -3196,6 +3408,31 @@ fn link_open_policy_to_js(policy: &LinkOpenPolicy) -> JsValue {
     }
     let _ = Reflect::set(&obj, &JsValue::from_str("blockedHosts"), &blocked_hosts);
 
+    obj.into()
+}
+
+fn clipboard_policy_to_js(policy: &ClipboardPolicy) -> JsValue {
+    let obj = Object::new();
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("copyEnabled"),
+        &JsValue::from_bool(policy.copy_enabled),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("pasteEnabled"),
+        &JsValue::from_bool(policy.paste_enabled),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("maxPasteBytes"),
+        &JsValue::from_f64(policy.max_paste_bytes as f64),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("hostManagedClipboard"),
+        &JsValue::from_bool(true),
+    );
     obj.into()
 }
 
@@ -4115,6 +4352,31 @@ mod tests {
     }
 
     #[test]
+    fn extract_selection_text_skips_inferred_wide_continuation_cells() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 4;
+        term.rows = 1;
+        let mut cells = vec![CellData::EMPTY; 4];
+        cells[0].glyph_id = '界' as u32;
+        cells[2].glyph_id = 'A' as u32;
+        term.shadow_cells = cells;
+        term.selection_range = Some((0, 3));
+
+        assert_eq!(term.extract_selection_text(), "界A");
+    }
+
+    #[test]
+    fn extract_selection_text_trims_trailing_spaces_per_selected_row() {
+        let mut term = FrankenTermWeb::new();
+        term.cols = 4;
+        term.rows = 2;
+        term.shadow_cells = text_row_cells("AB  CD  ");
+        term.selection_range = Some((0, 8));
+
+        assert_eq!(term.extract_selection_text(), "AB\nCD");
+    }
+
+    #[test]
     fn mouse_link_click_queue_drains_in_order() {
         let mut term = FrankenTermWeb::new();
         term.cols = 2;
@@ -4181,6 +4443,52 @@ mod tests {
 
         let drained = term.drain_link_clicks();
         assert_eq!(drained.length(), 1);
+        let event = drained.get(0);
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("source"))
+                .expect("link click event should expose source")
+                .as_string()
+                .as_deref(),
+            Some("osc8")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("openAllowed"))
+                .expect("link click event should expose openAllowed")
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("openReason"))
+                .expect("link click event should expose openReason")
+                .as_string()
+                .as_deref(),
+            Some("osc8_url_unavailable")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("policyRule"))
+                .expect("link click event should expose policyRule")
+                .as_string()
+                .as_deref(),
+            Some("osc8_url_unavailable")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("actionOutcome"))
+                .expect("link click event should expose actionOutcome")
+                .as_string()
+                .as_deref(),
+            Some("block_open")
+        );
+        assert!(
+            Reflect::get(&event, &JsValue::from_str("auditUrl"))
+                .expect("link click event should expose auditUrl")
+                .is_null()
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("auditUrlRedacted"))
+                .expect("link click event should expose auditUrlRedacted")
+                .as_bool(),
+            Some(false)
+        );
         assert!(term.link_clicks.is_empty());
         assert_eq!(term.drain_link_clicks().length(), 0);
     }
@@ -4291,6 +4599,72 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_policy_snapshot_exposes_secure_defaults() {
+        let term = FrankenTermWeb::new();
+        let snapshot = term.clipboard_policy_snapshot();
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("copyEnabled"))
+                .expect("clipboard_policy_snapshot should expose copyEnabled")
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("pasteEnabled"))
+                .expect("clipboard_policy_snapshot should expose pasteEnabled")
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("maxPasteBytes"))
+                .expect("clipboard_policy_snapshot should expose maxPasteBytes")
+                .as_f64(),
+            Some(MAX_PASTE_BYTES as f64)
+        );
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("hostManagedClipboard"))
+                .expect("clipboard_policy_snapshot should expose hostManagedClipboard")
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn set_clipboard_policy_can_disable_copy_and_paste() {
+        let mut term = FrankenTermWeb::new();
+        let cfg = Object::new();
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("copyEnabled"),
+            &JsValue::from_bool(false),
+        );
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("pasteEnabled"),
+            &JsValue::from_bool(false),
+        );
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("maxPasteBytes"),
+            &JsValue::from_f64(256.0),
+        );
+        assert!(term.set_clipboard_policy(cfg.into()).is_ok());
+
+        term.cols = 4;
+        term.rows = 1;
+        term.shadow_cells = text_row_cells("ABCD");
+        term.selection_range = Some((0, 4));
+        assert_eq!(term.copy_selection(), None);
+
+        let err = term
+            .paste_text("abc")
+            .expect_err("paste_text should reject when paste policy is disabled");
+        assert_eq!(
+            err.as_string().as_deref(),
+            Some("paste disabled by clipboard policy")
+        );
+    }
+
+    #[test]
     fn paste_text_rejects_payload_above_max_bytes() {
         let mut term = FrankenTermWeb::new();
         let oversized = "x".repeat(MAX_PASTE_BYTES + 1);
@@ -4300,6 +4674,26 @@ mod tests {
         assert_eq!(
             err.as_string().as_deref(),
             Some("paste payload too large (max 786432 UTF-8 bytes)")
+        );
+    }
+
+    #[test]
+    fn paste_text_respects_clipboard_policy_max_bytes_override() {
+        let mut term = FrankenTermWeb::new();
+        let cfg = Object::new();
+        let _ = Reflect::set(
+            &cfg,
+            &JsValue::from_str("maxPasteBytes"),
+            &JsValue::from_f64(8.0),
+        );
+        assert!(term.set_clipboard_policy(cfg.into()).is_ok());
+
+        let err = term
+            .paste_text("123456789")
+            .expect_err("paste_text should enforce clipboard policy maxPasteBytes");
+        assert_eq!(
+            err.as_string().as_deref(),
+            Some("paste payload too large (max 8 UTF-8 bytes)")
         );
     }
 
@@ -4633,11 +5027,38 @@ mod tests {
                 .as_deref(),
             Some("scheme_blocked")
         );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("policyRule"))
+                .expect("link click event should expose policyRule")
+                .as_string()
+                .as_deref(),
+            Some("scheme_blocked")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("actionOutcome"))
+                .expect("link click event should expose actionOutcome")
+                .as_string()
+                .as_deref(),
+            Some("block_open")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("auditUrl"))
+                .expect("link click event should expose auditUrl")
+                .as_string()
+                .as_deref(),
+            Some("http://example.test")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("auditUrlRedacted"))
+                .expect("link click event should expose auditUrlRedacted")
+                .as_bool(),
+            Some(false)
+        );
     }
 
     #[test]
     fn drain_link_clicks_jsonl_emits_e2e_records() {
-        let text = "https://example.test docs";
+        let text = "https://example.test/docs docs";
         let mut term = FrankenTermWeb::new();
         term.cols = text.chars().count() as u16;
         term.rows = 1;
@@ -4673,7 +5094,12 @@ mod tests {
         assert_eq!(parsed["seed"], 5);
         assert_eq!(parsed["event_idx"], 0);
         assert_eq!(parsed["open_allowed"], true);
-        assert_eq!(parsed["url"], "https://example.test");
+        assert_eq!(parsed["url"], "https://example.test/docs");
+        assert_eq!(parsed["open_reason"], serde_json::Value::Null);
+        assert_eq!(parsed["policy_rule"], "allow_default");
+        assert_eq!(parsed["action_outcome"], "allow_open");
+        assert_eq!(parsed["audit_url"], "https://example.test");
+        assert_eq!(parsed["audit_url_redacted"], true);
     }
 
     #[test]

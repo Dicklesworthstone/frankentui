@@ -330,6 +330,10 @@ pub struct LinkClickSnapshot {
     pub url: Option<String>,
     pub open_allowed: bool,
     pub open_reason: Option<String>,
+    pub policy_rule: String,
+    pub action_outcome: String,
+    pub audit_url: Option<String>,
+    pub audit_url_redacted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -351,6 +355,11 @@ struct LinkClickJsonlRecord<'a> {
     open_allowed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_reason: Option<&'a str>,
+    policy_rule: &'a str,
+    action_outcome: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audit_url: Option<&'a str>,
+    audit_url_redacted: bool,
 }
 
 #[must_use]
@@ -829,6 +838,10 @@ pub fn link_click_jsonl(
         url: click.url.as_deref(),
         open_allowed: click.open_allowed,
         open_reason: click.open_reason.as_deref(),
+        policy_rule: &click.policy_rule,
+        action_outcome: &click.action_outcome,
+        audit_url: click.audit_url.as_deref(),
+        audit_url_redacted: click.audit_url_redacted,
     };
     serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string())
 }
@@ -1543,6 +1556,10 @@ mod tests {
             url: Some("https://example.test/docs".to_string()),
             open_allowed: true,
             open_reason: None,
+            policy_rule: "allow_default".to_string(),
+            action_outcome: "allow_open".to_string(),
+            audit_url: Some("https://example.test".to_string()),
+            audit_url_redacted: true,
         };
         let line = link_click_jsonl("run-link", 7, "T000321", 4, &click);
         let parsed: serde_json::Value =
@@ -1560,6 +1577,10 @@ mod tests {
         assert_eq!(parsed["url"], "https://example.test/docs");
         assert_eq!(parsed["open_allowed"], true);
         assert!(parsed.get("open_reason").is_none());
+        assert_eq!(parsed["policy_rule"], "allow_default");
+        assert_eq!(parsed["action_outcome"], "allow_open");
+        assert_eq!(parsed["audit_url"], "https://example.test");
+        assert_eq!(parsed["audit_url_redacted"], true);
     }
 
     #[test]
@@ -1572,6 +1593,10 @@ mod tests {
             url: None,
             open_allowed: false,
             open_reason: Some("url_unavailable".to_string()),
+            policy_rule: "url_unavailable".to_string(),
+            action_outcome: "block_open".to_string(),
+            audit_url: None,
+            audit_url_redacted: false,
         };
         let a = link_click_jsonl("run-a", 0, "T000010", 0, &click);
         let b = link_click_jsonl("run-a", 0, "T000010", 0, &click);
@@ -2123,6 +2148,10 @@ mod tests {
             url: Some("https://example.com".to_string()),
             open_allowed: true,
             open_reason: None,
+            policy_rule: "allow_default".to_string(),
+            action_outcome: "allow_open".to_string(),
+            audit_url: Some("https://example.com".to_string()),
+            audit_url_redacted: false,
         };
         let click2 = click.clone();
         assert_eq!(click, click2);
@@ -2140,6 +2169,10 @@ mod tests {
             url: None,
             open_allowed: false,
             open_reason: Some("blocked_by_policy".to_string()),
+            policy_rule: "blocked_by_policy".to_string(),
+            action_outcome: "block_open".to_string(),
+            audit_url: None,
+            audit_url_redacted: false,
         };
         let line = link_click_jsonl("run", 0, "T0", 0, &click);
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();

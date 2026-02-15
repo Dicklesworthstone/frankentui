@@ -55,19 +55,28 @@ Validation:
 
 ### 4.2 Clipboard Policy Defaults
 
+- `clipboardPolicy()` defaults:
+  - `copyEnabled = true`
+  - `pasteEnabled = true`
+  - `maxPasteBytes = 786432`
+  - `hostManagedClipboard = true`
 - No direct clipboard write side effect inside WASM:
   `copySelection()` returns text; host performs clipboard writes.
 - Paste requires explicit host call (`pasteText`) and enforces max payload:
   `MAX_PASTE_BYTES = 786432` bytes decoded UTF-8.
+- Hosts may further tighten policy using `setClipboardPolicy(...)`.
 
 Implementation:
 
-- `crates/frankenterm-web/src/wasm.rs` (`copySelection`, `pasteText`)
+- `crates/frankenterm-web/src/wasm.rs` (`clipboardPolicy`, `setClipboardPolicy`, `copySelection`, `pasteText`)
 - `docs/spec/frankenterm-websocket-protocol.md` (`Clipboard` message size limits)
 
 Validation:
 
+- `clipboard_policy_snapshot_exposes_secure_defaults`
+- `set_clipboard_policy_can_disable_copy_and_paste`
 - `paste_text_rejects_payload_above_max_bytes`
+- `paste_text_respects_clipboard_policy_max_bytes_override`
 - `extract_and_copy_selection_insert_row_breaks_at_grid_boundaries`
 
 ## 5. Bounded-Resource Contract
@@ -111,7 +120,7 @@ Specification:
 | Cross-origin WS hijack | Browser ↔ WS bridge | Strict origin allow-list; reject missing/disallowed origin | Protocol spec §3.2; bridge logs rejected origins |
 | Payload/queue memory exhaustion | Host/WASM and WS transport | Hard payload limits + bounded queues + drop-oldest policy | Queue bound tests; protocol size limits; flow-control diagnostics |
 | Attach lifecycle desync/retry storms | WASM attach state machine | Deterministic state machine, bounded transition log, capped retries/backoff | `attach.rs` tests (`handshake_timeout...`, `transition_log_is_bounded_to_capacity`) |
-| Unsafe link opening | Host/WASM | HTTPS-only default, explicit allow/block lists, reason-coded deny path | Link-policy unit tests + `drainLinkClicksJsonl` evidence |
+| Unsafe link opening | Host/WASM | HTTPS-only default, explicit allow/block lists, reason-coded deny path + audit URL redaction fields | Link-policy unit tests + `drainLinkClicksJsonl` evidence |
 | Clipboard abuse | Host/WASM and protocol | Host-gesture clipboard model, bounded payload, no command-exec API | `pasteText` max-size tests; protocol command-exec prohibition |
 | Incident triage blind spots | All boundaries | JSONL evidence surfaces + deterministic replay fixtures | `drainAttachTransitionsJsonl`, `drainLinkClicksJsonl`, remote replay tests |
 
@@ -152,4 +161,3 @@ postmortem correlation.
 2. Token theft/session fixation defenses require server-side rollout discipline.
 3. Link policy allow/block lists are host-configurable and can be weakened by integrators.
 4. Large-scale adversarial traffic still requires bridge-side rate-limit tuning per deployment.
-

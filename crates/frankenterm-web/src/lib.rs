@@ -40,7 +40,7 @@ pub const FRANKENTERM_JS_EVENT_SCHEMA_VERSION: &str = "1.0.0";
 /// Canonical list of supported public FrankenTermWeb JS methods.
 ///
 /// Keep sorted for deterministic contract hashing/comparison.
-pub const FRANKENTERM_JS_PUBLIC_METHODS: [&str; 64] = [
+pub const FRANKENTERM_JS_PUBLIC_METHODS: [&str; 66] = [
     "accessibilityClassNames",
     "accessibilityDomSnapshot",
     "accessibilityState",
@@ -61,6 +61,7 @@ pub const FRANKENTERM_JS_PUBLIC_METHODS: [&str; 64] = [
     "attachTransportOpened",
     "clearSearch",
     "clearSelection",
+    "clipboardPolicy",
     "copySelection",
     "destroy",
     "drainAccessibilityAnnouncements",
@@ -92,6 +93,7 @@ pub const FRANKENTERM_JS_PUBLIC_METHODS: [&str; 64] = [
     "searchPrev",
     "searchState",
     "setAccessibility",
+    "setClipboardPolicy",
     "setCursor",
     "setHoveredLinkId",
     "setLinkOpenPolicy",
