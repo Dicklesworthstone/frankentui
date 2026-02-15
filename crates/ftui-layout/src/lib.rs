@@ -51,6 +51,7 @@ mod repro_space_around;
 pub mod responsive;
 pub mod responsive_layout;
 pub mod visibility;
+pub mod workspace;
 
 pub use cache::{
     CoherenceCache, CoherenceId, LayoutCache, LayoutCacheKey, LayoutCacheStats, S3FifoLayoutCache,
@@ -84,6 +85,10 @@ pub use responsive::Responsive;
 pub use responsive_layout::{ResponsiveLayout, ResponsiveSplit};
 use std::cmp::min;
 pub use visibility::Visibility;
+pub use workspace::{
+    MigrationResult, WORKSPACE_SCHEMA_VERSION, WorkspaceMetadata, WorkspaceMigrationError,
+    WorkspaceSnapshot, WorkspaceValidationError, migrate_workspace, needs_migration,
+};
 
 /// A constraint on the size of a layout area.
 #[derive(Debug, Clone, Copy, PartialEq)]
