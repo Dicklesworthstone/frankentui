@@ -64,6 +64,7 @@ pub mod width_cache;
 pub mod wrap;
 
 pub mod hyphenation;
+pub mod incremental_break;
 
 #[cfg(feature = "markup")]
 pub mod markup;
@@ -129,6 +130,7 @@ pub use hyphenation::{
     HyphenBreakPoint, HyphenationDict, HyphenationPattern, PatternTrie, break_penalties,
     compile_pattern, english_dict_mini,
 };
+pub use incremental_break::{BreakerSnapshot, EditEvent, IncrementalBreaker, ReflowResult};
 pub use rope::Rope;
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
 pub use text::{Line, Span, Text};
