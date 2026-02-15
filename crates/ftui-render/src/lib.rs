@@ -29,6 +29,7 @@ pub mod counting_writer;
 pub mod diff;
 pub mod diff_strategy;
 pub mod drawing;
+pub mod fit_metrics;
 pub mod frame;
 pub mod frame_guardrails;
 pub mod grapheme_pool;
