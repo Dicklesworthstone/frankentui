@@ -60,6 +60,9 @@ crates/ftui-extras/src/seq_*.py
 __pycache__/
 *.pyc
 
+# Compiler crash reports
+rustc-ice-*.txt
+
 # Beads history snapshots (JSONL export is tracked, history is local)
 .beads/.br_history/
 
