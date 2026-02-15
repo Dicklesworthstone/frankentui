@@ -1,6 +1,6 @@
 [package]
 name = "ftui-runtime"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Elm-style runtime loop and subscriptions for FrankenTUI."
@@ -45,14 +45,14 @@ telemetry = [
 ]
 
 [dependencies]
-ftui-backend = { path = "../ftui-backend", version = "0.1.0" }
-ftui-core = { path = "../ftui-core", version = "0.1.1" }
-ftui-layout = { path = "../ftui-layout", version = "0.1.1" }
-ftui-i18n = { path = "../ftui-i18n", version = "0.1.1" }
-ftui-render = { path = "../ftui-render", version = "0.1.1" }
-ftui-style = { path = "../ftui-style", version = "0.1.1" }
-ftui-text = { path = "../ftui-text", version = "0.1.1" }
-ftui-tty = { path = "../ftui-tty", version = "0.1.0", optional = true }
+ftui-backend = { path = "../ftui-backend", version = "0.2.0" }
+ftui-core = { path = "../ftui-core", version = "0.2.0" }
+ftui-layout = { path = "../ftui-layout", version = "0.2.0" }
+ftui-i18n = { path = "../ftui-i18n", version = "0.2.0" }
+ftui-render = { path = "../ftui-render", version = "0.2.0" }
+ftui-style = { path = "../ftui-style", version = "0.2.0" }
+ftui-text = { path = "../ftui-text", version = "0.2.0" }
+ftui-tty = { path = "../ftui-tty", version = "0.2.0", optional = true }
 tracing = "0.1.41"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.2"
@@ -73,7 +73,7 @@ base64 = { version = "0.22", optional = true }
 im = { version = "15.1", optional = true }
 
 [dev-dependencies]
-ftui-core = { path = "../ftui-core", version = "0.1.1", features = ["test-helpers"] }
+ftui-core = { path = "../ftui-core", version = "0.2.0", features = ["test-helpers"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.7.0"
 tempfile = "3.22.0"

@@ -1,6 +1,6 @@
 [package]
 name = "ftui-widgets"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Widget library built on FrankenTUI render and layout."
@@ -19,11 +19,11 @@ tracing = ["dep:tracing", "ftui-render/tracing"]
 [dependencies]
 ahash = "0.8"
 bitflags = "2.10.0"
-ftui-core = { path = "../ftui-core", version = "0.1.1" }
-ftui-layout = { path = "../ftui-layout", version = "0.1.1" }
-ftui-render = { path = "../ftui-render", version = "0.1.1" }
-ftui-style = { path = "../ftui-style", version = "0.1.1" }
-ftui-text = { path = "../ftui-text", version = "0.1.1", features = ["markup"] }
+ftui-core = { path = "../ftui-core", version = "0.2.0" }
+ftui-layout = { path = "../ftui-layout", version = "0.2.0" }
+ftui-render = { path = "../ftui-render", version = "0.2.0" }
+ftui-style = { path = "../ftui-style", version = "0.2.0" }
+ftui-text = { path = "../ftui-text", version = "0.2.0", features = ["markup"] }
 web-time = "1.1.0"
 regex = { version = "1.12.3", optional = true }
 serde = { version = "1.0.227", features = ["derive"], optional = true }

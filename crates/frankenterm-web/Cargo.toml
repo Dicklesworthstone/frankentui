@@ -1,7 +1,8 @@
 [package]
 name = "frankenterm-web"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+publish = false
 license = "MIT"
 description = "WASM frontend for FrankenTerm: web rendering + input, exported via wasm-bindgen."
 repository = "https://github.com/Dicklesworthstone/frankentui"
@@ -24,8 +25,8 @@ wasm-opt = ["-Oz", "--all-features", "--converge"]
 default = []
 
 [dependencies]
-frankenterm-core = { path = "../frankenterm-core", version = "0.1.0" }
-ftui-render = { path = "../ftui-render", version = "0.1.1" }
+frankenterm-core = { path = "../frankenterm-core", version = "0.2.0" }
+ftui-render = { path = "../ftui-render", version = "0.2.0" }
 bitflags = "2.10.0"
 serde = { version = "1.0.227", features = ["derive"] }
 serde_json = "1.0.145"

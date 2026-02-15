@@ -1,6 +1,6 @@
 [package]
 name = "ftui-pty"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "PTY-backed test utilities for FrankenTUI."
@@ -10,8 +10,8 @@ documentation = "https://docs.rs/ftui-pty"
 readme = "../../README.md"
 
 [dependencies]
-frankenterm-core = { path = "../frankenterm-core", version = "0.1.0", features = ["ws-codec"] }
-ftui-core = { path = "../ftui-core", version = "0.1.1", features = ["crossterm"] }
+frankenterm-core = { path = "../frankenterm-core", version = "0.2.0", features = ["ws-codec"] }
+ftui-core = { path = "../ftui-core", version = "0.2.0", features = ["crossterm"] }
 portable-pty = "0.9.0"
 serde_json = "1.0.145"
 time = { version = "0.3.44", features = ["formatting"] }

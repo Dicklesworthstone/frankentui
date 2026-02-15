@@ -1,6 +1,6 @@
 [package]
 name = "ftui"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "FrankenTUI public facade and prelude."
@@ -16,11 +16,11 @@ extras = ["dep:ftui-extras"]
 crossterm = ["runtime", "ftui-core/crossterm", "ftui-runtime/crossterm-compat"]
 
 [dependencies]
-ftui-core = { path = "../ftui-core", version = "0.1.1" }
-ftui-render = { path = "../ftui-render", version = "0.1.1" }
-ftui-style = { path = "../ftui-style", version = "0.1.1" }
-ftui-text = { path = "../ftui-text", version = "0.1.1" }
-ftui-layout = { path = "../ftui-layout", version = "0.1.1" }
-ftui-runtime = { path = "../ftui-runtime", version = "0.1.1", optional = true }
-ftui-widgets = { path = "../ftui-widgets", version = "0.1.1" }
-ftui-extras = { path = "../ftui-extras", version = "0.1.1", optional = true }
+ftui-core = { path = "../ftui-core", version = "0.2.0" }
+ftui-render = { path = "../ftui-render", version = "0.2.0" }
+ftui-style = { path = "../ftui-style", version = "0.2.0" }
+ftui-text = { path = "../ftui-text", version = "0.2.0" }
+ftui-layout = { path = "../ftui-layout", version = "0.2.0" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.2.0", optional = true }
+ftui-widgets = { path = "../ftui-widgets", version = "0.2.0" }
+ftui-extras = { path = "../ftui-extras", version = "0.2.0", optional = true }
