@@ -76,6 +76,7 @@ pub mod bidi;
 pub mod normalization;
 
 pub mod justification;
+pub mod layout_policy;
 pub mod search;
 pub mod vertical_metrics;
 
@@ -136,6 +137,7 @@ pub use incremental_break::{BreakerSnapshot, EditEvent, IncrementalBreaker, Refl
 pub use justification::{
     GlueSpec, JustificationControl, JustifyMode, SUBCELL_SCALE, SpaceCategory, SpacePenalty,
 };
+pub use layout_policy::{LayoutPolicy, LayoutTier, PolicyError, ResolvedPolicy, RuntimeCapability};
 pub use rope::Rope;
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
 pub use text::{Line, Span, Text};
