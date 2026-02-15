@@ -1,6 +1,6 @@
 [package]
 name = "ftui-web"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "WASM backend implementation for FrankenTUI (host-driven, deterministic)."
@@ -15,11 +15,11 @@ default = []
 input-parser = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
-ftui-backend = { path = "../ftui-backend", version = "0.1.0" }
-ftui-core = { path = "../ftui-core", version = "0.1.1" }
-ftui-layout = { path = "../ftui-layout", version = "0.1.1" }
-ftui-render = { path = "../ftui-render", version = "0.1.1" }
-ftui-runtime = { path = "../ftui-runtime", version = "0.1.1", default-features = false }
+ftui-backend = { path = "../ftui-backend", version = "0.2.0" }
+ftui-core = { path = "../ftui-core", version = "0.2.0" }
+ftui-layout = { path = "../ftui-layout", version = "0.2.0" }
+ftui-render = { path = "../ftui-render", version = "0.2.0" }
+ftui-runtime = { path = "../ftui-runtime", version = "0.2.0", default-features = false }
 serde = { version = "1.0.227", features = ["derive"], optional = true }
 serde_json = { version = "1.0.145", optional = true }
 

@@ -1,6 +1,6 @@
 [package]
 name = "frankenterm-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Host-agnostic VT/ANSI terminal engine: grid, parser, cursor, and scrollback."
@@ -21,8 +21,8 @@ smallvec = "1.15.0"
 unicode-width = "0.2.2"
 
 [dev-dependencies]
-ftui-pty = { path = "../ftui-pty" }
-ftui-extras = { path = "../ftui-extras", features = ["terminal"] }
+ftui-pty = { path = "../ftui-pty", version = "0.2.0" }
+ftui-extras = { path = "../ftui-extras", version = "0.2.0", features = ["terminal"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.6.0"
 serde = { version = "1.0.227", features = ["derive"] }
