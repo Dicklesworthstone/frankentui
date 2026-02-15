@@ -133,11 +133,12 @@ pub const FRANKENTERM_JS_EVENT_ORDERING_RULES: [&str; 7] = [
     "drainLinkClicks() and drainAccessibilityAnnouncements() return FIFO order and destructively drain queues",
 ];
 /// Bounded-delivery policy for host-observable queues.
-pub const FRANKENTERM_JS_EVENT_BUFFER_POLICY: [&str; 4] = [
+pub const FRANKENTERM_JS_EVENT_BUFFER_POLICY: [&str; 5] = [
     "encoded_inputs_queue_max=4096; drop_oldest_on_overflow",
     "encoded_input_bytes_queue_max=4096; drop_oldest_on_overflow",
     "link_click_queue_max=2048; drop_oldest_on_overflow",
     "accessibility_announcement_queue_max=64; drop_oldest_on_overflow",
+    "attach_transition_queue_max=512; drop_oldest_on_overflow",
 ];
 
 #[cfg(target_arch = "wasm32")]

@@ -195,8 +195,24 @@ To prevent unbounded memory growth, host-drained queues use drop-oldest policy:
 - `encoded_input_bytes_queue_max=4096`
 - `link_click_queue_max=2048`
 - `accessibility_announcement_queue_max=64`
+- `attach_transition_queue_max=512`
 
 Host integrations should drain these queues at least once per render tick.
+
+### Security Defaults (Attach + Embedding)
+
+Default host-facing security posture:
+
+- Link open policy defaults to HTTPS-only:
+  - `allowHttp=false`
+  - `allowHttps=true`
+  - `allowedHosts=[]`
+  - `blockedHosts=[]`
+- Clipboard writes are host-managed only:
+  - `copySelection()` returns text but does not write clipboard directly.
+  - Hosts are expected to use trusted user gestures for clipboard APIs.
+- Clipboard/paste payload is bounded:
+  - `pasteText()` rejects payloads over `786432` UTF-8 bytes.
 
 ## Determinism and Logging Requirements
 
@@ -242,6 +258,7 @@ E2E coverage MUST enforce:
 ## References
 
 - `docs/spec/frankenterm-websocket-protocol.md`
+- `docs/spec/frankenterm-remote-threat-model.md`
 - `docs/spec/wasm-showcase-runner-contract.md`
 - `crates/frankenterm-web/src/lib.rs`
 - `crates/frankenterm-web/src/wasm.rs`

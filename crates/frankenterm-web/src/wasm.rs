@@ -190,7 +190,8 @@ struct TextShapingConfig {
 impl Default for LinkOpenPolicy {
     fn default() -> Self {
         Self {
-            allow_http: true,
+            // Secure-by-default posture: block cleartext HTTP unless explicitly enabled.
+            allow_http: false,
             allow_https: true,
             allowed_hosts: Vec::new(),
             blocked_hosts: Vec::new(),
@@ -1399,6 +1400,8 @@ impl FrankenTermWeb {
     /// - `allowHttps` / `allow_https`: bool
     /// - `allowedHosts` / `allowed_hosts`: string[]
     /// - `blockedHosts` / `blocked_hosts`: string[]
+    ///
+    /// Defaults: `allowHttp=false`, `allowHttps=true`, empty allow/block host lists.
     #[wasm_bindgen(js_name = setLinkOpenPolicy)]
     pub fn set_link_open_policy(&mut self, options: JsValue) -> Result<(), JsValue> {
         self.link_open_policy = parse_link_open_policy(Some(&options))?;
@@ -4250,6 +4253,78 @@ mod tests {
             .expect("valid HTTPS URL should parse into normalized scheme and host");
         assert_eq!(scheme, "https");
         assert_eq!(host, "example.test");
+    }
+
+    #[test]
+    fn link_open_policy_defaults_to_https_only() {
+        let policy = LinkOpenPolicy::default();
+        assert!(!policy.allow_http);
+        assert!(policy.allow_https);
+        assert!(policy.allowed_hosts.is_empty());
+        assert!(policy.blocked_hosts.is_empty());
+
+        let denied = policy.evaluate(Some("http://example.test/path"));
+        assert!(!denied.allowed);
+        assert_eq!(denied.reason, Some("scheme_blocked"));
+
+        let allowed = policy.evaluate(Some("https://example.test/path"));
+        assert!(allowed.allowed);
+        assert_eq!(allowed.reason, None);
+    }
+
+    #[test]
+    fn link_open_policy_snapshot_exposes_secure_defaults() {
+        let term = FrankenTermWeb::new();
+        let snapshot = term.link_open_policy_snapshot();
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("allowHttp"))
+                .expect("link_open_policy_snapshot should expose allowHttp")
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("allowHttps"))
+                .expect("link_open_policy_snapshot should expose allowHttps")
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn paste_text_rejects_payload_above_max_bytes() {
+        let mut term = FrankenTermWeb::new();
+        let oversized = "x".repeat(MAX_PASTE_BYTES + 1);
+        let err = term
+            .paste_text(&oversized)
+            .expect_err("paste_text should reject payloads larger than MAX_PASTE_BYTES");
+        assert_eq!(
+            err.as_string().as_deref(),
+            Some("paste payload too large (max 786432 UTF-8 bytes)")
+        );
+    }
+
+    #[test]
+    fn input_rejects_paste_event_payload_above_max_bytes() {
+        let mut term = FrankenTermWeb::new();
+        let event = Object::new();
+        let _ = Reflect::set(
+            &event,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("paste"),
+        );
+        let _ = Reflect::set(
+            &event,
+            &JsValue::from_str("data"),
+            &JsValue::from_str(&"x".repeat(MAX_PASTE_BYTES + 1)),
+        );
+
+        let err = term
+            .input(event.into())
+            .expect_err("input() should reject oversized paste events");
+        assert_eq!(
+            err.as_string().as_deref(),
+            Some("paste payload too large (max 786432 UTF-8 bytes)")
+        );
     }
 
     #[test]

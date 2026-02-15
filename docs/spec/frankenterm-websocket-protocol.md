@@ -23,6 +23,7 @@ Design constraints (inherited from the FrankenTerm architecture spec):
 Related specs:
 
 - `docs/spec/frankenterm-web-api.md` (stable browser SDK API contract)
+- `docs/spec/frankenterm-remote-threat-model.md` (threat model + mitigation/test mapping)
 
 ## 1. Transport Layer
 
@@ -469,6 +470,11 @@ The server MUST NOT:
 - Allow the client to access the host filesystem directly.
 
 ### 3.5 Threat Model
+
+The concise matrix in this section is normative for protocol behavior. The
+full remote-attach + embedding threat model (including trust boundaries,
+mitigation ownership, required tests, and incident-triage evidence workflows)
+lives in `docs/spec/frankenterm-remote-threat-model.md`.
 
 #### 3.5.1 Threat Matrix
 
