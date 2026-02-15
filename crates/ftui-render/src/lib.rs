@@ -30,6 +30,7 @@ pub mod diff;
 pub mod diff_strategy;
 pub mod drawing;
 pub mod frame;
+pub mod frame_guardrails;
 pub mod grapheme_pool;
 pub mod headless;
 pub mod link_registry;
