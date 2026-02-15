@@ -76,6 +76,7 @@ pub mod bidi;
 pub mod normalization;
 
 pub mod search;
+pub mod vertical_metrics;
 
 /// Bounds-based text measurement for layout negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -134,6 +135,9 @@ pub use incremental_break::{BreakerSnapshot, EditEvent, IncrementalBreaker, Refl
 pub use rope::Rope;
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
 pub use text::{Line, Span, Text};
+pub use vertical_metrics::{
+    BaselineGrid, LeadingSpec, ParagraphSpacing, VerticalMetrics, VerticalPolicy,
+};
 pub use view::{TextView, ViewLine, Viewport};
 pub use width_cache::{
     CacheStats, CountMinSketch, DEFAULT_CACHE_CAPACITY, Doorkeeper, S3FifoWidthCache,
