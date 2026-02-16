@@ -15,6 +15,7 @@ thread_local_cache = []
 markup = ["dep:ftui-render"]
 bidi = ["dep:unicode-bidi"]
 normalization = ["dep:unicode-normalization"]
+shaping = ["dep:rustybuzz"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
@@ -32,6 +33,7 @@ rustc-hash = "2.1.1"
 ropey = "1.6.1"
 unicode-bidi = { version = "0.3.18", optional = true }
 unicode-normalization = { version = "0.1.24", optional = true }
+rustybuzz = { version = "0.20", optional = true }
 
 [dev-dependencies]
 proptest = "1.7.0"
