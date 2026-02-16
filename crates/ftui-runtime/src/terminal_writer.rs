@@ -79,6 +79,7 @@ use ftui_render::presenter::Presenter;
 use tracing::{debug_span, info, info_span, trace, warn};
 
 /// Size of the internal write buffer (64KB).
+#[allow(dead_code)] // Used by Presenter::new; kept here for reference.
 const BUFFER_CAPACITY: usize = 64 * 1024;
 
 /// DEC cursor save (ESC 7) - more portable than CSI s.
@@ -100,66 +101,9 @@ const ERASE_LINE: &[u8] = b"\x1b[2K";
 #[allow(dead_code)] // API for future diff strategy integration
 const FULL_REDRAW_PROBE_INTERVAL: u64 = 60;
 
-/// Writer wrapper that can count bytes written when enabled.
-struct CountingWriter<W: Write> {
-    inner: W,
-    count_enabled: bool,
-    bytes_written: u64,
-}
-
-impl<W: Write> CountingWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            count_enabled: false,
-            bytes_written: 0,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn enable_counting(&mut self) {
-        self.count_enabled = true;
-        self.bytes_written = 0;
-    }
-
-    #[allow(dead_code)]
-    fn disable_counting(&mut self) {
-        self.count_enabled = false;
-    }
-
-    #[allow(dead_code)]
-    fn take_count(&mut self) -> u64 {
-        let count = self.bytes_written;
-        self.bytes_written = 0;
-        count
-    }
-
-    fn into_inner(self) -> W {
-        self.inner
-    }
-}
-
-impl<W: Write> Write for CountingWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = self.inner.write(buf)?;
-        if self.count_enabled {
-            self.bytes_written = self.bytes_written.saturating_add(written as u64);
-        }
-        Ok(written)
-    }
-
-    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.inner.write_all(buf)?;
-        if self.count_enabled {
-            self.bytes_written = self.bytes_written.saturating_add(buf.len() as u64);
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
+// CountingWriter is re-used from ftui_render::counting_writer::CountingWriter.
+// The Presenter wraps the writer in CountingWriter<BufWriter<W>>.
+// For byte counting, use reset_counter() and bytes_written() on the counting writer.
 
 fn default_diff_run_id() -> String {
     format!("diff-{}", std::process::id())
@@ -1104,7 +1048,7 @@ impl<W: Write> TerminalWriter<W> {
         };
         let trace_enabled = self.render_trace.is_some();
         if trace_enabled {
-            self.writer().enable_counting();
+            self.writer().reset_counter();
         }
         let present_start = if trace_enabled {
             Some(Instant::now())
@@ -1132,12 +1076,17 @@ impl<W: Write> TerminalWriter<W> {
 
         let present_us = present_start.map(|start| start.elapsed().as_micros() as u64);
         let present_bytes = if trace_enabled {
-            Some(self.writer().take_count())
+            {
+                let w = self.writer();
+                let count = w.bytes_written();
+                w.reset_counter();
+                Some(count)
+            }
         } else {
             None
         };
         if trace_enabled {
-            self.writer().disable_counting();
+            // No-op: ftui_render::CountingWriter always counts; reset happens in take above.
         }
 
         if let Ok(stats) = result {
@@ -1216,7 +1165,7 @@ impl<W: Write> TerminalWriter<W> {
         };
         let trace_enabled = self.render_trace.is_some();
         if trace_enabled {
-            self.writer().enable_counting();
+            self.writer().reset_counter();
         }
         let present_start = if trace_enabled {
             Some(Instant::now())
@@ -1244,12 +1193,17 @@ impl<W: Write> TerminalWriter<W> {
 
         let present_us = present_start.map(|start| start.elapsed().as_micros() as u64);
         let present_bytes = if trace_enabled {
-            Some(self.writer().take_count())
+            {
+                let w = self.writer();
+                let count = w.bytes_written();
+                w.reset_counter();
+                Some(count)
+            }
         } else {
             None
         };
         if trace_enabled {
-            self.writer().disable_counting();
+            // No-op: ftui_render::CountingWriter always counts; reset happens in take above.
         }
 
         if let Ok(stats) = result {
@@ -1683,34 +1637,28 @@ impl<W: Write> TerminalWriter<W> {
 
                     // Reset presenter state (cursor unknown) because we manually moved cursor/saved
                     // and apply viewport offset for inline positioning.
-                    self.presenter_mut().reset();
-                    self.presenter_mut().set_viewport_offset_y(ui_y_start);
+                    let presenter = self.presenter.as_mut().expect("presenter consumed");
+                    presenter.reset();
+                    presenter.set_viewport_offset_y(ui_y_start);
 
                     if decision.has_diff {
-                        self.presenter_mut().prepare_runs(&self.diff_scratch);
+                        presenter.prepare_runs(&self.diff_scratch);
                         // Emit
-                        self.presenter_mut().emit_diff_runs(
-                            buffer,
-                            Some(&self.pool),
-                            Some(&self.links),
-                        )?;
+                        presenter.emit_diff_runs(buffer, Some(&self.pool), Some(&self.links))?;
 
                         emit_stats.diff_cells = self.diff_scratch.len();
-                        emit_stats.diff_runs = self.diff_scratch.runs().len(); // Approximate, runs_buf reused
+                        emit_stats.diff_runs = self.diff_scratch.runs().len();
                     } else {
-                        // Full redraw
-                        // Diff scratch has no changes, so we must force a full diff
-                        let full = BufferDiff::full(buffer.width(), buffer.height());
-                        self.presenter_mut().prepare_runs(&full);
-                        self.presenter_mut().emit_diff_runs(
-                            buffer,
-                            Some(&self.pool),
-                            Some(&self.links),
-                        )?;
+                        // Full redraw — clip to visible_height so the
+                        // Presenter does not emit cursor moves past the
+                        // terminal bottom.
+                        let full = BufferDiff::full(buffer.width(), visible_height);
+                        presenter.prepare_runs(&full);
+                        presenter.emit_diff_runs(buffer, Some(&self.pool), Some(&self.links))?;
 
                         emit_stats.diff_cells =
-                            (buffer.width() as usize) * (buffer.height() as usize);
-                        emit_stats.diff_runs = buffer.height() as usize;
+                            (buffer.width() as usize) * (visible_height as usize);
+                        emit_stats.diff_runs = visible_height as usize;
                     }
                 }
             }
@@ -1876,8 +1824,12 @@ impl<W: Write> TerminalWriter<W> {
         let mut current_link: Option<u32> = None;
         let default_cell = Cell::default();
 
-        // Borrow writer once
-        let writer = self.writer();
+        // Borrow writer via direct field access for borrow splitting (runs_buf, pool, links).
+        let writer = self
+            .presenter
+            .as_mut()
+            .expect("presenter consumed")
+            .counting_writer_mut();
 
         for run in &self.runs_buf {
             if let Some(limit) = max_height
@@ -2042,8 +1994,12 @@ impl<W: Write> TerminalWriter<W> {
         let mut current_link: Option<u32> = None;
         let default_cell = Cell::default();
 
-        // Borrow writer once
-        let writer = self.writer();
+        // Borrow writer via direct field access for borrow splitting (pool, links).
+        let writer = self
+            .presenter
+            .as_mut()
+            .expect("presenter consumed")
+            .counting_writer_mut();
 
         for y in 0..height {
             write!(
@@ -4451,7 +4407,7 @@ mod tests {
         );
         assert!(writer.prev_buffer.is_none());
         // Should not panic
-        writer.gc();
+        writer.gc(None);
     }
 
     #[test]
@@ -4464,7 +4420,7 @@ mod tests {
         );
         writer.prev_buffer = Some(Buffer::new(10, 5));
         // Should not panic
-        writer.gc();
+        writer.gc(None);
     }
 
     // =========================================================================
@@ -4677,60 +4633,9 @@ mod tests {
         assert_eq!(json_escape("\u{1f600}"), "\u{1f600}");
     }
 
-    // =========================================================================
-    // CountingWriter tests
-    // =========================================================================
-
-    #[test]
-    fn counting_writer_no_counting_by_default() {
-        let mut cw = CountingWriter::new(Vec::new());
-        cw.write_all(b"hello").unwrap();
-        assert_eq!(cw.take_count(), 0);
-    }
-
-    #[test]
-    fn counting_writer_counts_when_enabled() {
-        let mut cw = CountingWriter::new(Vec::new());
-        cw.enable_counting();
-        cw.write_all(b"hello").unwrap();
-        assert_eq!(cw.take_count(), 5);
-    }
-
-    #[test]
-    fn counting_writer_take_count_resets() {
-        let mut cw = CountingWriter::new(Vec::new());
-        cw.enable_counting();
-        cw.write_all(b"abc").unwrap();
-        assert_eq!(cw.take_count(), 3);
-        // After take, count resets
-        assert_eq!(cw.take_count(), 0);
-    }
-
-    #[test]
-    fn counting_writer_disable_stops_counting() {
-        let mut cw = CountingWriter::new(Vec::new());
-        cw.enable_counting();
-        cw.write_all(b"abc").unwrap();
-        cw.disable_counting();
-        cw.write_all(b"def").unwrap();
-        // Only "abc" was counted
-        assert_eq!(cw.take_count(), 3);
-    }
-
-    #[test]
-    fn counting_writer_write_counts_partial() {
-        let mut cw = CountingWriter::new(Vec::new());
-        cw.enable_counting();
-        let written = cw.write(b"hello world").unwrap();
-        assert_eq!(written, 11);
-        assert_eq!(cw.take_count(), 11);
-    }
-
-    #[test]
-    fn counting_writer_flush() {
-        let mut cw = CountingWriter::new(Vec::new());
-        cw.flush().unwrap();
-    }
+    // CountingWriter tests removed — the local CountingWriter was removed
+    // in favour of ftui_render::counting_writer::CountingWriter (accessed via
+    // Presenter). The render-crate CountingWriter has its own test suite.
 
     #[test]
     fn counting_writer_into_inner() {
