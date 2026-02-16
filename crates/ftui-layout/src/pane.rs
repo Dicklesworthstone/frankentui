@@ -472,6 +472,299 @@ impl PaneLayout {
     }
 }
 
+/// Default radius for magnetic docking attraction in cell units.
+pub const PANE_MAGNETIC_FIELD_CELLS: f64 = 6.0;
+
+/// Default inset from pane edges used to classify edge/corner grips.
+pub const PANE_EDGE_GRIP_INSET_CELLS: f64 = 1.5;
+
+/// Docking zones for magnetic insertion previews.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneDockZone {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+/// One magnetic docking preview candidate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneDockPreview {
+    pub target: PaneId,
+    pub zone: PaneDockZone,
+    /// Distance-weighted score; higher means stronger attraction.
+    pub score: f64,
+    /// Ghost rectangle to visualize the insertion/drop target.
+    pub ghost_rect: Rect,
+}
+
+/// Resize grip classification for any-edge / any-corner interaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneResizeGrip {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl PaneResizeGrip {
+    #[must_use]
+    const fn horizontal_edge(self) -> Option<bool> {
+        match self {
+            Self::Left | Self::TopLeft | Self::BottomLeft => Some(false),
+            Self::Right | Self::TopRight | Self::BottomRight => Some(true),
+            Self::Top | Self::Bottom => None,
+        }
+    }
+
+    #[must_use]
+    const fn vertical_edge(self) -> Option<bool> {
+        match self {
+            Self::Top | Self::TopLeft | Self::TopRight => Some(false),
+            Self::Bottom | Self::BottomLeft | Self::BottomRight => Some(true),
+            Self::Left | Self::Right => None,
+        }
+    }
+}
+
+/// Pointer motion summary used by pressure-sensitive policies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneMotionVector {
+    pub delta_x: i32,
+    pub delta_y: i32,
+    /// Cells per second.
+    pub speed: f64,
+    /// Number of direction sign flips observed in this gesture window.
+    pub direction_changes: u16,
+}
+
+impl PaneMotionVector {
+    #[must_use]
+    pub fn from_delta(
+        delta_x: i32,
+        delta_y: i32,
+        elapsed_ms: u32,
+        direction_changes: u16,
+    ) -> Self {
+        let elapsed = f64::from(elapsed_ms.max(1)) / 1_000.0;
+        let dx = f64::from(delta_x);
+        let dy = f64::from(delta_y);
+        let distance = (dx * dx + dy * dy).sqrt();
+        Self {
+            delta_x,
+            delta_y,
+            speed: distance / elapsed,
+            direction_changes,
+        }
+    }
+}
+
+/// Inertial throw profile used after drag release.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaneInertialThrow {
+    pub velocity_x: f64,
+    pub velocity_y: f64,
+    /// Exponential velocity damping per second. Higher means quicker settle.
+    pub damping: f64,
+    /// Projection horizon used for target preview/landing selection.
+    pub horizon_ms: u16,
+}
+
+impl PaneInertialThrow {
+    #[must_use]
+    pub fn from_motion(motion: PaneMotionVector) -> Self {
+        Self {
+            velocity_x: f64::from(motion.delta_x),
+            velocity_y: f64::from(motion.delta_y),
+            damping: 7.5,
+            horizon_ms: 220,
+        }
+    }
+
+    #[must_use]
+    pub fn projected_pointer(self, start: PanePointerPosition) -> PanePointerPosition {
+        let dt = f64::from(self.horizon_ms) / 1_000.0;
+        let attenuation = (-self.damping * dt).exp();
+        let gain = if self.damping <= f64::EPSILON {
+            dt
+        } else {
+            (1.0 - attenuation) / self.damping
+        };
+        let projected_x = f64::from(start.x) + self.velocity_x * gain;
+        let projected_y = f64::from(start.y) + self.velocity_y * gain;
+        PanePointerPosition::new(round_f64_to_i32(projected_x), round_f64_to_i32(projected_y))
+    }
+}
+
+/// Dynamic snap aggressiveness derived from drag pressure cues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanePressureSnapProfile {
+    /// Relative snap strength (0..=10_000). Higher means stronger canonical snap.
+    pub strength_bps: u16,
+    /// Effective hysteresis window used for sticky docking/snap.
+    pub hysteresis_bps: u16,
+}
+
+impl PanePressureSnapProfile {
+    /// Compute pressure profile from gesture speed and direction noise.
+    ///
+    /// Slow/stable drags reduce snap force for precision; fast drags with
+    /// consistent direction increase snap force for canonical layouts.
+    #[must_use]
+    pub fn from_motion(motion: PaneMotionVector) -> Self {
+        let speed_factor = (motion.speed / 40.0).clamp(0.0, 1.0);
+        let noise_penalty = (f64::from(motion.direction_changes) / 8.0).clamp(0.0, 1.0);
+        let confidence = (speed_factor * (1.0 - 0.6 * noise_penalty)).clamp(0.0, 1.0);
+        let strength = (2_000.0 + confidence * 8_000.0).round() as u16;
+        let hysteresis = (80.0 + confidence * 340.0).round() as u16;
+        Self {
+            strength_bps: strength.min(10_000),
+            hysteresis_bps: hysteresis.min(2_000),
+        }
+    }
+
+    #[must_use]
+    pub fn apply_to_tuning(self, base: PaneSnapTuning) -> PaneSnapTuning {
+        let scaled_step = ((u32::from(base.step_bps) * (11_000 - u32::from(self.strength_bps)))
+            / 10_000)
+            .clamp(100, 10_000);
+        PaneSnapTuning {
+            step_bps: scaled_step as u16,
+            hysteresis_bps: self.hysteresis_bps.max(base.hysteresis_bps),
+        }
+    }
+}
+
+/// Result of planning a side/corner resize from one pointer sample.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneEdgeResizePlan {
+    pub leaf: PaneId,
+    pub grip: PaneResizeGrip,
+    pub operations: Vec<PaneOperation>,
+}
+
+/// Planned pane move with organic reflow semantics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneReflowMovePlan {
+    pub source: PaneId,
+    pub pointer: PanePointerPosition,
+    pub projected_pointer: PanePointerPosition,
+    pub preview: PaneDockPreview,
+    pub snap_profile: PanePressureSnapProfile,
+    pub operations: Vec<PaneOperation>,
+}
+
+/// Errors while deriving edge/corner resize plans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneEdgeResizePlanError {
+    MissingLeaf { leaf: PaneId },
+    NodeNotLeaf { node: PaneId },
+    MissingLayoutRect { node: PaneId },
+    NoAxisSplit { leaf: PaneId, axis: SplitAxis },
+    InvalidRatio { numerator: u32, denominator: u32 },
+}
+
+impl fmt::Display for PaneEdgeResizePlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingLeaf { leaf } => write!(f, "pane leaf {} not found", leaf.get()),
+            Self::NodeNotLeaf { node } => write!(f, "node {} is not a leaf", node.get()),
+            Self::MissingLayoutRect { node } => {
+                write!(f, "layout missing rectangle for node {}", node.get())
+            }
+            Self::NoAxisSplit { leaf, axis } => {
+                write!(f, "no ancestor split on {axis:?} axis for leaf {}", leaf.get())
+            }
+            Self::InvalidRatio {
+                numerator,
+                denominator,
+            } => write!(
+                f,
+                "invalid planned ratio {numerator}/{denominator} for edge resize"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PaneEdgeResizePlanError {}
+
+/// Multi-pane selection state for group interactions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PaneSelectionState {
+    pub anchor: Option<PaneId>,
+    pub selected: BTreeSet<PaneId>,
+}
+
+/// Planned group transform preserving the internal cluster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneGroupTransformPlan {
+    pub members: Vec<PaneId>,
+    pub operations: Vec<PaneOperation>,
+}
+
+impl PaneSelectionState {
+    /// Toggle selection with shift-like additive semantics.
+    pub fn shift_toggle(&mut self, pane_id: PaneId) {
+        if self.selected.contains(&pane_id) {
+            let _ = self.selected.remove(&pane_id);
+            if self.anchor == Some(pane_id) {
+                self.anchor = self.selected.iter().next().copied();
+            }
+        } else {
+            let _ = self.selected.insert(pane_id);
+            if self.anchor.is_none() {
+                self.anchor = Some(pane_id);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn as_sorted_vec(&self) -> Vec<PaneId> {
+        self.selected.iter().copied().collect()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.selected.is_empty()
+    }
+}
+
+/// High-level adaptive layout topology modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneLayoutIntelligenceMode {
+    Focus,
+    Compare,
+    Monitor,
+    Compact,
+}
+
+/// One persistent timeline event for deterministic undo/redo/replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneInteractionTimelineEntry {
+    pub sequence: u64,
+    pub operation_id: u64,
+    pub operation: PaneOperation,
+    pub before_hash: u64,
+    pub after_hash: u64,
+}
+
+/// Persistent interaction timeline with undo/redo cursor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PaneInteractionTimeline {
+    /// Full operation history in deterministic order.
+    pub entries: Vec<PaneInteractionTimelineEntry>,
+    /// Number of entries currently applied (<= entries.len()).
+    pub cursor: usize,
+}
+
 /// Placement of an incoming node relative to an existing node inside a split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2472,6 +2765,8 @@ pub enum PaneOperation {
     },
     /// Swap two non-ancestor subtrees.
     SwapNodes { first: PaneId, second: PaneId },
+    /// Set an explicit split ratio on an existing split node.
+    SetSplitRatio { split: PaneId, ratio: PaneSplitRatio },
     /// Canonicalize all split ratios to reduced form and validate positivity.
     NormalizeRatios,
 }
@@ -2485,6 +2780,7 @@ impl PaneOperation {
             Self::CloseNode { .. } => PaneOperationKind::CloseNode,
             Self::MoveSubtree { .. } => PaneOperationKind::MoveSubtree,
             Self::SwapNodes { .. } => PaneOperationKind::SwapNodes,
+            Self::SetSplitRatio { .. } => PaneOperationKind::SetSplitRatio,
             Self::NormalizeRatios => PaneOperationKind::NormalizeRatios,
         }
     }
@@ -2500,6 +2796,7 @@ impl PaneOperation {
             } => {
                 vec![*source, *target]
             }
+            Self::SetSplitRatio { split, .. } => vec![*split],
             Self::NormalizeRatios => Vec::new(),
         }
     }
@@ -2513,6 +2810,7 @@ pub enum PaneOperationKind {
     CloseNode,
     MoveSubtree,
     SwapNodes,
+    SetSplitRatio,
     NormalizeRatios,
 }
 
@@ -3122,6 +3420,9 @@ impl PaneTree {
             PaneOperation::SwapNodes { first, second } => {
                 self.apply_swap_nodes(first, second, touched)
             }
+            PaneOperation::SetSplitRatio { split, ratio } => {
+                self.apply_set_split_ratio(split, ratio, touched)
+            }
             PaneOperation::NormalizeRatios => self.apply_normalize_ratios(touched),
         }
     }
@@ -3422,6 +3723,30 @@ impl PaneTree {
                 let _ = touched.insert(node.id);
             }
         }
+        Ok(())
+    }
+
+    fn apply_set_split_ratio(
+        &mut self,
+        split_id: PaneId,
+        ratio: PaneSplitRatio,
+        touched: &mut BTreeSet<PaneId>,
+    ) -> Result<(), PaneOperationFailure> {
+        let node = self
+            .nodes
+            .get_mut(&split_id)
+            .ok_or(PaneOperationFailure::MissingNode { node_id: split_id })?;
+        let PaneNodeKind::Split(split) = &mut node.kind else {
+            return Err(PaneOperationFailure::ParentNotSplit { node_id: split_id });
+        };
+        split.ratio = PaneSplitRatio::new(ratio.numerator(), ratio.denominator()).map_err(|_| {
+            PaneOperationFailure::InvalidRatio {
+                node_id: split_id,
+                numerator: ratio.numerator(),
+                denominator: ratio.denominator(),
+            }
+        })?;
+        let _ = touched.insert(split_id);
         Ok(())
     }
 
