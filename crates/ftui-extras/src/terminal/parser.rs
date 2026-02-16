@@ -17,7 +17,411 @@
 //! | Unknown CSI | Unrecognized sequence | Silently ignored |
 //! | Truncated sequence | Incomplete input | Buffered for next parse call |
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
 use vte::{Parser, Perform};
+
+/// Opaque identifier returned when registering a parser hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HookId(u64);
+
+impl HookId {
+    /// Return the numeric id value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Hook classes supported by [`AnsiParser`] registration APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookClass {
+    /// CSI (`ESC [`) hook pipeline.
+    Csi,
+    /// OSC (`ESC ]`) hook pipeline.
+    Osc,
+    /// ESC (single-byte final) hook pipeline.
+    Esc,
+    /// DCS (`ESC P`) hook pipeline.
+    Dcs,
+}
+
+/// Hook dispatch result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookDisposition {
+    /// Continue dispatching remaining hooks, then fallback to the handler.
+    Continue,
+    /// Stop hook dispatch and suppress fallback handler dispatch.
+    Consume,
+    /// Reject the hook invocation and continue with fallback behavior.
+    Reject,
+}
+
+/// Structured policy rejection codes emitted in hook traces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookRejectReason {
+    /// Hook class disabled by capability profile.
+    CapabilityDisabled,
+    /// Parse-time quota exceeded.
+    QuotaExceeded,
+    /// Hook callback ran longer than the configured max runtime.
+    TimeoutExceeded,
+    /// Hook callback panicked and was isolated.
+    HookPanicked,
+    /// Hook explicitly rejected processing.
+    HookRejected,
+}
+
+/// Hook trace stage for deterministic postmortem replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookTraceStage {
+    /// A registered hook callback was invoked.
+    HookInvoked,
+    /// A hook consumed the event and stopped fallback dispatch.
+    HookConsumed,
+    /// No hook consumed the event, so fallback handler dispatch occurred.
+    FallbackDispatched,
+    /// Policy/capability/isolation rejected hook execution.
+    PolicyRejected,
+}
+
+/// Replay-grade structured hook trace event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookTraceEvent {
+    /// Unix timestamp in milliseconds.
+    pub ts_ms: u64,
+    /// Monotonic correlation id for deterministic event ordering.
+    pub correlation_id: u64,
+    /// Hook class for this record.
+    pub class: HookClass,
+    /// Dispatch stage.
+    pub stage: HookTraceStage,
+    /// Hook id, when the record corresponds to a specific callback.
+    pub hook_id: Option<HookId>,
+    /// Rejection reason, if the stage is `PolicyRejected`.
+    pub reject_reason: Option<HookRejectReason>,
+    /// Callback elapsed microseconds when available.
+    pub elapsed_us: Option<u64>,
+}
+
+/// Parse-time capability profile for parser hook classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookCapabilities {
+    /// Allow CSI hooks.
+    pub csi: bool,
+    /// Allow OSC hooks.
+    pub osc: bool,
+    /// Allow ESC hooks.
+    pub esc: bool,
+    /// Allow DCS hooks.
+    pub dcs: bool,
+}
+
+impl Default for HookCapabilities {
+    fn default() -> Self {
+        Self {
+            csi: true,
+            osc: true,
+            esc: true,
+            dcs: true,
+        }
+    }
+}
+
+/// Parse-time parser hook policy (quotas + callback runtime bounds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookPolicy {
+    /// Max CSI hook dispatches per `parse()` call.
+    pub max_csi_invocations_per_parse: u32,
+    /// Max OSC hook dispatches per `parse()` call.
+    pub max_osc_invocations_per_parse: u32,
+    /// Max ESC hook dispatches per `parse()` call.
+    pub max_esc_invocations_per_parse: u32,
+    /// Max DCS hook dispatches per `parse()` call.
+    pub max_dcs_invocations_per_parse: u32,
+    /// Max DCS `put` bytes delivered to hooks per `parse()` call.
+    pub max_dcs_bytes_per_parse: usize,
+    /// Max callback runtime before timeout rejection.
+    pub max_hook_runtime: Duration,
+}
+
+impl Default for HookPolicy {
+    fn default() -> Self {
+        Self {
+            max_csi_invocations_per_parse: 2_048,
+            max_osc_invocations_per_parse: 1_024,
+            max_esc_invocations_per_parse: 2_048,
+            max_dcs_invocations_per_parse: 8_192,
+            max_dcs_bytes_per_parse: 256 * 1024,
+            max_hook_runtime: Duration::from_millis(5),
+        }
+    }
+}
+
+/// CSI hook event payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsiHookEvent {
+    /// CSI numeric params.
+    pub params: Vec<i64>,
+    /// CSI intermediate bytes.
+    pub intermediates: Vec<u8>,
+    /// CSI final byte.
+    pub final_byte: char,
+}
+
+/// OSC hook event payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OscHookEvent {
+    /// OSC semicolon-separated params.
+    pub params: Vec<Vec<u8>>,
+}
+
+/// ESC hook event payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EscHookEvent {
+    /// ESC intermediates.
+    pub intermediates: Vec<u8>,
+    /// ESC final byte.
+    pub final_byte: char,
+}
+
+/// DCS hook event payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DcsHookEvent {
+    /// DCS sequence start (`hook`).
+    Hook {
+        /// DCS numeric params.
+        params: Vec<i64>,
+        /// DCS intermediate bytes.
+        intermediates: Vec<u8>,
+        /// DCS final byte.
+        final_byte: char,
+    },
+    /// DCS payload byte (`put`).
+    Put {
+        /// DCS data byte.
+        byte: u8,
+    },
+    /// DCS sequence end (`unhook`).
+    Unhook,
+}
+
+type CsiHookCallback = Box<dyn FnMut(&CsiHookEvent) -> HookDisposition>;
+type OscHookCallback = Box<dyn FnMut(&OscHookEvent) -> HookDisposition>;
+type EscHookCallback = Box<dyn FnMut(&EscHookEvent) -> HookDisposition>;
+type DcsHookCallback = Box<dyn FnMut(&DcsHookEvent) -> HookDisposition>;
+
+struct HookEntry<T> {
+    id: HookId,
+    callback: T,
+}
+
+#[derive(Default)]
+struct HookRegistry {
+    next_id: u64,
+    csi: Vec<HookEntry<CsiHookCallback>>,
+    osc: Vec<HookEntry<OscHookCallback>>,
+    esc: Vec<HookEntry<EscHookCallback>>,
+    dcs: Vec<HookEntry<DcsHookCallback>>,
+}
+
+impl HookRegistry {
+    fn register_csi<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&CsiHookEvent) -> HookDisposition + 'static,
+    {
+        let id = self.next_hook_id();
+        self.csi.push(HookEntry {
+            id,
+            callback: Box::new(callback),
+        });
+        id
+    }
+
+    fn register_osc<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&OscHookEvent) -> HookDisposition + 'static,
+    {
+        let id = self.next_hook_id();
+        self.osc.push(HookEntry {
+            id,
+            callback: Box::new(callback),
+        });
+        id
+    }
+
+    fn register_esc<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&EscHookEvent) -> HookDisposition + 'static,
+    {
+        let id = self.next_hook_id();
+        self.esc.push(HookEntry {
+            id,
+            callback: Box::new(callback),
+        });
+        id
+    }
+
+    fn register_dcs<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&DcsHookEvent) -> HookDisposition + 'static,
+    {
+        let id = self.next_hook_id();
+        self.dcs.push(HookEntry {
+            id,
+            callback: Box::new(callback),
+        });
+        id
+    }
+
+    fn deregister(&mut self, id: HookId) -> bool {
+        fn remove_hook<T>(hooks: &mut Vec<HookEntry<T>>, id: HookId) -> bool {
+            if let Some(idx) = hooks.iter().position(|entry| entry.id == id) {
+                hooks.remove(idx);
+                return true;
+            }
+            false
+        }
+
+        remove_hook(&mut self.csi, id)
+            || remove_hook(&mut self.osc, id)
+            || remove_hook(&mut self.esc, id)
+            || remove_hook(&mut self.dcs, id)
+    }
+
+    fn clear(&mut self) {
+        self.csi.clear();
+        self.osc.clear();
+        self.esc.clear();
+        self.dcs.clear();
+    }
+
+    fn next_hook_id(&mut self) -> HookId {
+        self.next_id = self.next_id.saturating_add(1);
+        HookId(self.next_id)
+    }
+}
+
+#[derive(Default)]
+struct HookDispatchBudget {
+    csi_invocations: u32,
+    osc_invocations: u32,
+    esc_invocations: u32,
+    dcs_invocations: u32,
+    dcs_bytes: usize,
+}
+
+fn system_time_ms() -> u64 {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(ts).unwrap_or(u64::MAX)
+}
+
+fn push_hook_trace(
+    traces: &mut Vec<HookTraceEvent>,
+    next_correlation_id: &mut u64,
+    class: HookClass,
+    stage: HookTraceStage,
+    hook_id: Option<HookId>,
+    reject_reason: Option<HookRejectReason>,
+    elapsed: Option<Duration>,
+) {
+    let correlation_id = *next_correlation_id;
+    *next_correlation_id = next_correlation_id.saturating_add(1);
+    let elapsed_us = elapsed.map(|dur| u64::try_from(dur.as_micros()).unwrap_or(u64::MAX));
+    traces.push(HookTraceEvent {
+        ts_ms: system_time_ms(),
+        correlation_id,
+        class,
+        stage,
+        hook_id,
+        reject_reason,
+        elapsed_us,
+    });
+}
+
+fn dispatch_registered_hooks<E, F>(
+    hooks: &mut [HookEntry<F>],
+    event: &E,
+    class: HookClass,
+    max_runtime: Duration,
+    traces: &mut Vec<HookTraceEvent>,
+    next_correlation_id: &mut u64,
+) -> bool
+where
+    F: FnMut(&E) -> HookDisposition,
+{
+    for entry in hooks {
+        let started = Instant::now();
+        let outcome = catch_unwind(AssertUnwindSafe(|| (entry.callback)(event)));
+        let elapsed = started.elapsed();
+
+        push_hook_trace(
+            traces,
+            next_correlation_id,
+            class,
+            HookTraceStage::HookInvoked,
+            Some(entry.id),
+            None,
+            Some(elapsed),
+        );
+
+        if elapsed > max_runtime {
+            push_hook_trace(
+                traces,
+                next_correlation_id,
+                class,
+                HookTraceStage::PolicyRejected,
+                Some(entry.id),
+                Some(HookRejectReason::TimeoutExceeded),
+                Some(elapsed),
+            );
+            continue;
+        }
+
+        match outcome {
+            Ok(HookDisposition::Continue) => {}
+            Ok(HookDisposition::Consume) => {
+                push_hook_trace(
+                    traces,
+                    next_correlation_id,
+                    class,
+                    HookTraceStage::HookConsumed,
+                    Some(entry.id),
+                    None,
+                    Some(elapsed),
+                );
+                return true;
+            }
+            Ok(HookDisposition::Reject) => {
+                push_hook_trace(
+                    traces,
+                    next_correlation_id,
+                    class,
+                    HookTraceStage::PolicyRejected,
+                    Some(entry.id),
+                    Some(HookRejectReason::HookRejected),
+                    Some(elapsed),
+                );
+            }
+            Err(_) => {
+                push_hook_trace(
+                    traces,
+                    next_correlation_id,
+                    class,
+                    HookTraceStage::PolicyRejected,
+                    Some(entry.id),
+                    Some(HookRejectReason::HookPanicked),
+                    Some(elapsed),
+                );
+            }
+        }
+    }
+    false
+}
 
 /// Handler trait for ANSI escape sequence events.
 ///
@@ -151,6 +555,153 @@ pub trait AnsiHandler {
 /// Adapter that bridges vte's `Perform` trait to our `AnsiHandler` trait.
 struct VteAdapter<'a, H: AnsiHandler> {
     handler: &'a mut H,
+    hooks: &'a mut HookRegistry,
+    policy: HookPolicy,
+    capabilities: HookCapabilities,
+    traces: &'a mut Vec<HookTraceEvent>,
+    next_correlation_id: &'a mut u64,
+    budget: HookDispatchBudget,
+}
+
+impl<H: AnsiHandler> VteAdapter<'_, H> {
+    fn record_policy_rejection(&mut self, class: HookClass, reason: HookRejectReason) {
+        push_hook_trace(
+            self.traces,
+            self.next_correlation_id,
+            class,
+            HookTraceStage::PolicyRejected,
+            None,
+            Some(reason),
+            None,
+        );
+    }
+
+    fn record_fallback(&mut self, class: HookClass) {
+        push_hook_trace(
+            self.traces,
+            self.next_correlation_id,
+            class,
+            HookTraceStage::FallbackDispatched,
+            None,
+            None,
+            None,
+        );
+    }
+
+    fn dispatch_csi_hooks(&mut self, event: &CsiHookEvent) -> bool {
+        if self.hooks.csi.is_empty() {
+            return false;
+        }
+
+        if !self.capabilities.csi {
+            self.record_policy_rejection(HookClass::Csi, HookRejectReason::CapabilityDisabled);
+            return false;
+        }
+
+        if self.budget.csi_invocations >= self.policy.max_csi_invocations_per_parse {
+            self.record_policy_rejection(HookClass::Csi, HookRejectReason::QuotaExceeded);
+            return false;
+        }
+        self.budget.csi_invocations = self.budget.csi_invocations.saturating_add(1);
+
+        dispatch_registered_hooks(
+            &mut self.hooks.csi,
+            event,
+            HookClass::Csi,
+            self.policy.max_hook_runtime,
+            self.traces,
+            self.next_correlation_id,
+        )
+    }
+
+    fn dispatch_osc_hooks(&mut self, event: &OscHookEvent) -> bool {
+        if self.hooks.osc.is_empty() {
+            return false;
+        }
+
+        if !self.capabilities.osc {
+            self.record_policy_rejection(HookClass::Osc, HookRejectReason::CapabilityDisabled);
+            return false;
+        }
+
+        if self.budget.osc_invocations >= self.policy.max_osc_invocations_per_parse {
+            self.record_policy_rejection(HookClass::Osc, HookRejectReason::QuotaExceeded);
+            return false;
+        }
+        self.budget.osc_invocations = self.budget.osc_invocations.saturating_add(1);
+
+        dispatch_registered_hooks(
+            &mut self.hooks.osc,
+            event,
+            HookClass::Osc,
+            self.policy.max_hook_runtime,
+            self.traces,
+            self.next_correlation_id,
+        )
+    }
+
+    fn dispatch_esc_hooks(&mut self, event: &EscHookEvent) -> bool {
+        if self.hooks.esc.is_empty() {
+            return false;
+        }
+
+        if !self.capabilities.esc {
+            self.record_policy_rejection(HookClass::Esc, HookRejectReason::CapabilityDisabled);
+            return false;
+        }
+
+        if self.budget.esc_invocations >= self.policy.max_esc_invocations_per_parse {
+            self.record_policy_rejection(HookClass::Esc, HookRejectReason::QuotaExceeded);
+            return false;
+        }
+        self.budget.esc_invocations = self.budget.esc_invocations.saturating_add(1);
+
+        dispatch_registered_hooks(
+            &mut self.hooks.esc,
+            event,
+            HookClass::Esc,
+            self.policy.max_hook_runtime,
+            self.traces,
+            self.next_correlation_id,
+        )
+    }
+
+    fn dispatch_dcs_hooks(&mut self, event: &DcsHookEvent) -> bool {
+        if self.hooks.dcs.is_empty() {
+            return false;
+        }
+
+        if !self.capabilities.dcs {
+            self.record_policy_rejection(HookClass::Dcs, HookRejectReason::CapabilityDisabled);
+            return false;
+        }
+
+        if self.budget.dcs_invocations >= self.policy.max_dcs_invocations_per_parse {
+            self.record_policy_rejection(HookClass::Dcs, HookRejectReason::QuotaExceeded);
+            return false;
+        }
+
+        if matches!(event, DcsHookEvent::Put { .. })
+            && self.budget.dcs_bytes >= self.policy.max_dcs_bytes_per_parse
+        {
+            self.record_policy_rejection(HookClass::Dcs, HookRejectReason::QuotaExceeded);
+            return false;
+        }
+
+        self.budget.dcs_invocations = self.budget.dcs_invocations.saturating_add(1);
+        if matches!(event, DcsHookEvent::Put { .. }) {
+            self.budget.dcs_bytes = self.budget.dcs_bytes.saturating_add(1);
+        }
+
+        dispatch_registered_hooks(
+            &mut self.hooks.dcs,
+            event,
+            HookClass::Dcs,
+            self.policy.max_hook_runtime,
+            self.traces,
+            self.next_correlation_id,
+        )
+    }
 }
 
 impl<H: AnsiHandler> Perform for VteAdapter<'_, H> {
@@ -171,16 +722,48 @@ impl<H: AnsiHandler> Perform for VteAdapter<'_, H> {
                 subparams.first().copied().map(i64::from).unwrap_or(0)
             })
             .collect();
+        let intermediates = intermediates.to_vec();
+        let event = CsiHookEvent {
+            params: params.clone(),
+            intermediates: intermediates.clone(),
+            final_byte: c,
+        };
 
-        self.handler.csi_dispatch(&params, intermediates, c);
+        if self.dispatch_csi_hooks(&event) {
+            return;
+        }
+
+        self.record_fallback(HookClass::Csi);
+        self.handler.csi_dispatch(&params, &intermediates, c);
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        self.handler.osc_dispatch(params);
+        let params: Vec<Vec<u8>> = params.iter().map(|param| param.to_vec()).collect();
+        let event = OscHookEvent {
+            params: params.clone(),
+        };
+        if self.dispatch_osc_hooks(&event) {
+            return;
+        }
+
+        self.record_fallback(HookClass::Osc);
+        let refs: Vec<&[u8]> = params.iter().map(Vec::as_slice).collect();
+        self.handler.osc_dispatch(&refs);
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
-        self.handler.esc_dispatch(intermediates, byte as char);
+        let final_byte = char::from(byte);
+        let intermediates = intermediates.to_vec();
+        let event = EscHookEvent {
+            intermediates: intermediates.clone(),
+            final_byte,
+        };
+        if self.dispatch_esc_hooks(&event) {
+            return;
+        }
+
+        self.record_fallback(HookClass::Esc);
+        self.handler.esc_dispatch(&intermediates, final_byte);
     }
 
     fn hook(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, c: char) {
@@ -188,14 +771,37 @@ impl<H: AnsiHandler> Perform for VteAdapter<'_, H> {
             .iter()
             .map(|subparams| subparams.first().copied().map(i64::from).unwrap_or(0))
             .collect();
-        self.handler.hook(&params, intermediates, c);
+        let intermediates = intermediates.to_vec();
+        let event = DcsHookEvent::Hook {
+            params: params.clone(),
+            intermediates: intermediates.clone(),
+            final_byte: c,
+        };
+        if self.dispatch_dcs_hooks(&event) {
+            return;
+        }
+
+        self.record_fallback(HookClass::Dcs);
+        self.handler.hook(&params, &intermediates, c);
     }
 
     fn put(&mut self, byte: u8) {
+        let event = DcsHookEvent::Put { byte };
+        if self.dispatch_dcs_hooks(&event) {
+            return;
+        }
+
+        self.record_fallback(HookClass::Dcs);
         self.handler.put(byte);
     }
 
     fn unhook(&mut self) {
+        let event = DcsHookEvent::Unhook;
+        if self.dispatch_dcs_hooks(&event) {
+            return;
+        }
+
+        self.record_fallback(HookClass::Dcs);
         self.handler.unhook();
     }
 }
@@ -224,6 +830,11 @@ impl<H: AnsiHandler> Perform for VteAdapter<'_, H> {
 /// ```
 pub struct AnsiParser {
     inner: Parser,
+    hooks: HookRegistry,
+    hook_policy: HookPolicy,
+    hook_capabilities: HookCapabilities,
+    hook_trace: Vec<HookTraceEvent>,
+    next_correlation_id: u64,
 }
 
 impl Default for AnsiParser {
@@ -238,6 +849,11 @@ impl AnsiParser {
     pub fn new() -> Self {
         Self {
             inner: Parser::new(),
+            hooks: HookRegistry::default(),
+            hook_policy: HookPolicy::default(),
+            hook_capabilities: HookCapabilities::default(),
+            hook_trace: Vec::new(),
+            next_correlation_id: 1,
         }
     }
 
@@ -246,8 +862,101 @@ impl AnsiParser {
     /// This method can be called repeatedly with chunks of data. The parser
     /// maintains state between calls to handle sequences that span chunks.
     pub fn parse<H: AnsiHandler>(&mut self, data: &[u8], handler: &mut H) {
-        let mut adapter = VteAdapter { handler };
+        let mut adapter = VteAdapter {
+            handler,
+            hooks: &mut self.hooks,
+            policy: self.hook_policy,
+            capabilities: self.hook_capabilities,
+            traces: &mut self.hook_trace,
+            next_correlation_id: &mut self.next_correlation_id,
+            budget: HookDispatchBudget::default(),
+        };
         self.inner.advance(&mut adapter, data);
+    }
+
+    /// Register a deterministic CSI hook callback.
+    ///
+    /// Hooks are invoked in registration order.
+    pub fn register_csi_hook<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&CsiHookEvent) -> HookDisposition + 'static,
+    {
+        self.hooks.register_csi(callback)
+    }
+
+    /// Register a deterministic OSC hook callback.
+    ///
+    /// Hooks are invoked in registration order.
+    pub fn register_osc_hook<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&OscHookEvent) -> HookDisposition + 'static,
+    {
+        self.hooks.register_osc(callback)
+    }
+
+    /// Register a deterministic ESC hook callback.
+    ///
+    /// Hooks are invoked in registration order.
+    pub fn register_esc_hook<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&EscHookEvent) -> HookDisposition + 'static,
+    {
+        self.hooks.register_esc(callback)
+    }
+
+    /// Register a deterministic DCS hook callback.
+    ///
+    /// Hooks are invoked in registration order.
+    pub fn register_dcs_hook<F>(&mut self, callback: F) -> HookId
+    where
+        F: FnMut(&DcsHookEvent) -> HookDisposition + 'static,
+    {
+        self.hooks.register_dcs(callback)
+    }
+
+    /// Deregister a previously registered hook.
+    ///
+    /// Returns `true` when a hook was removed.
+    pub fn deregister_hook(&mut self, id: HookId) -> bool {
+        self.hooks.deregister(id)
+    }
+
+    /// Remove all registered parser hooks.
+    pub fn clear_hooks(&mut self) {
+        self.hooks.clear();
+    }
+
+    /// Set parse-time hook policy controls.
+    pub fn set_hook_policy(&mut self, policy: HookPolicy) {
+        self.hook_policy = policy;
+    }
+
+    /// Read the active parse-time hook policy.
+    #[must_use]
+    pub const fn hook_policy(&self) -> HookPolicy {
+        self.hook_policy
+    }
+
+    /// Set hook capability gates.
+    pub fn set_hook_capabilities(&mut self, capabilities: HookCapabilities) {
+        self.hook_capabilities = capabilities;
+    }
+
+    /// Read active hook capability gates.
+    #[must_use]
+    pub const fn hook_capabilities(&self) -> HookCapabilities {
+        self.hook_capabilities
+    }
+
+    /// Borrow the accumulated structured hook trace log.
+    #[must_use]
+    pub fn hook_trace(&self) -> &[HookTraceEvent] {
+        &self.hook_trace
+    }
+
+    /// Drain and return structured hook trace records.
+    pub fn drain_hook_trace(&mut self) -> Vec<HookTraceEvent> {
+        std::mem::take(&mut self.hook_trace)
     }
 
     /// Reset the parser to initial state.
@@ -577,6 +1286,8 @@ impl Iterator for SgrIterator<'_> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::thread;
 
     /// Test handler that records all events.
     #[derive(Default)]
@@ -789,6 +1500,150 @@ mod tests {
         assert_eq!(csi_calls[0].0, vec![5]);
     }
 
+    #[test]
+    fn csi_hook_registration_is_ordered_and_deregisterable() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+        let order: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let order_first = Rc::clone(&order);
+        parser.register_csi_hook(move |_event| {
+            order_first.borrow_mut().push("first");
+            HookDisposition::Continue
+        });
+
+        let order_second = Rc::clone(&order);
+        let consumer_id = parser.register_csi_hook(move |_event| {
+            order_second.borrow_mut().push("second");
+            HookDisposition::Consume
+        });
+
+        parser.parse(b"\x1b[5A", &mut handler);
+
+        assert_eq!(*order.borrow(), vec!["first", "second"]);
+        assert!(handler.csi_calls.borrow().is_empty());
+        assert!(
+            parser
+                .hook_trace()
+                .iter()
+                .any(|event| event.class == HookClass::Csi
+                    && event.stage == HookTraceStage::HookConsumed)
+        );
+
+        assert!(parser.deregister_hook(consumer_id));
+        parser.drain_hook_trace();
+        parser.parse(b"\x1b[6A", &mut handler);
+        assert_eq!(handler.csi_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn capability_gating_skips_hooks_and_records_rejection() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+        let calls = Rc::new(RefCell::new(0_u32));
+        let calls_for_hook = Rc::clone(&calls);
+
+        parser.register_csi_hook(move |_event| {
+            *calls_for_hook.borrow_mut() += 1;
+            HookDisposition::Continue
+        });
+
+        parser.set_hook_capabilities(HookCapabilities {
+            csi: false,
+            ..HookCapabilities::default()
+        });
+
+        parser.parse(b"\x1b[1A", &mut handler);
+
+        assert_eq!(*calls.borrow(), 0);
+        assert_eq!(handler.csi_calls.borrow().len(), 1);
+
+        let trace = parser.drain_hook_trace();
+        assert!(trace.iter().any(|event| {
+            event.class == HookClass::Csi
+                && event.stage == HookTraceStage::PolicyRejected
+                && event.reject_reason == Some(HookRejectReason::CapabilityDisabled)
+        }));
+        assert!(trace.iter().any(|event| {
+            event.class == HookClass::Csi && event.stage == HookTraceStage::FallbackDispatched
+        }));
+    }
+
+    #[test]
+    fn csi_hook_quota_is_enforced_per_parse_call() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+        let calls = Rc::new(RefCell::new(0_u32));
+        let calls_for_hook = Rc::clone(&calls);
+
+        parser.set_hook_policy(HookPolicy {
+            max_csi_invocations_per_parse: 1,
+            ..HookPolicy::default()
+        });
+
+        parser.register_csi_hook(move |_event| {
+            *calls_for_hook.borrow_mut() += 1;
+            HookDisposition::Continue
+        });
+
+        parser.parse(b"\x1b[1A\x1b[2B", &mut handler);
+
+        assert_eq!(*calls.borrow(), 1);
+        assert_eq!(handler.csi_calls.borrow().len(), 2);
+
+        let trace = parser.drain_hook_trace();
+        assert!(trace.iter().any(|event| {
+            event.class == HookClass::Csi
+                && event.stage == HookTraceStage::PolicyRejected
+                && event.reject_reason == Some(HookRejectReason::QuotaExceeded)
+        }));
+    }
+
+    #[test]
+    fn hook_panic_is_isolated_and_falls_back_to_handler() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+
+        parser.register_csi_hook(|_event| -> HookDisposition {
+            panic!("panic from hook should be isolated");
+        });
+
+        parser.parse(b"\x1b[3A", &mut handler);
+
+        assert_eq!(handler.csi_calls.borrow().len(), 1);
+        let trace = parser.drain_hook_trace();
+        assert!(trace.iter().any(|event| {
+            event.class == HookClass::Csi
+                && event.stage == HookTraceStage::PolicyRejected
+                && event.reject_reason == Some(HookRejectReason::HookPanicked)
+        }));
+    }
+
+    #[test]
+    fn hook_timeout_isolated_and_falls_back_to_handler() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+
+        parser.set_hook_policy(HookPolicy {
+            max_hook_runtime: Duration::from_millis(1),
+            ..HookPolicy::default()
+        });
+        parser.register_csi_hook(|_event| {
+            thread::sleep(Duration::from_millis(3));
+            HookDisposition::Consume
+        });
+
+        parser.parse(b"\x1b[4A", &mut handler);
+
+        assert_eq!(handler.csi_calls.borrow().len(), 1);
+        let trace = parser.drain_hook_trace();
+        assert!(trace.iter().any(|event| {
+            event.class == HookClass::Csi
+                && event.stage == HookTraceStage::PolicyRejected
+                && event.reject_reason == Some(HookRejectReason::TimeoutExceeded)
+        }));
+    }
+
     // ── SGR parsing tests ─────────────────────────────────────────────
 
     #[test]
@@ -934,6 +1789,37 @@ mod tests {
         assert_eq!(handler.hook_calls.len(), 1);
         assert_eq!(handler.hook_calls[0].0, vec![1, 2]);
         assert_eq!(handler.hook_calls[0].2, 'q');
+    }
+
+    #[test]
+    fn dcs_hook_byte_quota_enforced_with_replay_trace() {
+        let mut parser = AnsiParser::new();
+        let mut handler = DcsTestHandler::default();
+        let dcs_put_hook_calls = Rc::new(RefCell::new(0_usize));
+        let dcs_put_hook_calls_for_hook = Rc::clone(&dcs_put_hook_calls);
+
+        parser.set_hook_policy(HookPolicy {
+            max_dcs_bytes_per_parse: 2,
+            ..HookPolicy::default()
+        });
+        parser.register_dcs_hook(move |event| {
+            if matches!(event, DcsHookEvent::Put { .. }) {
+                *dcs_put_hook_calls_for_hook.borrow_mut() += 1;
+            }
+            HookDisposition::Continue
+        });
+
+        parser.parse(b"\x1bPqABCDE\x1b\\", &mut handler);
+
+        assert_eq!(*dcs_put_hook_calls.borrow(), 2);
+        assert_eq!(handler.put_bytes, b"ABCDE".to_vec());
+
+        let trace = parser.drain_hook_trace();
+        assert!(trace.iter().any(|event| {
+            event.class == HookClass::Dcs
+                && event.stage == HookTraceStage::PolicyRejected
+                && event.reject_reason == Some(HookRejectReason::QuotaExceeded)
+        }));
     }
 
     // ── ESC sequence variant tests ──────────────────────────────────────
@@ -1488,6 +2374,24 @@ mod tests {
         let parser = AnsiParser::new();
         let debug = format!("{parser:?}");
         assert!(debug.contains("AnsiParser"));
+    }
+
+    #[test]
+    fn hook_trace_correlation_ids_are_monotonic() {
+        let mut parser = AnsiParser::new();
+        let mut handler = TestHandler::default();
+
+        parser.register_esc_hook(|_event| HookDisposition::Continue);
+        parser.parse(b"\x1b7\x1b8", &mut handler);
+
+        let trace = parser.drain_hook_trace();
+        assert!(!trace.is_empty());
+        assert!(
+            trace
+                .windows(2)
+                .all(|window| { window[0].correlation_id < window[1].correlation_id })
+        );
+        assert!(trace.iter().all(|event| event.ts_ms > 0));
     }
 
     #[test]

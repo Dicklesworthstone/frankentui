@@ -7,6 +7,7 @@
 //! - draining terminal query replies,
 //! - snapshotting incremental patches.
 
+use crate::cell::{HyperlinkId, HyperlinkRegistry};
 use crate::{
     Action, AnsiModes, Cursor, Grid, GridDiff, Modes, Parser, Patch, ReplyContext, ReplyEngine,
     SavedCursor, Scrollback, WidthPolicy, translate_charset,
@@ -49,6 +50,8 @@ pub struct TerminalEngine {
     reply_engine: ReplyEngine,
     pending_replies: Vec<Vec<u8>>,
     last_printed: Option<char>,
+    hyperlink_registry: HyperlinkRegistry,
+    active_hyperlink: HyperlinkId,
     cols: u16,
     rows: u16,
     scrollback_capacity: usize,
@@ -87,6 +90,8 @@ impl TerminalEngine {
             reply_engine: config.reply_engine,
             pending_replies: Vec::new(),
             last_printed: None,
+            hyperlink_registry: HyperlinkRegistry::new(),
+            active_hyperlink: 0,
             cols,
             rows,
             scrollback_capacity: config.scrollback_capacity,
@@ -184,6 +189,12 @@ impl TerminalEngine {
     #[must_use]
     pub fn width_policy(&self) -> WidthPolicy {
         self.width_policy
+    }
+
+    /// Resolve an OSC-8 hyperlink URI by ID.
+    #[must_use]
+    pub fn hyperlink_uri(&self, id: HyperlinkId) -> Option<&str> {
+        self.hyperlink_registry.get(id)
     }
 
     fn maybe_enqueue_reply_for_action(&mut self, action: &Action) {
@@ -401,8 +412,14 @@ impl TerminalEngine {
                 self.scrollback = Scrollback::new(self.scrollback_capacity);
                 self.modes.reset();
                 self.last_printed = None;
+                self.hyperlink_registry.clear();
+                self.active_hyperlink = 0;
             }
-            Action::SetTitle(_) | Action::HyperlinkStart(_) | Action::HyperlinkEnd => {}
+            Action::SetTitle(_) => {}
+            Action::HyperlinkStart(uri) => {
+                self.active_hyperlink = self.hyperlink_registry.intern(&uri);
+            }
+            Action::HyperlinkEnd => self.active_hyperlink = 0,
             Action::SetTabStop => self.cursor.set_tab_stop(),
             Action::ClearTabStop(mode) => match mode {
                 0 => self.cursor.clear_tab_stop(),
@@ -441,6 +458,7 @@ impl TerminalEngine {
                 self.cursor.set_scroll_region(0, self.rows, self.rows);
                 self.cursor.pending_wrap = false;
                 self.cursor.reset_charset();
+                self.active_hyperlink = 0;
             }
             Action::EraseScrollback => self.scrollback.clear(),
             Action::FocusIn | Action::FocusOut | Action::PasteStart | Action::PasteEnd => {}
@@ -538,6 +556,14 @@ impl TerminalEngine {
         );
         if written == 0 {
             return;
+        }
+        if let Some(cell) = self.grid.cell_mut(self.cursor.row, self.cursor.col) {
+            cell.hyperlink = self.active_hyperlink;
+        }
+        if written == 2
+            && let Some(cell) = self.grid.cell_mut(self.cursor.row, self.cursor.col + 1)
+        {
+            cell.hyperlink = self.active_hyperlink;
         }
 
         if self.cursor.col + u16::from(written) >= self.cols {
@@ -671,6 +697,78 @@ mod tests {
         );
         assert!(engine.cursor().row < 2);
         assert!(engine.cursor().col < 2);
+    }
+
+    #[test]
+    fn osc8_hyperlink_state_tags_cells_and_resolves_uri() {
+        let mut engine = TerminalEngine::new(16, 1);
+        engine.feed_bytes(b"\x1b]8;;https://explicit.test\x07AB\x1b]8;;\x07C");
+
+        let first = engine
+            .grid()
+            .cell(0, 0)
+            .expect("cell should exist")
+            .hyperlink;
+        let second = engine
+            .grid()
+            .cell(0, 1)
+            .expect("cell should exist")
+            .hyperlink;
+        let third = engine
+            .grid()
+            .cell(0, 2)
+            .expect("cell should exist")
+            .hyperlink;
+        assert_ne!(first, 0);
+        assert_eq!(first, second);
+        assert_eq!(third, 0);
+        assert_eq!(engine.hyperlink_uri(first), Some("https://explicit.test"));
+    }
+
+    #[test]
+    fn full_reset_clears_hyperlink_registry_and_active_state() {
+        let mut engine = TerminalEngine::new(8, 1);
+        engine.feed_bytes(b"\x1b]8;;https://reset.test\x07A");
+
+        let link_id = engine
+            .grid()
+            .cell(0, 0)
+            .expect("cell should exist")
+            .hyperlink;
+        assert_ne!(link_id, 0);
+        assert_eq!(engine.hyperlink_uri(link_id), Some("https://reset.test"));
+
+        engine.feed_bytes(b"\x1bc");
+        engine.feed_bytes(b"B");
+
+        let cell = engine.grid().cell(0, 0).expect("cell should exist");
+        assert_eq!(cell.content(), 'B');
+        assert_eq!(cell.hyperlink, 0);
+        assert_eq!(engine.hyperlink_uri(link_id), None);
+    }
+
+    #[test]
+    fn hyperlink_metadata_survives_resize() {
+        let mut engine = TerminalEngine::new(4, 1);
+        engine.feed_bytes(b"\x1b]8;;https://resize.test\x07ABCD\x1b]8;;\x07");
+
+        let link_id = engine
+            .grid()
+            .cell(0, 0)
+            .expect("cell should exist")
+            .hyperlink;
+        assert_ne!(link_id, 0);
+        engine.resize(6, 1);
+
+        assert_eq!(
+            engine
+                .grid()
+                .cell(0, 0)
+                .expect("cell should exist")
+                .hyperlink,
+            link_id
+        );
+        assert_eq!(engine.hyperlink_uri(link_id), Some("https://resize.test"));
     }
 
     // ── Combining mark / grapheme cluster integration ──────────────

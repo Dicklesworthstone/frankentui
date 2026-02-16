@@ -25,7 +25,7 @@ use crate::{
     FRANKENTERM_JS_EVENT_TYPES, FRANKENTERM_JS_PROTOCOL_VERSION, FRANKENTERM_JS_PUBLIC_METHODS,
     FRANKENTERM_JS_VERSIONING_POLICY,
 };
-use frankenterm_core::{ScrollbackWindow, TerminalEngine};
+use frankenterm_core::{HyperlinkId, ScrollbackWindow, TerminalEngine};
 use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -1450,12 +1450,21 @@ impl FrankenTermWeb {
         self.link_id_at_xy(x, y)
     }
 
-    /// Return plaintext auto-detected URL at a given grid cell, if present.
+    /// Return resolved hyperlink URL at a given cell, if present.
+    ///
+    /// Explicit OSC-8 links take precedence over auto-detected plaintext URLs.
     #[wasm_bindgen(js_name = linkUrlAt)]
     pub fn link_url_at(&self, x: u16, y: u16) -> Option<String> {
         let offset = self.cell_offset_at_xy(x, y)?;
-        let id = self.auto_link_ids.get(offset).copied().unwrap_or(0);
-        self.auto_link_urls.get(&id).cloned()
+        let explicit_id = self
+            .shadow_cells
+            .get(offset)
+            .map_or(0, |cell| cell_attr_link_id(cell.attrs));
+        if explicit_id != 0 {
+            return self.explicit_link_url(explicit_id);
+        }
+        let auto_id = self.auto_link_ids.get(offset).copied().unwrap_or(0);
+        self.auto_link_urls.get(&auto_id).cloned()
     }
 
     /// Drain queued hyperlink click events detected from normalized mouse input.
@@ -2241,9 +2250,23 @@ impl FrankenTermWeb {
             .collect()
     }
 
+    fn explicit_link_url(&self, link_id: u32) -> Option<String> {
+        let core_id = HyperlinkId::try_from(link_id).ok()?;
+        self.engine
+            .as_ref()
+            .and_then(|engine| engine.hyperlink_uri(core_id))
+            .map(str::to_owned)
+    }
+
+    fn resolve_link_target(&self, link_id: u32) -> (Option<String>, &'static str) {
+        if let Some(url) = self.auto_link_urls.get(&link_id).cloned() {
+            return (Some(url), "auto");
+        }
+        (self.explicit_link_url(link_id), "osc8")
+    }
+
     fn resolve_link_click(&self, click: LinkClickEvent) -> ResolvedLinkClick {
-        let url = self.auto_link_urls.get(&click.link_id).cloned();
-        let source = if url.is_some() { "auto" } else { "osc8" };
+        let (url, source) = self.resolve_link_target(click.link_id);
         // OSC-8 links without URL metadata in this host path are denied explicitly.
         let open_decision = if source == "osc8" && url.is_none() {
             LinkOpenDecision::deny("osc8_url_unavailable")
@@ -4675,6 +4698,64 @@ mod tests {
         term.shadow_cells[0].attrs = (77u32 << 8) | 0x1;
         term.recompute_auto_links();
         assert_eq!(term.link_at(0, 0), 77);
+    }
+
+    #[test]
+    fn feed_preserves_explicit_osc8_url_for_lookup_and_click_policy() {
+        let text = "https://auto.test/path";
+        let mut term = FrankenTermWeb::new();
+        term.resize(text.chars().count() as u16, 1);
+        let payload = format!("\x1b]8;;https://explicit.test/docs\x07{text}\x1b]8;;\x07");
+        term.feed(payload.as_bytes());
+
+        let link_id = term.link_at(0, 0);
+        assert_ne!(link_id, 0);
+        assert!(link_id < AUTO_LINK_ID_BASE);
+        assert_eq!(
+            term.link_url_at(0, 0),
+            Some("https://explicit.test/docs".to_string())
+        );
+        assert_eq!(term.auto_link_ids[0], 0);
+
+        assert!(
+            term.queue_input_event(InputEvent::Mouse(MouseInput {
+                phase: MousePhase::Down,
+                button: Some(MouseButton::Left),
+                x: 0,
+                y: 0,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+
+        let drained = term.drain_link_clicks();
+        assert_eq!(drained.length(), 1);
+        let event = drained.get(0);
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("source"))
+                .expect("link click event should expose source")
+                .as_string()
+                .as_deref(),
+            Some("osc8")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("url"))
+                .expect("link click event should expose url")
+                .as_string()
+                .as_deref(),
+            Some("https://explicit.test/docs")
+        );
+        assert_eq!(
+            Reflect::get(&event, &JsValue::from_str("openAllowed"))
+                .expect("link click event should expose openAllowed")
+                .as_bool(),
+            Some(true)
+        );
+        assert!(
+            Reflect::get(&event, &JsValue::from_str("openReason"))
+                .expect("link click event should expose openReason")
+                .is_null()
+        );
     }
 
     #[test]

@@ -178,22 +178,12 @@ fn assert_frame_drop_invariant<F>(
         .collect();
 
     // Run with drops
-    let drop_checksums = run_frame_sequence(
-        width,
-        height,
-        frame_count,
-        drop_indices,
-        frame_fn.clone(),
-    );
+    let drop_checksums =
+        run_frame_sequence(width, height, frame_count, drop_indices, frame_fn.clone());
 
     // Run baseline (only present the same frames, in order)
-    let baseline_checksums = run_baseline_sequence(
-        width,
-        height,
-        frame_count,
-        &presented_indices,
-        frame_fn,
-    );
+    let baseline_checksums =
+        run_baseline_sequence(width, height, frame_count, &presented_indices, frame_fn);
 
     // Buffer checksums should match: same render function at same frame index
     // produces the same buffer regardless of what was presented before.
@@ -249,8 +239,7 @@ fn render_list_frame(frame_idx: usize, frame: &mut Frame) {
     let items: Vec<ListItem> = (0..10)
         .map(|i| ListItem::new(format!("Item {i} (frame {frame_idx})")))
         .collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL));
     let mut state = ListState::default();
     state.select(Some(frame_idx % 10));
     StatefulWidget::render(&list, area, frame, &mut state);
@@ -274,7 +263,12 @@ fn render_multi_widget_frame(frame_idx: usize, frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     // Top half: paragraph
     let top = Rect::new(0, 0, area.width, area.height / 2);
-    let bottom = Rect::new(0, area.height / 2, area.width, area.height - area.height / 2);
+    let bottom = Rect::new(
+        0,
+        area.height / 2,
+        area.width,
+        area.height - area.height / 2,
+    );
 
     let text = Text::raw(format!("Frame {frame_idx} top"));
     Paragraph::new(text).render(top, frame);
@@ -291,7 +285,9 @@ fn render_multi_widget_frame(frame_idx: usize, frame: &mut Frame) {
 fn single_frame_drop_paragraph() {
     assert_frame_drop_invariant(
         "single_drop_paragraph",
-        W, H, 5,
+        W,
+        H,
+        5,
         &[2], // Drop frame 2
         render_paragraph_frame,
     );
@@ -299,19 +295,16 @@ fn single_frame_drop_paragraph() {
 
 #[test]
 fn single_frame_drop_progress() {
-    assert_frame_drop_invariant(
-        "single_drop_progress",
-        W, H, 5,
-        &[2],
-        render_progress_frame,
-    );
+    assert_frame_drop_invariant("single_drop_progress", W, H, 5, &[2], render_progress_frame);
 }
 
 #[test]
 fn single_frame_drop_sparkline() {
     assert_frame_drop_invariant(
         "single_drop_sparkline",
-        W, H, 5,
+        W,
+        H,
+        5,
         &[2],
         render_sparkline_frame,
     );
@@ -319,19 +312,16 @@ fn single_frame_drop_sparkline() {
 
 #[test]
 fn single_frame_drop_list() {
-    assert_frame_drop_invariant(
-        "single_drop_list",
-        W, H, 5,
-        &[2],
-        render_list_frame,
-    );
+    assert_frame_drop_invariant("single_drop_list", W, H, 5, &[2], render_list_frame);
 }
 
 #[test]
 fn single_frame_drop_block_paragraph() {
     assert_frame_drop_invariant(
         "single_drop_block_paragraph",
-        W, H, 5,
+        W,
+        H,
+        5,
         &[2],
         render_block_paragraph_frame,
     );
@@ -340,22 +330,12 @@ fn single_frame_drop_block_paragraph() {
 #[test]
 fn single_frame_drop_first_frame() {
     // Drop the very first frame — writer has no prev_buffer yet.
-    assert_frame_drop_invariant(
-        "single_drop_first",
-        W, H, 5,
-        &[0],
-        render_paragraph_frame,
-    );
+    assert_frame_drop_invariant("single_drop_first", W, H, 5, &[0], render_paragraph_frame);
 }
 
 #[test]
 fn single_frame_drop_last_frame() {
-    assert_frame_drop_invariant(
-        "single_drop_last",
-        W, H, 5,
-        &[4],
-        render_paragraph_frame,
-    );
+    assert_frame_drop_invariant("single_drop_last", W, H, 5, &[4], render_paragraph_frame);
 }
 
 // ===========================================================================
@@ -366,7 +346,9 @@ fn single_frame_drop_last_frame() {
 fn burst_drop_5_consecutive_paragraph() {
     assert_frame_drop_invariant(
         "burst_5_paragraph",
-        W, H, 12,
+        W,
+        H,
+        12,
         &[3, 4, 5, 6, 7], // Drop 5 consecutive
         render_paragraph_frame,
     );
@@ -376,7 +358,9 @@ fn burst_drop_5_consecutive_paragraph() {
 fn burst_drop_5_consecutive_list() {
     assert_frame_drop_invariant(
         "burst_5_list",
-        W, H, 12,
+        W,
+        H,
+        12,
         &[3, 4, 5, 6, 7],
         render_list_frame,
     );
@@ -386,7 +370,9 @@ fn burst_drop_5_consecutive_list() {
 fn burst_drop_5_consecutive_multi_widget() {
     assert_frame_drop_invariant(
         "burst_5_multi_widget",
-        W, H, 12,
+        W,
+        H,
+        12,
         &[3, 4, 5, 6, 7],
         render_multi_widget_frame,
     );
@@ -396,7 +382,9 @@ fn burst_drop_5_consecutive_multi_widget() {
 fn burst_drop_from_start() {
     assert_frame_drop_invariant(
         "burst_from_start",
-        W, H, 10,
+        W,
+        H,
+        10,
         &[0, 1, 2, 3, 4],
         render_paragraph_frame,
     );
@@ -406,7 +394,9 @@ fn burst_drop_from_start() {
 fn burst_drop_at_end() {
     assert_frame_drop_invariant(
         "burst_at_end",
-        W, H, 10,
+        W,
+        H,
+        10,
         &[5, 6, 7, 8, 9],
         render_sparkline_frame,
     );
@@ -421,7 +411,9 @@ fn periodic_drop_every_3rd_paragraph() {
     let drops: Vec<usize> = (0..30).filter(|i| i % 3 == 2).collect();
     assert_frame_drop_invariant(
         "periodic_every3_paragraph",
-        W, H, 30,
+        W,
+        H,
+        30,
         &drops,
         render_paragraph_frame,
     );
@@ -430,12 +422,7 @@ fn periodic_drop_every_3rd_paragraph() {
 #[test]
 fn periodic_drop_every_3rd_list() {
     let drops: Vec<usize> = (0..30).filter(|i| i % 3 == 2).collect();
-    assert_frame_drop_invariant(
-        "periodic_every3_list",
-        W, H, 30,
-        &drops,
-        render_list_frame,
-    );
+    assert_frame_drop_invariant("periodic_every3_list", W, H, 30, &drops, render_list_frame);
 }
 
 #[test]
@@ -444,7 +431,9 @@ fn periodic_drop_every_2nd() {
     let drops: Vec<usize> = (0..20).filter(|i| i % 2 == 1).collect();
     assert_frame_drop_invariant(
         "periodic_every2_paragraph",
-        W, H, 20,
+        W,
+        H,
+        20,
         &drops,
         render_paragraph_frame,
     );
@@ -455,7 +444,9 @@ fn periodic_drop_every_2nd_progress() {
     let drops: Vec<usize> = (0..20).filter(|i| i % 2 == 1).collect();
     assert_frame_drop_invariant(
         "periodic_every2_progress",
-        W, H, 20,
+        W,
+        H,
+        20,
         &drops,
         render_progress_frame,
     );
@@ -466,7 +457,9 @@ fn periodic_drop_every_4th_sparkline() {
     let drops: Vec<usize> = (0..40).filter(|i| i % 4 == 3).collect();
     assert_frame_drop_invariant(
         "periodic_every4_sparkline",
-        W, H, 40,
+        W,
+        H,
+        40,
         &drops,
         render_sparkline_frame,
     );
@@ -484,39 +477,33 @@ fn periodic_drop_every_4th_sparkline() {
 fn layout_delay_single_drop() {
     // Simulate a frame where layout is "expensive" — the frame is complex
     // and gets dropped, but next frame recovers.
-    assert_frame_drop_invariant(
-        "layout_delay_single",
-        60, 20, 8,
-        &[3],
-        |idx, frame| {
-            let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-            // Alternating simple/complex frames
-            if idx % 2 == 0 {
-                Paragraph::new(Text::raw(format!("Simple frame {idx}")))
-                    .render(area, frame);
-            } else {
-                let block = Block::default()
-                    .title("Complex")
-                    .borders(Borders::ALL);
-                let inner = block.inner(area);
-                block.render(area, frame);
-                let items: Vec<ListItem> = (0..15)
-                    .map(|i| ListItem::new(format!("Row {i} f{idx}")))
-                    .collect();
-                let list = List::new(items);
-                let mut state = ListState::default();
-                state.select(Some(idx % 15));
-                StatefulWidget::render(&list, inner, frame, &mut state);
-            }
-        },
-    );
+    assert_frame_drop_invariant("layout_delay_single", 60, 20, 8, &[3], |idx, frame| {
+        let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
+        // Alternating simple/complex frames
+        if idx % 2 == 0 {
+            Paragraph::new(Text::raw(format!("Simple frame {idx}"))).render(area, frame);
+        } else {
+            let block = Block::default().title("Complex").borders(Borders::ALL);
+            let inner = block.inner(area);
+            block.render(area, frame);
+            let items: Vec<ListItem> = (0..15)
+                .map(|i| ListItem::new(format!("Row {i} f{idx}")))
+                .collect();
+            let list = List::new(items);
+            let mut state = ListState::default();
+            state.select(Some(idx % 15));
+            StatefulWidget::render(&list, inner, frame, &mut state);
+        }
+    });
 }
 
 #[test]
 fn layout_delay_burst_drops() {
     assert_frame_drop_invariant(
         "layout_delay_burst",
-        60, 20, 12,
+        60,
+        20,
+        12,
         &[4, 5, 6],
         |idx, frame| {
             let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
@@ -541,19 +528,17 @@ fn layout_delay_burst_drops() {
 
 #[test]
 fn diff_delay_full_content_change() {
-    assert_frame_drop_invariant(
-        "diff_delay_full_change",
-        W, H, 10,
-        &[3, 4],
-        |idx, frame| {
-            let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-            // Each frame has completely different content (worst-case for diff)
-            let fill_char = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'][idx % 10];
-            let line = format!("{}", fill_char).repeat(area.width as usize);
-            let text: String = (0..area.height).map(|_| line.clone()).collect::<Vec<_>>().join("\n");
-            Paragraph::new(Text::raw(text)).render(area, frame);
-        },
-    );
+    assert_frame_drop_invariant("diff_delay_full_change", W, H, 10, &[3, 4], |idx, frame| {
+        let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
+        // Each frame has completely different content (worst-case for diff)
+        let fill_char = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'][idx % 10];
+        let line = format!("{}", fill_char).repeat(area.width as usize);
+        let text: String = (0..area.height)
+            .map(|_| line.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Paragraph::new(Text::raw(text)).render(area, frame);
+    });
 }
 
 #[test]
@@ -561,7 +546,9 @@ fn diff_delay_alternating_content() {
     // Alternate between two very different layouts — stresses diff after drop.
     assert_frame_drop_invariant(
         "diff_delay_alternating",
-        W, H, 10,
+        W,
+        H,
+        10,
         &[2, 4, 6],
         |idx, frame| {
             let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
@@ -645,7 +632,9 @@ fn no_accumulated_artifacts_after_10_drops() {
 fn drop_all_except_last() {
     assert_frame_drop_invariant(
         "drop_all_except_last",
-        W, H, 8,
+        W,
+        H,
+        8,
         &[0, 1, 2, 3, 4, 5, 6], // Only frame 7 presented
         render_paragraph_frame,
     );
@@ -655,7 +644,9 @@ fn drop_all_except_last() {
 fn drop_all_except_first() {
     assert_frame_drop_invariant(
         "drop_all_except_first",
-        W, H, 8,
+        W,
+        H,
+        8,
         &[1, 2, 3, 4, 5, 6, 7], // Only frame 0 presented
         render_paragraph_frame,
     );
@@ -664,51 +655,33 @@ fn drop_all_except_first() {
 #[test]
 fn drop_none() {
     // No drops — should pass trivially.
-    assert_frame_drop_invariant(
-        "drop_none",
-        W, H, 5,
-        &[],
-        render_paragraph_frame,
-    );
+    assert_frame_drop_invariant("drop_none", W, H, 5, &[], render_paragraph_frame);
 }
 
 #[test]
 fn single_frame_no_drop() {
-    assert_frame_drop_invariant(
-        "single_frame_no_drop",
-        W, H, 1,
-        &[],
-        render_paragraph_frame,
-    );
+    assert_frame_drop_invariant("single_frame_no_drop", W, H, 1, &[], render_paragraph_frame);
 }
 
 #[test]
 fn empty_buffer_frame_drop() {
-    assert_frame_drop_invariant(
-        "empty_buffer_drop",
-        W, H, 5,
-        &[1, 3],
-        |_idx, _frame| {
-            // Render nothing — empty buffer
-        },
-    );
+    assert_frame_drop_invariant("empty_buffer_drop", W, H, 5, &[1, 3], |_idx, _frame| {
+        // Render nothing — empty buffer
+    });
 }
 
 #[test]
 fn tiny_buffer_frame_drop() {
-    assert_frame_drop_invariant(
-        "tiny_buffer_drop",
-        4, 2, 5,
-        &[2],
-        render_paragraph_frame,
-    );
+    assert_frame_drop_invariant("tiny_buffer_drop", 4, 2, 5, &[2], render_paragraph_frame);
 }
 
 #[test]
 fn large_buffer_frame_drop() {
     assert_frame_drop_invariant(
         "large_buffer_drop",
-        200, 60, 5,
+        200,
+        60,
+        5,
         &[2],
         render_paragraph_frame,
     );
@@ -723,7 +696,9 @@ fn list_selection_survives_frame_drops() {
     // Verify that list selection rendering is correct after drops.
     assert_frame_drop_invariant(
         "list_selection_drops",
-        W, H, 10,
+        W,
+        H,
+        10,
         &[2, 4, 6, 8],
         render_list_frame,
     );
@@ -733,7 +708,9 @@ fn list_selection_survives_frame_drops() {
 fn progress_animation_survives_drops() {
     assert_frame_drop_invariant(
         "progress_animation_drops",
-        W, H, 15,
+        W,
+        H,
+        15,
         &[1, 3, 5, 7, 9, 11, 13],
         render_progress_frame,
     );
@@ -747,7 +724,9 @@ fn progress_animation_survives_drops() {
 fn mixed_widgets_with_drops() {
     assert_frame_drop_invariant(
         "mixed_widgets_drops",
-        50, 15, 10,
+        50,
+        15,
+        10,
         &[1, 3, 5, 7],
         |idx, frame| {
             let _area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
@@ -766,13 +745,14 @@ fn widget_type_changes_during_drops() {
     // Widget type changes while frames are dropped — stresses diff engine.
     assert_frame_drop_invariant(
         "widget_type_change_drops",
-        W, H, 8,
+        W,
+        H,
+        8,
         &[2, 3, 4], // Drop frames during widget type transition
         |idx, frame| {
             let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
             if idx < 3 {
-                Paragraph::new(Text::raw(format!("Phase 1 frame {idx}")))
-                    .render(area, frame);
+                Paragraph::new(Text::raw(format!("Phase 1 frame {idx}"))).render(area, frame);
             } else {
                 let data: Vec<f64> = (0..area.width as u64).map(|x| x as f64).collect();
                 Sparkline::new(&data).render(area, frame);
@@ -790,7 +770,9 @@ fn stress_100_frames_periodic_drops() {
     let drops: Vec<usize> = (0..100).filter(|i| i % 5 == 3).collect();
     assert_frame_drop_invariant(
         "stress_100_periodic",
-        W, H, 100,
+        W,
+        H,
+        100,
         &drops,
         render_paragraph_frame,
     );
@@ -807,7 +789,9 @@ fn stress_100_frames_random_pattern_drops() {
         .collect();
     assert_frame_drop_invariant(
         "stress_100_random_pattern",
-        W, H, 100,
+        W,
+        H,
+        100,
         &drops,
         render_multi_widget_frame,
     );
@@ -826,7 +810,9 @@ fn stress_200_frames_burst_and_periodic() {
 
     assert_frame_drop_invariant(
         "stress_200_burst_periodic",
-        W, H, 200,
+        W,
+        H,
+        200,
         &drops,
         render_paragraph_frame,
     );
