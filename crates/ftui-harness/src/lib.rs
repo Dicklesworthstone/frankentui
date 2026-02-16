@@ -66,6 +66,10 @@ use ftui_render::cell::{PackedRgba, StyleFlags};
 use ftui_render::grapheme_pool::GraphemePool;
 
 // Re-export types useful for harness users.
+pub use determinism::{
+    DeterminismFixture, JsonValue, LabScenario, LabScenarioContext, LabScenarioResult,
+    LabScenarioRun, TestJsonlLogger, lab_scenarios_run_total,
+};
 pub use ftui_core::geometry::Rect;
 pub use ftui_render::buffer;
 pub use ftui_render::cell;

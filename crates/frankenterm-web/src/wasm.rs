@@ -1695,7 +1695,11 @@ impl FrankenTermWeb {
                 .stale_reason
                 .map(JsValue::from_str)
                 .unwrap_or(JsValue::NULL);
-            let _ = Reflect::set(&marker_obj, &JsValue::from_str("staleReason"), &stale_reason);
+            let _ = Reflect::set(
+                &marker_obj,
+                &JsValue::from_str("staleReason"),
+                &stale_reason,
+            );
             let relative_line = marker
                 .relative_line
                 .map(|v| JsValue::from_f64(v as f64))
@@ -1760,7 +1764,14 @@ impl FrankenTermWeb {
         };
         let window = self.marker_history_window();
         self.marker_store
-            .create_decoration(kind, start_marker_id, end_marker, start_col, end_col, window)
+            .create_decoration(
+                kind,
+                start_marker_id,
+                end_marker,
+                start_col,
+                end_col,
+                window,
+            )
             .map_err(JsValue::from_str)
     }
 
@@ -1833,7 +1844,7 @@ impl FrankenTermWeb {
     pub fn drain_marker_decoration_jsonl(
         &mut self,
         run_id: String,
-        seed: u64,
+        seed: u32,
         timestamp: String,
     ) -> Result<Array, JsValue> {
         if run_id.is_empty() {
@@ -2483,6 +2494,7 @@ impl FrankenTermWeb {
     pub fn render(&mut self) -> Result<(), JsValue> {
         self.scroll_state.tick(self.max_scroll_offset());
         self.refresh_viewport_snapshot();
+        self.reconcile_markers();
         let Some(renderer) = self.renderer.as_mut() else {
             return Err(JsValue::from_str("renderer not initialized"));
         };
@@ -2526,6 +2538,7 @@ impl FrankenTermWeb {
         self.reduced_motion_enabled = false;
         self.focused = false;
         self.live_announcements.clear();
+        self.marker_store = MarkerStore::new();
         self.shadow_cells.clear();
         self.flat_spans_scratch.clear();
         self.flat_cells_scratch.clear();

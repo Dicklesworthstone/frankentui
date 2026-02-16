@@ -615,8 +615,20 @@ impl Flex {
                         (leftover as u64 * i as u64 / slots as u64) as u16
                     }
                 } else {
-                    // Around: (Leftover * (2i + 1)) / slots
-                    (leftover as u64 * (2 * i as u64 + 1) / slots as u64) as u16
+                    // Around: center-balanced integer rounding.
+                    // Left half floors, right half ceils, and the middle item (odd counts)
+                    // uses nearest-integer rounding to avoid persistent left drift.
+                    let numerator = leftover as u64 * (2 * i as u64 + 1);
+                    let denominator = slots as u64;
+                    let midpoint = sizes.len() / 2;
+                    let raw = if sizes.len() % 2 == 1 && i == midpoint {
+                        (numerator + (denominator / 2)) / denominator
+                    } else if i < midpoint {
+                        numerator / denominator
+                    } else {
+                        numerator.div_ceil(denominator)
+                    };
+                    raw.min(u64::from(u16::MAX)) as u16
                 }
             } else {
                 // Fixed gap
@@ -745,11 +757,30 @@ pub(crate) fn solve_constraints_with_hints<F>(
 where
     F: Fn(usize, u16) -> LayoutSizeHint,
 {
+    const WEIGHT_SCALE: u64 = 10_000;
+
     let mut sizes = vec![0u16; constraints.len()];
     let mut remaining = available_size;
     let mut grow_indices = Vec::new();
 
-    // 1. First pass: Allocate Fixed, Percentage, Ratio, Min, and intrinsic sizing constraints
+    let grow_weight = |constraint: Constraint| -> u64 {
+        match constraint {
+            Constraint::Ratio(n, d) => {
+                if n == 0 {
+                    0
+                } else {
+                    let scaled = (u128::from(n) * u128::from(WEIGHT_SCALE)) / u128::from(d.max(1));
+                    scaled.max(1).min(u128::from(u64::MAX)) as u64
+                }
+            }
+            Constraint::Min(_) | Constraint::Max(_) | Constraint::Fill | Constraint::FitMin => {
+                WEIGHT_SCALE
+            }
+            _ => 0,
+        }
+    };
+
+    // 1. First pass: Allocate fixed/absolute constraints and seed grow pool.
     for (i, &constraint) in constraints.iter().enumerate() {
         match constraint {
             Constraint::Fixed(size) => {
@@ -765,13 +796,9 @@ where
                 sizes[i] = size;
                 remaining = remaining.saturating_sub(size);
             }
-            Constraint::Ratio(n, d) => {
-                // Ratio acts as a fixed fraction of the TOTAL available space, similar to Percentage.
-                let size = (available_size as u64 * n as u64 / d.max(1) as u64).min(u16::MAX as u64)
-                    as u16;
-                let size = min(size, remaining);
-                sizes[i] = size;
-                remaining = remaining.saturating_sub(size);
+            Constraint::Ratio(_, _) => {
+                // Ratio participates in weighted grow distribution, not absolute first-pass sizing.
+                grow_indices.push(i);
             }
             Constraint::Min(min_size) => {
                 let size = min(min_size, remaining);
@@ -824,12 +851,14 @@ where
             break;
         }
 
-        let mut total_weight = 0u64;
-        const WEIGHT_SCALE: u64 = 10_000;
-
-        for &_i in &grow_indices {
-            // All remaining grow types (Min, Max, Fill, FitMin) have equal weight
-            total_weight += WEIGHT_SCALE;
+        let mut total_weight = 0u128;
+        let mut last_weighted_pos = None;
+        for (grow_pos, &i) in grow_indices.iter().enumerate() {
+            let weight = grow_weight(constraints[i]);
+            if weight > 0 {
+                total_weight = total_weight.saturating_add(u128::from(weight));
+                last_weighted_pos = Some(grow_pos);
+            }
         }
 
         if total_weight == 0 {
@@ -837,22 +866,27 @@ where
         }
 
         let space_to_distribute = remaining;
-        let mut allocated = 0;
+        let mut allocated = 0u16;
         let mut shares = vec![0u16; constraints.len()];
+        let last_weighted_pos = last_weighted_pos.unwrap_or_default();
 
-        for (idx, &i) in grow_indices.iter().enumerate() {
-            let weight = WEIGHT_SCALE;
+        for (grow_pos, &i) in grow_indices.iter().enumerate() {
+            let weight = grow_weight(constraints[i]);
+            if weight == 0 {
+                continue;
+            }
 
             // Last item gets the rest to ensure exact sum conservation
-            let size = if idx == grow_indices.len() - 1 {
+            let size = if grow_pos == last_weighted_pos {
                 space_to_distribute.saturating_sub(allocated)
             } else {
-                let s = (space_to_distribute as u64 * weight / total_weight) as u16;
+                let scaled = (u128::from(space_to_distribute) * u128::from(weight)) / total_weight;
+                let s = u16::try_from(scaled).unwrap_or(u16::MAX);
                 min(s, space_to_distribute.saturating_sub(allocated))
             };
 
             shares[i] = size;
-            allocated += size;
+            allocated = allocated.saturating_add(size);
         }
 
         // Check for Max constraint violations

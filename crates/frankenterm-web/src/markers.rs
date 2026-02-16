@@ -70,8 +70,10 @@ impl HistoryWindow {
         if end_rel_exclusive <= start_rel {
             return None;
         }
-        let start = self.absolute_line_for_relative(start_rel)?;
-        let end_exclusive = self.absolute_line_for_relative(end_rel_exclusive)?;
+        let start_rel_u64 = u64::try_from(start_rel).ok()?;
+        let end_rel_u64 = u64::try_from(end_rel_exclusive).ok()?;
+        let start = self.base_absolute_line.saturating_add(start_rel_u64);
+        let end_exclusive = self.base_absolute_line.saturating_add(end_rel_u64);
         Some((start, end_exclusive))
     }
 }
@@ -289,19 +291,17 @@ impl MarkerStore {
         if !self.markers.contains_key(&start_marker_id) {
             return Err("start marker not found");
         }
-        if matches!(kind, DecorationKind::Range)
-            && end_marker_id
-                .map(|id| self.markers.contains_key(&id))
-                .unwrap_or(false)
-                == false
-        {
+        let has_end_marker = end_marker_id
+            .map(|id| self.markers.contains_key(&id))
+            .unwrap_or(false);
+        if matches!(kind, DecorationKind::Range) && !has_end_marker {
             return Err("range decorations require an existing end marker");
         }
 
         let (normalized_start_col, normalized_end_col) = if window.cols == 0 {
             (0, 0)
         } else {
-            let max_col = window.cols as u16;
+            let max_col = u16::try_from(window.cols).unwrap_or(u16::MAX);
             let start = start_col.min(max_col);
             let mut end = end_col.min(max_col);
             if matches!(kind, DecorationKind::Inline | DecorationKind::Range) && end <= start {
@@ -369,9 +369,15 @@ impl MarkerStore {
         }
 
         let mut decoration_changes = Vec::new();
-        for decoration in self.decorations.values_mut() {
-            let next_reason = self.decoration_stale_reason(*decoration);
-            if decoration.stale_reason != next_reason {
+        let decoration_ids: Vec<u32> = self.decorations.keys().copied().collect();
+        for decoration_id in decoration_ids {
+            let Some(current) = self.decorations.get(&decoration_id).copied() else {
+                continue;
+            };
+            let next_reason = self.decoration_stale_reason(current);
+            if current.stale_reason != next_reason
+                && let Some(decoration) = self.decorations.get_mut(&decoration_id)
+            {
                 decoration.stale_reason = next_reason;
                 decoration_changes.push((decoration.id, next_reason));
             }
@@ -677,7 +683,7 @@ mod tests {
             .expect("decoration snapshot should exist");
         assert!(!snapshot.stale);
         assert_eq!(snapshot.start_offset, Some(0));
-        assert_eq!(snapshot.end_offset, Some(98));
+        assert_eq!(snapshot.end_offset, Some(88));
     }
 
     #[test]

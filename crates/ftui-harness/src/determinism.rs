@@ -9,6 +9,15 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+/// Counter for total executed lab scenarios in-process.
+static LAB_SCENARIOS_RUN_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Read the total number of executed lab scenarios.
+#[must_use]
+pub fn lab_scenarios_run_total() -> u64 {
+    LAB_SCENARIOS_RUN_TOTAL.load(Ordering::Relaxed)
+}
+
 /// Shared deterministic fixture for a test run.
 #[derive(Debug)]
 pub struct DeterminismFixture {
@@ -230,9 +239,24 @@ impl TestJsonlLogger {
         }
     }
 
+    /// Create a JSONL logger with explicit determinism controls.
+    pub fn new_with(prefix: &str, seed: u64, deterministic: bool, time_step_ms: u64) -> Self {
+        Self {
+            fixture: DeterminismFixture::new_with(prefix, seed, deterministic, time_step_ms),
+            schema_version: 1,
+            seq: AtomicU64::new(0),
+            context: BTreeMap::new(),
+        }
+    }
+
     /// Access the underlying determinism fixture.
     pub fn fixture(&self) -> &DeterminismFixture {
         &self.fixture
+    }
+
+    /// Return the number of emitted lines for this logger.
+    pub fn emitted_count(&self) -> u64 {
+        self.seq.load(Ordering::Relaxed)
     }
 
     /// Set the JSONL schema version.
@@ -325,6 +349,152 @@ impl TestJsonlLogger {
     pub fn log_env(&self) {
         let env_json = self.fixture.env_snapshot().to_json();
         self.log("env", &[("env", JsonValue::raw(env_json))]);
+    }
+}
+
+/// Metadata emitted for one deterministic lab scenario run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabScenarioResult {
+    /// Stable scenario identifier.
+    pub scenario_name: String,
+    /// Run identifier from the deterministic fixture.
+    pub run_id: String,
+    /// Seed used for this scenario.
+    pub seed: u64,
+    /// Whether deterministic mode was active.
+    pub deterministic: bool,
+    /// Number of emitted JSONL events in this run.
+    pub event_count: u64,
+    /// Wall-clock duration for the run in microseconds.
+    pub duration_us: u64,
+    /// Global total count of executed scenarios in this process.
+    pub run_total: u64,
+}
+
+/// Output plus run metadata for a deterministic lab scenario.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabScenarioRun<T> {
+    /// Scenario execution metadata.
+    pub result: LabScenarioResult,
+    /// Scenario return value.
+    pub output: T,
+}
+
+/// Helper context passed to a running lab scenario.
+#[derive(Debug, Clone, Copy)]
+pub struct LabScenarioContext<'a> {
+    logger: &'a TestJsonlLogger,
+}
+
+impl<'a> LabScenarioContext<'a> {
+    /// Emit an informational scenario event.
+    pub fn log_info(&self, event: &str, fields: &[(&str, JsonValue)]) {
+        self.logger.log(event, fields);
+    }
+
+    /// Emit a warning event for scheduler or ordering anomalies.
+    pub fn log_warn(&self, anomaly: &str, detail: &str) {
+        self.logger.log(
+            "lab.scenario.warn",
+            &[
+                ("anomaly", JsonValue::str(anomaly)),
+                ("detail", JsonValue::str(detail)),
+            ],
+        );
+    }
+
+    /// Access the underlying deterministic fixture.
+    pub fn fixture(&self) -> &DeterminismFixture {
+        self.logger.fixture()
+    }
+
+    /// Deterministic monotonic time helper.
+    pub fn now_ms(&self) -> u64 {
+        self.logger.fixture().now_ms()
+    }
+}
+
+/// Deterministic scenario runner for FrankenLab-style test harnesses.
+#[derive(Debug)]
+pub struct LabScenario {
+    scenario_name: String,
+    logger: TestJsonlLogger,
+}
+
+impl LabScenario {
+    /// Create a scenario runner using environment-driven determinism settings.
+    pub fn new(prefix: &str, scenario_name: &str, default_seed: u64) -> Self {
+        let mut logger = TestJsonlLogger::new(prefix, default_seed);
+        logger.add_context_str("scenario_name", scenario_name);
+        Self {
+            scenario_name: scenario_name.to_string(),
+            logger,
+        }
+    }
+
+    /// Create a scenario runner with explicit determinism settings.
+    pub fn new_with(
+        prefix: &str,
+        scenario_name: &str,
+        seed: u64,
+        deterministic: bool,
+        time_step_ms: u64,
+    ) -> Self {
+        let mut logger = TestJsonlLogger::new_with(prefix, seed, deterministic, time_step_ms);
+        logger.add_context_str("scenario_name", scenario_name);
+        Self {
+            scenario_name: scenario_name.to_string(),
+            logger,
+        }
+    }
+
+    /// Access the underlying fixture for this scenario.
+    pub fn fixture(&self) -> &DeterminismFixture {
+        self.logger.fixture()
+    }
+
+    /// Execute a deterministic scenario closure and emit start/end JSONL records.
+    pub fn run<T>(&self, run: impl FnOnce(&LabScenarioContext<'_>) -> T) -> LabScenarioRun<T> {
+        let seed = self.fixture().seed();
+        let deterministic = self.fixture().deterministic();
+        self.logger.log(
+            "lab.scenario.start",
+            &[
+                ("scenario_name", JsonValue::str(self.scenario_name.clone())),
+                ("seed", JsonValue::u64(seed)),
+            ],
+        );
+
+        let started_at = Instant::now();
+        let context = LabScenarioContext {
+            logger: &self.logger,
+        };
+        let output = run(&context);
+        let duration_us = started_at.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        let event_count = self.logger.emitted_count().saturating_add(1);
+        self.logger.log(
+            "lab.scenario.end",
+            &[
+                ("scenario_name", JsonValue::str(self.scenario_name.clone())),
+                ("seed", JsonValue::u64(seed)),
+                ("event_count", JsonValue::u64(event_count)),
+                ("duration_us", JsonValue::u64(duration_us)),
+            ],
+        );
+
+        let run_total = LAB_SCENARIOS_RUN_TOTAL
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let result = LabScenarioResult {
+            scenario_name: self.scenario_name.clone(),
+            run_id: self.fixture().run_id().to_string(),
+            seed,
+            deterministic,
+            event_count,
+            duration_us,
+            run_total,
+        };
+        LabScenarioRun { result, output }
     }
 }
 
@@ -475,6 +645,39 @@ mod tests {
         let line = logger.emit_line("step", &[("ok", JsonValue::bool(true))]);
         assert!(line.contains("\"context\":{"));
         assert!(line.contains("\"suite\":\"determinism\""));
+    }
+
+    #[test]
+    fn lab_scenario_reports_deterministic_metadata() {
+        let scenario = LabScenario::new_with("lab_scenario", "deterministic_case", 4242, true, 9);
+        let run = scenario.run(|ctx| {
+            ctx.log_info("lab.step", &[("phase", JsonValue::str("init"))]);
+            ctx.log_warn("schedule_gap", "simulated warning");
+            ctx.now_ms()
+        });
+
+        assert_eq!(run.output, 9);
+        assert_eq!(run.result.scenario_name, "deterministic_case");
+        assert_eq!(run.result.seed, 4242);
+        assert!(run.result.deterministic);
+        assert_eq!(run.result.event_count, 4);
+        assert!(run.result.run_total >= 1);
+    }
+
+    #[test]
+    fn lab_scenario_runs_are_repeatable_with_fixed_seed() {
+        fn run_once() -> LabScenarioRun<u64> {
+            let scenario = LabScenario::new_with("lab_repeat", "repeat_case", 77, true, 5);
+            scenario.run(|ctx| ctx.now_ms())
+        }
+
+        let first = run_once();
+        let second = run_once();
+
+        assert_eq!(first.output, second.output);
+        assert_eq!(first.result.seed, second.result.seed);
+        assert_eq!(first.result.event_count, second.result.event_count);
+        assert_eq!(first.result.scenario_name, second.result.scenario_name);
     }
 
     // ── escape_json ───────────────────────────────────────────────────
