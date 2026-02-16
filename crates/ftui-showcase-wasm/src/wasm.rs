@@ -104,6 +104,37 @@ fn pane_zone_label(zone: ftui_layout::PaneDockZone) -> &'static str {
     }
 }
 
+fn pane_rect_to_js(rect: ftui_layout::Rect) -> JsValue {
+    let ghost = Object::new();
+    set_js(&ghost, "x", JsValue::from_f64(f64::from(rect.x)));
+    set_js(&ghost, "y", JsValue::from_f64(f64::from(rect.y)));
+    set_js(&ghost, "width", JsValue::from_f64(f64::from(rect.width)));
+    set_js(&ghost, "height", JsValue::from_f64(f64::from(rect.height)));
+    ghost.into()
+}
+
+fn pane_push_dock_candidate(
+    candidates: &Array,
+    target: Option<PaneId>,
+    zone: Option<ftui_layout::PaneDockZone>,
+    ghost_rect: Option<ftui_layout::Rect>,
+    strength_bps: u16,
+) {
+    let (Some(target), Some(zone), Some(ghost_rect)) = (target, zone, ghost_rect) else {
+        return;
+    };
+    let candidate = Object::new();
+    set_js(&candidate, "target", JsValue::from_f64(target.get() as f64));
+    set_js(&candidate, "zone", JsValue::from_str(pane_zone_label(zone)));
+    set_js(
+        &candidate,
+        "dock_strength_bps",
+        JsValue::from_f64(f64::from(strength_bps)),
+    );
+    set_js(&candidate, "ghost_rect", pane_rect_to_js(ghost_rect));
+    candidates.push(&candidate.into());
+}
+
 fn ignored_reason_label(reason: PanePointerIgnoredReason) -> &'static str {
     match reason {
         PanePointerIgnoredReason::InvalidPointerId => "invalid_pointer_id",
@@ -252,15 +283,43 @@ fn pane_dispatch_to_js(
         set_js(&obj, "dock_zone", JsValue::NULL);
     }
     if let Some(rect) = preview.ghost_rect {
-        let ghost = Object::new();
-        set_js(&ghost, "x", JsValue::from_f64(f64::from(rect.x)));
-        set_js(&ghost, "y", JsValue::from_f64(f64::from(rect.y)));
-        set_js(&ghost, "width", JsValue::from_f64(f64::from(rect.width)));
-        set_js(&ghost, "height", JsValue::from_f64(f64::from(rect.height)));
-        set_js(&obj, "ghost_rect", ghost.into());
+        set_js(&obj, "ghost_rect", pane_rect_to_js(rect));
     } else {
         set_js(&obj, "ghost_rect", JsValue::NULL);
     }
+    set_js(
+        &obj,
+        "dock_strength_bps",
+        JsValue::from_f64(f64::from(preview.dock_strength_bps)),
+    );
+    set_js(
+        &obj,
+        "motion_speed_cps",
+        JsValue::from_f64(f64::from(preview.motion_speed_cps)),
+    );
+    let dock_candidates = Array::new();
+    pane_push_dock_candidate(
+        &dock_candidates,
+        preview.target,
+        preview.zone,
+        preview.ghost_rect,
+        preview.dock_strength_bps,
+    );
+    pane_push_dock_candidate(
+        &dock_candidates,
+        preview.alt_one_target,
+        preview.alt_one_zone,
+        preview.alt_one_ghost_rect,
+        preview.alt_one_strength_bps,
+    );
+    pane_push_dock_candidate(
+        &dock_candidates,
+        preview.alt_two_target,
+        preview.alt_two_zone,
+        preview.alt_two_ghost_rect,
+        preview.alt_two_strength_bps,
+    );
+    set_js(&obj, "dock_candidates", dock_candidates.into());
     set_js(
         &obj,
         "timeline_cursor",
@@ -325,14 +384,51 @@ fn pane_state_to_js(runner: &RunnerCore) -> JsValue {
         set_js(&obj, "dock_zone", JsValue::NULL);
     }
     if let Some(rect) = preview.ghost_rect {
-        let ghost = Object::new();
-        set_js(&ghost, "x", JsValue::from_f64(f64::from(rect.x)));
-        set_js(&ghost, "y", JsValue::from_f64(f64::from(rect.y)));
-        set_js(&ghost, "width", JsValue::from_f64(f64::from(rect.width)));
-        set_js(&ghost, "height", JsValue::from_f64(f64::from(rect.height)));
-        set_js(&obj, "ghost_rect", ghost.into());
+        set_js(&obj, "ghost_rect", pane_rect_to_js(rect));
     } else {
         set_js(&obj, "ghost_rect", JsValue::NULL);
+    }
+    set_js(
+        &obj,
+        "dock_strength_bps",
+        JsValue::from_f64(f64::from(preview.dock_strength_bps)),
+    );
+    set_js(
+        &obj,
+        "motion_speed_cps",
+        JsValue::from_f64(f64::from(preview.motion_speed_cps)),
+    );
+    let dock_candidates = Array::new();
+    pane_push_dock_candidate(
+        &dock_candidates,
+        preview.target,
+        preview.zone,
+        preview.ghost_rect,
+        preview.dock_strength_bps,
+    );
+    pane_push_dock_candidate(
+        &dock_candidates,
+        preview.alt_one_target,
+        preview.alt_one_zone,
+        preview.alt_one_ghost_rect,
+        preview.alt_one_strength_bps,
+    );
+    pane_push_dock_candidate(
+        &dock_candidates,
+        preview.alt_two_target,
+        preview.alt_two_zone,
+        preview.alt_two_ghost_rect,
+        preview.alt_two_strength_bps,
+    );
+    set_js(&obj, "dock_candidates", dock_candidates.into());
+    if let Some(pointer_id) = runner.pane_active_pointer_id() {
+        set_js(
+            &obj,
+            "active_pointer_id",
+            JsValue::from_f64(f64::from(pointer_id)),
+        );
+    } else {
+        set_js(&obj, "active_pointer_id", JsValue::NULL);
     }
 
     let selected = Array::new();
