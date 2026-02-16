@@ -87,3 +87,30 @@ SESSION_REPORT.md
 
 # Determinism test output (ephemeral, machine-dependent)
 determinism_lab_report.jsonl
+
+# Ephemeral files (agent-generated, build artifacts, test detritus)
+ci-artifacts/
+test_meminfo
+
+# Agent session ephemeral files
+SESSION_TODO.md
+SESSION_*.md
+verify_*.sh
+newfile.txt
+repro_*.rs
+
+# Nested crate build artifacts
+crates/*/target/
+
+# Local scratch DBs
+storage.sqlite3
+storage.sqlite3-*
+
+# FastEmbed model caches
+.fastembed_cache/
+
+# Agent coordination config
+.agent-mail.yaml
+
+# Claude local settings
+.claude/settings.local.json
