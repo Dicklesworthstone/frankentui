@@ -22,15 +22,49 @@ mod runner_core;
 mod tests {
     use crate::runner_core::{PaneDispatchOutcome, RunnerCore};
     use ftui_layout::{
-        PaneId, PaneModifierSnapshot, PanePointerButton, PaneResizeTarget, SplitAxis,
+        PaneId, PaneLayoutIntelligenceMode, PaneModifierSnapshot, PanePointerButton,
+        PaneResizeTarget, SplitAxis,
     };
     use ftui_web::pane_pointer_capture::{PanePointerCaptureCommand, PanePointerIgnoredReason};
+    use std::collections::HashSet;
 
     fn test_target() -> PaneResizeTarget {
         PaneResizeTarget {
             split_id: PaneId::MIN,
             axis: SplitAxis::Horizontal,
         }
+    }
+
+    fn apply_any_intelligence_mode(core: &mut RunnerCore) -> Option<PaneLayoutIntelligenceMode> {
+        let primary = PaneId::new(core.pane_primary_id()?).ok()?;
+        [
+            PaneLayoutIntelligenceMode::Compare,
+            PaneLayoutIntelligenceMode::Monitor,
+            PaneLayoutIntelligenceMode::Compact,
+            PaneLayoutIntelligenceMode::Focus,
+        ]
+        .into_iter()
+        .find(|&mode| core.pane_apply_intelligence_mode(mode, primary))
+    }
+
+    fn operation_ids_from_snapshot_json(snapshot_json: &str) -> Vec<u64> {
+        let value: serde_json::Value =
+            serde_json::from_str(snapshot_json).expect("snapshot json should parse as value");
+        value
+            .get("interaction_timeline")
+            .and_then(|timeline| timeline.get("entries"))
+            .and_then(serde_json::Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        entry
+                            .get("operation_id")
+                            .and_then(serde_json::Value::as_u64)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     #[test]
@@ -247,6 +281,97 @@ mod tests {
                     && line.contains("outcome=semantic_forwarded")
             }),
             "expected pane pointer lifecycle log entry, got: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn runner_core_undo_clears_pointer_capture_after_structural_change() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        assert!(
+            apply_any_intelligence_mode(&mut core).is_some(),
+            "expected at least one adaptive mode to produce structural operations"
+        );
+
+        let down = core.pane_pointer_down(
+            test_target(),
+            57,
+            PanePointerButton::Primary,
+            5,
+            4,
+            PaneModifierSnapshot::default(),
+        );
+        assert!(down.accepted());
+        assert_eq!(core.pane_active_pointer_id(), Some(57));
+
+        assert!(
+            core.pane_undo(),
+            "undo should apply after recorded mutations"
+        );
+        assert_eq!(core.pane_active_pointer_id(), None);
+
+        let move_after = core.pane_pointer_move(57, 8, 4, PaneModifierSnapshot::default());
+        assert!(matches!(
+            move_after.outcome,
+            PaneDispatchOutcome::Ignored(PanePointerIgnoredReason::NoActivePointer)
+        ));
+    }
+
+    #[test]
+    fn import_snapshot_resets_capture_and_keeps_operation_ids_monotonic() {
+        let mut source = RunnerCore::new(80, 24);
+        source.init();
+        assert!(
+            apply_any_intelligence_mode(&mut source).is_some(),
+            "expected at least one adaptive mode to produce structural operations"
+        );
+        let snapshot_json = source
+            .export_workspace_snapshot_json()
+            .expect("snapshot export should succeed");
+        let before_ids = operation_ids_from_snapshot_json(&snapshot_json);
+        let max_before = before_ids.iter().copied().max().unwrap_or(0);
+
+        let mut restored = RunnerCore::new(80, 24);
+        restored.init();
+        let down = restored.pane_pointer_down(
+            test_target(),
+            91,
+            PanePointerButton::Primary,
+            6,
+            6,
+            PaneModifierSnapshot::default(),
+        );
+        assert!(down.accepted());
+        assert_eq!(restored.pane_active_pointer_id(), Some(91));
+
+        restored
+            .import_workspace_snapshot_json(&snapshot_json)
+            .expect("snapshot import should succeed");
+        assert_eq!(
+            restored.pane_active_pointer_id(),
+            None,
+            "import should reset capture adapter state"
+        );
+
+        assert!(
+            apply_any_intelligence_mode(&mut restored).is_some(),
+            "restored runner should continue accepting structural pane mutations"
+        );
+        let after_json = restored
+            .export_workspace_snapshot_json()
+            .expect("snapshot export after restore should succeed");
+        let after_ids = operation_ids_from_snapshot_json(&after_json);
+        let max_after = after_ids.iter().copied().max().unwrap_or(0);
+        let unique_ids: HashSet<u64> = after_ids.iter().copied().collect();
+
+        assert!(
+            max_after > max_before,
+            "operation ids should keep advancing after import"
+        );
+        assert_eq!(
+            unique_ids.len(),
+            after_ids.len(),
+            "timeline operation ids should remain unique after import + mutation"
         );
     }
 }
