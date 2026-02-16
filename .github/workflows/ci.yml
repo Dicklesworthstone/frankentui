@@ -481,6 +481,12 @@ jobs:
       - name: Golden checksum verification (bd-3jlw5.2)
         run: cargo test -p ftui-demo-showcase --test golden_checksums -- golden_checksums_verify golden_checksums_deterministic --nocapture
 
+      - name: Terminal/Web parity gate (all screens + interactions)
+        run: cargo test -p ftui-demo-showcase --test terminal_web_parity -- --nocapture
+
+      - name: Pane interaction parity gate
+        run: cargo test -p ftui-showcase-wasm pane_interaction_trace_is_deterministic -- --nocapture
+
       - name: Baseline benchmark capture (bd-3jlw5.1)
         run: cargo test -p ftui-demo-showcase --test baseline_capture -- --nocapture
 

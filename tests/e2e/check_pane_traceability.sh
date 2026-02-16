@@ -221,10 +221,10 @@ while IFS= read -r issue; do
         while IFS= read -r evidence_key; do
             evidence_value="$(jq -r --arg key "$evidence_key" '.[$key] // empty' <<< "$evidence_status_json")"
             if [[ "$issue_status" == "closed" && "$evidence_value" != "passing" ]]; then
-                stale_rows+=("$(jq -cn --arg bead_id "$bead_id" --arg key "$evidence_key" --arg value "$evidence_value" --arg issue_status "$issue_status" '{bead_id:$bead_id,issue_status:$issue_status,evidence:$key,status:$value,reason:\"closed bead requires passing evidence\"}')")
+                stale_rows+=("$(jq -cn --arg bead_id "$bead_id" --arg key "$evidence_key" --arg value "$evidence_value" --arg issue_status "$issue_status" '{bead_id:$bead_id,issue_status:$issue_status,evidence:$key,status:$value,reason:"closed bead requires passing evidence"}')")
             fi
             if [[ "$issue_status" == "in_progress" && ( "$evidence_value" == "planned" || "$evidence_value" == "blocked" ) ]]; then
-                stale_rows+=("$(jq -cn --arg bead_id "$bead_id" --arg key "$evidence_key" --arg value "$evidence_value" --arg issue_status "$issue_status" '{bead_id:$bead_id,issue_status:$issue_status,evidence:$key,status:$value,reason:\"in-progress bead has non-actionable required evidence\"}')")
+                stale_rows+=("$(jq -cn --arg bead_id "$bead_id" --arg key "$evidence_key" --arg value "$evidence_value" --arg issue_status "$issue_status" '{bead_id:$bead_id,issue_status:$issue_status,evidence:$key,status:$value,reason:"in-progress bead has non-actionable required evidence"}')")
             fi
         done < <(jq -r '.[]' <<< "$required_evidence_json")
     fi

@@ -436,4 +436,77 @@ mod tests {
             "timeline baseline node ids should be canonicalized, got: {baseline_ids:?}"
         );
     }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct PaneTraceSignature {
+        layout_hash: u64,
+        selected_ids: Vec<u64>,
+        operation_ids: Vec<u64>,
+        baseline_ids: Vec<u64>,
+    }
+
+    fn run_pane_trace_signature() -> PaneTraceSignature {
+        let mut core = RunnerCore::new(120, 40);
+        core.init();
+        let modifiers = PaneModifierSnapshot::default();
+
+        let down = core.pane_pointer_down(
+            test_target(),
+            77,
+            PanePointerButton::Primary,
+            6,
+            6,
+            modifiers,
+        );
+        assert!(down.accepted(), "pointer down should be accepted");
+        let acquired = core.pane_capture_acquired(77);
+        assert!(acquired.accepted(), "capture should be acknowledged");
+        let mv = core.pane_pointer_move(77, 14, 6, modifiers);
+        assert!(mv.accepted(), "pointer move should be accepted");
+        let up = core.pane_pointer_up(77, PanePointerButton::Primary, 14, 6, modifiers);
+        assert!(up.accepted(), "pointer up should be accepted");
+        assert_eq!(
+            core.pane_active_pointer_id(),
+            None,
+            "pointer must be released after up"
+        );
+
+        assert!(
+            apply_any_intelligence_mode(&mut core).is_some(),
+            "adaptive intelligence mode should produce structural operations"
+        );
+        assert!(core.pane_undo(), "pane undo should apply");
+        assert!(core.pane_redo(), "pane redo should apply");
+        assert!(core.pane_replay(), "pane replay should apply");
+
+        let snapshot_json = core
+            .export_workspace_snapshot_json()
+            .expect("pane snapshot export should succeed");
+        let operation_ids = operation_ids_from_snapshot_json(&snapshot_json);
+        let baseline_ids = timeline_baseline_node_ids_from_snapshot_json(&snapshot_json);
+
+        let mut restored = RunnerCore::new(120, 40);
+        restored.init();
+        restored
+            .import_workspace_snapshot_json(&snapshot_json)
+            .expect("pane snapshot import should succeed");
+
+        PaneTraceSignature {
+            layout_hash: restored.pane_layout_hash(),
+            selected_ids: restored.pane_selected_ids(),
+            operation_ids,
+            baseline_ids,
+        }
+    }
+
+    #[test]
+    fn pane_interaction_trace_is_deterministic() {
+        let sig_a = run_pane_trace_signature();
+        let sig_b = run_pane_trace_signature();
+        assert_eq!(sig_a, sig_b, "pane interaction signature should be stable");
+        assert!(
+            !sig_a.operation_ids.is_empty(),
+            "pane trace should include timeline operations"
+        );
+    }
 }

@@ -33,8 +33,6 @@ use ftui_extras::mermaid::MermaidConfig;
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::Cell as RenderCell;
 use ftui_render::frame::{Frame, HitGrid, HitId};
-#[cfg(not(target_arch = "wasm32"))]
-use ftui_runtime::Every;
 use ftui_runtime::render_trace::checksum_buffer;
 use ftui_runtime::undo::HistoryManager;
 use ftui_runtime::{Cmd, FrameTiming, FrameTimingSink, Model, MouseCapturePolicy, Subscription};
@@ -1565,10 +1563,7 @@ impl From<Event> for AppMsg {
     fn from(event: Event) -> Self {
         match event {
             Event::Resize { width, height } => Self::Resize { width, height },
-            #[cfg(target_arch = "wasm32")]
             Event::Tick => Self::Tick,
-            #[cfg(not(target_arch = "wasm32"))]
-            Event::Tick => Self::ScreenEvent(Event::Tick),
             other => Self::ScreenEvent(other),
         }
     }
@@ -3868,31 +3863,17 @@ impl Model for AppModel {
             Cmd::None
         };
 
-        #[cfg(target_arch = "wasm32")]
-        {
-            // WASM uses `StepProgram`, which does not evaluate `subscriptions()`.
-            // Schedule ticks via `Cmd::Tick` so animations and periodic logic run.
-            let tick_ms = self.tick_interval_ms().max(1);
-            Cmd::batch(vec![base_cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            base_cmd
-        }
+        // Keep terminal and web semantics aligned: both runtimes are driven by
+        // the same command-based tick source instead of target-specific branches.
+        let tick_ms = self.tick_interval_ms().max(1);
+        Cmd::batch(vec![base_cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
     }
 
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
         let cmd = self.handle_msg(msg, EventSource::User);
-        #[cfg(target_arch = "wasm32")]
-        {
-            // Keep tick rate in sync with the current screen/mode (tour/vfx/etc).
-            let tick_ms = self.tick_interval_ms().max(1);
-            Cmd::batch(vec![cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            cmd
-        }
+        // Keep tick cadence in sync with the current screen/mode (tour/vfx/etc).
+        let tick_ms = self.tick_interval_ms().max(1);
+        Cmd::batch(vec![cmd, Cmd::Tick(Duration::from_millis(tick_ms))])
     }
 
     fn view(&self, frame: &mut Frame) {
@@ -4019,17 +4000,7 @@ impl Model for AppModel {
     }
 
     fn subscriptions(&self) -> Vec<Box<dyn Subscription<Self::Message>>> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            Vec::new()
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let tick_ms = self.tick_interval_ms();
-            vec![Box::new(Every::new(Duration::from_millis(tick_ms), || {
-                AppMsg::Tick
-            }))]
-        }
+        Vec::new()
     }
 }
 

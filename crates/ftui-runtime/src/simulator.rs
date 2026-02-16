@@ -182,6 +182,12 @@ impl<M: Model> ProgramSimulator<M> {
         &mut self.model
     }
 
+    /// Access the simulator grapheme pool used to render captured frames.
+    #[inline]
+    pub fn pool(&self) -> &GraphemePool {
+        &self.pool
+    }
+
     /// Check if the simulated program is still running.
     ///
     /// Returns `false` after a `Cmd::Quit` has been executed.
