@@ -126,23 +126,56 @@ Specification:
 
 ## 7. Deterministic Incident-Triage Workflow (Runbook)
 
-When an attach/security incident occurs:
+### 7.1 Evidence Capture Checklist (always deterministic)
 
-1. Capture JSONL evidence:
+1. Capture a dedicated run with fixed seed/time-step:
+   - `E2E_DETERMINISTIC=1`
+   - `E2E_SEED=<incident-seed>`
+2. Export attach/link evidence from the WASM surface:
    - `drainAttachTransitionsJsonl(run_id)`
    - `drainLinkClicksJsonl(run_id, seed, timestamp)`
-   - Remote E2E logs from scripts below
-2. Classify failure domain:
-   - auth/origin/rate-limit/payload-bounds/link-policy/clipboard
-3. Reproduce deterministically:
-   - replay same input/event sequence and seed
-   - verify transition/order invariants
-4. Contain safely:
-   - prefer false-block for auth/origin checks
-   - prefer bounded degradation (drop/coalesce/throttle) over unbounded growth
-5. Document:
-   - add/update risk entry in `docs/risk-register.md`
-   - update this threat model with new mitigation/test coverage
+3. Capture bridge/session telemetry:
+   - `ws_bridge_telemetry.jsonl`
+   - remote script summaries (`*_summary.json`)
+4. Persist an incident bundle directory containing:
+   - E2E JSONL
+   - fixture JSONL (if applicable)
+   - summary JSON
+   - bridge telemetry JSONL
+   - command line + seed metadata
+
+### 7.2 Standard Triage Commands
+
+```bash
+# Full remote workflow smoke/regression evidence
+rch exec -- /data/projects/frankentui/tests/e2e/scripts/test_remote_all.sh
+
+# Deterministic attach ordering + lifecycle evidence
+rch exec -- /data/projects/frankentui/tests/e2e/scripts/test_frankenterm_event_ordering_contract.sh
+
+# Strict schema validation for replay-grade logs
+python3 tests/e2e/lib/validate_jsonl.py <e2e-jsonl> \
+  --schema tests/e2e/lib/e2e_jsonl_schema.json \
+  --registry tests/e2e/lib/e2e_hash_registry.json \
+  --strict
+```
+
+### 7.3 Incident Playbooks
+
+| Incident Class | Signals | Immediate Containment | Deterministic Reproduction |
+|---|---|---|---|
+| Attach flapping / reconnect storm | Repeated `backing_off` / `retry_timer_elapsed`; rising reconnect counters | Keep retry caps/backoff enabled; reject parallel stale attaches; avoid disabling bounds in production | Re-run `test_frankenterm_event_ordering_contract.sh` with incident seed and compare transition ordering/action sets |
+| Malformed-frame protocol desync | `protocol_error`, close codes (`1002/1008`), handshake failures | Fail closed on invalid envelopes; keep strict frame-length/type validation; close transport on fatal paths | Replay with fixed seed and inspect attach transition JSONL for deterministic `failure_code` + state progression |
+| Output flood / memory pressure | Queue/window saturation, flow-control drop/coalesce decisions, high `bytes_rx` bursts | Preserve hard queue caps and output windows; prefer bounded drop/coalesce over buffer growth | Re-run remote stress scripts and compare JSONL metrics (`ws_metrics`, transition logs, summary artifacts) |
+| Link/clipboard policy bypass attempt | Unexpected link opens, denied/accepted mismatch, oversize paste paths | Keep HTTPS-only + allow/block host gates; enforce paste max bytes and host-managed clipboard | Re-run remote paste/selection/link scripts and confirm policy reasons are stable in JSONL traces |
+
+### 7.4 Documentation and Follow-Up
+
+After mitigation:
+
+1. Add/update risk entries in `docs/risk-register.md`.
+2. Record the incident runbook delta in this threat model.
+3. Attach incident bundle paths in bead/mail thread for replayable auditability.
 
 ## 8. Required E2E Evidence Paths
 

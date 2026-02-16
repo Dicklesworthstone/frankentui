@@ -33,7 +33,10 @@ TIMESTAMP="$(e2e_log_stamp)"
 LOG_DIR="${LOG_DIR:-/tmp/ftui-frankenterm-event-ordering-${E2E_RUN_ID}-${TIMESTAMP}}"
 E2E_LOG_DIR="$LOG_DIR"
 E2E_RESULTS_DIR="${E2E_RESULTS_DIR:-$LOG_DIR/results}"
-E2E_JSONL_FILE="${E2E_JSONL_FILE:-$LOG_DIR/frankenterm_event_ordering.e2e.jsonl}"
+# Force an isolated JSONL file for this fixture to keep schema validation and
+# replay diagnostics deterministic even when parent shells export a shared
+# E2E_JSONL_FILE value.
+E2E_JSONL_FILE="${FRANKENTERM_EVENT_ORDERING_JSONL_FILE:-$LOG_DIR/frankenterm_event_ordering.e2e.jsonl}"
 E2E_RUN_CMD="${E2E_RUN_CMD:-$0 $*}"
 E2E_RUN_START_MS="${E2E_RUN_START_MS:-$(e2e_run_start_ms)}"
 export E2E_LOG_DIR E2E_RESULTS_DIR E2E_JSONL_FILE E2E_RUN_CMD E2E_RUN_START_MS

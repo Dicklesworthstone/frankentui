@@ -720,6 +720,9 @@ jobs:
       - name: Remote replay gate (when available)
         run: |
           set -euo pipefail
+          if [[ -x "./tests/e2e/scripts/test_frankenterm_event_ordering_contract.sh" ]]; then
+            ./tests/e2e/scripts/test_frankenterm_event_ordering_contract.sh
+          fi
           shopt -s nullglob
           remote_scripts=(tests/e2e/scripts/test_remote*.sh)
           if [[ -x "./scripts/remote_terminal_e2e.sh" ]]; then

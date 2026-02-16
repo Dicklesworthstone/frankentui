@@ -144,6 +144,7 @@ async function main() {
   const pkg = await loadPkg(args.pkgDir);
   const runId = args.runId || `frankenterm-event-ordering-seed-${args.seed}`;
   const correlationId = `corr-${runId}`;
+  const seedBigInt = BigInt(args.seed);
 
   /** @type {Array<Record<string, unknown>>} */
   const jsonlEvents = [];
@@ -233,27 +234,78 @@ async function main() {
     )}`,
   );
 
-  // Mode transitions: attach state-machine transitions.
+  // Mode transitions: attach state-machine transitions (reconnect + protocol error).
   term.attachConnect(0);
   term.attachTransportOpened(10);
   term.attachHandshakeAck("session-e2e", 20);
-  term.attachTransportClosed(1000, true, "normal_close", 30);
+  term.attachTransportClosed(1006, false, "network_drop", 30);
+  term.attachTick(280);
+  term.attachTransportOpened(290);
+  term.attachHandshakeAck("session-e2e-reconnected", 300);
+  term.attachProtocolError("codec_violation", true, 310);
   const attachLines = Array.from(term.drainAttachTransitionsJsonl(runId));
   const attachSeqs = [];
+  const attachEvents = [];
+  const attachToStates = [];
+  const attachActionKinds = [];
   for (const [idx, line] of attachLines.entries()) {
     const parsed = JSON.parse(String(line));
     const transitionSeq = Number(parsed.transition_seq ?? idx);
+    const attachEvent = String(parsed.attach_event ?? "");
+    const toState = String(parsed.to_state ?? "");
+    const actionKinds = Array.isArray(parsed.actions)
+      ? parsed.actions.map((action) => String(action?.kind ?? ""))
+      : [];
     attachSeqs.push(transitionSeq);
+    attachEvents.push(attachEvent);
+    attachToStates.push(toState);
+    attachActionKinds.push(...actionKinds);
     emit("attach.transition", {
       drain_index: idx,
       transition_seq: transitionSeq,
       from_state: parsed.from_state ?? "",
-      to_state: parsed.to_state ?? "",
-      attach_event: parsed.attach_event ?? "",
+      to_state: toState,
+      attach_event: attachEvent,
+      action_kinds: actionKinds,
     });
   }
-  expect(attachSeqs.length >= 4, errors, "expected >=4 attach transitions in E2E fixture");
+  expect(attachSeqs.length >= 8, errors, "expected >=8 attach transitions in E2E fixture");
   expect(monotonic(attachSeqs), errors, "attach transition_seq must be monotonic");
+  expect(
+    attachEvents.includes("retry_timer_elapsed"),
+    errors,
+    `attach transitions missing retry_timer_elapsed: ${JSON.stringify(attachEvents)}`,
+  );
+  expect(
+    attachEvents.includes("protocol_error"),
+    errors,
+    `attach transitions missing protocol_error: ${JSON.stringify(attachEvents)}`,
+  );
+  expect(
+    attachToStates.includes("backing_off"),
+    errors,
+    `attach transitions missing backing_off state: ${JSON.stringify(attachToStates)}`,
+  );
+  expect(
+    attachToStates.includes("failed"),
+    errors,
+    `attach transitions missing failed state: ${JSON.stringify(attachToStates)}`,
+  );
+  expect(
+    attachActionKinds.includes("schedule_retry"),
+    errors,
+    `attach transitions missing schedule_retry action: ${JSON.stringify(attachActionKinds)}`,
+  );
+  expect(
+    attachActionKinds.includes("open_transport"),
+    errors,
+    `attach transitions missing open_transport action: ${JSON.stringify(attachActionKinds)}`,
+  );
+  expect(
+    attachActionKinds.includes("close_transport"),
+    errors,
+    `attach transitions missing close_transport action: ${JSON.stringify(attachActionKinds)}`,
+  );
 
   // Resize + feed mode transitions for deterministic reply bytes.
   term.resize(8, 4);
@@ -330,7 +382,9 @@ async function main() {
   }
 
   const imeTraceTimestamp = args.deterministic ? "T999999" : isoNow();
-  const imeTraceLines = Array.from(term.drainImeCompositionJsonl(runId, args.seed, imeTraceTimestamp));
+  const imeTraceLines = Array.from(
+    term.drainImeCompositionJsonl(runId, seedBigInt, imeTraceTimestamp),
+  );
   const imeTraceKinds = [];
   for (const [idx, line] of imeTraceLines.entries()) {
     const parsed = JSON.parse(String(line));
@@ -365,7 +419,7 @@ async function main() {
     progressReasons.push(payload.reason ?? null);
     emit("terminal.progress", {
       drain_index: idx,
-      seq: Number(entry.seq ?? 0),
+      subscription_seq: Number(entry.seq ?? 0),
       accepted: Boolean(payload.accepted),
       state: payload.state ?? null,
       value: payload.value ?? null,
@@ -433,7 +487,12 @@ async function main() {
   term.input({ kind: "focus", focused: false });
   const subscriptionJsonlTimestamp = args.deterministic ? "T999998" : isoNow();
   const subscriptionJsonl = Array.from(
-    term.drainEventSubscriptionJsonl(subscriptionId, runId, args.seed, subscriptionJsonlTimestamp),
+    term.drainEventSubscriptionJsonl(
+      subscriptionId,
+      runId,
+      seedBigInt,
+      subscriptionJsonlTimestamp,
+    ),
   );
   expect(
     subscriptionJsonl.length === 1,
