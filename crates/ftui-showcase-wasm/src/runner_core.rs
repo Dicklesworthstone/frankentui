@@ -8,6 +8,11 @@
 use core::time::Duration;
 
 use ftui_demo_showcase::app::AppModel;
+use ftui_demo_showcase::pane_interaction::{
+    DOCK_PREVIEW_CANDIDATE_LIMIT, PanePreviewState, PaneTimelineStatus, adaptive_dock_strength_bps,
+    adaptive_magnetic_field_cells, blend_preview_ghost_rect, build_preview_state_from_candidates,
+    dynamic_live_reflow_threshold_bps, dynamic_preview_switch_advantage_bps, edge_fling_projection,
+};
 use ftui_layout::{
     PANE_EDGE_GRIP_INSET_CELLS, PANE_MAGNETIC_FIELD_CELLS, PaneDockPreview, PaneDockZone,
     PaneDragResizeEffect, PaneId, PaneInertialThrow, PaneInteractionTimeline,
@@ -70,13 +75,6 @@ const PATCH_HASH_ALGO: &str = "fnv1a64";
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
 const DEFAULT_SPRING_BLEND_BPS: u16 = 3_500;
-const PANE_MAGNETIC_FIELD_MIN_CELLS: f64 = 3.5;
-const PANE_MAGNETIC_FIELD_MAX_CELLS: f64 = 11.0;
-const DOCK_PREVIEW_CANDIDATE_LIMIT: usize = 3;
-const LIVE_REFLOW_THRESHOLD_MIN_BPS: u16 = 3_600;
-const LIVE_REFLOW_THRESHOLD_MAX_BPS: u16 = 8_200;
-const LIVE_REFLOW_SWITCH_ADVANTAGE_MIN_BPS: u16 = 450;
-const LIVE_REFLOW_SWITCH_ADVANTAGE_MAX_BPS: u16 = 1_650;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,34 +97,6 @@ struct AutoPointerDownContext {
     target: PaneResizeTarget,
     leaf: PaneId,
     mode: PaneGestureMode,
-}
-
-/// Live preview metadata consumed by WASM/host renderers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PanePreviewState {
-    pub source: Option<PaneId>,
-    pub target: Option<PaneId>,
-    pub zone: Option<PaneDockZone>,
-    pub ghost_rect: Option<Rect>,
-    pub dock_strength_bps: u16,
-    pub motion_speed_cps: u16,
-    pub alt_one_target: Option<PaneId>,
-    pub alt_one_zone: Option<PaneDockZone>,
-    pub alt_one_ghost_rect: Option<Rect>,
-    pub alt_one_strength_bps: u16,
-    pub alt_two_target: Option<PaneId>,
-    pub alt_two_zone: Option<PaneDockZone>,
-    pub alt_two_ghost_rect: Option<Rect>,
-    pub alt_two_strength_bps: u16,
-    pub selection_bounds: Option<Rect>,
-}
-
-/// Lightweight timeline status for host HUD updates.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PaneTimelineStatus {
-    pub cursor: usize,
-    pub len: usize,
 }
 
 /// Host-facing outcome category for one pane lifecycle dispatch.
@@ -853,7 +823,8 @@ impl RunnerCore {
                 } else {
                     None
                 };
-                let magnetic_field = adaptive_magnetic_field_cells(motion, pressure);
+                let magnetic_field =
+                    adaptive_magnetic_field_cells(PANE_MAGNETIC_FIELD_CELLS, motion, pressure);
                 let switch_advantage_bps = dynamic_preview_switch_advantage_bps(motion, pressure);
                 let live_reflow_threshold_bps = dynamic_live_reflow_threshold_bps(motion, pressure);
 
@@ -1076,14 +1047,12 @@ impl RunnerCore {
         pressure: PanePressureSnapProfile,
         dock_strength_bps: u16,
     ) -> Rect {
-        let Some(previous) = self.preview_state.ghost_rect else {
-            return target;
-        };
-        let blend = (u32::from(2_000_u16)
-            + u32::from(pressure.strength_bps / 2)
-            + u32::from(dock_strength_bps / 4))
-        .clamp(2_000, 9_200) as u16;
-        blend_rect(previous, target, blend)
+        blend_preview_ghost_rect(
+            self.preview_state.ghost_rect,
+            target,
+            pressure,
+            dock_strength_bps,
+        )
     }
 
     fn arm_gesture(&mut self, pointer_id: u32, leaf: PaneId, mode: PaneGestureMode) {
@@ -1271,187 +1240,6 @@ fn blend_bps(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
     let delta = target.saturating_sub(current);
     let blended = current + ((delta * i32::try_from(blend).unwrap_or(10_000)) / 10_000);
     blended.clamp(1, 9_999) as u16
-}
-
-fn adaptive_magnetic_field_cells(
-    motion: PaneMotionVector,
-    pressure: PanePressureSnapProfile,
-) -> f64 {
-    let speed_factor = (motion.speed / 90.0).clamp(0.0, 1.0);
-    let confidence = (f64::from(pressure.strength_bps) / 10_000.0).clamp(0.0, 1.0);
-    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
-    (PANE_MAGNETIC_FIELD_CELLS + speed_factor * 3.5 + confidence * 1.8 - noise_penalty * 1.6)
-        .clamp(PANE_MAGNETIC_FIELD_MIN_CELLS, PANE_MAGNETIC_FIELD_MAX_CELLS)
-}
-
-fn dynamic_live_reflow_threshold_bps(
-    motion: PaneMotionVector,
-    pressure: PanePressureSnapProfile,
-) -> u16 {
-    let speed_factor = (motion.speed / 95.0).clamp(0.0, 1.0).powf(0.78);
-    let confidence = (f64::from(pressure.strength_bps) / 10_000.0)
-        .clamp(0.0, 1.0)
-        .powf(0.9);
-    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
-    let threshold = 7_100.0 - speed_factor * 1_850.0 - confidence * 1_050.0 + noise_penalty * 900.0;
-    threshold.round().clamp(
-        f64::from(LIVE_REFLOW_THRESHOLD_MIN_BPS),
-        f64::from(LIVE_REFLOW_THRESHOLD_MAX_BPS),
-    ) as u16
-}
-
-fn dynamic_preview_switch_advantage_bps(
-    motion: PaneMotionVector,
-    pressure: PanePressureSnapProfile,
-) -> u16 {
-    let speed_factor = (motion.speed / 95.0).clamp(0.0, 1.0);
-    let confidence = (f64::from(pressure.strength_bps) / 10_000.0).clamp(0.0, 1.0);
-    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
-    let advantage =
-        1_250.0 - speed_factor * 500.0 + noise_penalty * 420.0 + (1.0 - confidence) * 260.0;
-    advantage.round().clamp(
-        f64::from(LIVE_REFLOW_SWITCH_ADVANTAGE_MIN_BPS),
-        f64::from(LIVE_REFLOW_SWITCH_ADVANTAGE_MAX_BPS),
-    ) as u16
-}
-
-fn adaptive_dock_strength_bps(
-    score: f64,
-    motion: PaneMotionVector,
-    pressure: PanePressureSnapProfile,
-    committed: bool,
-) -> u16 {
-    if score <= 0.0 {
-        return 0;
-    }
-    let base = score.clamp(0.0, 1.0) * 10_000.0;
-    let speed = (motion.speed / 110.0).clamp(0.0, 1.0);
-    let confidence = (f64::from(pressure.strength_bps) / 10_000.0).clamp(0.0, 1.0);
-    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
-    let abs_dx = f64::from(motion.delta_x).abs();
-    let abs_dy = f64::from(motion.delta_y).abs();
-    let dominance = if (abs_dx + abs_dy) <= f64::EPSILON {
-        0.0
-    } else {
-        (abs_dx - abs_dy).abs() / (abs_dx + abs_dy)
-    };
-    let assist =
-        speed * 0.16 + confidence * 0.10 + dominance * 0.08 + if committed { 0.06 } else { 0.0 };
-    let precision_penalty = (1.0 - speed) * (1.0 - confidence) * 0.12 + noise_penalty * 0.18;
-    (base * (1.0 + assist - precision_penalty))
-        .round()
-        .clamp(0.0, 10_000.0) as u16
-}
-
-fn edge_fling_projection(
-    pointer: PanePointerPosition,
-    motion: PaneMotionVector,
-    viewport: Rect,
-) -> PanePointerPosition {
-    if motion.speed < 34.0 {
-        return pointer;
-    }
-    let boost_cells = ((motion.speed - 28.0) * 0.13).round().clamp(2.0, 26.0);
-    let margin_x = (f64::from(viewport.width) * 0.14).clamp(2.0, 18.0);
-    let margin_y = (f64::from(viewport.height) * 0.18).clamp(2.0, 14.0);
-    let left = f64::from(viewport.x);
-    let right = f64::from(viewport.x.saturating_add(viewport.width.saturating_sub(1)));
-    let top = f64::from(viewport.y);
-    let bottom = f64::from(viewport.y.saturating_add(viewport.height.saturating_sub(1)));
-    let px = f64::from(pointer.x);
-    let py = f64::from(pointer.y);
-
-    let mut out_x = f64::from(pointer.x);
-    let mut out_y = f64::from(pointer.y);
-    if f64::from(motion.delta_x) < 0.0 && px <= left + margin_x {
-        out_x -= boost_cells;
-    } else if f64::from(motion.delta_x) > 0.0 && px >= right - margin_x {
-        out_x += boost_cells;
-    }
-    if f64::from(motion.delta_y) < 0.0 && py <= top + margin_y {
-        out_y -= boost_cells;
-    } else if f64::from(motion.delta_y) > 0.0 && py >= bottom - margin_y {
-        out_y += boost_cells;
-    }
-    PanePointerPosition::new(round_f64_to_i32(out_x), round_f64_to_i32(out_y))
-}
-
-fn blend_u16_value(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
-    let blend = u32::from(blend_factor_bps.clamp(1, 10_000));
-    let current = i32::from(current);
-    let target = i32::from(target);
-    let delta = target.saturating_sub(current);
-    let blended = current + ((delta * i32::try_from(blend).unwrap_or(10_000)) / 10_000);
-    blended.clamp(0, i32::from(u16::MAX)) as u16
-}
-
-fn round_f64_to_i32(value: f64) -> i32 {
-    if value.is_nan() {
-        return 0;
-    }
-    if value >= f64::from(i32::MAX) {
-        return i32::MAX;
-    }
-    if value <= f64::from(i32::MIN) {
-        return i32::MIN;
-    }
-    value.round() as i32
-}
-
-fn blend_rect(current: Rect, target: Rect, blend_factor_bps: u16) -> Rect {
-    Rect::new(
-        blend_u16_value(current.x, target.x, blend_factor_bps),
-        blend_u16_value(current.y, target.y, blend_factor_bps),
-        blend_u16_value(current.width.max(1), target.width.max(1), blend_factor_bps).max(1),
-        blend_u16_value(
-            current.height.max(1),
-            target.height.max(1),
-            blend_factor_bps,
-        )
-        .max(1),
-    )
-}
-
-fn score_to_strength_bps(score: f64) -> u16 {
-    (score * 10_000.0).round().clamp(0.0, 10_000.0) as u16
-}
-
-fn build_preview_state_from_candidates(
-    source: PaneId,
-    primary: PaneDockPreview,
-    primary_ghost_rect: Rect,
-    dock_strength_bps: u16,
-    motion_speed_cps: u16,
-    ranked: &[PaneDockPreview],
-    selection_bounds: Option<Rect>,
-) -> PanePreviewState {
-    let mut alternatives = ranked
-        .iter()
-        .copied()
-        .filter(|candidate| candidate.target != primary.target || candidate.zone != primary.zone);
-    let alt_one = alternatives.next();
-    let alt_two = alternatives.next();
-    PanePreviewState {
-        source: Some(source),
-        target: Some(primary.target),
-        zone: Some(primary.zone),
-        ghost_rect: Some(primary_ghost_rect),
-        dock_strength_bps,
-        motion_speed_cps,
-        alt_one_target: alt_one.map(|candidate| candidate.target),
-        alt_one_zone: alt_one.map(|candidate| candidate.zone),
-        alt_one_ghost_rect: alt_one.map(|candidate| candidate.ghost_rect),
-        alt_one_strength_bps: alt_one
-            .map(|candidate| score_to_strength_bps(candidate.score))
-            .unwrap_or(0),
-        alt_two_target: alt_two.map(|candidate| candidate.target),
-        alt_two_zone: alt_two.map(|candidate| candidate.zone),
-        alt_two_ghost_rect: alt_two.map(|candidate| candidate.ghost_rect),
-        alt_two_strength_bps: alt_two
-            .map(|candidate| score_to_strength_bps(candidate.score))
-            .unwrap_or(0),
-        selection_bounds,
-    }
 }
 
 fn pane_operations_signature(operations: &[PaneOperation]) -> u64 {

@@ -9,9 +9,8 @@ use js_sys::{Array, Object, Reflect, Uint32Array};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-use super::runner_core::{
-    PaneDispatchOutcome, PaneDispatchSummary, PanePreviewState, PaneTimelineStatus, RunnerCore,
-};
+use super::runner_core::{PaneDispatchOutcome, PaneDispatchSummary, RunnerCore};
+use ftui_demo_showcase::pane_interaction::{PanePreviewState, PaneTimelineStatus};
 use ftui_layout::{
     PaneId, PaneLayoutIntelligenceMode, PaneModifierSnapshot, PanePointerButton, PaneResizeTarget,
     SplitAxis,
