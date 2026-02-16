@@ -40,7 +40,8 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::pane::{
-    PANE_TREE_SCHEMA_VERSION, PaneId, PaneModelError, PaneNodeKind, PaneTreeSnapshot,
+    PANE_TREE_SCHEMA_VERSION, PaneId, PaneInteractionTimeline, PaneModelError, PaneNodeKind,
+    PaneTreeSnapshot,
 };
 
 /// Current workspace schema version.
@@ -65,6 +66,9 @@ pub struct WorkspaceSnapshot {
     pub active_pane_id: Option<PaneId>,
     /// Workspace metadata (name, timestamps, host info).
     pub metadata: WorkspaceMetadata,
+    /// Persistent pane interaction timeline for undo/redo/replay.
+    #[serde(default)]
+    pub interaction_timeline: PaneInteractionTimeline,
     /// Forward-compatible extension bag.
     #[serde(default)]
     pub extensions: BTreeMap<String, String>,
@@ -83,6 +87,7 @@ impl WorkspaceSnapshot {
             pane_tree,
             active_pane_id: None,
             metadata,
+            interaction_timeline: PaneInteractionTimeline::default(),
             extensions: BTreeMap::new(),
         }
     }
@@ -147,6 +152,13 @@ impl WorkspaceSnapshot {
         // Metadata validation
         if self.metadata.name.is_empty() {
             return Err(WorkspaceValidationError::EmptyWorkspaceName);
+        }
+
+        if self.interaction_timeline.cursor > self.interaction_timeline.entries.len() {
+            return Err(WorkspaceValidationError::TimelineCursorOutOfRange {
+                cursor: self.interaction_timeline.cursor,
+                len: self.interaction_timeline.entries.len(),
+            });
         }
 
         Ok(())
@@ -255,6 +267,8 @@ pub enum WorkspaceValidationError {
     ActivePaneNotLeaf { pane_id: PaneId },
     /// Workspace name is empty.
     EmptyWorkspaceName,
+    /// Timeline cursor is outside the recorded history bounds.
+    TimelineCursorOutOfRange { cursor: usize, len: usize },
     /// Pane model error from tree operations.
     PaneModel(PaneModelError),
 }
@@ -290,6 +304,10 @@ impl fmt::Display for WorkspaceValidationError {
                 write!(f, "active pane {} is a split, not a leaf", pane_id.get())
             }
             Self::EmptyWorkspaceName => write!(f, "workspace name must not be empty"),
+            Self::TimelineCursorOutOfRange { cursor, len } => write!(
+                f,
+                "interaction timeline cursor {cursor} out of bounds for history length {len}"
+            ),
             Self::PaneModel(e) => write!(f, "pane model error: {e}"),
         }
     }
@@ -387,7 +405,10 @@ pub fn needs_migration(snapshot: &WorkspaceSnapshot) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pane::{PaneLeaf, PaneNodeRecord, PaneSplit, PaneSplitRatio, SplitAxis};
+    use crate::pane::{
+        PaneInteractionTimelineEntry, PaneLeaf, PaneNodeRecord, PaneOperation, PaneSplit,
+        PaneSplitRatio, SplitAxis,
+    };
 
     fn minimal_tree() -> PaneTreeSnapshot {
         PaneTreeSnapshot {
@@ -548,6 +569,26 @@ mod tests {
         let snap = WorkspaceSnapshot::new(minimal_tree(), WorkspaceMetadata::new(""));
         let err = snap.validate().unwrap_err();
         assert!(matches!(err, WorkspaceValidationError::EmptyWorkspaceName));
+    }
+
+    #[test]
+    fn validate_timeline_cursor_out_of_range() {
+        let mut snap = minimal_snapshot();
+        snap.interaction_timeline.cursor = 2;
+        snap.interaction_timeline
+            .entries
+            .push(PaneInteractionTimelineEntry {
+                sequence: 1,
+                operation_id: 10,
+                operation: PaneOperation::NormalizeRatios,
+                before_hash: 1,
+                after_hash: 2,
+            });
+        let err = snap.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            WorkspaceValidationError::TimelineCursorOutOfRange { .. }
+        ));
     }
 
     // ---- Serialization ----

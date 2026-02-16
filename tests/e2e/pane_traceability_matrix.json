@@ -1,0 +1,386 @@
+{
+  "schema_version": "pane-traceability-v1",
+  "root_bead": "bd-gajnk",
+  "status_values": [
+    "planned",
+    "implemented",
+    "passing",
+    "flaky",
+    "blocked"
+  ],
+  "default_evidence_status_by_bead_status": {
+    "open": {
+      "unit": "planned",
+      "e2e": "planned",
+      "logging": "planned"
+    },
+    "in_progress": {
+      "unit": "implemented",
+      "e2e": "implemented",
+      "logging": "implemented"
+    },
+    "closed": {
+      "unit": "passing",
+      "e2e": "passing",
+      "logging": "passing"
+    }
+  },
+  "profiles": {
+    "program": {
+      "description": "Program-level planning and gate visibility for the pane epic.",
+      "required_evidence": [
+        "logging"
+      ],
+      "scripts": [
+        "tests/e2e/check_pane_traceability.sh"
+      ],
+      "artifact_assertions": [
+        "artifact_pane_traceability_matrix",
+        "artifact_pane_traceability_status"
+      ]
+    },
+    "implementation": {
+      "description": "Implementation beads require unit/e2e/logging evidence tied to canonical pane runners.",
+      "required_evidence": [
+        "unit",
+        "e2e",
+        "logging"
+      ],
+      "scripts": [
+        "scripts/pane_e2e.sh",
+        "tests/e2e/scripts/test_layout_composer_resize.sh",
+        "tests/e2e/scripts/test_action_timeline.sh"
+      ],
+      "artifact_assertions": [
+        "artifact_jsonl",
+        "artifact_pane_e2e_summary",
+        "artifact_pane_artifact_bundle"
+      ]
+    },
+    "validation": {
+      "description": "Validation beads must map to deterministic replay, E2E coverage, and structured diagnostics.",
+      "required_evidence": [
+        "unit",
+        "e2e",
+        "logging"
+      ],
+      "scripts": [
+        "scripts/pane_e2e.sh",
+        "tests/e2e/check_pane_traceability.sh",
+        "tests/e2e/scripts/test_layout_composer_resize.sh",
+        "tests/e2e/scripts/test_action_timeline.sh"
+      ],
+      "artifact_assertions": [
+        "artifact_jsonl",
+        "artifact_pane_e2e_summary",
+        "artifact_pane_traceability_status",
+        "artifact_pane_artifact_bundle"
+      ]
+    },
+    "rollout": {
+      "description": "Rollout beads require evidence that release gates and traceability summaries are wired.",
+      "required_evidence": [
+        "e2e",
+        "logging"
+      ],
+      "scripts": [
+        "scripts/pane_e2e.sh",
+        "tests/e2e/check_pane_traceability.sh"
+      ],
+      "artifact_assertions": [
+        "artifact_jsonl",
+        "artifact_pane_e2e_summary",
+        "artifact_pane_traceability_status"
+      ]
+    }
+  },
+  "evidence_overrides": {
+    "bd-a46q1.9": {
+      "unit": "implemented",
+      "e2e": "implemented",
+      "logging": "implemented"
+    }
+  },
+  "rows": [
+    {
+      "bead_id": "bd-114kn",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1381a",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-14edr",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-14w4r",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-16jx8",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-16jx8.1",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-18yus",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1atyk",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1efcv",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1fix5",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1k7ek",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1pvzq",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1qkzq",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1w0w4",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1w0w4.1",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1w0w4.2",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1w0w4.3",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1w0w4.4",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1w0w4.5",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1w0w4.6",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1w0w4.7",
+      "profile": "rollout"
+    },
+    {
+      "bead_id": "bd-1wg6i",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-1y0ph",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-21pbi",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-21pbi.1",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-21pbi.2",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-21pbi.3",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-21pbi.4",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-21pbi.5",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-21pbi.6",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-23pre",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-24v9m",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-25wj7",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-27s9r",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2axgy",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2bav7",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2chnd",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2dy6m",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2eqqy",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2g4bw",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2ljzu",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2mgle",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2pouv",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2r1yi",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2tns3",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-2tp51",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-30abw",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-3aciu",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-3bfbp",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-3jmx7",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-3mbbe",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-6u66i",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-945xs",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-a46q1",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.1",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.2",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.3",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.4",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.5",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.6",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.7",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.8",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-a46q1.9",
+      "profile": "validation"
+    },
+    {
+      "bead_id": "bd-ap8ut",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-c2z7c",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-gajnk",
+      "profile": "program"
+    },
+    {
+      "bead_id": "bd-j1mo9",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-x9lqw",
+      "profile": "implementation"
+    },
+    {
+      "bead_id": "bd-ylfkz",
+      "profile": "implementation"
+    }
+  ],
+  "notes": [
+    "Rows must include every bead descended from root_bead.",
+    "check_pane_traceability.sh materializes the live status view and fails when rows drift."
+  ]
+}

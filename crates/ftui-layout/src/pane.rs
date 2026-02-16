@@ -470,6 +470,51 @@ impl PaneLayout {
     pub fn iter(&self) -> impl Iterator<Item = (PaneId, Rect)> + '_ {
         self.rects.iter().map(|(node_id, rect)| (*node_id, *rect))
     }
+
+    /// Classify pointer hit-test against any edge/corner grip for a pane rect.
+    #[must_use]
+    pub fn classify_resize_grip(
+        &self,
+        node_id: PaneId,
+        pointer: PanePointerPosition,
+        inset_cells: f64,
+    ) -> Option<PaneResizeGrip> {
+        let rect = self.rect(node_id)?;
+        classify_resize_grip(rect, pointer, inset_cells)
+    }
+
+    /// Compute the outer bounding box of a pane cluster in layout space.
+    #[must_use]
+    pub fn cluster_bounds(&self, nodes: &BTreeSet<PaneId>) -> Option<Rect> {
+        if nodes.is_empty() {
+            return None;
+        }
+        let mut min_x: Option<u16> = None;
+        let mut min_y: Option<u16> = None;
+        let mut max_x: Option<u16> = None;
+        let mut max_y: Option<u16> = None;
+
+        for node_id in nodes {
+            let rect = self.rect(*node_id)?;
+            min_x = Some(min_x.map_or(rect.x, |v| v.min(rect.x)));
+            min_y = Some(min_y.map_or(rect.y, |v| v.min(rect.y)));
+            let right = rect.x.saturating_add(rect.width);
+            let bottom = rect.y.saturating_add(rect.height);
+            max_x = Some(max_x.map_or(right, |v| v.max(right)));
+            max_y = Some(max_y.map_or(bottom, |v| v.max(bottom)));
+        }
+
+        let left = min_x?;
+        let top = min_y?;
+        let right = max_x?;
+        let bottom = max_y?;
+        Some(Rect::new(
+            left,
+            top,
+            right.saturating_sub(left).max(1),
+            bottom.saturating_sub(top).max(1),
+        ))
+    }
 }
 
 /// Default radius for magnetic docking attraction in cell units.
@@ -695,6 +740,33 @@ impl fmt::Display for PaneEdgeResizePlanError {
 
 impl std::error::Error for PaneEdgeResizePlanError {}
 
+/// Errors while planning reflow moves and docking previews.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneReflowPlanError {
+    MissingSource { source: PaneId },
+    NoDockTarget,
+    SourceCannotMoveRoot { source: PaneId },
+    InvalidRatio { numerator: u32, denominator: u32 },
+}
+
+impl fmt::Display for PaneReflowPlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSource { source } => write!(f, "source node {} not found", source.get()),
+            Self::NoDockTarget => write!(f, "no magnetic docking target available"),
+            Self::SourceCannotMoveRoot { source } => {
+                write!(f, "source node {} is root and cannot be reflow-moved", source.get())
+            }
+            Self::InvalidRatio {
+                numerator,
+                denominator,
+            } => write!(f, "invalid reflow ratio {numerator}/{denominator}"),
+        }
+    }
+}
+
+impl std::error::Error for PaneReflowPlanError {}
+
 /// Multi-pane selection state for group interactions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PaneSelectionState {
@@ -759,10 +831,42 @@ pub struct PaneInteractionTimelineEntry {
 /// Persistent interaction timeline with undo/redo cursor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PaneInteractionTimeline {
+    /// Baseline tree before first recorded mutation.
+    pub baseline: Option<PaneTreeSnapshot>,
     /// Full operation history in deterministic order.
     pub entries: Vec<PaneInteractionTimelineEntry>,
     /// Number of entries currently applied (<= entries.len()).
     pub cursor: usize,
+}
+
+/// Timeline replay/undo/redo failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneInteractionTimelineError {
+    MissingBaseline,
+    BaselineInvalid { source: PaneModelError },
+    ApplyFailed { source: PaneOperationError },
+}
+
+impl fmt::Display for PaneInteractionTimelineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingBaseline => write!(f, "timeline baseline is not set"),
+            Self::BaselineInvalid { source } => {
+                write!(f, "failed to restore timeline baseline: {source}")
+            }
+            Self::ApplyFailed { source } => write!(f, "timeline replay operation failed: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for PaneInteractionTimelineError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::BaselineInvalid { source } => Some(source),
+            Self::ApplyFailed { source } => Some(source),
+            Self::MissingBaseline => None,
+        }
+    }
 }
 
 /// Placement of an incoming node relative to an existing node inside a split.
@@ -2739,6 +2843,187 @@ fn cancel_target_matches(active: PaneResizeTarget, incoming: Option<PaneResizeTa
     incoming.is_none() || incoming == Some(active)
 }
 
+fn round_f64_to_i32(value: f64) -> i32 {
+    if !value.is_finite() {
+        return 0;
+    }
+    if value >= f64::from(i32::MAX) {
+        return i32::MAX;
+    }
+    if value <= f64::from(i32::MIN) {
+        return i32::MIN;
+    }
+    value.round() as i32
+}
+
+fn axis_share_from_pointer(
+    rect: Rect,
+    pointer: PanePointerPosition,
+    axis: SplitAxis,
+    inset_cells: f64,
+) -> f64 {
+    let inset = inset_cells.max(0.0);
+    let (origin, extent, coordinate) = match axis {
+        SplitAxis::Horizontal => (f64::from(rect.x), f64::from(rect.width), f64::from(pointer.x)),
+        SplitAxis::Vertical => (f64::from(rect.y), f64::from(rect.height), f64::from(pointer.y)),
+    };
+    if extent <= 0.0 {
+        return 0.5;
+    }
+    let low = origin + inset.min(extent / 2.0);
+    let high = (origin + extent) - inset.min(extent / 2.0);
+    if high <= low {
+        return 0.5;
+    }
+    ((coordinate - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+fn classify_resize_grip(
+    rect: Rect,
+    pointer: PanePointerPosition,
+    inset_cells: f64,
+) -> Option<PaneResizeGrip> {
+    let inset = inset_cells.max(0.5);
+    let left = f64::from(rect.x);
+    let right = f64::from(rect.x.saturating_add(rect.width.saturating_sub(1)));
+    let top = f64::from(rect.y);
+    let bottom = f64::from(rect.y.saturating_add(rect.height.saturating_sub(1)));
+    let px = f64::from(pointer.x);
+    let py = f64::from(pointer.y);
+
+    if px < left - inset || px > right + inset || py < top - inset || py > bottom + inset {
+        return None;
+    }
+
+    let near_left = (px - left).abs() <= inset;
+    let near_right = (px - right).abs() <= inset;
+    let near_top = (py - top).abs() <= inset;
+    let near_bottom = (py - bottom).abs() <= inset;
+
+    match (near_left, near_right, near_top, near_bottom) {
+        (true, false, true, false) => Some(PaneResizeGrip::TopLeft),
+        (false, true, true, false) => Some(PaneResizeGrip::TopRight),
+        (true, false, false, true) => Some(PaneResizeGrip::BottomLeft),
+        (false, true, false, true) => Some(PaneResizeGrip::BottomRight),
+        (true, false, false, false) => Some(PaneResizeGrip::Left),
+        (false, true, false, false) => Some(PaneResizeGrip::Right),
+        (false, false, true, false) => Some(PaneResizeGrip::Top),
+        (false, false, false, true) => Some(PaneResizeGrip::Bottom),
+        _ => None,
+    }
+}
+
+fn euclidean_distance(a: PanePointerPosition, b: PanePointerPosition) -> f64 {
+    let dx = f64::from(a.x - b.x);
+    let dy = f64::from(a.y - b.y);
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn rect_zone_anchor(rect: Rect, zone: PaneDockZone) -> PanePointerPosition {
+    let left = i32::from(rect.x);
+    let right = i32::from(rect.x.saturating_add(rect.width.saturating_sub(1)));
+    let top = i32::from(rect.y);
+    let bottom = i32::from(rect.y.saturating_add(rect.height.saturating_sub(1)));
+    let mid_x = (left + right) / 2;
+    let mid_y = (top + bottom) / 2;
+    match zone {
+        PaneDockZone::Left => PanePointerPosition::new(left, mid_y),
+        PaneDockZone::Right => PanePointerPosition::new(right, mid_y),
+        PaneDockZone::Top => PanePointerPosition::new(mid_x, top),
+        PaneDockZone::Bottom => PanePointerPosition::new(mid_x, bottom),
+        PaneDockZone::Center => PanePointerPosition::new(mid_x, mid_y),
+    }
+}
+
+fn dock_zone_ghost_rect(rect: Rect, zone: PaneDockZone) -> Rect {
+    match zone {
+        PaneDockZone::Left => Rect::new(rect.x, rect.y, (rect.width / 2).max(1), rect.height.max(1)),
+        PaneDockZone::Right => {
+            let width = (rect.width / 2).max(1);
+            Rect::new(
+                rect.x.saturating_add(rect.width.saturating_sub(width)),
+                rect.y,
+                width,
+                rect.height.max(1),
+            )
+        }
+        PaneDockZone::Top => Rect::new(rect.x, rect.y, rect.width.max(1), (rect.height / 2).max(1)),
+        PaneDockZone::Bottom => {
+            let height = (rect.height / 2).max(1);
+            Rect::new(
+                rect.x,
+                rect.y.saturating_add(rect.height.saturating_sub(height)),
+                rect.width.max(1),
+                height,
+            )
+        }
+        PaneDockZone::Center => rect,
+    }
+}
+
+fn dock_zone_score(distance: f64, radius: f64, zone: PaneDockZone) -> f64 {
+    if radius <= 0.0 || distance > radius {
+        return 0.0;
+    }
+    let base = 1.0 - (distance / radius);
+    let zone_weight = match zone {
+        PaneDockZone::Center => 0.85,
+        PaneDockZone::Left | PaneDockZone::Right | PaneDockZone::Top | PaneDockZone::Bottom => 1.0,
+    };
+    base * zone_weight
+}
+
+fn dock_preview_for_rect(
+    target: PaneId,
+    rect: Rect,
+    pointer: PanePointerPosition,
+    magnetic_field_cells: f64,
+) -> Option<PaneDockPreview> {
+    let radius = magnetic_field_cells.max(0.5);
+    let zones = [
+        PaneDockZone::Left,
+        PaneDockZone::Right,
+        PaneDockZone::Top,
+        PaneDockZone::Bottom,
+        PaneDockZone::Center,
+    ];
+    let mut best: Option<PaneDockPreview> = None;
+    for zone in zones {
+        let anchor = rect_zone_anchor(rect, zone);
+        let distance = euclidean_distance(anchor, pointer);
+        let score = dock_zone_score(distance, radius, zone);
+        if score <= 0.0 {
+            continue;
+        }
+        let candidate = PaneDockPreview {
+            target,
+            zone,
+            score,
+            ghost_rect: dock_zone_ghost_rect(rect, zone),
+        };
+        match best {
+            Some(current) if candidate.score <= current.score => {}
+            _ => best = Some(candidate),
+        }
+    }
+    best
+}
+
+fn zone_to_axis_placement_and_target_share(
+    zone: PaneDockZone,
+    incoming_share_bps: u16,
+) -> (SplitAxis, PanePlacement, u16) {
+    let incoming = incoming_share_bps.clamp(500, 9_500);
+    let target_share = 10_000_u16.saturating_sub(incoming);
+    match zone {
+        PaneDockZone::Left => (SplitAxis::Horizontal, PanePlacement::IncomingFirst, incoming),
+        PaneDockZone::Right => (SplitAxis::Horizontal, PanePlacement::ExistingFirst, target_share),
+        PaneDockZone::Top => (SplitAxis::Vertical, PanePlacement::IncomingFirst, incoming),
+        PaneDockZone::Bottom => (SplitAxis::Vertical, PanePlacement::ExistingFirst, target_share),
+        PaneDockZone::Center => (SplitAxis::Horizontal, PanePlacement::ExistingFirst, 5_000),
+    }
+}
+
 /// Supported structural pane operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -4001,6 +4286,602 @@ impl PaneTree {
 
         self.solve_node(split.first, first_rect, rects)?;
         self.solve_node(split.second, second_rect, rects)?;
+        Ok(())
+    }
+
+    /// Pick the best magnetic docking preview at a pointer location.
+    #[must_use]
+    pub fn choose_dock_preview(
+        &self,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        magnetic_field_cells: f64,
+    ) -> Option<PaneDockPreview> {
+        self.choose_dock_preview_excluding(layout, pointer, magnetic_field_cells, None)
+    }
+
+    /// Plan a pane move with inertial projection, magnetic docking, and
+    /// pressure-sensitive snapping.
+    pub fn plan_reflow_move_with_preview(
+        &self,
+        source: PaneId,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        motion: PaneMotionVector,
+        inertial: Option<PaneInertialThrow>,
+        magnetic_field_cells: f64,
+    ) -> Result<PaneReflowMovePlan, PaneReflowPlanError> {
+        if !self.nodes.contains_key(&source) {
+            return Err(PaneReflowPlanError::MissingSource { source });
+        }
+        if source == self.root {
+            return Err(PaneReflowPlanError::SourceCannotMoveRoot { source });
+        }
+
+        let projected = inertial
+            .map(|profile| profile.projected_pointer(pointer))
+            .unwrap_or(pointer);
+        let preview = self
+            .choose_dock_preview_excluding(layout, projected, magnetic_field_cells, Some(source))
+            .ok_or(PaneReflowPlanError::NoDockTarget)?;
+
+        let snap_profile = PanePressureSnapProfile::from_motion(motion);
+        let incoming_share_bps = snap_profile
+            .strength_bps
+            .saturating_sub(2_000)
+            .clamp(2_500, 7_500);
+
+        let operations = if preview.zone == PaneDockZone::Center {
+            vec![PaneOperation::SwapNodes {
+                first: source,
+                second: preview.target,
+            }]
+        } else {
+            let (axis, placement, target_first_share) =
+                zone_to_axis_placement_and_target_share(preview.zone, incoming_share_bps);
+            let ratio = PaneSplitRatio::new(
+                u32::from(target_first_share.max(1)),
+                u32::from(10_000_u16.saturating_sub(target_first_share).max(1)),
+            )
+            .map_err(|_| PaneReflowPlanError::InvalidRatio {
+                numerator: u32::from(target_first_share.max(1)),
+                denominator: u32::from(10_000_u16.saturating_sub(target_first_share).max(1)),
+            })?;
+            vec![PaneOperation::MoveSubtree {
+                source,
+                target: preview.target,
+                axis,
+                ratio,
+                placement,
+            }]
+        };
+
+        Ok(PaneReflowMovePlan {
+            source,
+            pointer,
+            projected_pointer: projected,
+            preview,
+            snap_profile,
+            operations,
+        })
+    }
+
+    /// Apply a previously planned reflow move.
+    pub fn apply_reflow_move_plan(
+        &mut self,
+        operation_seed: u64,
+        plan: &PaneReflowMovePlan,
+    ) -> Result<Vec<PaneOperationOutcome>, PaneOperationError> {
+        let mut outcomes = Vec::with_capacity(plan.operations.len());
+        for (index, operation) in plan.operations.iter().cloned().enumerate() {
+            let outcome = self.apply_operation(operation_seed.saturating_add(index as u64), operation)?;
+            outcomes.push(outcome);
+        }
+        Ok(outcomes)
+    }
+
+    /// Plan any-edge / any-corner organic resize for one leaf.
+    pub fn plan_edge_resize(
+        &self,
+        leaf: PaneId,
+        layout: &PaneLayout,
+        grip: PaneResizeGrip,
+        pointer: PanePointerPosition,
+        pressure: PanePressureSnapProfile,
+    ) -> Result<PaneEdgeResizePlan, PaneEdgeResizePlanError> {
+        let node = self
+            .nodes
+            .get(&leaf)
+            .ok_or(PaneEdgeResizePlanError::MissingLeaf { leaf })?;
+        if !matches!(node.kind, PaneNodeKind::Leaf(_)) {
+            return Err(PaneEdgeResizePlanError::NodeNotLeaf { node: leaf });
+        }
+
+        let tuned_snap = pressure.apply_to_tuning(PaneSnapTuning::default());
+        let mut operations = Vec::with_capacity(2);
+
+        if let Some(_toward_max) = grip.horizontal_edge() {
+            let split_id = self
+                .nearest_axis_split_for_node(leaf, SplitAxis::Horizontal)
+                .ok_or(PaneEdgeResizePlanError::NoAxisSplit {
+                    leaf,
+                    axis: SplitAxis::Horizontal,
+                })?;
+            let split_rect = layout
+                .rect(split_id)
+                .ok_or(PaneEdgeResizePlanError::MissingLayoutRect { node: split_id })?;
+            let share = axis_share_from_pointer(
+                split_rect,
+                pointer,
+                SplitAxis::Horizontal,
+                PANE_EDGE_GRIP_INSET_CELLS,
+            );
+            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let ratio = PaneSplitRatio::new(
+                u32::from(snapped.max(1)),
+                u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            )
+            .map_err(|_| PaneEdgeResizePlanError::InvalidRatio {
+                numerator: u32::from(snapped.max(1)),
+                denominator: u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            })?;
+            operations.push(PaneOperation::SetSplitRatio {
+                split: split_id,
+                ratio,
+            });
+        }
+
+        if let Some(_toward_max) = grip.vertical_edge() {
+            let split_id = self
+                .nearest_axis_split_for_node(leaf, SplitAxis::Vertical)
+                .ok_or(PaneEdgeResizePlanError::NoAxisSplit {
+                    leaf,
+                    axis: SplitAxis::Vertical,
+                })?;
+            let split_rect = layout
+                .rect(split_id)
+                .ok_or(PaneEdgeResizePlanError::MissingLayoutRect { node: split_id })?;
+            let share = axis_share_from_pointer(
+                split_rect,
+                pointer,
+                SplitAxis::Vertical,
+                PANE_EDGE_GRIP_INSET_CELLS,
+            );
+            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let ratio = PaneSplitRatio::new(
+                u32::from(snapped.max(1)),
+                u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            )
+            .map_err(|_| PaneEdgeResizePlanError::InvalidRatio {
+                numerator: u32::from(snapped.max(1)),
+                denominator: u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            })?;
+            operations.push(PaneOperation::SetSplitRatio {
+                split: split_id,
+                ratio,
+            });
+        }
+
+        Ok(PaneEdgeResizePlan {
+            leaf,
+            grip,
+            operations,
+        })
+    }
+
+    /// Apply all operations generated by an edge/corner resize plan.
+    pub fn apply_edge_resize_plan(
+        &mut self,
+        operation_seed: u64,
+        plan: &PaneEdgeResizePlan,
+    ) -> Result<Vec<PaneOperationOutcome>, PaneOperationError> {
+        let mut outcomes = Vec::with_capacity(plan.operations.len());
+        for (index, operation) in plan.operations.iter().cloned().enumerate() {
+            outcomes.push(self.apply_operation(operation_seed.saturating_add(index as u64), operation)?);
+        }
+        Ok(outcomes)
+    }
+
+    /// Plan a cluster move by moving the anchor and then reattaching members.
+    pub fn plan_group_move(
+        &self,
+        selection: &PaneSelectionState,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        motion: PaneMotionVector,
+        inertial: Option<PaneInertialThrow>,
+        magnetic_field_cells: f64,
+    ) -> Result<PaneGroupTransformPlan, PaneReflowPlanError> {
+        if selection.is_empty() {
+            return Ok(PaneGroupTransformPlan {
+                members: Vec::new(),
+                operations: Vec::new(),
+            });
+        }
+        let members = selection.as_sorted_vec();
+        let anchor = selection.anchor.unwrap_or(members[0]);
+        let reflow = self.plan_reflow_move_with_preview(
+            anchor,
+            layout,
+            pointer,
+            motion,
+            inertial,
+            magnetic_field_cells,
+        )?;
+        let mut operations = reflow.operations.clone();
+        if members.len() > 1 {
+            let (axis, placement, target_first_share) =
+                zone_to_axis_placement_and_target_share(reflow.preview.zone, 5_000);
+            let ratio = PaneSplitRatio::new(
+                u32::from(target_first_share.max(1)),
+                u32::from(10_000_u16.saturating_sub(target_first_share).max(1)),
+            )
+            .map_err(|_| PaneReflowPlanError::InvalidRatio {
+                numerator: u32::from(target_first_share.max(1)),
+                denominator: u32::from(10_000_u16.saturating_sub(target_first_share).max(1)),
+            })?;
+            for member in members.iter().copied().filter(|member| *member != anchor) {
+                operations.push(PaneOperation::MoveSubtree {
+                    source: member,
+                    target: anchor,
+                    axis,
+                    ratio,
+                    placement,
+                });
+            }
+        }
+        Ok(PaneGroupTransformPlan { members, operations })
+    }
+
+    /// Plan a cluster resize by resizing the shared outer boundary while
+    /// preserving internal cluster ratios.
+    pub fn plan_group_resize(
+        &self,
+        selection: &PaneSelectionState,
+        layout: &PaneLayout,
+        grip: PaneResizeGrip,
+        pointer: PanePointerPosition,
+        pressure: PanePressureSnapProfile,
+    ) -> Result<PaneGroupTransformPlan, PaneEdgeResizePlanError> {
+        if selection.is_empty() {
+            return Ok(PaneGroupTransformPlan {
+                members: Vec::new(),
+                operations: Vec::new(),
+            });
+        }
+        let members = selection.as_sorted_vec();
+        let cluster_root = self
+            .lowest_common_ancestor(&members)
+            .unwrap_or_else(|| selection.anchor.unwrap_or(members[0]));
+        let proxy_leaf = selection.anchor.unwrap_or(members[0]);
+
+        let tuned_snap = pressure.apply_to_tuning(PaneSnapTuning::default());
+        let mut operations = Vec::with_capacity(2);
+
+        if grip.horizontal_edge().is_some() {
+            let split_id = self
+                .nearest_axis_split_for_node(cluster_root, SplitAxis::Horizontal)
+                .ok_or(PaneEdgeResizePlanError::NoAxisSplit {
+                    leaf: proxy_leaf,
+                    axis: SplitAxis::Horizontal,
+                })?;
+            let split_rect = layout
+                .rect(split_id)
+                .ok_or(PaneEdgeResizePlanError::MissingLayoutRect { node: split_id })?;
+            let share = axis_share_from_pointer(
+                split_rect,
+                pointer,
+                SplitAxis::Horizontal,
+                PANE_EDGE_GRIP_INSET_CELLS,
+            );
+            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let ratio = PaneSplitRatio::new(
+                u32::from(snapped.max(1)),
+                u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            )
+            .map_err(|_| PaneEdgeResizePlanError::InvalidRatio {
+                numerator: u32::from(snapped.max(1)),
+                denominator: u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            })?;
+            operations.push(PaneOperation::SetSplitRatio {
+                split: split_id,
+                ratio,
+            });
+        }
+
+        if grip.vertical_edge().is_some() {
+            let split_id = self
+                .nearest_axis_split_for_node(cluster_root, SplitAxis::Vertical)
+                .ok_or(PaneEdgeResizePlanError::NoAxisSplit {
+                    leaf: proxy_leaf,
+                    axis: SplitAxis::Vertical,
+                })?;
+            let split_rect = layout
+                .rect(split_id)
+                .ok_or(PaneEdgeResizePlanError::MissingLayoutRect { node: split_id })?;
+            let share = axis_share_from_pointer(
+                split_rect,
+                pointer,
+                SplitAxis::Vertical,
+                PANE_EDGE_GRIP_INSET_CELLS,
+            );
+            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let ratio = PaneSplitRatio::new(
+                u32::from(snapped.max(1)),
+                u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            )
+            .map_err(|_| PaneEdgeResizePlanError::InvalidRatio {
+                numerator: u32::from(snapped.max(1)),
+                denominator: u32::from(10_000_u16.saturating_sub(snapped).max(1)),
+            })?;
+            operations.push(PaneOperation::SetSplitRatio {
+                split: split_id,
+                ratio,
+            });
+        }
+
+        Ok(PaneGroupTransformPlan { members, operations })
+    }
+
+    /// Apply a group transform plan.
+    pub fn apply_group_transform_plan(
+        &mut self,
+        operation_seed: u64,
+        plan: &PaneGroupTransformPlan,
+    ) -> Result<Vec<PaneOperationOutcome>, PaneOperationError> {
+        let mut outcomes = Vec::with_capacity(plan.operations.len());
+        for (index, operation) in plan.operations.iter().cloned().enumerate() {
+            outcomes.push(self.apply_operation(operation_seed.saturating_add(index as u64), operation)?);
+        }
+        Ok(outcomes)
+    }
+
+    /// Plan adaptive topology transitions using core split-tree operations.
+    pub fn plan_intelligence_mode(
+        &self,
+        mode: PaneLayoutIntelligenceMode,
+        primary: PaneId,
+    ) -> Result<Vec<PaneOperation>, PaneReflowPlanError> {
+        if !self.nodes.contains_key(&primary) {
+            return Err(PaneReflowPlanError::MissingSource { source: primary });
+        }
+        let mut leaves = self
+            .nodes
+            .values()
+            .filter_map(|node| matches!(node.kind, PaneNodeKind::Leaf(_)).then_some(node.id))
+            .collect::<Vec<_>>();
+        leaves.sort_unstable();
+        let secondary = leaves.iter().copied().find(|leaf| *leaf != primary);
+
+        let focused_ratio = PaneSplitRatio::new(7, 3).map_err(|_| PaneReflowPlanError::InvalidRatio {
+            numerator: 7,
+            denominator: 3,
+        })?;
+        let balanced_ratio = PaneSplitRatio::new(1, 1).map_err(|_| PaneReflowPlanError::InvalidRatio {
+            numerator: 1,
+            denominator: 1,
+        })?;
+        let monitor_ratio = PaneSplitRatio::new(2, 1).map_err(|_| PaneReflowPlanError::InvalidRatio {
+            numerator: 2,
+            denominator: 1,
+        })?;
+
+        let mut operations = Vec::new();
+        match mode {
+            PaneLayoutIntelligenceMode::Focus => {
+                if primary != self.root {
+                    operations.push(PaneOperation::MoveSubtree {
+                        source: primary,
+                        target: self.root,
+                        axis: SplitAxis::Horizontal,
+                        ratio: focused_ratio,
+                        placement: PanePlacement::IncomingFirst,
+                    });
+                }
+            }
+            PaneLayoutIntelligenceMode::Compare => {
+                if let Some(other) = secondary
+                    && other != primary
+                {
+                    operations.push(PaneOperation::MoveSubtree {
+                        source: primary,
+                        target: other,
+                        axis: SplitAxis::Horizontal,
+                        ratio: balanced_ratio,
+                        placement: PanePlacement::IncomingFirst,
+                    });
+                }
+            }
+            PaneLayoutIntelligenceMode::Monitor => {
+                if primary != self.root {
+                    operations.push(PaneOperation::MoveSubtree {
+                        source: primary,
+                        target: self.root,
+                        axis: SplitAxis::Vertical,
+                        ratio: monitor_ratio,
+                        placement: PanePlacement::IncomingFirst,
+                    });
+                }
+            }
+            PaneLayoutIntelligenceMode::Compact => {
+                for node in self.nodes.values() {
+                    if matches!(node.kind, PaneNodeKind::Split(_)) {
+                        operations.push(PaneOperation::SetSplitRatio {
+                            split: node.id,
+                            ratio: balanced_ratio,
+                        });
+                    }
+                }
+                operations.push(PaneOperation::NormalizeRatios);
+            }
+        }
+        Ok(operations)
+    }
+
+    fn choose_dock_preview_excluding(
+        &self,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        magnetic_field_cells: f64,
+        excluded: Option<PaneId>,
+    ) -> Option<PaneDockPreview> {
+        let mut best: Option<PaneDockPreview> = None;
+        for node in self.nodes.values() {
+            if !matches!(node.kind, PaneNodeKind::Leaf(_)) {
+                continue;
+            }
+            if excluded == Some(node.id) {
+                continue;
+            }
+            let Some(rect) = layout.rect(node.id) else {
+                continue;
+            };
+            let Some(candidate) = dock_preview_for_rect(node.id, rect, pointer, magnetic_field_cells) else {
+                continue;
+            };
+            match best {
+                Some(current)
+                    if candidate.score < current.score
+                        || (candidate.score == current.score && candidate.target > current.target) => {}
+                _ => best = Some(candidate),
+            }
+        }
+        best
+    }
+
+    fn nearest_axis_split_for_node(&self, node: PaneId, axis: SplitAxis) -> Option<PaneId> {
+        let mut cursor = Some(node);
+        while let Some(node_id) = cursor {
+            let parent = self.nodes.get(&node_id).and_then(|record| record.parent)?;
+            let parent_record = self.nodes.get(&parent)?;
+            if let PaneNodeKind::Split(split) = &parent_record.kind
+                && split.axis == axis
+            {
+                return Some(parent);
+            }
+            cursor = Some(parent);
+        }
+        None
+    }
+
+    fn lowest_common_ancestor(&self, nodes: &[PaneId]) -> Option<PaneId> {
+        if nodes.is_empty() {
+            return None;
+        }
+        let mut ancestor_paths = nodes
+            .iter()
+            .map(|node_id| self.ancestor_chain(*node_id))
+            .collect::<Option<Vec<_>>>()?;
+        let first = ancestor_paths.remove(0);
+        first
+            .into_iter()
+            .find(|candidate| ancestor_paths.iter().all(|path| path.contains(candidate)))
+    }
+
+    fn ancestor_chain(&self, node: PaneId) -> Option<Vec<PaneId>> {
+        let mut out = Vec::new();
+        let mut cursor = Some(node);
+        while let Some(node_id) = cursor {
+            if !self.nodes.contains_key(&node_id) {
+                return None;
+            }
+            out.push(node_id);
+            cursor = self.nodes.get(&node_id).and_then(|record| record.parent);
+        }
+        Some(out)
+    }
+}
+
+impl PaneInteractionTimeline {
+    /// Construct a timeline with an explicit baseline snapshot.
+    #[must_use]
+    pub fn with_baseline(tree: &PaneTree) -> Self {
+        Self {
+            baseline: Some(tree.to_snapshot()),
+            entries: Vec::new(),
+            cursor: 0,
+        }
+    }
+
+    /// Number of currently-applied entries.
+    #[must_use]
+    pub const fn applied_len(&self) -> usize {
+        self.cursor
+    }
+
+    /// Append one operation by applying it to the provided tree.
+    ///
+    /// If the cursor is behind the head (after undo), redo entries are dropped
+    /// before appending the new branch.
+    pub fn apply_and_record(
+        &mut self,
+        tree: &mut PaneTree,
+        sequence: u64,
+        operation_id: u64,
+        operation: PaneOperation,
+    ) -> Result<PaneOperationOutcome, PaneOperationError> {
+        if self.baseline.is_none() {
+            self.baseline = Some(tree.to_snapshot());
+        }
+        if self.cursor < self.entries.len() {
+            self.entries.truncate(self.cursor);
+        }
+        let before_hash = tree.state_hash();
+        let outcome = tree.apply_operation(operation_id, operation.clone())?;
+        let after_hash = tree.state_hash();
+        self.entries.push(PaneInteractionTimelineEntry {
+            sequence,
+            operation_id,
+            operation,
+            before_hash,
+            after_hash,
+        });
+        self.cursor = self.entries.len();
+        Ok(outcome)
+    }
+
+    /// Undo the last applied entry by deterministic rebuild from baseline.
+    pub fn undo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneInteractionTimelineError> {
+        if self.cursor == 0 {
+            return Ok(false);
+        }
+        self.cursor -= 1;
+        self.rebuild(tree)?;
+        Ok(true)
+    }
+
+    /// Redo one entry by deterministic rebuild from baseline.
+    pub fn redo(&mut self, tree: &mut PaneTree) -> Result<bool, PaneInteractionTimelineError> {
+        if self.cursor >= self.entries.len() {
+            return Ok(false);
+        }
+        self.cursor += 1;
+        self.rebuild(tree)?;
+        Ok(true)
+    }
+
+    /// Rebuild a new tree from baseline and currently-applied entries.
+    pub fn replay(&self) -> Result<PaneTree, PaneInteractionTimelineError> {
+        let baseline = self
+            .baseline
+            .clone()
+            .ok_or(PaneInteractionTimelineError::MissingBaseline)?;
+        let mut tree = PaneTree::from_snapshot(baseline)
+            .map_err(|source| PaneInteractionTimelineError::BaselineInvalid { source })?;
+        for entry in self.entries.iter().take(self.cursor) {
+            tree.apply_operation(entry.operation_id, entry.operation.clone())
+                .map_err(|source| PaneInteractionTimelineError::ApplyFailed { source })?;
+        }
+        Ok(tree)
+    }
+
+    fn rebuild(&self, tree: &mut PaneTree) -> Result<(), PaneInteractionTimelineError> {
+        let replayed = self.replay()?;
+        *tree = replayed;
         Ok(())
     }
 }
@@ -7065,5 +7946,181 @@ mod tests {
             prop_assert_eq!(first.actions, second.actions);
             prop_assert_eq!(first.report_after, second.report_after);
         }
+    }
+
+    #[test]
+    fn set_split_ratio_operation_updates_existing_split() {
+        let mut tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        tree.apply_operation(
+            900,
+            PaneOperation::SetSplitRatio {
+                split: id(1),
+                ratio: PaneSplitRatio::new(5, 3).expect("valid ratio"),
+            },
+        )
+        .expect("set split ratio should succeed");
+
+        let root = tree.node(id(1)).expect("root exists");
+        let PaneNodeKind::Split(split) = &root.kind else {
+            unreachable!("root should be split");
+        };
+        assert_eq!(split.ratio.numerator(), 5);
+        assert_eq!(split.ratio.denominator(), 3);
+    }
+
+    #[test]
+    fn layout_classifies_any_edge_grips_and_edge_resize_plans_apply() {
+        let mut tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 120, 48))
+            .expect("layout should solve");
+        let left_rect = layout.rect(id(2)).expect("leaf 2 rect");
+        let pointer = PanePointerPosition::new(
+            i32::from(left_rect.x.saturating_add(left_rect.width.saturating_sub(1))),
+            i32::from(left_rect.y.saturating_add(left_rect.height / 2)),
+        );
+        let grip = layout
+            .classify_resize_grip(id(2), pointer, PANE_EDGE_GRIP_INSET_CELLS)
+            .expect("grip should classify");
+        assert!(matches!(
+            grip,
+            PaneResizeGrip::Right
+                | PaneResizeGrip::TopRight
+                | PaneResizeGrip::BottomRight
+        ));
+
+        let plan = tree
+            .plan_edge_resize(
+                id(2),
+                &layout,
+                grip,
+                pointer,
+                PanePressureSnapProfile {
+                    strength_bps: 8_000,
+                    hysteresis_bps: 250,
+                },
+            )
+            .expect("edge resize plan should build");
+        assert!(!plan.operations.is_empty());
+        tree.apply_edge_resize_plan(901, &plan)
+            .expect("edge resize plan should apply");
+        assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn magnetic_docking_preview_and_reflow_plan_are_generated() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 100, 40))
+            .expect("layout should solve");
+        let right_rect = layout.rect(id(3)).expect("leaf 3 rect");
+        let pointer = PanePointerPosition::new(i32::from(right_rect.x), i32::from(right_rect.y));
+        let preview = tree
+            .choose_dock_preview(&layout, pointer, PANE_MAGNETIC_FIELD_CELLS)
+            .expect("magnetic preview should exist");
+        assert!(preview.score > 0.0);
+
+        let plan = tree
+            .plan_reflow_move_with_preview(
+                id(2),
+                &layout,
+                pointer,
+                PaneMotionVector::from_delta(24, 0, 48, 0),
+                Some(PaneInertialThrow::from_motion(PaneMotionVector::from_delta(
+                    24, 0, 48, 0,
+                ))),
+                PANE_MAGNETIC_FIELD_CELLS,
+            )
+            .expect("reflow plan should build");
+        assert!(!plan.operations.is_empty());
+    }
+
+    #[test]
+    fn group_move_and_group_resize_plan_generation() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 100, 40))
+            .expect("layout should solve");
+        let mut selection = PaneSelectionState::default();
+        selection.shift_toggle(id(2));
+        selection.shift_toggle(id(3));
+        assert_eq!(selection.selected.len(), 2);
+
+        let move_plan = tree
+            .plan_group_move(
+                &selection,
+                &layout,
+                PanePointerPosition::new(80, 4),
+                PaneMotionVector::from_delta(30, 2, 64, 1),
+                None,
+                PANE_MAGNETIC_FIELD_CELLS,
+            )
+            .expect("group move plan should build");
+        assert!(!move_plan.operations.is_empty());
+
+        let resize_plan = tree
+            .plan_group_resize(
+                &selection,
+                &layout,
+                PaneResizeGrip::Right,
+                PanePointerPosition::new(70, 20),
+                PanePressureSnapProfile::from_motion(PaneMotionVector::from_delta(40, 1, 32, 0)),
+            )
+            .expect("group resize plan should build");
+        assert!(!resize_plan.operations.is_empty());
+    }
+
+    #[test]
+    fn pressure_sensitive_snap_prefers_fast_straight_drags() {
+        let slow = PanePressureSnapProfile::from_motion(PaneMotionVector::from_delta(4, 1, 300, 3));
+        let fast = PanePressureSnapProfile::from_motion(PaneMotionVector::from_delta(40, 2, 48, 0));
+        assert!(fast.strength_bps > slow.strength_bps);
+        assert!(fast.hysteresis_bps >= slow.hysteresis_bps);
+    }
+
+    #[test]
+    fn intelligence_mode_compact_emits_ratio_normalization_ops() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let ops = tree
+            .plan_intelligence_mode(PaneLayoutIntelligenceMode::Compact, id(2))
+            .expect("compact mode should plan");
+        assert!(ops.iter().any(|op| matches!(op, PaneOperation::NormalizeRatios)));
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, PaneOperation::SetSplitRatio { .. })));
+    }
+
+    #[test]
+    fn interaction_timeline_supports_undo_redo_and_replay() {
+        let mut tree = PaneTree::singleton("root");
+        let mut timeline = PaneInteractionTimeline::default();
+
+        timeline
+            .apply_and_record(
+                &mut tree,
+                1,
+                1000,
+                PaneOperation::SplitLeaf {
+                    target: id(1),
+                    axis: SplitAxis::Horizontal,
+                    ratio: PaneSplitRatio::new(1, 1).expect("valid ratio"),
+                    placement: PanePlacement::ExistingFirst,
+                    new_leaf: PaneLeaf::new("aux"),
+                },
+            )
+            .expect("split should apply");
+        let split_hash = tree.state_hash();
+        assert_eq!(timeline.applied_len(), 1);
+
+        let undone = timeline.undo(&mut tree).expect("undo should succeed");
+        assert!(undone);
+        assert_eq!(tree.root(), id(1));
+
+        let redone = timeline.redo(&mut tree).expect("redo should succeed");
+        assert!(redone);
+        assert_eq!(tree.state_hash(), split_hash);
+
+        let replayed = timeline.replay().expect("replay should succeed");
+        assert_eq!(replayed.state_hash(), tree.state_hash());
     }
 }

@@ -237,6 +237,172 @@ jsonl_emit() {
     echo "$json" >> "$E2E_JSONL_FILE"
 }
 
+jsonl_next_event_seq() {
+    e2e_counter_next "event_seq" 1 "E2E_EVENT_SEQ" 0 >/dev/null
+    printf '%s' "${E2E_EVENT_SEQ:-0}"
+}
+
+jsonl_trace_id() {
+    local prefix="${1:-trace}"
+    local normalized="${prefix//[^a-zA-Z0-9._-]/-}"
+    local seq
+    seq="$(jsonl_next_event_seq)"
+    printf '%s-%s-%06d' "${E2E_RUN_ID:-run}" "$normalized" "$seq"
+}
+
+jsonl_pane_trace() {
+    local trace_id="$1"
+    local host="$2"
+    local pane_tree_hash="$3"
+    local focus_state_hash="$4"
+    local splitter_state_hash="$5"
+    local duration_ms="$6"
+    local status="$7"
+    local details="${8:-}"
+    local failure_code="${9:-}"
+    jsonl_init
+
+    local ts
+    ts="$(e2e_timestamp)"
+    local seq
+    seq="$(jsonl_next_event_seq)"
+    local seed_json="null"
+    if [[ -n "${E2E_SEED:-}" ]]; then
+        seed_json="${E2E_SEED}"
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        jsonl_emit "$(jq -nc \
+            --arg schema_version "$E2E_JSONL_SCHEMA_VERSION" \
+            --arg type "pane_trace" \
+            --arg timestamp "$ts" \
+            --arg run_id "$E2E_RUN_ID" \
+            --arg trace_id "$trace_id" \
+            --arg host "$host" \
+            --arg pane_tree_hash "$pane_tree_hash" \
+            --arg focus_state_hash "$focus_state_hash" \
+            --arg splitter_state_hash "$splitter_state_hash" \
+            --arg status "$status" \
+            --arg details "$details" \
+            --arg failure_code "$failure_code" \
+            --argjson duration_ms "$duration_ms" \
+            --argjson event_seq "$seq" \
+            --argjson seed "$seed_json" \
+            '{schema_version:$schema_version,type:$type,timestamp:$timestamp,run_id:$run_id,seed:$seed,event_seq:$event_seq,trace_id:$trace_id,host:$host,pane_tree_hash:$pane_tree_hash,focus_state_hash:$focus_state_hash,splitter_state_hash:$splitter_state_hash,duration_ms:$duration_ms,status:$status,details:$details}
+             + (if $failure_code != "" then {failure_code:$failure_code} else {} end)')"
+    else
+        jsonl_emit "{\"schema_version\":\"${E2E_JSONL_SCHEMA_VERSION}\",\"type\":\"pane_trace\",\"timestamp\":\"$(json_escape "$ts")\",\"run_id\":\"$(json_escape "$E2E_RUN_ID")\",\"seed\":${seed_json},\"event_seq\":${seq},\"trace_id\":\"$(json_escape "$trace_id")\",\"host\":\"$(json_escape "$host")\",\"pane_tree_hash\":\"$(json_escape "$pane_tree_hash")\",\"focus_state_hash\":\"$(json_escape "$focus_state_hash")\",\"splitter_state_hash\":\"$(json_escape "$splitter_state_hash")\",\"duration_ms\":${duration_ms},\"status\":\"$(json_escape "$status")\",\"details\":\"$(json_escape "$details")\"}"
+    fi
+}
+
+jsonl_pane_write_manifest() {
+    local manifest_path="$1"
+    local trace_id="$2"
+    local bundle_id="$3"
+    local status="$4"
+    local notes="${5:-}"
+    local replay_trace_path="$6"
+    local jsonl_path="$7"
+    local snapshots_dir="$8"
+    local event_seq="$9"
+
+    local seed_json="null"
+    if [[ -n "${E2E_SEED:-}" ]]; then
+        seed_json="${E2E_SEED}"
+    fi
+
+    mkdir -p "$(dirname "$manifest_path")"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -nc \
+            --arg schema_version "$E2E_JSONL_SCHEMA_VERSION" \
+            --arg generated_at "$(e2e_timestamp)" \
+            --arg run_id "$E2E_RUN_ID" \
+            --arg trace_id "$trace_id" \
+            --arg bundle_id "$bundle_id" \
+            --arg status "$status" \
+            --arg notes "$notes" \
+            --arg replay_trace "$replay_trace_path" \
+            --arg jsonl "$jsonl_path" \
+            --arg snapshots_dir "$snapshots_dir" \
+            --argjson event_seq "$event_seq" \
+            --argjson seed "$seed_json" \
+            '{
+                schema_version:$schema_version,
+                generated_at:$generated_at,
+                run_id:$run_id,
+                seed:$seed,
+                event_seq:$event_seq,
+                trace_id:$trace_id,
+                bundle_id:$bundle_id,
+                status:$status,
+                notes:$notes,
+                artifacts:{
+                    replay_trace:$replay_trace,
+                    jsonl:$jsonl,
+                    snapshots_dir:$snapshots_dir
+                }
+            }' > "$manifest_path"
+    else
+        cat > "$manifest_path" <<EOF_MANIFEST
+{"schema_version":"${E2E_JSONL_SCHEMA_VERSION}","generated_at":"$(e2e_timestamp)","run_id":"$(json_escape "$E2E_RUN_ID")","seed":${seed_json},"event_seq":${event_seq},"trace_id":"$(json_escape "$trace_id")","bundle_id":"$(json_escape "$bundle_id")","status":"$(json_escape "$status")","notes":"$(json_escape "$notes")","artifacts":{"replay_trace":"$(json_escape "$replay_trace_path")","jsonl":"$(json_escape "$jsonl_path")","snapshots_dir":"$(json_escape "$snapshots_dir")"}}
+EOF_MANIFEST
+    fi
+}
+
+jsonl_pane_artifact_bundle() {
+    local trace_id="$1"
+    local bundle_id="$2"
+    local manifest_path="$3"
+    local jsonl_path="$4"
+    local replay_trace_path="$5"
+    local snapshots_dir="$6"
+    local status="$7"
+    local notes="${8:-}"
+    jsonl_init
+
+    local ts
+    ts="$(e2e_timestamp)"
+    local seq
+    seq="$(jsonl_next_event_seq)"
+    local seed_json="null"
+    if [[ -n "${E2E_SEED:-}" ]]; then
+        seed_json="${E2E_SEED}"
+    fi
+
+    jsonl_pane_write_manifest \
+        "$manifest_path" \
+        "$trace_id" \
+        "$bundle_id" \
+        "$status" \
+        "$notes" \
+        "$replay_trace_path" \
+        "$jsonl_path" \
+        "$snapshots_dir" \
+        "$seq"
+
+    if command -v jq >/dev/null 2>&1; then
+        jsonl_emit "$(jq -nc \
+            --arg schema_version "$E2E_JSONL_SCHEMA_VERSION" \
+            --arg type "pane_artifact_bundle" \
+            --arg timestamp "$ts" \
+            --arg run_id "$E2E_RUN_ID" \
+            --arg trace_id "$trace_id" \
+            --arg bundle_id "$bundle_id" \
+            --arg manifest_path "$manifest_path" \
+            --arg jsonl_path "$jsonl_path" \
+            --arg replay_trace_path "$replay_trace_path" \
+            --arg snapshots_dir "$snapshots_dir" \
+            --arg status "$status" \
+            --arg notes "$notes" \
+            --argjson event_seq "$seq" \
+            --argjson seed "$seed_json" \
+            '{schema_version:$schema_version,type:$type,timestamp:$timestamp,run_id:$run_id,seed:$seed,event_seq:$event_seq,trace_id:$trace_id,bundle_id:$bundle_id,manifest_path:$manifest_path,jsonl_path:$jsonl_path,replay_trace_path:$replay_trace_path,snapshots_dir:$snapshots_dir,status:$status,notes:$notes}')"
+    else
+        jsonl_emit "{\"schema_version\":\"${E2E_JSONL_SCHEMA_VERSION}\",\"type\":\"pane_artifact_bundle\",\"timestamp\":\"$(json_escape "$ts")\",\"run_id\":\"$(json_escape "$E2E_RUN_ID")\",\"seed\":${seed_json},\"event_seq\":${seq},\"trace_id\":\"$(json_escape "$trace_id")\",\"bundle_id\":\"$(json_escape "$bundle_id")\",\"manifest_path\":\"$(json_escape "$manifest_path")\",\"jsonl_path\":\"$(json_escape "$jsonl_path")\",\"replay_trace_path\":\"$(json_escape "$replay_trace_path")\",\"snapshots_dir\":\"$(json_escape "$snapshots_dir")\",\"status\":\"$(json_escape "$status")\",\"notes\":\"$(json_escape "$notes")\"}"
+    fi
+}
+
 jsonl_should_validate() {
     if [[ "${E2E_JSONL_VALIDATE:-}" == "1" ]]; then
         return 0
@@ -296,6 +462,12 @@ jsonl_validate_line() {
             ;;
         step_end)
             jq -e 'has("step") and has("status") and has("duration_ms") and has("mode") and has("cols") and has("rows") and has("seed")' >/dev/null <<<"$line"
+            ;;
+        pane_trace)
+            jq -e 'has("event_seq") and has("trace_id") and has("host") and has("pane_tree_hash") and has("focus_state_hash") and has("splitter_state_hash") and has("duration_ms") and has("status")' >/dev/null <<<"$line"
+            ;;
+        pane_artifact_bundle)
+            jq -e 'has("event_seq") and has("trace_id") and has("bundle_id") and has("manifest_path") and has("jsonl_path") and has("replay_trace_path") and has("snapshots_dir") and has("status")' >/dev/null <<<"$line"
             ;;
         input)
             jq -e 'has("seed") and has("input_type") and has("encoding") and has("input_hash")' >/dev/null <<<"$line"

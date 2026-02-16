@@ -11,8 +11,9 @@
 use ftui_layout::{
     PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS, PANE_DRAG_RESIZE_DEFAULT_THRESHOLD, PaneCancelReason,
     PaneDragResizeMachine, PaneDragResizeMachineError, PaneDragResizeState,
-    PaneDragResizeTransition, PaneModifierSnapshot, PanePointerButton, PanePointerPosition,
-    PaneResizeTarget, PaneSemanticInputEvent, PaneSemanticInputEventKind,
+    PaneDragResizeTransition, PaneInertialThrow, PaneModifierSnapshot, PaneMotionVector,
+    PanePointerButton, PanePointerPosition, PanePressureSnapProfile, PaneResizeTarget,
+    PaneSemanticInputEvent, PaneSemanticInputEventKind,
 };
 
 /// Adapter configuration for pane pointer-capture lifecycle handling.
@@ -57,6 +58,12 @@ struct ActivePointerCapture {
     target: PaneResizeTarget,
     button: PanePointerButton,
     last_position: PanePointerPosition,
+    cumulative_delta_x: i32,
+    cumulative_delta_y: i32,
+    direction_changes: u16,
+    sample_count: u32,
+    previous_step_delta_x: i32,
+    previous_step_delta_y: i32,
     capture_state: CaptureState,
 }
 
@@ -123,15 +130,24 @@ pub struct PanePointerLogEntry {
 }
 
 /// Result of one pointer lifecycle dispatch.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PanePointerDispatch {
     pub semantic_event: Option<PaneSemanticInputEvent>,
     pub transition: Option<PaneDragResizeTransition>,
+    pub motion: Option<PaneMotionVector>,
+    pub inertial_throw: Option<PaneInertialThrow>,
+    pub projected_position: Option<PanePointerPosition>,
     pub capture_command: Option<PanePointerCaptureCommand>,
     pub log: PanePointerLogEntry,
 }
 
 impl PanePointerDispatch {
+    /// Derive dynamic snap profile for this dispatch from captured motion.
+    #[must_use]
+    pub fn pressure_snap_profile(&self) -> Option<PanePressureSnapProfile> {
+        self.motion.map(PanePressureSnapProfile::from_motion)
+    }
+
     fn ignored(
         phase: PanePointerLifecyclePhase,
         reason: PanePointerIgnoredReason,
@@ -142,6 +158,9 @@ impl PanePointerDispatch {
         Self {
             semantic_event: None,
             transition: None,
+            motion: None,
+            inertial_throw: None,
+            projected_position: None,
             capture_command: None,
             log: PanePointerLogEntry {
                 phase,
@@ -163,6 +182,9 @@ impl PanePointerDispatch {
         Self {
             semantic_event: None,
             transition: None,
+            motion: None,
+            inertial_throw: None,
+            projected_position: None,
             capture_command: None,
             log: PanePointerLogEntry {
                 phase,
@@ -283,6 +305,12 @@ impl PanePointerCaptureAdapter {
                 target,
                 button,
                 last_position: position,
+                cumulative_delta_x: 0,
+                cumulative_delta_y: 0,
+                direction_changes: 0,
+                sample_count: 0,
+                previous_step_delta_x: 0,
+                previous_step_delta_y: 0,
                 capture_state: CaptureState::Requested,
             });
         }
@@ -351,7 +379,26 @@ impl PanePointerCaptureAdapter {
             delta_x: position.x.saturating_sub(active.last_position.x),
             delta_y: position.y.saturating_sub(active.last_position.y),
         };
-        let dispatch = self.forward_semantic(
+        let step_delta_x = position.x.saturating_sub(active.last_position.x);
+        let step_delta_y = position.y.saturating_sub(active.last_position.y);
+        if active.sample_count > 0 {
+            let flipped_x = step_delta_x.signum() != 0
+                && active.previous_step_delta_x.signum() != 0
+                && step_delta_x.signum() != active.previous_step_delta_x.signum();
+            let flipped_y = step_delta_y.signum() != 0
+                && active.previous_step_delta_y.signum() != 0
+                && step_delta_y.signum() != active.previous_step_delta_y.signum();
+            if flipped_x || flipped_y {
+                active.direction_changes = active.direction_changes.saturating_add(1);
+            }
+        }
+        active.cumulative_delta_x = active.cumulative_delta_x.saturating_add(step_delta_x);
+        active.cumulative_delta_y = active.cumulative_delta_y.saturating_add(step_delta_y);
+        active.sample_count = active.sample_count.saturating_add(1);
+        active.previous_step_delta_x = step_delta_x;
+        active.previous_step_delta_y = step_delta_y;
+
+        let mut dispatch = self.forward_semantic(
             DispatchContext {
                 phase: PanePointerLifecyclePhase::PointerMove,
                 pointer_id: Some(pointer_id),
@@ -365,6 +412,12 @@ impl PanePointerCaptureAdapter {
         if dispatch.transition.is_some() {
             active.last_position = position;
             self.active = Some(active);
+            dispatch.motion = Some(PaneMotionVector::from_delta(
+                active.cumulative_delta_x,
+                active.cumulative_delta_y,
+                active.sample_count.saturating_mul(16),
+                active.direction_changes,
+            ));
         }
         dispatch
     }
@@ -411,7 +464,7 @@ impl PanePointerCaptureAdapter {
             button: active.button,
             position,
         };
-        let dispatch = self.forward_semantic(
+        let mut dispatch = self.forward_semantic(
             DispatchContext {
                 phase: PanePointerLifecyclePhase::PointerUp,
                 pointer_id: Some(pointer_id),
@@ -426,6 +479,16 @@ impl PanePointerCaptureAdapter {
                 .then_some(PanePointerCaptureCommand::Release { pointer_id }),
         );
         if dispatch.transition.is_some() {
+            let motion = PaneMotionVector::from_delta(
+                active.cumulative_delta_x,
+                active.cumulative_delta_y,
+                active.sample_count.saturating_mul(16),
+                active.direction_changes,
+            );
+            let inertial = PaneInertialThrow::from_motion(motion);
+            dispatch.motion = Some(motion);
+            dispatch.projected_position = Some(inertial.projected_pointer(position));
+            dispatch.inertial_throw = Some(inertial);
             self.active = None;
         }
         dispatch
@@ -607,6 +670,9 @@ impl PanePointerCaptureAdapter {
                 PanePointerDispatch {
                     semantic_event: Some(event),
                     transition: Some(transition),
+                    motion: None,
+                    inertial_throw: None,
+                    projected_position: None,
                     capture_command,
                     log: PanePointerLogEntry {
                         phase: context.phase,

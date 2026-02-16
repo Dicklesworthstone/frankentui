@@ -364,6 +364,9 @@ cargo clippy --all-targets -- -D warnings
 ```bash
 ./scripts/e2e_test.sh
 ./scripts/widget_api_e2e.sh
+./scripts/pane_e2e.sh --mode smoke
+./scripts/pane_e2e.sh --mode full
+./tests/e2e/check_pane_traceability.sh
 ```
 
 ---

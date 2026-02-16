@@ -138,11 +138,14 @@ jsonl_init
 
 PANE_TRACE_ROOT="$(jsonl_trace_id "pane-e2e")"
 PANE_ARTIFACT_ROOT="$E2E_RESULTS_DIR/pane_artifacts/runner"
+PANE_TRACEABILITY_MATRIX="${PANE_TRACEABILITY_MATRIX:-$PROJECT_ROOT/tests/e2e/pane_traceability_matrix.json}"
+PANE_TRACEABILITY_STATUS="${PANE_TRACEABILITY_STATUS:-$E2E_RESULTS_DIR/pane_traceability_status.json}"
 mkdir -p "$PANE_ARTIFACT_ROOT"
 
 jsonl_assert "artifact_pane_e2e_log_dir" "pass" "path=$E2E_LOG_DIR"
 jsonl_assert "artifact_pane_e2e_results_dir" "pass" "path=$E2E_RESULTS_DIR"
 jsonl_assert "artifact_pane_e2e_artifact_root" "pass" "path=$PANE_ARTIFACT_ROOT"
+jsonl_assert "artifact_pane_traceability_matrix" "pass" "path=$PANE_TRACEABILITY_MATRIX"
 
 if command -v rch >/dev/null 2>&1; then
     CARGO_RUNNER=(rch exec -- cargo)
@@ -315,6 +318,24 @@ run_cargo_test_step() {
     run_step "$step_id" "web" "${CARGO_RUNNER[@]}" test "$@"
 }
 
+run_traceability_step() {
+    local traceability_cmd=(bash "$PROJECT_ROOT/tests/e2e/check_pane_traceability.sh" --matrix "$PANE_TRACEABILITY_MATRIX" --output "$PANE_TRACEABILITY_STATUS")
+    local traceability_step="pane_traceability_matrix_check"
+
+    if [[ "$MODE" == "smoke" ]]; then
+        traceability_cmd+=(--warn-only)
+        traceability_step="pane_traceability_matrix_smoke"
+    fi
+
+    run_step "$traceability_step" "terminal" "${traceability_cmd[@]}" || true
+
+    if [[ -f "$PANE_TRACEABILITY_STATUS" ]]; then
+        jsonl_assert "artifact_pane_traceability_status" "pass" "path=$PANE_TRACEABILITY_STATUS"
+    else
+        jsonl_assert "artifact_pane_traceability_status" "failed" "path=$PANE_TRACEABILITY_STATUS"
+    fi
+}
+
 if $RUN_TERMINAL; then
     run_step "pane_terminal_layout_resize_smoke" "terminal" bash "$PROJECT_ROOT/tests/e2e/scripts/test_layout_composer_resize.sh" || true
 
@@ -348,6 +369,8 @@ if $RUN_WEB; then
         done
     fi
 fi
+
+run_traceability_step
 
 SUMMARY_JSON="$E2E_RESULTS_DIR/pane_e2e_summary.json"
 if command -v jq >/dev/null 2>&1; then

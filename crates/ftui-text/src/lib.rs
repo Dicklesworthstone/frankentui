@@ -75,6 +75,7 @@ pub mod bidi;
 #[cfg(feature = "normalization")]
 pub mod normalization;
 
+pub mod cluster_map;
 pub mod justification;
 pub mod layout_policy;
 pub mod script_segmentation;
@@ -150,6 +151,7 @@ pub use shaping::{
     FontFeature, FontFeatures, FontId, NoopShaper, ShapedGlyph, ShapedRun, ShapingCache,
     ShapingCacheStats, ShapingKey, TextShaper,
 };
+pub use cluster_map::{ClusterEntry, ClusterMap};
 pub use text::{Line, Span, Text};
 pub use vertical_metrics::{
     BaselineGrid, LeadingSpec, ParagraphSpacing, VerticalMetrics, VerticalPolicy,
