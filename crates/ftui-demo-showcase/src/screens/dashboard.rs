@@ -3429,10 +3429,11 @@ impl Dashboard {
         };
 
         match panel {
-            DashboardFocus::Plasma | DashboardFocus::TextFx => Some(ScreenId::VisualEffects),
+            DashboardFocus::Plasma => Some(ScreenId::VisualEffects),
             DashboardFocus::Charts => Some(ScreenId::DataViz),
             DashboardFocus::Code => Some(ScreenId::CodeExplorer),
             DashboardFocus::Info => Some(ScreenId::Performance),
+            DashboardFocus::TextFx => Some(ScreenId::LayoutLab),
             DashboardFocus::Activity => Some(ScreenId::ActionTimeline),
             DashboardFocus::Markdown => Some(ScreenId::MarkdownRichText),
             DashboardFocus::None => None,
@@ -5312,7 +5313,7 @@ impl Dashboard {
 
         let hint = self
             .scroll_hint_text(DashboardFocus::TextFx)
-            .unwrap_or("e: next set · click → Visual Effects");
+            .unwrap_or("e: next set · click → Layout Lab (Pane Studio)");
         self.render_panel_hint(frame, rows[2], hint);
     }
 
@@ -5510,7 +5511,7 @@ impl Dashboard {
         chrome::register_pane_hit(frame, self.layout_charts.get(), ScreenId::DataViz);
         chrome::register_pane_hit(frame, self.layout_code.get(), ScreenId::CodeExplorer);
         chrome::register_pane_hit(frame, self.layout_info.get(), ScreenId::Performance);
-        chrome::register_pane_hit(frame, self.layout_text_fx.get(), ScreenId::VisualEffects);
+        chrome::register_pane_hit(frame, self.layout_text_fx.get(), ScreenId::LayoutLab);
         chrome::register_pane_hit(frame, self.layout_activity.get(), ScreenId::ActionTimeline);
         chrome::register_pane_hit(
             frame,
@@ -6074,6 +6075,13 @@ mod tests {
         state.update(&click);
 
         assert_eq!(state.focus, DashboardFocus::Markdown);
+    }
+
+    #[test]
+    fn dashboard_text_fx_prefers_layout_lab_link_target() {
+        let mut state = Dashboard::new();
+        state.hover = DashboardFocus::TextFx;
+        assert_eq!(state.preferred_link_target(), Some(ScreenId::LayoutLab));
     }
 
     #[test]

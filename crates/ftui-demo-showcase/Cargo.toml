@@ -3,6 +3,7 @@ name = "ftui-demo-showcase"
 version = "0.2.0"
 edition = "2024"
 publish = false
+default-run = "ftui-demo-showcase"
 license = "MIT"
 description = "Demo showcase app and snapshots for FrankenTUI."
 repository = "https://github.com/Dicklesworthstone/frankentui"

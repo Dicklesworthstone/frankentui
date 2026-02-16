@@ -3,15 +3,21 @@
 //! Layout Laboratory screen — interactive constraint solver and layout widget demos.
 
 use std::cell::Cell;
+use std::collections::BTreeSet;
 
 use ftui_core::event::{Event, KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
 use ftui_core::geometry::{Rect, Sides};
-use ftui_layout::{Alignment as FlexAlignment, Constraint, Flex};
+use ftui_layout::{
+    Alignment as FlexAlignment, Constraint, Flex, PANE_EDGE_GRIP_INSET_CELLS,
+    PANE_MAGNETIC_FIELD_CELLS, PaneId, PaneInertialThrow, PaneInteractionTimeline,
+    PaneLayoutIntelligenceMode, PaneMotionVector, PaneNodeKind, PanePointerPosition,
+    PanePressureSnapProfile, PaneSelectionState, PaneTree,
+};
 use ftui_render::cell::PackedRgba;
 use ftui_render::frame::Frame;
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
-use ftui_text::display_width;
+use ftui_text::{display_width, truncate_to_width};
 use ftui_widgets::Widget;
 use ftui_widgets::align::{Align, VerticalAlignment};
 use ftui_widgets::block::{Alignment, Block};
@@ -24,6 +30,12 @@ use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::rule::Rule;
 
 use super::{HelpEntry, Screen};
+use crate::pane_interaction::{
+    ActivePaneGesture, PaneDragSemanticsContext, PaneDragSemanticsInput, PaneGestureArmState,
+    PanePreviewState, PaneTimelineApplyState, apply_drag_semantics, apply_operations_with_timeline,
+    arm_active_gesture, default_pane_layout_tree, pointer_down_context_at,
+    rollback_timeline_to_cursor, update_selection_for_pointer_down,
+};
 use crate::theme;
 
 /// The five layout presets available.
@@ -87,6 +99,42 @@ pub struct LayoutLab {
     layout_preview: Cell<Rect>,
     /// Cached controls area for mouse hit-testing.
     layout_controls: Cell<Rect>,
+    /// Cached pane preview area for hit-testing.
+    pane_preview: Cell<Rect>,
+    /// Interactive pane workspace tree.
+    pane_tree: PaneTree,
+    /// Persistent interaction timeline for undo/redo/replay.
+    pane_timeline: PaneInteractionTimeline,
+    /// Multi-pane selection state (shift-click cluster).
+    pane_selection: PaneSelectionState,
+    /// Active pointer gesture state.
+    pane_active_gesture: Option<ActivePaneGesture>,
+    /// Timeline cursor at gesture start for rollback on cancel.
+    pane_gesture_timeline_cursor_start: Option<usize>,
+    /// Last applied live-reflow signature for dedupe.
+    pane_live_reflow_signature: Option<u64>,
+    /// Current docking ghost/alternatives preview.
+    pane_preview_state: PanePreviewState,
+    /// Monotonic operation id sequence.
+    pane_next_operation_id: u64,
+    /// Workspace generation counter.
+    pane_workspace_generation: u64,
+    /// Monotonic semantic input sequence.
+    pane_sequence: u64,
+    /// Last pointer position while dragging.
+    pane_last_pointer: Option<PanePointerPosition>,
+    /// Last computed motion vector.
+    pane_last_motion: PaneMotionVector,
+    /// Direction-change count in active gesture.
+    pane_drag_direction_changes: u16,
+    /// Last delta signs for direction-change detection.
+    pane_last_delta_sign: Option<(i8, i8)>,
+    /// Last number of operations applied from one interaction sample.
+    pane_last_applied_ops: usize,
+    /// Current adaptive intelligence mode.
+    pane_intelligence_mode: PaneLayoutIntelligenceMode,
+    /// Adjustable magnetic docking attraction radius.
+    pane_magnetic_field_cells: f64,
 }
 
 /// The 5 alignment modes.
@@ -122,6 +170,12 @@ impl LayoutLab {
     pub fn new() -> Self {
         let mut debugger = LayoutDebugger::new();
         debugger.set_enabled(true);
+        let pane_tree = default_pane_layout_tree();
+        let mut pane_selection = PaneSelectionState::default();
+        if let Some(primary) = first_leaf_id(&pane_tree) {
+            pane_selection.anchor = Some(primary);
+            let _ = pane_selection.selected.insert(primary);
+        }
         Self {
             current_preset: 0,
             selected_constraint: 0,
@@ -135,6 +189,24 @@ impl LayoutLab {
             show_debug: false,
             layout_preview: Cell::new(Rect::default()),
             layout_controls: Cell::new(Rect::default()),
+            pane_preview: Cell::new(Rect::default()),
+            pane_timeline: PaneInteractionTimeline::with_baseline(&pane_tree),
+            pane_tree,
+            pane_selection,
+            pane_active_gesture: None,
+            pane_gesture_timeline_cursor_start: None,
+            pane_live_reflow_signature: None,
+            pane_preview_state: PanePreviewState::default(),
+            pane_next_operation_id: 1,
+            pane_workspace_generation: 0,
+            pane_sequence: 0,
+            pane_last_pointer: None,
+            pane_last_motion: PaneMotionVector::from_delta(0, 0, 16, 0),
+            pane_drag_direction_changes: 0,
+            pane_last_delta_sign: None,
+            pane_last_applied_ops: 0,
+            pane_intelligence_mode: PaneLayoutIntelligenceMode::Focus,
+            pane_magnetic_field_cells: PANE_MAGNETIC_FIELD_CELLS,
         }
     }
 
@@ -190,9 +262,45 @@ impl LayoutLab {
 
 impl LayoutLab {
     /// Handle mouse interactions.
-    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+    fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16, modifiers: Modifiers) {
         let preview = self.layout_preview.get();
         let controls = self.layout_controls.get();
+        let pane_preview = self.pane_preview.get();
+        let pointer = PanePointerPosition::new(i32::from(x), i32::from(y));
+
+        if pane_preview.contains(x, y) || self.pane_active_gesture.is_some() {
+            match kind {
+                MouseEventKind::Down(MouseButton::Left) if pane_preview.contains(x, y) => {
+                    self.handle_pane_pointer_down(pointer, modifiers.contains(Modifiers::SHIFT));
+                    return;
+                }
+                MouseEventKind::Drag(MouseButton::Left) if self.pane_active_gesture.is_some() => {
+                    self.apply_pane_drag(pointer, false);
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) if self.pane_active_gesture.is_some() => {
+                    self.apply_pane_drag(pointer, true);
+                    self.finish_pane_gesture();
+                    return;
+                }
+                MouseEventKind::Down(MouseButton::Right) if pane_preview.contains(x, y) => {
+                    self.cycle_pane_intelligence_mode();
+                    return;
+                }
+                MouseEventKind::ScrollUp if pane_preview.contains(x, y) => {
+                    self.pane_magnetic_field_cells =
+                        (self.pane_magnetic_field_cells - 0.4).max(2.0);
+                    return;
+                }
+                MouseEventKind::ScrollDown if pane_preview.contains(x, y) => {
+                    self.pane_magnetic_field_cells =
+                        (self.pane_magnetic_field_cells + 0.4).min(14.0);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if controls.contains(x, y) {
@@ -235,7 +343,7 @@ impl Screen for LayoutLab {
 
     fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
         if let Event::Mouse(mouse) = event {
-            self.handle_mouse(mouse.kind, mouse.x, mouse.y);
+            self.handle_mouse(mouse.kind, mouse.x, mouse.y, mouse.modifiers);
             return Cmd::None;
         }
         if let Event::Key(key) = event {
@@ -264,6 +372,33 @@ impl Screen for LayoutLab {
                 (KeyCode::Char('5'), Modifiers::NONE) => {
                     self.current_preset = 4;
                     self.selected_constraint = 0;
+                }
+                (KeyCode::Char('u'), Modifiers::NONE) => {
+                    self.pane_undo();
+                }
+                (KeyCode::Char('y'), Modifiers::NONE) => {
+                    self.pane_redo();
+                }
+                (KeyCode::Char('R'), Modifiers::NONE) | (KeyCode::Char('r'), Modifiers::SHIFT) => {
+                    self.pane_replay();
+                }
+                (KeyCode::Char('f'), Modifiers::NONE) => {
+                    self.apply_pane_intelligence_mode(PaneLayoutIntelligenceMode::Focus);
+                }
+                (KeyCode::Char('c'), Modifiers::NONE) => {
+                    self.apply_pane_intelligence_mode(PaneLayoutIntelligenceMode::Compare);
+                }
+                (KeyCode::Char('n'), Modifiers::NONE) => {
+                    self.apply_pane_intelligence_mode(PaneLayoutIntelligenceMode::Monitor);
+                }
+                (KeyCode::Char('k'), Modifiers::NONE) => {
+                    self.apply_pane_intelligence_mode(PaneLayoutIntelligenceMode::Compact);
+                }
+                (KeyCode::Char('x'), Modifiers::NONE) => {
+                    self.reset_pane_workspace();
+                }
+                (KeyCode::Escape, Modifiers::NONE) => {
+                    self.cancel_pane_gesture();
                 }
 
                 // Direction toggle
@@ -394,6 +529,22 @@ impl Screen for LayoutLab {
                 action: "Toggle debug",
             },
             HelpEntry {
+                key: "u/y/R",
+                action: "Pane undo/redo/replay",
+            },
+            HelpEntry {
+                key: "f/c/n/k",
+                action: "Focus/Compare/Monitor/Compact",
+            },
+            HelpEntry {
+                key: "x",
+                action: "Reset pane workspace",
+            },
+            HelpEntry {
+                key: "Shift+Click",
+                action: "Multi-pane select cluster",
+            },
+            HelpEntry {
                 key: "Click",
                 action: "Toggle debug/direction",
             },
@@ -427,6 +578,37 @@ impl LayoutLab {
 
     /// Render the upper half: layout preview with colored blocks.
     fn render_preview(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Layout + Pane Studio ")
+            .title_alignment(Alignment::Center)
+            .style(theme::content_border());
+        let inner = block.inner(area);
+        block.render(area, frame);
+
+        if inner.width < 36 || inner.height < 8 {
+            self.pane_preview.set(Rect::default());
+            Paragraph::new("Resize wider to unlock Pane Studio.")
+                .style(theme::muted())
+                .render(inner, frame);
+            return;
+        }
+
+        if inner.width >= 84 {
+            let cols = Flex::horizontal()
+                .gap(theme::spacing::XS)
+                .constraints([Constraint::Percentage(54.0), Constraint::Percentage(46.0)])
+                .split(inner);
+            self.render_layout_preview_panel(frame, cols[0]);
+            self.render_pane_preview_panel(frame, cols[1]);
+        } else {
+            self.pane_preview.set(Rect::default());
+            self.render_layout_preview_panel(frame, inner);
+        }
+    }
+
+    fn render_layout_preview_panel(&self, frame: &mut Frame, area: Rect) {
         let title = format!(
             " Preset {}: {} ",
             self.current_preset + 1,
@@ -434,10 +616,14 @@ impl LayoutLab {
         );
         let block = Block::new()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(BorderType::Square)
             .title(&title)
             .title_alignment(Alignment::Center)
-            .style(theme::content_border());
+            .style(
+                Style::new()
+                    .fg(theme::accent::ACCENT_6)
+                    .bg(theme::alpha::SURFACE),
+            );
         let inner = block.inner(area);
         block.render(area, frame);
 
@@ -449,9 +635,7 @@ impl LayoutLab {
             _ => {}
         }
 
-        // Debug overlay
         if self.show_debug {
-            // Render the debug info as text in the bottom-right corner
             let debug_width = 40u16.min(inner.width);
             let debug_height = 6u16.min(inner.height);
             let debug_area = Rect::new(
@@ -485,6 +669,422 @@ impl LayoutLab {
             Paragraph::new(debug_text)
                 .style(Style::new().fg(theme::fg::PRIMARY))
                 .render(debug_inner, frame);
+        }
+    }
+
+    fn render_pane_preview_panel(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Square)
+            .title(" Pane Studio ")
+            .title_alignment(Alignment::Center)
+            .style(
+                Style::new()
+                    .fg(theme::accent::ACCENT_8)
+                    .bg(theme::alpha::SURFACE),
+            );
+        let inner = block.inner(area);
+        block.render(area, frame);
+        self.pane_preview.set(inner);
+
+        if inner.width < 20 || inner.height < 8 {
+            Paragraph::new("Pane studio needs a bit more space.")
+                .style(theme::muted())
+                .render(inner, frame);
+            return;
+        }
+
+        let Ok(layout) = self.pane_tree.solve_layout(inner) else {
+            Paragraph::new("Pane layout solve failed.")
+                .style(Style::new().fg(theme::accent::ERROR))
+                .render(inner, frame);
+            return;
+        };
+
+        for node in self.pane_tree.nodes() {
+            let PaneNodeKind::Leaf(leaf) = &node.kind else {
+                continue;
+            };
+            let Some(rect) = layout.rect(node.id) else {
+                continue;
+            };
+            if rect.is_empty() {
+                continue;
+            }
+
+            let selected = self.pane_selection.selected.contains(&node.id);
+            let anchor = self.pane_selection.anchor == Some(node.id);
+            let active = self
+                .pane_active_gesture
+                .is_some_and(|gesture| gesture.leaf == node.id);
+            let accent = if active {
+                theme::accent::WARNING
+            } else if selected {
+                theme::accent::SUCCESS
+            } else {
+                theme::accent::ACCENT_9
+            };
+
+            let title = if anchor {
+                format!("*{} {}", node.id.get(), leaf.surface_key)
+            } else {
+                format!("{} {}", node.id.get(), leaf.surface_key)
+            };
+            let pane_block = Block::new()
+                .borders(Borders::ALL)
+                .border_type(if selected {
+                    BorderType::Double
+                } else {
+                    BorderType::Rounded
+                })
+                .title(title.as_str())
+                .title_alignment(Alignment::Center)
+                .style(Style::new().fg(accent).bg(theme::alpha::SURFACE));
+            pane_block.render(rect, frame);
+
+            let visual_rect = layout
+                .visual_rect(node.id)
+                .unwrap_or_else(|| pane_block.inner(rect));
+            if !visual_rect.is_empty() {
+                let pane_info = format!("{}x{}  @{},{}", rect.width, rect.height, rect.x, rect.y);
+                Paragraph::new(pane_info)
+                    .style(Style::new().fg(theme::fg::SECONDARY))
+                    .render(visual_rect, frame);
+            }
+        }
+
+        if let Some(cluster_bounds) = layout.cluster_bounds(&self.pane_selection.selected) {
+            let cluster_rect = cluster_bounds.intersection(&inner);
+            if !cluster_rect.is_empty() {
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Heavy)
+                    .title("Cluster")
+                    .style(Style::new().fg(theme::accent::ACCENT_5))
+                    .render(cluster_rect, frame);
+            }
+        }
+
+        self.render_pane_preview_overlays(frame, inner);
+
+        let mode_label = pane_mode_label(self.pane_intelligence_mode);
+        let status = format!(
+            "mode:{mode_label}  sel:{}  tl:{}/{}  ops:{}",
+            self.pane_selection.selected.len(),
+            self.pane_timeline.cursor,
+            self.pane_timeline.entries.len(),
+            self.pane_last_applied_ops,
+        );
+        let status_area = Rect::new(inner.x, inner.y, inner.width.min(48), 1);
+        Paragraph::new(truncate_to_width(&status, usize::from(status_area.width)))
+            .style(theme::muted())
+            .render(status_area, frame);
+    }
+
+    fn render_pane_preview_overlays(&self, frame: &mut Frame, viewport: Rect) {
+        let zone = self
+            .pane_preview_state
+            .zone
+            .map(pane_zone_label)
+            .unwrap_or("none");
+        if let Some(rect) = self.pane_preview_state.ghost_rect {
+            let ghost = rect.intersection(&viewport);
+            if !ghost.is_empty() {
+                let title = format!(
+                    "Dock {zone} {:02}%",
+                    self.pane_preview_state.dock_strength_bps / 100
+                );
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Double)
+                    .title(title.as_str())
+                    .title_alignment(Alignment::Center)
+                    .style(Style::new().fg(theme::accent::WARNING))
+                    .render(ghost, frame);
+            }
+        }
+
+        if let Some(rect) = self.pane_preview_state.alt_one_ghost_rect {
+            let alt = rect.intersection(&viewport);
+            if !alt.is_empty() {
+                let label = self
+                    .pane_preview_state
+                    .alt_one_zone
+                    .map(pane_zone_label)
+                    .unwrap_or("alt");
+                let title = format!(
+                    "Alt1 {label} {:02}%",
+                    self.pane_preview_state.alt_one_strength_bps / 100
+                );
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Square)
+                    .title(title.as_str())
+                    .title_alignment(Alignment::Center)
+                    .style(
+                        Style::new()
+                            .fg(theme::accent::ACCENT_10)
+                            .attrs(StyleFlags::DIM),
+                    )
+                    .render(alt, frame);
+            }
+        }
+
+        if let Some(rect) = self.pane_preview_state.alt_two_ghost_rect {
+            let alt = rect.intersection(&viewport);
+            if !alt.is_empty() {
+                let label = self
+                    .pane_preview_state
+                    .alt_two_zone
+                    .map(pane_zone_label)
+                    .unwrap_or("alt");
+                let title = format!(
+                    "Alt2 {label} {:02}%",
+                    self.pane_preview_state.alt_two_strength_bps / 100
+                );
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Square)
+                    .title(title.as_str())
+                    .title_alignment(Alignment::Center)
+                    .style(
+                        Style::new()
+                            .fg(theme::accent::ACCENT_5)
+                            .attrs(StyleFlags::DIM),
+                    )
+                    .render(alt, frame);
+            }
+        }
+    }
+
+    fn handle_pane_pointer_down(&mut self, pointer: PanePointerPosition, shift: bool) {
+        let viewport = self.pane_preview.get();
+        if viewport.is_empty() {
+            return;
+        }
+        let Some(context) = pointer_down_context_at(
+            &self.pane_tree,
+            viewport,
+            pointer,
+            PANE_EDGE_GRIP_INSET_CELLS,
+        ) else {
+            return;
+        };
+
+        update_selection_for_pointer_down(&mut self.pane_selection, context.leaf, shift);
+        arm_active_gesture(
+            PaneGestureArmState {
+                active_gesture: &mut self.pane_active_gesture,
+                gesture_timeline_cursor_start: &mut self.pane_gesture_timeline_cursor_start,
+                live_reflow_signature: &mut self.pane_live_reflow_signature,
+                preview_state: &mut self.pane_preview_state,
+            },
+            self.pane_timeline.cursor,
+            1,
+            context.leaf,
+            context.mode,
+        );
+
+        self.pane_last_pointer = Some(pointer);
+        self.pane_last_motion = PaneMotionVector::from_delta(0, 0, 16, 0);
+        self.pane_drag_direction_changes = 0;
+        self.pane_last_delta_sign = None;
+    }
+
+    fn apply_pane_drag(&mut self, pointer: PanePointerPosition, committed: bool) {
+        let Some(active) = self.pane_active_gesture else {
+            return;
+        };
+
+        let previous = self.pane_last_pointer.unwrap_or(pointer);
+        let delta_x = pointer.x.saturating_sub(previous.x);
+        let delta_y = pointer.y.saturating_sub(previous.y);
+        let signs = (delta_x.signum() as i8, delta_y.signum() as i8);
+
+        if let Some((last_x, last_y)) = self.pane_last_delta_sign {
+            if signs.0 != 0 && last_x != 0 && signs.0 != last_x {
+                self.pane_drag_direction_changes =
+                    self.pane_drag_direction_changes.saturating_add(1);
+            }
+            if signs.1 != 0 && last_y != 0 && signs.1 != last_y {
+                self.pane_drag_direction_changes =
+                    self.pane_drag_direction_changes.saturating_add(1);
+            }
+        }
+        self.pane_last_delta_sign = Some(signs);
+
+        let mut motion =
+            PaneMotionVector::from_delta(delta_x, delta_y, 16, self.pane_drag_direction_changes);
+        if committed && delta_x == 0 && delta_y == 0 {
+            motion = self.pane_last_motion;
+        } else {
+            self.pane_last_motion = motion;
+        }
+
+        let pressure = PanePressureSnapProfile::from_motion(motion);
+        let inertial_throw = if committed {
+            Some(PaneInertialThrow::from_motion(motion))
+        } else {
+            None
+        };
+        let projected_position = inertial_throw.map(|throw| throw.projected_pointer(pointer));
+
+        self.pane_sequence = self.pane_sequence.saturating_add(1);
+        self.pane_last_applied_ops = apply_drag_semantics(
+            PaneDragSemanticsContext {
+                layout_tree: &mut self.pane_tree,
+                timeline: &mut self.pane_timeline,
+                next_operation_id: &mut self.pane_next_operation_id,
+                workspace_generation: &mut self.pane_workspace_generation,
+                selection: &self.pane_selection,
+                preview_state: &mut self.pane_preview_state,
+                live_reflow_signature: &mut self.pane_live_reflow_signature,
+                viewport: self.pane_preview.get(),
+                baseline_magnetic_field_cells: self.pane_magnetic_field_cells,
+            },
+            PaneDragSemanticsInput {
+                sequence: self.pane_sequence,
+                active,
+                pointer,
+                pressure,
+                motion,
+                projected_position,
+                inertial_throw,
+                committed,
+            },
+        );
+        self.pane_last_pointer = Some(pointer);
+    }
+
+    fn finish_pane_gesture(&mut self) {
+        self.pane_active_gesture = None;
+        self.pane_gesture_timeline_cursor_start = None;
+        self.pane_live_reflow_signature = None;
+        self.pane_preview_state = PanePreviewState::default();
+        self.pane_last_pointer = None;
+        self.pane_last_delta_sign = None;
+        self.pane_drag_direction_changes = 0;
+    }
+
+    fn cancel_pane_gesture(&mut self) {
+        let _ = rollback_timeline_to_cursor(
+            &mut self.pane_tree,
+            &mut self.pane_timeline,
+            self.pane_gesture_timeline_cursor_start,
+            &mut self.pane_workspace_generation,
+        );
+        self.finish_pane_gesture();
+    }
+
+    fn pane_undo(&mut self) {
+        if matches!(self.pane_timeline.undo(&mut self.pane_tree), Ok(true)) {
+            self.pane_workspace_generation = self.pane_workspace_generation.saturating_add(1);
+            self.sanitize_pane_selection();
+            self.finish_pane_gesture();
+        }
+    }
+
+    fn pane_redo(&mut self) {
+        if matches!(self.pane_timeline.redo(&mut self.pane_tree), Ok(true)) {
+            self.pane_workspace_generation = self.pane_workspace_generation.saturating_add(1);
+            self.sanitize_pane_selection();
+            self.finish_pane_gesture();
+        }
+    }
+
+    fn pane_replay(&mut self) {
+        if let Ok(tree) = self.pane_timeline.replay() {
+            self.pane_tree = tree;
+            self.pane_workspace_generation = self.pane_workspace_generation.saturating_add(1);
+            self.pane_next_operation_id =
+                (self.pane_timeline.entries.len() as u64).saturating_add(1);
+            self.sanitize_pane_selection();
+            self.finish_pane_gesture();
+        }
+    }
+
+    fn cycle_pane_intelligence_mode(&mut self) {
+        let next = match self.pane_intelligence_mode {
+            PaneLayoutIntelligenceMode::Focus => PaneLayoutIntelligenceMode::Compare,
+            PaneLayoutIntelligenceMode::Compare => PaneLayoutIntelligenceMode::Monitor,
+            PaneLayoutIntelligenceMode::Monitor => PaneLayoutIntelligenceMode::Compact,
+            PaneLayoutIntelligenceMode::Compact => PaneLayoutIntelligenceMode::Focus,
+        };
+        self.apply_pane_intelligence_mode(next);
+    }
+
+    fn apply_pane_intelligence_mode(&mut self, mode: PaneLayoutIntelligenceMode) {
+        let primary = self
+            .pane_selection
+            .anchor
+            .or_else(|| first_leaf_id(&self.pane_tree));
+        let Some(primary) = primary else {
+            return;
+        };
+        let Ok(operations) = self.pane_tree.plan_intelligence_mode(mode, primary) else {
+            return;
+        };
+        self.pane_sequence = self.pane_sequence.saturating_add(1);
+        let pressure = PanePressureSnapProfile {
+            strength_bps: 8_000,
+            hysteresis_bps: 320,
+        };
+        let applied = apply_operations_with_timeline(
+            PaneTimelineApplyState {
+                layout_tree: &mut self.pane_tree,
+                timeline: &mut self.pane_timeline,
+                next_operation_id: &mut self.pane_next_operation_id,
+                workspace_generation: &mut self.pane_workspace_generation,
+            },
+            self.pane_sequence,
+            &operations,
+            pressure,
+            true,
+        );
+        if applied > 0 {
+            self.pane_last_applied_ops = applied;
+            self.pane_intelligence_mode = mode;
+            self.sanitize_pane_selection();
+            self.finish_pane_gesture();
+        }
+    }
+
+    fn reset_pane_workspace(&mut self) {
+        self.pane_tree = default_pane_layout_tree();
+        self.pane_timeline = PaneInteractionTimeline::with_baseline(&self.pane_tree);
+        self.pane_next_operation_id = 1;
+        self.pane_workspace_generation = 0;
+        self.pane_sequence = 0;
+        self.pane_last_applied_ops = 0;
+        self.pane_intelligence_mode = PaneLayoutIntelligenceMode::Focus;
+        self.pane_selection = PaneSelectionState::default();
+        self.sanitize_pane_selection();
+        self.finish_pane_gesture();
+    }
+
+    fn sanitize_pane_selection(&mut self) {
+        let mut leaf_ids = BTreeSet::new();
+        for node in self.pane_tree.nodes() {
+            if matches!(node.kind, PaneNodeKind::Leaf(_)) {
+                let _ = leaf_ids.insert(node.id);
+            }
+        }
+
+        self.pane_selection
+            .selected
+            .retain(|pane_id| leaf_ids.contains(pane_id));
+        if self.pane_selection.selected.is_empty()
+            && let Some(first) = leaf_ids.iter().next().copied()
+        {
+            let _ = self.pane_selection.selected.insert(first);
+        }
+
+        if !self
+            .pane_selection
+            .anchor
+            .is_some_and(|anchor| self.pane_selection.selected.contains(&anchor))
+        {
+            self.pane_selection.anchor = self.pane_selection.selected.iter().next().copied();
         }
     }
 
@@ -688,6 +1288,21 @@ impl LayoutLab {
             })
             .collect::<Vec<_>>()
             .join("  ");
+        let selected = self
+            .pane_selection
+            .as_sorted_vec()
+            .into_iter()
+            .map(|pane_id| pane_id.get().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let gesture = self
+            .pane_active_gesture
+            .map_or("Idle".to_string(), |gesture| format!("{:?}", gesture.mode));
+        let preview = self
+            .pane_preview_state
+            .zone
+            .map(pane_zone_label)
+            .unwrap_or("none");
 
         let info = format!(
             "Preset: [{}] {}\n\
@@ -696,7 +1311,14 @@ impl LayoutLab {
              Gap: {} (+/-)\n\
              Margin: {} (m/M)\n\
              Padding: {} (p/P)\n\
-             Constraints: {}",
+             Constraints: {}\n\
+             Pane Mode: {} (f/c/n/k)\n\
+             Selected: [{}] (Shift+Click)\n\
+             Gesture: {} (Esc cancel)\n\
+             Dock: {} {:02}%\n\
+             Timeline: {}/{} (u/y/R)\n\
+             Magnetic Field: {:.1} (wheel in pane)\n\
+             Workspace Gen: {}",
             self.current_preset + 1,
             PRESET_NAMES[self.current_preset],
             self.direction.label(),
@@ -705,6 +1327,15 @@ impl LayoutLab {
             self.margin,
             self.padding_amount,
             constraint_list,
+            pane_mode_label(self.pane_intelligence_mode),
+            selected,
+            gesture,
+            preview,
+            self.pane_preview_state.dock_strength_bps / 100,
+            self.pane_timeline.cursor,
+            self.pane_timeline.entries.len(),
+            self.pane_magnetic_field_cells,
+            self.pane_workspace_generation,
         );
 
         Paragraph::new(info)
@@ -845,6 +1476,32 @@ fn align_position(idx: usize) -> (Alignment, VerticalAlignment, &'static str) {
         7 => (Alignment::Center, VerticalAlignment::Bottom, "BotCenter"),
         _ => (Alignment::Right, VerticalAlignment::Bottom, "BotRight"),
     }
+}
+
+fn pane_mode_label(mode: PaneLayoutIntelligenceMode) -> &'static str {
+    match mode {
+        PaneLayoutIntelligenceMode::Focus => "Focus",
+        PaneLayoutIntelligenceMode::Compare => "Compare",
+        PaneLayoutIntelligenceMode::Monitor => "Monitor",
+        PaneLayoutIntelligenceMode::Compact => "Compact",
+    }
+}
+
+fn pane_zone_label(zone: ftui_layout::PaneDockZone) -> &'static str {
+    match zone {
+        ftui_layout::PaneDockZone::Left => "Left",
+        ftui_layout::PaneDockZone::Right => "Right",
+        ftui_layout::PaneDockZone::Top => "Top",
+        ftui_layout::PaneDockZone::Bottom => "Bottom",
+        ftui_layout::PaneDockZone::Center => "Center",
+    }
+}
+
+fn first_leaf_id(tree: &PaneTree) -> Option<PaneId> {
+    tree.nodes().find_map(|node| match node.kind {
+        PaneNodeKind::Leaf(_) => Some(node.id),
+        _ => None,
+    })
 }
 
 /// Solve a flex layout and return the resulting rects (for testing).
@@ -1814,6 +2471,134 @@ mod tests {
             "Vertical and horizontal should produce distinct renders"
         );
     }
+
+    #[test]
+    fn pane_preview_area_populates_on_wide_layout() {
+        let lab = LayoutLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(140, 40, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 140, 40));
+        assert!(
+            !lab.pane_preview.get().is_empty(),
+            "pane preview area should be available at wide sizes"
+        );
+    }
+
+    #[test]
+    fn pane_drag_records_timeline_entries() {
+        let mut lab = LayoutLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(140, 40, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 140, 40));
+        let pane_area = lab.pane_preview.get();
+        assert!(!pane_area.is_empty(), "pane area should be initialized");
+
+        let layout = lab
+            .pane_tree
+            .solve_layout(pane_area)
+            .expect("pane layout should solve");
+        let mut leaves = lab
+            .pane_tree
+            .nodes()
+            .filter_map(|node| matches!(node.kind, PaneNodeKind::Leaf(_)).then_some(node.id))
+            .collect::<Vec<_>>();
+        leaves.sort_unstable();
+        assert!(
+            leaves.len() >= 2,
+            "default pane tree should have multiple leaves"
+        );
+
+        let from = layout.rect(leaves[0]).expect("first leaf rect");
+        let to = layout.rect(leaves[1]).expect("second leaf rect");
+        let from_x = from.x.saturating_add(from.width / 2);
+        let from_y = from.y.saturating_add(from.height / 2);
+        let to_x = to.x.saturating_add(to.width / 2);
+        let to_y = to.y.saturating_add(to.height / 2);
+
+        lab.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            from_x,
+            from_y,
+            Modifiers::NONE,
+        );
+        lab.handle_mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            to_x,
+            to_y,
+            Modifiers::NONE,
+        );
+        lab.handle_mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            to_x,
+            to_y,
+            Modifiers::NONE,
+        );
+
+        assert!(
+            !lab.pane_timeline.entries.is_empty(),
+            "drag interaction should record timeline operations"
+        );
+    }
+
+    #[test]
+    fn pane_shift_click_selects_cluster() {
+        let mut lab = LayoutLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(140, 40, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 140, 40));
+        let pane_area = lab.pane_preview.get();
+        let layout = lab
+            .pane_tree
+            .solve_layout(pane_area)
+            .expect("pane layout should solve");
+        let mut leaves = lab
+            .pane_tree
+            .nodes()
+            .filter_map(|node| matches!(node.kind, PaneNodeKind::Leaf(_)).then_some(node.id))
+            .collect::<Vec<_>>();
+        leaves.sort_unstable();
+        assert!(
+            leaves.len() >= 2,
+            "default pane tree should have multiple leaves"
+        );
+
+        let first = layout.rect(leaves[0]).expect("first leaf rect");
+        let second = layout.rect(leaves[1]).expect("second leaf rect");
+        let p1x = first.x.saturating_add(first.width / 2);
+        let p1y = first.y.saturating_add(first.height / 2);
+        let p2x = second.x.saturating_add(second.width / 2);
+        let p2y = second.y.saturating_add(second.height / 2);
+
+        lab.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            p1x,
+            p1y,
+            Modifiers::NONE,
+        );
+        lab.handle_mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            p1x,
+            p1y,
+            Modifiers::NONE,
+        );
+        lab.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            p2x,
+            p2y,
+            Modifiers::SHIFT,
+        );
+        lab.handle_mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            p2x,
+            p2y,
+            Modifiers::SHIFT,
+        );
+
+        assert!(
+            lab.pane_selection.selected.len() >= 2,
+            "shift-click should keep both panes selected"
+        );
+    }
 }
 
 #[test]
@@ -1821,9 +2606,19 @@ fn click_preview_toggles_debug() {
     let mut lab = LayoutLab::new();
     lab.layout_preview.set(Rect::new(0, 0, 80, 20));
     assert!(!lab.show_debug);
-    lab.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 10);
+    lab.handle_mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        10,
+        Modifiers::NONE,
+    );
     assert!(lab.show_debug);
-    lab.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 10);
+    lab.handle_mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        10,
+        Modifiers::NONE,
+    );
     assert!(!lab.show_debug);
 }
 
@@ -1832,7 +2627,12 @@ fn click_controls_toggles_direction() {
     let mut lab = LayoutLab::new();
     lab.layout_controls.set(Rect::new(0, 20, 40, 10));
     assert_eq!(lab.direction, Direction::Vertical);
-    lab.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 25);
+    lab.handle_mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        25,
+        Modifiers::NONE,
+    );
     assert_eq!(lab.direction, Direction::Horizontal);
 }
 
@@ -1841,7 +2641,12 @@ fn right_click_preview_cycles_preset() {
     let mut lab = LayoutLab::new();
     lab.layout_preview.set(Rect::new(0, 0, 80, 20));
     assert_eq!(lab.current_preset, 0);
-    lab.handle_mouse(MouseEventKind::Down(MouseButton::Right), 10, 10);
+    lab.handle_mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        10,
+        10,
+        Modifiers::NONE,
+    );
     assert_eq!(lab.current_preset, 1);
 }
 
@@ -1850,9 +2655,9 @@ fn scroll_preview_adjusts_gap() {
     let mut lab = LayoutLab::new();
     lab.layout_preview.set(Rect::new(0, 0, 80, 20));
     assert_eq!(lab.gap, 0);
-    lab.handle_mouse(MouseEventKind::ScrollDown, 10, 10);
+    lab.handle_mouse(MouseEventKind::ScrollDown, 10, 10, Modifiers::NONE);
     assert_eq!(lab.gap, 1);
-    lab.handle_mouse(MouseEventKind::ScrollUp, 10, 10);
+    lab.handle_mouse(MouseEventKind::ScrollUp, 10, 10, Modifiers::NONE);
     assert_eq!(lab.gap, 0);
 }
 
@@ -1861,9 +2666,9 @@ fn scroll_controls_adjusts_alignment() {
     let mut lab = LayoutLab::new();
     lab.layout_controls.set(Rect::new(0, 20, 40, 10));
     assert_eq!(lab.alignment_idx, 0);
-    lab.handle_mouse(MouseEventKind::ScrollDown, 10, 25);
+    lab.handle_mouse(MouseEventKind::ScrollDown, 10, 25, Modifiers::NONE);
     assert_eq!(lab.alignment_idx, 1);
-    lab.handle_mouse(MouseEventKind::ScrollUp, 10, 25);
+    lab.handle_mouse(MouseEventKind::ScrollUp, 10, 25, Modifiers::NONE);
     assert_eq!(lab.alignment_idx, 0);
 }
 
