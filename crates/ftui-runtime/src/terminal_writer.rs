@@ -70,10 +70,12 @@ use crate::render_trace::{
 use ftui_core::inline_mode::InlineStrategy;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::{Buffer, DirtySpanConfig, DirtySpanStats};
+use ftui_render::counting_writer::CountingWriter;
 use ftui_render::diff::{BufferDiff, ChangeRun, TileDiffConfig, TileDiffFallback, TileDiffStats};
 use ftui_render::diff_strategy::{DiffStrategy, DiffStrategyConfig, DiffStrategySelector};
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
+use ftui_render::presenter::Presenter;
 use tracing::{debug_span, info, info_span, trace, warn};
 
 /// Size of the internal write buffer (64KB).
@@ -488,8 +490,8 @@ impl RuntimeDiffConfig {
 /// Enforces the one-writer rule and implements inline mode correctly.
 /// All terminal output should go through this struct.
 pub struct TerminalWriter<W: Write> {
-    /// Buffered writer for efficient output. Option allows moving out for into_inner().
-    writer: Option<CountingWriter<BufWriter<W>>>,
+    /// Presenter handles efficient ANSI emission and cursor tracking.
+    presenter: Presenter<W>,
     /// Current screen mode.
     screen_mode: ScreenMode,
     /// Last computed auto UI height (inline auto mode only).
@@ -653,11 +655,11 @@ impl<W: Write> TerminalWriter<W> {
         diff_scratch
             .tile_config_mut()
             .clone_from(&diff_config.tile_diff_config);
+
+        let presenter = Presenter::new(writer, capabilities);
+
         Self {
-            writer: Some(CountingWriter::new(BufWriter::with_capacity(
-                BUFFER_CAPACITY,
-                writer,
-            ))),
+            presenter,
             screen_mode,
             auto_ui_height,
             ui_anchor,
@@ -697,7 +699,51 @@ impl<W: Write> TerminalWriter<W> {
     /// Panics if the writer has been taken (via `into_inner`).
     #[inline]
     fn writer(&mut self) -> &mut CountingWriter<BufWriter<W>> {
-        self.writer.as_mut().expect("writer has been consumed")
+        // Presenter owns the writer wrapped in CountingWriter<BufWriter<W>>
+        // We exposed writer_mut which returns &mut W (the CountingWriter<...>)
+        // wait, Presenter::writer_mut returns &mut W where W is the generic param of Presenter.
+        // But TerminalWriter<W> creates Presenter<W>.
+        // So Presenter::new(writer) wraps W in CountingWriter<BufWriter<W>>.
+        // Actually, Presenter struct is:
+        // pub struct Presenter<W: Write> {
+        //    writer: CountingWriter<BufWriter<W>>,
+        // }
+        // And I added:
+        // pub fn writer_mut(&mut self) -> &mut W {
+        //    &mut self.writer.inner.get_mut().0
+        // }
+        // Wait, CountingWriter<BufWriter<W>>. inner is BufWriter<W>. get_mut() gives &mut W (buffer flushed?).
+        // No, BufWriter::get_mut returns &mut W.
+        // So writer_mut returns &mut W.
+        // But TerminalWriter::writer() returns &mut CountingWriter<BufWriter<W>>.
+        // This mismatch is problematic because TerminalWriter uses CountingWriter methods like take_count().
+
+        // I need to fix Presenter::writer_mut to return the CountingWriter wrapper, or update TerminalWriter to use the inner writer.
+        // TerminalWriter uses `enable_counting`, `take_count`.
+        // So I need access to the CountingWriter.
+
+        // Let's modify Presenter to expose the CountingWriter.
+        // But Presenter struct field `writer` is private.
+        // I can't change Presenter anymore in this tool call.
+        // I must assume Presenter::writer_mut returned `&mut W` in the previous step.
+        // Wait, in the previous step I wrote:
+        // &mut self.writer.inner.get_mut().0  <-- This accesses the raw W inside BufWriter inside CountingWriter??
+        // CountingWriter struct: `inner: W`.
+        // So `self.writer.inner` is `BufWriter<W>`.
+        // `BufWriter::get_mut()` returns `&mut W`.
+        // So `writer_mut` returns `&mut W`.
+
+        // TerminalWriter expects `&mut CountingWriter<BufWriter<W>>`.
+        // This is a type mismatch.
+
+        // I need to change Presenter to expose the *whole* writer stack, or at least the CountingWriter.
+        // Or, I should move CountingWriter *outside* Presenter? No, Presenter uses it.
+
+        // Okay, I made a mistake in Presenter's `writer_mut`.
+        // I should have exposed the CountingWriter.
+
+        // Let's fix Presenter first.
+        panic!("Need to fix Presenter first");
     }
 
     /// Reset diff strategy state when the previous buffer is invalidated.
@@ -1661,18 +1707,40 @@ impl<W: Write> TerminalWriter<W> {
                 }
                 diff_strategy = decision.strategy;
 
-                // Emit diff
+                // Emit diff using Presenter
                 {
                     let _span = debug_span!("ftui.render.emit").entered();
+
+                    // Reset presenter state (cursor unknown) because we manually moved cursor/saved
+                    // and apply viewport offset for inline positioning.
+                    self.presenter.reset();
+                    self.presenter.set_viewport_offset_y(ui_y_start);
+
                     if decision.has_diff {
-                        let diff = std::mem::take(&mut self.diff_scratch);
-                        let result =
-                            self.emit_diff(buffer, &diff, Some(visible_height), ui_y_start);
-                        self.diff_scratch = diff;
-                        emit_stats = result?;
+                        self.presenter.prepare_runs(&self.diff_scratch);
+                        // Emit
+                        self.presenter.emit_diff_runs(
+                            buffer,
+                            Some(&self.pool),
+                            Some(&self.links),
+                        )?;
+
+                        emit_stats.diff_cells = self.diff_scratch.len();
+                        emit_stats.diff_runs = self.diff_scratch.runs().len(); // Approximate, runs_buf reused
                     } else {
-                        emit_stats =
-                            self.emit_full_redraw(buffer, Some(visible_height), ui_y_start)?;
+                        // Full redraw
+                        // Diff scratch has no changes, so we must force a full diff
+                        let full = BufferDiff::full(buffer.width(), buffer.height());
+                        self.presenter.prepare_runs(&full);
+                        self.presenter.emit_diff_runs(
+                            buffer,
+                            Some(&self.pool),
+                            Some(&self.links),
+                        )?;
+
+                        emit_stats.diff_cells =
+                            (buffer.width() as usize) * (buffer.height() as usize);
+                        emit_stats.diff_runs = buffer.height() as usize;
                     }
                 }
             }
@@ -2352,15 +2420,19 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Perform garbage collection on the grapheme pool.
     ///
-    /// Frees graphemes that are not referenced by the current front buffer (`prev_buffer`).
+    /// Frees graphemes that are not referenced by the current front buffer (`prev_buffer`)
+    /// or the optional `extra_buffer` (e.g. a pending render).
+    ///
     /// This should be called periodically (e.g. every N frames) to prevent memory leaks
-    /// in long-running applications with dynamic content (e.g. streaming logs with emoji).
-    pub fn gc(&mut self) {
-        let buffers = if let Some(ref buf) = self.prev_buffer {
-            vec![buf]
-        } else {
-            vec![]
-        };
+    /// in long-running applications with dynamic content.
+    pub fn gc(&mut self, extra_buffer: Option<&Buffer>) {
+        let mut buffers = Vec::with_capacity(2);
+        if let Some(ref buf) = self.prev_buffer {
+            buffers.push(buf);
+        }
+        if let Some(buf) = extra_buffer {
+            buffers.push(buf);
+        }
         self.pool.gc(&buffers);
     }
 

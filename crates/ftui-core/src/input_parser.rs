@@ -286,6 +286,20 @@ impl InputParser {
                     KeyEvent::new(KeyCode::Escape).with_modifiers(Modifiers::ALT),
                 ))
             }
+            // Control characters (Ctrl+Key) -> Alt+Ctrl+Key
+            0x00..=0x1F => {
+                self.state = ParserState::Ground;
+                // Delegate to process_ground to decode the control key (e.g. 0x01 -> Ctrl+A)
+                // then add the ALT modifier.
+                if let Some(mut event) = self.process_ground(byte) {
+                    if let Event::Key(ref mut key) = event {
+                        key.modifiers |= Modifiers::ALT;
+                    }
+                    Some(event)
+                } else {
+                    None
+                }
+            }
             // Alt+letter or Alt+char
             0x20..=0x7E => {
                 self.state = ParserState::Ground;
@@ -2078,6 +2092,36 @@ mod tests {
             events.first(),
             Some(Event::Key(k)) if k.code == KeyCode::Char('}') && k.modifiers.contains(Modifiers::ALT)
         ));
+    }
+
+    #[test]
+    fn alt_ctrl_key_combinations() {
+        let mut parser = InputParser::new();
+
+        // ESC + Ctrl+A (0x01) -> Alt+Ctrl+A
+        let events = parser.parse(&[0x1B, 0x01]);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::Key(k) => {
+                assert_eq!(k.code, KeyCode::Char('a'));
+                assert!(k.modifiers.contains(Modifiers::ALT));
+                assert!(k.modifiers.contains(Modifiers::CTRL));
+            }
+            _ => panic!("Expected Key event"),
+        }
+
+        // ESC + Backspace (0x08) -> Alt+Backspace (Ctrl+H is Backspace)
+        // Note: 0x08 is Backspace in process_ground.
+        // So ESC + 0x08 should be Alt+Backspace.
+        let events = parser.parse(&[0x1B, 0x08]);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::Key(k) => {
+                assert_eq!(k.code, KeyCode::Backspace);
+                assert!(k.modifiers.contains(Modifiers::ALT));
+            }
+            _ => panic!("Expected Key event"),
+        }
     }
 
     // ── SS3 arrow keys ───────────────────────────────────────────────

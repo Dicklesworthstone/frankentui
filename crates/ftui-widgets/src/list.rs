@@ -133,7 +133,7 @@ impl<'a> List<'a> {
 }
 
 /// Mutable state for a [`List`] widget tracking selection and scroll offset.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ListState {
     /// Unique ID for undo tracking.
     undo_id: UndoWidgetId,
@@ -145,6 +145,21 @@ pub struct ListState {
     pub offset: usize,
     /// Optional persistence ID for state saving/restoration.
     persistence_id: Option<String>,
+    /// Whether to force the selected item into view on next render.
+    scroll_into_view_requested: bool,
+}
+
+impl Default for ListState {
+    fn default() -> Self {
+        Self {
+            undo_id: UndoWidgetId::default(),
+            selected: None,
+            hovered: None,
+            offset: 0,
+            persistence_id: None,
+            scroll_into_view_requested: true,
+        }
+    }
 }
 
 impl ListState {
@@ -154,6 +169,7 @@ impl ListState {
         if index.is_none() {
             self.offset = 0;
         }
+        self.scroll_into_view_requested = true;
     }
 
     /// Return the currently selected item index.
@@ -278,6 +294,7 @@ impl ListState {
             None => 0,
         };
         self.selected = Some(next);
+        self.scroll_into_view_requested = true;
     }
 
     /// Move selection to the previous item.
@@ -289,6 +306,7 @@ impl ListState {
             None => 0,
         };
         self.selected = Some(prev);
+        self.scroll_into_view_requested = true;
     }
 }
 
@@ -391,12 +409,15 @@ impl<'a> StatefulWidget for List<'a> {
         }
 
         // Ensure visible range includes selected item
-        if let Some(selected) = state.selected {
+        if state.scroll_into_view_requested
+            && let Some(selected) = state.selected
+        {
             if selected >= state.offset + list_height {
                 state.offset = selected - list_height + 1;
             } else if selected < state.offset {
                 state.offset = selected;
             }
+            state.scroll_into_view_requested = false;
         }
 
         // Iterate over visible items

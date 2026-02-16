@@ -287,8 +287,8 @@ fn simple_08_sparkline_basic() {
 fn simple_09_sparkline_gradient() {
     assert_full_deterministic("simple_09_sparkline_gradient", 60, 4, |frame| {
         let data = [0.0, 2.0, 5.0, 3.0, 8.0, 1.0, 9.0, 4.0, 6.0, 7.0];
-        let sparkline = Sparkline::new(&data)
-            .gradient(PackedRgba::rgb(255, 0, 0), PackedRgba::rgb(0, 255, 0));
+        let sparkline =
+            Sparkline::new(&data).gradient(PackedRgba::rgb(255, 0, 0), PackedRgba::rgb(0, 255, 0));
         sparkline.render(Rect::new(0, 0, 60, 4), frame);
     });
 }
@@ -395,7 +395,7 @@ fn simple_20_block_thick_borders() {
     assert_deterministic("simple_20_block_thick_borders", 40, 10, |frame| {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Thick)
+            .border_type(BorderType::Heavy)
             .title("Thick");
         block.render(Rect::new(0, 0, 40, 10), frame);
     });
@@ -460,10 +460,7 @@ fn layout_03_three_column() {
 #[test]
 fn layout_04_nested_flex() {
     assert_deterministic("layout_04_nested_flex", 80, 24, |frame| {
-        let outer = Flex::vertical().constraints(vec![
-            Constraint::Fixed(3),
-            Constraint::Min(0),
-        ]);
+        let outer = Flex::vertical().constraints(vec![Constraint::Fixed(3), Constraint::Min(0)]);
         let outer_areas = outer.split(Rect::new(0, 0, 80, 24));
         Block::default()
             .borders(Borders::ALL)
@@ -494,9 +491,15 @@ fn layout_05_grid_3x3() {
                 Constraint::Fixed(30),
                 Constraint::Fixed(30),
             ]);
-        let cells = grid.split(Rect::new(0, 0, 90, 30));
-        for (i, cell) in cells.iter().enumerate() {
-            Paragraph::new(Text::raw(format!("Cell {i}"))).render(*cell, frame);
+        let layout = grid.split(Rect::new(0, 0, 90, 30));
+        let mut idx = 0;
+        for r in 0..3 {
+            for c in 0..3 {
+                let cell_rect = layout.cell(r, c);
+                let label = format!("Cell {idx}");
+                Paragraph::new(Text::raw(&label)).render(cell_rect, frame);
+                idx += 1;
+            }
         }
     });
 }
@@ -515,12 +518,18 @@ fn layout_06_grid_mixed_constraints() {
                 Constraint::Min(40),
                 Constraint::Percentage(25.0),
             ]);
-        let cells = grid.split(Rect::new(0, 0, 120, 40));
-        for (i, cell) in cells.iter().enumerate() {
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("G{i}"))
-                .render(*cell, frame);
+        let layout = grid.split(Rect::new(0, 0, 120, 40));
+        let mut idx = 0;
+        for r in 0..3 {
+            for c in 0..3 {
+                let cell_rect = layout.cell(r, c);
+                let title = format!("G{idx}");
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title.as_str())
+                    .render(cell_rect, frame);
+                idx += 1;
+            }
         }
     });
 }
@@ -532,10 +541,11 @@ fn layout_07_flex_with_gap() {
             .constraints(vec![Constraint::Percentage(25.0); 4])
             .gap(1);
         let areas = flex.split(Rect::new(0, 0, 80, 24));
+        let titles = ["P0", "P1", "P2", "P3"];
         for (i, area) in areas.iter().enumerate() {
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("P{i}"))
+                .title(titles[i])
                 .render(*area, frame);
         }
     });
@@ -568,9 +578,7 @@ fn layout_09_deeply_nested() {
                 .constraints(vec![Constraint::Percentage(50.0); 2])
                 .split(*area1);
             for area2 in &l2 {
-                Block::default()
-                    .borders(Borders::ALL)
-                    .render(*area2, frame);
+                Block::default().borders(Borders::ALL).render(*area2, frame);
             }
         }
     });
@@ -581,16 +589,10 @@ fn layout_10_sidebar_main_footer() {
     assert_deterministic("layout_10_sidebar_main_footer", 100, 30, |frame| {
         let root = Rect::new(0, 0, 100, 30);
         let vert = Flex::vertical()
-            .constraints(vec![
-                Constraint::Min(0),
-                Constraint::Fixed(1),
-            ])
+            .constraints(vec![Constraint::Min(0), Constraint::Fixed(1)])
             .split(root);
         let horiz = Flex::horizontal()
-            .constraints(vec![
-                Constraint::Fixed(25),
-                Constraint::Min(0),
-            ])
+            .constraints(vec![Constraint::Fixed(25), Constraint::Min(0)])
             .split(vert[0]);
 
         Block::default()
@@ -619,10 +621,16 @@ fn layout_12_grid_4x4() {
         let grid = Grid::new()
             .rows(vec![Constraint::Ratio(1, 4); 4])
             .columns(vec![Constraint::Ratio(1, 4); 4]);
-        let cells = grid.split(Rect::new(0, 0, 80, 24));
-        for (i, cell) in cells.iter().enumerate() {
-            let ch = (b'A' + (i as u8) % 26) as char;
-            Paragraph::new(Text::raw(format!("{ch}"))).render(*cell, frame);
+        let layout = grid.split(Rect::new(0, 0, 80, 24));
+        let mut idx = 0u8;
+        for r in 0..4 {
+            for c in 0..4 {
+                let cell_rect = layout.cell(r, c);
+                let ch = (b'A' + idx % 26) as char;
+                let label = format!("{ch}");
+                Paragraph::new(Text::raw(&label)).render(cell_rect, frame);
+                idx += 1;
+            }
         }
     });
 }
@@ -634,16 +642,12 @@ fn layout_13_block_inside_flex() {
             .constraints(vec![Constraint::Percentage(50.0); 2])
             .split(Rect::new(0, 0, 80, 24));
 
-        let block_l = Block::default()
-            .borders(Borders::ALL)
-            .title("Left");
+        let block_l = Block::default().borders(Borders::ALL).title("Left");
         let inner_l = block_l.inner(areas[0]);
         block_l.render(areas[0], frame);
         Paragraph::new(Text::raw("Left content")).render(inner_l, frame);
 
-        let block_r = Block::default()
-            .borders(Borders::ALL)
-            .title("Right");
+        let block_r = Block::default().borders(Borders::ALL).title("Right");
         let inner_r = block_r.inner(areas[1]);
         block_r.render(areas[1], frame);
         Paragraph::new(Text::raw("Right content")).render(inner_r, frame);
@@ -685,10 +689,11 @@ fn layout_15_flex_min_constraints() {
                 Constraint::Min(5),
             ])
             .split(Rect::new(0, 0, 80, 24));
+        let titles = ["Min 0", "Min 1", "Min 2"];
         for (i, area) in areas.iter().enumerate() {
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Min {i}"))
+                .title(titles[i])
                 .render(*area, frame);
         }
     });
@@ -735,10 +740,11 @@ fn layout_18_progress_bars_stacked() {
             .constraints(vec![Constraint::Fixed(3); 6])
             .split(Rect::new(0, 0, 60, 18));
         let ratios = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+        let labels = ["0%", "20%", "40%", "60%", "80%", "100%"];
         for (i, area) in areas.iter().enumerate() {
             ProgressBar::new()
                 .ratio(ratios[i])
-                .label(format!("{}%", (ratios[i] * 100.0) as u32))
+                .label(labels[i])
                 .render(*area, frame);
         }
     });
@@ -760,13 +766,11 @@ fn layout_19_header_content_footer() {
             .title("FrankenTUI")
             .render(areas[0], frame);
         let inner_areas = Flex::horizontal()
-            .constraints(vec![
-                Constraint::Fixed(20),
-                Constraint::Min(0),
-            ])
+            .constraints(vec![Constraint::Fixed(20), Constraint::Min(0)])
             .split(areas[1]);
         Paragraph::new(Text::raw("Menu\n- Item 1\n- Item 2")).render(inner_areas[0], frame);
-        Paragraph::new(Text::raw("Content area\nWith multiple lines")).render(inner_areas[1], frame);
+        Paragraph::new(Text::raw("Content area\nWith multiple lines"))
+            .render(inner_areas[1], frame);
         Block::default()
             .borders(Borders::ALL)
             .title("Status")
@@ -780,9 +784,15 @@ fn layout_20_grid_2x6() {
         let grid = Grid::new()
             .rows(vec![Constraint::Ratio(1, 6); 6])
             .columns(vec![Constraint::Percentage(50.0); 2]);
-        let cells = grid.split(Rect::new(0, 0, 80, 24));
-        for (i, cell) in cells.iter().enumerate() {
-            Paragraph::new(Text::raw(format!("Cell {i:02}"))).render(*cell, frame);
+        let layout = grid.split(Rect::new(0, 0, 80, 24));
+        let mut idx = 0;
+        for r in 0..6 {
+            for c in 0..2 {
+                let cell_rect = layout.cell(r, c);
+                let label = format!("Cell {idx:02}");
+                Paragraph::new(Text::raw(&label)).render(cell_rect, frame);
+                idx += 1;
+            }
         }
     });
 }
@@ -799,7 +809,9 @@ fn interact_01_list_no_selection() {
         20,
         ListState::default,
         |frame, state| {
-            let items: Vec<ListItem> = (0..10).map(|i| ListItem::new(format!("Item {i}"))).collect();
+            let items: Vec<ListItem> = (0..10)
+                .map(|i| ListItem::new(format!("Item {i}")))
+                .collect();
             let list = List::new(items)
                 .highlight_symbol("> ")
                 .block(Block::default().borders(Borders::ALL));
@@ -820,7 +832,9 @@ fn interact_02_list_selected_first() {
             s
         },
         |frame, state| {
-            let items: Vec<ListItem> = (0..10).map(|i| ListItem::new(format!("Item {i}"))).collect();
+            let items: Vec<ListItem> = (0..10)
+                .map(|i| ListItem::new(format!("Item {i}")))
+                .collect();
             let list = List::new(items)
                 .highlight_symbol("> ")
                 .highlight_style(Style::new().bold());
@@ -841,7 +855,9 @@ fn interact_03_list_selected_middle() {
             s
         },
         |frame, state| {
-            let items: Vec<ListItem> = (0..10).map(|i| ListItem::new(format!("Item {i}"))).collect();
+            let items: Vec<ListItem> = (0..10)
+                .map(|i| ListItem::new(format!("Item {i}")))
+                .collect();
             let list = List::new(items)
                 .highlight_symbol("→ ")
                 .highlight_style(Style::new().reverse());
@@ -862,7 +878,9 @@ fn interact_04_list_selected_last() {
             s
         },
         |frame, state| {
-            let items: Vec<ListItem> = (0..10).map(|i| ListItem::new(format!("Item {i}"))).collect();
+            let items: Vec<ListItem> = (0..10)
+                .map(|i| ListItem::new(format!("Item {i}")))
+                .collect();
             let list = List::new(items).highlight_symbol("> ");
             StatefulWidget::render(&list, Rect::new(0, 0, 40, 20), frame, state);
         },
@@ -882,7 +900,9 @@ fn interact_05_list_scrolled() {
             s
         },
         |frame, state| {
-            let items: Vec<ListItem> = (0..30).map(|i| ListItem::new(format!("Line {i}"))).collect();
+            let items: Vec<ListItem> = (0..30)
+                .map(|i| ListItem::new(format!("Line {i}")))
+                .collect();
             let list = List::new(items).highlight_symbol("> ");
             StatefulWidget::render(&list, Rect::new(0, 0, 40, 10), frame, state);
         },
@@ -902,7 +922,9 @@ fn interact_06_list_with_hover() {
             s
         },
         |frame, state| {
-            let items: Vec<ListItem> = (0..10).map(|i| ListItem::new(format!("Item {i}"))).collect();
+            let items: Vec<ListItem> = (0..10)
+                .map(|i| ListItem::new(format!("Item {i}")))
+                .collect();
             let list = List::new(items)
                 .highlight_symbol("> ")
                 .hover_style(Style::new().italic());
@@ -1068,8 +1090,9 @@ fn interact_14_list_long_scrolled() {
             s
         },
         |frame, state| {
-            let items: Vec<ListItem> =
-                (0..100).map(|i| ListItem::new(format!("Entry {i:03}"))).collect();
+            let items: Vec<ListItem> = (0..100)
+                .map(|i| ListItem::new(format!("Entry {i:03}")))
+                .collect();
             let list = List::new(items).highlight_symbol("> ");
             StatefulWidget::render(&list, Rect::new(0, 0, 40, 10), frame, state);
         },
@@ -1119,8 +1142,7 @@ fn interact_16_list_with_styled_items() {
             let items = vec![
                 ListItem::new("Normal item"),
                 ListItem::new("Selected item").style(Style::new().bold()),
-                ListItem::new("Colored item")
-                    .style(Style::new().fg(PackedRgba::rgb(255, 200, 0))),
+                ListItem::new("Colored item").style(Style::new().fg(PackedRgba::rgb(255, 200, 0))),
             ];
             let list = List::new(items)
                 .highlight_symbol("* ")
@@ -1182,7 +1204,9 @@ fn interact_19_list_block_and_selection() {
             s
         },
         |frame, state| {
-            let items: Vec<ListItem> = (0..8).map(|i| ListItem::new(format!("Option {i}"))).collect();
+            let items: Vec<ListItem> = (0..8)
+                .map(|i| ListItem::new(format!("Option {i}")))
+                .collect();
             let list = List::new(items)
                 .highlight_symbol("→ ")
                 .block(Block::default().borders(Borders::ALL).title("Menu"));
@@ -1344,7 +1368,10 @@ fn interact_28_table_wide_columns() {
         },
         |frame, state| {
             let table = Table::new(
-                vec![Row::new(["Long column A value here", "Another wide column B"])],
+                vec![Row::new([
+                    "Long column A value here",
+                    "Another wide column B",
+                ])],
                 vec![Constraint::Percentage(60.0), Constraint::Percentage(40.0)],
             );
             StatefulWidget::render(&table, Rect::new(0, 0, 200, 10), frame, state);
@@ -1498,9 +1525,7 @@ fn edge_13_paragraph_spaces() {
 #[test]
 fn edge_14_mixed_unicode() {
     assert_deterministic("edge_14_mixed_unicode", 80, 10, |frame| {
-        let para = Paragraph::new(Text::raw(
-            "ASCII + 日本語 + العربية + emoji 🎉 + ñ + café",
-        ));
+        let para = Paragraph::new(Text::raw("ASCII + 日本語 + العربية + emoji 🎉 + ñ + café"));
         para.render(Rect::new(0, 0, 80, 10), frame);
     });
 }
@@ -1552,13 +1577,13 @@ fn edge_19_paragraph_tab_chars() {
 #[test]
 fn edge_20_large_buffer() {
     assert_deterministic("edge_20_large_buffer", 200, 60, |frame| {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title("Large");
+        let block = Block::default().borders(Borders::ALL).title("Large");
         let inner = block.inner(Rect::new(0, 0, 200, 60));
         block.render(Rect::new(0, 0, 200, 60), frame);
 
-        let text: String = (0..50).map(|i| format!("Line {i:04}: {}\n", "x".repeat(150))).collect();
+        let text: String = (0..50)
+            .map(|i| format!("Line {i:04}: {}\n", "x".repeat(150)))
+            .collect();
         let para = Paragraph::new(Text::raw(&text));
         para.render(inner, frame);
     });
@@ -1637,7 +1662,10 @@ fn regress_04_buffer_clear_after_render() {
     render(&mut frame2);
     let cs2 = compute_buffer_checksum(&frame2.buffer);
 
-    assert_eq!(cs1, cs2, "Determinism violation in '{name}': {cs1} != {cs2}");
+    assert_eq!(
+        cs1, cs2,
+        "Determinism violation in '{name}': {cs1} != {cs2}"
+    );
     log_jsonl("parity", &[("scenario", name), ("outcome", "pass")]);
 }
 
@@ -1743,7 +1771,10 @@ fn regress_09_size_sensitivity() {
     }
     log_jsonl(
         "discrimination",
-        &[("scenario", "regress_09_size_sensitivity"), ("outcome", "pass")],
+        &[
+            ("scenario", "regress_09_size_sensitivity"),
+            ("outcome", "pass"),
+        ],
     );
 }
 
@@ -1768,12 +1799,18 @@ fn regress_10_fg_bg_independence() {
     let cs_green_fg = make(PackedRgba::rgb(0, 255, 0), PackedRgba::rgb(0, 0, 0));
     let cs_red_bg = make(PackedRgba::rgb(0, 0, 0), PackedRgba::rgb(255, 0, 0));
 
-    assert_ne!(cs_red_fg, cs_green_fg, "fg color should affect full checksum");
+    assert_ne!(
+        cs_red_fg, cs_green_fg,
+        "fg color should affect full checksum"
+    );
     assert_ne!(cs_red_fg, cs_red_bg, "fg vs bg should affect full checksum");
 
     log_jsonl(
         "discrimination",
-        &[("scenario", "regress_10_fg_bg_independence"), ("outcome", "pass")],
+        &[
+            ("scenario", "regress_10_fg_bg_independence"),
+            ("outcome", "pass"),
+        ],
     );
 }
 
@@ -1821,8 +1858,7 @@ fn regress_12_composite_layout_determinism() {
             .iter()
             .map(|s| ListItem::new(*s))
             .collect();
-        let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("Nav"));
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Nav"));
         let mut list_state = ListState::default();
         list_state.select(Some(1));
         StatefulWidget::render(&list, body[0], frame, &mut list_state);
@@ -1842,8 +1878,7 @@ fn regress_12_composite_layout_determinism() {
             .ratio(0.67)
             .label("67%")
             .render(main_areas[1], frame);
-        Paragraph::new(Text::raw("Main content area"))
-            .render(main_areas[2], frame);
+        Paragraph::new(Text::raw("Main content area")).render(main_areas[2], frame);
 
         // Footer
         Block::default()

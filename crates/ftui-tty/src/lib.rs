@@ -423,7 +423,9 @@ impl TtyEventSource {
                 tty.as_fd(),
                 nix::poll::PollFlags::POLLIN,
             )];
-            let timeout_ms: u16 = timeout.as_millis().try_into().unwrap_or(u16::MAX);
+            // Use i32 for timeout to allow values > 65s (up to ~24 days).
+            // poll(2) takes milliseconds as a signed int.
+            let timeout_ms: i32 = timeout.as_millis().try_into().unwrap_or(i32::MAX);
             match nix::poll::poll(&mut poll_fds, nix::poll::PollTimeout::from(timeout_ms)) {
                 Ok(n) => n,
                 Err(nix::errno::Errno::EINTR) => return Ok(false),

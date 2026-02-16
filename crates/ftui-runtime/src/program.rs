@@ -3413,7 +3413,7 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 
             // Periodic grapheme pool GC
             if loop_count.is_multiple_of(1000) {
-                self.writer.gc();
+                self.writer.gc(None);
             }
         }
 

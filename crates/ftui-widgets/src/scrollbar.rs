@@ -128,9 +128,12 @@ impl ScrollbarState {
     ///
     /// # Hit data convention
     ///
-    /// The hit data (`u64`) is encoded as `(part << 56) | track_position` where
-    /// `part` is one of `SCROLLBAR_PART_*` and `track_position` is the index
-    /// within the rendered track.
+    /// The hit data (`u64`) is encoded as:
+    /// `[8: part] [28: track_len] [28: track_pos]`
+    ///
+    /// - `part`: One of `SCROLLBAR_PART_*`.
+    /// - `track_len`: The effective length of the track (excluding buttons).
+    /// - `track_pos`: The position within the effective track (0-based).
     ///
     /// # Arguments
     ///
@@ -159,20 +162,21 @@ impl ScrollbarState {
                             return MouseResult::Scrolled;
                         }
                         SCROLLBAR_PART_TRACK | SCROLLBAR_PART_THUMB => {
-                            // Proportional jump: position in track → position in content.
-                            //
-                            // The hit data encodes only `track_pos` (no explicit `track_len`).
-                            // In practice the scrollbar is usually rendered with a length equal
-                            // to `viewport_length`, so we use `viewport_length` as the track length.
-                            let track_pos = (data & 0x00FF_FFFF_FFFF_FFFF) as usize;
+                            // Decode track length and position
+                            let track_len = ((data >> 28) & 0x0FFF_FFFF) as usize;
+                            let track_pos = (data & 0x0FFF_FFFF) as usize;
+
+                            if track_len == 0 {
+                                return MouseResult::Ignored;
+                            }
+
                             let max_pos = self.content_length.saturating_sub(self.viewport_length);
-                            let track_len = self.viewport_length.max(1);
                             let denom = track_len.saturating_sub(1).max(1);
                             let clamped_pos = track_pos.min(denom);
                             self.position = if max_pos == 0 {
                                 0
                             } else {
-                                // Round-to-nearest integer in a deterministic way.
+                                // Round-to-nearest integer
                                 let num = (clamped_pos as u128) * (max_pos as u128);
                                 let pos = (num + (denom as u128 / 2)) / denom as u128;
                                 pos as usize
@@ -190,9 +194,14 @@ impl ScrollbarState {
                 {
                     let part = data >> 56;
                     if matches!(part, SCROLLBAR_PART_TRACK | SCROLLBAR_PART_THUMB) {
-                        let track_pos = (data & 0x00FF_FFFF_FFFF_FFFF) as usize;
+                        let track_len = ((data >> 28) & 0x0FFF_FFFF) as usize;
+                        let track_pos = (data & 0x0FFF_FFFF) as usize;
+
+                        if track_len == 0 {
+                            return MouseResult::Ignored;
+                        }
+
                         let max_pos = self.content_length.saturating_sub(self.viewport_length);
-                        let track_len = self.viewport_length.max(1);
                         let denom = track_len.saturating_sub(1).max(1);
                         let clamped_pos = track_pos.min(denom);
                         self.position = if max_pos == 0 {
@@ -267,24 +276,32 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
             return;
         }
 
-        // Calculate scrollbar layout
-        // Simplified logic: track is the full length
-        let track_len = length;
+        // Calculate layout
+        let start_offset = if self.begin_symbol.is_some() { 1 } else { 0 };
+        let end_offset = if self.end_symbol.is_some() { 1 } else { 0 };
 
-        // Calculate thumb size and position
-        let viewport_ratio = state.viewport_length as f64 / state.content_length as f64;
-        let thumb_size = (track_len as f64 * viewport_ratio).max(1.0).round() as usize;
-        let thumb_size = thumb_size.min(track_len);
+        // Effective track excludes buttons
+        let track_len = length.saturating_sub(start_offset + end_offset);
 
-        let max_pos = state.content_length.saturating_sub(state.viewport_length);
-        let pos_ratio = if max_pos == 0 {
-            0.0
+        // Calculate thumb size and position within the effective track
+        let (thumb_offset, thumb_size) = if track_len > 0 {
+            let viewport_ratio = state.viewport_length as f64 / state.content_length as f64;
+            let size = (track_len as f64 * viewport_ratio).max(1.0).round() as usize;
+            let size = size.min(track_len);
+
+            let max_pos = state.content_length.saturating_sub(state.viewport_length);
+            let pos_ratio = if max_pos == 0 {
+                0.0
+            } else {
+                state.position.min(max_pos) as f64 / max_pos as f64
+            };
+
+            let available_track = track_len.saturating_sub(size);
+            let offset = (available_track as f64 * pos_ratio).round() as usize;
+            (offset, size)
         } else {
-            state.position.min(max_pos) as f64 / max_pos as f64
+            (0, 0)
         };
-
-        let available_track = track_len.saturating_sub(thumb_size);
-        let thumb_offset = (available_track as f64 * pos_ratio).round() as usize;
 
         // Symbols
         let track_char = self
@@ -300,20 +317,24 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 
         // Draw
         let mut next_draw_index = 0;
-        for i in 0..track_len {
+        for i in 0..length {
             if i < next_draw_index {
                 continue;
             }
 
-            let is_thumb = i >= thumb_offset && i < thumb_offset + thumb_size;
-            let (symbol, part) = if is_thumb {
-                (thumb_char, SCROLLBAR_PART_THUMB)
-            } else if i == 0 && self.begin_symbol.is_some() {
-                (begin_char, SCROLLBAR_PART_BEGIN)
-            } else if i == track_len - 1 && self.end_symbol.is_some() {
-                (end_char, SCROLLBAR_PART_END)
+            // Determine part type and relative position
+            let (symbol, part, rel_pos) = if i < start_offset {
+                (begin_char, SCROLLBAR_PART_BEGIN, 0)
+            } else if i >= length - end_offset {
+                (end_char, SCROLLBAR_PART_END, 0)
             } else {
-                (track_char, SCROLLBAR_PART_TRACK)
+                let track_idx = i - start_offset;
+                let is_thumb = track_idx >= thumb_offset && track_idx < thumb_offset + thumb_size;
+                if is_thumb {
+                    (thumb_char, SCROLLBAR_PART_THUMB, track_idx)
+                } else {
+                    (track_char, SCROLLBAR_PART_TRACK, track_idx)
+                }
             };
 
             let symbol_width = display_width(symbol);
@@ -325,7 +346,7 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 
             let style = if !frame.buffer.degradation.apply_styling() {
                 Style::default()
-            } else if is_thumb {
+            } else if part == SCROLLBAR_PART_THUMB {
                 self.thumb_style
             } else {
                 self.track_style
@@ -333,7 +354,6 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
 
             let (x, y) = if is_vertical {
                 let x = match self.orientation {
-                    // For VerticalRight, position so the symbol (including wide chars) fits in the area
                     ScrollbarOrientation::VerticalRight => area
                         .right()
                         .saturating_sub(symbol_width.max(1) as u16)
@@ -351,15 +371,16 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
                 (area.left().saturating_add(i as u16), y)
             };
 
-            // Only draw if within bounds (redundant check but safe)
+            // Only draw if within bounds
             if x < area.right() && y < area.bottom() {
-                // Use draw_text_span to handle graphemes correctly.
-                // Pass max_x that accommodates the symbol width for wide characters.
                 draw_text_span(frame, x, y, symbol, style, area.right());
 
                 if let Some(id) = self.hit_id {
-                    let data = (part << 56) | (i as u64);
-                    // Never register hits outside the widget area (even if the symbol is wide).
+                    // Encode data: [8: part] [28: track_len] [28: track_pos]
+                    let data = (part << 56)
+                        | ((track_len as u64 & 0x0FFF_FFFF) << 28)
+                        | (rel_pos as u64 & 0x0FFF_FFFF);
+
                     let hit_w = (symbol_width.max(1) as u16).min(area.right().saturating_sub(x));
                     frame.register_hit(Rect::new(x, y, hit_w, 1), id, HitRegion::Scrollbar, data);
                 }

@@ -827,7 +827,7 @@ where
         let mut total_weight = 0u64;
         const WEIGHT_SCALE: u64 = 10_000;
 
-        for &i in &grow_indices {
+        for &_i in &grow_indices {
             // All remaining grow types (Min, Max, Fill, FitMin) have equal weight
             total_weight += WEIGHT_SCALE;
         }

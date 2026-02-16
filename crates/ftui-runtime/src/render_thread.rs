@@ -197,7 +197,7 @@ fn render_loop<W: Write + Send>(
 
         // Periodic grapheme pool GC
         if loop_count.is_multiple_of(1000) {
-            writer.gc();
+            writer.gc(latest_render.as_ref().map(|(buf, _, _)| buf));
         }
 
         if shutdown {

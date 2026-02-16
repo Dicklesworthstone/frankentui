@@ -190,6 +190,7 @@ mod cost_model {
     ///
     /// Gap cells cost ~1 byte each (character content), plus potential style
     /// overhead estimated at 1 byte per gap cell (conservative).
+    #[allow(dead_code)]
     pub fn plan_row(row_runs: &[ChangeRun], prev_x: Option<u16>, prev_y: Option<u16>) -> RowPlan {
         let mut scratch = RowPlanScratch::default();
         plan_row_reuse(row_runs, prev_x, prev_y, &mut scratch)
@@ -331,6 +332,8 @@ pub struct Presenter<W: Write> {
     cursor_x: Option<u16>,
     /// Current cursor Y position (0-indexed). None = unknown.
     cursor_y: Option<u16>,
+    /// Viewport Y offset (added to all row coordinates).
+    viewport_offset_y: u16,
     /// Terminal capabilities for conditional output.
     capabilities: TerminalCapabilities,
     /// Reusable scratch buffers for the cost-model DP, avoiding per-row
@@ -349,10 +352,36 @@ impl<W: Write> Presenter<W> {
             current_link: None,
             cursor_x: None,
             cursor_y: None,
+            viewport_offset_y: 0,
             capabilities,
             plan_scratch: cost_model::RowPlanScratch::default(),
             runs_buf: Vec::new(),
         }
+    }
+
+    /// Get mutable access to the innermost writer (`W`).
+    ///
+    /// This allows the caller to write raw data (e.g. logs) bypassing the
+    /// presenter's state tracking. Note that this may invalidate cursor
+    /// tracking if the raw writes move the cursor.
+    pub fn writer_mut(&mut self) -> &mut W {
+        self.writer.inner_mut().get_mut()
+    }
+
+    /// Get mutable access to the full counting writer stack.
+    ///
+    /// This exposes `CountingWriter<BufWriter<W>>` so callers can access
+    /// byte counting, buffered flush, etc.
+    pub fn counting_writer_mut(&mut self) -> &mut CountingWriter<BufWriter<W>> {
+        &mut self.writer
+    }
+
+    /// Set the viewport Y offset.
+    ///
+    /// All subsequent render operations will add this offset to row coordinates.
+    /// Useful for inline mode where the UI starts at a specific row.
+    pub fn set_viewport_offset_y(&mut self, offset: u16) {
+        self.viewport_offset_y = offset;
     }
 
     /// Get the terminal capabilities.
@@ -406,7 +435,7 @@ impl<W: Write> Presenter<W> {
         }
 
         // Emit diff using run grouping for efficiency
-        self.emit_runs_reuse(buffer, pool, links)?;
+        self.emit_diff_runs(buffer, pool, links)?;
 
         // Reset style at end (clean state for next frame)
         ansi::sgr_reset(&mut self.writer)?;
@@ -436,71 +465,12 @@ impl<W: Write> Presenter<W> {
         Ok(stats)
     }
 
-    /// Emit runs of changed cells using the DP cost model.
+    /// Emit diff runs using the cost model and internal buffers.
     ///
-    /// Groups runs by row, then for each row decides whether to emit runs
-    /// individually (sparse) or merge them (write through gaps) based on
-    /// byte cost estimation.
-    #[allow(dead_code)] // Kept for reference; production path uses emit_runs_reuse
-    fn emit_runs(
-        &mut self,
-        buffer: &Buffer,
-        runs: &[ChangeRun],
-        pool: Option<&GraphemePool>,
-        links: Option<&LinkRegistry>,
-    ) -> io::Result<()> {
-        #[cfg(feature = "tracing")]
-        let _span = tracing::debug_span!("emit_diff");
-        #[cfg(feature = "tracing")]
-        let _guard = _span.enter();
-
-        #[cfg(feature = "tracing")]
-        tracing::trace!(run_count = runs.len(), "emitting runs");
-
-        // Group runs by row and apply cost model per row
-        let mut i = 0;
-        while i < runs.len() {
-            let row_y = runs[i].y;
-
-            // Collect all runs on this row
-            let row_start = i;
-            while i < runs.len() && runs[i].y == row_y {
-                i += 1;
-            }
-            let row_runs = &runs[row_start..i];
-
-            let plan = cost_model::plan_row(row_runs, self.cursor_x, self.cursor_y);
-
-            #[cfg(feature = "tracing")]
-            tracing::trace!(
-                row = row_y,
-                spans = plan.spans().len(),
-                cost = plan.total_cost(),
-                "row plan"
-            );
-
-            let row = buffer.row_cells(row_y);
-            for span in plan.spans() {
-                self.move_cursor_optimal(span.x0, span.y)?;
-                // Hot path: avoid recomputing `y * width + x` for every cell.
-                let start = span.x0 as usize;
-                let end = span.x1 as usize;
-                debug_assert!(start <= end);
-                debug_assert!(end < row.len());
-
-                let mut idx = start;
-                for cell in &row[start..=end] {
-                    self.emit_cell(idx as u16, cell, pool, links)?;
-                    idx += 1;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Like `emit_runs` but uses the internal `runs_buf` and `plan_scratch`
-    /// to avoid per-row and per-frame allocations.
-    fn emit_runs_reuse(
+    /// This allows advanced callers (like TerminalWriter) to drive the emission
+    /// phase manually while still benefiting from the optimization logic.
+    /// The caller must populate `self.runs_buf` before calling this (e.g. via `diff.runs_into`).
+    pub fn emit_diff_runs(
         &mut self,
         buffer: &Buffer,
         pool: Option<&GraphemePool>,
@@ -558,6 +528,13 @@ impl<W: Write> Presenter<W> {
             }
         }
         Ok(())
+    }
+
+    /// Prepare the runs buffer from a diff.
+    ///
+    /// Helper for external callers to populate the runs buffer before calling `emit_diff_runs`.
+    pub fn prepare_runs(&mut self, diff: &BufferDiff) {
+        diff.runs_into(&mut self.runs_buf);
     }
 
     /// Emit a single cell.

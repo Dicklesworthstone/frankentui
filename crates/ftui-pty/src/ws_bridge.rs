@@ -297,6 +297,7 @@ fn run_single_session(
         // --- Flow control: evaluate policy and drain output queue ---
         if let Some(ref mut fc) = fc_state {
             fc.maybe_reset_rate_window();
+            let was_paused = fc.pty_reads_paused;
             let decision = fc.evaluate();
 
             // Log non-stable decisions
@@ -314,6 +315,8 @@ fn run_single_session(
                 )?;
             }
 
+            emit_flow_control_stall_if_transitioned(telemetry, fc, was_paused)?;
+
             // Drain output queue per budget
             let batch = fc.drain_output(decision.output_batch_budget_bytes);
             if !batch.is_empty() {
@@ -326,6 +329,13 @@ fn run_single_session(
 
             // Send replenishment if needed
             if fc.should_send_replenish() {
+                emit_flow_control_event(
+                    telemetry,
+                    "input",
+                    "replenish",
+                    fc.input_window,
+                    fc.input_pending_bytes,
+                )?;
                 telemetry.write(
                     "flow_control_replenish",
                     json!({
@@ -646,6 +656,41 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 fn make_session_id() -> String {
     let ts = OffsetDateTime::now_utc().unix_timestamp_nanos();
     format!("ws-bridge-{}-{ts}", std::process::id())
+}
+
+fn emit_flow_control_event(
+    telemetry: &mut TelemetrySink,
+    direction: &'static str,
+    action: &'static str,
+    window_bytes: u32,
+    queued_bytes: u32,
+) -> io::Result<()> {
+    telemetry.write(
+        "flow_control",
+        json!({
+            "direction": direction,
+            "action": action,
+            "window_bytes": window_bytes,
+            "queued_bytes": queued_bytes,
+        }),
+    )
+}
+
+fn emit_flow_control_stall_if_transitioned(
+    telemetry: &mut TelemetrySink,
+    fc: &FlowControlBridgeState,
+    was_paused: bool,
+) -> io::Result<()> {
+    if !was_paused && fc.pty_reads_paused {
+        emit_flow_control_event(
+            telemetry,
+            "output",
+            "stall",
+            fc.output_window,
+            fc.output_queue_bytes(),
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -1636,6 +1681,69 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
     }
 
+    #[test]
+    fn flow_control_event_writes_expected_payload_fields() {
+        let dir = std::env::temp_dir().join("ftui-test-flow-control-event");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("flow_control_event.jsonl");
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut sink = TelemetrySink::new(Some(&path), "sess-fc").expect("create sink");
+            emit_flow_control_event(&mut sink, "output", "stall", 65_536, 65_000)
+                .expect("write flow_control");
+        }
+
+        let content = std::fs::read_to_string(&path).expect("read file");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        let parsed: Value = serde_json::from_str(lines[0]).expect("parse flow_control event");
+        assert_eq!(parsed["event"], "flow_control");
+        assert_eq!(parsed["payload"]["direction"], "output");
+        assert_eq!(parsed["payload"]["action"], "stall");
+        assert_eq!(parsed["payload"]["window_bytes"], 65_536);
+        assert_eq!(parsed["payload"]["queued_bytes"], 65_000);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn flow_control_stall_emits_only_on_pause_transition() {
+        let dir = std::env::temp_dir().join("ftui-test-flow-control-stall");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let path = dir.join("flow_control_stall.jsonl");
+        let _ = std::fs::remove_file(&path);
+
+        let mut fc = default_fc_state();
+        let payload = [b'x'; 128];
+        fc.enqueue_output(&payload);
+        fc.pty_reads_paused = true;
+
+        {
+            let mut sink = TelemetrySink::new(Some(&path), "sess-stall").expect("create sink");
+            emit_flow_control_stall_if_transitioned(&mut sink, &fc, false)
+                .expect("emit rising-edge stall");
+            emit_flow_control_stall_if_transitioned(&mut sink, &fc, true)
+                .expect("do not emit while already paused");
+        }
+
+        let content = std::fs::read_to_string(&path).expect("read file");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        let parsed: Value = serde_json::from_str(lines[0]).expect("parse flow_control stall");
+        assert_eq!(parsed["event"], "flow_control");
+        assert_eq!(parsed["payload"]["direction"], "output");
+        assert_eq!(parsed["payload"]["action"], "stall");
+        assert_eq!(parsed["payload"]["window_bytes"], fc.output_window);
+        assert_eq!(parsed["payload"]["queued_bytes"], fc.output_queue_bytes());
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn bridge_smoke_echoes_bytes_through_pty() {
@@ -1775,8 +1883,10 @@ mod tests {
 
     #[test]
     fn fc_drain_respects_window() {
-        let mut config = FlowControlBridgeConfig::default();
-        config.output_window = 50;
+        let config = FlowControlBridgeConfig {
+            output_window: 50,
+            ..FlowControlBridgeConfig::default()
+        };
         let mut fc = FlowControlBridgeState::new(&config);
 
         fc.enqueue_output(&[0xCC; 200]);
@@ -1788,8 +1898,10 @@ mod tests {
 
     #[test]
     fn fc_drain_all_output_ignores_window() {
-        let mut config = FlowControlBridgeConfig::default();
-        config.output_window = 10;
+        let config = FlowControlBridgeConfig {
+            output_window: 10,
+            ..FlowControlBridgeConfig::default()
+        };
         let mut fc = FlowControlBridgeState::new(&config);
 
         fc.enqueue_output(&[0xDD; 100]);
@@ -1856,8 +1968,10 @@ mod tests {
 
     #[test]
     fn fc_coalesce_resize_disabled() {
-        let mut config = FlowControlBridgeConfig::default();
-        config.coalesce_resize_ms = 0;
+        let config = FlowControlBridgeConfig {
+            coalesce_resize_ms: 0,
+            ..FlowControlBridgeConfig::default()
+        };
         let mut fc = FlowControlBridgeState::new(&config);
 
         fc.coalesce_resize(80, 24);
@@ -1867,8 +1981,10 @@ mod tests {
 
     #[test]
     fn fc_coalesce_resize_defers() {
-        let mut config = FlowControlBridgeConfig::default();
-        config.coalesce_resize_ms = 100; // 100ms window
+        let config = FlowControlBridgeConfig {
+            coalesce_resize_ms: 100, // 100ms window
+            ..FlowControlBridgeConfig::default()
+        };
         let mut fc = FlowControlBridgeState::new(&config);
 
         fc.coalesce_resize(80, 24);
@@ -1879,8 +1995,10 @@ mod tests {
 
     #[test]
     fn fc_coalesce_resize_overwrite() {
-        let mut config = FlowControlBridgeConfig::default();
-        config.coalesce_resize_ms = 0;
+        let config = FlowControlBridgeConfig {
+            coalesce_resize_ms: 0,
+            ..FlowControlBridgeConfig::default()
+        };
         let mut fc = FlowControlBridgeState::new(&config);
 
         fc.coalesce_resize(80, 24);
@@ -1891,8 +2009,10 @@ mod tests {
 
     #[test]
     fn fc_coalesce_resize_flushes_after_timeout() {
-        let mut config = FlowControlBridgeConfig::default();
-        config.coalesce_resize_ms = 10; // 10ms window
+        let config = FlowControlBridgeConfig {
+            coalesce_resize_ms: 10, // 10ms window
+            ..FlowControlBridgeConfig::default()
+        };
         let mut fc = FlowControlBridgeState::new(&config);
 
         fc.coalesce_resize(132, 50);
@@ -2149,10 +2269,10 @@ mod tests {
             .windows(b"fc-echo-test".len())
             .any(|window| window == b"fc-echo-test");
 
-        if let Err(err) = client.send(Message::Text(r#"{"type":"close"}"#.to_string().into())) {
-            if last_error.is_none() {
-                last_error = Some(err);
-            }
+        if let Err(err) = client.send(Message::Text(r#"{"type":"close"}"#.to_string().into()))
+            && last_error.is_none()
+        {
+            last_error = Some(err);
         }
         let result = handle.join().expect("bridge thread join");
         result.expect("bridge result");
