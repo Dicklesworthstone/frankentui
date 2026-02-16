@@ -56,6 +56,7 @@ pub struct RunnerCore {
     /// Deterministic operation id source for pane operations.
     next_operation_id: u64,
     /// Active adaptive intelligence mode.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     intelligence_mode: PaneLayoutIntelligenceMode,
     /// Monotonic workspace generation used in persisted snapshots.
     workspace_generation: u64,
@@ -68,12 +69,14 @@ const DEFAULT_PANE_MARGIN_CELLS: u16 = 1;
 const DEFAULT_PANE_PADDING_CELLS: u16 = 1;
 const DEFAULT_SPRING_BLEND_BPS: u16 = 3_500;
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneGestureMode {
     Move,
     Resize(PaneResizeGrip),
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActivePaneGesture {
     pointer_id: u32,
@@ -91,6 +94,7 @@ pub struct PanePreviewState {
 }
 
 /// Lightweight timeline status for host HUD updates.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneTimelineStatus {
     pub cursor: usize,
@@ -123,6 +127,7 @@ impl PaneDispatchSummary {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 impl RunnerCore {
     /// Create a new runner with the given initial terminal dimensions.
     pub fn new(cols: u16, rows: u16) -> Self {
@@ -616,7 +621,7 @@ impl RunnerCore {
     fn leaf_at_pointer(&self, pointer: PanePointerPosition) -> Option<PaneId> {
         let x = u16::try_from(pointer.x).ok()?;
         let y = u16::try_from(pointer.y).ok()?;
-        let layout = self.layout_tree.solve(self.viewport_rect()).ok()?;
+        let layout = self.layout_tree.solve_layout(self.viewport_rect()).ok()?;
         let mut best: Option<(PaneId, u32)> = None;
         for (node_id, rect) in layout.iter() {
             let Some(node) = self.layout_tree.node(node_id) else {
@@ -690,7 +695,7 @@ impl RunnerCore {
         pointer: PanePointerPosition,
         modifiers: PaneModifierSnapshot,
     ) -> Option<PaneResizeTarget> {
-        let layout = self.layout_tree.solve(self.viewport_rect()).ok()?;
+        let layout = self.layout_tree.solve_layout(self.viewport_rect()).ok()?;
         let leaf = self.leaf_at_pointer(pointer)?;
 
         if modifiers.shift {
@@ -768,7 +773,7 @@ impl RunnerCore {
         let motion = dispatch
             .motion
             .unwrap_or_else(|| PaneMotionVector::from_delta(0, 0, 16, 0));
-        let Ok(layout) = self.layout_tree.solve(self.viewport_rect()) else {
+        let Ok(layout) = self.layout_tree.solve_layout(self.viewport_rect()) else {
             return;
         };
 
