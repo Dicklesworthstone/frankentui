@@ -18,7 +18,7 @@
 //! # Tracing
 //!
 //! When the `tracing` feature is active, cancellation emits a `WARN`-level event
-//! and deadline checks emit `TRACE`-level spans with `cx_id` and
+//! and deadline checks emit `cx.propagate` spans with `cx_id` and
 //! `deadline_remaining_us` fields.
 //!
 //! # Example
@@ -43,9 +43,9 @@ use web_time::{Duration, Instant};
 
 // Import tracing macros (no-op when tracing feature is disabled).
 #[cfg(feature = "tracing")]
-use crate::logging::warn;
+use crate::logging::{info_span, warn};
 #[cfg(not(feature = "tracing"))]
-use crate::warn;
+use crate::{info_span, warn};
 
 // ─── Cx ID generation ────────────────────────────────────────────────────────
 
@@ -421,10 +421,24 @@ impl Cx {
     /// // ... continue work ...
     /// ```
     pub fn check(&self) -> Result<(), CxError> {
-        if self.is_cancelled() {
+        let cancelled = self.is_cancelled();
+        let deadline_remaining_us = self.remaining_us().unwrap_or(u64::MAX);
+        let propagate_span = info_span!(
+            "cx.propagate",
+            cx_id = self.id(),
+            deadline_remaining_us,
+            cx_cancelled = cancelled
+        );
+        let _propagate_span = propagate_span.enter();
+
+        if cancelled {
+            warn!(
+                cx_id = self.id(),
+                deadline_remaining_us, "cx.propagate cancelled"
+            );
             return Err(CxError::Cancelled);
         }
-        if self.is_expired() {
+        if deadline_remaining_us == 0 {
             return Err(CxError::DeadlineExceeded);
         }
         Ok(())
@@ -436,6 +450,86 @@ impl Cx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    #[cfg(feature = "tracing-json")]
+    use std::sync::{Arc, Mutex};
+
+    #[cfg(feature = "tracing-json")]
+    use tracing::Subscriber;
+    #[cfg(feature = "tracing-json")]
+    use tracing::field::{Field, Visit};
+    #[cfg(feature = "tracing-json")]
+    use tracing_subscriber::filter::LevelFilter;
+    #[cfg(feature = "tracing-json")]
+    use tracing_subscriber::layer::{Context, Layer};
+    #[cfg(feature = "tracing-json")]
+    use tracing_subscriber::prelude::*;
+    #[cfg(feature = "tracing-json")]
+    use tracing_subscriber::registry::LookupSpan;
+
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct TestModel {
+        value: u32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum RenderStrategy {
+        Full,
+        Degraded,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum MissingCxError {
+        MissingContext,
+        Cx(CxError),
+    }
+
+    fn update_with_cx(cx: &Cx, model: &mut TestModel, delta: u32) -> Result<(), CxError> {
+        cx.check()?;
+        model.value = model.value.saturating_add(delta);
+        Ok(())
+    }
+
+    fn update_with_optional_cx(
+        cx: Option<&Cx>,
+        model: &mut TestModel,
+        delta: u32,
+    ) -> Result<(), MissingCxError> {
+        let cx = cx.ok_or(MissingCxError::MissingContext)?;
+        update_with_cx(cx, model, delta).map_err(MissingCxError::Cx)
+    }
+
+    fn render_widget_with_cx_atomic(
+        cx: &Cx,
+        source: &str,
+        sink: &mut String,
+        mut on_chunk: impl FnMut(usize),
+    ) -> Result<(), CxError> {
+        let mut scratch = String::new();
+        for (idx, ch) in source.chars().enumerate() {
+            scratch.push(ch);
+            on_chunk(idx);
+            cx.check()?;
+        }
+        sink.push_str(&scratch);
+        Ok(())
+    }
+
+    fn subscription_send_with_cx(
+        cx: &Cx,
+        sender: &mpsc::Sender<u32>,
+        payload: u32,
+    ) -> Result<(), CxError> {
+        cx.check()?;
+        sender.send(payload).map_err(|_| CxError::Cancelled)
+    }
+
+    fn choose_render_strategy(cx: &Cx, downgrade_threshold: Duration) -> RenderStrategy {
+        match cx.remaining() {
+            Some(remaining) if remaining <= downgrade_threshold => RenderStrategy::Degraded,
+            _ => RenderStrategy::Full,
+        }
+    }
 
     #[test]
     fn background_cx_is_not_cancelled() {
@@ -637,5 +731,157 @@ mod tests {
         clock.advance(Duration::from_millis(10));
         let completed = cx.sleep(Duration::from_secs(10));
         assert!(!completed);
+    }
+
+    #[test]
+    fn cx_propagates_across_update_render_and_subscription_phases() {
+        let clock = LabClock::new();
+        let (cx, _ctrl) = Cx::lab_with_deadline(&clock, Duration::from_millis(100));
+        let mut model = TestModel::default();
+
+        update_with_cx(&cx, &mut model, 7).expect("update should respect live cx");
+        let mut rendered = String::new();
+        render_widget_with_cx_atomic(&cx, "ok", &mut rendered, |_| {})
+            .expect("render should respect live cx");
+
+        let (tx, rx) = mpsc::channel();
+        subscription_send_with_cx(&cx, &tx, model.value)
+            .expect("subscription should respect live cx");
+
+        assert_eq!(model.value, 7);
+        assert_eq!(rendered, "ok");
+        assert_eq!(rx.try_recv().expect("subscription payload"), 7);
+    }
+
+    #[test]
+    fn cancellation_mid_render_aborts_without_partial_output() {
+        let clock = LabClock::new();
+        let (cx, ctrl) = Cx::lab(&clock);
+        let mut sink = String::from("prefix:");
+
+        let result = render_widget_with_cx_atomic(&cx, "render-me", &mut sink, |idx| {
+            if idx == 2 {
+                ctrl.cancel();
+            }
+        });
+
+        assert_eq!(result, Err(CxError::Cancelled));
+        assert_eq!(sink, "prefix:");
+    }
+
+    #[test]
+    fn deadline_enforcement_triggers_strategy_downgrade() {
+        let clock = LabClock::new();
+        let (cx, _ctrl) = Cx::lab_with_deadline(&clock, Duration::from_millis(50));
+
+        assert_eq!(
+            choose_render_strategy(&cx, Duration::from_millis(10)),
+            RenderStrategy::Full
+        );
+
+        clock.advance(Duration::from_millis(45));
+        assert_eq!(
+            choose_render_strategy(&cx, Duration::from_millis(10)),
+            RenderStrategy::Degraded
+        );
+    }
+
+    #[test]
+    fn missing_cx_returns_clear_runtime_error() {
+        let mut model = TestModel::default();
+        let err = update_with_optional_cx(None, &mut model, 1).expect_err("missing cx");
+        assert_eq!(err, MissingCxError::MissingContext);
+        assert_eq!(model.value, 0, "state should remain unchanged without cx");
+    }
+
+    #[cfg(feature = "tracing-json")]
+    #[derive(Default, Clone)]
+    struct TraceCaptureLayer {
+        spans: Arc<Mutex<Vec<String>>>,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[cfg(feature = "tracing-json")]
+    #[derive(Default)]
+    struct EventMessageVisitor {
+        message: Option<String>,
+    }
+
+    #[cfg(feature = "tracing-json")]
+    impl Visit for EventMessageVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "message" {
+                self.message = Some(value.to_string());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    #[cfg(feature = "tracing-json")]
+    impl<S> Layer<S> for TraceCaptureLayer
+    where
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            self.spans
+                .lock()
+                .expect("span capture lock")
+                .push(attrs.metadata().name().to_string());
+        }
+
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = EventMessageVisitor::default();
+            event.record(&mut visitor);
+            let message = visitor.message.unwrap_or_default();
+            self.events
+                .lock()
+                .expect("event capture lock")
+                .push(format!("{}:{}", event.metadata().level(), message));
+        }
+    }
+
+    #[cfg(feature = "tracing-json")]
+    #[test]
+    fn check_emits_cx_propagate_span_and_warns_on_cancellation() {
+        let capture = TraceCaptureLayer::default();
+        let subscriber =
+            tracing_subscriber::registry().with(capture.clone().with_filter(LevelFilter::TRACE));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (cx, ctrl) = Cx::background();
+        ctrl.cancel();
+        let result = cx.check();
+        assert_eq!(result, Err(CxError::Cancelled));
+
+        let spans = capture.spans.lock().expect("span capture lock");
+        assert!(
+            spans.iter().any(|name| name == "cx.propagate"),
+            "expected cx.propagate span, got {spans:?}"
+        );
+        drop(spans);
+
+        let events = capture.events.lock().expect("event capture lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.contains("WARN:cx cancelled")),
+            "expected cancellation WARN event, got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.contains("WARN:cx.propagate cancelled")),
+            "expected cx.propagate WARN event, got {events:?}"
+        );
     }
 }
