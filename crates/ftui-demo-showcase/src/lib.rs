@@ -23,6 +23,7 @@ pub mod chrome;
 pub mod cli;
 pub mod data;
 pub mod determinism;
+pub mod pane_interaction;
 pub mod screens;
 pub mod test_logging;
 pub mod theme;

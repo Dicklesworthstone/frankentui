@@ -118,7 +118,11 @@ fn build_buffer(width: u16, height: u16, seed: u64) -> Buffer {
     for _ in 0..num_cells {
         let x = rng.next_range(width as usize) as u16;
         let y = rng.next_range(height as usize) as u16;
-        buf.set_raw(x, y, Cell::from_char(rng.next_char()).with_fg(rng.next_color()));
+        buf.set_raw(
+            x,
+            y,
+            Cell::from_char(rng.next_char()).with_fg(rng.next_color()),
+        );
     }
     buf
 }
