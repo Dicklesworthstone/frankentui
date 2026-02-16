@@ -599,6 +599,16 @@ impl AttachClientStateMachine {
             );
         }
 
+        if self.state == AttachState::BackingOff {
+            return self.record_transition(
+                now_ms,
+                AttachEventKind::TransportClosed,
+                from_state,
+                Some("ignored_in_current_state".to_owned()),
+                actions,
+            );
+        }
+
         let normalized_reason = normalize_reason(&reason_text, "transport_closed");
         self.close_reason = Some(normalized_reason.clone());
 
@@ -617,12 +627,13 @@ impl AttachClientStateMachine {
 
         let fatal_close_code = matches!(code, 1002 | 1003 | 1007 | 1008);
         let orderly_close = clean && matches!(code, 1000 | 1001);
+        let active_before_close = self.state == AttachState::Active;
 
         if fatal_close_code {
             self.state = AttachState::Failed;
             self.retry_deadline_ms = None;
             self.failure_code = Some(format!("close_{code}"));
-        } else if orderly_close && !self.config.retry_on_clean_close {
+        } else if active_before_close && orderly_close && !self.config.retry_on_clean_close {
             self.state = AttachState::Closed;
             self.retry_deadline_ms = None;
             self.failure_code = None;
@@ -633,7 +644,7 @@ impl AttachClientStateMachine {
             self.attempt = next_attempt;
             self.retry_deadline_ms = Some(retry_deadline);
             actions.push(AttachAction::schedule_retry(retry_deadline, next_attempt));
-        } else if orderly_close {
+        } else if active_before_close && orderly_close {
             self.state = AttachState::Closed;
             self.retry_deadline_ms = None;
             self.failure_code = None;
@@ -983,6 +994,57 @@ mod tests {
         );
         assert_eq!(closed.from_state, AttachState::Closing);
         assert_eq!(closed.to_state, AttachState::Closed);
+    }
+
+    #[test]
+    fn transport_closed_while_backing_off_preserves_retry_timer() {
+        let mut machine = AttachClientStateMachine::default();
+        machine.handle_event(0, AttachEvent::ConnectRequested);
+        machine.handle_event(10, AttachEvent::TransportOpened);
+        let timeout_transition = machine.handle_event(5_010, AttachEvent::Tick);
+        assert_eq!(timeout_transition.to_state, AttachState::BackingOff);
+        assert_eq!(timeout_transition.retry_deadline_ms, Some(5_260));
+
+        let close_transition = machine.handle_event(
+            5_015,
+            AttachEvent::TransportClosed {
+                code: 1000,
+                clean: true,
+                reason: "normal".to_owned(),
+            },
+        );
+        assert_eq!(close_transition.from_state, AttachState::BackingOff);
+        assert_eq!(close_transition.to_state, AttachState::BackingOff);
+        assert_eq!(
+            close_transition.reason.as_deref(),
+            Some("ignored_in_current_state")
+        );
+        assert_eq!(machine.snapshot().retry_deadline_ms, Some(5_260));
+
+        let retry_transition = machine.handle_event(5_260, AttachEvent::Tick);
+        assert_eq!(retry_transition.event, AttachEventKind::RetryTimerElapsed);
+        assert_eq!(retry_transition.to_state, AttachState::ConnectingTransport);
+        assert_eq!(retry_transition.actions, vec![AttachAction::open_transport()]);
+    }
+
+    #[test]
+    fn clean_transport_close_while_connecting_schedules_retry() {
+        let mut machine = AttachClientStateMachine::default();
+        machine.handle_event(0, AttachEvent::ConnectRequested);
+
+        let closed = machine.handle_event(
+            20,
+            AttachEvent::TransportClosed {
+                code: 1000,
+                clean: true,
+                reason: "open_failed".to_owned(),
+            },
+        );
+        assert_eq!(closed.from_state, AttachState::ConnectingTransport);
+        assert_eq!(closed.to_state, AttachState::BackingOff);
+        assert_eq!(closed.attempt, 2);
+        assert_eq!(closed.retry_deadline_ms, Some(270));
+        assert_eq!(closed.actions, vec![AttachAction::schedule_retry(270, 2)]);
     }
 
     #[test]

@@ -4209,7 +4209,7 @@ fn get_event_type_list(
                     "field {key} contains unknown event type: {raw}"
                 )));
             };
-            if !out.iter().any(|existing| *existing == event_type) {
+            if !out.contains(&event_type) {
                 out.push(event_type);
             }
         }
