@@ -178,7 +178,11 @@ pub struct PaneLeaf {
     /// Host-provided stable surface key (for replay/diff mapping).
     pub surface_key: String,
     /// Forward-compatible extension bag.
-    #[serde(default)]
+    #[serde(
+        default,
+        rename = "leaf_extensions",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub extensions: BTreeMap<String, String>,
 }
 
@@ -221,7 +225,7 @@ pub struct PaneNodeRecord {
     #[serde(flatten)]
     pub kind: PaneNodeKind,
     /// Forward-compatible extension bag.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, String>,
 }
 
