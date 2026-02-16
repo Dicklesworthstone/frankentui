@@ -699,7 +699,11 @@ impl Buffer {
         // Case 2: Overwriting a Continuation
         else if current.is_continuation() && !new_cell.is_continuation() {
             let mut back_x = x;
-            while back_x > 0 {
+            // Limit scan to max possible grapheme width to avoid O(N) scan on rows
+            // filled with orphaned continuations. 127 is GraphemeId::MAX_WIDTH.
+            let limit = x.saturating_sub(127);
+
+            while back_x > limit {
                 back_x -= 1;
                 if let Some(h_idx) = self.index(back_x, y) {
                     let h_cell = self.cells[h_idx];
@@ -743,6 +747,43 @@ impl Buffer {
         } else {
             None
         }
+    }
+
+    /// Helper to clean up orphaned continuation cells to the right of a write.
+    ///
+    /// If we write a cell at `x`, and `x+1` contains a continuation cell that
+    /// is NOT owned by `x` (which is guaranteed since we just wrote `x`),
+    /// then `x+1` (and subsequent continuations) are orphans. This method
+    /// scans forward and clears them to prevent visual artifacts.
+    #[inline]
+    fn cleanup_orphaned_tails(&mut self, start_x: u16, y: u16) {
+        if start_x >= self.width {
+            return;
+        }
+
+        // Optimization: check first cell without loop overhead
+        let Some(idx) = self.index(start_x, y) else {
+            return;
+        };
+        if !self.cells[idx].is_continuation() {
+            return;
+        }
+
+        // Found an orphan, start scanning
+        let mut x = start_x;
+        let mut max_x = x;
+        let row_end_idx = (y as usize * self.width as usize) + self.width as usize;
+        let mut curr_idx = idx;
+
+        while curr_idx < row_end_idx && self.cells[curr_idx].is_continuation() {
+            self.cells[curr_idx] = Cell::default();
+            max_x = x;
+            x = x.saturating_add(1);
+            curr_idx += 1;
+        }
+
+        // Mark the cleared range as dirty
+        self.mark_dirty_span(y, start_x, max_x.saturating_add(1));
     }
 
     /// Fast-path cell write for the common case.
@@ -857,6 +898,7 @@ impl Buffer {
 
             self.cells[idx] = final_cell;
             self.mark_dirty_span(y, span_start, span_end);
+            self.cleanup_orphaned_tails(x.saturating_add(1), y);
             return;
         }
 
@@ -920,6 +962,7 @@ impl Buffer {
             self.cells[idx] = Cell::CONTINUATION;
         }
         self.mark_dirty_span(y, span_start, span_end);
+        self.cleanup_orphaned_tails(x.saturating_add(width as u16), y);
     }
 
     /// Set the cell at (x, y) without scissor or opacity processing.

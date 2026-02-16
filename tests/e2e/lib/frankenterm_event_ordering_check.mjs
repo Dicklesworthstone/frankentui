@@ -7,6 +7,7 @@ import process from "node:process";
 const DEFAULT_REQUIRED_ORDERING_SNIPPETS = [
   "drainEncodedInputs() returns FIFO",
   "drainEncodedInputBytes() returns FIFO",
+  "drainImeCompositionJsonl() returns FIFO",
   "drainReplyBytes() returns FIFO",
   "drainAttachTransitionsJsonl() returns transitions",
   "drainLinkClicks() and drainAccessibilityAnnouncements() return FIFO",
@@ -16,6 +17,7 @@ const REQUIRED_EVENT_TYPES = [
   "attach.transition",
   "input.accessibility",
   "input.composition",
+  "input.composition_trace",
   "input.focus",
   "input.mouse",
   "input.paste",
@@ -217,8 +219,30 @@ async function main() {
 
   // Burst + composition edge ordering.
   term.input({ kind: "composition", phase: "update", data: "x" });
+  const imeActiveSnapshot = term.imeState();
+  expect(
+    Boolean(imeActiveSnapshot.active),
+    errors,
+    `imeState.active should be true during composition, got ${JSON.stringify(imeActiveSnapshot)}`,
+  );
+  expect(
+    String(imeActiveSnapshot.preedit ?? "") === "x",
+    errors,
+    `imeState.preedit should track latest preedit text, got ${JSON.stringify(imeActiveSnapshot)}`,
+  );
   term.input({ kind: "key", phase: "down", key: "A", code: "KeyA", repeat: false, mods: 0 });
-  term.input({ kind: "composition", phase: "end", data: "x" });
+  term.input({ kind: "composition", phase: "end" });
+  const imeInactiveSnapshot = term.imeState();
+  expect(
+    !Boolean(imeInactiveSnapshot.active),
+    errors,
+    `imeState.active should be false after composition end, got ${JSON.stringify(imeInactiveSnapshot)}`,
+  );
+  expect(
+    imeInactiveSnapshot.preedit === null || imeInactiveSnapshot.preedit === undefined,
+    errors,
+    `imeState.preedit should be cleared after composition end, got ${JSON.stringify(imeInactiveSnapshot)}`,
+  );
   for (let i = 0; i < 6; i += 1) {
     term.input({ kind: "paste", data: `burst-${i}` });
   }
@@ -252,6 +276,22 @@ async function main() {
     emit("input.vt_bytes", {
       drain_index: idx,
       bytes_hex: toHex(chunk),
+    });
+  }
+
+  const imeTraceTimestamp = args.deterministic ? "T999999" : isoNow();
+  const imeTraceLines = Array.from(term.drainImeCompositionJsonl(runId, args.seed, imeTraceTimestamp));
+  const imeTraceKinds = [];
+  for (const [idx, line] of imeTraceLines.entries()) {
+    const parsed = JSON.parse(String(line));
+    imeTraceKinds.push(String(parsed.event_kind ?? ""));
+    emit("input.composition_trace", {
+      drain_index: idx,
+      event_kind: parsed.event_kind ?? "",
+      phase: parsed.phase ?? null,
+      synthetic: Boolean(parsed.synthetic),
+      active_after: Boolean(parsed.active_after),
+      preedit_after: parsed.preedit_after ?? null,
     });
   }
 
@@ -310,6 +350,16 @@ async function main() {
     `expected at least 7 VT byte chunks, got ${encodedByteChunks.length}`,
   );
   expect(
+    imeTraceLines.length >= 4,
+    errors,
+    `expected at least 4 IME trace records, got ${imeTraceLines.length}`,
+  );
+  expect(
+    imeTraceKinds.includes("drop_key"),
+    errors,
+    `expected IME trace to include drop_key event, got ${JSON.stringify(imeTraceKinds)}`,
+  );
+  expect(
     JSON.stringify(replyChunks) === JSON.stringify(["1b5b343b3852", "1b5b323b3552"]),
     errors,
     `reply byte order mismatch: ${JSON.stringify(replyChunks)}`,
@@ -349,6 +399,7 @@ async function main() {
     attach_transition_count: attachLines.length,
     encoded_input_count: encodedInputLines.length,
     encoded_vt_chunk_count: encodedByteChunks.length,
+    ime_trace_count: imeTraceLines.length,
     reply_chunk_count: replyChunks.length,
     link_click_count: linkClicks.length,
     accessibility_announcement_count: announcements.length,

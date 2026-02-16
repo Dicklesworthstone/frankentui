@@ -294,6 +294,37 @@ proptest! {
     }
 }
 
+#[test]
+fn end_without_data_reuses_latest_preedit_payload() {
+    let mut state = CompositionState::default();
+    let _ = state.rewrite(InputEvent::Composition(CompositionInput {
+        phase: CompositionPhase::Start,
+        data: None,
+    }));
+    let _ = state.rewrite(InputEvent::Composition(CompositionInput {
+        phase: CompositionPhase::Update,
+        data: Some("漢".into()),
+    }));
+
+    let out: Vec<InputEvent> = state
+        .rewrite(InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::End,
+            data: None,
+        }))
+        .into_events()
+        .collect();
+
+    assert_eq!(
+        out,
+        vec![InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::End,
+            data: Some("漢".into()),
+        })]
+    );
+    assert!(!state.is_active());
+    assert_eq!(state.preedit(), None);
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // 8. VT encoder: key-up produces empty in legacy mode
 // ═════════════════════════════════════════════════════════════════════════

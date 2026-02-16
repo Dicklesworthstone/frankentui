@@ -181,11 +181,15 @@ pub use markup::{MarkupError, MarkupParser, parse_markup};
 #[cfg(feature = "normalization")]
 pub use normalization::{NormForm, eq_normalized, is_normalized, normalize, normalize_for_search};
 
-pub use search::{
-    SearchResult, search_ascii_case_insensitive, search_exact, search_exact_overlapping,
-};
 #[cfg(feature = "normalization")]
-pub use search::{search_case_insensitive, search_normalized};
+pub use search::{
+    PolicySearchResult, SearchPolicy, search_case_insensitive, search_normalized,
+    search_with_policy,
+};
+pub use search::{
+    SearchResult, WidthMode, display_col_at, search_ascii_case_insensitive, search_exact,
+    search_exact_overlapping,
+};
 
 #[cfg(test)]
 mod measurement_tests {

@@ -311,15 +311,22 @@ impl CompositionRewrite {
 }
 
 /// Tracks IME composition session state and normalizes event streams.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct CompositionState {
     active: bool,
+    preedit: Option<Box<str>>,
 }
 
 impl CompositionState {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// Return the currently tracked preedit text, if any.
+    #[must_use]
+    pub fn preedit(&self) -> Option<&str> {
+        self.preedit.as_deref()
     }
 
     /// Normalize one input event against current composition state.
@@ -335,6 +342,7 @@ impl CompositionState {
             InputEvent::Composition(comp) => self.rewrite_composition(comp),
             InputEvent::Focus(FocusInput { focused: false }) if self.active => {
                 self.active = false;
+                self.preedit = None;
                 CompositionRewrite {
                     synthetic: Some(synthetic_composition_event(CompositionPhase::Cancel)),
                     primary: Some(InputEvent::Focus(FocusInput { focused: false })),
@@ -351,7 +359,7 @@ impl CompositionState {
         }
     }
 
-    fn rewrite_composition(&mut self, comp: CompositionInput) -> CompositionRewrite {
+    fn rewrite_composition(&mut self, mut comp: CompositionInput) -> CompositionRewrite {
         match comp.phase {
             CompositionPhase::Start => {
                 let synthetic = if self.active {
@@ -360,6 +368,7 @@ impl CompositionState {
                     None
                 };
                 self.active = true;
+                self.preedit = normalized_preedit(comp.data.as_deref());
                 CompositionRewrite {
                     synthetic,
                     primary: Some(InputEvent::Composition(comp)),
@@ -372,18 +381,26 @@ impl CompositionState {
                     self.active = true;
                     Some(synthetic_composition_event(CompositionPhase::Start))
                 };
+                if let Some(preedit) = normalized_preedit(comp.data.as_deref()) {
+                    self.preedit = Some(preedit);
+                }
                 CompositionRewrite {
                     synthetic,
                     primary: Some(InputEvent::Composition(comp)),
                 }
             }
             CompositionPhase::End => {
+                // Some browser/event-wrapper paths emit `end` without commit text.
+                // Reuse the latest non-empty preedit payload so commit bytes remain deterministic.
+                comp.data =
+                    normalized_preedit(comp.data.as_deref()).or_else(|| self.preedit.clone());
                 let synthetic = if self.active {
                     None
                 } else {
                     Some(synthetic_composition_event(CompositionPhase::Start))
                 };
                 self.active = false;
+                self.preedit = None;
                 CompositionRewrite {
                     synthetic,
                     primary: Some(InputEvent::Composition(comp)),
@@ -391,6 +408,7 @@ impl CompositionState {
             }
             CompositionPhase::Cancel => {
                 self.active = false;
+                self.preedit = None;
                 CompositionRewrite {
                     synthetic: None,
                     primary: Some(InputEvent::Composition(comp)),
@@ -402,6 +420,10 @@ impl CompositionState {
 
 fn synthetic_composition_event(phase: CompositionPhase) -> InputEvent {
     InputEvent::Composition(CompositionInput { phase, data: None })
+}
+
+fn normalized_preedit(data: Option<&str>) -> Option<Box<str>> {
+    data.and_then(|text| (!text.is_empty()).then(|| text.into()))
 }
 
 /// Minimal modifier tracker used to guarantee "no stuck modifiers" after focus loss.
@@ -1320,9 +1342,42 @@ mod tests {
         let end_out: Vec<InputEvent> = state.rewrite(end).into_events().collect();
         assert_eq!(end_out.len(), 1);
         assert!(!state.is_active());
+        assert_eq!(state.preedit(), None);
 
         let pass_through: Vec<InputEvent> = state.rewrite(key.clone()).into_events().collect();
         assert_eq!(pass_through, vec![key]);
+    }
+
+    #[test]
+    fn composition_end_without_data_reuses_latest_preedit() {
+        let mut state = CompositionState::default();
+        let _ = state.rewrite(InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::Start,
+            data: None,
+        }));
+        let _ = state.rewrite(InputEvent::Composition(CompositionInput {
+            phase: CompositionPhase::Update,
+            data: Some("你好".into()),
+        }));
+        assert_eq!(state.preedit(), Some("你好"));
+
+        let out: Vec<InputEvent> = state
+            .rewrite(InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::End,
+                data: None,
+            }))
+            .into_events()
+            .collect();
+
+        assert_eq!(
+            out,
+            vec![InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::End,
+                data: Some("你好".into()),
+            })]
+        );
+        assert!(!state.is_active());
+        assert_eq!(state.preedit(), None);
     }
 
     #[test]
@@ -1330,9 +1385,10 @@ mod tests {
         let mut state = CompositionState::default();
         let _ = state.rewrite(InputEvent::Composition(CompositionInput {
             phase: CompositionPhase::Start,
-            data: None,
+            data: Some("に".into()),
         }));
         assert!(state.is_active());
+        assert_eq!(state.preedit(), Some("に"));
 
         let out: Vec<InputEvent> = state
             .rewrite(InputEvent::Focus(FocusInput { focused: false }))
@@ -1349,6 +1405,7 @@ mod tests {
             ]
         );
         assert!(!state.is_active());
+        assert_eq!(state.preedit(), None);
     }
 
     #[test]

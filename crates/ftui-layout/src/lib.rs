@@ -558,91 +558,104 @@ impl Flex {
 
     fn sizes_to_rects(&self, area: Rect, sizes: &[u16]) -> Vec<Rect> {
         let mut rects = Vec::with_capacity(sizes.len());
+        if sizes.is_empty() {
+            return rects;
+        }
 
-        // Calculate total used space (sizes + gaps) safely
-        let total_gaps = if sizes.len() > 1 {
-            let gap_count = sizes.len() - 1;
-            (gap_count as u64 * self.gap as u64).min(u16::MAX as u64) as u16
-        } else {
-            0
-        };
-        let total_used: u16 = sizes.iter().sum::<u16>().saturating_add(total_gaps);
+        let total_items_size: u16 = sizes.iter().sum();
         let total_available = match self.direction {
             Direction::Horizontal => area.width,
             Direction::Vertical => area.height,
         };
-        let leftover = total_available.saturating_sub(total_used);
 
-        // Calculate starting position and gap adjustment based on alignment
-        let (start_offset, extra_gap) = match self.alignment {
-            Alignment::Start => (0, 0),
-            Alignment::End => (leftover, 0),
-            Alignment::Center => (leftover / 2, 0),
-            Alignment::SpaceBetween => (0, 0),
-            Alignment::SpaceAround => {
-                if sizes.is_empty() {
-                    (0, 0)
+        // Determine offsets strategy
+        let (start_shift, use_formula) = match self.alignment {
+            Alignment::Start => (0, None),
+            Alignment::End => {
+                let gap_space = (sizes.len().saturating_sub(1) as u64 * self.gap as u64)
+                    .min(u16::MAX as u64) as u16;
+                let used = total_items_size.saturating_add(gap_space);
+                (total_available.saturating_sub(used), None)
+            }
+            Alignment::Center => {
+                let gap_space = (sizes.len().saturating_sub(1) as u64 * self.gap as u64)
+                    .min(u16::MAX as u64) as u16;
+                let used = total_items_size.saturating_add(gap_space);
+                (total_available.saturating_sub(used) / 2, None)
+            }
+            Alignment::SpaceBetween => {
+                let leftover = total_available.saturating_sub(total_items_size);
+                let slots = sizes.len().saturating_sub(1);
+                if slots > 0 {
+                    (0, Some((leftover, slots, 0))) // 0 = Between
                 } else {
-                    // Space around: equal space before, between, and after
-                    // slots = sizes.len() * 2. Use usize to prevent overflow.
-                    let slots = sizes.len() * 2;
-                    let unit = (leftover as usize / slots) as u16;
-                    let rem = (leftover as usize % slots) as u16;
-                    (unit + rem / 2, 0)
+                    (0, None)
+                }
+            }
+            Alignment::SpaceAround => {
+                let leftover = total_available.saturating_sub(total_items_size);
+                let slots = sizes.len() * 2;
+                if slots > 0 {
+                    (0, Some((leftover, slots, 1))) // 1 = Around
+                } else {
+                    (0, None)
                 }
             }
         };
 
-        let mut current_pos = match self.direction {
-            Direction::Horizontal => area.x.saturating_add(start_offset),
-            Direction::Vertical => area.y.saturating_add(start_offset),
-        };
+        let mut accumulated_size = 0;
 
         for (i, &size) in sizes.iter().enumerate() {
+            let gap_offset = if let Some((leftover, slots, mode)) = use_formula {
+                if mode == 0 {
+                    // Between: (Leftover * i) / slots
+                    if i == 0 {
+                        0
+                    } else {
+                        (leftover as u64 * i as u64 / slots as u64) as u16
+                    }
+                } else {
+                    // Around: (Leftover * (2i + 1)) / slots
+                    (leftover as u64 * (2 * i as u64 + 1) / slots as u64) as u16
+                }
+            } else {
+                // Fixed gap
+                if i > 0 {
+                    (i as u64 * self.gap as u64).min(u16::MAX as u64) as u16
+                } else {
+                    0
+                }
+            };
+
+            let pos = match self.direction {
+                Direction::Horizontal => area
+                    .x
+                    .saturating_add(start_shift)
+                    .saturating_add(accumulated_size)
+                    .saturating_add(gap_offset),
+                Direction::Vertical => area
+                    .y
+                    .saturating_add(start_shift)
+                    .saturating_add(accumulated_size)
+                    .saturating_add(gap_offset),
+            };
+
             let rect = match self.direction {
                 Direction::Horizontal => Rect {
-                    x: current_pos,
+                    x: pos,
                     y: area.y,
                     width: size,
                     height: area.height,
                 },
                 Direction::Vertical => Rect {
                     x: area.x,
-                    y: current_pos,
+                    y: pos,
                     width: area.width,
                     height: size,
                 },
             };
             rects.push(rect);
-
-            // Advance position for next item
-            current_pos = current_pos
-                .saturating_add(size)
-                .saturating_add(self.gap)
-                .saturating_add(extra_gap);
-
-            // Add alignment-specific spacing
-            match self.alignment {
-                Alignment::SpaceBetween => {
-                    if sizes.len() > 1 && i < sizes.len() - 1 {
-                        let count = sizes.len() - 1; // usize
-                        // Use usize division to prevent overflow/panic
-                        let base = (leftover as usize / count) as u16;
-                        let rem = leftover as usize % count;
-                        // Compare i (usize) with rem (usize) to avoid truncation for large i
-                        let extra = base + if i < rem { 1 } else { 0 };
-                        current_pos = current_pos.saturating_add(extra);
-                    }
-                }
-                Alignment::SpaceAround => {
-                    if !sizes.is_empty() {
-                        let slots = sizes.len() * 2; // usize
-                        let unit = (leftover as usize / slots) as u16;
-                        current_pos = current_pos.saturating_add(unit.saturating_mul(2));
-                    }
-                }
-                _ => {}
-            }
+            accumulated_size = accumulated_size.saturating_add(size);
         }
 
         rects
@@ -736,7 +749,7 @@ where
     let mut remaining = available_size;
     let mut grow_indices = Vec::new();
 
-    // 1. First pass: Allocate Fixed, Percentage, Min, and intrinsic sizing constraints
+    // 1. First pass: Allocate Fixed, Percentage, Ratio, Min, and intrinsic sizing constraints
     for (i, &constraint) in constraints.iter().enumerate() {
         match constraint {
             Constraint::Fixed(size) => {
@@ -752,6 +765,14 @@ where
                 sizes[i] = size;
                 remaining = remaining.saturating_sub(size);
             }
+            Constraint::Ratio(n, d) => {
+                // Ratio acts as a fixed fraction of the TOTAL available space, similar to Percentage.
+                let size = (available_size as u64 * n as u64 / d.max(1) as u64).min(u16::MAX as u64)
+                    as u16;
+                let size = min(size, remaining);
+                sizes[i] = size;
+                remaining = remaining.saturating_sub(size);
+            }
             Constraint::Min(min_size) => {
                 let size = min(min_size, remaining);
                 sizes[i] = size;
@@ -760,10 +781,6 @@ where
             }
             Constraint::Max(_) => {
                 // Max initially takes 0, but is a candidate for growth
-                grow_indices.push(i);
-            }
-            Constraint::Ratio(_, _) => {
-                // Ratio takes 0 initially, candidate for growth
                 grow_indices.push(i);
             }
             Constraint::Fill => {
@@ -811,18 +828,11 @@ where
         const WEIGHT_SCALE: u64 = 10_000;
 
         for &i in &grow_indices {
-            match constraints[i] {
-                Constraint::Ratio(n, d) => {
-                    let w = n as u64 * WEIGHT_SCALE / d.max(1) as u64;
-                    // Allow weight to be 0 if n is 0
-                    total_weight += w;
-                }
-                _ => total_weight += WEIGHT_SCALE,
-            }
+            // All remaining grow types (Min, Max, Fill, FitMin) have equal weight
+            total_weight += WEIGHT_SCALE;
         }
 
         if total_weight == 0 {
-            // If all weights are zero (e.g. all Ratio(0, N)), distribute nothing.
             break;
         }
 
@@ -831,20 +841,11 @@ where
         let mut shares = vec![0u16; constraints.len()];
 
         for (idx, &i) in grow_indices.iter().enumerate() {
-            let weight = match constraints[i] {
-                Constraint::Ratio(n, d) => n as u64 * WEIGHT_SCALE / d.max(1) as u64,
-                _ => WEIGHT_SCALE,
-            };
+            let weight = WEIGHT_SCALE;
 
-            // Last item gets the rest ONLY if it has weight.
-            // If it has 0 weight, it shouldn't inherit the rounding error.
+            // Last item gets the rest to ensure exact sum conservation
             let size = if idx == grow_indices.len() - 1 {
-                // If the last item has 0 weight, it should get 0.
-                if weight == 0 {
-                    0
-                } else {
-                    space_to_distribute.saturating_sub(allocated)
-                }
+                space_to_distribute.saturating_sub(allocated)
             } else {
                 let s = (space_to_distribute as u64 * weight / total_weight) as u16;
                 min(s, space_to_distribute.saturating_sub(allocated))

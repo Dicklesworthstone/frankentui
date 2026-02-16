@@ -89,9 +89,7 @@ fn xorshift32(state: &mut u32) -> u32 {
 /// Walk a 3-level tree (root → children → grandchildren) computing layout.
 fn walk_tree(inc: &mut IncrementalLayout, root: NodeId, root_area: Rect) {
     let child_count = inc.graph().dependents(root).len();
-    let root_rects = inc.get_or_compute(root, root_area, |a| {
-        split_equal(a, child_count.max(1))
-    });
+    let root_rects = inc.get_or_compute(root, root_area, |a| split_equal(a, child_count.max(1)));
     let children: Vec<_> = inc.graph().dependents(root).to_vec();
     for (i, child) in children.iter().enumerate() {
         let child_area = if i < root_rects.len() {
@@ -100,9 +98,8 @@ fn walk_tree(inc: &mut IncrementalLayout, root: NodeId, root_area: Rect) {
             Rect::default()
         };
         let gc_count = inc.graph().dependents(*child).len();
-        let child_rects = inc.get_or_compute(*child, child_area, |a| {
-            split_equal(a, gc_count.max(1))
-        });
+        let child_rects =
+            inc.get_or_compute(*child, child_area, |a| split_equal(a, gc_count.max(1)));
         let grandchildren: Vec<_> = inc.graph().dependents(*child).to_vec();
         for (j, gc) in grandchildren.iter().enumerate() {
             let gc_area = if j < child_rects.len() {
@@ -346,7 +343,11 @@ fn e2e_dirty_propagation_root_dirties_all() {
         "timestamp_ns": elapsed_ns(&start),
     }));
 
-    assert_eq!(dirty.len(), 111, "root dirty should propagate to all descendants");
+    assert_eq!(
+        dirty.len(),
+        111,
+        "root dirty should propagate to all descendants"
+    );
 
     log.emit(json!({
         "test": "dirty_propagation_root_dirties_all",
@@ -553,7 +554,7 @@ fn e2e_cache_invalidation_exactly_right_nodes() {
     let log = JsonlLog::new();
     let start = Instant::now();
 
-    let (mut inc, root, children, grandchildren) = build_tree(5, 3);
+    let (mut inc, root, _children, grandchildren) = build_tree(5, 3);
     inc.propagate();
 
     let a = area(200, 60);
@@ -594,11 +595,7 @@ fn e2e_cache_invalidation_exactly_right_nodes() {
 
     // Only grandchild[7] should recompute (1 node).
     assert_eq!(s.recomputed, 1, "exactly 1 node should recompute");
-    assert_eq!(
-        s.cached,
-        inc.node_count() - 1,
-        "all other nodes cached"
-    );
+    assert_eq!(s.cached, inc.node_count() - 1, "all other nodes cached");
 
     log.emit(json!({
         "test": "cache_invalidation_exactly_right_nodes",
@@ -915,7 +912,7 @@ fn e2e_edge_case_add_remove_during_layout() {
 
     let mut inc = IncrementalLayout::new();
     let root = inc.add_node(None);
-    let c1 = inc.add_node(Some(root));
+    let _c1 = inc.add_node(Some(root));
     let c2 = inc.add_node(Some(root));
     inc.propagate();
 
@@ -927,7 +924,10 @@ fn e2e_edge_case_add_remove_during_layout() {
 
     // Remove c2 mid-layout.
     inc.remove_node(c2);
-    assert!(inc.is_dirty(root), "parent should be dirty after child removal");
+    assert!(
+        inc.is_dirty(root),
+        "parent should be dirty after child removal"
+    );
     assert_eq!(inc.cache_len(), 2); // c2 evicted
 
     // Add new child.
@@ -1169,10 +1169,7 @@ fn e2e_isomorphism_incremental_equals_full() {
         for (i, ((id_i, h_i), (id_f, h_f))) in
             incr_hashes.iter().zip(full_hashes.iter()).enumerate()
         {
-            assert_eq!(
-                id_i, id_f,
-                "node order mismatch at position {i}"
-            );
+            assert_eq!(id_i, id_f, "node order mismatch at position {i}");
             assert_eq!(
                 h_i, h_f,
                 "hash mismatch at node {id_i} (position {i}) for {children}x{gc_per} tree"
@@ -1222,9 +1219,7 @@ fn e2e_isomorphism_after_partial_dirty() {
         "timestamp_ns": elapsed_ns(&start),
     }));
 
-    for (i, ((id_i, h_i), (id_f, h_f))) in
-        incr_hashes.iter().zip(full_hashes.iter()).enumerate()
-    {
+    for (i, ((id_i, h_i), (id_f, h_f))) in incr_hashes.iter().zip(full_hashes.iter()).enumerate() {
         assert_eq!(id_i, id_f, "node order mismatch at {i}");
         assert_eq!(
             h_i, h_f,

@@ -13,7 +13,7 @@ use ftui_layout::{
     PaneDragResizeEffect, PaneId, PaneInertialThrow, PaneInteractionTimeline,
     PaneLayoutIntelligenceMode, PaneLeaf, PaneModifierSnapshot, PaneMotionVector, PaneNodeKind,
     PaneOperation, PanePlacement, PanePointerButton, PanePointerPosition, PanePressureSnapProfile,
-    PaneResizeGrip, PaneResizeTarget, PaneSelectionState, PaneSplitRatio, PaneTree, Rect, Sides,
+    PaneResizeGrip, PaneResizeTarget, PaneSelectionState, PaneSplitRatio, PaneTree, Rect,
     SplitAxis, WorkspaceMetadata, WorkspaceSnapshot,
 };
 use ftui_web::pane_pointer_capture::{
@@ -69,8 +69,6 @@ pub struct RunnerCore {
 const PATCH_HASH_ALGO: &str = "fnv1a64";
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
-const DEFAULT_PANE_MARGIN_CELLS: u16 = 1;
-const DEFAULT_PANE_PADDING_CELLS: u16 = 1;
 const DEFAULT_SPRING_BLEND_BPS: u16 = 3_500;
 const PANE_MAGNETIC_FIELD_MIN_CELLS: f64 = 3.5;
 const PANE_MAGNETIC_FIELD_MAX_CELLS: f64 = 11.0;
@@ -95,6 +93,14 @@ struct ActivePaneGesture {
     mode: PaneGestureMode,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoPointerDownContext {
+    target: PaneResizeTarget,
+    leaf: PaneId,
+    mode: PaneGestureMode,
+}
+
 /// Live preview metadata consumed by WASM/host renderers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PanePreviewState {
@@ -112,6 +118,7 @@ pub struct PanePreviewState {
     pub alt_two_zone: Option<PaneDockZone>,
     pub alt_two_ghost_rect: Option<Rect>,
     pub alt_two_strength_bps: u16,
+    pub selection_bounds: Option<Rect>,
 }
 
 /// Lightweight timeline status for host HUD updates.
@@ -488,13 +495,19 @@ impl RunnerCore {
         modifiers: PaneModifierSnapshot,
     ) -> PaneDispatchSummary {
         let pointer = PanePointerPosition::new(x, y);
-        let target = self
-            .prepare_auto_pointer_down(pointer_id, pointer, modifiers)
-            .unwrap_or(PaneResizeTarget {
-                split_id: self.layout_tree.root(),
-                axis: SplitAxis::Horizontal,
-            });
-        self.pane_pointer_down(target, pointer_id, button, x, y, modifiers)
+        let Some(context) = self.pointer_down_context_at(pointer) else {
+            return self.reject_pointer_down(pointer_id, pointer);
+        };
+        let target = context.target;
+        let dispatch = self
+            .pane_adapter
+            .pointer_down(target, pointer_id, button, pointer, modifiers);
+        let summary = self.record_pane_dispatch(dispatch);
+        if summary.accepted() && self.active_gesture.is_none() {
+            self.update_selection_for_pointer_down(context.leaf, modifiers.shift);
+            self.arm_gesture(pointer_id, context.leaf, context.mode);
+        }
+        summary
     }
 
     /// Auto-targeted pointer-move from host coordinates.
@@ -530,23 +543,19 @@ impl RunnerCore {
         y: i32,
         modifiers: PaneModifierSnapshot,
     ) -> PaneDispatchSummary {
-        if self.active_gesture.is_none() {
-            let pointer = PanePointerPosition::new(x, y);
-            if let Some(leaf) = self.leaf_at_pointer(pointer) {
-                self.arm_gesture(pointer_id, leaf, PaneGestureMode::Move);
-                if !modifiers.shift {
-                    self.set_single_selection(leaf);
-                }
-            }
+        let pointer = PanePointerPosition::new(x, y);
+        let dispatch = self
+            .pane_adapter
+            .pointer_down(target, pointer_id, button, pointer, modifiers);
+        let summary = self.record_pane_dispatch(dispatch);
+        if summary.accepted()
+            && self.active_gesture.is_none()
+            && let Some(context) = self.pointer_down_context_at(pointer)
+        {
+            self.update_selection_for_pointer_down(context.leaf, modifiers.shift);
+            self.arm_gesture(pointer_id, context.leaf, context.mode);
         }
-        let dispatch = self.pane_adapter.pointer_down(
-            target,
-            pointer_id,
-            button,
-            PanePointerPosition::new(x, y),
-            modifiers,
-        );
-        self.record_pane_dispatch(dispatch)
+        summary
     }
 
     /// Mark pane pointer capture as acquired by the host/browser.
@@ -627,16 +636,6 @@ impl RunnerCore {
         Rect::new(0, 0, width.max(1), height.max(1))
     }
 
-    fn decorated_pane_rect(rect: Rect) -> Rect {
-        let margin = rect.inner(Sides::all(DEFAULT_PANE_MARGIN_CELLS));
-        let padded = margin.inner(Sides::all(DEFAULT_PANE_PADDING_CELLS));
-        if padded.width == 0 || padded.height == 0 {
-            margin
-        } else {
-            padded
-        }
-    }
-
     fn leaf_at_pointer(&self, pointer: PanePointerPosition) -> Option<PaneId> {
         let x = u16::try_from(pointer.x).ok()?;
         let y = u16::try_from(pointer.y).ok()?;
@@ -649,11 +648,10 @@ impl RunnerCore {
             if !matches!(node.kind, PaneNodeKind::Leaf(_)) {
                 continue;
             }
-            let visual = Self::decorated_pane_rect(rect);
-            if !visual.contains(x, y) {
+            if !rect.contains(x, y) {
                 continue;
             }
-            let area = u32::from(visual.width) * u32::from(visual.height);
+            let area = u32::from(rect.width) * u32::from(rect.height);
             match best {
                 Some((_, best_area)) if best_area <= area => {}
                 _ => best = Some((node_id, area)),
@@ -696,6 +694,19 @@ impl RunnerCore {
         self.selection.anchor = Some(pane_id);
     }
 
+    fn update_selection_for_pointer_down(&mut self, leaf: PaneId, shift: bool) {
+        if shift {
+            self.selection.shift_toggle(leaf);
+            if self.selection.anchor.is_none() {
+                self.selection.anchor = Some(leaf);
+            }
+            return;
+        }
+        if !(self.selection.selected.contains(&leaf) && self.selection.selected.len() > 1) {
+            self.set_single_selection(leaf);
+        }
+    }
+
     fn grip_primary_axis(grip: PaneResizeGrip) -> SplitAxis {
         match grip {
             PaneResizeGrip::Left
@@ -708,24 +719,12 @@ impl RunnerCore {
         }
     }
 
-    fn prepare_auto_pointer_down(
-        &mut self,
-        pointer_id: u32,
+    fn pointer_down_context_at(
+        &self,
         pointer: PanePointerPosition,
-        modifiers: PaneModifierSnapshot,
-    ) -> Option<PaneResizeTarget> {
+    ) -> Option<AutoPointerDownContext> {
         let layout = self.layout_tree.solve_layout(self.viewport_rect()).ok()?;
         let leaf = self.leaf_at_pointer(pointer)?;
-
-        if modifiers.shift {
-            self.selection.shift_toggle(leaf);
-            if self.selection.anchor.is_none() {
-                self.selection.anchor = Some(leaf);
-            }
-        } else if !(self.selection.selected.contains(&leaf) && self.selection.selected.len() > 1) {
-            self.set_single_selection(leaf);
-        }
-
         let grip = layout.classify_resize_grip(leaf, pointer, PANE_EDGE_GRIP_INSET_CELLS);
         let mode = grip.map_or(PaneGestureMode::Move, PaneGestureMode::Resize);
         let axis = grip.map_or(SplitAxis::Horizontal, Self::grip_primary_axis);
@@ -733,10 +732,11 @@ impl RunnerCore {
             .nearest_axis_split_for_node(leaf, axis)
             .or_else(|| self.nearest_split_for_node(leaf))
             .unwrap_or(self.layout_tree.root());
-
-        self.arm_gesture(pointer_id, leaf, mode);
-
-        Some(PaneResizeTarget { split_id, axis })
+        Some(AutoPointerDownContext {
+            target: PaneResizeTarget { split_id, axis },
+            leaf,
+            mode,
+        })
     }
 
     fn apply_pane_dispatch_semantics(&mut self, dispatch: &PanePointerDispatch) {
@@ -816,7 +816,7 @@ impl RunnerCore {
                         sequence,
                         &plan.operations,
                         pressure,
-                        true,
+                        !committed,
                     );
                 } else {
                     let Ok(plan) = self.layout_tree.plan_edge_resize(
@@ -832,7 +832,7 @@ impl RunnerCore {
                         sequence,
                         &plan.operations,
                         pressure,
-                        true,
+                        !committed,
                     );
                 }
             }
@@ -861,6 +861,7 @@ impl RunnerCore {
                     && self.selection.selected.contains(&active.leaf)
                 {
                     let anchor = self.selection.anchor.unwrap_or(active.leaf);
+                    let selection_bounds = layout.cluster_bounds(&self.selection.selected);
                     let Ok(preview_plan) = self.layout_tree.plan_reflow_move_with_preview(
                         anchor,
                         &layout,
@@ -872,9 +873,12 @@ impl RunnerCore {
                         self.preview_state = PanePreviewState::default();
                         return;
                     };
-                    let dock_strength_bps = (preview_plan.preview.score * 10_000.0)
-                        .round()
-                        .clamp(0.0, 10_000.0) as u16;
+                    let dock_strength_bps = adaptive_dock_strength_bps(
+                        preview_plan.preview.score,
+                        motion,
+                        pressure,
+                        committed,
+                    );
                     let ghost_rect = self.blend_preview_ghost(
                         preview_plan.preview.ghost_rect,
                         pressure,
@@ -905,6 +909,7 @@ impl RunnerCore {
                             dock_strength_bps,
                             motion.speed.round().clamp(0.0, 65_535.0) as u16,
                             &ranked,
+                            selection_bounds,
                         );
                     }
                     let should_live_apply = !committed
@@ -930,6 +935,9 @@ impl RunnerCore {
                             self.apply_live_reflow_if_needed(sequence, &plan.operations, pressure);
                     }
                 } else {
+                    let selection_bounds = layout
+                        .visual_rect(active.leaf)
+                        .or_else(|| layout.rect(active.leaf));
                     let Ok(plan) = self.layout_tree.plan_reflow_move_with_preview(
                         active.leaf,
                         &layout,
@@ -942,7 +950,7 @@ impl RunnerCore {
                         return;
                     };
                     let dock_strength_bps =
-                        (plan.preview.score * 10_000.0).round().clamp(0.0, 10_000.0) as u16;
+                        adaptive_dock_strength_bps(plan.preview.score, motion, pressure, committed);
                     let ghost_rect = self.blend_preview_ghost(
                         plan.preview.ghost_rect,
                         pressure,
@@ -973,6 +981,7 @@ impl RunnerCore {
                             dock_strength_bps,
                             motion.speed.round().clamp(0.0, 65_535.0) as u16,
                             &ranked,
+                            selection_bounds,
                         );
                     }
                     let should_live_apply = !committed
@@ -1163,6 +1172,32 @@ impl RunnerCore {
         self.pane_logs.push(format_pane_log_entry(dispatch.log));
         summary
     }
+
+    fn reject_pointer_down(
+        &mut self,
+        pointer_id: u32,
+        pointer: PanePointerPosition,
+    ) -> PaneDispatchSummary {
+        let log = PanePointerLogEntry {
+            phase: PanePointerLifecyclePhase::PointerDown,
+            sequence: None,
+            pointer_id: Some(pointer_id),
+            target: None,
+            position: Some(pointer),
+            capture_command: None,
+            outcome: PanePointerLogOutcome::Ignored(PanePointerIgnoredReason::MachineRejectedEvent),
+        };
+        let summary = PaneDispatchSummary {
+            phase: log.phase,
+            sequence: log.sequence,
+            pointer_id: log.pointer_id,
+            target: log.target,
+            capture_command: log.capture_command,
+            outcome: PaneDispatchOutcome::Ignored(PanePointerIgnoredReason::MachineRejectedEvent),
+        };
+        self.pane_logs.push(format_pane_log_entry(log));
+        summary
+    }
 }
 
 fn leaf_id_for_key(tree: &PaneTree, key: &str) -> Option<PaneId> {
@@ -1280,6 +1315,34 @@ fn dynamic_preview_switch_advantage_bps(
     ) as u16
 }
 
+fn adaptive_dock_strength_bps(
+    score: f64,
+    motion: PaneMotionVector,
+    pressure: PanePressureSnapProfile,
+    committed: bool,
+) -> u16 {
+    if score <= 0.0 {
+        return 0;
+    }
+    let base = score.clamp(0.0, 1.0) * 10_000.0;
+    let speed = (motion.speed / 110.0).clamp(0.0, 1.0);
+    let confidence = (f64::from(pressure.strength_bps) / 10_000.0).clamp(0.0, 1.0);
+    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
+    let abs_dx = f64::from(motion.delta_x).abs();
+    let abs_dy = f64::from(motion.delta_y).abs();
+    let dominance = if (abs_dx + abs_dy) <= f64::EPSILON {
+        0.0
+    } else {
+        (abs_dx - abs_dy).abs() / (abs_dx + abs_dy)
+    };
+    let assist =
+        speed * 0.16 + confidence * 0.10 + dominance * 0.08 + if committed { 0.06 } else { 0.0 };
+    let precision_penalty = (1.0 - speed) * (1.0 - confidence) * 0.12 + noise_penalty * 0.18;
+    (base * (1.0 + assist - precision_penalty))
+        .round()
+        .clamp(0.0, 10_000.0) as u16
+}
+
 fn edge_fling_projection(
     pointer: PanePointerPosition,
     motion: PaneMotionVector,
@@ -1322,6 +1385,19 @@ fn blend_u16_value(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
     blended.clamp(0, i32::from(u16::MAX)) as u16
 }
 
+fn round_f64_to_i32(value: f64) -> i32 {
+    if value.is_nan() {
+        return 0;
+    }
+    if value >= f64::from(i32::MAX) {
+        return i32::MAX;
+    }
+    if value <= f64::from(i32::MIN) {
+        return i32::MIN;
+    }
+    value.round() as i32
+}
+
 fn blend_rect(current: Rect, target: Rect, blend_factor_bps: u16) -> Rect {
     Rect::new(
         blend_u16_value(current.x, target.x, blend_factor_bps),
@@ -1347,6 +1423,7 @@ fn build_preview_state_from_candidates(
     dock_strength_bps: u16,
     motion_speed_cps: u16,
     ranked: &[PaneDockPreview],
+    selection_bounds: Option<Rect>,
 ) -> PanePreviewState {
     let mut alternatives = ranked
         .iter()
@@ -1373,6 +1450,7 @@ fn build_preview_state_from_candidates(
         alt_two_strength_bps: alt_two
             .map(|candidate| score_to_strength_bps(candidate.score))
             .unwrap_or(0),
+        selection_bounds,
     }
 }
 
@@ -1559,6 +1637,29 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_dock_strength_rewards_fast_confident_commits() {
+        let fast = adaptive_dock_strength_bps(
+            0.72,
+            PaneMotionVector::from_delta(42, 4, 34, 0),
+            PanePressureSnapProfile {
+                strength_bps: 8_400,
+                hysteresis_bps: 520,
+            },
+            true,
+        );
+        let precise = adaptive_dock_strength_bps(
+            0.72,
+            PaneMotionVector::from_delta(6, 1, 240, 7),
+            PanePressureSnapProfile {
+                strength_bps: 2_800,
+                hysteresis_bps: 180,
+            },
+            false,
+        );
+        assert!(fast > precise);
+    }
+
+    #[test]
     fn preview_state_includes_secondary_dock_candidates() {
         let primary = PaneDockPreview {
             target: PaneId::new(2).expect("valid pane id"),
@@ -1585,10 +1686,70 @@ mod tests {
             8_800,
             420,
             &[primary, secondary, tertiary],
+            Some(Rect::new(8, 3, 40, 22)),
         );
         assert_eq!(state.alt_one_target, Some(secondary.target));
         assert_eq!(state.alt_two_target, Some(tertiary.target));
         assert!(state.alt_one_strength_bps > state.alt_two_strength_bps);
+        assert_eq!(state.selection_bounds, Some(Rect::new(8, 3, 40, 22)));
+    }
+
+    #[test]
+    fn ignored_pointer_down_does_not_arm_gesture_or_selection() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        let before = runner.selection.clone();
+        let summary = runner.pane_pointer_down_at(
+            17,
+            PanePointerButton::Secondary,
+            6,
+            6,
+            PaneModifierSnapshot::default(),
+        );
+        assert!(!summary.accepted());
+        assert!(runner.active_gesture.is_none());
+        assert_eq!(runner.selection, before);
+    }
+
+    #[test]
+    fn out_of_bounds_pointer_down_is_rejected_without_capture() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        let summary = runner.pane_pointer_down_at(
+            19,
+            PanePointerButton::Primary,
+            -4,
+            -2,
+            PaneModifierSnapshot::default(),
+        );
+        assert!(!summary.accepted());
+        assert!(matches!(
+            summary.outcome,
+            PaneDispatchOutcome::Ignored(PanePointerIgnoredReason::MachineRejectedEvent)
+        ));
+        assert_eq!(runner.pane_active_pointer_id(), None);
+        assert!(runner.active_gesture.is_none());
+    }
+
+    #[test]
+    fn edge_pointer_down_arms_resize_gesture() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        let summary = runner.pane_pointer_down_at(
+            23,
+            PanePointerButton::Primary,
+            0,
+            0,
+            PaneModifierSnapshot::default(),
+        );
+        assert!(summary.accepted());
+        match runner.active_gesture {
+            Some(ActivePaneGesture {
+                mode: PaneGestureMode::Resize(PaneResizeGrip::TopLeft),
+                ..
+            }) => {}
+            other => panic!("expected top-left resize gesture, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1608,7 +1769,7 @@ mod tests {
         let pointer = PanePointerPosition::new(2, 20);
         let projected = edge_fling_projection(
             pointer,
-            PaneMotionVector::from_delta(-8, 0, 220, 0),
+            PaneMotionVector::from_delta(-3, 0, 420, 0),
             viewport,
         );
         assert_eq!(projected, pointer);

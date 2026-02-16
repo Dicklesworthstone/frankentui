@@ -151,6 +151,10 @@ impl<'a> Sparkline<'a> {
             return 0;
         }
 
+        if value <= self.baseline {
+            return 0;
+        }
+
         let range = max - min;
         if range <= 0.0 {
             return 4; // Middle bar for flat data

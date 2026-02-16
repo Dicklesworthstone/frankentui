@@ -223,21 +223,26 @@ impl<T> Virtualized<T> {
         }
 
         let items_visible = match &self.item_height {
-            ItemHeight::Fixed(h) if *h > 0 => (viewport_height / h) as usize,
+            // Use div_ceil to include partially visible items
+            ItemHeight::Fixed(h) if *h > 0 => viewport_height.div_ceil(*h) as usize,
             ItemHeight::Fixed(_) => viewport_height as usize,
             ItemHeight::Variable(cache) => {
-                // Sum heights until the next item would exceed viewport (O(visible))
+                // Sum heights until we fill or exceed viewport
                 let mut count = 0;
                 let mut total_height = 0u16;
                 let start = self.scroll_offset;
                 while start + count < self.len() {
                     let next = cache.get(start + count);
                     let proposed = total_height.saturating_add(next);
-                    if proposed > viewport_height {
-                        break;
-                    }
+
+                    // Always include the item
                     total_height = proposed;
                     count += 1;
+
+                    // Stop if we've filled the viewport
+                    if total_height >= viewport_height {
+                        break;
+                    }
                 }
                 count
             }
@@ -317,20 +322,30 @@ impl<T> Virtualized<T> {
         self.follow_mode = true;
     }
 
-    /// Page up (scroll by visible count).
+    /// Page up (scroll by visible count - 1).
     pub fn page_up(&mut self) {
         let visible_count = self.visible_count.get();
         if visible_count > 0 {
-            let delta = i32::try_from(visible_count).unwrap_or(i32::MAX);
+            let step = if visible_count > 1 {
+                visible_count - 1
+            } else {
+                1
+            };
+            let delta = i32::try_from(step).unwrap_or(i32::MAX);
             self.scroll(-delta);
         }
     }
 
-    /// Page down (scroll by visible count).
+    /// Page down (scroll by visible count - 1).
     pub fn page_down(&mut self) {
         let visible_count = self.visible_count.get();
         if visible_count > 0 {
-            let delta = i32::try_from(visible_count).unwrap_or(i32::MAX);
+            let step = if visible_count > 1 {
+                visible_count - 1
+            } else {
+                1
+            };
+            let delta = i32::try_from(step).unwrap_or(i32::MAX);
             self.scroll(delta);
         }
     }
@@ -894,18 +909,28 @@ impl VirtualizedListState {
         }
     }
 
-    /// Page up (scroll by visible count).
+    /// Page up (scroll by visible count - 1).
     pub fn page_up(&mut self, total_items: usize) {
         if self.visible_count > 0 {
-            let delta = i32::try_from(self.visible_count).unwrap_or(i32::MAX);
+            let step = if self.visible_count > 1 {
+                self.visible_count - 1
+            } else {
+                1
+            };
+            let delta = i32::try_from(step).unwrap_or(i32::MAX);
             self.scroll(-delta, total_items);
         }
     }
 
-    /// Page down (scroll by visible count).
+    /// Page down (scroll by visible count - 1).
     pub fn page_down(&mut self, total_items: usize) {
         if self.visible_count > 0 {
-            let delta = i32::try_from(self.visible_count).unwrap_or(i32::MAX);
+            let step = if self.visible_count > 1 {
+                self.visible_count - 1
+            } else {
+                1
+            };
+            let delta = i32::try_from(step).unwrap_or(i32::MAX);
             self.scroll(delta, total_items);
         }
     }
@@ -1123,7 +1148,9 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
         }
 
         // Reserve space for scrollbar if needed
-        let items_per_viewport = (area.height / self.fixed_height.max(1)) as usize;
+        let fixed_h = self.fixed_height.max(1);
+        // Use div_ceil to include partially visible items and avoid 0 count for large items
+        let items_per_viewport = area.height.div_ceil(fixed_h) as usize;
         let needs_scrollbar = self.show_scrollbar && total_items > items_per_viewport;
         let content_width = if needs_scrollbar {
             area.width.saturating_sub(1)

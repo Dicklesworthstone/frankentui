@@ -41,6 +41,7 @@ const MAX_PASTE_BYTES: usize = 768 * 1024;
 /// Bounded queue limits for host-drained event streams.
 const MAX_ENCODED_INPUT_EVENTS: usize = 4096;
 const MAX_ENCODED_INPUT_BYTE_CHUNKS: usize = 4096;
+const MAX_IME_TRACE_EVENTS: usize = 2048;
 const MAX_LINK_CLICKS: usize = 2048;
 
 fn empty_search_index(config: SearchConfig) -> SearchIndex {
@@ -115,6 +116,7 @@ pub struct FrankenTermWeb {
     encoder_features: VtInputEncoderFeatures,
     encoded_inputs: Vec<String>,
     encoded_input_bytes: Vec<Vec<u8>>,
+    ime_trace_events: Vec<ImeTraceEvent>,
     link_clicks: Vec<LinkClickEvent>,
     auto_link_ids: Vec<u32>,
     auto_link_urls: HashMap<u32, String>,
@@ -166,6 +168,16 @@ struct ResolvedLinkClick {
     policy_rule: &'static str,
     action_outcome: &'static str,
     open_decision: LinkOpenDecision,
+}
+
+#[derive(Debug, Clone)]
+struct ImeTraceEvent {
+    event_kind: &'static str,
+    phase: Option<CompositionPhase>,
+    data: Option<String>,
+    synthetic: bool,
+    active_after: bool,
+    preedit_after: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -401,6 +413,7 @@ impl FrankenTermWeb {
             encoder_features: VtInputEncoderFeatures::default(),
             encoded_inputs: Vec::new(),
             encoded_input_bytes: Vec::new(),
+            ime_trace_events: Vec::new(),
             link_clicks: Vec::new(),
             auto_link_ids: Vec::new(),
             auto_link_urls: HashMap::new(),
@@ -690,6 +703,26 @@ impl FrankenTermWeb {
         ))
     }
 
+    /// Return the current IME composition snapshot.
+    ///
+    /// Shape:
+    /// `{ active, preedit }` where `preedit` is `null` when no tracked preedit text exists.
+    #[wasm_bindgen(js_name = imeState)]
+    pub fn ime_state(&self) -> JsValue {
+        let obj = Object::new();
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("active"),
+            &JsValue::from_bool(self.composition.is_active()),
+        );
+        let preedit = self
+            .composition
+            .preedit()
+            .map_or(JsValue::NULL, JsValue::from_str);
+        let _ = Reflect::set(&obj, &JsValue::from_str("preedit"), &preedit);
+        obj.into()
+    }
+
     /// Accepts DOM-derived keyboard/mouse/touch events.
     ///
     /// This method expects an `InputEvent`-shaped JS object (not a raw DOM event),
@@ -699,9 +732,21 @@ impl FrankenTermWeb {
     /// then queued for downstream consumption (e.g. feeding `ftui-web`).
     pub fn input(&mut self, event: JsValue) -> Result<(), JsValue> {
         let ev = parse_input_event(&event)?;
+        let was_key_event = matches!(ev, InputEvent::Key(_));
         let rewrite = self.composition.rewrite(ev);
 
-        for ev in rewrite.into_events() {
+        let synthetic = rewrite.synthetic;
+        let primary = rewrite.primary;
+        if synthetic.is_none() && primary.is_none() && was_key_event {
+            self.record_ime_drop_key_trace();
+        }
+
+        if let Some(ev) = synthetic {
+            self.record_ime_trace_event(&ev, true);
+            self.queue_input_event(ev)?;
+        }
+        if let Some(ev) = primary {
+            self.record_ime_trace_event(&ev, false);
             self.queue_input_event(ev)?;
         }
         Ok(())
@@ -715,6 +760,40 @@ impl FrankenTermWeb {
             arr.push(&JsValue::from_str(&s));
         }
         arr
+    }
+
+    /// Drain queued IME composition trace records as JSONL lines.
+    ///
+    /// Records are emitted in rewrite order and include post-rewrite composition
+    /// state snapshots for deterministic failure triage.
+    #[wasm_bindgen(js_name = drainImeCompositionJsonl)]
+    pub fn drain_ime_composition_jsonl(
+        &mut self,
+        run_id: String,
+        seed: u64,
+        timestamp: String,
+    ) -> Array {
+        let out = Array::new();
+        for (event_idx, event) in self.ime_trace_events.drain(..).enumerate() {
+            let line = serde_json::json!({
+                "schema_version": "e2e-jsonl-v1",
+                "type": "ime_composition",
+                "run_id": run_id,
+                "seed": seed,
+                "timestamp": timestamp,
+                "event_idx": event_idx as u64,
+                "event_kind": event.event_kind,
+                "phase": event.phase.map(composition_phase_label),
+                "data": event.data,
+                "synthetic": event.synthetic,
+                "active_after": event.active_after,
+                "preedit_after": event.preedit_after,
+            });
+            if let Ok(line) = serde_json::to_string(&line) {
+                out.push(&JsValue::from_str(&line));
+            }
+        }
+        out
     }
 
     /// Drain queued VT-compatible input byte chunks for remote PTY forwarding.
@@ -1737,6 +1816,7 @@ impl FrankenTermWeb {
         self.encoder_features = VtInputEncoderFeatures::default();
         self.encoded_inputs.clear();
         self.encoded_input_bytes.clear();
+        self.ime_trace_events.clear();
         self.link_clicks.clear();
         self.auto_link_ids.clear();
         self.auto_link_urls.clear();
@@ -1928,6 +2008,39 @@ impl FrankenTermWeb {
             );
         }
         Ok(())
+    }
+
+    fn record_ime_trace_event(&mut self, event: &InputEvent, synthetic: bool) {
+        let InputEvent::Composition(comp) = event else {
+            return;
+        };
+        push_bounded(
+            &mut self.ime_trace_events,
+            ImeTraceEvent {
+                event_kind: "composition",
+                phase: Some(comp.phase),
+                data: comp.data.as_deref().map(ToOwned::to_owned),
+                synthetic,
+                active_after: self.composition.is_active(),
+                preedit_after: self.composition.preedit().map(ToOwned::to_owned),
+            },
+            MAX_IME_TRACE_EVENTS,
+        );
+    }
+
+    fn record_ime_drop_key_trace(&mut self) {
+        push_bounded(
+            &mut self.ime_trace_events,
+            ImeTraceEvent {
+                event_kind: "drop_key",
+                phase: None,
+                data: None,
+                synthetic: false,
+                active_after: self.composition.is_active(),
+                preedit_after: self.composition.preedit().map(ToOwned::to_owned),
+            },
+            MAX_IME_TRACE_EVENTS,
+        );
     }
 
     fn set_focus_internal(&mut self, focused: bool) {
@@ -2522,6 +2635,15 @@ fn parse_input_event(event: &JsValue) -> Result<InputEvent, JsValue> {
         "focus" => parse_focus_event(event),
         "accessibility" => parse_accessibility_event(event),
         other => Err(JsValue::from_str(&format!("unknown input kind: {other}"))),
+    }
+}
+
+const fn composition_phase_label(phase: CompositionPhase) -> &'static str {
+    match phase {
+        CompositionPhase::Start => "start",
+        CompositionPhase::Update => "update",
+        CompositionPhase::End => "end",
+        CompositionPhase::Cancel => "cancel",
     }
 }
 
@@ -5134,6 +5256,124 @@ mod tests {
             .as_string()
             .expect("drained encoded input should be a string");
         assert!(last.contains(&format!("\"evt-{}\"", total - 1)));
+    }
+
+    #[test]
+    fn ime_state_reports_active_and_preedit_snapshot() {
+        let mut term = FrankenTermWeb::new();
+        let _ = term
+            .composition
+            .rewrite(InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::Update,
+                data: Some("に".into()),
+            }));
+
+        let snapshot = term.ime_state();
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("active"))
+                .expect("ime_state should expose active")
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            Reflect::get(&snapshot, &JsValue::from_str("preedit"))
+                .expect("ime_state should expose preedit")
+                .as_string()
+                .as_deref(),
+            Some("に")
+        );
+
+        let _ = term
+            .composition
+            .rewrite(InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::End,
+                data: None,
+            }));
+        let cleared = term.ime_state();
+        assert_eq!(
+            Reflect::get(&cleared, &JsValue::from_str("active"))
+                .expect("ime_state should expose active")
+                .as_bool(),
+            Some(false)
+        );
+        assert!(
+            Reflect::get(&cleared, &JsValue::from_str("preedit"))
+                .expect("ime_state should expose preedit")
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn drain_ime_composition_jsonl_emits_trace_records() {
+        let mut term = FrankenTermWeb::new();
+        let _ = term
+            .composition
+            .rewrite(InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::Update,
+                data: Some("x".into()),
+            }));
+        term.record_ime_trace_event(
+            &InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::Start,
+                data: None,
+            }),
+            true,
+        );
+        term.record_ime_trace_event(
+            &InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::Update,
+                data: Some("x".into()),
+            }),
+            false,
+        );
+        term.record_ime_drop_key_trace();
+
+        let lines =
+            term.drain_ime_composition_jsonl("run-ime".to_string(), 9, "T000500".to_string());
+        assert_eq!(lines.length(), 3);
+
+        let first = lines
+            .get(0)
+            .as_string()
+            .expect("drain_ime_composition_jsonl should emit strings");
+        let first: serde_json::Value =
+            serde_json::from_str(&first).expect("first IME JSONL line should parse");
+        assert_eq!(first["type"], "ime_composition");
+        assert_eq!(first["run_id"], "run-ime");
+        assert_eq!(first["seed"], 9);
+        assert_eq!(first["event_kind"], "composition");
+        assert_eq!(first["phase"], "start");
+        assert_eq!(first["synthetic"], true);
+
+        let last = lines
+            .get(2)
+            .as_string()
+            .expect("drain_ime_composition_jsonl should emit strings");
+        let last: serde_json::Value =
+            serde_json::from_str(&last).expect("last IME JSONL line should parse");
+        assert_eq!(last["event_kind"], "drop_key");
+        assert_eq!(last["phase"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn ime_trace_queue_drops_oldest_on_overflow() {
+        let mut term = FrankenTermWeb::new();
+        let total = MAX_IME_TRACE_EVENTS + 4;
+        for idx in 0..total {
+            let event = InputEvent::Composition(CompositionInput {
+                phase: CompositionPhase::Update,
+                data: Some(format!("p{idx}").into_boxed_str()),
+            });
+            term.record_ime_trace_event(&event, false);
+        }
+
+        assert_eq!(term.ime_trace_events.len(), MAX_IME_TRACE_EVENTS);
+        let first = term
+            .ime_trace_events
+            .first()
+            .and_then(|event| event.data.as_deref())
+            .expect("overflow queue should retain earliest surviving payload");
+        assert_eq!(first, "p4");
     }
 
     #[test]

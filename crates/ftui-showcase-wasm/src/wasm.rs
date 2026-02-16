@@ -287,6 +287,11 @@ fn pane_dispatch_to_js(
     } else {
         set_js(&obj, "ghost_rect", JsValue::NULL);
     }
+    if let Some(rect) = preview.selection_bounds {
+        set_js(&obj, "selection_bounds", pane_rect_to_js(rect));
+    } else {
+        set_js(&obj, "selection_bounds", JsValue::NULL);
+    }
     set_js(
         &obj,
         "dock_strength_bps",
@@ -387,6 +392,11 @@ fn pane_state_to_js(runner: &RunnerCore) -> JsValue {
         set_js(&obj, "ghost_rect", pane_rect_to_js(rect));
     } else {
         set_js(&obj, "ghost_rect", JsValue::NULL);
+    }
+    if let Some(rect) = preview.selection_bounds {
+        set_js(&obj, "selection_bounds", pane_rect_to_js(rect));
+    } else {
+        set_js(&obj, "selection_bounds", JsValue::NULL);
     }
     set_js(
         &obj,

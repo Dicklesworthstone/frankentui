@@ -88,6 +88,25 @@
 	      opacity 80ms ease-out;
 	    will-change: left, top, width, height, opacity;
 	  }
+	  #pane-selection-halo {
+	    position: fixed;
+	    border: 1px solid rgba(124, 198, 228, 0.70);
+	    background: linear-gradient(180deg, rgba(68, 128, 164, 0.10), rgba(34, 74, 96, 0.06));
+	    border-radius: 12px;
+	    pointer-events: none;
+	    z-index: 10;
+	    display: none;
+	    opacity: 0;
+	    transform: scale(0.995);
+	    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
+	    transition:
+	      left 95ms cubic-bezier(0.22, 1, 0.36, 1),
+	      top 95ms cubic-bezier(0.22, 1, 0.36, 1),
+	      width 100ms cubic-bezier(0.22, 1, 0.36, 1),
+	      height 100ms cubic-bezier(0.22, 1, 0.36, 1),
+	      opacity 90ms ease-out;
+	    will-change: left, top, width, height, opacity;
+	  }
 	  #error-overlay {
 	    display: none;
 	    position: fixed; inset: 0;
@@ -156,6 +175,7 @@
 <div id="pane-ghost" aria-hidden="true"></div>
 <div id="pane-ghost-alt-1" aria-hidden="true"></div>
 <div id="pane-ghost-alt-2" aria-hidden="true"></div>
+<div id="pane-selection-halo" aria-hidden="true"></div>
 <div id="pane-dock-hint" aria-hidden="true"></div>
 <div id="touch-zoom">
   <button id="zoom-out">&minus;</button>
@@ -194,6 +214,7 @@ const loadingBar     = document.getElementById("loading-bar");
 const paneGhost      = document.getElementById("pane-ghost");
 const paneGhostAlt1  = document.getElementById("pane-ghost-alt-1");
 const paneGhostAlt2  = document.getElementById("pane-ghost-alt-2");
+const paneSelectionHalo = document.getElementById("pane-selection-halo");
 const paneGhostAlts  = [paneGhostAlt1, paneGhostAlt2];
 const paneDockHint   = document.getElementById("pane-dock-hint");
 const PANE_WORKSPACE_KEY = "ftui-pane-workspace-v1";
@@ -449,10 +470,30 @@ function paneDockCandidatesFromState(state) {
   }];
 }
 
+function renderSelectionHalo(state, rect, cellW, cellH) {
+  if (!paneSelectionHalo) return;
+  const bounds = state?.selection_bounds;
+  if (!bounds) {
+    paneSelectionHalo.style.display = "none";
+    paneSelectionHalo.style.opacity = "0";
+    return;
+  }
+  const selectedCount = Array.isArray(state?.selected_ids) ? state.selected_ids.length : 0;
+  const activeBoost = state?.active_pointer_id !== null && state?.active_pointer_id !== undefined;
+  const emphasis = Math.min(1, Math.max(0.25, selectedCount / 4 + (activeBoost ? 0.2 : 0)));
+  paneSelectionHalo.style.left = `${Math.round(rect.left + bounds.x * cellW)}px`;
+  paneSelectionHalo.style.top = `${Math.round(rect.top + bounds.y * cellH)}px`;
+  paneSelectionHalo.style.width = `${Math.max(1, Math.round(bounds.width * cellW))}px`;
+  paneSelectionHalo.style.height = `${Math.max(1, Math.round(bounds.height * cellH))}px`;
+  paneSelectionHalo.style.opacity = `${(0.26 + emphasis * 0.42).toFixed(3)}`;
+  paneSelectionHalo.style.display = "block";
+}
+
 function renderPaneGhost(state) {
   const rect = canvas.getBoundingClientRect();
   const cellW = currentCols > 0 ? rect.width / currentCols : CELL_WIDTH;
   const cellH = currentRows > 0 ? rect.height / currentRows : CELL_HEIGHT;
+  renderSelectionHalo(state, rect, cellW, cellH);
   const dockCandidates = paneDockCandidatesFromState(state);
   const primaryCandidate = dockCandidates[0];
   if (primaryCandidate && primaryCandidate.ghost_rect) {
