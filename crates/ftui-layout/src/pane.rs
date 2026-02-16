@@ -2941,10 +2941,10 @@ fn elastic_ratio_bps(raw_bps: u16, pressure: PanePressureSnapProfile) -> u16 {
     let resistance = (0.62 - confidence * 0.34).clamp(0.18, 0.68);
     let eased = if raw < edge_band {
         let ratio = (raw / edge_band).clamp(0.0, 1.0);
-        edge_band * ratio.powf(1.0 + resistance)
+        edge_band * ratio.powf(1.0 / (1.0 + resistance))
     } else if raw > 1.0 - edge_band {
         let ratio = ((1.0 - raw) / edge_band).clamp(0.0, 1.0);
-        1.0 - edge_band * ratio.powf(1.0 + resistance)
+        1.0 - edge_band * ratio.powf(1.0 / (1.0 + resistance))
     } else {
         raw
     };
