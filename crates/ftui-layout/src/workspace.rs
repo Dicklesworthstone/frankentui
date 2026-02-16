@@ -406,8 +406,8 @@ pub fn needs_migration(snapshot: &WorkspaceSnapshot) -> bool {
 mod tests {
     use super::*;
     use crate::pane::{
-        PaneInteractionTimelineEntry, PaneLeaf, PaneNodeRecord, PaneOperation, PaneSplit,
-        PaneSplitRatio, SplitAxis,
+        PaneInteractionTimelineEntry, PaneLeaf, PaneNodeKind, PaneNodeRecord, PaneOperation,
+        PaneSplit, PaneSplitRatio, SplitAxis,
     };
 
     fn minimal_tree() -> PaneTreeSnapshot {
@@ -593,14 +593,8 @@ mod tests {
 
     // ---- Serialization ----
     //
-    // NOTE: Full JSON round-trip through serde_json is blocked by a known
-    // upstream issue: PaneNodeRecord uses `#[serde(flatten)]` on PaneNodeKind,
-    // which flattens PaneLeaf.extensions alongside PaneNodeRecord.extensions,
-    // producing duplicate `"extensions"` keys in JSON. serde_json rejects
-    // duplicate fields on deserialization.
-    //
-    // We test serialization succeeds and deserialization from hand-crafted JSON
-    // that matches the expected wire format.
+    // Roundtrip coverage verifies pane/workspace snapshots remain portable across
+    // hosts and can be parsed back without lossy key collisions.
 
     #[test]
     fn serde_serialize_minimal_succeeds() {
@@ -617,6 +611,64 @@ mod tests {
         let json = serde_json::to_string_pretty(&snap).unwrap();
         assert!(json.contains("\"active_pane_id\": 2"));
         assert!(json.contains("\"name\": \"split\""));
+    }
+
+    #[test]
+    fn serde_roundtrip_snapshot_preserves_leaf_and_node_extensions() {
+        let mut tree = minimal_tree();
+        tree.extensions
+            .insert("tree_scope".to_string(), "tree".to_string());
+        tree.nodes[0]
+            .extensions
+            .insert("node_scope".to_string(), "node".to_string());
+        let PaneNodeKind::Leaf(leaf) = &mut tree.nodes[0].kind else {
+            panic!("minimal tree root should be leaf");
+        };
+        leaf.extensions
+            .insert("leaf_scope".to_string(), "leaf".to_string());
+
+        let mut snap = WorkspaceSnapshot::new(tree, WorkspaceMetadata::new("roundtrip"));
+        snap.extensions
+            .insert("workspace_scope".to_string(), "workspace".to_string());
+        snap.metadata
+            .tags
+            .insert("metadata_scope".to_string(), "metadata".to_string());
+
+        let json = serde_json::to_string(&snap).unwrap();
+        let decoded: WorkspaceSnapshot = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            decoded
+                .extensions
+                .get("workspace_scope")
+                .map(std::string::String::as_str),
+            Some("workspace")
+        );
+        assert_eq!(
+            decoded
+                .pane_tree
+                .extensions
+                .get("tree_scope")
+                .map(std::string::String::as_str),
+            Some("tree")
+        );
+        assert_eq!(
+            decoded.pane_tree.nodes[0]
+                .extensions
+                .get("node_scope")
+                .map(std::string::String::as_str),
+            Some("node")
+        );
+        let PaneNodeKind::Leaf(decoded_leaf) = &decoded.pane_tree.nodes[0].kind else {
+            panic!("decoded minimal tree root should be leaf");
+        };
+        assert_eq!(
+            decoded_leaf
+                .extensions
+                .get("leaf_scope")
+                .map(std::string::String::as_str),
+            Some("leaf")
+        );
     }
 
     #[test]
