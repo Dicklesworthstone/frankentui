@@ -491,7 +491,9 @@ impl RuntimeDiffConfig {
 /// All terminal output should go through this struct.
 pub struct TerminalWriter<W: Write> {
     /// Presenter handles efficient ANSI emission and cursor tracking.
-    presenter: Presenter<W>,
+    /// Wrapped in `Option` so `into_inner` can take ownership; `Drop` skips
+    /// cleanup when `None` (already consumed).
+    presenter: Option<Presenter<W>>,
     /// Current screen mode.
     screen_mode: ScreenMode,
     /// Last computed auto UI height (inline auto mode only).
@@ -659,7 +661,7 @@ impl<W: Write> TerminalWriter<W> {
         let presenter = Presenter::new(writer, capabilities);
 
         Self {
-            presenter,
+            presenter: Some(presenter),
             screen_mode,
             auto_ui_height,
             ui_anchor,
@@ -692,58 +694,26 @@ impl<W: Write> TerminalWriter<W> {
         }
     }
 
-    /// Get a mutable reference to the internal writer.
+    /// Get a mutable reference to the internal counting writer.
     ///
     /// # Panics
     ///
-    /// Panics if the writer has been taken (via `into_inner`).
+    /// Panics if the presenter has been taken (via `into_inner`).
     #[inline]
     fn writer(&mut self) -> &mut CountingWriter<BufWriter<W>> {
-        // Presenter owns the writer wrapped in CountingWriter<BufWriter<W>>
-        // We exposed writer_mut which returns &mut W (the CountingWriter<...>)
-        // wait, Presenter::writer_mut returns &mut W where W is the generic param of Presenter.
-        // But TerminalWriter<W> creates Presenter<W>.
-        // So Presenter::new(writer) wraps W in CountingWriter<BufWriter<W>>.
-        // Actually, Presenter struct is:
-        // pub struct Presenter<W: Write> {
-        //    writer: CountingWriter<BufWriter<W>>,
-        // }
-        // And I added:
-        // pub fn writer_mut(&mut self) -> &mut W {
-        //    &mut self.writer.inner.get_mut().0
-        // }
-        // Wait, CountingWriter<BufWriter<W>>. inner is BufWriter<W>. get_mut() gives &mut W (buffer flushed?).
-        // No, BufWriter::get_mut returns &mut W.
-        // So writer_mut returns &mut W.
-        // But TerminalWriter::writer() returns &mut CountingWriter<BufWriter<W>>.
-        // This mismatch is problematic because TerminalWriter uses CountingWriter methods like take_count().
+        self.presenter_mut().counting_writer_mut()
+    }
 
-        // I need to fix Presenter::writer_mut to return the CountingWriter wrapper, or update TerminalWriter to use the inner writer.
-        // TerminalWriter uses `enable_counting`, `take_count`.
-        // So I need access to the CountingWriter.
-
-        // Let's modify Presenter to expose the CountingWriter.
-        // But Presenter struct field `writer` is private.
-        // I can't change Presenter anymore in this tool call.
-        // I must assume Presenter::writer_mut returned `&mut W` in the previous step.
-        // Wait, in the previous step I wrote:
-        // &mut self.writer.inner.get_mut().0  <-- This accesses the raw W inside BufWriter inside CountingWriter??
-        // CountingWriter struct: `inner: W`.
-        // So `self.writer.inner` is `BufWriter<W>`.
-        // `BufWriter::get_mut()` returns `&mut W`.
-        // So `writer_mut` returns `&mut W`.
-
-        // TerminalWriter expects `&mut CountingWriter<BufWriter<W>>`.
-        // This is a type mismatch.
-
-        // I need to change Presenter to expose the *whole* writer stack, or at least the CountingWriter.
-        // Or, I should move CountingWriter *outside* Presenter? No, Presenter uses it.
-
-        // Okay, I made a mistake in Presenter's `writer_mut`.
-        // I should have exposed the CountingWriter.
-
-        // Let's fix Presenter first.
-        panic!("Need to fix Presenter first");
+    /// Get a mutable reference to the presenter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the presenter has been taken (via `into_inner`).
+    #[inline]
+    fn presenter_mut(&mut self) -> &mut Presenter<W> {
+        self.presenter
+            .as_mut()
+            .expect("presenter has been consumed")
     }
 
     /// Reset diff strategy state when the previous buffer is invalidated.
@@ -1713,13 +1683,13 @@ impl<W: Write> TerminalWriter<W> {
 
                     // Reset presenter state (cursor unknown) because we manually moved cursor/saved
                     // and apply viewport offset for inline positioning.
-                    self.presenter.reset();
-                    self.presenter.set_viewport_offset_y(ui_y_start);
+                    self.presenter_mut().reset();
+                    self.presenter_mut().set_viewport_offset_y(ui_y_start);
 
                     if decision.has_diff {
-                        self.presenter.prepare_runs(&self.diff_scratch);
+                        self.presenter_mut().prepare_runs(&self.diff_scratch);
                         // Emit
-                        self.presenter.emit_diff_runs(
+                        self.presenter_mut().emit_diff_runs(
                             buffer,
                             Some(&self.pool),
                             Some(&self.links),
@@ -1731,8 +1701,8 @@ impl<W: Write> TerminalWriter<W> {
                         // Full redraw
                         // Diff scratch has no changes, so we must force a full diff
                         let full = BufferDiff::full(buffer.width(), buffer.height());
-                        self.presenter.prepare_runs(&full);
-                        self.presenter.emit_diff_runs(
+                        self.presenter_mut().prepare_runs(&full);
+                        self.presenter_mut().emit_diff_runs(
                             buffer,
                             Some(&self.pool),
                             Some(&self.links),
@@ -1907,7 +1877,7 @@ impl<W: Write> TerminalWriter<W> {
         let default_cell = Cell::default();
 
         // Borrow writer once
-        let writer = self.writer.as_mut().expect("writer has been consumed");
+        let writer = self.writer();
 
         for run in &self.runs_buf {
             if let Some(limit) = max_height
@@ -2073,7 +2043,7 @@ impl<W: Write> TerminalWriter<W> {
         let default_cell = Cell::default();
 
         // Borrow writer once
-        let writer = self.writer.as_mut().expect("writer has been consumed");
+        let writer = self.writer();
 
         for y in 0..height {
             write!(
@@ -2414,8 +2384,8 @@ impl<W: Write> TerminalWriter<W> {
     /// Returns `None` if the buffer could not be flushed.
     pub fn into_inner(mut self) -> Option<W> {
         self.cleanup();
-        // Take the writer before Drop runs (Drop will see None and skip cleanup)
-        self.writer.take()?.into_inner().into_inner().ok()
+        // Take the presenter before Drop runs (Drop will see None and skip cleanup)
+        self.presenter.take()?.into_inner().ok()
     }
 
     /// Perform garbage collection on the grapheme pool.
@@ -2440,9 +2410,10 @@ impl<W: Write> TerminalWriter<W> {
     ///
     /// This restores sync/cursor/scroll-region state without terminating the writer.
     fn best_effort_inline_cleanup(&mut self) {
-        let Some(ref mut writer) = self.writer else {
+        let Some(ref mut presenter) = self.presenter else {
             return;
         };
+        let writer = presenter.counting_writer_mut();
 
         // Emit restorations unconditionally: write errors can occur after bytes
         // were partially written, so internal flags may be stale.
@@ -2465,9 +2436,10 @@ impl<W: Write> TerminalWriter<W> {
 
     /// Internal cleanup on drop.
     fn cleanup(&mut self) {
-        let Some(ref mut writer) = self.writer else {
-            return; // Writer already taken (via into_inner)
+        let Some(ref mut presenter) = self.presenter else {
+            return; // Presenter already taken (via into_inner)
         };
+        let writer = presenter.counting_writer_mut();
 
         // End any pending sync block
         if self.in_sync_block {
