@@ -81,3 +81,9 @@ setup_fonts.sh
 dist/
 saga_of_frankenterm_js.md
 SESSION_REPORT.md
+
+# macOS metadata
+.DS_Store
+
+# Determinism test output (ephemeral, machine-dependent)
+determinism_lab_report.jsonl
