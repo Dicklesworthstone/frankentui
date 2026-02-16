@@ -3820,6 +3820,19 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             let prediction = predictor.predict(key, baseline_us, budget_us);
             if prediction.risk {
                 self.budget.degrade();
+                info!(
+                    bucket = %prediction.bucket,
+                    upper_us = prediction.upper_us,
+                    budget_us = prediction.budget_us,
+                    fallback_level = prediction.fallback_level,
+                    degradation = self.budget.degradation().as_str(),
+                    "conformal gate triggered strategy downgrade"
+                );
+                debug!(
+                    monotonic.counter.conformal_gate_triggers_total = 1_u64,
+                    bucket = %prediction.bucket,
+                    "conformal gate trigger"
+                );
             }
             debug!(
                 bucket = %prediction.bucket,
@@ -3828,6 +3841,11 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 fallback = prediction.fallback_level,
                 risk = prediction.risk,
                 "conformal risk gate"
+            );
+            debug!(
+                monotonic.histogram.conformal_prediction_interval_width_us = prediction.quantile.max(0.0),
+                bucket = %prediction.bucket,
+                "conformal prediction interval width"
             );
             conformal_prediction = Some(prediction);
         }

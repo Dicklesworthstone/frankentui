@@ -278,6 +278,16 @@ impl ConformalPredictor {
 
     /// Predict a conservative upper bound for frame time.
     pub fn predict(&self, key: BucketKey, y_hat_us: f64, budget_us: f64) -> ConformalPrediction {
+        let span = tracing::info_span!(
+            "conformal.predict",
+            calibration_set_size = tracing::field::Empty,
+            predicted_upper_bound_us = tracing::field::Empty,
+            frame_budget_us = budget_us,
+            coverage_alpha = self.config.alpha,
+            gate_triggered = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
         let QuantileDecision {
             quantile,
             sample_count,
@@ -286,6 +296,20 @@ impl ConformalPredictor {
 
         let upper_us = y_hat_us + quantile.max(0.0);
         let risk = upper_us > budget_us;
+
+        span.record("calibration_set_size", sample_count);
+        span.record("predicted_upper_bound_us", upper_us);
+        span.record("gate_triggered", risk);
+
+        tracing::debug!(
+            bucket = %key,
+            y_hat_us,
+            quantile,
+            interval_width_us = quantile.max(0.0),
+            fallback_level,
+            sample_count,
+            "prediction interval"
+        );
 
         ConformalPrediction {
             upper_us,
@@ -851,5 +875,110 @@ mod tests {
         let p = predictor.predict(key, 42.5, 16666.0);
         assert!((p.y_hat - 42.5).abs() < 1e-10);
         assert!((p.budget_us - 16666.0).abs() < 1e-10);
+    }
+
+    // --- tracing span verification ---
+
+    #[test]
+    fn predict_emits_conformal_predict_span() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct SpanChecker {
+            saw_conformal_predict: Arc<AtomicBool>,
+        }
+
+        impl tracing::Subscriber for SpanChecker {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                if span.metadata().name() == "conformal.predict" {
+                    self.saw_conformal_predict.store(true, Ordering::Relaxed);
+                }
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+            fn event(&self, _event: &tracing::Event<'_>) {}
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        let saw_it = Arc::new(AtomicBool::new(false));
+        let subscriber = SpanChecker {
+            saw_conformal_predict: Arc::clone(&saw_it),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let predictor = ConformalPredictor::new(ConformalConfig::default());
+        let key = test_key(80, 24);
+        let _ = predictor.predict(key, 100.0, 16666.0);
+
+        assert!(
+            saw_it.load(Ordering::Relaxed),
+            "predict() must emit a 'conformal.predict' tracing span"
+        );
+    }
+
+    #[test]
+    fn predict_span_records_gate_triggered_true() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct GateChecker {
+            saw_gate_true: Arc<AtomicBool>,
+        }
+
+        struct GateVisitor(Arc<AtomicBool>);
+
+        impl tracing::field::Visit for GateVisitor {
+            fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+                if field.name() == "gate_triggered" && value {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+            fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn fmt::Debug) {}
+        }
+
+        impl tracing::Subscriber for GateChecker {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+                let mut visitor = GateVisitor(Arc::clone(&self.saw_gate_true));
+                values.record(&mut visitor);
+            }
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+            fn event(&self, _event: &tracing::Event<'_>) {}
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        let saw_gate = Arc::new(AtomicBool::new(false));
+        let subscriber = GateChecker {
+            saw_gate_true: Arc::clone(&saw_gate),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let predictor = ConformalPredictor::new(ConformalConfig {
+            alpha: 0.1,
+            min_samples: 1,
+            window_size: 8,
+            q_default: 50_000.0, // large default to guarantee risk
+        });
+        let key = test_key(80, 24);
+        // budget_us = 100 << q_default = 50_000 -> risk = true
+        let p = predictor.predict(key, 0.0, 100.0);
+        assert!(p.risk, "prediction should be risky");
+        assert!(
+            saw_gate.load(Ordering::Relaxed),
+            "predict() must record gate_triggered=true when risk"
+        );
     }
 }
