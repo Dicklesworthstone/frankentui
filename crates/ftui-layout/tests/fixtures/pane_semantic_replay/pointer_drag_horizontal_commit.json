@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "fixture_id": "pointer_drag_horizontal_commit",
+  "description": "Pointer drag arms, starts, updates, and commits while preserving deterministic replay outputs.",
+  "trace": {
+    "metadata": {
+      "schema_version": 1,
+      "seed": 4242,
+      "start_unix_ms": 1700000000420,
+      "host": "pane-e2e-terminal",
+      "checksum": 9574813522045738968
+    },
+    "events": [
+      {
+        "schema_version": 1,
+        "sequence": 1,
+        "modifiers": {
+          "shift": false,
+          "alt": false,
+          "ctrl": false,
+          "meta": false
+        },
+        "event": "pointer_down",
+        "target": {
+          "split_id": 7,
+          "axis": "horizontal"
+        },
+        "pointer_id": 11,
+        "button": "primary",
+        "position": {
+          "x": 10,
+          "y": 4
+        },
+        "extensions": {}
+      },
+      {
+        "schema_version": 1,
+        "sequence": 2,
+        "modifiers": {
+          "shift": false,
+          "alt": false,
+          "ctrl": false,
+          "meta": false
+        },
+        "event": "pointer_move",
+        "target": {
+          "split_id": 7,
+          "axis": "horizontal"
+        },
+        "pointer_id": 11,
+        "position": {
+          "x": 13,
+          "y": 4
+        },
+        "delta_x": 0,
+        "delta_y": 0,
+        "extensions": {}
+      },
+      {
+        "schema_version": 1,
+        "sequence": 3,
+        "modifiers": {
+          "shift": false,
+          "alt": false,
+          "ctrl": false,
+          "meta": false
+        },
+        "event": "pointer_move",
+        "target": {
+          "split_id": 7,
+          "axis": "horizontal"
+        },
+        "pointer_id": 11,
+        "position": {
+          "x": 15,
+          "y": 6
+        },
+        "delta_x": 0,
+        "delta_y": 0,
+        "extensions": {}
+      },
+      {
+        "schema_version": 1,
+        "sequence": 4,
+        "modifiers": {
+          "shift": false,
+          "alt": false,
+          "ctrl": false,
+          "meta": false
+        },
+        "event": "pointer_up",
+        "target": {
+          "split_id": 7,
+          "axis": "horizontal"
+        },
+        "pointer_id": 11,
+        "button": "primary",
+        "position": {
+          "x": 16,
+          "y": 6
+        },
+        "extensions": {}
+      }
+    ]
+  },
+  "expected": {
+    "trace_checksum": 9574813522045738968,
+    "transition_count": 4,
+    "final_state": {
+      "state": "idle"
+    },
+    "transition_hash": 0,
+    "frame_hash": 0
+  }
+}

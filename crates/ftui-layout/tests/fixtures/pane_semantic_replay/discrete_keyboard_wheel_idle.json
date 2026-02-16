@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "fixture_id": "discrete_keyboard_wheel_idle",
+  "description": "Discrete keyboard and wheel interactions replay deterministically and leave the machine idle.",
+  "trace": {
+    "metadata": {
+      "schema_version": 1,
+      "seed": 1337,
+      "start_unix_ms": 1700000001337,
+      "host": "pane-e2e-web",
+      "checksum": 9097431234233636438
+    },
+    "events": [
+      {
+        "schema_version": 1,
+        "sequence": 1,
+        "modifiers": {
+          "shift": false,
+          "alt": false,
+          "ctrl": false,
+          "meta": false
+        },
+        "event": "keyboard_resize",
+        "target": {
+          "split_id": 12,
+          "axis": "vertical"
+        },
+        "direction": "increase",
+        "units": 2,
+        "extensions": {}
+      },
+      {
+        "schema_version": 1,
+        "sequence": 2,
+        "modifiers": {
+          "shift": false,
+          "alt": false,
+          "ctrl": false,
+          "meta": false
+        },
+        "event": "wheel_nudge",
+        "target": {
+          "split_id": 12,
+          "axis": "vertical"
+        },
+        "lines": -3,
+        "extensions": {}
+      },
+      {
+        "schema_version": 1,
+        "sequence": 3,
+        "modifiers": {
+          "shift": false,
+          "alt": false,
+          "ctrl": false,
+          "meta": false
+        },
+        "event": "keyboard_resize",
+        "target": {
+          "split_id": 12,
+          "axis": "vertical"
+        },
+        "direction": "decrease",
+        "units": 1,
+        "extensions": {}
+      }
+    ]
+  },
+  "expected": {
+    "trace_checksum": 9097431234233636438,
+    "transition_count": 3,
+    "final_state": {
+      "state": "idle"
+    },
+    "transition_hash": 0,
+    "frame_hash": 0
+  }
+}
