@@ -34,6 +34,15 @@
 	    color: #666; font: 12px/1 "Pragmasevka NF", monospace;
 	    pointer-events: none; z-index: 10;
 	  }
+	  #pane-ghost {
+	    position: fixed;
+	    border: 1px dashed rgba(120, 220, 255, 0.95);
+	    background: rgba(80, 170, 220, 0.16);
+	    border-radius: 6px;
+	    pointer-events: none;
+	    z-index: 12;
+	    display: none;
+	  }
 	  #error-overlay {
 	    display: none;
 	    position: fixed; inset: 0;
@@ -99,6 +108,7 @@
 <div id="container">
   <canvas id="terminal-canvas" tabindex="0"></canvas>
 </div>
+<div id="pane-ghost" aria-hidden="true"></div>
 <div id="touch-zoom">
   <button id="zoom-out">&minus;</button>
   <button id="zoom-reset">1:1</button>
@@ -133,6 +143,9 @@ const errorDiv       = document.getElementById("error-overlay");
 const loadingOverlay = document.getElementById("loading-overlay");
 const loadingLabel   = document.getElementById("loading-label");
 const loadingBar     = document.getElementById("loading-bar");
+const paneGhost      = document.getElementById("pane-ghost");
+const PANE_POINTER_ID = 1;
+const PANE_WORKSPACE_KEY = "ftui-pane-workspace-v1";
 
 function showError(msg) {
   errorDiv.textContent = msg;
@@ -268,6 +281,7 @@ function applyZoom() {
   } else {
     status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
   }
+  syncPaneOverlayFromRunner();
   localStorage.setItem("ftui-zoom", String(userZoom));
   // Update URL without reload.
   const url = new URL(window.location);
@@ -303,6 +317,91 @@ let currentRows = geo.rows;
 
 const runner = new ShowcaseRunner(currentCols, currentRows);
 runner.init();
+
+function paneStateSnapshot() {
+  if (typeof runner.paneLayoutState === "function") {
+    return runner.paneLayoutState();
+  }
+  return null;
+}
+
+function renderPaneGhost(state) {
+  if (!state || !state.ghost_rect) {
+    paneGhost.style.display = "none";
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const cellW = currentCols > 0 ? rect.width / currentCols : CELL_WIDTH;
+  const cellH = currentRows > 0 ? rect.height / currentRows : CELL_HEIGHT;
+  paneGhost.style.left = `${Math.round(rect.left + state.ghost_rect.x * cellW)}px`;
+  paneGhost.style.top = `${Math.round(rect.top + state.ghost_rect.y * cellH)}px`;
+  paneGhost.style.width = `${Math.max(1, Math.round(state.ghost_rect.width * cellW))}px`;
+  paneGhost.style.height = `${Math.max(1, Math.round(state.ghost_rect.height * cellH))}px`;
+  paneGhost.style.display = "block";
+}
+
+function updatePaneStatusSuffix(state) {
+  if (!state) return;
+  const timeline = `${state.timeline_cursor || 0}/${state.timeline_length || 0}`;
+  const selected = Array.isArray(state.selected_ids) ? state.selected_ids.length : 0;
+  const zone = state.dock_zone ? ` ${state.dock_zone}` : "";
+  const modeText = zone ? ` dock${zone}` : "";
+  if (Math.abs(userZoom - 1.0) > 0.01) {
+    status.textContent =
+      `${currentCols}\u00d7${currentRows} \u2014 zoom ${Math.round(userZoom * 100)}% \u2014 panes ${timeline} sel ${selected}${modeText}`;
+  } else {
+    status.textContent =
+      `${currentCols}\u00d7${currentRows} \u2014 panes ${timeline} sel ${selected}${modeText}`;
+  }
+}
+
+function syncPaneOverlayFromRunner() {
+  const state = paneStateSnapshot();
+  renderPaneGhost(state);
+  updatePaneStatusSuffix(state);
+}
+
+function persistPaneWorkspace() {
+  if (typeof runner.paneExportWorkspaceSnapshot !== "function") return;
+  const snapshot = runner.paneExportWorkspaceSnapshot();
+  if (snapshot) {
+    localStorage.setItem(PANE_WORKSPACE_KEY, snapshot);
+  }
+}
+
+function restorePaneWorkspace() {
+  if (typeof runner.paneImportWorkspaceSnapshot !== "function") return false;
+  const snapshot = localStorage.getItem(PANE_WORKSPACE_KEY);
+  if (!snapshot) return false;
+  return runner.paneImportWorkspaceSnapshot(snapshot);
+}
+
+function paneModsFromDomEvent(e) {
+  return (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+}
+
+function paneDispatchPointerDown(e) {
+  if (typeof runner.panePointerDownAt !== "function") return null;
+  const point = domMouseToInput(e, "down");
+  return runner.panePointerDownAt(PANE_POINTER_ID, e.button, point.x, point.y, paneModsFromDomEvent(e));
+}
+
+function paneDispatchPointerMove(e) {
+  if (typeof runner.panePointerMoveAt !== "function") return null;
+  const point = domMouseToInput(e, "move");
+  return runner.panePointerMoveAt(PANE_POINTER_ID, point.x, point.y, paneModsFromDomEvent(e));
+}
+
+function paneDispatchPointerUp(e) {
+  if (typeof runner.panePointerUpAt !== "function") return null;
+  const point = domMouseToInput(e, "up");
+  return runner.panePointerUpAt(PANE_POINTER_ID, e.button, point.x, point.y, paneModsFromDomEvent(e));
+}
+
+const restoredPaneWorkspace = restorePaneWorkspace();
+if (restoredPaneWorkspace) {
+  syncPaneOverlayFromRunner();
+}
 
 function resolveWasmMemory(mod) {
   if (!mod) return null;
@@ -406,6 +505,7 @@ term.render();
 setProgress(100, "Ready");
 loadingOverlay.classList.add("hidden");
 status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
+syncPaneOverlayFromRunner();
 
 // Inject large text assets after first frame so startup work is not blocked.
 largeAssetsPromise.then((assets) => {
@@ -442,6 +542,7 @@ const resizeObserver = new ResizeObserver(() => {
     runner.resize(currentCols, currentRows);
     jsonl({ event: "resize", cols: currentCols, rows: currentRows, ts: Date.now() });
     status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
+    syncPaneOverlayFromRunner();
   }
 });
 resizeObserver.observe(container);
@@ -561,6 +662,49 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
+  const lowerKey = String(e.key || "").toLowerCase();
+  if (zoomMod && lowerKey === "z") {
+    e.preventDefault();
+    const changed = e.shiftKey
+      ? (typeof runner.paneRedoLayout === "function" && runner.paneRedoLayout())
+      : (typeof runner.paneUndoLayout === "function" && runner.paneUndoLayout());
+    if (changed) {
+      persistPaneWorkspace();
+      syncPaneOverlayFromRunner();
+    }
+    return;
+  }
+  if (zoomMod && lowerKey === "y") {
+    e.preventDefault();
+    const changed = typeof runner.paneRedoLayout === "function" && runner.paneRedoLayout();
+    if (changed) {
+      persistPaneWorkspace();
+      syncPaneOverlayFromRunner();
+    }
+    return;
+  }
+  if (zoomMod && lowerKey === "r") {
+    e.preventDefault();
+    const changed = typeof runner.paneReplayLayout === "function" && runner.paneReplayLayout();
+    if (changed) {
+      persistPaneWorkspace();
+      syncPaneOverlayFromRunner();
+    }
+    return;
+  }
+  if (e.ctrlKey && e.altKey && ["1", "2", "3", "4"].includes(e.key)) {
+    e.preventDefault();
+    const mode = Number(e.key) - 1;
+    const changed =
+      typeof runner.paneApplyLayoutMode === "function" &&
+      runner.paneApplyLayoutMode(mode, 0);
+    if (changed) {
+      persistPaneWorkspace();
+      syncPaneOverlayFromRunner();
+    }
+    return;
+  }
+
   e.preventDefault();
   safeTermInput(domKeyToInput(e, "down"));
 }, { capture: true });
@@ -582,11 +726,16 @@ canvas.addEventListener("mousedown", (e) => {
   canvas.focus();
   mouseButtonsDown = e.buttons;
   dragButton = e.button;
+  paneDispatchPointerDown(e);
+  syncPaneOverlayFromRunner();
   safeTermInput(domMouseToInput(e, "down"));
 });
 canvas.addEventListener("mouseup", (e) => {
   e.preventDefault();
   mouseButtonsDown = e.buttons;
+  paneDispatchPointerUp(e);
+  persistPaneWorkspace();
+  syncPaneOverlayFromRunner();
   safeTermInput(domMouseToInput(e, "up"));
 });
 canvas.addEventListener("mousemove", (e) => {
@@ -595,6 +744,8 @@ canvas.addEventListener("mousemove", (e) => {
     // Drag: use the button from the original mousedown (e.button is always 0 on mousemove).
     const ev = domMouseToInput(e, "drag");
     ev.button = dragButton;
+    paneDispatchPointerMove(e);
+    syncPaneOverlayFromRunner();
     safeTermInput(ev);
   } else {
     safeTermInput(domMouseToInput(e, "move"));
@@ -615,10 +766,20 @@ window.addEventListener("paste", (e) => {
 canvas.addEventListener("focus", () => { safeTermInput({ kind: "focus", focused: true }); });
 canvas.addEventListener("blur",  () => { safeTermInput({ kind: "focus", focused: false }); });
 
-window.addEventListener("blur", () => { safeTermInput({ kind: "focus", focused: false }); });
+window.addEventListener("blur", () => {
+  safeTermInput({ kind: "focus", focused: false });
+  if (typeof runner.paneBlur === "function") {
+    runner.paneBlur();
+    syncPaneOverlayFromRunner();
+  }
+});
 window.addEventListener("focus", () => { safeTermInput({ kind: "focus", focused: true }); });
 document.addEventListener("visibilitychange", () => {
   safeTermInput({ kind: "focus", focused: !document.hidden });
+  if (document.hidden && typeof runner.paneVisibilityHidden === "function") {
+    runner.paneVisibilityHidden();
+    syncPaneOverlayFromRunner();
+  }
 });
 
 // Composition (IME) events.
@@ -661,6 +822,7 @@ window.addEventListener("orientationchange", () => {
       currentRows = geo.rows;
       runner.resize(currentCols, currentRows);
       status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
+      syncPaneOverlayFromRunner();
     }
   }, 150);
 });
@@ -867,6 +1029,7 @@ function frame(timestamp) {
   for (let i = 0; i < logs.length; i++) {
     jsonl({ event: "log", text: logs[i], frame_idx: result.frame_idx, ts: Date.now() });
   }
+  syncPaneOverlayFromRunner();
 
   // 6. Continue or stop.
   if (result.running) {

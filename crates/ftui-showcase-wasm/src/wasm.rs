@@ -135,7 +135,9 @@ fn pane_dispatch_to_js(
         ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::PointerDown => "pointer_down",
         ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::PointerMove => "pointer_move",
         ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::PointerUp => "pointer_up",
-        ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::PointerCancel => "pointer_cancel",
+        ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::PointerCancel => {
+            "pointer_cancel"
+        }
         ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::PointerLeave => "pointer_leave",
         ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::Blur => "blur",
         ftui_web::pane_pointer_capture::PanePointerLifecyclePhase::VisibilityHidden => {
