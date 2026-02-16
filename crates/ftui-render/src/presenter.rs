@@ -410,6 +410,8 @@ impl<W: Write> Presenter<W> {
         pool: Option<&GraphemePool>,
         links: Option<&LinkRegistry>,
     ) -> io::Result<PresentStats> {
+        let bracket_supported = self.capabilities.sync_output;
+
         #[cfg(feature = "tracing")]
         let _span = tracing::info_span!(
             "present",
@@ -420,6 +422,18 @@ impl<W: Write> Presenter<W> {
         #[cfg(feature = "tracing")]
         let _guard = _span.enter();
 
+        #[cfg(feature = "tracing")]
+        let fallback_used = !bracket_supported;
+        #[cfg(feature = "tracing")]
+        let _sync_span = tracing::info_span!(
+            "render.sync_bracket",
+            bracket_supported,
+            fallback_used,
+            frame_bytes = tracing::field::Empty,
+        );
+        #[cfg(feature = "tracing")]
+        let _sync_guard = _sync_span.enter();
+
         // Calculate runs upfront for stats, reusing the runs buffer.
         diff.runs_into(&mut self.runs_buf);
         let run_count = self.runs_buf.len();
@@ -429,9 +443,15 @@ impl<W: Write> Presenter<W> {
         self.writer.reset_counter();
         let collector = StatsCollector::start(cells_changed, run_count);
 
-        // Begin synchronized output to prevent flicker
-        if self.capabilities.sync_output {
+        // Begin synchronized output to prevent flicker.
+        // When sync brackets are supported, use DEC 2026 for atomic frame display.
+        // Otherwise, fall back to cursor-hiding to reduce visual flicker.
+        if bracket_supported {
             ansi::sync_begin(&mut self.writer)?;
+        } else {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("sync brackets unsupported; falling back to cursor-hide strategy");
+            ansi::cursor_hide(&mut self.writer)?;
         }
 
         // Emit diff using run grouping for efficiency
@@ -447,9 +467,11 @@ impl<W: Write> Presenter<W> {
             self.current_link = None;
         }
 
-        // End synchronized output
-        if self.capabilities.sync_output {
+        // End synchronized output / restore cursor visibility
+        if bracket_supported {
             ansi::sync_end(&mut self.writer)?;
+        } else {
+            ansi::cursor_show(&mut self.writer)?;
         }
 
         self.writer.flush()?;
@@ -458,6 +480,7 @@ impl<W: Write> Presenter<W> {
 
         #[cfg(feature = "tracing")]
         {
+            _sync_span.record("frame_bytes", stats.bytes_emitted);
             stats.log();
             tracing::trace!("frame presented");
         }
@@ -1094,8 +1117,14 @@ mod tests {
         presenter.present(&buffer, &diff).unwrap();
         let output = get_output(presenter);
 
-        // Should only have SGR reset
-        assert!(output.starts_with(b"\x1b[0m"));
+        // Without sync, fallback hides cursor first, then SGR reset, then cursor show
+        assert!(output.starts_with(ansi::CURSOR_HIDE));
+        assert!(output.ends_with(ansi::CURSOR_SHOW));
+        // SGR reset is still present between the cursor brackets
+        assert!(
+            output.windows(b"\x1b[0m".len()).any(|w| w == b"\x1b[0m"),
+            "SGR reset should be present"
+        );
     }
 
     #[test]
@@ -1620,7 +1649,9 @@ mod tests {
 
         // Should NOT contain sync sequences
         assert!(
-            !output.starts_with(ansi::SYNC_BEGIN),
+            !output
+                .windows(ansi::SYNC_BEGIN.len())
+                .any(|w| w == ansi::SYNC_BEGIN),
             "Sync begin should not appear when sync_output is disabled"
         );
         assert!(
@@ -1628,6 +1659,16 @@ mod tests {
                 .windows(ansi::SYNC_END.len())
                 .any(|w| w == ansi::SYNC_END),
             "Sync end should not appear when sync_output is disabled"
+        );
+
+        // Instead, cursor-hide fallback should be used
+        assert!(
+            output.starts_with(ansi::CURSOR_HIDE),
+            "Fallback should start with cursor hide"
+        );
+        assert!(
+            output.ends_with(ansi::CURSOR_SHOW),
+            "Fallback should end with cursor show"
         );
     }
 
