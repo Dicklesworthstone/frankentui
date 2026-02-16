@@ -38,26 +38,31 @@ use crate::wrap::ParagraphObjective;
 /// richer runtime capabilities (proportional fonts, sub-pixel positioning).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum LayoutTier {
+    /// Survival mode: bare-minimum rendering under extreme compute pressure.
+    /// Greedy wrapping, no justification, no leading, no shaping.
+    /// Only used when the adaptive controller forces degradation below Fast.
+    Emergency = 0,
     /// Minimal: greedy wrapping, no justification, no leading.
     /// Suitable for raw terminal output where every cell counts.
-    Fast = 0,
+    Fast = 1,
     /// Moderate: optimal line-breaking, French spacing, moderate leading.
     /// Good default for terminal UIs with readable text.
     #[default]
-    Balanced = 1,
+    Balanced = 2,
     /// Full: TeX-class typography with baseline grid, microtypographic
     /// justification, hyphenation, and fine-grained spacing.
-    Quality = 2,
+    Quality = 3,
 }
 
 impl LayoutTier {
-    /// The tier one step below, or `None` if already at `Fast`.
+    /// The tier one step below, or `None` if already at `Emergency`.
     #[must_use]
     pub const fn degrade(&self) -> Option<Self> {
         match self {
             Self::Quality => Some(Self::Balanced),
             Self::Balanced => Some(Self::Fast),
-            Self::Fast => None,
+            Self::Fast => Some(Self::Emergency),
+            Self::Emergency => None,
         }
     }
 
@@ -77,6 +82,7 @@ impl LayoutTier {
 impl fmt::Display for LayoutTier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Emergency => write!(f, "emergency"),
             Self::Fast => write!(f, "fast"),
             Self::Balanced => write!(f, "balanced"),
             Self::Quality => write!(f, "quality"),
@@ -146,8 +152,9 @@ impl RuntimeCapability {
     #[must_use]
     pub fn supports_tier(&self, tier: LayoutTier) -> bool {
         match tier {
-            LayoutTier::Fast => true,     // Always supportable
-            LayoutTier::Balanced => true, // Works in monospace too (just less impactful)
+            LayoutTier::Emergency => true, // Always supportable (bare survival)
+            LayoutTier::Fast => true,      // Always supportable
+            LayoutTier::Balanced => true,  // Works in monospace too (just less impactful)
             LayoutTier::Quality => {
                 // Quality requires proportional fonts for meaningful justification
                 self.proportional_fonts
@@ -209,6 +216,15 @@ pub struct LayoutPolicy {
 const DEFAULT_LINE_HEIGHT_SUBPX: u32 = 16 * 256;
 
 impl LayoutPolicy {
+    /// Emergency preset: bare-minimum survival mode.
+    pub const EMERGENCY: Self = Self {
+        tier: LayoutTier::Emergency,
+        allow_degradation: false, // already at bottom
+        justify_override: None,
+        vertical_override: None,
+        line_height_subpx: 0,
+    };
+
     /// Quick preset: terminal-optimized.
     pub const FAST: Self = Self {
         tier: LayoutTier::Fast,
@@ -274,13 +290,13 @@ impl LayoutPolicy {
 
         // Build the three subsystem configs from the effective tier
         let objective = match effective_tier {
-            LayoutTier::Fast => ParagraphObjective::terminal(),
+            LayoutTier::Emergency | LayoutTier::Fast => ParagraphObjective::terminal(),
             LayoutTier::Balanced => ParagraphObjective::default(),
             LayoutTier::Quality => ParagraphObjective::typographic(),
         };
 
         let vertical_policy = self.vertical_override.unwrap_or(match effective_tier {
-            LayoutTier::Fast => VerticalPolicy::Compact,
+            LayoutTier::Emergency | LayoutTier::Fast => VerticalPolicy::Compact,
             LayoutTier::Balanced => VerticalPolicy::Readable,
             LayoutTier::Quality => VerticalPolicy::Typographic,
         });
@@ -288,7 +304,7 @@ impl LayoutPolicy {
         let vertical = vertical_policy.resolve(line_h);
 
         let mut justification = match effective_tier {
-            LayoutTier::Fast => JustificationControl::TERMINAL,
+            LayoutTier::Emergency | LayoutTier::Fast => JustificationControl::TERMINAL,
             LayoutTier::Balanced => JustificationControl::READABLE,
             LayoutTier::Quality => JustificationControl::TYPOGRAPHIC,
         };
@@ -475,6 +491,7 @@ mod tests {
 
     #[test]
     fn tier_ordering() {
+        assert!(LayoutTier::Emergency < LayoutTier::Fast);
         assert!(LayoutTier::Fast < LayoutTier::Balanced);
         assert!(LayoutTier::Balanced < LayoutTier::Quality);
     }
@@ -490,8 +507,13 @@ mod tests {
     }
 
     #[test]
-    fn tier_degrade_fast_is_none() {
-        assert_eq!(LayoutTier::Fast.degrade(), None);
+    fn tier_degrade_fast_is_emergency() {
+        assert_eq!(LayoutTier::Fast.degrade(), Some(LayoutTier::Emergency));
+    }
+
+    #[test]
+    fn tier_degrade_emergency_is_none() {
+        assert_eq!(LayoutTier::Emergency.degrade(), None);
     }
 
     #[test]
@@ -499,14 +521,25 @@ mod tests {
         let chain = LayoutTier::Quality.degradation_chain();
         assert_eq!(
             chain,
-            vec![LayoutTier::Quality, LayoutTier::Balanced, LayoutTier::Fast]
+            vec![
+                LayoutTier::Quality,
+                LayoutTier::Balanced,
+                LayoutTier::Fast,
+                LayoutTier::Emergency,
+            ]
         );
     }
 
     #[test]
     fn tier_degradation_chain_fast() {
         let chain = LayoutTier::Fast.degradation_chain();
-        assert_eq!(chain, vec![LayoutTier::Fast]);
+        assert_eq!(chain, vec![LayoutTier::Fast, LayoutTier::Emergency]);
+    }
+
+    #[test]
+    fn tier_degradation_chain_emergency() {
+        let chain = LayoutTier::Emergency.degradation_chain();
+        assert_eq!(chain, vec![LayoutTier::Emergency]);
     }
 
     #[test]
@@ -516,6 +549,7 @@ mod tests {
 
     #[test]
     fn tier_display() {
+        assert_eq!(format!("{}", LayoutTier::Emergency), "emergency");
         assert_eq!(format!("{}", LayoutTier::Quality), "quality");
         assert_eq!(format!("{}", LayoutTier::Balanced), "balanced");
         assert_eq!(format!("{}", LayoutTier::Fast), "fast");
@@ -825,6 +859,23 @@ mod tests {
     }
 
     // ── Edge cases ───────────────────────────────────────────────────
+
+    #[test]
+    fn emergency_resolves_with_terminal_caps() {
+        let result = LayoutPolicy::EMERGENCY.resolve(&RuntimeCapability::TERMINAL);
+        let resolved = result.unwrap();
+        assert_eq!(resolved.effective_tier, LayoutTier::Emergency);
+        assert!(!resolved.degraded);
+        assert!(!resolved.use_optimal_breaking);
+        assert!(!resolved.use_hyphenation);
+        assert!(!resolved.is_justified());
+    }
+
+    #[test]
+    fn emergency_caps_supported() {
+        assert!(RuntimeCapability::TERMINAL.supports_tier(LayoutTier::Emergency));
+        assert!(RuntimeCapability::FULL.supports_tier(LayoutTier::Emergency));
+    }
 
     #[test]
     fn fast_with_full_caps_stays_fast() {

@@ -83,6 +83,7 @@ pub mod search;
 pub mod shaped_render;
 pub mod shaping;
 pub mod shaping_fallback;
+pub mod tier_budget;
 pub mod vertical_metrics;
 
 /// Bounds-based text measurement for layout negotiation.
@@ -156,6 +157,9 @@ pub use shaping::{
 };
 pub use shaping_fallback::{FallbackEvent, FallbackStats, ShapingFallback};
 pub use text::{Line, Span, Text};
+pub use tier_budget::{
+    FrameBudget, MemoryBudget, QueueBudget, SafetyInvariant, TierBudget, TierFeatures, TierLadder,
+};
 pub use vertical_metrics::{
     BaselineGrid, LeadingSpec, ParagraphSpacing, VerticalMetrics, VerticalPolicy,
 };
