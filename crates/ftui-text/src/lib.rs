@@ -77,7 +77,9 @@ pub mod normalization;
 
 pub mod justification;
 pub mod layout_policy;
+pub mod script_segmentation;
 pub mod search;
+pub mod shaping;
 pub mod vertical_metrics;
 
 /// Bounds-based text measurement for layout negotiation.
@@ -139,7 +141,15 @@ pub use justification::{
 };
 pub use layout_policy::{LayoutPolicy, LayoutTier, PolicyError, ResolvedPolicy, RuntimeCapability};
 pub use rope::Rope;
+pub use script_segmentation::{
+    RunCacheKey, RunDirection, Script, ScriptRun, TextRun, partition_by_script,
+    partition_text_runs,
+};
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
+pub use shaping::{
+    FontFeature, FontFeatures, FontId, NoopShaper, ShapedGlyph, ShapedRun, ShapingCache,
+    ShapingCacheStats, ShapingKey, TextShaper,
+};
 pub use text::{Line, Span, Text};
 pub use vertical_metrics::{
     BaselineGrid, LeadingSpec, ParagraphSpacing, VerticalMetrics, VerticalPolicy,
