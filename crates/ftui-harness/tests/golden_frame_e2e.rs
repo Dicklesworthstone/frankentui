@@ -141,12 +141,7 @@ fn assert_pipeline_deterministic(
 }
 
 /// Run a scenario across all 5 terminal profiles.
-fn assert_across_profiles(
-    scenario: &str,
-    width: u16,
-    height: u16,
-    render_fn: &dyn Fn(&mut Frame),
-) {
+fn assert_across_profiles(scenario: &str, width: u16, height: u16, render_fn: &dyn Fn(&mut Frame)) {
     for (profile_name, caps) in &profiles() {
         assert_pipeline_deterministic(scenario, profile_name, caps, width, height, render_fn);
     }
@@ -277,7 +272,9 @@ fn render_rule(frame: &mut Frame) {
 
 fn render_list_selected(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let items: Vec<ListItem> = (0..10).map(|i| ListItem::new(format!("Item {i}"))).collect();
+    let items: Vec<ListItem> = (0..10)
+        .map(|i| ListItem::new(format!("Item {i}")))
+        .collect();
     let widget = List::new(items).highlight_symbol("> ");
     let mut state = ListState::default();
     state.select(Some(3));
@@ -404,11 +401,9 @@ fn render_hidden_text(frame: &mut Frame) {
 
 fn render_horizontal_split(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks = ftui_layout::Layout::horizontal([
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
-    ])
-    .split(area);
+    let chunks =
+        ftui_layout::Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
     Paragraph::new(Text::raw("Left")).render(chunks[0], frame);
     Paragraph::new(Text::raw("Right")).render(chunks[1], frame);
 }
@@ -439,11 +434,9 @@ fn render_nested_flex(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     let outer =
         ftui_layout::Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
-    let inner = ftui_layout::Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(70),
-    ])
-    .split(outer[1]);
+    let inner =
+        ftui_layout::Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+            .split(outer[1]);
     Paragraph::new(Text::raw("Header")).render(outer[0], frame);
     Paragraph::new(Text::raw("Sidebar")).render(inner[0], frame);
     Paragraph::new(Text::raw("Main content area")).render(inner[1], frame);
@@ -468,8 +461,8 @@ fn render_grid_2x2(frame: &mut Frame) {
 
 fn render_sidebar_main(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks = ftui_layout::Layout::horizontal([Constraint::Length(20), Constraint::Fill(1)])
-        .split(area);
+    let chunks =
+        ftui_layout::Layout::horizontal([Constraint::Length(20), Constraint::Fill(1)]).split(area);
     Block::new()
         .borders(Borders::ALL)
         .title(Span::raw("Nav"))
@@ -620,7 +613,9 @@ fn render_list_empty(frame: &mut Frame) {
 
 fn render_list_scrolled(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let items: Vec<ListItem> = (0..50).map(|i| ListItem::new(format!("Item {i}"))).collect();
+    let items: Vec<ListItem> = (0..50)
+        .map(|i| ListItem::new(format!("Item {i}")))
+        .collect();
     let widget = List::new(items).highlight_symbol("> ");
     let mut state = ListState::default();
     state.select(Some(40));
@@ -674,7 +669,9 @@ fn render_composite_dashboard(frame: &mut Frame) {
         .percent(75)
         .render(main_chunks[0], frame);
     let data = vec![3, 5, 7, 2, 8, 4, 6, 1, 9, 5];
-    Sparkline::default().data(&data).render(main_chunks[1], frame);
+    Sparkline::default()
+        .data(&data)
+        .render(main_chunks[1], frame);
 
     Paragraph::new(Text::raw("Status: OK")).render(chunks[2], frame);
 }
@@ -1115,8 +1112,8 @@ fn e2e_57_size_sensitivity() {
 
 #[test]
 fn e2e_tracing_present_span_emitted() {
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     struct PresentSpanChecker {
         saw_present: Arc<AtomicBool>,

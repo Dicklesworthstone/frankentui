@@ -1024,7 +1024,10 @@ mod tests {
         let retry_transition = machine.handle_event(5_260, AttachEvent::Tick);
         assert_eq!(retry_transition.event, AttachEventKind::RetryTimerElapsed);
         assert_eq!(retry_transition.to_state, AttachState::ConnectingTransport);
-        assert_eq!(retry_transition.actions, vec![AttachAction::open_transport()]);
+        assert_eq!(
+            retry_transition.actions,
+            vec![AttachAction::open_transport()]
+        );
     }
 
     #[test]

@@ -105,6 +105,7 @@ impl ScrollbackLine {
 pub struct Scrollback {
     lines: VecDeque<ScrollbackLine>,
     capacity: usize,
+    oldest_line_absolute: u64,
 }
 
 impl Scrollback {
@@ -116,6 +117,7 @@ impl Scrollback {
         Self {
             lines: VecDeque::with_capacity(capacity.min(4096)),
             capacity,
+            oldest_line_absolute: 0,
         }
     }
 
@@ -133,7 +135,9 @@ impl Scrollback {
     pub fn set_capacity(&mut self, capacity: usize) {
         self.capacity = capacity;
         while self.lines.len() > capacity {
-            self.lines.pop_front();
+            if self.lines.pop_front().is_some() {
+                self.oldest_line_absolute = self.oldest_line_absolute.saturating_add(1);
+            }
         }
     }
 
@@ -142,6 +146,51 @@ impl Scrollback {
     #[must_use]
     pub fn len(&self) -> usize {
         self.lines.len()
+    }
+
+    /// Absolute line index of the oldest retained line.
+    ///
+    /// The first line ever pushed has absolute index `0`. This value advances
+    /// when old lines are evicted (capacity pressure or explicit trimming).
+    #[inline]
+    #[must_use]
+    pub fn oldest_line_absolute(&self) -> u64 {
+        self.oldest_line_absolute
+    }
+
+    /// Absolute line index of the newest retained line.
+    ///
+    /// Returns `None` when scrollback is empty.
+    #[inline]
+    #[must_use]
+    pub fn newest_line_absolute(&self) -> Option<u64> {
+        let len_u64 = u64::try_from(self.lines.len()).ok()?;
+        if len_u64 == 0 {
+            return None;
+        }
+        Some(
+            self.oldest_line_absolute
+                .saturating_add(len_u64.saturating_sub(1)),
+        )
+    }
+
+    /// Absolute line index that will be assigned to the next pushed line.
+    #[inline]
+    #[must_use]
+    pub fn next_line_absolute(&self) -> u64 {
+        self.oldest_line_absolute
+            .saturating_add(u64::try_from(self.lines.len()).unwrap_or(u64::MAX))
+    }
+
+    /// Resolve a retained line index (`0 = oldest retained`) to absolute index.
+    #[inline]
+    #[must_use]
+    pub fn absolute_line_for_index(&self, index: usize) -> Option<u64> {
+        if index >= self.lines.len() {
+            return None;
+        }
+        let idx_u64 = u64::try_from(index).ok()?;
+        Some(self.oldest_line_absolute.saturating_add(idx_u64))
     }
 
     /// Whether the scrollback is empty.
@@ -160,7 +209,11 @@ impl Scrollback {
             return None;
         }
         let evicted = if self.lines.len() == self.capacity {
-            self.lines.pop_front()
+            let line = self.lines.pop_front();
+            if line.is_some() {
+                self.oldest_line_absolute = self.oldest_line_absolute.saturating_add(1);
+            }
+            line
         } else {
             None
         };
@@ -212,6 +265,9 @@ impl Scrollback {
 
     /// Clear all stored lines.
     pub fn clear(&mut self) {
+        self.oldest_line_absolute = self
+            .oldest_line_absolute
+            .saturating_add(u64::try_from(self.lines.len()).unwrap_or(u64::MAX));
         self.lines.clear();
     }
 
@@ -302,6 +358,68 @@ mod tests {
         let line1 = sb.get(1).unwrap();
         assert_eq!(row_text(&line1.cells), "second");
         assert!(line1.wrapped);
+    }
+
+    #[test]
+    fn absolute_indexing_tracks_retained_window() {
+        let mut sb = Scrollback::new(3);
+        assert_eq!(sb.oldest_line_absolute(), 0);
+        assert_eq!(sb.next_line_absolute(), 0);
+
+        let _ = sb.push_row(&make_row("a"), false);
+        let _ = sb.push_row(&make_row("b"), false);
+        let _ = sb.push_row(&make_row("c"), false);
+
+        assert_eq!(sb.oldest_line_absolute(), 0);
+        assert_eq!(sb.newest_line_absolute(), Some(2));
+        assert_eq!(sb.next_line_absolute(), 3);
+        assert_eq!(sb.absolute_line_for_index(0), Some(0));
+        assert_eq!(sb.absolute_line_for_index(2), Some(2));
+        assert_eq!(sb.absolute_line_for_index(3), None);
+    }
+
+    #[test]
+    fn evictions_advance_oldest_absolute_index() {
+        let mut sb = Scrollback::new(2);
+        let _ = sb.push_row(&make_row("a"), false);
+        let _ = sb.push_row(&make_row("b"), false);
+        assert_eq!(sb.oldest_line_absolute(), 0);
+
+        let evicted = sb.push_row(&make_row("c"), false);
+        assert!(evicted.is_some());
+        assert_eq!(sb.oldest_line_absolute(), 1);
+        assert_eq!(sb.newest_line_absolute(), Some(2));
+        assert_eq!(sb.next_line_absolute(), 3);
+    }
+
+    #[test]
+    fn pop_newest_keeps_oldest_absolute_index() {
+        let mut sb = Scrollback::new(3);
+        let _ = sb.push_row(&make_row("a"), false);
+        let _ = sb.push_row(&make_row("b"), false);
+        let oldest_before = sb.oldest_line_absolute();
+
+        let _ = sb.pop_newest();
+        assert_eq!(sb.oldest_line_absolute(), oldest_before);
+        assert_eq!(sb.newest_line_absolute(), Some(0));
+    }
+
+    #[test]
+    fn clear_advances_absolute_index_by_retained_len() {
+        let mut sb = Scrollback::new(4);
+        let _ = sb.push_row(&make_row("a"), false);
+        let _ = sb.push_row(&make_row("b"), false);
+        let _ = sb.push_row(&make_row("c"), false);
+        assert_eq!(sb.oldest_line_absolute(), 0);
+
+        sb.clear();
+        assert_eq!(sb.oldest_line_absolute(), 3);
+        assert_eq!(sb.newest_line_absolute(), None);
+        assert_eq!(sb.next_line_absolute(), 3);
+
+        let _ = sb.push_row(&make_row("d"), false);
+        assert_eq!(sb.newest_line_absolute(), Some(3));
+        assert_eq!(sb.next_line_absolute(), 4);
     }
 
     #[test]

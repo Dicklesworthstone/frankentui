@@ -13,6 +13,7 @@ use crate::input::{
     MousePhase, PasteInput, TouchInput, TouchPhase, TouchPoint, VtInputEncoderFeatures, WheelInput,
     encode_vt_input_event, normalize_dom_key_code,
 };
+use crate::markers::{DecorationKind, HistoryWindow, MarkerStore};
 use crate::patch_feed::core_patch_to_patches;
 use crate::renderer::{
     CellData, CellPatch, CursorStyle, GridGeometry, RendererBackendPreference, RendererConfig,
@@ -166,6 +167,7 @@ pub struct FrankenTermWeb {
     next_auto_link_id: u32,
     progress_parser: Parser,
     progress_last_value: u8,
+    marker_store: MarkerStore,
     engine: Option<TerminalEngine>,
     renderer: Option<WebGpuRenderer>,
 }
@@ -690,6 +692,7 @@ impl FrankenTermWeb {
             next_auto_link_id: AUTO_LINK_ID_BASE,
             progress_parser: Parser::new(),
             progress_last_value: 0,
+            marker_store: MarkerStore::new(),
             engine: None,
             renderer: None,
         }
@@ -1609,6 +1612,264 @@ impl FrankenTermWeb {
         self.sync_renderer_interaction_state();
     }
 
+    /// Create a marker anchored to a unified-history line index.
+    ///
+    /// - `line_idx`: `0 = oldest retained line`, must be in range of
+    ///   `viewportState().totalLines`.
+    /// - `column`: optional preferred column for inline/range decorations.
+    ///
+    /// Returns a deterministic marker id (`u32`).
+    #[wasm_bindgen(js_name = createMarker)]
+    pub fn create_marker(&mut self, line_idx: i32, column: i32) -> Result<u32, JsValue> {
+        if line_idx < 0 {
+            return Err(JsValue::from_str("line index must be >= 0"));
+        }
+        let relative_line =
+            usize::try_from(line_idx).map_err(|_| JsValue::from_str("line index overflow"))?;
+        let column_u16 = if column < 0 {
+            0
+        } else {
+            u16::try_from(column).map_err(|_| JsValue::from_str("column overflow"))?
+        };
+        let window = self.marker_history_window();
+        self.marker_store
+            .create_marker(relative_line, column_u16, window)
+            .map_err(JsValue::from_str)
+    }
+
+    /// Remove a marker by id.
+    ///
+    /// Returns `true` when a marker existed and was removed.
+    #[wasm_bindgen(js_name = dropMarker)]
+    pub fn drop_marker(&mut self, marker_id: u32) -> bool {
+        let window = self.marker_history_window();
+        self.marker_store.remove_marker(marker_id, window)
+    }
+
+    /// Return marker snapshots with deterministic anchor-resolution metadata.
+    #[wasm_bindgen(js_name = markersState)]
+    pub fn markers_state(&self) -> JsValue {
+        let window = self.marker_history_window();
+        let markers = self.marker_store.marker_snapshots(window);
+
+        let obj = Object::new();
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("historyBaseAbsoluteLine"),
+            &JsValue::from_f64(window.base_absolute_line as f64),
+        );
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("totalLines"),
+            &JsValue::from_f64(window.total_lines as f64),
+        );
+        let _ = Reflect::set(
+            &obj,
+            &JsValue::from_str("scrollbackLines"),
+            &JsValue::from_f64(window.scrollback_lines as f64),
+        );
+        let marker_arr = Array::new_with_length(markers.len() as u32);
+        for (idx, marker) in markers.iter().enumerate() {
+            let marker_obj = Object::new();
+            let _ = Reflect::set(
+                &marker_obj,
+                &JsValue::from_str("id"),
+                &JsValue::from_f64(f64::from(marker.id)),
+            );
+            let _ = Reflect::set(
+                &marker_obj,
+                &JsValue::from_str("absoluteLine"),
+                &JsValue::from_f64(marker.absolute_line as f64),
+            );
+            let _ = Reflect::set(
+                &marker_obj,
+                &JsValue::from_str("column"),
+                &JsValue::from_f64(f64::from(marker.column)),
+            );
+            let _ = Reflect::set(
+                &marker_obj,
+                &JsValue::from_str("stale"),
+                &JsValue::from_bool(marker.stale),
+            );
+            let stale_reason = marker
+                .stale_reason
+                .map(JsValue::from_str)
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(&marker_obj, &JsValue::from_str("staleReason"), &stale_reason);
+            let relative_line = marker
+                .relative_line
+                .map(|v| JsValue::from_f64(v as f64))
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(
+                &marker_obj,
+                &JsValue::from_str("relativeLine"),
+                &relative_line,
+            );
+            let grid_row = marker
+                .grid_row
+                .map(|v| JsValue::from_f64(v as f64))
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(&marker_obj, &JsValue::from_str("gridRow"), &grid_row);
+            let cell_offset = marker
+                .cell_offset
+                .map(|v| JsValue::from_f64(v as f64))
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(&marker_obj, &JsValue::from_str("cellOffset"), &cell_offset);
+            marker_arr.set(idx as u32, marker_obj.into());
+        }
+        let _ = Reflect::set(&obj, &JsValue::from_str("markers"), &marker_arr);
+        obj.into()
+    }
+
+    /// Create a decoration primitive anchored by marker ids.
+    ///
+    /// `kind` values:
+    /// - `"inline"`: range `[startCol, endCol)` on `startMarkerId` line
+    /// - `"line"`: full-line decoration at `startMarkerId`
+    /// - `"range"`: multiline range from `startMarkerId` to `endMarkerId`
+    ///
+    /// For non-range kinds pass `endMarkerId < 0`.
+    #[wasm_bindgen(js_name = createDecoration)]
+    pub fn create_decoration(
+        &mut self,
+        kind: &str,
+        start_marker_id: u32,
+        end_marker_id: i32,
+        start_col: i32,
+        end_col: i32,
+    ) -> Result<u32, JsValue> {
+        let kind = DecorationKind::parse(kind)
+            .ok_or_else(|| JsValue::from_str("invalid decoration kind"))?;
+        let end_marker = if end_marker_id < 0 {
+            None
+        } else {
+            Some(
+                u32::try_from(end_marker_id)
+                    .map_err(|_| JsValue::from_str("end marker id overflow"))?,
+            )
+        };
+        let start_col = if start_col < 0 {
+            0
+        } else {
+            u16::try_from(start_col).map_err(|_| JsValue::from_str("start col overflow"))?
+        };
+        let end_col = if end_col < 0 {
+            0
+        } else {
+            u16::try_from(end_col).map_err(|_| JsValue::from_str("end col overflow"))?
+        };
+        let window = self.marker_history_window();
+        self.marker_store
+            .create_decoration(kind, start_marker_id, end_marker, start_col, end_col, window)
+            .map_err(JsValue::from_str)
+    }
+
+    /// Remove a decoration by id.
+    ///
+    /// Returns `true` when a decoration existed and was removed.
+    #[wasm_bindgen(js_name = dropDecoration)]
+    pub fn drop_decoration(&mut self, decoration_id: u32) -> bool {
+        self.marker_store.remove_decoration(decoration_id)
+    }
+
+    /// Return decoration snapshots resolved against the current viewport/history.
+    #[wasm_bindgen(js_name = decorationsState)]
+    pub fn decorations_state(&self) -> JsValue {
+        let window = self.marker_history_window();
+        let decorations = self.marker_store.decoration_snapshots(window);
+        let arr = Array::new_with_length(decorations.len() as u32);
+        for (idx, decoration) in decorations.iter().enumerate() {
+            let obj = Object::new();
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("id"),
+                &JsValue::from_f64(f64::from(decoration.id)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("kind"),
+                &JsValue::from_str(decoration.kind.as_str()),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("startMarkerId"),
+                &JsValue::from_f64(f64::from(decoration.start_marker_id)),
+            );
+            let end_marker = decoration
+                .end_marker_id
+                .map(|id| JsValue::from_f64(f64::from(id)))
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(&obj, &JsValue::from_str("endMarkerId"), &end_marker);
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("stale"),
+                &JsValue::from_bool(decoration.stale),
+            );
+            let stale_reason = decoration
+                .stale_reason
+                .map(JsValue::from_str)
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(&obj, &JsValue::from_str("staleReason"), &stale_reason);
+            let start_offset = decoration
+                .start_offset
+                .map(|v| JsValue::from_f64(v as f64))
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(&obj, &JsValue::from_str("startOffset"), &start_offset);
+            let end_offset = decoration
+                .end_offset
+                .map(|v| JsValue::from_f64(v as f64))
+                .unwrap_or(JsValue::NULL);
+            let _ = Reflect::set(&obj, &JsValue::from_str("endOffset"), &end_offset);
+            arr.set(idx as u32, obj.into());
+        }
+        arr.into()
+    }
+
+    /// Drain marker/decoration diagnostics as JSONL lines.
+    ///
+    /// Records are ordered by deterministic diagnostic sequence and include
+    /// stale/invalidation reasons for replay-grade troubleshooting.
+    #[wasm_bindgen(js_name = drainMarkerDecorationJsonl)]
+    pub fn drain_marker_decoration_jsonl(
+        &mut self,
+        run_id: String,
+        seed: u64,
+        timestamp: String,
+    ) -> Result<Array, JsValue> {
+        if run_id.is_empty() {
+            return Err(JsValue::from_str("run_id must not be empty"));
+        }
+        if timestamp.is_empty() {
+            return Err(JsValue::from_str("timestamp must not be empty"));
+        }
+        let window = self.marker_history_window();
+        let events = self.marker_store.drain_diagnostics();
+        let out = Array::new_with_length(events.len() as u32);
+        for (event_idx, event) in events.into_iter().enumerate() {
+            let payload = serde_json::json!({
+                "type": "marker_decoration",
+                "schema_version": "frankenterm-marker-v1",
+                "run_id": run_id,
+                "seed": seed,
+                "timestamp": timestamp,
+                "event_idx": event_idx,
+                "seq": event.seq,
+                "entity": event.entity.as_str(),
+                "action": event.action,
+                "id": event.id,
+                "reason": event.reason,
+                "history_base_absolute_line": window.base_absolute_line,
+                "history_total_lines": window.total_lines,
+                "scrollback_lines": window.scrollback_lines,
+                "cols": window.cols,
+                "rows": window.rows,
+            })
+            .to_string();
+            out.set(event_idx as u32, JsValue::from_str(&payload));
+        }
+        Ok(out)
+    }
+
     /// Build or refresh search results over the current shadow grid.
     ///
     /// `options` keys:
@@ -2416,6 +2677,27 @@ impl FrankenTermWeb {
             .map_or(0, |engine| engine.scrollback().len())
     }
 
+    fn history_base_absolute_line(&self) -> u64 {
+        self.engine
+            .as_ref()
+            .map_or(0, |engine| engine.scrollback().oldest_line_absolute())
+    }
+
+    fn marker_history_window(&self) -> HistoryWindow {
+        HistoryWindow {
+            base_absolute_line: self.history_base_absolute_line(),
+            total_lines: self.total_history_lines(),
+            scrollback_lines: self.scrollback_line_count(),
+            cols: usize::from(self.cols),
+            rows: usize::from(self.rows),
+        }
+    }
+
+    fn reconcile_markers(&mut self) {
+        let window = self.marker_history_window();
+        self.marker_store.reconcile(window);
+    }
+
     fn total_history_lines(&self) -> usize {
         self.scrollback_line_count()
             .saturating_add(usize::from(self.rows))
@@ -2434,6 +2716,7 @@ impl FrankenTermWeb {
 
     fn refresh_viewport_after_user_navigation(&mut self) -> ViewportSnapshot {
         let snap = self.refresh_viewport_snapshot();
+        self.reconcile_markers();
         self.follow_output = snap.is_at_bottom;
         snap
     }
@@ -2452,6 +2735,7 @@ impl FrankenTermWeb {
             );
         }
         let snap = self.refresh_viewport_snapshot();
+        self.reconcile_markers();
         if !self.follow_output && snap.max_scroll_offset == 0 {
             // If there is no scrollback headroom anymore, automatically resume
             // follow-output mode.
@@ -2515,6 +2799,7 @@ impl FrankenTermWeb {
     fn sync_terminal_engine_size(&mut self, cols: u16, rows: u16) {
         if cols == 0 || rows == 0 {
             self.engine = None;
+            self.reconcile_markers();
             return;
         }
 
@@ -2523,6 +2808,7 @@ impl FrankenTermWeb {
         } else {
             self.engine = Some(TerminalEngine::new(cols, rows));
         }
+        self.reconcile_markers();
     }
 
     fn queue_input_event(&mut self, ev: InputEvent) -> Result<(), JsValue> {

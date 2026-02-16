@@ -18,6 +18,7 @@ pub mod coordinate_guard;
 pub mod frame_harness;
 pub mod glyph_atlas;
 pub mod input;
+pub mod markers;
 pub mod patch_feed;
 pub mod renderer;
 pub mod resize_arbiter;
