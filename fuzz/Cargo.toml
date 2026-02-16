@@ -18,6 +18,12 @@ path = "../crates/ftui-core"
 [dependencies.frankenterm-core]
 path = "../crates/frankenterm-core"
 
+[dependencies.ftui-text]
+path = "../crates/ftui-text"
+
+[dependencies.ftui-style]
+path = "../crates/ftui-style"
+
 [[bin]]
 name = "fuzz_input_parser"
 path = "fuzz_targets/fuzz_input_parser.rs"
@@ -49,6 +55,41 @@ bench = false
 [[bin]]
 name = "fuzz_grid_mutations"
 path = "fuzz_targets/fuzz_grid_mutations.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_text_cluster_map"
+path = "fuzz_targets/fuzz_text_cluster_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_text_shaped_layout"
+path = "fuzz_targets/fuzz_text_shaped_layout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_text_wrap"
+path = "fuzz_targets/fuzz_text_wrap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_text_width"
+path = "fuzz_targets/fuzz_text_width.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_text_hyphenation"
+path = "fuzz_targets/fuzz_text_hyphenation.rs"
 test = false
 doc = false
 bench = false
