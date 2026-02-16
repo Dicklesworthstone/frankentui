@@ -838,7 +838,11 @@ impl RunnerCore {
             }
             PaneGestureMode::Move => {
                 let projected_pointer = if committed {
-                    dispatch.projected_position.unwrap_or(pointer)
+                    edge_fling_projection(
+                        dispatch.projected_position.unwrap_or(pointer),
+                        motion,
+                        self.viewport_rect(),
+                    )
                 } else {
                     pointer
                 };
@@ -1276,6 +1280,39 @@ fn dynamic_preview_switch_advantage_bps(
     ) as u16
 }
 
+fn edge_fling_projection(
+    pointer: PanePointerPosition,
+    motion: PaneMotionVector,
+    viewport: Rect,
+) -> PanePointerPosition {
+    if motion.speed < 34.0 {
+        return pointer;
+    }
+    let boost_cells = ((motion.speed - 28.0) * 0.13).round().clamp(2.0, 26.0);
+    let margin_x = (f64::from(viewport.width) * 0.14).clamp(2.0, 18.0);
+    let margin_y = (f64::from(viewport.height) * 0.18).clamp(2.0, 14.0);
+    let left = f64::from(viewport.x);
+    let right = f64::from(viewport.x.saturating_add(viewport.width.saturating_sub(1)));
+    let top = f64::from(viewport.y);
+    let bottom = f64::from(viewport.y.saturating_add(viewport.height.saturating_sub(1)));
+    let px = f64::from(pointer.x);
+    let py = f64::from(pointer.y);
+
+    let mut out_x = f64::from(pointer.x);
+    let mut out_y = f64::from(pointer.y);
+    if f64::from(motion.delta_x) < 0.0 && px <= left + margin_x {
+        out_x -= boost_cells;
+    } else if f64::from(motion.delta_x) > 0.0 && px >= right - margin_x {
+        out_x += boost_cells;
+    }
+    if f64::from(motion.delta_y) < 0.0 && py <= top + margin_y {
+        out_y -= boost_cells;
+    } else if f64::from(motion.delta_y) > 0.0 && py >= bottom - margin_y {
+        out_y += boost_cells;
+    }
+    PanePointerPosition::new(round_f64_to_i32(out_x), round_f64_to_i32(out_y))
+}
+
 fn blend_u16_value(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
     let blend = u32::from(blend_factor_bps.clamp(1, 10_000));
     let current = i32::from(current);
@@ -1552,5 +1589,28 @@ mod tests {
         assert_eq!(state.alt_one_target, Some(secondary.target));
         assert_eq!(state.alt_two_target, Some(tertiary.target));
         assert!(state.alt_one_strength_bps > state.alt_two_strength_bps);
+    }
+
+    #[test]
+    fn edge_fling_projection_pushes_fast_edge_release_outward() {
+        let viewport = Rect::new(0, 0, 120, 40);
+        let projected = edge_fling_projection(
+            PanePointerPosition::new(2, 20),
+            PaneMotionVector::from_delta(-36, 0, 42, 0),
+            viewport,
+        );
+        assert!(projected.x < 2);
+    }
+
+    #[test]
+    fn edge_fling_projection_keeps_slow_motion_unchanged() {
+        let viewport = Rect::new(0, 0, 120, 40);
+        let pointer = PanePointerPosition::new(2, 20);
+        let projected = edge_fling_projection(
+            pointer,
+            PaneMotionVector::from_delta(-8, 0, 220, 0),
+            viewport,
+        );
+        assert_eq!(projected, pointer);
     }
 }
