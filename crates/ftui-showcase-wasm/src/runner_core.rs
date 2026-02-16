@@ -9,12 +9,12 @@ use core::time::Duration;
 
 use ftui_demo_showcase::app::AppModel;
 use ftui_layout::{
-    PANE_EDGE_GRIP_INSET_CELLS, PANE_MAGNETIC_FIELD_CELLS, PaneDockZone, PaneDragResizeEffect,
-    PaneId, PaneInteractionTimeline, PaneLayoutIntelligenceMode, PaneLeaf, PaneModifierSnapshot,
-    PaneMotionVector, PaneNodeKind, PaneOperation, PanePlacement, PanePointerButton,
-    PanePointerPosition, PanePressureSnapProfile, PaneResizeGrip, PaneResizeTarget,
-    PaneSelectionState, PaneSplitRatio, PaneTree, Rect, Sides, SplitAxis, WorkspaceMetadata,
-    WorkspaceSnapshot,
+    PANE_EDGE_GRIP_INSET_CELLS, PANE_MAGNETIC_FIELD_CELLS, PaneDockPreview, PaneDockZone,
+    PaneDragResizeEffect, PaneId, PaneInertialThrow, PaneInteractionTimeline,
+    PaneLayoutIntelligenceMode, PaneLeaf, PaneModifierSnapshot, PaneMotionVector, PaneNodeKind,
+    PaneOperation, PanePlacement, PanePointerButton, PanePointerPosition, PanePressureSnapProfile,
+    PaneResizeGrip, PaneResizeTarget, PaneSelectionState, PaneSplitRatio, PaneTree, Rect, Sides,
+    SplitAxis, WorkspaceMetadata, WorkspaceSnapshot,
 };
 use ftui_web::pane_pointer_capture::{
     PanePointerCaptureAdapter, PanePointerCaptureCommand, PanePointerCaptureConfig,
@@ -51,6 +51,10 @@ pub struct RunnerCore {
     selection: PaneSelectionState,
     /// Active drag gesture context.
     active_gesture: Option<ActivePaneGesture>,
+    /// Timeline cursor at gesture start, used to rollback canceled drag mutations.
+    gesture_timeline_cursor_start: Option<usize>,
+    /// Last applied live-reflow operation signature for dedupe.
+    live_reflow_signature: Option<u64>,
     /// Current magnetic docking / ghost preview state.
     preview_state: PanePreviewState,
     /// Deterministic operation id source for pane operations.
@@ -68,6 +72,13 @@ const FNV64_PRIME: u64 = 0x100000001b3;
 const DEFAULT_PANE_MARGIN_CELLS: u16 = 1;
 const DEFAULT_PANE_PADDING_CELLS: u16 = 1;
 const DEFAULT_SPRING_BLEND_BPS: u16 = 3_500;
+const PANE_MAGNETIC_FIELD_MIN_CELLS: f64 = 3.5;
+const PANE_MAGNETIC_FIELD_MAX_CELLS: f64 = 11.0;
+const DOCK_PREVIEW_CANDIDATE_LIMIT: usize = 3;
+const LIVE_REFLOW_THRESHOLD_MIN_BPS: u16 = 3_600;
+const LIVE_REFLOW_THRESHOLD_MAX_BPS: u16 = 8_200;
+const LIVE_REFLOW_SWITCH_ADVANTAGE_MIN_BPS: u16 = 450;
+const LIVE_REFLOW_SWITCH_ADVANTAGE_MAX_BPS: u16 = 1_650;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +102,16 @@ pub struct PanePreviewState {
     pub target: Option<PaneId>,
     pub zone: Option<PaneDockZone>,
     pub ghost_rect: Option<Rect>,
+    pub dock_strength_bps: u16,
+    pub motion_speed_cps: u16,
+    pub alt_one_target: Option<PaneId>,
+    pub alt_one_zone: Option<PaneDockZone>,
+    pub alt_one_ghost_rect: Option<Rect>,
+    pub alt_one_strength_bps: u16,
+    pub alt_two_target: Option<PaneId>,
+    pub alt_two_zone: Option<PaneDockZone>,
+    pub alt_two_ghost_rect: Option<Rect>,
+    pub alt_two_strength_bps: u16,
 }
 
 /// Lightweight timeline status for host HUD updates.
@@ -147,6 +168,8 @@ impl RunnerCore {
             layout_tree,
             selection: PaneSelectionState::default(),
             active_gesture: None,
+            gesture_timeline_cursor_start: None,
+            live_reflow_signature: None,
             preview_state: PanePreviewState::default(),
             next_operation_id: 1,
             intelligence_mode: PaneLayoutIntelligenceMode::Focus,
@@ -510,11 +533,7 @@ impl RunnerCore {
         if self.active_gesture.is_none() {
             let pointer = PanePointerPosition::new(x, y);
             if let Some(leaf) = self.leaf_at_pointer(pointer) {
-                self.active_gesture = Some(ActivePaneGesture {
-                    pointer_id,
-                    leaf,
-                    mode: PaneGestureMode::Move,
-                });
+                self.arm_gesture(pointer_id, leaf, PaneGestureMode::Move);
                 if !modifiers.shift {
                     self.set_single_selection(leaf);
                 }
@@ -715,12 +734,7 @@ impl RunnerCore {
             .or_else(|| self.nearest_split_for_node(leaf))
             .unwrap_or(self.layout_tree.root());
 
-        self.active_gesture = Some(ActivePaneGesture {
-            pointer_id,
-            leaf,
-            mode,
-        });
-        self.preview_state = PanePreviewState::default();
+        self.arm_gesture(pointer_id, leaf, mode);
 
         Some(PaneResizeTarget { split_id, axis })
     }
@@ -738,10 +752,15 @@ impl RunnerCore {
             PaneDragResizeEffect::Committed { end, .. } => {
                 self.apply_drag_semantics(sequence, end, dispatch, true);
                 self.active_gesture = None;
+                self.gesture_timeline_cursor_start = None;
+                self.live_reflow_signature = None;
                 self.preview_state = PanePreviewState::default();
             }
             PaneDragResizeEffect::Canceled { .. } => {
+                self.rollback_active_gesture_mutations();
                 self.active_gesture = None;
+                self.gesture_timeline_cursor_start = None;
+                self.live_reflow_signature = None;
                 self.preview_state = PanePreviewState::default();
             }
             PaneDragResizeEffect::Noop { .. }
@@ -779,6 +798,7 @@ impl RunnerCore {
 
         match active.mode {
             PaneGestureMode::Resize(grip) => {
+                self.live_reflow_signature = None;
                 self.preview_state = PanePreviewState::default();
                 if self.selection.selected.len() > 1
                     && self.selection.selected.contains(&active.leaf)
@@ -822,47 +842,88 @@ impl RunnerCore {
                 } else {
                     pointer
                 };
-                let inertial = committed.then_some(dispatch.inertial_throw).flatten();
+                let inertial = if committed {
+                    dispatch.inertial_throw
+                } else if motion.speed > 18.0 {
+                    Some(PaneInertialThrow::from_motion(motion))
+                } else {
+                    None
+                };
+                let magnetic_field = adaptive_magnetic_field_cells(motion, pressure);
+                let switch_advantage_bps = dynamic_preview_switch_advantage_bps(motion, pressure);
+                let live_reflow_threshold_bps = dynamic_live_reflow_threshold_bps(motion, pressure);
 
                 if self.selection.selected.len() > 1
                     && self.selection.selected.contains(&active.leaf)
                 {
                     let anchor = self.selection.anchor.unwrap_or(active.leaf);
-                    if let Ok(preview_plan) = self.layout_tree.plan_reflow_move_with_preview(
+                    let Ok(preview_plan) = self.layout_tree.plan_reflow_move_with_preview(
                         anchor,
                         &layout,
                         pointer,
                         motion,
                         inertial,
-                        PANE_MAGNETIC_FIELD_CELLS,
-                    ) {
-                        self.preview_state = PanePreviewState {
-                            source: Some(anchor),
-                            target: Some(preview_plan.preview.target),
-                            zone: Some(preview_plan.preview.zone),
-                            ghost_rect: Some(preview_plan.preview.ghost_rect),
-                        };
-                    } else {
+                        magnetic_field,
+                    ) else {
                         self.preview_state = PanePreviewState::default();
+                        return;
+                    };
+                    let dock_strength_bps = (preview_plan.preview.score * 10_000.0)
+                        .round()
+                        .clamp(0.0, 10_000.0) as u16;
+                    let ghost_rect = self.blend_preview_ghost(
+                        preview_plan.preview.ghost_rect,
+                        pressure,
+                        dock_strength_bps,
+                    );
+                    let mut ranked = self.layout_tree.ranked_dock_previews_with_motion(
+                        &layout,
+                        pointer,
+                        motion,
+                        magnetic_field,
+                        Some(anchor),
+                        DOCK_PREVIEW_CANDIDATE_LIMIT,
+                    );
+                    if ranked.is_empty() {
+                        ranked.push(preview_plan.preview);
                     }
-                    if committed {
+                    let allow_switch = self.allow_preview_switch(
+                        preview_plan.preview.target,
+                        preview_plan.preview.zone,
+                        dock_strength_bps,
+                        switch_advantage_bps,
+                    );
+                    if allow_switch {
+                        self.preview_state = build_preview_state_from_candidates(
+                            anchor,
+                            preview_plan.preview,
+                            ghost_rect,
+                            dock_strength_bps,
+                            motion.speed.round().clamp(0.0, 65_535.0) as u16,
+                            &ranked,
+                        );
+                    }
+                    let should_live_apply = !committed
+                        && allow_switch
+                        && dock_strength_bps >= live_reflow_threshold_bps;
+                    if committed || should_live_apply {
                         let Ok(plan) = self.layout_tree.plan_group_move(
                             &self.selection,
                             &layout,
-                            projected_pointer,
+                            if committed {
+                                projected_pointer
+                            } else {
+                                pointer
+                            },
                             motion,
                             inertial,
-                            PANE_MAGNETIC_FIELD_CELLS,
+                            magnetic_field,
                         ) else {
                             self.preview_state = PanePreviewState::default();
                             return;
                         };
-                        let _ = self.apply_operations_with_timeline(
-                            sequence,
-                            &plan.operations,
-                            pressure,
-                            false,
-                        );
+                        let _ =
+                            self.apply_live_reflow_if_needed(sequence, &plan.operations, pressure);
                     }
                 } else {
                     let Ok(plan) = self.layout_tree.plan_reflow_move_with_preview(
@@ -871,24 +932,51 @@ impl RunnerCore {
                         pointer,
                         motion,
                         inertial,
-                        PANE_MAGNETIC_FIELD_CELLS,
+                        magnetic_field,
                     ) else {
                         self.preview_state = PanePreviewState::default();
                         return;
                     };
-                    self.preview_state = PanePreviewState {
-                        source: Some(active.leaf),
-                        target: Some(plan.preview.target),
-                        zone: Some(plan.preview.zone),
-                        ghost_rect: Some(plan.preview.ghost_rect),
-                    };
-                    if committed {
-                        let _ = self.apply_operations_with_timeline(
-                            sequence,
-                            &plan.operations,
-                            pressure,
-                            false,
+                    let dock_strength_bps =
+                        (plan.preview.score * 10_000.0).round().clamp(0.0, 10_000.0) as u16;
+                    let ghost_rect = self.blend_preview_ghost(
+                        plan.preview.ghost_rect,
+                        pressure,
+                        dock_strength_bps,
+                    );
+                    let mut ranked = self.layout_tree.ranked_dock_previews_with_motion(
+                        &layout,
+                        pointer,
+                        motion,
+                        magnetic_field,
+                        Some(active.leaf),
+                        DOCK_PREVIEW_CANDIDATE_LIMIT,
+                    );
+                    if ranked.is_empty() {
+                        ranked.push(plan.preview);
+                    }
+                    let allow_switch = self.allow_preview_switch(
+                        plan.preview.target,
+                        plan.preview.zone,
+                        dock_strength_bps,
+                        switch_advantage_bps,
+                    );
+                    if allow_switch {
+                        self.preview_state = build_preview_state_from_candidates(
+                            active.leaf,
+                            plan.preview,
+                            ghost_rect,
+                            dock_strength_bps,
+                            motion.speed.round().clamp(0.0, 65_535.0) as u16,
+                            &ranked,
                         );
+                    }
+                    let should_live_apply = !committed
+                        && allow_switch
+                        && dock_strength_bps >= live_reflow_threshold_bps;
+                    if committed || should_live_apply {
+                        let _ =
+                            self.apply_live_reflow_if_needed(sequence, &plan.operations, pressure);
                     }
                 }
             }
@@ -920,6 +1008,26 @@ impl RunnerCore {
         applied
     }
 
+    fn apply_live_reflow_if_needed(
+        &mut self,
+        sequence: u64,
+        operations: &[PaneOperation],
+        pressure: PanePressureSnapProfile,
+    ) -> usize {
+        if operations.is_empty() {
+            return 0;
+        }
+        let signature = pane_operations_signature(operations);
+        if self.live_reflow_signature == Some(signature) {
+            return 0;
+        }
+        let applied = self.apply_operations_with_timeline(sequence, operations, pressure, false);
+        if applied > 0 {
+            self.live_reflow_signature = Some(signature);
+        }
+        applied
+    }
+
     fn spring_adjust_operation(
         &self,
         operation: PaneOperation,
@@ -947,6 +1055,73 @@ impl RunnerCore {
         let denominator = 10_000_u32.saturating_sub(u32::from(blended)).max(1);
         let ratio = PaneSplitRatio::new(u32::from(blended.max(1)), denominator).unwrap_or(ratio);
         PaneOperation::SetSplitRatio { split, ratio }
+    }
+
+    fn blend_preview_ghost(
+        &self,
+        target: Rect,
+        pressure: PanePressureSnapProfile,
+        dock_strength_bps: u16,
+    ) -> Rect {
+        let Some(previous) = self.preview_state.ghost_rect else {
+            return target;
+        };
+        let blend = (u32::from(2_000_u16)
+            + u32::from(pressure.strength_bps / 2)
+            + u32::from(dock_strength_bps / 4))
+        .clamp(2_000, 9_200) as u16;
+        blend_rect(previous, target, blend)
+    }
+
+    fn arm_gesture(&mut self, pointer_id: u32, leaf: PaneId, mode: PaneGestureMode) {
+        self.active_gesture = Some(ActivePaneGesture {
+            pointer_id,
+            leaf,
+            mode,
+        });
+        self.gesture_timeline_cursor_start = Some(self.timeline.cursor);
+        self.live_reflow_signature = None;
+        self.preview_state = PanePreviewState::default();
+    }
+
+    fn rollback_active_gesture_mutations(&mut self) {
+        let Some(start_cursor) = self.gesture_timeline_cursor_start else {
+            return;
+        };
+        let mut rolled_back = false;
+        while self.timeline.cursor > start_cursor {
+            match self.timeline.undo(&mut self.layout_tree) {
+                Ok(true) => rolled_back = true,
+                Ok(false) => break,
+                Err(err) => {
+                    self.pane_logs
+                        .push(format!("pane_timeline cancel_rollback error: {err}"));
+                    break;
+                }
+            }
+        }
+        if rolled_back {
+            self.workspace_generation = self.workspace_generation.saturating_add(1);
+        }
+    }
+
+    fn allow_preview_switch(
+        &self,
+        next_target: PaneId,
+        next_zone: PaneDockZone,
+        next_strength_bps: u16,
+        switch_advantage_bps: u16,
+    ) -> bool {
+        if self.preview_state.target.is_none() || self.preview_state.zone.is_none() {
+            return true;
+        }
+        if self.preview_state.target == Some(next_target)
+            && self.preview_state.zone == Some(next_zone)
+        {
+            return true;
+        }
+        self.preview_state.dock_strength_bps
+            <= next_strength_bps.saturating_add(switch_advantage_bps)
     }
 
     fn next_operation_id(&mut self) -> u64 {
@@ -1057,6 +1232,121 @@ fn blend_bps(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
     let delta = target.saturating_sub(current);
     let blended = current + ((delta * i32::try_from(blend).unwrap_or(10_000)) / 10_000);
     blended.clamp(1, 9_999) as u16
+}
+
+fn adaptive_magnetic_field_cells(
+    motion: PaneMotionVector,
+    pressure: PanePressureSnapProfile,
+) -> f64 {
+    let speed_factor = (motion.speed / 90.0).clamp(0.0, 1.0);
+    let confidence = (f64::from(pressure.strength_bps) / 10_000.0).clamp(0.0, 1.0);
+    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
+    (PANE_MAGNETIC_FIELD_CELLS + speed_factor * 3.5 + confidence * 1.8 - noise_penalty * 1.6)
+        .clamp(PANE_MAGNETIC_FIELD_MIN_CELLS, PANE_MAGNETIC_FIELD_MAX_CELLS)
+}
+
+fn dynamic_live_reflow_threshold_bps(
+    motion: PaneMotionVector,
+    pressure: PanePressureSnapProfile,
+) -> u16 {
+    let speed_factor = (motion.speed / 95.0).clamp(0.0, 1.0).powf(0.78);
+    let confidence = (f64::from(pressure.strength_bps) / 10_000.0)
+        .clamp(0.0, 1.0)
+        .powf(0.9);
+    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
+    let threshold = 7_100.0 - speed_factor * 1_850.0 - confidence * 1_050.0 + noise_penalty * 900.0;
+    threshold.round().clamp(
+        f64::from(LIVE_REFLOW_THRESHOLD_MIN_BPS),
+        f64::from(LIVE_REFLOW_THRESHOLD_MAX_BPS),
+    ) as u16
+}
+
+fn dynamic_preview_switch_advantage_bps(
+    motion: PaneMotionVector,
+    pressure: PanePressureSnapProfile,
+) -> u16 {
+    let speed_factor = (motion.speed / 95.0).clamp(0.0, 1.0);
+    let confidence = (f64::from(pressure.strength_bps) / 10_000.0).clamp(0.0, 1.0);
+    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
+    let advantage =
+        1_250.0 - speed_factor * 500.0 + noise_penalty * 420.0 + (1.0 - confidence) * 260.0;
+    advantage.round().clamp(
+        f64::from(LIVE_REFLOW_SWITCH_ADVANTAGE_MIN_BPS),
+        f64::from(LIVE_REFLOW_SWITCH_ADVANTAGE_MAX_BPS),
+    ) as u16
+}
+
+fn blend_u16_value(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
+    let blend = u32::from(blend_factor_bps.clamp(1, 10_000));
+    let current = i32::from(current);
+    let target = i32::from(target);
+    let delta = target.saturating_sub(current);
+    let blended = current + ((delta * i32::try_from(blend).unwrap_or(10_000)) / 10_000);
+    blended.clamp(0, i32::from(u16::MAX)) as u16
+}
+
+fn blend_rect(current: Rect, target: Rect, blend_factor_bps: u16) -> Rect {
+    Rect::new(
+        blend_u16_value(current.x, target.x, blend_factor_bps),
+        blend_u16_value(current.y, target.y, blend_factor_bps),
+        blend_u16_value(current.width.max(1), target.width.max(1), blend_factor_bps).max(1),
+        blend_u16_value(
+            current.height.max(1),
+            target.height.max(1),
+            blend_factor_bps,
+        )
+        .max(1),
+    )
+}
+
+fn score_to_strength_bps(score: f64) -> u16 {
+    (score * 10_000.0).round().clamp(0.0, 10_000.0) as u16
+}
+
+fn build_preview_state_from_candidates(
+    source: PaneId,
+    primary: PaneDockPreview,
+    primary_ghost_rect: Rect,
+    dock_strength_bps: u16,
+    motion_speed_cps: u16,
+    ranked: &[PaneDockPreview],
+) -> PanePreviewState {
+    let mut alternatives = ranked
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.target != primary.target || candidate.zone != primary.zone);
+    let alt_one = alternatives.next();
+    let alt_two = alternatives.next();
+    PanePreviewState {
+        source: Some(source),
+        target: Some(primary.target),
+        zone: Some(primary.zone),
+        ghost_rect: Some(primary_ghost_rect),
+        dock_strength_bps,
+        motion_speed_cps,
+        alt_one_target: alt_one.map(|candidate| candidate.target),
+        alt_one_zone: alt_one.map(|candidate| candidate.zone),
+        alt_one_ghost_rect: alt_one.map(|candidate| candidate.ghost_rect),
+        alt_one_strength_bps: alt_one
+            .map(|candidate| score_to_strength_bps(candidate.score))
+            .unwrap_or(0),
+        alt_two_target: alt_two.map(|candidate| candidate.target),
+        alt_two_zone: alt_two.map(|candidate| candidate.zone),
+        alt_two_ghost_rect: alt_two.map(|candidate| candidate.ghost_rect),
+        alt_two_strength_bps: alt_two
+            .map(|candidate| score_to_strength_bps(candidate.score))
+            .unwrap_or(0),
+    }
+}
+
+fn pane_operations_signature(operations: &[PaneOperation]) -> u64 {
+    let mut hash = FNV64_OFFSET_BASIS;
+    for operation in operations {
+        let debug = format!("{operation:?}");
+        hash = fnv1a64_extend(hash, debug.as_bytes());
+        hash = fnv1a64_extend(hash, b"|");
+    }
+    hash
 }
 
 fn format_split_axis(axis: SplitAxis) -> &'static str {
@@ -1187,4 +1477,80 @@ fn hash_flat_patch_batch(spans: &[u32], cells: &[u32]) -> Option<String> {
     }
 
     Some(format!("{PATCH_HASH_ALGO}:{hash:016x}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_reflow_threshold_drops_for_fast_confident_motion() {
+        let slow_noisy = dynamic_live_reflow_threshold_bps(
+            PaneMotionVector::from_delta(6, 1, 220, 7),
+            PanePressureSnapProfile {
+                strength_bps: 2_800,
+                hysteresis_bps: 150,
+            },
+        );
+        let fast_stable = dynamic_live_reflow_threshold_bps(
+            PaneMotionVector::from_delta(38, 2, 40, 0),
+            PanePressureSnapProfile {
+                strength_bps: 8_400,
+                hysteresis_bps: 540,
+            },
+        );
+        assert!(fast_stable < slow_noisy);
+    }
+
+    #[test]
+    fn preview_switch_advantage_increases_with_noise() {
+        let stable = dynamic_preview_switch_advantage_bps(
+            PaneMotionVector::from_delta(26, 2, 62, 0),
+            PanePressureSnapProfile {
+                strength_bps: 7_600,
+                hysteresis_bps: 380,
+            },
+        );
+        let noisy = dynamic_preview_switch_advantage_bps(
+            PaneMotionVector::from_delta(26, 2, 62, 8),
+            PanePressureSnapProfile {
+                strength_bps: 7_600,
+                hysteresis_bps: 380,
+            },
+        );
+        assert!(noisy > stable);
+    }
+
+    #[test]
+    fn preview_state_includes_secondary_dock_candidates() {
+        let primary = PaneDockPreview {
+            target: PaneId::new(2).expect("valid pane id"),
+            zone: PaneDockZone::Right,
+            score: 0.88,
+            ghost_rect: Rect::new(20, 4, 30, 12),
+        };
+        let secondary = PaneDockPreview {
+            target: PaneId::new(3).expect("valid pane id"),
+            zone: PaneDockZone::Bottom,
+            score: 0.61,
+            ghost_rect: Rect::new(20, 16, 30, 8),
+        };
+        let tertiary = PaneDockPreview {
+            target: PaneId::new(4).expect("valid pane id"),
+            zone: PaneDockZone::Center,
+            score: 0.54,
+            ghost_rect: Rect::new(10, 4, 40, 20),
+        };
+        let state = build_preview_state_from_candidates(
+            PaneId::new(1).expect("valid pane id"),
+            primary,
+            primary.ghost_rect,
+            8_800,
+            420,
+            &[primary, secondary, tertiary],
+        );
+        assert_eq!(state.alt_one_target, Some(secondary.target));
+        assert_eq!(state.alt_two_target, Some(tertiary.target));
+        assert!(state.alt_one_strength_bps > state.alt_two_strength_bps);
+    }
 }

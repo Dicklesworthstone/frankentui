@@ -36,12 +36,57 @@
 	  }
 	  #pane-ghost {
 	    position: fixed;
-	    border: 1px dashed rgba(120, 220, 255, 0.95);
-	    background: rgba(80, 170, 220, 0.16);
-	    border-radius: 6px;
+	    border: 1px solid rgba(120, 220, 255, 0.95);
+	    background: linear-gradient(135deg, rgba(90, 190, 235, 0.14), rgba(90, 190, 235, 0.24));
+	    border-radius: 10px;
 	    pointer-events: none;
 	    z-index: 12;
 	    display: none;
+	    opacity: 0;
+	    transform: scale(0.985);
+	    backdrop-filter: blur(1.5px);
+	    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+	    transition:
+	      left 85ms cubic-bezier(0.22, 1, 0.36, 1),
+	      top 85ms cubic-bezier(0.22, 1, 0.36, 1),
+	      width 90ms cubic-bezier(0.22, 1, 0.36, 1),
+	      height 90ms cubic-bezier(0.22, 1, 0.36, 1),
+	      opacity 80ms ease-out,
+	      transform 90ms cubic-bezier(0.2, 0.9, 0.2, 1);
+	    will-change: left, top, width, height, opacity, transform;
+	  }
+	  #pane-dock-hint {
+	    position: fixed;
+	    padding: 4px 10px;
+	    border-radius: 999px;
+	    border: 1px solid rgba(180, 220, 240, 0.55);
+	    background: rgba(16, 26, 34, 0.85);
+	    color: #d5edf8;
+	    font: 11px/1.2 "Pragmasevka NF", monospace;
+	    pointer-events: none;
+	    z-index: 13;
+	    display: none;
+	    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+	    backdrop-filter: blur(2px);
+	  }
+	  #pane-ghost-alt-1,
+	  #pane-ghost-alt-2 {
+	    position: fixed;
+	    border: 1px dashed rgba(130, 205, 236, 0.65);
+	    background: rgba(60, 130, 170, 0.08);
+	    border-radius: 8px;
+	    pointer-events: none;
+	    z-index: 11;
+	    display: none;
+	    opacity: 0;
+	    transform: scale(0.99);
+	    transition:
+	      left 90ms cubic-bezier(0.22, 1, 0.36, 1),
+	      top 90ms cubic-bezier(0.22, 1, 0.36, 1),
+	      width 95ms cubic-bezier(0.22, 1, 0.36, 1),
+	      height 95ms cubic-bezier(0.22, 1, 0.36, 1),
+	      opacity 80ms ease-out;
+	    will-change: left, top, width, height, opacity;
 	  }
 	  #error-overlay {
 	    display: none;
@@ -109,6 +154,9 @@
   <canvas id="terminal-canvas" tabindex="0"></canvas>
 </div>
 <div id="pane-ghost" aria-hidden="true"></div>
+<div id="pane-ghost-alt-1" aria-hidden="true"></div>
+<div id="pane-ghost-alt-2" aria-hidden="true"></div>
+<div id="pane-dock-hint" aria-hidden="true"></div>
 <div id="touch-zoom">
   <button id="zoom-out">&minus;</button>
   <button id="zoom-reset">1:1</button>
@@ -144,9 +192,14 @@ const loadingOverlay = document.getElementById("loading-overlay");
 const loadingLabel   = document.getElementById("loading-label");
 const loadingBar     = document.getElementById("loading-bar");
 const paneGhost      = document.getElementById("pane-ghost");
-const PANE_POINTER_ID = 1;
+const paneGhostAlt1  = document.getElementById("pane-ghost-alt-1");
+const paneGhostAlt2  = document.getElementById("pane-ghost-alt-2");
+const paneGhostAlts  = [paneGhostAlt1, paneGhostAlt2];
+const paneDockHint   = document.getElementById("pane-dock-hint");
 const PANE_WORKSPACE_KEY = "ftui-pane-workspace-v1";
 let paneWorkspaceToken = "";
+const paneActivePointers = new Set();
+let paneGhostDecay = null;
 
 function showError(msg) {
   errorDiv.textContent = msg;
@@ -334,19 +387,147 @@ function paneWorkspaceSnapshotToken(state) {
   return `${layoutHash}:${timelineCursor}:${timelineLength}`;
 }
 
-function renderPaneGhost(state) {
-  if (!state || !state.ghost_rect) {
-    paneGhost.style.display = "none";
-    return;
+function applyGhostVisualState(rectPx, strength, zone, alphaScale = 1.0) {
+  paneGhost.style.left = `${Math.round(rectPx.left)}px`;
+  paneGhost.style.top = `${Math.round(rectPx.top)}px`;
+  paneGhost.style.width = `${Math.max(1, Math.round(rectPx.width))}px`;
+  paneGhost.style.height = `${Math.max(1, Math.round(rectPx.height))}px`;
+  const accent = ({
+    left: "86, 214, 255",
+    right: "83, 226, 181",
+    top: "244, 198, 84",
+    bottom: "255, 141, 94",
+    center: "141, 201, 255",
+  })[zone] || "86, 214, 255";
+  paneGhost.style.borderColor = `rgba(${accent}, ${(0.55 + strength * 0.45) * alphaScale})`;
+  paneGhost.style.background =
+    `linear-gradient(135deg, rgba(${accent}, ${(0.12 + strength * 0.10) * alphaScale}), rgba(${accent}, ${(0.24 + strength * 0.22) * alphaScale}))`;
+  paneGhost.style.boxShadow =
+    `0 0 ${Math.round(14 + strength * 24)}px rgba(${accent}, ${(0.18 + strength * 0.45) * alphaScale})`;
+  paneGhost.style.opacity = `${(0.28 + strength * 0.72) * alphaScale}`;
+  paneGhost.style.transform = `scale(${0.985 + strength * 0.02})`;
+  paneGhost.style.display = "block";
+}
+
+function hideAlternateDockGhosts() {
+  for (const ghost of paneGhostAlts) {
+    ghost.style.display = "none";
+    ghost.style.opacity = "0";
   }
+}
+
+function applyAlternateGhostVisualState(node, rectPx, strength, zone, rank = 1) {
+  const accent = ({
+    left: "92, 183, 222",
+    right: "90, 199, 170",
+    top: "214, 186, 104",
+    bottom: "226, 152, 120",
+    center: "144, 183, 220",
+  })[zone] || "92, 183, 222";
+  const alpha = Math.max(0.12, Math.min(0.75, (0.52 - rank * 0.14) * (0.42 + strength * 0.58)));
+  node.style.left = `${Math.round(rectPx.left)}px`;
+  node.style.top = `${Math.round(rectPx.top)}px`;
+  node.style.width = `${Math.max(1, Math.round(rectPx.width))}px`;
+  node.style.height = `${Math.max(1, Math.round(rectPx.height))}px`;
+  node.style.borderColor = `rgba(${accent}, ${0.36 + alpha * 0.55})`;
+  node.style.background = `rgba(${accent}, ${0.07 + alpha * 0.20})`;
+  node.style.opacity = `${alpha}`;
+  node.style.display = "block";
+}
+
+function paneDockCandidatesFromState(state) {
+  if (!state) return [];
+  if (Array.isArray(state.dock_candidates) && state.dock_candidates.length > 0) {
+    return state.dock_candidates;
+  }
+  if (!state.ghost_rect) return [];
+  return [{
+    target: state.dock_target,
+    zone: state.dock_zone,
+    dock_strength_bps: state.dock_strength_bps,
+    ghost_rect: state.ghost_rect,
+  }];
+}
+
+function renderPaneGhost(state) {
   const rect = canvas.getBoundingClientRect();
   const cellW = currentCols > 0 ? rect.width / currentCols : CELL_WIDTH;
   const cellH = currentRows > 0 ? rect.height / currentRows : CELL_HEIGHT;
-  paneGhost.style.left = `${Math.round(rect.left + state.ghost_rect.x * cellW)}px`;
-  paneGhost.style.top = `${Math.round(rect.top + state.ghost_rect.y * cellH)}px`;
-  paneGhost.style.width = `${Math.max(1, Math.round(state.ghost_rect.width * cellW))}px`;
-  paneGhost.style.height = `${Math.max(1, Math.round(state.ghost_rect.height * cellH))}px`;
-  paneGhost.style.display = "block";
+  const dockCandidates = paneDockCandidatesFromState(state);
+  const primaryCandidate = dockCandidates[0];
+  if (primaryCandidate && primaryCandidate.ghost_rect) {
+    const strength = Math.max(
+      0,
+      Math.min(1, Number(primaryCandidate.dock_strength_bps || state?.dock_strength_bps || 0) / 10000),
+    );
+    const zone = String(primaryCandidate.zone || state?.dock_zone || "center");
+    const rectPx = {
+      left: rect.left + primaryCandidate.ghost_rect.x * cellW,
+      top: rect.top + primaryCandidate.ghost_rect.y * cellH,
+      width: primaryCandidate.ghost_rect.width * cellW,
+      height: primaryCandidate.ghost_rect.height * cellH,
+    };
+    applyGhostVisualState(rectPx, strength, zone);
+    hideAlternateDockGhosts();
+    const alternates = dockCandidates.slice(1, 3);
+    alternates.forEach((candidate, idx) => {
+      if (!candidate?.ghost_rect) return;
+      const altStrength = Math.max(0, Math.min(1, Number(candidate.dock_strength_bps || 0) / 10000));
+      const altRect = {
+        left: rect.left + candidate.ghost_rect.x * cellW,
+        top: rect.top + candidate.ghost_rect.y * cellH,
+        width: candidate.ghost_rect.width * cellW,
+        height: candidate.ghost_rect.height * cellH,
+      };
+      const node = paneGhostAlts[idx];
+      if (!node) return;
+      applyAlternateGhostVisualState(node, altRect, altStrength, String(candidate.zone || "center"), idx + 1);
+    });
+    paneGhostDecay = {
+      startedAtMs: performance.now(),
+      rectPx,
+      strength,
+      zone,
+    };
+
+    const label = zone === "center" ? "Swap" : `Dock ${zone.charAt(0).toUpperCase()}${zone.slice(1)}`;
+    paneDockHint.textContent = `${label} · ${Math.round(strength * 100)}%`;
+    paneDockHint.style.left = `${Math.round(rectPx.left + 8)}px`;
+    const hintTop = Math.max(6, Math.round(rectPx.top - 26));
+    paneDockHint.style.top = `${hintTop}px`;
+    paneDockHint.style.display = strength > 0.05 ? "block" : "none";
+    return;
+  }
+
+  const decay = paneGhostDecay;
+  if (decay) {
+    const elapsed = performance.now() - decay.startedAtMs;
+    const durationMs = 150;
+    if (elapsed < durationMs) {
+      const t = elapsed / durationMs;
+      const fade = 1.0 - t;
+      applyGhostVisualState(
+        {
+          left: decay.rectPx.left,
+          top: decay.rectPx.top,
+          width: decay.rectPx.width * (0.985 + fade * 0.015),
+          height: decay.rectPx.height * (0.985 + fade * 0.015),
+        },
+        decay.strength,
+        decay.zone,
+        fade,
+      );
+      hideAlternateDockGhosts();
+      paneDockHint.style.display = "none";
+      return;
+    }
+  }
+
+  paneGhostDecay = null;
+  hideAlternateDockGhosts();
+  paneGhost.style.display = "none";
+  paneGhost.style.opacity = "0";
+  paneDockHint.style.display = "none";
 }
 
 function updatePaneStatusSuffix(state) {
@@ -354,13 +535,17 @@ function updatePaneStatusSuffix(state) {
   const timeline = `${state.timeline_cursor || 0}/${state.timeline_length || 0}`;
   const selected = Array.isArray(state.selected_ids) ? state.selected_ids.length : 0;
   const zone = state.dock_zone ? ` ${state.dock_zone}` : "";
+  const strength = Number(state.dock_strength_bps || 0);
+  const speed = Number(state.motion_speed_cps || 0);
   const modeText = zone ? ` dock${zone}` : "";
+  const glideText = speed > 0 ? ` v${speed}` : "";
+  const snapText = strength > 0 ? ` s${Math.round(strength / 100)}` : "";
   if (Math.abs(userZoom - 1.0) > 0.01) {
     status.textContent =
-      `${currentCols}\u00d7${currentRows} \u2014 zoom ${Math.round(userZoom * 100)}% \u2014 panes ${timeline} sel ${selected}${modeText}`;
+      `${currentCols}\u00d7${currentRows} \u2014 zoom ${Math.round(userZoom * 100)}% \u2014 panes ${timeline} sel ${selected}${modeText}${glideText}${snapText}`;
   } else {
     status.textContent =
-      `${currentCols}\u00d7${currentRows} \u2014 panes ${timeline} sel ${selected}${modeText}`;
+      `${currentCols}\u00d7${currentRows} \u2014 panes ${timeline} sel ${selected}${modeText}${glideText}${snapText}`;
   }
 }
 
@@ -383,6 +568,9 @@ function persistPaneWorkspace(state) {
 }
 
 function persistPaneWorkspaceIfChanged(state) {
+  if (state && state.active_pointer_id !== null && state.active_pointer_id !== undefined) {
+    return;
+  }
   const token = paneWorkspaceSnapshotToken(state);
   if (!token || token === paneWorkspaceToken) return;
   persistPaneWorkspace(state);
@@ -403,22 +591,81 @@ function paneModsFromDomEvent(e) {
   return (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 }
 
+function panePointerIdFromEvent(e) {
+  if (e && Number.isFinite(e.pointerId)) {
+    return Math.max(0, Math.trunc(e.pointerId));
+  }
+  return 1;
+}
+
+function applyPaneCaptureCommand(dispatch, options = {}) {
+  if (!dispatch || !dispatch.capture_command) return dispatch;
+  const command = dispatch.capture_command;
+  const pointerId = Number(command.pointer_id);
+  if (!Number.isFinite(pointerId)) return dispatch;
+  const pointerInt = Math.max(0, Math.trunc(pointerId));
+  if (command.kind === "acquire") {
+    try {
+      if (typeof canvas.setPointerCapture === "function") {
+        canvas.setPointerCapture(pointerInt);
+      }
+    } catch (_) {}
+    if (!options.skipAcquireAck && typeof runner.panePointerCaptureAcquired === "function") {
+      const ack = runner.panePointerCaptureAcquired(pointerInt);
+      return ack || dispatch;
+    }
+  } else if (command.kind === "release") {
+    try {
+      if (typeof canvas.releasePointerCapture === "function") {
+        canvas.releasePointerCapture(pointerInt);
+      }
+    } catch (_) {}
+  }
+  return dispatch;
+}
+
 function paneDispatchPointerDown(e) {
   if (typeof runner.panePointerDownAt !== "function") return null;
   const point = domMouseToInput(e, "down");
-  return runner.panePointerDownAt(PANE_POINTER_ID, e.button, point.x, point.y, paneModsFromDomEvent(e));
+  const pointerId = panePointerIdFromEvent(e);
+  const dispatch = runner.panePointerDownAt(pointerId, e.button, point.x, point.y, paneModsFromDomEvent(e));
+  return applyPaneCaptureCommand(dispatch);
 }
 
 function paneDispatchPointerMove(e) {
   if (typeof runner.panePointerMoveAt !== "function") return null;
   const point = domMouseToInput(e, "move");
-  return runner.panePointerMoveAt(PANE_POINTER_ID, point.x, point.y, paneModsFromDomEvent(e));
+  const pointerId = panePointerIdFromEvent(e);
+  const dispatch = runner.panePointerMoveAt(pointerId, point.x, point.y, paneModsFromDomEvent(e));
+  return applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
 }
 
 function paneDispatchPointerUp(e) {
   if (typeof runner.panePointerUpAt !== "function") return null;
   const point = domMouseToInput(e, "up");
-  return runner.panePointerUpAt(PANE_POINTER_ID, e.button, point.x, point.y, paneModsFromDomEvent(e));
+  const pointerId = panePointerIdFromEvent(e);
+  const dispatch = runner.panePointerUpAt(pointerId, e.button, point.x, point.y, paneModsFromDomEvent(e));
+  return applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
+}
+
+function paneDispatchPointerCancel(e) {
+  if (typeof runner.panePointerCancel !== "function") return null;
+  const pointerId = panePointerIdFromEvent(e);
+  const dispatch = runner.panePointerCancel(pointerId);
+  return applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
+}
+
+function paneDispatchPointerLeave(e) {
+  if (typeof runner.panePointerLeave !== "function") return null;
+  const pointerId = panePointerIdFromEvent(e);
+  const dispatch = runner.panePointerLeave(pointerId);
+  return applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
+}
+
+function paneDispatchLostPointerCapture(e) {
+  if (typeof runner.paneLostPointerCapture !== "function") return null;
+  const pointerId = panePointerIdFromEvent(e);
+  return runner.paneLostPointerCapture(pointerId);
 }
 
 const restoredPaneWorkspace = restorePaneWorkspace();
@@ -743,39 +990,128 @@ window.addEventListener("keyup", (e) => {
 // initiated the drag from the mousedown event.
 let mouseButtonsDown = 0;
 let dragButton = 0;
-
-canvas.addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  canvas.focus();
-  mouseButtonsDown = e.buttons;
-  dragButton = e.button;
-  paneDispatchPointerDown(e);
-  syncPaneOverlayFromRunner();
-  safeTermInput(domMouseToInput(e, "down"));
-});
-canvas.addEventListener("mouseup", (e) => {
-  e.preventDefault();
-  mouseButtonsDown = e.buttons;
-  paneDispatchPointerUp(e);
-  persistPaneWorkspace();
-  syncPaneOverlayFromRunner();
-  safeTermInput(domMouseToInput(e, "up"));
-});
-canvas.addEventListener("mousemove", (e) => {
-  mouseButtonsDown = e.buttons;
-  if (mouseButtonsDown) {
-    // Drag: use the button from the original mousedown (e.button is always 0 on mousemove).
-    const ev = domMouseToInput(e, "drag");
-    ev.button = dragButton;
-    paneDispatchPointerMove(e);
+if ("PointerEvent" in window) {
+  canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    canvas.focus();
+    const pointerId = panePointerIdFromEvent(e);
+    mouseButtonsDown = e.pointerType === "mouse" ? e.buttons : mouseButtonsDown;
+    dragButton = e.pointerType === "mouse" ? e.button : dragButton;
+    const dispatch = paneDispatchPointerDown(e);
+    if (!dispatch || dispatch.accepted !== false) {
+      paneActivePointers.add(pointerId);
+    }
     syncPaneOverlayFromRunner();
-    safeTermInput(ev);
-  } else {
-    safeTermInput(domMouseToInput(e, "move"));
-  }
+    if (e.pointerType === "mouse") {
+      safeTermInput(domMouseToInput(e, "down"));
+    }
+  });
+
+  canvas.addEventListener("pointerup", (e) => {
+    e.preventDefault();
+    const pointerId = panePointerIdFromEvent(e);
+    paneActivePointers.delete(pointerId);
+    if (e.pointerType === "mouse") {
+      mouseButtonsDown = e.buttons;
+    }
+    paneDispatchPointerUp(e);
+    persistPaneWorkspace();
+    syncPaneOverlayFromRunner();
+    if (e.pointerType === "mouse") {
+      safeTermInput(domMouseToInput(e, "up"));
+    }
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    const pointerId = panePointerIdFromEvent(e);
+    if (e.pointerType === "mouse") {
+      mouseButtonsDown = e.buttons;
+      if (mouseButtonsDown) {
+        const ev = domMouseToInput(e, "drag");
+        ev.button = dragButton;
+        if (paneActivePointers.has(pointerId)) {
+          paneDispatchPointerMove(e);
+          syncPaneOverlayFromRunner();
+        }
+        safeTermInput(ev);
+      } else {
+        if (paneActivePointers.has(pointerId)) {
+          paneDispatchPointerMove(e);
+          syncPaneOverlayFromRunner();
+        }
+        safeTermInput(domMouseToInput(e, "move"));
+      }
+      return;
+    }
+
+    if (paneActivePointers.has(pointerId)) {
+      e.preventDefault();
+      paneDispatchPointerMove(e);
+      syncPaneOverlayFromRunner();
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("pointercancel", (e) => {
+    const pointerId = panePointerIdFromEvent(e);
+    paneActivePointers.delete(pointerId);
+    paneDispatchPointerCancel(e);
+    syncPaneOverlayFromRunner();
+  });
+
+  canvas.addEventListener("pointerleave", (e) => {
+    const pointerId = panePointerIdFromEvent(e);
+    if (!paneActivePointers.has(pointerId)) return;
+    paneDispatchPointerLeave(e);
+    syncPaneOverlayFromRunner();
+  });
+
+  canvas.addEventListener("lostpointercapture", (e) => {
+    const pointerId = panePointerIdFromEvent(e);
+    paneActivePointers.delete(pointerId);
+    paneDispatchLostPointerCapture(e);
+    syncPaneOverlayFromRunner();
+  });
+
+  window.addEventListener("pointerup", (e) => {
+    paneActivePointers.delete(panePointerIdFromEvent(e));
+  });
+} else {
+  canvas.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    canvas.focus();
+    mouseButtonsDown = e.buttons;
+    dragButton = e.button;
+    paneDispatchPointerDown(e);
+    syncPaneOverlayFromRunner();
+    safeTermInput(domMouseToInput(e, "down"));
+  });
+  canvas.addEventListener("mouseup", (e) => {
+    e.preventDefault();
+    mouseButtonsDown = e.buttons;
+    paneDispatchPointerUp(e);
+    persistPaneWorkspace();
+    syncPaneOverlayFromRunner();
+    safeTermInput(domMouseToInput(e, "up"));
+  });
+  canvas.addEventListener("mousemove", (e) => {
+    mouseButtonsDown = e.buttons;
+    if (mouseButtonsDown) {
+      const ev = domMouseToInput(e, "drag");
+      ev.button = dragButton;
+      paneDispatchPointerMove(e);
+      syncPaneOverlayFromRunner();
+      safeTermInput(ev);
+    } else {
+      safeTermInput(domMouseToInput(e, "move"));
+    }
+  });
+  window.addEventListener("mouseup", () => { mouseButtonsDown = 0; });
+}
+
+window.addEventListener("blur", () => {
+  mouseButtonsDown = 0;
+  paneActivePointers.clear();
 });
-window.addEventListener("mouseup", () => { mouseButtonsDown = 0; });
-window.addEventListener("blur", () => { mouseButtonsDown = 0; });
 // Suppress context menu on canvas (right-click is forwarded to terminal).
 canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); });
 canvas.addEventListener("wheel", (e) => {
