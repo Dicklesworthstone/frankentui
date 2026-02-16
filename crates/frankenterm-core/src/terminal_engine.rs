@@ -219,7 +219,7 @@ impl TerminalEngine {
                 self.cursor.col = self.cursor.next_tab_stop(self.cols);
                 self.cursor.pending_wrap = false;
             }
-            Action::Backspace => self.cursor.move_left(1),
+            Action::Backspace => self.apply_backspace(),
             Action::Bell => {}
             Action::CursorUp(count) => self.cursor.move_up(count),
             Action::CursorDown(count) => self.cursor.move_down(count, self.rows),
@@ -572,6 +572,31 @@ impl TerminalEngine {
             self.cursor.col += u16::from(written);
             self.cursor.pending_wrap = false;
         }
+    }
+
+    /// Move to the previous grapheme start for C0 backspace semantics.
+    ///
+    /// Wide graphemes occupy a leading + continuation cell. Backspace should
+    /// land on the leading cell, not on the continuation placeholder.
+    fn apply_backspace(&mut self) {
+        let mut target_col = if self.cursor.pending_wrap {
+            self.cursor.col
+        } else if self.cursor.col > 0 {
+            self.cursor.col - 1
+        } else {
+            self.cursor.pending_wrap = false;
+            return;
+        };
+
+        if let Some(cell) = self.grid.cell(self.cursor.row, target_col)
+            && cell.is_wide_continuation()
+            && target_col > 0
+        {
+            target_col -= 1;
+        }
+
+        self.cursor.col = target_col;
+        self.cursor.pending_wrap = false;
     }
 
     /// Attach a combining mark to the cell that was most recently printed.
@@ -933,5 +958,58 @@ mod tests {
         let cont = engine.grid().cell(0, 1).unwrap();
         assert!(cont.is_wide_continuation());
         assert!(!cont.has_combining());
+    }
+
+    #[test]
+    fn backspace_moves_to_wide_grapheme_start() {
+        let mut engine = TerminalEngine::new(10, 1);
+        engine.feed_bytes("A中".as_bytes());
+        assert_eq!(engine.cursor().col, 3);
+
+        engine.feed_bytes(b"\x08");
+        assert_eq!(engine.cursor().col, 1);
+
+        engine.feed_bytes(b"X");
+        let leading = engine.grid().cell(0, 1).expect("leading cell exists");
+        let trailing = engine.grid().cell(0, 2).expect("trailing cell exists");
+        assert_eq!(leading.content(), 'X');
+        assert!(!leading.is_wide());
+        assert_eq!(trailing.content(), ' ');
+        assert!(!trailing.is_wide_continuation());
+    }
+
+    #[test]
+    fn backspace_from_pending_wrap_on_wide_char_targets_leading_cell() {
+        let mut engine = TerminalEngine::new(4, 1);
+        engine.feed_bytes("AB中".as_bytes());
+        assert!(engine.cursor().pending_wrap);
+        assert_eq!(engine.cursor().col, 2);
+
+        engine.feed_bytes(b"\x08");
+        assert_eq!(engine.cursor().col, 2);
+        assert!(!engine.cursor().pending_wrap);
+
+        engine.feed_bytes(b"X");
+        let leading = engine.grid().cell(0, 2).expect("leading cell exists");
+        let trailing = engine.grid().cell(0, 3).expect("trailing cell exists");
+        assert_eq!(leading.content(), 'X');
+        assert!(!leading.is_wide());
+        assert_eq!(trailing.content(), ' ');
+        assert!(!trailing.is_wide_continuation());
+    }
+
+    #[test]
+    fn backspace_after_combining_cluster_overwrites_base_cell() {
+        let mut engine = TerminalEngine::new(10, 1);
+        engine.feed_bytes("Ae\u{0301}".as_bytes());
+        assert_eq!(engine.cursor().col, 2);
+
+        engine.feed_bytes(b"\x08");
+        assert_eq!(engine.cursor().col, 1);
+
+        engine.feed_bytes(b"B");
+        let cell = engine.grid().cell(0, 1).expect("cell exists");
+        assert_eq!(cell.content(), 'B');
+        assert!(!cell.has_combining());
     }
 }
