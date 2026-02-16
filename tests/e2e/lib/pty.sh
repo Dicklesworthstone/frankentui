@@ -205,6 +205,7 @@ rows = int(os.environ.get("PTY_ROWS", "24"))
 resize_delay_ms = int(os.environ.get("PTY_RESIZE_DELAY_MS", "0"))
 resize_cols = os.environ.get("PTY_RESIZE_COLS")
 resize_rows = os.environ.get("PTY_RESIZE_ROWS")
+resize_sequence_raw = os.environ.get("PTY_RESIZE_SEQUENCE", "").strip()
 drain_timeout = float(os.environ.get("PTY_DRAIN_TIMEOUT_MS", "200")) / 1000.0
 terminate_grace = float(os.environ.get("PTY_TERMINATE_GRACE_MS", "300")) / 1000.0
 read_poll = float(os.environ.get("PTY_READ_POLL_MS", "50")) / 1000.0
@@ -253,17 +254,59 @@ except Exception:
 
 start = time.monotonic()
 deadline = start + timeout
-resize_at = None
-resize_done = False
-resize_cols_int = None
-resize_rows_int = None
-if resize_delay_ms > 0 and resize_cols and resize_rows:
+resize_events = []
+
+if resize_sequence_raw:
+    for raw_item in resize_sequence_raw.split(";"):
+        item = raw_item.strip()
+        if not item:
+            continue
+        try:
+            delay_part, size_part = item.split(":", 1)
+            cols_part, rows_part = size_part.lower().split("x", 1)
+            delay_ms = int(delay_part)
+            cols_val = int(cols_part)
+            rows_val = int(rows_part)
+            if delay_ms < 0 or cols_val <= 0 or rows_val <= 0:
+                continue
+            resize_events.append((start + (delay_ms / 1000.0), cols_val, rows_val))
+        except ValueError:
+            continue
+    resize_events.sort(key=lambda event: event[0])
+elif resize_delay_ms > 0 and resize_cols and resize_rows:
     try:
-        resize_cols_int = int(resize_cols)
-        resize_rows_int = int(resize_rows)
-        resize_at = start + (resize_delay_ms / 1000.0)
+        resize_events.append(
+            (
+                start + (resize_delay_ms / 1000.0),
+                int(resize_cols),
+                int(resize_rows),
+            )
+        )
     except ValueError:
-        resize_at = None
+        resize_events = []
+
+def apply_resize(target_cols: int, target_rows: int) -> None:
+    try:
+        import fcntl
+        import struct
+        import termios
+
+        winsize = struct.pack("HHHH", target_rows, target_cols, 0, 0)
+        try:
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+        except Exception:
+            pass
+        if slave_fd_open is not None:
+            try:
+                fcntl.ioctl(slave_fd_open, termios.TIOCSWINSZ, winsize)
+            except Exception:
+                pass
+        try:
+            os.killpg(proc.pid, signal.SIGWINCH)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 def _preexec_setup_controlling_tty() -> None:
     # `pty.openpty()` alone does not guarantee `/dev/tty` is available in the
@@ -309,30 +352,9 @@ try:
             except OSError:
                 pass
 
-        if resize_at is not None and (not resize_done) and now >= resize_at:
-            if resize_cols_int and resize_rows_int:
-                try:
-                    import fcntl
-                    import struct
-                    import termios
-
-                    winsize = struct.pack("HHHH", resize_rows_int, resize_cols_int, 0, 0)
-                    try:
-                        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-                    except Exception:
-                        pass
-                    if slave_fd_open is not None:
-                        try:
-                            fcntl.ioctl(slave_fd_open, termios.TIOCSWINSZ, winsize)
-                        except Exception:
-                            pass
-                    try:
-                        os.killpg(proc.pid, signal.SIGWINCH)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-            resize_done = True
+        while resize_events and now >= resize_events[0][0]:
+            _, next_cols, next_rows = resize_events.pop(0)
+            apply_resize(next_cols, next_rows)
 
         if terminate_at is None and now >= deadline:
             terminate_at = now + terminate_grace

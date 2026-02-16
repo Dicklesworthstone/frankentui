@@ -779,6 +779,7 @@ impl RunnerCore {
 
         match active.mode {
             PaneGestureMode::Resize(grip) => {
+                self.preview_state = PanePreviewState::default();
                 if self.selection.selected.len() > 1
                     && self.selection.selected.contains(&active.leaf)
                 {
@@ -841,6 +842,8 @@ impl RunnerCore {
                             zone: Some(preview_plan.preview.zone),
                             ghost_rect: Some(preview_plan.preview.ghost_rect),
                         };
+                    } else {
+                        self.preview_state = PanePreviewState::default();
                     }
                     if committed {
                         let Ok(plan) = self.layout_tree.plan_group_move(
@@ -851,6 +854,7 @@ impl RunnerCore {
                             inertial,
                             PANE_MAGNETIC_FIELD_CELLS,
                         ) else {
+                            self.preview_state = PanePreviewState::default();
                             return;
                         };
                         let _ = self.apply_operations_with_timeline(
@@ -869,6 +873,7 @@ impl RunnerCore {
                         inertial,
                         PANE_MAGNETIC_FIELD_CELLS,
                     ) else {
+                        self.preview_state = PanePreviewState::default();
                         return;
                     };
                     self.preview_state = PanePreviewState {

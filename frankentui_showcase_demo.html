@@ -146,6 +146,7 @@ const loadingBar     = document.getElementById("loading-bar");
 const paneGhost      = document.getElementById("pane-ghost");
 const PANE_POINTER_ID = 1;
 const PANE_WORKSPACE_KEY = "ftui-pane-workspace-v1";
+let paneWorkspaceToken = "";
 
 function showError(msg) {
   errorDiv.textContent = msg;
@@ -325,6 +326,14 @@ function paneStateSnapshot() {
   return null;
 }
 
+function paneWorkspaceSnapshotToken(state) {
+  if (!state) return "";
+  const layoutHash = state.layout_hash ?? "";
+  const timelineCursor = state.timeline_cursor ?? "";
+  const timelineLength = state.timeline_length ?? "";
+  return `${layoutHash}:${timelineCursor}:${timelineLength}`;
+}
+
 function renderPaneGhost(state) {
   if (!state || !state.ghost_rect) {
     paneGhost.style.display = "none";
@@ -359,21 +368,35 @@ function syncPaneOverlayFromRunner() {
   const state = paneStateSnapshot();
   renderPaneGhost(state);
   updatePaneStatusSuffix(state);
+  persistPaneWorkspaceIfChanged(state);
+  return state;
 }
 
-function persistPaneWorkspace() {
+function persistPaneWorkspace(state) {
   if (typeof runner.paneExportWorkspaceSnapshot !== "function") return;
   const snapshot = runner.paneExportWorkspaceSnapshot();
   if (snapshot) {
     localStorage.setItem(PANE_WORKSPACE_KEY, snapshot);
+    const tokenState = state || paneStateSnapshot();
+    paneWorkspaceToken = paneWorkspaceSnapshotToken(tokenState);
   }
+}
+
+function persistPaneWorkspaceIfChanged(state) {
+  const token = paneWorkspaceSnapshotToken(state);
+  if (!token || token === paneWorkspaceToken) return;
+  persistPaneWorkspace(state);
 }
 
 function restorePaneWorkspace() {
   if (typeof runner.paneImportWorkspaceSnapshot !== "function") return false;
   const snapshot = localStorage.getItem(PANE_WORKSPACE_KEY);
   if (!snapshot) return false;
-  return runner.paneImportWorkspaceSnapshot(snapshot);
+  const restored = runner.paneImportWorkspaceSnapshot(snapshot);
+  if (restored) {
+    paneWorkspaceToken = paneWorkspaceSnapshotToken(paneStateSnapshot());
+  }
+  return restored;
 }
 
 function paneModsFromDomEvent(e) {

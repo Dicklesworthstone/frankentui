@@ -51,3 +51,7 @@ harness = false
 [[bench]]
 name = "cache_bench"
 harness = false
+
+[[bench]]
+name = "shaped_render_bench"
+harness = false

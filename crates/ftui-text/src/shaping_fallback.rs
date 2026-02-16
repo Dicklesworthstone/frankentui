@@ -221,6 +221,11 @@ impl<S: TextShaper> ShapingFallback<S> {
             return (ShapedLineLayout::from_text(""), FallbackEvent::NoopUsed);
         }
 
+        // No primary shaper available — use NoopShaper directly.
+        let Some(shaper) = &self.primary else {
+            return (ShapedLineLayout::from_text(text), FallbackEvent::NoopUsed);
+        };
+
         // Check if the current tier requires shaping.
         let effective_tier = self.capabilities.best_tier();
         if effective_tier < self.shaping_tier {
@@ -230,8 +235,8 @@ impl<S: TextShaper> ShapingFallback<S> {
             );
         }
 
-        // Try primary shaper if available.
-        if let Some(shaper) = &self.primary {
+        // Try shaping with the primary shaper.
+        {
             let run = shaper.shape(text, script, direction, &self.features);
 
             if self.validate_output
@@ -249,14 +254,11 @@ impl<S: TextShaper> ShapingFallback<S> {
                 );
             }
 
-            return (
+            (
                 ShapedLineLayout::from_run(text, &run),
                 FallbackEvent::ShapedSuccessfully,
-            );
+            )
         }
-
-        // No primary shaper available — use NoopShaper.
-        (ShapedLineLayout::from_text(text), FallbackEvent::NoopUsed)
     }
 
     /// Shape multiple lines with fallback, collecting stats.
@@ -364,9 +366,9 @@ mod tests {
         let (layout, event) = fb.shape_line("Hello", Script::Latin, RunDirection::Ltr);
 
         assert_eq!(layout.total_cells(), 5);
-        // With TERMINAL capabilities, best_tier is Fast which may be below shaping_tier.
-        // Default shaping_tier is Balanced, TERMINAL best_tier is Fast → skipped.
-        assert_eq!(event, FallbackEvent::SkippedByPolicy);
+        // TERMINAL best_tier is Balanced, shaping_tier is Balanced → tier check passes,
+        // NoopShaper shapes successfully.
+        assert_eq!(event, FallbackEvent::ShapedSuccessfully);
     }
 
     #[test]

@@ -341,6 +341,7 @@ if $RUN_TERMINAL; then
     run_step "pane_layout_semantic_replay_harness" "terminal" "${CARGO_RUNNER[@]}" test -p ftui-layout --test pane_semantic_replay_harness -- --nocapture || true
 
     if [[ "$MODE" != "smoke" ]]; then
+        run_step "pane_terminal_layout_resize_thrash" "terminal" env LAYOUT_RESIZE_PROFILE=thrash bash "$PROJECT_ROOT/tests/e2e/scripts/test_layout_composer_resize.sh" || true
         run_step "pane_terminal_action_timeline_full" "terminal" bash "$PROJECT_ROOT/tests/e2e/scripts/test_action_timeline.sh" || true
     fi
 
