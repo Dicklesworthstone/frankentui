@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use ftui_core::geometry::Rect;
+use ftui_core::geometry::{Rect, Sides};
 use serde::{Deserialize, Serialize};
 
 /// Current pane tree schema version.
@@ -483,6 +483,22 @@ impl PaneLayout {
         classify_resize_grip(rect, pointer, inset_cells)
     }
 
+    /// Default visual pane rectangle with baseline margin and padding applied.
+    ///
+    /// This provides Tailwind-like breathing room around pane content by
+    /// default while remaining deterministic and constraint-safe.
+    #[must_use]
+    pub fn visual_rect(&self, node_id: PaneId) -> Option<Rect> {
+        let rect = self.rect(node_id)?;
+        let with_margin = rect.inner(Sides::all(PANE_DEFAULT_MARGIN_CELLS));
+        let with_padding = with_margin.inner(Sides::all(PANE_DEFAULT_PADDING_CELLS));
+        if with_padding.width == 0 || with_padding.height == 0 {
+            Some(with_margin)
+        } else {
+            Some(with_padding)
+        }
+    }
+
     /// Compute the outer bounding box of a pane cluster in layout space.
     #[must_use]
     pub fn cluster_bounds(&self, nodes: &BTreeSet<PaneId>) -> Option<Rect> {
@@ -522,6 +538,12 @@ pub const PANE_MAGNETIC_FIELD_CELLS: f64 = 6.0;
 
 /// Default inset from pane edges used to classify edge/corner grips.
 pub const PANE_EDGE_GRIP_INSET_CELLS: f64 = 1.5;
+
+/// Default pane margin in cell units.
+pub const PANE_DEFAULT_MARGIN_CELLS: u16 = 1;
+
+/// Default pane padding in cell units.
+pub const PANE_DEFAULT_PADDING_CELLS: u16 = 1;
 
 /// Docking zones for magnetic insertion previews.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -8065,6 +8087,20 @@ mod tests {
         tree.apply_edge_resize_plan(901, &plan)
             .expect("edge resize plan should apply");
         assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn pane_layout_visual_rect_applies_default_margin_and_padding() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 120, 48))
+            .expect("layout should solve");
+        let raw = layout.rect(id(2)).expect("leaf rect exists");
+        let visual = layout.visual_rect(id(2)).expect("visual rect exists");
+        assert!(visual.width <= raw.width);
+        assert!(visual.height <= raw.height);
+        assert!(visual.width > 0);
+        assert!(visual.height > 0);
     }
 
     #[test]

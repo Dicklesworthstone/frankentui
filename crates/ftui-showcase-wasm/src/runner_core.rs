@@ -9,7 +9,12 @@ use core::time::Duration;
 
 use ftui_demo_showcase::app::AppModel;
 use ftui_layout::{
-    PaneModifierSnapshot, PanePointerButton, PanePointerPosition, PaneResizeTarget, SplitAxis,
+    PANE_EDGE_GRIP_INSET_CELLS, PANE_MAGNETIC_FIELD_CELLS, PaneDockZone, PaneDragResizeEffect,
+    PaneId, PaneInteractionTimeline, PaneLayoutIntelligenceMode, PaneLeaf, PaneModifierSnapshot,
+    PaneMotionVector, PaneNodeKind, PaneOperation, PanePlacement, PanePointerButton,
+    PanePointerPosition, PanePressureSnapProfile, PaneResizeGrip, PaneResizeTarget,
+    PaneSelectionState, PaneSplitRatio, PaneTree, Rect, Sides, SplitAxis, WorkspaceMetadata,
+    WorkspaceSnapshot,
 };
 use ftui_web::pane_pointer_capture::{
     PanePointerCaptureAdapter, PanePointerCaptureCommand, PanePointerCaptureConfig,
@@ -38,11 +43,59 @@ pub struct RunnerCore {
     pane_adapter: PanePointerCaptureAdapter,
     /// Structured pane interaction logs (kept separate from presenter output logs).
     pane_logs: Vec<String>,
+    /// Interactive pane topology model used for advanced pane semantics.
+    layout_tree: PaneTree,
+    /// Persistent structural timeline for undo/redo/replay.
+    timeline: PaneInteractionTimeline,
+    /// Current multi-pane selection cluster.
+    selection: PaneSelectionState,
+    /// Active drag gesture context.
+    active_gesture: Option<ActivePaneGesture>,
+    /// Current magnetic docking / ghost preview state.
+    preview_state: PanePreviewState,
+    /// Deterministic operation id source for pane operations.
+    next_operation_id: u64,
+    /// Active adaptive intelligence mode.
+    intelligence_mode: PaneLayoutIntelligenceMode,
+    /// Monotonic workspace generation used in persisted snapshots.
+    workspace_generation: u64,
 }
 
 const PATCH_HASH_ALGO: &str = "fnv1a64";
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
+const DEFAULT_PANE_MARGIN_CELLS: u16 = 1;
+const DEFAULT_PANE_PADDING_CELLS: u16 = 1;
+const DEFAULT_SPRING_BLEND_BPS: u16 = 3_500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneGestureMode {
+    Move,
+    Resize(PaneResizeGrip),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActivePaneGesture {
+    pointer_id: u32,
+    leaf: PaneId,
+    mode: PaneGestureMode,
+}
+
+/// Live preview metadata consumed by WASM/host renderers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PanePreviewState {
+    pub source: Option<PaneId>,
+    pub target: Option<PaneId>,
+    pub zone: Option<PaneDockZone>,
+    pub ghost_rect: Option<Rect>,
+}
+
+/// Lightweight timeline status for host HUD updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneTimelineStatus {
+    pub cursor: usize,
+    pub len: usize,
+}
 
 /// Host-facing outcome category for one pane lifecycle dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +127,7 @@ impl RunnerCore {
     /// Create a new runner with the given initial terminal dimensions.
     pub fn new(cols: u16, rows: u16) -> Self {
         let model = AppModel::default();
+        let layout_tree = default_layout_tree();
         Self {
             inner: StepProgram::new(model, cols, rows),
             cached_patch_hash: None,
@@ -84,6 +138,14 @@ impl RunnerCore {
             pane_adapter: PanePointerCaptureAdapter::new(PanePointerCaptureConfig::default())
                 .expect("default pane pointer adapter config should be valid"),
             pane_logs: Vec::new(),
+            timeline: PaneInteractionTimeline::with_baseline(&layout_tree),
+            layout_tree,
+            selection: PaneSelectionState::default(),
+            active_gesture: None,
+            preview_state: PanePreviewState::default(),
+            next_operation_id: 1,
+            intelligence_mode: PaneLayoutIntelligenceMode::Focus,
+            workspace_generation: 0,
         }
     }
 
@@ -124,6 +186,7 @@ impl RunnerCore {
     /// Resize the terminal. Pushes a `Resize` event processed on the next step.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.inner.resize(cols, rows);
+        self.preview_state = PanePreviewState::default();
     }
 
     /// Process pending events and render if dirty.
@@ -228,6 +291,207 @@ impl RunnerCore {
         self.pane_adapter.active_pointer_id()
     }
 
+    /// Current live magnetic-docking ghost preview.
+    #[must_use]
+    pub const fn pane_preview_state(&self) -> PanePreviewState {
+        self.preview_state
+    }
+
+    /// Current timeline cursor/length summary.
+    #[must_use]
+    pub fn pane_timeline_status(&self) -> PaneTimelineStatus {
+        PaneTimelineStatus {
+            cursor: self.timeline.cursor,
+            len: self.timeline.entries.len(),
+        }
+    }
+
+    /// Selected pane IDs in deterministic order.
+    #[must_use]
+    pub fn pane_selected_ids(&self) -> Vec<u64> {
+        self.selection
+            .as_sorted_vec()
+            .into_iter()
+            .map(PaneId::get)
+            .collect()
+    }
+
+    /// Deterministic hash of the current pane topology.
+    #[must_use]
+    pub fn pane_layout_hash(&self) -> u64 {
+        self.layout_tree.state_hash()
+    }
+
+    /// Primary pane id used as default focus target for adaptive modes.
+    #[must_use]
+    pub fn pane_primary_id(&self) -> Option<u64> {
+        self.selection
+            .anchor
+            .or_else(|| {
+                self.layout_tree
+                    .nodes()
+                    .find_map(|node| matches!(node.kind, PaneNodeKind::Leaf(_)).then_some(node.id))
+            })
+            .map(PaneId::get)
+    }
+
+    /// Export pane tree + timeline snapshot as canonical JSON.
+    pub fn export_workspace_snapshot_json(&self) -> Result<String, String> {
+        let mut metadata = WorkspaceMetadata::new("showcase-runner");
+        metadata.saved_generation = self.workspace_generation;
+        let mut snapshot = WorkspaceSnapshot::new(self.layout_tree.to_snapshot(), metadata);
+        snapshot.interaction_timeline = self.timeline.clone();
+        snapshot.active_pane_id = self.selection.anchor;
+        snapshot
+            .validate()
+            .map_err(|err| format!("workspace snapshot validation failed: {err}"))?;
+        serde_json::to_string(&snapshot)
+            .map_err(|err| format!("workspace snapshot encode failed: {err}"))
+    }
+
+    /// Restore pane tree + timeline from a previously exported JSON snapshot.
+    pub fn import_workspace_snapshot_json(&mut self, json: &str) -> Result<(), String> {
+        let snapshot: WorkspaceSnapshot = serde_json::from_str(json)
+            .map_err(|err| format!("workspace snapshot parse failed: {err}"))?;
+        snapshot
+            .validate()
+            .map_err(|err| format!("workspace snapshot invalid: {err}"))?;
+        self.layout_tree = PaneTree::from_snapshot(snapshot.pane_tree.clone())
+            .map_err(|err| format!("pane tree restore failed: {err}"))?;
+        self.timeline = snapshot.interaction_timeline;
+        if self.timeline.baseline.is_none() {
+            self.timeline = PaneInteractionTimeline::with_baseline(&self.layout_tree);
+        }
+        self.selection = PaneSelectionState::default();
+        if let Some(anchor) = snapshot.active_pane_id {
+            self.selection.anchor = Some(anchor);
+            let _ = self.selection.selected.insert(anchor);
+        }
+        self.preview_state = PanePreviewState::default();
+        self.active_gesture = None;
+        self.workspace_generation = snapshot.metadata.saved_generation;
+        Ok(())
+    }
+
+    /// Undo one pane structural mutation from the timeline.
+    pub fn pane_undo(&mut self) -> bool {
+        match self.timeline.undo(&mut self.layout_tree) {
+            Ok(changed) => {
+                if changed {
+                    self.workspace_generation = self.workspace_generation.saturating_add(1);
+                    self.preview_state = PanePreviewState::default();
+                }
+                changed
+            }
+            Err(err) => {
+                self.pane_logs
+                    .push(format!("pane_timeline undo error: {err}"));
+                false
+            }
+        }
+    }
+
+    /// Redo one pane structural mutation from the timeline.
+    pub fn pane_redo(&mut self) -> bool {
+        match self.timeline.redo(&mut self.layout_tree) {
+            Ok(changed) => {
+                if changed {
+                    self.workspace_generation = self.workspace_generation.saturating_add(1);
+                    self.preview_state = PanePreviewState::default();
+                }
+                changed
+            }
+            Err(err) => {
+                self.pane_logs
+                    .push(format!("pane_timeline redo error: {err}"));
+                false
+            }
+        }
+    }
+
+    /// Deterministically rebuild pane topology from timeline baseline + cursor.
+    pub fn pane_replay(&mut self) -> bool {
+        match self.timeline.replay() {
+            Ok(tree) => {
+                self.layout_tree = tree;
+                self.workspace_generation = self.workspace_generation.saturating_add(1);
+                self.preview_state = PanePreviewState::default();
+                self.active_gesture = None;
+                true
+            }
+            Err(err) => {
+                self.pane_logs
+                    .push(format!("pane_timeline replay error: {err}"));
+                false
+            }
+        }
+    }
+
+    /// Apply one adaptive layout intelligence mode transition.
+    pub fn pane_apply_intelligence_mode(
+        &mut self,
+        mode: PaneLayoutIntelligenceMode,
+        primary: PaneId,
+    ) -> bool {
+        let operations = match self.layout_tree.plan_intelligence_mode(mode, primary) {
+            Ok(operations) => operations,
+            Err(err) => {
+                self.pane_logs
+                    .push(format!("pane_intelligence mode_plan_error: {err}"));
+                return false;
+            }
+        };
+        self.intelligence_mode = mode;
+        let pressure = PanePressureSnapProfile {
+            strength_bps: 8_000,
+            hysteresis_bps: 320,
+        };
+        let applied = self.apply_operations_with_timeline(0, &operations, pressure, true);
+        applied > 0
+    }
+
+    /// Auto-targeted pointer-down from host coordinates (no split-id required).
+    pub fn pane_pointer_down_at(
+        &mut self,
+        pointer_id: u32,
+        button: PanePointerButton,
+        x: i32,
+        y: i32,
+        modifiers: PaneModifierSnapshot,
+    ) -> PaneDispatchSummary {
+        let pointer = PanePointerPosition::new(x, y);
+        let target = self
+            .prepare_auto_pointer_down(pointer_id, pointer, modifiers)
+            .unwrap_or(PaneResizeTarget {
+                split_id: self.layout_tree.root(),
+                axis: SplitAxis::Horizontal,
+            });
+        self.pane_pointer_down(target, pointer_id, button, x, y, modifiers)
+    }
+
+    /// Auto-targeted pointer-move from host coordinates.
+    pub fn pane_pointer_move_at(
+        &mut self,
+        pointer_id: u32,
+        x: i32,
+        y: i32,
+        modifiers: PaneModifierSnapshot,
+    ) -> PaneDispatchSummary {
+        self.pane_pointer_move(pointer_id, x, y, modifiers)
+    }
+
+    /// Auto-targeted pointer-up from host coordinates.
+    pub fn pane_pointer_up_at(
+        &mut self,
+        pointer_id: u32,
+        button: PanePointerButton,
+        x: i32,
+        y: i32,
+        modifiers: PaneModifierSnapshot,
+    ) -> PaneDispatchSummary {
+        self.pane_pointer_up(pointer_id, button, x, y, modifiers)
+    }
+
     /// Handle pane pointer-down and emit capture command if needed.
     pub fn pane_pointer_down(
         &mut self,
@@ -238,6 +502,19 @@ impl RunnerCore {
         y: i32,
         modifiers: PaneModifierSnapshot,
     ) -> PaneDispatchSummary {
+        if self.active_gesture.is_none() {
+            let pointer = PanePointerPosition::new(x, y);
+            if let Some(leaf) = self.leaf_at_pointer(pointer) {
+                self.active_gesture = Some(ActivePaneGesture {
+                    pointer_id,
+                    leaf,
+                    mode: PaneGestureMode::Move,
+                });
+                if !modifiers.shift {
+                    self.set_single_selection(leaf);
+                }
+            }
+        }
         let dispatch = self.pane_adapter.pointer_down(
             target,
             pointer_id,
@@ -321,6 +598,353 @@ impl RunnerCore {
         self.record_pane_dispatch(dispatch)
     }
 
+    fn viewport_rect(&self) -> Rect {
+        let (width, height) = self.inner.size();
+        Rect::new(0, 0, width.max(1), height.max(1))
+    }
+
+    fn decorated_pane_rect(rect: Rect) -> Rect {
+        let margin = rect.inner(Sides::all(DEFAULT_PANE_MARGIN_CELLS));
+        let padded = margin.inner(Sides::all(DEFAULT_PANE_PADDING_CELLS));
+        if padded.width == 0 || padded.height == 0 {
+            margin
+        } else {
+            padded
+        }
+    }
+
+    fn leaf_at_pointer(&self, pointer: PanePointerPosition) -> Option<PaneId> {
+        let x = u16::try_from(pointer.x).ok()?;
+        let y = u16::try_from(pointer.y).ok()?;
+        let layout = self.layout_tree.solve(self.viewport_rect()).ok()?;
+        let mut best: Option<(PaneId, u32)> = None;
+        for (node_id, rect) in layout.iter() {
+            let Some(node) = self.layout_tree.node(node_id) else {
+                continue;
+            };
+            if !matches!(node.kind, PaneNodeKind::Leaf(_)) {
+                continue;
+            }
+            let visual = Self::decorated_pane_rect(rect);
+            if !visual.contains(x, y) {
+                continue;
+            }
+            let area = u32::from(visual.width) * u32::from(visual.height);
+            match best {
+                Some((_, best_area)) if best_area <= area => {}
+                _ => best = Some((node_id, area)),
+            }
+        }
+        best.map(|(node_id, _)| node_id)
+    }
+
+    fn nearest_axis_split_for_node(&self, node: PaneId, axis: SplitAxis) -> Option<PaneId> {
+        let mut cursor = Some(node);
+        while let Some(node_id) = cursor {
+            let parent_id = self.layout_tree.node(node_id)?.parent?;
+            let parent = self.layout_tree.node(parent_id)?;
+            if let PaneNodeKind::Split(split) = &parent.kind
+                && split.axis == axis
+            {
+                return Some(parent_id);
+            }
+            cursor = Some(parent_id);
+        }
+        None
+    }
+
+    fn nearest_split_for_node(&self, node: PaneId) -> Option<PaneId> {
+        let mut cursor = Some(node);
+        while let Some(node_id) = cursor {
+            let parent_id = self.layout_tree.node(node_id)?.parent?;
+            let parent = self.layout_tree.node(parent_id)?;
+            if matches!(parent.kind, PaneNodeKind::Split(_)) {
+                return Some(parent_id);
+            }
+            cursor = Some(parent_id);
+        }
+        None
+    }
+
+    fn set_single_selection(&mut self, pane_id: PaneId) {
+        self.selection.selected.clear();
+        let _ = self.selection.selected.insert(pane_id);
+        self.selection.anchor = Some(pane_id);
+    }
+
+    fn grip_primary_axis(grip: PaneResizeGrip) -> SplitAxis {
+        match grip {
+            PaneResizeGrip::Left
+            | PaneResizeGrip::Right
+            | PaneResizeGrip::TopLeft
+            | PaneResizeGrip::TopRight
+            | PaneResizeGrip::BottomLeft
+            | PaneResizeGrip::BottomRight => SplitAxis::Horizontal,
+            PaneResizeGrip::Top | PaneResizeGrip::Bottom => SplitAxis::Vertical,
+        }
+    }
+
+    fn prepare_auto_pointer_down(
+        &mut self,
+        pointer_id: u32,
+        pointer: PanePointerPosition,
+        modifiers: PaneModifierSnapshot,
+    ) -> Option<PaneResizeTarget> {
+        let layout = self.layout_tree.solve(self.viewport_rect()).ok()?;
+        let leaf = self.leaf_at_pointer(pointer)?;
+
+        if modifiers.shift {
+            self.selection.shift_toggle(leaf);
+            if self.selection.anchor.is_none() {
+                self.selection.anchor = Some(leaf);
+            }
+        } else if !(self.selection.selected.contains(&leaf) && self.selection.selected.len() > 1) {
+            self.set_single_selection(leaf);
+        }
+
+        let grip = layout.classify_resize_grip(leaf, pointer, PANE_EDGE_GRIP_INSET_CELLS);
+        let mode = grip.map_or(PaneGestureMode::Move, PaneGestureMode::Resize);
+        let axis = grip.map_or(SplitAxis::Horizontal, Self::grip_primary_axis);
+        let split_id = self
+            .nearest_axis_split_for_node(leaf, axis)
+            .or_else(|| self.nearest_split_for_node(leaf))
+            .unwrap_or(self.layout_tree.root());
+
+        self.active_gesture = Some(ActivePaneGesture {
+            pointer_id,
+            leaf,
+            mode,
+        });
+        self.preview_state = PanePreviewState::default();
+
+        Some(PaneResizeTarget { split_id, axis })
+    }
+
+    fn apply_pane_dispatch_semantics(&mut self, dispatch: &PanePointerDispatch) {
+        let Some(transition) = dispatch.transition.as_ref() else {
+            return;
+        };
+        let sequence = transition.sequence;
+        match transition.effect {
+            PaneDragResizeEffect::DragStarted { current, .. }
+            | PaneDragResizeEffect::DragUpdated { current, .. } => {
+                self.apply_drag_semantics(sequence, current, dispatch, false);
+            }
+            PaneDragResizeEffect::Committed { end, .. } => {
+                self.apply_drag_semantics(sequence, end, dispatch, true);
+                self.active_gesture = None;
+                self.preview_state = PanePreviewState::default();
+            }
+            PaneDragResizeEffect::Canceled { .. } => {
+                self.active_gesture = None;
+                self.preview_state = PanePreviewState::default();
+            }
+            PaneDragResizeEffect::Noop { .. }
+            | PaneDragResizeEffect::Armed { .. }
+            | PaneDragResizeEffect::KeyboardApplied { .. }
+            | PaneDragResizeEffect::WheelApplied { .. } => {}
+        }
+    }
+
+    fn apply_drag_semantics(
+        &mut self,
+        sequence: u64,
+        pointer: PanePointerPosition,
+        dispatch: &PanePointerDispatch,
+        committed: bool,
+    ) {
+        let Some(active) = self.active_gesture else {
+            return;
+        };
+        if dispatch.log.pointer_id != Some(active.pointer_id) {
+            return;
+        }
+        let pressure = dispatch
+            .pressure_snap_profile()
+            .unwrap_or(PanePressureSnapProfile {
+                strength_bps: 4_000,
+                hysteresis_bps: 240,
+            });
+        let motion = dispatch
+            .motion
+            .unwrap_or_else(|| PaneMotionVector::from_delta(0, 0, 16, 0));
+        let Ok(layout) = self.layout_tree.solve(self.viewport_rect()) else {
+            return;
+        };
+
+        match active.mode {
+            PaneGestureMode::Resize(grip) => {
+                if self.selection.selected.len() > 1
+                    && self.selection.selected.contains(&active.leaf)
+                {
+                    let Ok(plan) = self.layout_tree.plan_group_resize(
+                        &self.selection,
+                        &layout,
+                        grip,
+                        pointer,
+                        pressure,
+                    ) else {
+                        return;
+                    };
+                    let _ = self.apply_operations_with_timeline(
+                        sequence,
+                        &plan.operations,
+                        pressure,
+                        true,
+                    );
+                } else {
+                    let Ok(plan) = self.layout_tree.plan_edge_resize(
+                        active.leaf,
+                        &layout,
+                        grip,
+                        pointer,
+                        pressure,
+                    ) else {
+                        return;
+                    };
+                    let _ = self.apply_operations_with_timeline(
+                        sequence,
+                        &plan.operations,
+                        pressure,
+                        true,
+                    );
+                }
+            }
+            PaneGestureMode::Move => {
+                let projected_pointer = if committed {
+                    dispatch.projected_position.unwrap_or(pointer)
+                } else {
+                    pointer
+                };
+                let inertial = committed.then_some(dispatch.inertial_throw).flatten();
+
+                if self.selection.selected.len() > 1
+                    && self.selection.selected.contains(&active.leaf)
+                {
+                    let anchor = self.selection.anchor.unwrap_or(active.leaf);
+                    if let Ok(preview_plan) = self.layout_tree.plan_reflow_move_with_preview(
+                        anchor,
+                        &layout,
+                        pointer,
+                        motion,
+                        inertial,
+                        PANE_MAGNETIC_FIELD_CELLS,
+                    ) {
+                        self.preview_state = PanePreviewState {
+                            source: Some(anchor),
+                            target: Some(preview_plan.preview.target),
+                            zone: Some(preview_plan.preview.zone),
+                            ghost_rect: Some(preview_plan.preview.ghost_rect),
+                        };
+                    }
+                    if committed {
+                        let Ok(plan) = self.layout_tree.plan_group_move(
+                            &self.selection,
+                            &layout,
+                            projected_pointer,
+                            motion,
+                            inertial,
+                            PANE_MAGNETIC_FIELD_CELLS,
+                        ) else {
+                            return;
+                        };
+                        let _ = self.apply_operations_with_timeline(
+                            sequence,
+                            &plan.operations,
+                            pressure,
+                            false,
+                        );
+                    }
+                } else {
+                    let Ok(plan) = self.layout_tree.plan_reflow_move_with_preview(
+                        active.leaf,
+                        &layout,
+                        pointer,
+                        motion,
+                        inertial,
+                        PANE_MAGNETIC_FIELD_CELLS,
+                    ) else {
+                        return;
+                    };
+                    self.preview_state = PanePreviewState {
+                        source: Some(active.leaf),
+                        target: Some(plan.preview.target),
+                        zone: Some(plan.preview.zone),
+                        ghost_rect: Some(plan.preview.ghost_rect),
+                    };
+                    if committed {
+                        let _ = self.apply_operations_with_timeline(
+                            sequence,
+                            &plan.operations,
+                            pressure,
+                            false,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_operations_with_timeline(
+        &mut self,
+        sequence: u64,
+        operations: &[PaneOperation],
+        pressure: PanePressureSnapProfile,
+        spring_blend: bool,
+    ) -> usize {
+        let mut applied = 0usize;
+        for operation in operations {
+            let operation = self.spring_adjust_operation(operation.clone(), pressure, spring_blend);
+            let operation_id = self.next_operation_id();
+            if self
+                .timeline
+                .apply_and_record(&mut self.layout_tree, sequence, operation_id, operation)
+                .is_ok()
+            {
+                applied = applied.saturating_add(1);
+            }
+        }
+        if applied > 0 {
+            self.workspace_generation = self.workspace_generation.saturating_add(1);
+        }
+        applied
+    }
+
+    fn spring_adjust_operation(
+        &self,
+        operation: PaneOperation,
+        pressure: PanePressureSnapProfile,
+        spring_blend: bool,
+    ) -> PaneOperation {
+        if !spring_blend {
+            return operation;
+        }
+        let PaneOperation::SetSplitRatio { split, ratio } = operation else {
+            return operation;
+        };
+        let Some(node) = self.layout_tree.node(split) else {
+            return PaneOperation::SetSplitRatio { split, ratio };
+        };
+        let PaneNodeKind::Split(split_node) = &node.kind else {
+            return PaneOperation::SetSplitRatio { split, ratio };
+        };
+        let current = ratio_to_bps(split_node.ratio);
+        let target = ratio_to_bps(ratio);
+        let spring_bps = (u32::from(DEFAULT_SPRING_BLEND_BPS)
+            + (u32::from(pressure.strength_bps) / 3))
+            .clamp(1_500, 9_000) as u16;
+        let blended = blend_bps(current, target, spring_bps);
+        let denominator = 10_000_u32.saturating_sub(u32::from(blended)).max(1);
+        let ratio = PaneSplitRatio::new(u32::from(blended.max(1)), denominator).unwrap_or(ratio);
+        PaneOperation::SetSplitRatio { split, ratio }
+    }
+
+    fn next_operation_id(&mut self) -> u64 {
+        let operation_id = self.next_operation_id;
+        self.next_operation_id = self.next_operation_id.saturating_add(1);
+        operation_id
+    }
+
     fn refresh_cached_patch_meta_from_live_outputs(&mut self) {
         let outputs = self.inner.outputs();
         // Invalidate heavy hash cache on each newly rendered frame. Compute only
@@ -332,6 +956,7 @@ impl RunnerCore {
     }
 
     fn record_pane_dispatch(&mut self, dispatch: PanePointerDispatch) -> PaneDispatchSummary {
+        self.apply_pane_dispatch_semantics(&dispatch);
         let summary = PaneDispatchSummary {
             phase: dispatch.log.phase,
             sequence: dispatch.log.sequence,
@@ -349,6 +974,79 @@ impl RunnerCore {
         self.pane_logs.push(format_pane_log_entry(dispatch.log));
         summary
     }
+}
+
+fn leaf_id_for_key(tree: &PaneTree, key: &str) -> Option<PaneId> {
+    tree.nodes().find_map(|node| match &node.kind {
+        PaneNodeKind::Leaf(leaf) if leaf.surface_key == key => Some(node.id),
+        _ => None,
+    })
+}
+
+fn default_layout_tree() -> PaneTree {
+    let mut tree = PaneTree::singleton("pane-1");
+    let ratio = PaneSplitRatio::new(1, 1).expect("1:1 split ratio must be valid");
+    let root_leaf = tree.root();
+    let _ = tree
+        .apply_operation(
+            1,
+            PaneOperation::SplitLeaf {
+                target: root_leaf,
+                axis: SplitAxis::Horizontal,
+                ratio,
+                placement: PanePlacement::ExistingFirst,
+                new_leaf: PaneLeaf::new("pane-2"),
+            },
+        )
+        .expect("default layout root split should succeed");
+
+    if let Some(left_leaf) = leaf_id_for_key(&tree, "pane-1") {
+        let _ = tree
+            .apply_operation(
+                2,
+                PaneOperation::SplitLeaf {
+                    target: left_leaf,
+                    axis: SplitAxis::Vertical,
+                    ratio,
+                    placement: PanePlacement::ExistingFirst,
+                    new_leaf: PaneLeaf::new("pane-3"),
+                },
+            )
+            .expect("default layout left split should succeed");
+    }
+
+    if let Some(right_leaf) = leaf_id_for_key(&tree, "pane-2") {
+        let _ = tree
+            .apply_operation(
+                3,
+                PaneOperation::SplitLeaf {
+                    target: right_leaf,
+                    axis: SplitAxis::Vertical,
+                    ratio,
+                    placement: PanePlacement::ExistingFirst,
+                    new_leaf: PaneLeaf::new("pane-4"),
+                },
+            )
+            .expect("default layout right split should succeed");
+    }
+
+    tree
+}
+
+fn ratio_to_bps(ratio: PaneSplitRatio) -> u16 {
+    let numerator = ratio.numerator() as f64;
+    let denominator = ratio.denominator() as f64;
+    let total = (numerator + denominator).max(1.0);
+    ((numerator / total) * 10_000.0).round().clamp(1.0, 9_999.0) as u16
+}
+
+fn blend_bps(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
+    let blend = u32::from(blend_factor_bps.clamp(1, 10_000));
+    let current = i32::from(current);
+    let target = i32::from(target);
+    let delta = target.saturating_sub(current);
+    let blended = current + ((delta * i32::try_from(blend).unwrap_or(10_000)) / 10_000);
+    blended.clamp(1, 9_999) as u16
 }
 
 fn format_split_axis(axis: SplitAxis) -> &'static str {
