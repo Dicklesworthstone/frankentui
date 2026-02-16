@@ -673,6 +673,8 @@ pub fn apply_drag_semantics(
         committed,
     } = input;
     let Ok(layout) = layout_tree.solve_layout(viewport) else {
+        *preview_state = PanePreviewState::default();
+        *live_reflow_signature = None;
         return 0;
     };
     match active.mode {
@@ -747,6 +749,7 @@ pub fn apply_drag_semantics(
                     magnetic_field,
                 ) else {
                     *preview_state = PanePreviewState::default();
+                    *live_reflow_signature = None;
                     return 0;
                 };
                 let dock_strength_bps = adaptive_dock_strength_bps(
@@ -806,6 +809,7 @@ pub fn apply_drag_semantics(
                         magnetic_field,
                     ) else {
                         *preview_state = PanePreviewState::default();
+                        *live_reflow_signature = None;
                         return 0;
                     };
                     apply_live_reflow_if_needed(
@@ -836,6 +840,7 @@ pub fn apply_drag_semantics(
                     magnetic_field,
                 ) else {
                     *preview_state = PanePreviewState::default();
+                    *live_reflow_signature = None;
                     return 0;
                 };
                 let dock_strength_bps =
@@ -1470,5 +1475,69 @@ mod tests {
         assert!(rolled_back);
         assert_eq!(timeline.cursor, 1);
         assert_ne!(ratio_before, ratio_after);
+    }
+
+    #[test]
+    fn apply_drag_semantics_resets_transient_state_when_plan_fails() {
+        let mut tree = default_pane_layout_tree();
+        let mut timeline = PaneInteractionTimeline::with_baseline(&tree);
+        let mut next_operation_id = 1_u64;
+        let mut generation = 0_u64;
+        let selection = PaneSelectionState::default();
+        let mut preview_state = PanePreviewState {
+            source: Some(PaneId::new(1).expect("valid pane id")),
+            target: Some(PaneId::new(2).expect("valid pane id")),
+            zone: Some(PaneDockZone::Right),
+            ghost_rect: Some(Rect::new(2, 2, 10, 6)),
+            dock_strength_bps: 8_400,
+            motion_speed_cps: 220,
+            alt_one_target: None,
+            alt_one_zone: None,
+            alt_one_ghost_rect: None,
+            alt_one_strength_bps: 0,
+            alt_two_target: None,
+            alt_two_zone: None,
+            alt_two_ghost_rect: None,
+            alt_two_strength_bps: 0,
+            selection_bounds: None,
+        };
+        let mut live_signature = Some(0xfeed_beef_u64);
+
+        let applied = apply_drag_semantics(
+            PaneDragSemanticsContext {
+                layout_tree: &mut tree,
+                timeline: &mut timeline,
+                next_operation_id: &mut next_operation_id,
+                workspace_generation: &mut generation,
+                selection: &selection,
+                preview_state: &mut preview_state,
+                live_reflow_signature: &mut live_signature,
+                viewport: Rect::new(0, 0, 120, 40),
+                baseline_magnetic_field_cells: 6.0,
+            },
+            PaneDragSemanticsInput {
+                sequence: 1,
+                active: ActivePaneGesture {
+                    pointer_id: 7,
+                    leaf: PaneId::new(999).expect("nonexistent pane id should be constructible"),
+                    mode: PaneGestureMode::Move,
+                },
+                pointer: PanePointerPosition::new(30, 10),
+                pressure: PanePressureSnapProfile {
+                    strength_bps: 6_400,
+                    hysteresis_bps: 320,
+                },
+                motion: PaneMotionVector::from_delta(24, 0, 32, 0),
+                projected_position: None,
+                inertial_throw: None,
+                committed: false,
+            },
+        );
+
+        assert_eq!(applied, 0);
+        assert_eq!(preview_state, PanePreviewState::default());
+        assert_eq!(live_signature, None);
+        assert_eq!(timeline.cursor, 0);
+        assert_eq!(generation, 0);
     }
 }

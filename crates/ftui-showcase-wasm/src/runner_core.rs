@@ -348,13 +348,15 @@ impl RunnerCore {
         if self.timeline.baseline.is_none() {
             self.timeline = PaneInteractionTimeline::with_baseline(&self.layout_tree);
         }
+        self.refresh_next_operation_id_from_timeline();
         self.selection = PaneSelectionState::default();
         if let Some(anchor) = snapshot.active_pane_id {
             self.selection.anchor = Some(anchor);
             let _ = self.selection.selected.insert(anchor);
         }
-        self.preview_state = PanePreviewState::default();
-        self.active_gesture = None;
+        self.sanitize_selection_to_layout();
+        self.clear_transient_pane_interaction_state();
+        self.reset_pointer_capture_adapter();
         self.workspace_generation = snapshot.metadata.saved_generation;
         Ok(())
     }
@@ -365,7 +367,9 @@ impl RunnerCore {
             Ok(changed) => {
                 if changed {
                     self.workspace_generation = self.workspace_generation.saturating_add(1);
-                    self.preview_state = PanePreviewState::default();
+                    self.sanitize_selection_to_layout();
+                    self.clear_transient_pane_interaction_state();
+                    self.reset_pointer_capture_adapter();
                 }
                 changed
             }
@@ -383,7 +387,9 @@ impl RunnerCore {
             Ok(changed) => {
                 if changed {
                     self.workspace_generation = self.workspace_generation.saturating_add(1);
-                    self.preview_state = PanePreviewState::default();
+                    self.sanitize_selection_to_layout();
+                    self.clear_transient_pane_interaction_state();
+                    self.reset_pointer_capture_adapter();
                 }
                 changed
             }
@@ -401,8 +407,10 @@ impl RunnerCore {
             Ok(tree) => {
                 self.layout_tree = tree;
                 self.workspace_generation = self.workspace_generation.saturating_add(1);
-                self.preview_state = PanePreviewState::default();
-                self.active_gesture = None;
+                self.refresh_next_operation_id_from_timeline();
+                self.sanitize_selection_to_layout();
+                self.clear_transient_pane_interaction_state();
+                self.reset_pointer_capture_adapter();
                 true
             }
             Err(err) => {
@@ -427,13 +435,20 @@ impl RunnerCore {
                 return false;
             }
         };
-        self.intelligence_mode = mode;
         let pressure = PanePressureSnapProfile {
             strength_bps: 8_000,
             hysteresis_bps: 320,
         };
         let applied = self.apply_operations_with_timeline(0, &operations, pressure, true);
-        applied > 0
+        if applied > 0 {
+            self.intelligence_mode = mode;
+            self.sanitize_selection_to_layout();
+            self.clear_transient_pane_interaction_state();
+            self.reset_pointer_capture_adapter();
+            true
+        } else {
+            false
+        }
     }
 
     /// Auto-targeted pointer-down from host coordinates (no split-id required).
@@ -727,6 +742,54 @@ impl RunnerCore {
                     .push(format!("pane_timeline cancel_rollback error: {err}"));
             }
         }
+    }
+
+    fn clear_transient_pane_interaction_state(&mut self) {
+        self.preview_state = PanePreviewState::default();
+        self.active_gesture = None;
+        self.gesture_timeline_cursor_start = None;
+        self.live_reflow_signature = None;
+    }
+
+    fn sanitize_selection_to_layout(&mut self) {
+        let valid_leaves: std::collections::BTreeSet<PaneId> = self
+            .layout_tree
+            .nodes()
+            .filter_map(|node| matches!(node.kind, PaneNodeKind::Leaf(_)).then_some(node.id))
+            .collect();
+        self.selection
+            .selected
+            .retain(|pane_id| valid_leaves.contains(pane_id));
+        if self
+            .selection
+            .anchor
+            .is_some_and(|anchor| !valid_leaves.contains(&anchor))
+        {
+            self.selection.anchor = None;
+        }
+        if let Some(anchor) = self.selection.anchor {
+            let _ = self.selection.selected.insert(anchor);
+        } else {
+            self.selection.anchor = self.selection.selected.iter().next().copied();
+        }
+    }
+
+    fn reset_pointer_capture_adapter(&mut self) {
+        let config = self.pane_adapter.config();
+        self.pane_adapter = PanePointerCaptureAdapter::new(config)
+            .expect("existing pane pointer adapter config should remain valid");
+    }
+
+    fn refresh_next_operation_id_from_timeline(&mut self) {
+        self.next_operation_id = self
+            .timeline
+            .entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .max(1);
     }
 
     fn refresh_cached_patch_meta_from_live_outputs(&mut self) {
@@ -1100,5 +1163,48 @@ mod tests {
             viewport,
         );
         assert_eq!(projected, pointer);
+    }
+
+    #[test]
+    fn pane_replay_prunes_stale_selection_ids() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        let stale = PaneId::new(999).expect("nonexistent pane id should be constructible");
+        runner.selection.anchor = Some(stale);
+        let _ = runner.selection.selected.insert(stale);
+
+        assert!(runner.pane_replay());
+        assert!(runner.selection.anchor.is_none());
+        assert!(runner.selection.selected.is_empty());
+    }
+
+    #[test]
+    fn intelligence_mode_apply_prunes_stale_selection_ids() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        let stale = PaneId::new(999).expect("nonexistent pane id should be constructible");
+        runner.selection.anchor = Some(stale);
+        let _ = runner.selection.selected.insert(stale);
+        let primary = runner
+            .layout_tree
+            .nodes()
+            .find_map(|node| matches!(node.kind, PaneNodeKind::Leaf(_)).then_some(node.id))
+            .expect("default layout should contain a leaf");
+
+        let applied = [
+            PaneLayoutIntelligenceMode::Compare,
+            PaneLayoutIntelligenceMode::Monitor,
+            PaneLayoutIntelligenceMode::Compact,
+            PaneLayoutIntelligenceMode::Focus,
+        ]
+        .into_iter()
+        .any(|mode| runner.pane_apply_intelligence_mode(mode, primary));
+
+        assert!(
+            applied,
+            "expected at least one intelligence mode to apply operations"
+        );
+        assert!(runner.selection.anchor.is_none());
+        assert!(runner.selection.selected.is_empty());
     }
 }
