@@ -642,11 +642,29 @@ pub struct PaneInertialThrow {
 impl PaneInertialThrow {
     #[must_use]
     pub fn from_motion(motion: PaneMotionVector) -> Self {
+        let dx = f64::from(motion.delta_x);
+        let dy = f64::from(motion.delta_y);
+        let magnitude = (dx * dx + dy * dy).sqrt();
+        let direction_x = if magnitude <= f64::EPSILON {
+            0.0
+        } else {
+            dx / magnitude
+        };
+        let direction_y = if magnitude <= f64::EPSILON {
+            0.0
+        } else {
+            dy / magnitude
+        };
+        let speed = motion.speed.clamp(0.0, 220.0);
+        let speed_curve = (speed / 220.0).clamp(0.0, 1.0).powf(0.72);
+        let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
+        let coherence = (1.0 - 0.55 * noise_penalty).clamp(0.35, 1.0);
+        let projected_velocity = (10.0 + speed * 0.55) * coherence;
         Self {
-            velocity_x: f64::from(motion.delta_x),
-            velocity_y: f64::from(motion.delta_y),
-            damping: 7.5,
-            horizon_ms: 220,
+            velocity_x: direction_x * projected_velocity,
+            velocity_y: direction_y * projected_velocity,
+            damping: (9.2 - speed_curve * 4.0 + noise_penalty * 2.4).clamp(4.8, 10.5),
+            horizon_ms: (140.0 + speed_curve * 220.0).round().clamp(120.0, 380.0) as u16,
         }
     }
 
@@ -681,11 +699,16 @@ impl PanePressureSnapProfile {
     /// consistent direction increase snap force for canonical layouts.
     #[must_use]
     pub fn from_motion(motion: PaneMotionVector) -> Self {
-        let speed_factor = (motion.speed / 40.0).clamp(0.0, 1.0);
-        let noise_penalty = (f64::from(motion.direction_changes) / 8.0).clamp(0.0, 1.0);
-        let confidence = (speed_factor * (1.0 - 0.6 * noise_penalty)).clamp(0.0, 1.0);
-        let strength = (2_000.0 + confidence * 8_000.0).round() as u16;
-        let hysteresis = (80.0 + confidence * 340.0).round() as u16;
+        let abs_dx = f64::from(motion.delta_x.unsigned_abs());
+        let abs_dy = f64::from(motion.delta_y.unsigned_abs());
+        let axis_dominance = (abs_dx.max(abs_dy) / (abs_dx + abs_dy).max(1.0)).clamp(0.5, 1.0);
+        let speed_factor = (motion.speed / 70.0).clamp(0.0, 1.0).powf(0.78);
+        let noise_penalty = (f64::from(motion.direction_changes) / 7.0).clamp(0.0, 1.0);
+        let confidence =
+            (speed_factor * (0.65 + axis_dominance * 0.35) * (1.0 - noise_penalty * 0.72))
+                .clamp(0.0, 1.0);
+        let strength = (1_500.0 + confidence.powf(0.85) * 8_500.0).round() as u16;
+        let hysteresis = (60.0 + confidence * 500.0).round() as u16;
         Self {
             strength_bps: strength.min(10_000),
             hysteresis_bps: hysteresis.min(2_000),
@@ -2911,6 +2934,23 @@ fn axis_share_from_pointer(
     ((coordinate - low) / (high - low)).clamp(0.0, 1.0)
 }
 
+fn elastic_ratio_bps(raw_bps: u16, pressure: PanePressureSnapProfile) -> u16 {
+    let raw = f64::from(raw_bps.clamp(1, 9_999)) / 10_000.0;
+    let confidence = (f64::from(pressure.strength_bps) / 10_000.0).clamp(0.0, 1.0);
+    let edge_band = (0.16 - confidence * 0.09).clamp(0.05, 0.18);
+    let resistance = (0.62 - confidence * 0.34).clamp(0.18, 0.68);
+    let eased = if raw < edge_band {
+        let ratio = (raw / edge_band).clamp(0.0, 1.0);
+        edge_band * ratio.powf(1.0 + resistance)
+    } else if raw > 1.0 - edge_band {
+        let ratio = ((1.0 - raw) / edge_band).clamp(0.0, 1.0);
+        1.0 - edge_band * ratio.powf(1.0 + resistance)
+    } else {
+        raw
+    };
+    (eased * 10_000.0).round().clamp(1.0, 9_999.0) as u16
+}
+
 fn classify_resize_grip(
     rect: Rect,
     pointer: PanePointerPosition,
@@ -3008,6 +3048,16 @@ fn dock_zone_score(distance: f64, radius: f64, zone: PaneDockZone) -> f64 {
     base * zone_weight
 }
 
+const fn dock_zone_rank(zone: PaneDockZone) -> u8 {
+    match zone {
+        PaneDockZone::Left => 0,
+        PaneDockZone::Right => 1,
+        PaneDockZone::Top => 2,
+        PaneDockZone::Bottom => 3,
+        PaneDockZone::Center => 4,
+    }
+}
+
 fn dock_preview_for_rect(
     target: PaneId,
     rect: Rect,
@@ -3027,6 +3077,96 @@ fn dock_preview_for_rect(
         let anchor = rect_zone_anchor(rect, zone);
         let distance = euclidean_distance(anchor, pointer);
         let score = dock_zone_score(distance, radius, zone);
+        if score <= 0.0 {
+            continue;
+        }
+        let candidate = PaneDockPreview {
+            target,
+            zone,
+            score,
+            ghost_rect: dock_zone_ghost_rect(rect, zone),
+        };
+        match best {
+            Some(current) if candidate.score <= current.score => {}
+            _ => best = Some(candidate),
+        }
+    }
+    best
+}
+
+fn dock_zone_motion_intent(zone: PaneDockZone, motion: PaneMotionVector) -> f64 {
+    let dx = f64::from(motion.delta_x);
+    let dy = f64::from(motion.delta_y);
+    let abs_dx = dx.abs();
+    let abs_dy = dy.abs();
+    let total = (abs_dx + abs_dy).max(1.0);
+    let horizontal = abs_dx / total;
+    let vertical = abs_dy / total;
+    let speed_factor = (motion.speed / 140.0).clamp(0.0, 1.0);
+    let noise_penalty = (f64::from(motion.direction_changes) / 10.0).clamp(0.0, 1.0);
+
+    let directional = match zone {
+        PaneDockZone::Left => {
+            if dx < 0.0 {
+                0.95 + horizontal * 0.55
+            } else {
+                1.0 - horizontal * 0.35
+            }
+        }
+        PaneDockZone::Right => {
+            if dx > 0.0 {
+                0.95 + horizontal * 0.55
+            } else {
+                1.0 - horizontal * 0.35
+            }
+        }
+        PaneDockZone::Top => {
+            if dy < 0.0 {
+                0.95 + vertical * 0.55
+            } else {
+                1.0 - vertical * 0.35
+            }
+        }
+        PaneDockZone::Bottom => {
+            if dy > 0.0 {
+                0.95 + vertical * 0.55
+            } else {
+                1.0 - vertical * 0.35
+            }
+        }
+        PaneDockZone::Center => {
+            let axis_ambiguity = 1.0 - horizontal.max(vertical);
+            0.9 + axis_ambiguity * 0.25 - speed_factor * 0.12
+        }
+    };
+    (directional - noise_penalty * 0.22).clamp(0.55, 1.45)
+}
+
+fn dock_preview_for_rect_with_motion(
+    target: PaneId,
+    rect: Rect,
+    pointer: PanePointerPosition,
+    magnetic_field_cells: f64,
+    motion: PaneMotionVector,
+) -> Option<PaneDockPreview> {
+    let radius = magnetic_field_cells.max(0.5);
+    let zones = [
+        PaneDockZone::Left,
+        PaneDockZone::Right,
+        PaneDockZone::Top,
+        PaneDockZone::Bottom,
+        PaneDockZone::Center,
+    ];
+    let mut best: Option<PaneDockPreview> = None;
+    for zone in zones {
+        let anchor = rect_zone_anchor(rect, zone);
+        let distance = euclidean_distance(anchor, pointer);
+        let base = dock_zone_score(distance, radius, zone);
+        if base <= 0.0 {
+            continue;
+        }
+        let intent = dock_zone_motion_intent(zone, motion);
+        let score = (base * intent).clamp(0.0, 1.0);
         if score <= 0.0 {
             continue;
         }
@@ -4351,6 +4491,28 @@ impl PaneTree {
         self.choose_dock_preview_excluding(layout, pointer, magnetic_field_cells, None)
     }
 
+    /// Return top-ranked magnetic docking candidates (best-first) using
+    /// motion-aware intent weighting.
+    #[must_use]
+    pub fn ranked_dock_previews_with_motion(
+        &self,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        motion: PaneMotionVector,
+        magnetic_field_cells: f64,
+        excluded: Option<PaneId>,
+        limit: usize,
+    ) -> Vec<PaneDockPreview> {
+        self.collect_dock_previews_excluding_with_motion(
+            layout,
+            pointer,
+            magnetic_field_cells,
+            excluded,
+            motion,
+            limit,
+        )
+    }
+
     /// Plan a pane move with inertial projection, magnetic docking, and
     /// pressure-sensitive snapping.
     pub fn plan_reflow_move_with_preview(
@@ -4373,14 +4535,22 @@ impl PaneTree {
             .map(|profile| profile.projected_pointer(pointer))
             .unwrap_or(pointer);
         let preview = self
-            .choose_dock_preview_excluding(layout, projected, magnetic_field_cells, Some(source))
+            .choose_dock_preview_excluding_with_motion(
+                layout,
+                projected,
+                magnetic_field_cells,
+                Some(source),
+                motion,
+            )
             .ok_or(PaneReflowPlanError::NoDockTarget)?;
 
         let snap_profile = PanePressureSnapProfile::from_motion(motion);
+        let magnetic_boost = (preview.score * 1_800.0).round().clamp(0.0, 1_800.0) as u16;
         let incoming_share_bps = snap_profile
             .strength_bps
-            .saturating_sub(2_000)
-            .clamp(2_500, 7_500);
+            .saturating_sub(2_200)
+            .saturating_add(magnetic_boost / 2)
+            .clamp(2_400, 7_800);
 
         let operations = if preview.zone == PaneDockZone::Center {
             vec![PaneOperation::SwapNodes {
@@ -4468,7 +4638,10 @@ impl PaneTree {
                 SplitAxis::Horizontal,
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
-            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let raw_bps = elastic_ratio_bps(
+                (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16,
+                pressure,
+            );
             let snapped = tuned_snap
                 .decide(raw_bps, None)
                 .snapped_ratio_bps
@@ -4503,7 +4676,10 @@ impl PaneTree {
                 SplitAxis::Vertical,
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
-            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let raw_bps = elastic_ratio_bps(
+                (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16,
+                pressure,
+            );
             let snapped = tuned_snap
                 .decide(raw_bps, None)
                 .snapped_ratio_bps
@@ -4639,7 +4815,10 @@ impl PaneTree {
                 SplitAxis::Horizontal,
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
-            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let raw_bps = elastic_ratio_bps(
+                (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16,
+                pressure,
+            );
             let snapped = tuned_snap
                 .decide(raw_bps, None)
                 .snapped_ratio_bps
@@ -4674,7 +4853,10 @@ impl PaneTree {
                 SplitAxis::Vertical,
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
-            let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
+            let raw_bps = elastic_ratio_bps(
+                (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16,
+                pressure,
+            );
             let snapped = tuned_snap
                 .decide(raw_bps, None)
                 .snapped_ratio_bps
@@ -4831,6 +5013,71 @@ impl PaneTree {
             }
         }
         best
+    }
+
+    fn choose_dock_preview_excluding_with_motion(
+        &self,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        magnetic_field_cells: f64,
+        excluded: Option<PaneId>,
+        motion: PaneMotionVector,
+    ) -> Option<PaneDockPreview> {
+        self.collect_dock_previews_excluding_with_motion(
+            layout,
+            pointer,
+            magnetic_field_cells,
+            excluded,
+            motion,
+            1,
+        )
+        .into_iter()
+        .next()
+    }
+
+    fn collect_dock_previews_excluding_with_motion(
+        &self,
+        layout: &PaneLayout,
+        pointer: PanePointerPosition,
+        magnetic_field_cells: f64,
+        excluded: Option<PaneId>,
+        motion: PaneMotionVector,
+        limit: usize,
+    ) -> Vec<PaneDockPreview> {
+        let limit = limit.max(1);
+        let mut candidates = Vec::new();
+        for node in self.nodes.values() {
+            if !matches!(node.kind, PaneNodeKind::Leaf(_)) {
+                continue;
+            }
+            if excluded == Some(node.id) {
+                continue;
+            }
+            let Some(rect) = layout.rect(node.id) else {
+                continue;
+            };
+            let Some(candidate) = dock_preview_for_rect_with_motion(
+                node.id,
+                rect,
+                pointer,
+                magnetic_field_cells,
+                motion,
+            ) else {
+                continue;
+            };
+            candidates.push(candidate);
+        }
+        candidates.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.target.cmp(&right.target))
+                .then_with(|| dock_zone_rank(left.zone).cmp(&dock_zone_rank(right.zone)))
+        });
+        if candidates.len() > limit {
+            candidates.truncate(limit);
+        }
+        candidates
     }
 
     fn nearest_axis_split_for_node(&self, node: PaneId, axis: SplitAxis) -> Option<PaneId> {
@@ -8174,6 +8421,97 @@ mod tests {
         let fast = PanePressureSnapProfile::from_motion(PaneMotionVector::from_delta(40, 2, 48, 0));
         assert!(fast.strength_bps > slow.strength_bps);
         assert!(fast.hysteresis_bps >= slow.hysteresis_bps);
+    }
+
+    #[test]
+    fn pressure_sensitive_snap_penalizes_direction_noise() {
+        let stable =
+            PanePressureSnapProfile::from_motion(PaneMotionVector::from_delta(32, 2, 60, 0));
+        let noisy =
+            PanePressureSnapProfile::from_motion(PaneMotionVector::from_delta(32, 2, 60, 7));
+        assert!(stable.strength_bps > noisy.strength_bps);
+    }
+
+    #[test]
+    fn dock_zone_motion_intent_prefers_directionally_aligned_zones() {
+        let rightward = PaneMotionVector::from_delta(36, 2, 50, 0);
+        let left_bias = dock_zone_motion_intent(PaneDockZone::Left, rightward);
+        let right_bias = dock_zone_motion_intent(PaneDockZone::Right, rightward);
+        assert!(right_bias > left_bias);
+
+        let downward = PaneMotionVector::from_delta(2, 32, 52, 0);
+        let top_bias = dock_zone_motion_intent(PaneDockZone::Top, downward);
+        let bottom_bias = dock_zone_motion_intent(PaneDockZone::Bottom, downward);
+        assert!(bottom_bias > top_bias);
+    }
+
+    #[test]
+    fn dock_zone_motion_intent_noise_reduces_alignment_confidence() {
+        let stable = dock_zone_motion_intent(
+            PaneDockZone::Right,
+            PaneMotionVector::from_delta(40, 1, 45, 0),
+        );
+        let noisy = dock_zone_motion_intent(
+            PaneDockZone::Right,
+            PaneMotionVector::from_delta(40, 1, 45, 8),
+        );
+        assert!(stable > noisy);
+    }
+
+    #[test]
+    fn elastic_ratio_bps_resists_extreme_edges_more_at_low_confidence() {
+        let near_edge = 350;
+        let low_confidence = elastic_ratio_bps(
+            near_edge,
+            PanePressureSnapProfile {
+                strength_bps: 1_800,
+                hysteresis_bps: 120,
+            },
+        );
+        let high_confidence = elastic_ratio_bps(
+            near_edge,
+            PanePressureSnapProfile {
+                strength_bps: 8_600,
+                hysteresis_bps: 520,
+            },
+        );
+        assert!(low_confidence > near_edge);
+        assert!(high_confidence <= low_confidence);
+    }
+
+    #[test]
+    fn ranked_dock_previews_with_motion_returns_descending_scores() {
+        let tree = PaneTree::from_snapshot(make_valid_snapshot()).expect("valid tree");
+        let layout = tree
+            .solve_layout(Rect::new(0, 0, 100, 40))
+            .expect("layout should solve");
+        let right_rect = layout.rect(id(3)).expect("leaf 3 rect");
+        let pointer = PanePointerPosition::new(
+            i32::from(right_rect.x),
+            i32::from(right_rect.y.saturating_add(right_rect.height / 2)),
+        );
+        let ranked = tree.ranked_dock_previews_with_motion(
+            &layout,
+            pointer,
+            PaneMotionVector::from_delta(28, 2, 48, 0),
+            PANE_MAGNETIC_FIELD_CELLS,
+            Some(id(2)),
+            3,
+        );
+        assert!(!ranked.is_empty());
+        for pair in ranked.windows(2) {
+            assert!(pair[0].score >= pair[1].score);
+        }
+    }
+
+    #[test]
+    fn inertial_throw_projects_farther_for_faster_motion() {
+        let start = PanePointerPosition::new(40, 12);
+        let slow = PaneInertialThrow::from_motion(PaneMotionVector::from_delta(6, 0, 220, 1))
+            .projected_pointer(start);
+        let fast = PaneInertialThrow::from_motion(PaneMotionVector::from_delta(42, 0, 40, 0))
+            .projected_pointer(start);
+        assert!(fast.x > slow.x);
     }
 
     #[test]

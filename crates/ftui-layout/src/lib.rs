@@ -41,8 +41,10 @@
 
 pub mod cache;
 pub mod debug;
+pub mod dep_graph;
 pub mod direction;
 pub mod grid;
+pub mod incremental;
 pub mod pane;
 #[cfg(test)]
 mod repro_max_constraint;
