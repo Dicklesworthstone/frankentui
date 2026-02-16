@@ -76,31 +76,204 @@ sha256_text() {
 final_view_sha256() {
     local file="$1"
     local tail_bytes="$2"
+    local cols="${3:-80}"
+    local rows="${4:-24}"
     if [[ ! -f "$file" ]]; then
         echo ""
         return 0
     fi
     if [[ -n "${E2E_PYTHON:-}" ]]; then
-        "$E2E_PYTHON" - "$file" "$tail_bytes" <<'PY'
+        "$E2E_PYTHON" - "$file" "$tail_bytes" "$cols" "$rows" <<'PY'
 import hashlib
-import re
 import sys
 
 path = sys.argv[1]
 tail = int(sys.argv[2])
+cols = int(sys.argv[3])
+rows = int(sys.argv[4])
+
+if cols <= 0:
+    cols = 80
+if rows <= 0:
+    rows = 24
 
 with open(path, "rb") as handle:
     text = handle.read().decode("utf-8", errors="replace")
 
-text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text).replace("\r", "\n")
-marker = text.rfind("Layout Lab [")
-if marker >= 0:
-    start = max(0, marker - tail)
-    segment = text[start:marker]
-else:
-    segment = text[-tail:]
 
-print(hashlib.sha256(segment.encode("utf-8")).hexdigest())
+class VirtualTerminal:
+    def __init__(self, width: int, height: int) -> None:
+        self.cols = width
+        self.rows = height
+        self.screen = [[" "] * self.cols for _ in range(self.rows)]
+        self.row = 0
+        self.col = 0
+        self.saved = (0, 0)
+
+    def clear(self) -> None:
+        self.screen = [[" "] * self.cols for _ in range(self.rows)]
+
+    def scroll(self, count: int = 1) -> None:
+        for _ in range(max(0, count)):
+            self.screen.pop(0)
+            self.screen.append([" "] * self.cols)
+
+    def put(self, ch: str) -> None:
+        if self.col >= self.cols:
+            self.col = 0
+            self.row += 1
+        if self.row >= self.rows:
+            self.scroll(self.row - self.rows + 1)
+            self.row = self.rows - 1
+        self.screen[self.row][self.col] = ch
+        self.col += 1
+
+    def newline(self) -> None:
+        self.row += 1
+        if self.row >= self.rows:
+            self.scroll(1)
+            self.row = self.rows - 1
+
+    def cup(self, row: int, col: int) -> None:
+        self.row = max(0, min(self.rows - 1, row))
+        self.col = max(0, min(self.cols - 1, col))
+
+    def _csi_default(self, values: list[int], idx: int = 0, default: int = 1) -> int:
+        if idx >= len(values) or values[idx] == 0:
+            return default
+        return values[idx]
+
+    def csi(self, params: str, final: str) -> None:
+        private = params.startswith("?")
+        payload = params[1:] if private else params
+        values = [int(part) if part else 0 for part in payload.split(";")] if payload else []
+
+        if final in ("H", "f"):
+            row = self._csi_default(values, 0, 1) - 1
+            col = self._csi_default(values, 1, 1) - 1
+            self.cup(row, col)
+            return
+        if final == "A":
+            self.row = max(0, self.row - self._csi_default(values))
+            return
+        if final == "B":
+            self.row = min(self.rows - 1, self.row + self._csi_default(values))
+            return
+        if final == "C":
+            self.col = min(self.cols - 1, self.col + self._csi_default(values))
+            return
+        if final == "D":
+            self.col = max(0, self.col - self._csi_default(values))
+            return
+        if final == "J":
+            mode = self._csi_default(values, 0, 0)
+            if mode == 2:
+                self.clear()
+                self.cup(0, 0)
+            elif mode == 0:
+                for r in range(self.row, self.rows):
+                    start = self.col if r == self.row else 0
+                    for c in range(start, self.cols):
+                        self.screen[r][c] = " "
+            elif mode == 1:
+                for r in range(0, self.row + 1):
+                    end = self.col if r == self.row else self.cols - 1
+                    for c in range(0, end + 1):
+                        self.screen[r][c] = " "
+            return
+        if final == "K":
+            mode = self._csi_default(values, 0, 0)
+            if mode == 0:
+                for c in range(self.col, self.cols):
+                    self.screen[self.row][c] = " "
+            elif mode == 1:
+                for c in range(0, self.col + 1):
+                    self.screen[self.row][c] = " "
+            elif mode == 2:
+                for c in range(0, self.cols):
+                    self.screen[self.row][c] = " "
+            return
+        if final == "s":
+            self.saved = (self.row, self.col)
+            return
+        if final == "u":
+            self.row, self.col = self.saved
+            return
+        if final in ("h", "l") and private and "1049" in payload:
+            self.clear()
+            self.cup(0, 0)
+
+    def feed(self, stream: str) -> None:
+        i = 0
+        size = len(stream)
+        while i < size:
+            ch = stream[i]
+            if ch == "\x1b":
+                if i + 1 >= size:
+                    break
+                nxt = stream[i + 1]
+                if nxt == "[":
+                    j = i + 2
+                    while j < size and not ("@" <= stream[j] <= "~"):
+                        j += 1
+                    if j >= size:
+                        break
+                    self.csi(stream[i + 2 : j], stream[j])
+                    i = j + 1
+                    continue
+                if nxt == "]":
+                    j = i + 2
+                    while j < size and stream[j] not in ("\x07", "\x1b"):
+                        j += 1
+                    if j < size and stream[j] == "\x1b" and j + 1 < size and stream[j + 1] == "\\":
+                        j += 1
+                    i = j + 1
+                    continue
+                if nxt == "7":
+                    self.saved = (self.row, self.col)
+                    i += 2
+                    continue
+                if nxt == "8":
+                    self.row, self.col = self.saved
+                    i += 2
+                    continue
+                if nxt in "()":
+                    i = min(size, i + 3)
+                    continue
+                i += 2
+                continue
+
+            if ch == "\r":
+                self.col = 0
+                i += 1
+                continue
+            if ch == "\n":
+                self.newline()
+                i += 1
+                continue
+            if ch == "\b":
+                self.col = max(0, self.col - 1)
+                i += 1
+                continue
+            if ch == "\t":
+                self.col = min(self.cols - 1, ((self.col // 8) + 1) * 8)
+                i += 1
+                continue
+
+            if ord(ch) >= 32 and ch != "\x7f":
+                self.put(ch)
+            i += 1
+
+    def screen_text(self) -> str:
+        return "\n".join("".join(line) for line in self.screen)
+
+
+vt = VirtualTerminal(cols, rows)
+vt.feed(text)
+screen = vt.screen_text()
+if tail > 0 and len(screen) > tail:
+    screen = screen[-tail:]
+print(hashlib.sha256(screen.encode("utf-8")).hexdigest())
 PY
         return 0
     fi
@@ -361,7 +534,7 @@ baseline_view_hash() {
         pty_run "$output_file" "$DEMO_BIN" >/dev/null 2>&1 || return 1
 
     local baseline_hash
-    baseline_hash="$(final_view_sha256 "$output_file" "$ROUNDTRIP_TAIL_BYTES")"
+    baseline_hash="$(final_view_sha256 "$output_file" "$ROUNDTRIP_TAIL_BYTES" "$cols" "$rows")"
     BASELINE_VIEW_HASHES[$key]="$baseline_hash"
     printf '%s' "$baseline_hash"
 }
@@ -397,7 +570,7 @@ run_thrash_case() {
         local output_sha
         output_sha="$(sha256_file "$output_file")"
         local final_view_hash
-        final_view_hash="$(final_view_sha256 "$output_file" "$ROUNDTRIP_TAIL_BYTES")"
+        final_view_hash="$(final_view_sha256 "$output_file" "$ROUNDTRIP_TAIL_BYTES" "$start_cols" "$start_rows")"
         local baseline_hash
         baseline_hash="$(baseline_view_hash "$start_cols" "$start_rows" "$exit_after_ms" || true)"
 

@@ -3,11 +3,13 @@ set -euo pipefail
 
 # E2E tests for Terminal Capability Explorer (Demo Showcase)
 # bd-3b13l: Terminal capabilities + inline/alt verification
+# bd-1pys5.3: terminal capability mismatch fault injection
 #
 # Scenarios:
 # - Run terminal capabilities flow in alt + inline at 80x24 and 120x40.
 # - Export JSONL capability report and log raw values + derived metrics.
 # - Emit step start/end events with duration and stable hashes.
+# - Fault-inject capability mismatch profiles and validate graceful degradation.
 #
 # Keybindings used:
 # - j: Select capability
@@ -36,6 +38,33 @@ SEED="${E2E_SEED}"
 
 CAPS_SEND_SEQUENCE="jE"
 INLINE_UI_HEIGHT="${FTUI_DEMO_UI_HEIGHT:-12}"
+TERMINAL_CAPS_SUITE="${TERMINAL_CAPS_SUITE:-all}" # baseline | mismatch | all
+
+BASE_CASES=(
+    caps_alt_80x24
+    caps_alt_120x40
+    caps_inline_80x24
+    caps_inline_120x40
+)
+MISMATCH_CASES=(
+    caps_mismatch_color_downgrade
+    caps_mismatch_no_mouse
+    caps_mismatch_no_alt_screen
+    caps_mismatch_no_unicode
+    caps_mismatch_slow_terminal
+    caps_mismatch_broken_bracketed_paste
+)
+ALL_CASES=()
+if [[ "$TERMINAL_CAPS_SUITE" == "baseline" || "$TERMINAL_CAPS_SUITE" == "all" ]]; then
+    ALL_CASES+=("${BASE_CASES[@]}")
+fi
+if [[ "$TERMINAL_CAPS_SUITE" == "mismatch" || "$TERMINAL_CAPS_SUITE" == "all" ]]; then
+    ALL_CASES+=("${MISMATCH_CASES[@]}")
+fi
+if [[ "${#ALL_CASES[@]}" -eq 0 ]]; then
+    log_error "TERMINAL_CAPS_SUITE must be baseline, mismatch, or all (got: $TERMINAL_CAPS_SUITE)"
+    exit 2
+fi
 
 ensure_demo_bin() {
     local target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
@@ -45,7 +74,14 @@ ensure_demo_bin() {
         return 0
     fi
     log_info "Building ftui-demo-showcase (debug)..." >&2
-    (cd "$PROJECT_ROOT" && cargo build -p ftui-demo-showcase >/dev/null)
+    if command -v rch >/dev/null 2>&1; then
+        if ! (cd "$PROJECT_ROOT" && rch exec -- cargo build -p ftui-demo-showcase >/dev/null); then
+            log_warn "rch build failed; falling back to local cargo build" >&2
+            (cd "$PROJECT_ROOT" && cargo build -p ftui-demo-showcase >/dev/null)
+        fi
+    else
+        (cd "$PROJECT_ROOT" && cargo build -p ftui-demo-showcase >/dev/null)
+    fi
     if [[ -x "$bin" ]]; then
         echo "$bin"
         return 0
@@ -94,6 +130,134 @@ caps_report_load() {
         CAPS_SIMULATED_PROFILE="$(jq -r '.simulated_profile // ""' <<<"$CAPS_REPORT_LINE" 2>/dev/null || echo "")"
         CAPS_SIMULATION_ACTIVE="$(jq -r '.simulation_active // false' <<<"$CAPS_REPORT_LINE" 2>/dev/null || echo "false")"
     fi
+}
+
+caps_field() {
+    local report_file="$1"
+    local capability="$2"
+    local field="$3"
+    if [[ ! -f "$report_file" || $(command -v jq >/dev/null 2>&1; echo $?) -ne 0 ]]; then
+        echo ""
+        return 0
+    fi
+    jq -r --arg cap "$capability" --arg field "$field" \
+        '.capabilities[] | select(.capability == $cap) | .[$field]' \
+        "$report_file" 2>/dev/null | head -n 1
+}
+
+has_alt_screen_escape() {
+    local output_file="$1"
+    command grep -a -F -q $'\x1b[?1049h' "$output_file" && return 0
+    command grep -a -F -q $'\x1b[?1049l' "$output_file" && return 0
+    command grep -a -F -q $'\x1b[?1047h' "$output_file" && return 0
+    command grep -a -F -q $'\x1b[?1047l' "$output_file" && return 0
+    command grep -a -F -q $'\x1b[?47h' "$output_file" && return 0
+    command grep -a -F -q $'\x1b[?47l' "$output_file" && return 0
+    return 1
+}
+
+CAPS_ASSERT_ERROR=""
+
+assert_caps_case_expectations() {
+    local name="$1"
+    local report_file="$2"
+    local output_file="$3"
+    local mode="$4"
+    local duration_ms="$5"
+    CAPS_ASSERT_ERROR=""
+
+    local detected_profile
+    detected_profile="$(jq -r '.detected_profile // ""' "$report_file" 2>/dev/null || true)"
+
+    case "$name" in
+        caps_mismatch_color_downgrade)
+            [[ "$detected_profile" == "xterm" ]] || {
+                CAPS_ASSERT_ERROR="expected detected_profile=xterm, got $detected_profile"
+                return 1
+            }
+            [[ "$(caps_field "$report_file" "True color (24-bit)" "effective")" == "false" ]] || {
+                CAPS_ASSERT_ERROR="true-color must be disabled under xterm profile"
+                return 1
+            }
+            [[ "$(caps_field "$report_file" "256-color palette" "effective")" == "false" ]] || {
+                CAPS_ASSERT_ERROR="256-color must be disabled for 16-color downgrade"
+                return 1
+            }
+            ;;
+        caps_mismatch_no_mouse)
+            [[ "$detected_profile" == "vt100" ]] || {
+                CAPS_ASSERT_ERROR="expected detected_profile=vt100, got $detected_profile"
+                return 1
+            }
+            [[ "$(caps_field "$report_file" "SGR mouse" "effective")" == "false" ]] || {
+                CAPS_ASSERT_ERROR="mouse must be disabled in no-mouse scenario"
+                return 1
+            }
+            [[ "$(caps_field "$report_file" "SGR mouse" "fallback")" == "mouse disabled" ]] || {
+                CAPS_ASSERT_ERROR="mouse fallback must be 'mouse disabled'"
+                return 1
+            }
+            ;;
+        caps_mismatch_no_alt_screen)
+            [[ "$detected_profile" == "dumb" ]] || {
+                CAPS_ASSERT_ERROR="expected detected_profile=dumb, got $detected_profile"
+                return 1
+            }
+            [[ "$mode" == "inline" ]] || {
+                CAPS_ASSERT_ERROR="no-alt-screen scenario must run in inline mode"
+                return 1
+            }
+            if has_alt_screen_escape "$output_file"; then
+                CAPS_ASSERT_ERROR="inline fallback emitted alternate-screen escape sequences"
+                return 1
+            fi
+            ;;
+        caps_mismatch_no_unicode)
+            [[ "$detected_profile" == "vt100" ]] || {
+                CAPS_ASSERT_ERROR="expected detected_profile=vt100, got $detected_profile"
+                return 1
+            }
+            [[ "$(caps_field "$report_file" "True color (24-bit)" "effective")" == "false" ]] || {
+                CAPS_ASSERT_ERROR="no-unicode profile must disable true-color path"
+                return 1
+            }
+            command grep -a -q "Capability Matrix\|Terminal Capability Explorer" "$output_file" || {
+                CAPS_ASSERT_ERROR="output must remain usable in no-unicode scenario"
+                return 1
+            }
+            ;;
+        caps_mismatch_slow_terminal)
+            [[ "$detected_profile" == "modern" ]] || {
+                CAPS_ASSERT_ERROR="expected detected_profile=modern, got $detected_profile"
+                return 1
+            }
+            command grep -a -q $'\x1b\\[[0-9;?]*$' "$output_file" && {
+                CAPS_ASSERT_ERROR="slow-terminal run ended with incomplete CSI sequence"
+                return 1
+            }
+            ;;
+        caps_mismatch_broken_bracketed_paste)
+            [[ "$detected_profile" == "vt100" ]] || {
+                CAPS_ASSERT_ERROR="expected detected_profile=vt100, got $detected_profile"
+                return 1
+            }
+            [[ "$(caps_field "$report_file" "Bracketed paste" "effective")" == "false" ]] || {
+                CAPS_ASSERT_ERROR="bracketed paste must be disabled in broken-paste scenario"
+                return 1
+            }
+            [[ "$(caps_field "$report_file" "Bracketed paste" "fallback")" == "raw paste" ]] || {
+                CAPS_ASSERT_ERROR="broken-paste fallback must be 'raw paste'"
+                return 1
+            }
+            command grep -a -q $'\x1b\\[[0-9;?]*$' "$output_file" && {
+                CAPS_ASSERT_ERROR="broken-paste run ended with incomplete CSI sequence"
+                return 1
+            }
+            ;;
+        *)
+            ;;
+    esac
+    return 0
 }
 
 emit_caps_case_end() {
@@ -180,10 +344,14 @@ run_caps_case() {
     local mode="$2"
     local cols="$3"
     local rows="$4"
+    local send_sequence="${5:-$CAPS_SEND_SEQUENCE}"
 
     LOG_FILE="$E2E_LOG_DIR/${name}_${RUN_ID}.log"
     local output_file="$E2E_LOG_DIR/${name}_${RUN_ID}.pty"
     local report_file="$E2E_LOG_DIR/${name}_${RUN_ID}_report.jsonl"
+    local case_timeout="${CAPS_CASE_TIMEOUT:-6}"
+    local case_exit_after_ms="${CAPS_EXIT_AFTER_MS:-2000}"
+    local output_delay_ms="${PTY_OUTPUT_DELAY_MS:-0}"
 
     export E2E_CONTEXT_MODE="$mode"
     export E2E_CONTEXT_COLS="$cols"
@@ -207,10 +375,11 @@ run_caps_case() {
     if PTY_COLS="$cols" \
         PTY_ROWS="$rows" \
         PTY_SEND_DELAY_MS=400 \
-        PTY_SEND="$CAPS_SEND_SEQUENCE" \
-        PTY_TIMEOUT=6 \
+        PTY_SEND="$send_sequence" \
+        PTY_TIMEOUT="$case_timeout" \
+        PTY_OUTPUT_DELAY_MS="$output_delay_ms" \
         PTY_CANONICALIZE=1 \
-        FTUI_DEMO_EXIT_AFTER_MS=2000 \
+        FTUI_DEMO_EXIT_AFTER_MS="$case_exit_after_ms" \
         FTUI_TERMCAPS_DIAGNOSTICS=true \
         FTUI_TERMCAPS_DETERMINISTIC=true \
         FTUI_TERMCAPS_REPORT_PATH="$report_file" \
@@ -224,8 +393,10 @@ run_caps_case() {
     duration_ms=$((end_ms - start_ms))
 
     local status="passed"
+    local failure_reason="assertion failed"
     if [[ "$exit_code" -ne 0 ]]; then
         status="failed"
+        failure_reason="exit code $exit_code"
     fi
 
     local size=0
@@ -235,22 +406,29 @@ run_caps_case() {
 
     if [[ "$size" -lt 200 ]]; then
         status="failed"
+        failure_reason="output too small ($size bytes)"
     fi
 
     if [[ ! -f "$report_file" ]]; then
         status="failed"
+        failure_reason="report missing"
+    fi
+
+    local canonical_file="${PTY_CANONICAL_FILE:-}"
+    caps_report_load "$report_file"
+    if [[ "$status" == "passed" ]] && ! assert_caps_case_expectations "$name" "$report_file" "$output_file" "$mode" "$duration_ms"; then
+        status="failed"
+        failure_reason="${CAPS_ASSERT_ERROR:-expectation mismatch}"
     fi
 
     if [[ "$status" == "passed" ]]; then
         log_test_pass "$name"
         record_result "$name" "passed" "$duration_ms" "$LOG_FILE"
     else
-        log_test_fail "$name" "assertion failed"
-        record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "assertion failed"
+        log_test_fail "$name" "$failure_reason"
+        record_result "$name" "failed" "$duration_ms" "$LOG_FILE" "$failure_reason"
     fi
 
-    local canonical_file="${PTY_CANONICAL_FILE:-}"
-    caps_report_load "$report_file"
     jsonl_pty_capture "$output_file" "$cols" "$rows" "$exit_code" "$canonical_file"
     emit_caps_case_end "$name" "$status" "$duration_ms" "$mode" "$cols" "$rows" "$output_file" "$report_file" "$canonical_file"
 
@@ -264,7 +442,7 @@ DEMO_BIN="$(ensure_demo_bin || true)"
 if [[ -z "$DEMO_BIN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/terminal_caps_missing.log"
     caps_report_load ""
-    for t in caps_alt_80x24 caps_alt_120x40 caps_inline_80x24 caps_inline_120x40; do
+    for t in "${ALL_CASES[@]}"; do
         log_test_skip "$t" "ftui-demo-showcase binary missing"
         record_result "$t" "skipped" 0 "$LOG_FILE" "binary missing"
         emit_caps_case_end "$t" "skipped" 0 "unknown" 0 0 "" ""
@@ -276,7 +454,7 @@ CAPS_SCREEN="$(detect_caps_screen "$DEMO_BIN" || true)"
 if [[ -z "$CAPS_SCREEN" ]]; then
     LOG_FILE="$E2E_LOG_DIR/terminal_caps_missing.log"
     caps_report_load ""
-    for t in caps_alt_80x24 caps_alt_120x40 caps_inline_80x24 caps_inline_120x40; do
+    for t in "${ALL_CASES[@]}"; do
         log_test_skip "$t" "Terminal Capabilities screen not registered in --help"
         record_result "$t" "skipped" 0 "$LOG_FILE" "screen missing"
         emit_caps_case_end "$t" "skipped" 0 "unknown" 0 0 "" ""
@@ -287,10 +465,38 @@ fi
 export FTUI_DEMO_SCREEN="$CAPS_SCREEN"
 
 FAILURES=0
-run_caps_case "caps_alt_80x24" "alt" 80 24 || FAILURES=$((FAILURES + 1))
-run_caps_case "caps_alt_120x40" "alt" 120 40 || FAILURES=$((FAILURES + 1))
-run_caps_case "caps_inline_80x24" "inline" 80 24 || FAILURES=$((FAILURES + 1))
-run_caps_case "caps_inline_120x40" "inline" 120 40 || FAILURES=$((FAILURES + 1))
+if [[ "$TERMINAL_CAPS_SUITE" == "baseline" || "$TERMINAL_CAPS_SUITE" == "all" ]]; then
+    run_caps_case "caps_alt_80x24" "alt" 80 24 || FAILURES=$((FAILURES + 1))
+    run_caps_case "caps_alt_120x40" "alt" 120 40 || FAILURES=$((FAILURES + 1))
+    run_caps_case "caps_inline_80x24" "inline" 80 24 || FAILURES=$((FAILURES + 1))
+    run_caps_case "caps_inline_120x40" "inline" 120 40 || FAILURES=$((FAILURES + 1))
+fi
+
+if [[ "$TERMINAL_CAPS_SUITE" == "mismatch" || "$TERMINAL_CAPS_SUITE" == "all" ]]; then
+    FTUI_TEST_PROFILE=xterm \
+        run_caps_case "caps_mismatch_color_downgrade" "alt" 80 24 || FAILURES=$((FAILURES + 1))
+
+    FTUI_TEST_PROFILE=vt100 \
+        run_caps_case "caps_mismatch_no_mouse" "alt" 80 24 || FAILURES=$((FAILURES + 1))
+
+    FTUI_TEST_PROFILE=dumb \
+        run_caps_case "caps_mismatch_no_alt_screen" "inline" 80 24 || FAILURES=$((FAILURES + 1))
+
+    FTUI_TEST_PROFILE=vt100 \
+    FTUI_GLYPH_MODE=ascii \
+    FTUI_GLYPH_LINE_DRAWING=0 \
+    FTUI_GLYPH_EMOJI=0 \
+        run_caps_case "caps_mismatch_no_unicode" "alt" 80 24 || FAILURES=$((FAILURES + 1))
+
+    FTUI_TEST_PROFILE=modern \
+    CAPS_CASE_TIMEOUT=14 \
+    CAPS_EXIT_AFTER_MS=2500 \
+    PTY_OUTPUT_DELAY_MS=50 \
+        run_caps_case "caps_mismatch_slow_terminal" "alt" 80 24 || FAILURES=$((FAILURES + 1))
+
+    FTUI_TEST_PROFILE=vt100 \
+        run_caps_case "caps_mismatch_broken_bracketed_paste" "alt" 80 24 || FAILURES=$((FAILURES + 1))
+fi
 
 if [[ "$FAILURES" -gt 0 ]]; then
     log_error "Terminal Capabilities E2E tests: $FAILURES failure(s)"

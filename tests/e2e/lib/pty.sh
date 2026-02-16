@@ -178,6 +178,7 @@ pty_run() {
             PTY_READ_CHUNK="$read_chunk" \
             "$E2E_PYTHON" - "$@" <<'PY'
 import codecs
+import json
 import os
 import pty
 import select
@@ -210,6 +211,9 @@ drain_timeout = float(os.environ.get("PTY_DRAIN_TIMEOUT_MS", "200")) / 1000.0
 terminate_grace = float(os.environ.get("PTY_TERMINATE_GRACE_MS", "300")) / 1000.0
 read_poll = float(os.environ.get("PTY_READ_POLL_MS", "50")) / 1000.0
 read_chunk = int(os.environ.get("PTY_READ_CHUNK", "4096"))
+output_delay = float(os.environ.get("PTY_OUTPUT_DELAY_MS", "0")) / 1000.0
+drop_rule_raw = os.environ.get("PTY_DROP_RULE", "").strip().lower()
+drop_stats_file = os.environ.get("PTY_DROP_STATS_FILE", "").strip()
 capture_max_raw = os.environ.get("PTY_CAPTURE_MAX_BYTES", "")
 capture_max = None
 if capture_max_raw:
@@ -220,6 +224,35 @@ if capture_max_raw:
     except ValueError:
         print("Invalid PTY_CAPTURE_MAX_BYTES (expected integer)", file=sys.stderr)
         sys.exit(2)
+
+drop_single_idx = None
+drop_periodic = None
+drop_burst_start = None
+drop_burst_count = None
+
+if drop_rule_raw:
+    parts = [part.strip() for part in drop_rule_raw.split(":")]
+    kind = parts[0]
+    try:
+        if kind == "single" and len(parts) == 2:
+            drop_single_idx = int(parts[1])
+            if drop_single_idx <= 0:
+                drop_single_idx = None
+        elif kind == "periodic" and len(parts) == 2:
+            drop_periodic = int(parts[1])
+            if drop_periodic <= 0:
+                drop_periodic = None
+        elif kind == "burst" and len(parts) == 3:
+            drop_burst_start = int(parts[1])
+            drop_burst_count = int(parts[2])
+            if drop_burst_start <= 0 or drop_burst_count <= 0:
+                drop_burst_start = None
+                drop_burst_count = None
+    except ValueError:
+        drop_single_idx = None
+        drop_periodic = None
+        drop_burst_start = None
+        drop_burst_count = None
 
 send_bytes = b""
 if send_file:
@@ -341,6 +374,8 @@ sent = False
 last_data = start
 terminate_at = None
 stop_at = None
+chunk_count = 0
+dropped_chunks = 0
 
 try:
     while True:
@@ -391,12 +426,29 @@ try:
                 if not chunk:
                     eof = True
                     break
-                if capture_max != 0:
+                chunk_count += 1
+                should_drop = False
+                if drop_single_idx is not None and chunk_count == drop_single_idx:
+                    should_drop = True
+                if drop_periodic is not None and chunk_count % drop_periodic == 0:
+                    should_drop = True
+                if (
+                    drop_burst_start is not None
+                    and drop_burst_count is not None
+                    and drop_burst_start <= chunk_count < (drop_burst_start + drop_burst_count)
+                ):
+                    should_drop = True
+
+                if should_drop:
+                    dropped_chunks += 1
+                elif capture_max != 0:
                     captured.extend(chunk)
                     if capture_max is not None and capture_max > 0:
                         # Avoid O(n) tail-trimming on every read; trim lazily.
                         if len(captured) > capture_max * 2:
                             del captured[: len(captured) - capture_max]
+                if output_delay > 0:
+                    time.sleep(output_delay)
                 last_data = now
             if eof:
                 break
@@ -428,6 +480,22 @@ if capture_max is not None and capture_max > 0 and len(captured) > capture_max:
 
 with open(output_path, "wb") as handle:
     handle.write(captured)
+
+if drop_stats_file:
+    try:
+        with open(drop_stats_file, "w", encoding="utf-8") as stats:
+            json.dump(
+                {
+                    "drop_rule": drop_rule_raw,
+                    "chunks_total": chunk_count,
+                    "chunks_dropped": dropped_chunks,
+                    "chunks_kept": max(0, chunk_count - dropped_chunks),
+                },
+                stats,
+            )
+            stats.write("\n")
+    except Exception:
+        pass
 
 sys.exit(exit_code)
 PY
