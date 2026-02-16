@@ -42,7 +42,7 @@
 //! // Selection: cell range → byte range
 //! let (start, end) = map.cell_range_to_byte_range(6, 10);
 //! assert_eq!(start, 6);   // '世'
-//! assert_eq!(end, 13);    // end of '!'
+//! assert_eq!(end, 12);    // end of '界'
 //! ```
 
 use crate::shaping::ShapedRun;
@@ -129,22 +129,20 @@ impl ClusterMap {
 
         let mut entries = Vec::new();
         let mut cell_offset = 0u32;
-        let mut grapheme_idx = 0u32;
 
-        for (byte_offset, grapheme) in text.grapheme_indices(true) {
+        for (grapheme_idx, (byte_offset, grapheme)) in text.grapheme_indices(true).enumerate() {
             let width = crate::grapheme_width(grapheme) as u8;
             let byte_end = byte_offset + grapheme.len();
 
             entries.push(ClusterEntry {
                 byte_start: byte_offset as u32,
                 byte_end: byte_end as u32,
-                grapheme_index: grapheme_idx,
+                grapheme_index: grapheme_idx as u32,
                 cell_start: cell_offset,
                 cell_width: width,
             });
 
             cell_offset += width as u32;
-            grapheme_idx += 1;
         }
 
         Self {
@@ -276,11 +274,7 @@ impl ClusterMap {
     ///
     /// Returns `(cell_start, cell_end)` covering all clusters that overlap
     /// the given byte range.
-    pub fn byte_range_to_cell_range(
-        &self,
-        byte_start: usize,
-        byte_end: usize,
-    ) -> (usize, usize) {
+    pub fn byte_range_to_cell_range(&self, byte_start: usize, byte_end: usize) -> (usize, usize) {
         if self.entries.is_empty() || byte_start >= byte_end {
             return (0, 0);
         }
@@ -372,11 +366,7 @@ impl ClusterMap {
     /// Returns `(byte_start, byte_end)` covering all clusters that overlap
     /// the given cell range. Continuation cells are resolved to their
     /// owning cluster.
-    pub fn cell_range_to_byte_range(
-        &self,
-        cell_start: usize,
-        cell_end: usize,
-    ) -> (usize, usize) {
+    pub fn cell_range_to_byte_range(&self, cell_start: usize, cell_end: usize) -> (usize, usize) {
         if self.entries.is_empty() || cell_start >= cell_end {
             return (0, 0);
         }
@@ -386,8 +376,13 @@ impl ClusterMap {
         let end_byte = if cell_end >= self.total_cells as usize {
             self.total_bytes as usize
         } else {
-            // Find the cluster at cell_end and use its byte_start as the exclusive end.
-            self.cell_to_byte(cell_end)
+            // Find the cluster containing the last included cell and use its
+            // byte_end as the exclusive bound. This ensures wide characters
+            // partially covered by the cell range are fully included.
+            match self.cell_to_entry(cell_end.saturating_sub(1)) {
+                Some(entry) => entry.byte_end as usize,
+                None => self.total_bytes as usize,
+            }
         };
 
         (start_byte, end_byte.max(start_byte))
@@ -705,8 +700,8 @@ mod tests {
         // Cell range [2, 6) covers 世界
         assert_eq!(map.cell_range_to_byte_range(2, 6), (2, 8));
 
-        // Cell range [3, 5) starts on continuation → snaps to 世
-        assert_eq!(map.cell_range_to_byte_range(3, 5), (2, 5));
+        // Cell range [3, 5) starts on continuation → snaps to 世, ends including 界
+        assert_eq!(map.cell_range_to_byte_range(3, 5), (2, 8));
     }
 
     // -----------------------------------------------------------------------
@@ -760,16 +755,10 @@ mod tests {
         let map = ClusterMap::from_text(text);
 
         // Extract just the CJK chars (cells 2..6).
-        assert_eq!(
-            map.extract_text_for_cells(text, 2, 6),
-            "\u{4E16}\u{754C}"
-        );
+        assert_eq!(map.extract_text_for_cells(text, 2, 6), "\u{4E16}\u{754C}");
 
         // Extract including continuation cell.
-        assert_eq!(
-            map.extract_text_for_cells(text, 3, 5),
-            "\u{4E16}\u{754C}"
-        );
+        assert_eq!(map.extract_text_for_cells(text, 3, 5), "\u{4E16}\u{754C}");
     }
 
     #[test]
@@ -907,8 +896,8 @@ mod tests {
 
     #[test]
     fn from_shaped_run_noop() {
-        use crate::shaping::{FontFeatures, NoopShaper, TextShaper};
         use crate::script_segmentation::{RunDirection, Script};
+        use crate::shaping::{FontFeatures, NoopShaper, TextShaper};
 
         let text = "Hi\u{4E16}!";
         let shaper = NoopShaper;
@@ -929,7 +918,13 @@ mod tests {
     fn from_shaped_run_empty() {
         use crate::shaping::ShapedRun;
 
-        let map = ClusterMap::from_shaped_run("", &ShapedRun { glyphs: vec![], total_advance: 0 });
+        let map = ClusterMap::from_shaped_run(
+            "",
+            &ShapedRun {
+                glyphs: vec![],
+                total_advance: 0,
+            },
+        );
         assert!(map.is_empty());
     }
 }

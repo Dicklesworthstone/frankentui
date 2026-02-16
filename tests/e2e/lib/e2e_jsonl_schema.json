@@ -158,6 +158,60 @@
         "rows": ["number", "null"]
       }
     },
+    "pane_trace": {
+      "required": [
+        "event_seq",
+        "trace_id",
+        "host",
+        "pane_tree_hash",
+        "focus_state_hash",
+        "splitter_state_hash",
+        "duration_ms",
+        "status"
+      ],
+      "optional": [
+        "details",
+        "failure_code"
+      ],
+      "types": {
+        "event_seq": "number",
+        "trace_id": "string",
+        "host": "string",
+        "pane_tree_hash": "string",
+        "focus_state_hash": "string",
+        "splitter_state_hash": "string",
+        "duration_ms": "number",
+        "status": "string",
+        "details": "string",
+        "failure_code": "string"
+      }
+    },
+    "pane_artifact_bundle": {
+      "required": [
+        "event_seq",
+        "trace_id",
+        "bundle_id",
+        "manifest_path",
+        "jsonl_path",
+        "replay_trace_path",
+        "snapshots_dir",
+        "status"
+      ],
+      "optional": [
+        "notes"
+      ],
+      "types": {
+        "event_seq": "number",
+        "trace_id": "string",
+        "bundle_id": "string",
+        "manifest_path": "string",
+        "jsonl_path": "string",
+        "replay_trace_path": "string",
+        "snapshots_dir": "string",
+        "status": "string",
+        "notes": "string"
+      }
+    },
     "case": {
       "required": [
         "scenario",

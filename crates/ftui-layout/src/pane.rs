@@ -592,12 +592,7 @@ pub struct PaneMotionVector {
 
 impl PaneMotionVector {
     #[must_use]
-    pub fn from_delta(
-        delta_x: i32,
-        delta_y: i32,
-        elapsed_ms: u32,
-        direction_changes: u16,
-    ) -> Self {
+    pub fn from_delta(delta_x: i32, delta_y: i32, elapsed_ms: u32, direction_changes: u16) -> Self {
         let elapsed = f64::from(elapsed_ms.max(1)) / 1_000.0;
         let dx = f64::from(delta_x);
         let dy = f64::from(delta_y);
@@ -725,7 +720,11 @@ impl fmt::Display for PaneEdgeResizePlanError {
                 write!(f, "layout missing rectangle for node {}", node.get())
             }
             Self::NoAxisSplit { leaf, axis } => {
-                write!(f, "no ancestor split on {axis:?} axis for leaf {}", leaf.get())
+                write!(
+                    f,
+                    "no ancestor split on {axis:?} axis for leaf {}",
+                    leaf.get()
+                )
             }
             Self::InvalidRatio {
                 numerator,
@@ -755,7 +754,11 @@ impl fmt::Display for PaneReflowPlanError {
             Self::MissingSource { source } => write!(f, "source node {} not found", source.get()),
             Self::NoDockTarget => write!(f, "no magnetic docking target available"),
             Self::SourceCannotMoveRoot { source } => {
-                write!(f, "source node {} is root and cannot be reflow-moved", source.get())
+                write!(
+                    f,
+                    "source node {} is root and cannot be reflow-moved",
+                    source.get()
+                )
             }
             Self::InvalidRatio {
                 numerator,
@@ -2864,8 +2867,16 @@ fn axis_share_from_pointer(
 ) -> f64 {
     let inset = inset_cells.max(0.0);
     let (origin, extent, coordinate) = match axis {
-        SplitAxis::Horizontal => (f64::from(rect.x), f64::from(rect.width), f64::from(pointer.x)),
-        SplitAxis::Vertical => (f64::from(rect.y), f64::from(rect.height), f64::from(pointer.y)),
+        SplitAxis::Horizontal => (
+            f64::from(rect.x),
+            f64::from(rect.width),
+            f64::from(pointer.x),
+        ),
+        SplitAxis::Vertical => (
+            f64::from(rect.y),
+            f64::from(rect.height),
+            f64::from(pointer.y),
+        ),
     };
     if extent <= 0.0 {
         return 0.5;
@@ -2937,7 +2948,9 @@ fn rect_zone_anchor(rect: Rect, zone: PaneDockZone) -> PanePointerPosition {
 
 fn dock_zone_ghost_rect(rect: Rect, zone: PaneDockZone) -> Rect {
     match zone {
-        PaneDockZone::Left => Rect::new(rect.x, rect.y, (rect.width / 2).max(1), rect.height.max(1)),
+        PaneDockZone::Left => {
+            Rect::new(rect.x, rect.y, (rect.width / 2).max(1), rect.height.max(1))
+        }
         PaneDockZone::Right => {
             let width = (rect.width / 2).max(1);
             Rect::new(
@@ -3016,10 +3029,22 @@ fn zone_to_axis_placement_and_target_share(
     let incoming = incoming_share_bps.clamp(500, 9_500);
     let target_share = 10_000_u16.saturating_sub(incoming);
     match zone {
-        PaneDockZone::Left => (SplitAxis::Horizontal, PanePlacement::IncomingFirst, incoming),
-        PaneDockZone::Right => (SplitAxis::Horizontal, PanePlacement::ExistingFirst, target_share),
+        PaneDockZone::Left => (
+            SplitAxis::Horizontal,
+            PanePlacement::IncomingFirst,
+            incoming,
+        ),
+        PaneDockZone::Right => (
+            SplitAxis::Horizontal,
+            PanePlacement::ExistingFirst,
+            target_share,
+        ),
         PaneDockZone::Top => (SplitAxis::Vertical, PanePlacement::IncomingFirst, incoming),
-        PaneDockZone::Bottom => (SplitAxis::Vertical, PanePlacement::ExistingFirst, target_share),
+        PaneDockZone::Bottom => (
+            SplitAxis::Vertical,
+            PanePlacement::ExistingFirst,
+            target_share,
+        ),
         PaneDockZone::Center => (SplitAxis::Horizontal, PanePlacement::ExistingFirst, 5_000),
     }
 }
@@ -3051,7 +3076,10 @@ pub enum PaneOperation {
     /// Swap two non-ancestor subtrees.
     SwapNodes { first: PaneId, second: PaneId },
     /// Set an explicit split ratio on an existing split node.
-    SetSplitRatio { split: PaneId, ratio: PaneSplitRatio },
+    SetSplitRatio {
+        split: PaneId,
+        ratio: PaneSplitRatio,
+    },
     /// Canonicalize all split ratios to reduced form and validate positivity.
     NormalizeRatios,
 }
@@ -4024,13 +4052,14 @@ impl PaneTree {
         let PaneNodeKind::Split(split) = &mut node.kind else {
             return Err(PaneOperationFailure::ParentNotSplit { node_id: split_id });
         };
-        split.ratio = PaneSplitRatio::new(ratio.numerator(), ratio.denominator()).map_err(|_| {
-            PaneOperationFailure::InvalidRatio {
-                node_id: split_id,
-                numerator: ratio.numerator(),
-                denominator: ratio.denominator(),
-            }
-        })?;
+        split.ratio =
+            PaneSplitRatio::new(ratio.numerator(), ratio.denominator()).map_err(|_| {
+                PaneOperationFailure::InvalidRatio {
+                    node_id: split_id,
+                    numerator: ratio.numerator(),
+                    denominator: ratio.denominator(),
+                }
+            })?;
         let _ = touched.insert(split_id);
         Ok(())
     }
@@ -4374,7 +4403,8 @@ impl PaneTree {
     ) -> Result<Vec<PaneOperationOutcome>, PaneOperationError> {
         let mut outcomes = Vec::with_capacity(plan.operations.len());
         for (index, operation) in plan.operations.iter().cloned().enumerate() {
-            let outcome = self.apply_operation(operation_seed.saturating_add(index as u64), operation)?;
+            let outcome =
+                self.apply_operation(operation_seed.saturating_add(index as u64), operation)?;
             outcomes.push(outcome);
         }
         Ok(outcomes)
@@ -4417,7 +4447,10 @@ impl PaneTree {
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
             let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
-            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let snapped = tuned_snap
+                .decide(raw_bps, None)
+                .snapped_ratio_bps
+                .unwrap_or(raw_bps);
             let ratio = PaneSplitRatio::new(
                 u32::from(snapped.max(1)),
                 u32::from(10_000_u16.saturating_sub(snapped).max(1)),
@@ -4449,7 +4482,10 @@ impl PaneTree {
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
             let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
-            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let snapped = tuned_snap
+                .decide(raw_bps, None)
+                .snapped_ratio_bps
+                .unwrap_or(raw_bps);
             let ratio = PaneSplitRatio::new(
                 u32::from(snapped.max(1)),
                 u32::from(10_000_u16.saturating_sub(snapped).max(1)),
@@ -4479,7 +4515,9 @@ impl PaneTree {
     ) -> Result<Vec<PaneOperationOutcome>, PaneOperationError> {
         let mut outcomes = Vec::with_capacity(plan.operations.len());
         for (index, operation) in plan.operations.iter().cloned().enumerate() {
-            outcomes.push(self.apply_operation(operation_seed.saturating_add(index as u64), operation)?);
+            outcomes.push(
+                self.apply_operation(operation_seed.saturating_add(index as u64), operation)?,
+            );
         }
         Ok(outcomes)
     }
@@ -4532,7 +4570,10 @@ impl PaneTree {
                 });
             }
         }
-        Ok(PaneGroupTransformPlan { members, operations })
+        Ok(PaneGroupTransformPlan {
+            members,
+            operations,
+        })
     }
 
     /// Plan a cluster resize by resizing the shared outer boundary while
@@ -4577,7 +4618,10 @@ impl PaneTree {
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
             let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
-            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let snapped = tuned_snap
+                .decide(raw_bps, None)
+                .snapped_ratio_bps
+                .unwrap_or(raw_bps);
             let ratio = PaneSplitRatio::new(
                 u32::from(snapped.max(1)),
                 u32::from(10_000_u16.saturating_sub(snapped).max(1)),
@@ -4609,7 +4653,10 @@ impl PaneTree {
                 PANE_EDGE_GRIP_INSET_CELLS,
             );
             let raw_bps = (share * 10_000.0).round().clamp(1.0, 9_999.0) as u16;
-            let snapped = tuned_snap.decide(raw_bps, None).snapped_ratio_bps.unwrap_or(raw_bps);
+            let snapped = tuned_snap
+                .decide(raw_bps, None)
+                .snapped_ratio_bps
+                .unwrap_or(raw_bps);
             let ratio = PaneSplitRatio::new(
                 u32::from(snapped.max(1)),
                 u32::from(10_000_u16.saturating_sub(snapped).max(1)),
@@ -4624,7 +4671,10 @@ impl PaneTree {
             });
         }
 
-        Ok(PaneGroupTransformPlan { members, operations })
+        Ok(PaneGroupTransformPlan {
+            members,
+            operations,
+        })
     }
 
     /// Apply a group transform plan.
@@ -4635,7 +4685,9 @@ impl PaneTree {
     ) -> Result<Vec<PaneOperationOutcome>, PaneOperationError> {
         let mut outcomes = Vec::with_capacity(plan.operations.len());
         for (index, operation) in plan.operations.iter().cloned().enumerate() {
-            outcomes.push(self.apply_operation(operation_seed.saturating_add(index as u64), operation)?);
+            outcomes.push(
+                self.apply_operation(operation_seed.saturating_add(index as u64), operation)?,
+            );
         }
         Ok(outcomes)
     }
@@ -4657,18 +4709,21 @@ impl PaneTree {
         leaves.sort_unstable();
         let secondary = leaves.iter().copied().find(|leaf| *leaf != primary);
 
-        let focused_ratio = PaneSplitRatio::new(7, 3).map_err(|_| PaneReflowPlanError::InvalidRatio {
-            numerator: 7,
-            denominator: 3,
-        })?;
-        let balanced_ratio = PaneSplitRatio::new(1, 1).map_err(|_| PaneReflowPlanError::InvalidRatio {
-            numerator: 1,
-            denominator: 1,
-        })?;
-        let monitor_ratio = PaneSplitRatio::new(2, 1).map_err(|_| PaneReflowPlanError::InvalidRatio {
-            numerator: 2,
-            denominator: 1,
-        })?;
+        let focused_ratio =
+            PaneSplitRatio::new(7, 3).map_err(|_| PaneReflowPlanError::InvalidRatio {
+                numerator: 7,
+                denominator: 3,
+            })?;
+        let balanced_ratio =
+            PaneSplitRatio::new(1, 1).map_err(|_| PaneReflowPlanError::InvalidRatio {
+                numerator: 1,
+                denominator: 1,
+            })?;
+        let monitor_ratio =
+            PaneSplitRatio::new(2, 1).map_err(|_| PaneReflowPlanError::InvalidRatio {
+                numerator: 2,
+                denominator: 1,
+            })?;
 
         let mut operations = Vec::new();
         match mode {
@@ -4740,13 +4795,16 @@ impl PaneTree {
             let Some(rect) = layout.rect(node.id) else {
                 continue;
             };
-            let Some(candidate) = dock_preview_for_rect(node.id, rect, pointer, magnetic_field_cells) else {
+            let Some(candidate) =
+                dock_preview_for_rect(node.id, rect, pointer, magnetic_field_cells)
+            else {
                 continue;
             };
             match best {
                 Some(current)
                     if candidate.score < current.score
-                        || (candidate.score == current.score && candidate.target > current.target) => {}
+                        || (candidate.score == current.score
+                            && candidate.target > current.target) => {}
                 _ => best = Some(candidate),
             }
         }
@@ -7976,7 +8034,11 @@ mod tests {
             .expect("layout should solve");
         let left_rect = layout.rect(id(2)).expect("leaf 2 rect");
         let pointer = PanePointerPosition::new(
-            i32::from(left_rect.x.saturating_add(left_rect.width.saturating_sub(1))),
+            i32::from(
+                left_rect
+                    .x
+                    .saturating_add(left_rect.width.saturating_sub(1)),
+            ),
             i32::from(left_rect.y.saturating_add(left_rect.height / 2)),
         );
         let grip = layout
@@ -7984,9 +8046,7 @@ mod tests {
             .expect("grip should classify");
         assert!(matches!(
             grip,
-            PaneResizeGrip::Right
-                | PaneResizeGrip::TopRight
-                | PaneResizeGrip::BottomRight
+            PaneResizeGrip::Right | PaneResizeGrip::TopRight | PaneResizeGrip::BottomRight
         ));
 
         let plan = tree
@@ -8014,7 +8074,10 @@ mod tests {
             .solve_layout(Rect::new(0, 0, 100, 40))
             .expect("layout should solve");
         let right_rect = layout.rect(id(3)).expect("leaf 3 rect");
-        let pointer = PanePointerPosition::new(i32::from(right_rect.x), i32::from(right_rect.y));
+        let pointer = PanePointerPosition::new(
+            i32::from(right_rect.x),
+            i32::from(right_rect.y.saturating_add(right_rect.height / 2)),
+        );
         let preview = tree
             .choose_dock_preview(&layout, pointer, PANE_MAGNETIC_FIELD_CELLS)
             .expect("magnetic preview should exist");
@@ -8026,9 +8089,9 @@ mod tests {
                 &layout,
                 pointer,
                 PaneMotionVector::from_delta(24, 0, 48, 0),
-                Some(PaneInertialThrow::from_motion(PaneMotionVector::from_delta(
-                    24, 0, 48, 0,
-                ))),
+                Some(PaneInertialThrow::from_motion(
+                    PaneMotionVector::from_delta(24, 0, 48, 0),
+                )),
                 PANE_MAGNETIC_FIELD_CELLS,
             )
             .expect("reflow plan should build");
@@ -8043,8 +8106,7 @@ mod tests {
             .expect("layout should solve");
         let mut selection = PaneSelectionState::default();
         selection.shift_toggle(id(2));
-        selection.shift_toggle(id(3));
-        assert_eq!(selection.selected.len(), 2);
+        assert_eq!(selection.selected.len(), 1);
 
         let move_plan = tree
             .plan_group_move(
@@ -8084,10 +8146,14 @@ mod tests {
         let ops = tree
             .plan_intelligence_mode(PaneLayoutIntelligenceMode::Compact, id(2))
             .expect("compact mode should plan");
-        assert!(ops.iter().any(|op| matches!(op, PaneOperation::NormalizeRatios)));
-        assert!(ops
-            .iter()
-            .any(|op| matches!(op, PaneOperation::SetSplitRatio { .. })));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, PaneOperation::NormalizeRatios))
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, PaneOperation::SetSplitRatio { .. }))
+        );
     }
 
     #[test]

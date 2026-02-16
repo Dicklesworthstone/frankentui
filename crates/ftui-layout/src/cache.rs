@@ -1392,8 +1392,8 @@ mod tests {
     fn s3fifo_layout_reset_stats() {
         let mut cache = S3FifoLayoutCache::new(64);
         let key = s3_fifo_test_key(0, 80);
-        cache.get_or_compute(key, || vec![]);
-        cache.get_or_compute(key, || vec![]);
+        cache.get_or_compute(key, Vec::new);
+        cache.get_or_compute(key, Vec::new);
         cache.reset_stats();
         let stats = cache.stats();
         assert_eq!(stats.hits, 0);

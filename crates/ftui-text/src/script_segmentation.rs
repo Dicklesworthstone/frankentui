@@ -153,56 +153,56 @@ pub fn char_script(c: char) -> Script {
     match cp {
         // ASCII and Basic Latin
         // Letters are Latin; digits, punctuation, symbols are Common
-        0x0000..=0x0040 => Script::Common,     // Controls, space, ! " # $ % & ' ( ) * + , - . / 0-9 : ; < = > ? @
-        0x0041..=0x005A => Script::Latin,       // A-Z
-        0x005B..=0x0060 => Script::Common,      // [ \ ] ^ _ `
-        0x0061..=0x007A => Script::Latin,       // a-z
-        0x007B..=0x00BF => Script::Common,      // { | } ~ DEL, Latin-1 Supplement (controls, symbols, punctuation)
-        0x00C0..=0x00D6 => Script::Latin,       // À-Ö
-        0x00D7          => Script::Common,      // ×
-        0x00D8..=0x00F6 => Script::Latin,       // Ø-ö
-        0x00F7          => Script::Common,      // ÷
-        0x00F8..=0x024F => Script::Latin,       // ø-ɏ (Latin Extended-A & B)
-        0x0250..=0x02AF => Script::Latin,       // IPA Extensions (Latin)
-        0x02B0..=0x02FF => Script::Common,      // Spacing Modifier Letters
-        0x0300..=0x036F => Script::Inherited,   // Combining Diacritical Marks
+        0x0000..=0x0040 => Script::Common, // Controls, space, ! " # $ % & ' ( ) * + , - . / 0-9 : ; < = > ? @
+        0x0041..=0x005A => Script::Latin,  // A-Z
+        0x005B..=0x0060 => Script::Common, // [ \ ] ^ _ `
+        0x0061..=0x007A => Script::Latin,  // a-z
+        0x007B..=0x00BF => Script::Common, // { | } ~ DEL, Latin-1 Supplement (controls, symbols, punctuation)
+        0x00C0..=0x00D6 => Script::Latin,  // À-Ö
+        0x00D7 => Script::Common,          // ×
+        0x00D8..=0x00F6 => Script::Latin,  // Ø-ö
+        0x00F7 => Script::Common,          // ÷
+        0x00F8..=0x024F => Script::Latin,  // ø-ɏ (Latin Extended-A & B)
+        0x0250..=0x02AF => Script::Latin,  // IPA Extensions (Latin)
+        0x02B0..=0x02FF => Script::Common, // Spacing Modifier Letters
+        0x0300..=0x036F => Script::Inherited, // Combining Diacritical Marks
 
         // Greek and Coptic
         0x0370..=0x03FF => Script::Greek,
-        0x1F00..=0x1FFF => Script::Greek,       // Greek Extended
+        0x1F00..=0x1FFF => Script::Greek, // Greek Extended
 
         // Cyrillic
         0x0400..=0x04FF => Script::Cyrillic,
-        0x0500..=0x052F => Script::Cyrillic,    // Cyrillic Supplement
-        0x2DE0..=0x2DFF => Script::Cyrillic,    // Cyrillic Extended-A
-        0xA640..=0xA69F => Script::Cyrillic,    // Cyrillic Extended-B
-        0x1C80..=0x1C8F => Script::Cyrillic,    // Cyrillic Extended-C
+        0x0500..=0x052F => Script::Cyrillic, // Cyrillic Supplement
+        0x2DE0..=0x2DFF => Script::Cyrillic, // Cyrillic Extended-A
+        0xA640..=0xA69F => Script::Cyrillic, // Cyrillic Extended-B
+        0x1C80..=0x1C8F => Script::Cyrillic, // Cyrillic Extended-C
 
         // Armenian
         0x0530..=0x058F => Script::Armenian,
-        0xFB13..=0xFB17 => Script::Armenian,    // Armenian ligatures
+        0xFB13..=0xFB17 => Script::Armenian, // Armenian ligatures
 
         // Hebrew
         0x0590..=0x05FF => Script::Hebrew,
-        0xFB1D..=0xFB4F => Script::Hebrew,      // Hebrew Presentation Forms
+        0xFB1D..=0xFB4F => Script::Hebrew, // Hebrew Presentation Forms
 
         // Arabic
         0x0600..=0x06FF => Script::Arabic,
-        0x0750..=0x077F => Script::Arabic,      // Arabic Supplement
-        0x08A0..=0x08FF => Script::Arabic,      // Arabic Extended-A
-        0xFB50..=0xFDFF => Script::Arabic,      // Arabic Presentation Forms-A
-        0xFE70..=0xFEFF => Script::Arabic,      // Arabic Presentation Forms-B
+        0x0750..=0x077F => Script::Arabic, // Arabic Supplement
+        0x08A0..=0x08FF => Script::Arabic, // Arabic Extended-A
+        0xFB50..=0xFDFF => Script::Arabic, // Arabic Presentation Forms-A
+        0xFE70..=0xFEFF => Script::Arabic, // Arabic Presentation Forms-B
 
         // Syriac
         0x0700..=0x074F => Script::Syriac,
-        0x0860..=0x086F => Script::Syriac,      // Syriac Supplement
+        0x0860..=0x086F => Script::Syriac, // Syriac Supplement
 
         // Thaana
         0x0780..=0x07BF => Script::Thaana,
 
         // Devanagari
         0x0900..=0x097F => Script::Devanagari,
-        0xA8E0..=0xA8FF => Script::Devanagari,  // Devanagari Extended
+        0xA8E0..=0xA8FF => Script::Devanagari, // Devanagari Extended
 
         // Bengali
         0x0980..=0x09FF => Script::Bengali,
@@ -242,103 +242,103 @@ pub fn char_script(c: char) -> Script {
 
         // Myanmar
         0x1000..=0x109F => Script::Myanmar,
-        0xAA60..=0xAA7F => Script::Myanmar,     // Myanmar Extended-A
+        0xAA60..=0xAA7F => Script::Myanmar, // Myanmar Extended-A
 
         // Georgian
         0x10A0..=0x10FF => Script::Georgian,
-        0x2D00..=0x2D2F => Script::Georgian,    // Georgian Supplement
-        0x1C90..=0x1CBF => Script::Georgian,    // Georgian Extended
+        0x2D00..=0x2D2F => Script::Georgian, // Georgian Supplement
+        0x1C90..=0x1CBF => Script::Georgian, // Georgian Extended
 
         // Hangul
-        0x1100..=0x11FF => Script::Hangul,      // Hangul Jamo
-        0x3130..=0x318F => Script::Hangul,      // Hangul Compatibility Jamo
-        0xA960..=0xA97F => Script::Hangul,      // Hangul Jamo Extended-A
-        0xAC00..=0xD7AF => Script::Hangul,      // Hangul Syllables
-        0xD7B0..=0xD7FF => Script::Hangul,      // Hangul Jamo Extended-B
+        0x1100..=0x11FF => Script::Hangul, // Hangul Jamo
+        0x3130..=0x318F => Script::Hangul, // Hangul Compatibility Jamo
+        0xA960..=0xA97F => Script::Hangul, // Hangul Jamo Extended-A
+        0xAC00..=0xD7AF => Script::Hangul, // Hangul Syllables
+        0xD7B0..=0xD7FF => Script::Hangul, // Hangul Jamo Extended-B
 
         // Ethiopic
         0x1200..=0x137F => Script::Ethiopic,
-        0x1380..=0x139F => Script::Ethiopic,    // Ethiopic Supplement
-        0x2D80..=0x2DDF => Script::Ethiopic,    // Ethiopic Extended
-        0xAB00..=0xAB2F => Script::Ethiopic,    // Ethiopic Extended-A
+        0x1380..=0x139F => Script::Ethiopic, // Ethiopic Supplement
+        0x2D80..=0x2DDF => Script::Ethiopic, // Ethiopic Extended
+        0xAB00..=0xAB2F => Script::Ethiopic, // Ethiopic Extended-A
 
         // Latin Extended Additional / Extended-C / Extended-D / Extended-E
-        0x1E00..=0x1EFF => Script::Latin,       // Latin Extended Additional
-        0x2C60..=0x2C7F => Script::Latin,       // Latin Extended-C
-        0xA720..=0xA7FF => Script::Latin,       // Latin Extended-D
-        0xAB30..=0xAB6F => Script::Latin,       // Latin Extended-E
-        0xFB00..=0xFB06 => Script::Latin,       // Latin ligatures
+        0x1E00..=0x1EFF => Script::Latin, // Latin Extended Additional
+        0x2C60..=0x2C7F => Script::Latin, // Latin Extended-C
+        0xA720..=0xA7FF => Script::Latin, // Latin Extended-D
+        0xAB30..=0xAB6F => Script::Latin, // Latin Extended-E
+        0xFB00..=0xFB06 => Script::Latin, // Latin ligatures
 
         // CJK / Han
-        0x2E80..=0x2EFF => Script::Han,         // CJK Radicals Supplement
-        0x2F00..=0x2FDF => Script::Han,         // Kangxi Radicals
-        0x3400..=0x4DBF => Script::Han,         // CJK Unified Ideographs Extension A
-        0x4E00..=0x9FFF => Script::Han,         // CJK Unified Ideographs
-        0xF900..=0xFAFF => Script::Han,         // CJK Compatibility Ideographs
-        0x20000..=0x2A6DF => Script::Han,       // CJK Extension B
-        0x2A700..=0x2B73F => Script::Han,       // CJK Extension C
-        0x2B740..=0x2B81F => Script::Han,       // CJK Extension D
-        0x2B820..=0x2CEAF => Script::Han,       // CJK Extension E
-        0x2CEB0..=0x2EBEF => Script::Han,       // CJK Extension F
-        0x30000..=0x3134F => Script::Han,       // CJK Extension G
+        0x2E80..=0x2EFF => Script::Han,   // CJK Radicals Supplement
+        0x2F00..=0x2FDF => Script::Han,   // Kangxi Radicals
+        0x3400..=0x4DBF => Script::Han,   // CJK Unified Ideographs Extension A
+        0x4E00..=0x9FFF => Script::Han,   // CJK Unified Ideographs
+        0xF900..=0xFAFF => Script::Han,   // CJK Compatibility Ideographs
+        0x20000..=0x2A6DF => Script::Han, // CJK Extension B
+        0x2A700..=0x2B73F => Script::Han, // CJK Extension C
+        0x2B740..=0x2B81F => Script::Han, // CJK Extension D
+        0x2B820..=0x2CEAF => Script::Han, // CJK Extension E
+        0x2CEB0..=0x2EBEF => Script::Han, // CJK Extension F
+        0x30000..=0x3134F => Script::Han, // CJK Extension G
 
         // Hiragana
         0x3040..=0x309F => Script::Hiragana,
-        0x1B001..=0x1B11F => Script::Hiragana,  // Hiragana Extended
+        0x1B001..=0x1B11F => Script::Hiragana, // Hiragana Extended
 
         // Katakana
         0x30A0..=0x30FF => Script::Katakana,
-        0x31F0..=0x31FF => Script::Katakana,    // Katakana Phonetic Extensions
-        0xFF65..=0xFF9F => Script::Katakana,    // Halfwidth Katakana
+        0x31F0..=0x31FF => Script::Katakana, // Katakana Phonetic Extensions
+        0xFF65..=0xFF9F => Script::Katakana, // Halfwidth Katakana
 
         // Bopomofo
         0x3100..=0x312F => Script::Bopomofo,
-        0x31A0..=0x31BF => Script::Bopomofo,   // Bopomofo Extended
+        0x31A0..=0x31BF => Script::Bopomofo, // Bopomofo Extended
 
         // CJK symbols and punctuation — Common (shared across CJK scripts)
         0x3000..=0x303F => Script::Common,
 
         // General Punctuation, Superscripts, Currency, Letterlike, Number Forms
-        0x2000..=0x206F => Script::Common,      // General Punctuation
-        0x2070..=0x209F => Script::Common,      // Superscripts and Subscripts
-        0x20A0..=0x20CF => Script::Common,      // Currency Symbols
-        0x20D0..=0x20FF => Script::Inherited,   // Combining Marks for Symbols
-        0x2100..=0x214F => Script::Common,      // Letterlike Symbols
-        0x2150..=0x218F => Script::Common,      // Number Forms
-        0x2190..=0x21FF => Script::Common,      // Arrows
-        0x2200..=0x22FF => Script::Common,      // Mathematical Operators
-        0x2300..=0x23FF => Script::Common,      // Miscellaneous Technical
-        0x2400..=0x243F => Script::Common,      // Control Pictures
-        0x2440..=0x245F => Script::Common,      // OCR
-        0x2460..=0x24FF => Script::Common,      // Enclosed Alphanumerics
-        0x2500..=0x257F => Script::Common,      // Box Drawing
-        0x2580..=0x259F => Script::Common,      // Block Elements
-        0x25A0..=0x25FF => Script::Common,      // Geometric Shapes
-        0x2600..=0x26FF => Script::Common,      // Miscellaneous Symbols
-        0x2700..=0x27BF => Script::Common,      // Dingbats
-        0x27C0..=0x27EF => Script::Common,      // Misc Mathematical Symbols-A
-        0x27F0..=0x27FF => Script::Common,      // Supplemental Arrows-A
-        0x2800..=0x28FF => Script::Common,      // Braille Patterns
-        0x2900..=0x297F => Script::Common,      // Supplemental Arrows-B
-        0x2980..=0x29FF => Script::Common,      // Misc Mathematical Symbols-B
-        0x2A00..=0x2AFF => Script::Common,      // Supplemental Mathematical Operators
-        0x2B00..=0x2BFF => Script::Common,      // Miscellaneous Symbols and Arrows
+        0x2000..=0x206F => Script::Common, // General Punctuation
+        0x2070..=0x209F => Script::Common, // Superscripts and Subscripts
+        0x20A0..=0x20CF => Script::Common, // Currency Symbols
+        0x20D0..=0x20FF => Script::Inherited, // Combining Marks for Symbols
+        0x2100..=0x214F => Script::Common, // Letterlike Symbols
+        0x2150..=0x218F => Script::Common, // Number Forms
+        0x2190..=0x21FF => Script::Common, // Arrows
+        0x2200..=0x22FF => Script::Common, // Mathematical Operators
+        0x2300..=0x23FF => Script::Common, // Miscellaneous Technical
+        0x2400..=0x243F => Script::Common, // Control Pictures
+        0x2440..=0x245F => Script::Common, // OCR
+        0x2460..=0x24FF => Script::Common, // Enclosed Alphanumerics
+        0x2500..=0x257F => Script::Common, // Box Drawing
+        0x2580..=0x259F => Script::Common, // Block Elements
+        0x25A0..=0x25FF => Script::Common, // Geometric Shapes
+        0x2600..=0x26FF => Script::Common, // Miscellaneous Symbols
+        0x2700..=0x27BF => Script::Common, // Dingbats
+        0x27C0..=0x27EF => Script::Common, // Misc Mathematical Symbols-A
+        0x27F0..=0x27FF => Script::Common, // Supplemental Arrows-A
+        0x2800..=0x28FF => Script::Common, // Braille Patterns
+        0x2900..=0x297F => Script::Common, // Supplemental Arrows-B
+        0x2980..=0x29FF => Script::Common, // Misc Mathematical Symbols-B
+        0x2A00..=0x2AFF => Script::Common, // Supplemental Mathematical Operators
+        0x2B00..=0x2BFF => Script::Common, // Miscellaneous Symbols and Arrows
 
         // Halfwidth and Fullwidth Forms (Latin part)
-        0xFF01..=0xFF5E => Script::Latin,       // Fullwidth ASCII variants
-        0xFF61..=0xFF64 => Script::Common,      // Halfwidth CJK punctuation
+        0xFF01..=0xFF5E => Script::Latin, // Fullwidth ASCII variants
+        0xFF61..=0xFF64 => Script::Common, // Halfwidth CJK punctuation
 
         // Emoji and symbols (Common)
-        0xFE00..=0xFE0F => Script::Inherited,   // Variation Selectors
+        0xFE00..=0xFE0F => Script::Inherited, // Variation Selectors
         0xE0100..=0xE01EF => Script::Inherited, // Variation Selectors Supplement
-        0x1F000..=0x1FAFF => Script::Common,    // Emoji and symbols blocks
-        0xFE10..=0xFE1F => Script::Common,      // Vertical Forms
-        0xFE20..=0xFE2F => Script::Inherited,   // Combining Half Marks
-        0xFE30..=0xFE4F => Script::Common,      // CJK Compatibility Forms
-        0xFE50..=0xFE6F => Script::Common,      // Small Form Variants
+        0x1F000..=0x1FAFF => Script::Common,  // Emoji and symbols blocks
+        0xFE10..=0xFE1F => Script::Common,    // Vertical Forms
+        0xFE20..=0xFE2F => Script::Inherited, // Combining Half Marks
+        0xFE30..=0xFE4F => Script::Common,    // CJK Compatibility Forms
+        0xFE50..=0xFE6F => Script::Common,    // Small Form Variants
 
         // NKo
-        0x07C0..=0x07FF => Script::Arabic,      // Treat NKo as Arabic for shaping
+        0x07C0..=0x07FF => Script::Arabic, // Treat NKo as Arabic for shaping
 
         // Fallback
         _ => Script::Unknown,
@@ -875,7 +875,11 @@ mod tests {
         let chars: Vec<char> = "e\u{0301}".chars().collect();
         let resolved = resolve_scripts(&chars);
         assert_eq!(resolved[0], Script::Latin);
-        assert_eq!(resolved[1], Script::Latin, "combining mark should inherit Latin");
+        assert_eq!(
+            resolved[1],
+            Script::Latin,
+            "combining mark should inherit Latin"
+        );
     }
 
     #[test]
@@ -1056,9 +1060,7 @@ mod tests {
     fn text_runs_style_split() {
         let text = "Hello World";
         // Style changes at byte offset 5 (the space)
-        let style_fn = |offset: usize| -> u64 {
-            if offset < 5 { 1 } else { 2 }
-        };
+        let style_fn = |offset: usize| -> u64 { if offset < 5 { 1 } else { 2 } };
         let runs = partition_text_runs(text, None, Some(&style_fn));
         assert_eq!(runs.len(), 2, "runs: {runs:?}");
         assert_eq!(runs[0].style_id, 1);

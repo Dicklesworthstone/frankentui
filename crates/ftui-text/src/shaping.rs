@@ -811,40 +811,130 @@ mod tests {
     #[test]
     fn shaping_key_same_input_same_key() {
         let ff = FontFeatures::default();
-        let k1 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
-        let k2 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
+        let k1 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
+        let k2 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
         assert_eq!(k1, k2);
     }
 
     #[test]
     fn shaping_key_differs_by_text() {
         let ff = FontFeatures::default();
-        let k1 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
-        let k2 = ShapingKey::new("World", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
+        let k1 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
+        let k2 = ShapingKey::new(
+            "World",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn shaping_key_differs_by_font() {
         let ff = FontFeatures::default();
-        let k1 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
-        let k2 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(1), 3072, &ff, 0);
+        let k1 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
+        let k2 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(1),
+            3072,
+            &ff,
+            0,
+        );
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn shaping_key_differs_by_size() {
         let ff = FontFeatures::default();
-        let k1 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
-        let k2 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 4096, &ff, 0);
+        let k1 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
+        let k2 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            4096,
+            &ff,
+            0,
+        );
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn shaping_key_differs_by_generation() {
         let ff = FontFeatures::default();
-        let k1 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
-        let k2 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 1);
+        let k1 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
+        let k2 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            1,
+        );
         assert_ne!(k1, k2);
     }
 
@@ -855,8 +945,26 @@ mod tests {
 
         let ff2 = FontFeatures::default();
 
-        let k1 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff1, 0);
-        let k2 = ShapingKey::new("Hello", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff2, 0);
+        let k1 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff1,
+            0,
+        );
+        let k2 = ShapingKey::new(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff2,
+            0,
+        );
         assert_ne!(k1, k2);
     }
 
@@ -864,7 +972,16 @@ mod tests {
     fn shaping_key_hashable() {
         use std::collections::HashSet;
         let ff = FontFeatures::default();
-        let key = ShapingKey::new("test", Script::Latin, RunDirection::Ltr, 0, FontId(0), 3072, &ff, 0);
+        let key = ShapingKey::new(
+            "test",
+            Script::Latin,
+            RunDirection::Ltr,
+            0,
+            FontId(0),
+            3072,
+            &ff,
+            0,
+        );
         let mut set = HashSet::new();
         set.insert(key.clone());
         assert!(set.contains(&key));
@@ -952,8 +1069,22 @@ mod tests {
         let mut cache = ShapingCache::new(NoopShaper, 64);
         let ff = FontFeatures::default();
 
-        let r1 = cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
-        let r2 = cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
+        let r1 = cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
+        let r2 = cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
 
         assert_eq!(r1, r2);
         assert_eq!(cache.stats().hits, 1);
@@ -965,8 +1096,22 @@ mod tests {
         let mut cache = ShapingCache::new(NoopShaper, 64);
         let ff = FontFeatures::default();
 
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
-        cache.shape("World", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
+        cache.shape(
+            "World",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
 
         assert_eq!(cache.stats().hits, 0);
         assert_eq!(cache.stats().misses, 2);
@@ -977,8 +1122,22 @@ mod tests {
         let mut cache = ShapingCache::new(NoopShaper, 64);
         let ff = FontFeatures::default();
 
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(1), 3072, &ff);
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(1),
+            3072,
+            &ff,
+        );
 
         assert_eq!(cache.stats().misses, 2);
     }
@@ -988,8 +1147,22 @@ mod tests {
         let mut cache = ShapingCache::new(NoopShaper, 64);
         let ff = FontFeatures::default();
 
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 4096, &ff);
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            4096,
+            &ff,
+        );
 
         assert_eq!(cache.stats().misses, 2);
     }
@@ -1012,7 +1185,14 @@ mod tests {
         let ff = FontFeatures::default();
 
         // Cache a result at generation 0.
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
         assert_eq!(cache.stats().misses, 1);
         assert_eq!(cache.stats().hits, 0);
 
@@ -1020,7 +1200,14 @@ mod tests {
         cache.invalidate();
 
         // Same text — should be a miss because generation changed.
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
         assert_eq!(cache.stats().misses, 2);
         assert_eq!(cache.stats().stale_evictions, 0); // old key had gen=0, new key has gen=1, they don't match by key
     }
@@ -1030,8 +1217,22 @@ mod tests {
         let mut cache = ShapingCache::new(NoopShaper, 64);
         let ff = FontFeatures::default();
 
-        cache.shape("Hello", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
-        cache.shape("World", Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
+        cache.shape(
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
+        cache.shape(
+            "World",
+            Script::Latin,
+            RunDirection::Ltr,
+            FontId(0),
+            3072,
+            &ff,
+        );
 
         cache.clear();
 
@@ -1050,7 +1251,14 @@ mod tests {
         // Fill cache with 4 entries.
         for i in 0..4u8 {
             let text = format!("text{i}");
-            cache.shape(&text, Script::Latin, RunDirection::Ltr, FontId(0), 3072, &ff);
+            cache.shape(
+                &text,
+                Script::Latin,
+                RunDirection::Ltr,
+                FontId(0),
+                3072,
+                &ff,
+            );
         }
         assert_eq!(cache.stats().size, 4);
 
@@ -1065,10 +1273,22 @@ mod tests {
         let ff = FontFeatures::default();
 
         let r1 = cache.shape_with_style(
-            "Hello", Script::Latin, RunDirection::Ltr, 1, FontId(0), 3072, &ff,
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            1,
+            FontId(0),
+            3072,
+            &ff,
         );
         let r2 = cache.shape_with_style(
-            "Hello", Script::Latin, RunDirection::Ltr, 2, FontId(0), 3072, &ff,
+            "Hello",
+            Script::Latin,
+            RunDirection::Ltr,
+            2,
+            FontId(0),
+            3072,
+            &ff,
         );
 
         // Same text but different style — both are misses.

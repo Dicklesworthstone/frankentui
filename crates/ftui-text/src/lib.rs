@@ -80,7 +80,9 @@ pub mod justification;
 pub mod layout_policy;
 pub mod script_segmentation;
 pub mod search;
+pub mod shaped_render;
 pub mod shaping;
+pub mod shaping_fallback;
 pub mod vertical_metrics;
 
 /// Bounds-based text measurement for layout negotiation.
@@ -130,6 +132,7 @@ impl TextMeasurement {
     }
 }
 
+pub use cluster_map::{ClusterEntry, ClusterMap};
 pub use cursor::{CursorNavigator, CursorPosition};
 pub use editor::{Editor, Selection};
 pub use hyphenation::{
@@ -143,15 +146,15 @@ pub use justification::{
 pub use layout_policy::{LayoutPolicy, LayoutTier, PolicyError, ResolvedPolicy, RuntimeCapability};
 pub use rope::Rope;
 pub use script_segmentation::{
-    RunCacheKey, RunDirection, Script, ScriptRun, TextRun, partition_by_script,
-    partition_text_runs,
+    RunCacheKey, RunDirection, Script, ScriptRun, TextRun, partition_by_script, partition_text_runs,
 };
 pub use segment::{ControlCode, Segment, SegmentLine, SegmentLines, join_lines, split_into_lines};
+pub use shaped_render::{CellPlacement, RenderHint, ShapedLineLayout, SpacingDelta};
 pub use shaping::{
     FontFeature, FontFeatures, FontId, NoopShaper, ShapedGlyph, ShapedRun, ShapingCache,
     ShapingCacheStats, ShapingKey, TextShaper,
 };
-pub use cluster_map::{ClusterEntry, ClusterMap};
+pub use shaping_fallback::{FallbackEvent, FallbackStats, ShapingFallback};
 pub use text::{Line, Span, Text};
 pub use vertical_metrics::{
     BaselineGrid, LeadingSpec, ParagraphSpacing, VerticalMetrics, VerticalPolicy,
