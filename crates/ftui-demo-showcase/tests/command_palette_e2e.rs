@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_demo_showcase::app::{AppModel, AppMsg, ScreenId};
-use ftui_harness::determinism::DeterminismFixture;
+use ftui_harness::determinism::{DeterminismFixture, LabScenario};
 use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_runtime::Model;
@@ -776,37 +776,51 @@ fn e2e_stress_1000_actions() {
 fn e2e_determinism() {
     log_jsonl("env", &[("test", "e2e_determinism")]);
 
-    fn run_scenario() -> (u64, ScreenId) {
-        let mut app = AppModel::new();
-        app.update(AppMsg::Resize {
-            width: 120,
-            height: 40,
+    fn run_scenario() -> (u64, ScreenId, u64) {
+        let lab = LabScenario::new_with(
+            "command_palette_e2e",
+            "command_palette_determinism",
+            42,
+            true,
+            5,
+        );
+        let run = lab.run(|_ctx| {
+            let mut app = AppModel::new();
+            app.update(AppMsg::Resize {
+                width: 120,
+                height: 40,
+            });
+
+            // Open palette, query "widget", select second result, execute.
+            open_palette(&mut app);
+            type_chars(&mut app, "widget");
+            app.update(AppMsg::from(press(KeyCode::Down)));
+            let hash = capture_frame_hash(&mut app, 120, 40);
+            app.update(AppMsg::from(press(KeyCode::Enter)));
+
+            (hash, app.current_screen)
         });
-
-        // Open palette, query "widget", select second result, execute.
-        open_palette(&mut app);
-        type_chars(&mut app, "widget");
-        app.update(AppMsg::from(press(KeyCode::Down)));
-        let hash = capture_frame_hash(&mut app, 120, 40);
-        app.update(AppMsg::from(press(KeyCode::Enter)));
-
-        (hash, app.current_screen)
+        (run.output.0, run.output.1, run.result.event_count)
     }
 
-    let (hash1, screen1) = run_scenario();
-    let (hash2, screen2) = run_scenario();
-    let (hash3, screen3) = run_scenario();
+    let (hash1, screen1, events1) = run_scenario();
+    let (hash2, screen2, events2) = run_scenario();
+    let (hash3, screen3, events3) = run_scenario();
 
     assert_eq!(hash1, hash2, "frame hashes must be deterministic");
     assert_eq!(hash2, hash3, "frame hashes must be deterministic");
     assert_eq!(screen1, screen2, "resulting screen must be deterministic");
     assert_eq!(screen2, screen3, "resulting screen must be deterministic");
+    assert_eq!(events1, events2, "lab event count must be deterministic");
+    assert_eq!(events2, events3, "lab event count must be deterministic");
+    assert_eq!(events1, 2, "lab run should emit start/end events");
 
     log_jsonl(
         "completed",
         &[
             ("frame_hash", &format!("{hash1:016x}")),
             ("deterministic", "true"),
+            ("lab_event_count", &events1.to_string()),
         ],
     );
 }

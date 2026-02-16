@@ -50,21 +50,46 @@ mod tests {
     fn operation_ids_from_snapshot_json(snapshot_json: &str) -> Vec<u64> {
         let value: serde_json::Value =
             serde_json::from_str(snapshot_json).expect("snapshot json should parse as value");
-        value
+        let entries = value
             .get("interaction_timeline")
-            .and_then(|timeline| timeline.get("entries"))
+            .unwrap_or_else(|| panic!("snapshot missing interaction_timeline: {value}"))
+            .get("entries")
             .and_then(serde_json::Value::as_array)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| {
-                        entry
-                            .get("operation_id")
-                            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("snapshot timeline missing entries array: {value}"));
+        entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                entry
+                    .get("operation_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_else(|| {
+                        panic!("timeline entry {idx} missing u64 operation_id: {entry}")
                     })
-                    .collect()
             })
-            .unwrap_or_default()
+            .collect()
+    }
+
+    fn timeline_baseline_node_ids_from_snapshot_json(snapshot_json: &str) -> Vec<u64> {
+        let value: serde_json::Value =
+            serde_json::from_str(snapshot_json).expect("snapshot json should parse as value");
+        let nodes = value
+            .get("interaction_timeline")
+            .unwrap_or_else(|| panic!("snapshot missing interaction_timeline: {value}"))
+            .get("baseline")
+            .unwrap_or_else(|| panic!("snapshot timeline missing baseline: {value}"))
+            .get("nodes")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("timeline baseline missing nodes array: {value}"));
+        nodes
+            .iter()
+            .enumerate()
+            .map(|(idx, node)| {
+                node.get("id")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_else(|| panic!("baseline node {idx} missing u64 id: {node}"))
+            })
+            .collect()
     }
 
     #[test]
@@ -372,6 +397,43 @@ mod tests {
             unique_ids.len(),
             after_ids.len(),
             "timeline operation ids should remain unique after import + mutation"
+        );
+    }
+
+    #[test]
+    fn import_snapshot_canonicalizes_timeline_baseline_nodes() {
+        let mut source = RunnerCore::new(80, 24);
+        source.init();
+        assert!(
+            apply_any_intelligence_mode(&mut source).is_some(),
+            "expected at least one adaptive mode to produce structural operations"
+        );
+        let snapshot_json = source
+            .export_workspace_snapshot_json()
+            .expect("snapshot export should succeed");
+
+        let mut mutated: serde_json::Value =
+            serde_json::from_str(&snapshot_json).expect("snapshot json should parse as value");
+        mutated["interaction_timeline"]["baseline"]["nodes"]
+            .as_array_mut()
+            .expect("timeline baseline nodes should be present")
+            .reverse();
+        let mutated_json =
+            serde_json::to_string(&mutated).expect("mutated snapshot json should encode");
+
+        let mut restored = RunnerCore::new(80, 24);
+        restored.init();
+        restored
+            .import_workspace_snapshot_json(&mutated_json)
+            .expect("snapshot import should succeed");
+        let exported = restored
+            .export_workspace_snapshot_json()
+            .expect("snapshot export after import should succeed");
+        let baseline_ids = timeline_baseline_node_ids_from_snapshot_json(&exported);
+
+        assert!(
+            baseline_ids.windows(2).all(|ids| ids[0] <= ids[1]),
+            "timeline baseline node ids should be canonicalized, got: {baseline_ids:?}"
         );
     }
 }

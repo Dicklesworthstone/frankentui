@@ -327,6 +327,9 @@ impl RunnerCore {
         metadata.saved_generation = self.workspace_generation;
         let mut snapshot = WorkspaceSnapshot::new(self.layout_tree.to_snapshot(), metadata);
         snapshot.interaction_timeline = self.timeline.clone();
+        if let Some(baseline) = snapshot.interaction_timeline.baseline.as_mut() {
+            baseline.canonicalize();
+        }
         snapshot.active_pane_id = self.selection.anchor;
         snapshot
             .validate()
@@ -345,6 +348,9 @@ impl RunnerCore {
         self.layout_tree = PaneTree::from_snapshot(snapshot.pane_tree.clone())
             .map_err(|err| format!("pane tree restore failed: {err}"))?;
         self.timeline = snapshot.interaction_timeline;
+        if let Some(baseline) = self.timeline.baseline.as_mut() {
+            baseline.canonicalize();
+        }
         if self.timeline.baseline.is_none() {
             self.timeline = PaneInteractionTimeline::with_baseline(&self.layout_tree);
         }

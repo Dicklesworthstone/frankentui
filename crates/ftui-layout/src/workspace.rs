@@ -21,7 +21,7 @@
 //! let tree = PaneTreeSnapshot {
 //!     schema_version: PANE_TREE_SCHEMA_VERSION,
 //!     root: PaneId::default(),
-//!     next_id: PaneId::default(),
+//!     next_id: PaneId::new(2).unwrap(),
 //!     nodes: vec![PaneNodeRecord::leaf(PaneId::default(), None, PaneLeaf::new("main"))],
 //!     extensions: BTreeMap::new(),
 //! };
@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pane::{
     PANE_TREE_SCHEMA_VERSION, PaneId, PaneInteractionTimeline, PaneModelError, PaneNodeKind,
-    PaneTreeSnapshot,
+    PaneTree, PaneTreeSnapshot,
 };
 
 /// Current workspace schema version.
@@ -161,6 +161,27 @@ impl WorkspaceSnapshot {
             });
         }
 
+        // Timeline must be internally replayable and agree with persisted pane_tree state.
+        if self.interaction_timeline.baseline.is_some()
+            || !self.interaction_timeline.entries.is_empty()
+        {
+            let replayed_tree = self.interaction_timeline.replay().map_err(|err| {
+                WorkspaceValidationError::TimelineReplayFailed {
+                    reason: err.to_string(),
+                }
+            })?;
+            let pane_tree = PaneTree::from_snapshot(self.pane_tree.clone())
+                .map_err(WorkspaceValidationError::PaneModel)?;
+            let pane_tree_hash = pane_tree.state_hash();
+            let replay_hash = replayed_tree.state_hash();
+            if replay_hash != pane_tree_hash {
+                return Err(WorkspaceValidationError::TimelineReplayMismatch {
+                    pane_tree_hash,
+                    replay_hash,
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -269,6 +290,13 @@ pub enum WorkspaceValidationError {
     EmptyWorkspaceName,
     /// Timeline cursor is outside the recorded history bounds.
     TimelineCursorOutOfRange { cursor: usize, len: usize },
+    /// Timeline replay failed (missing/invalid baseline or invalid operation).
+    TimelineReplayFailed { reason: String },
+    /// Timeline replay does not match the persisted pane tree state.
+    TimelineReplayMismatch {
+        pane_tree_hash: u64,
+        replay_hash: u64,
+    },
     /// Pane model error from tree operations.
     PaneModel(PaneModelError),
 }
@@ -307,6 +335,16 @@ impl fmt::Display for WorkspaceValidationError {
             Self::TimelineCursorOutOfRange { cursor, len } => write!(
                 f,
                 "interaction timeline cursor {cursor} out of bounds for history length {len}"
+            ),
+            Self::TimelineReplayFailed { reason } => {
+                write!(f, "interaction timeline replay failed: {reason}")
+            }
+            Self::TimelineReplayMismatch {
+                pane_tree_hash,
+                replay_hash,
+            } => write!(
+                f,
+                "interaction timeline replay hash {replay_hash} does not match pane tree hash {pane_tree_hash}"
             ),
             Self::PaneModel(e) => write!(f, "pane model error: {e}"),
         }
@@ -407,7 +445,7 @@ mod tests {
     use super::*;
     use crate::pane::{
         PaneInteractionTimelineEntry, PaneLeaf, PaneNodeKind, PaneNodeRecord, PaneOperation,
-        PaneSplit, PaneSplitRatio, SplitAxis,
+        PaneSplit, PaneSplitRatio, PaneTree, SplitAxis,
     };
 
     fn minimal_tree() -> PaneTreeSnapshot {
@@ -588,6 +626,39 @@ mod tests {
         assert!(matches!(
             err,
             WorkspaceValidationError::TimelineCursorOutOfRange { .. }
+        ));
+    }
+
+    #[test]
+    fn validate_timeline_with_entries_requires_baseline() {
+        let mut snap = minimal_snapshot();
+        snap.interaction_timeline.cursor = 1;
+        snap.interaction_timeline
+            .entries
+            .push(PaneInteractionTimelineEntry {
+                sequence: 1,
+                operation_id: 10,
+                operation: PaneOperation::NormalizeRatios,
+                before_hash: 1,
+                after_hash: 2,
+            });
+        let err = snap.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            WorkspaceValidationError::TimelineReplayFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_timeline_replay_mismatch() {
+        let mut snap = WorkspaceSnapshot::new(split_tree(), WorkspaceMetadata::new("mismatch"));
+        let baseline_tree = PaneTree::from_snapshot(minimal_tree())
+            .expect("minimal pane tree snapshot should load");
+        snap.interaction_timeline = PaneInteractionTimeline::with_baseline(&baseline_tree);
+        let err = snap.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            WorkspaceValidationError::TimelineReplayMismatch { .. }
         ));
     }
 
