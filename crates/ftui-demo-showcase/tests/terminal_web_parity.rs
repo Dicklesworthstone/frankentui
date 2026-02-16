@@ -71,8 +71,8 @@ fn capture_signature(
     rows: u16,
     label: String,
 ) -> FrameParitySignature {
-    let terminal_buffer = terminal.capture_frame(cols, rows);
-    let terminal_hash = checksum_buffer(terminal_buffer, terminal.pool());
+    let terminal_buffer = terminal.capture_frame(cols, rows).clone();
+    let terminal_hash = checksum_buffer(&terminal_buffer, terminal.pool());
     let web_buffer = web
         .outputs()
         .last_buffer
