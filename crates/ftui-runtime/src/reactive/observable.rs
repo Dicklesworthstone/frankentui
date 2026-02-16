@@ -28,6 +28,8 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use tracing::{info, info_span};
+use web_time::Instant;
 
 /// A subscriber callback stored as a strong `Rc` internally, handed out
 /// as `Weak` to the observable.
@@ -199,21 +201,46 @@ impl<T: Clone + PartialEq + 'static> Observable<T> {
             return;
         }
 
-        // Clone the value once for all callbacks.
-        let value = self.inner.borrow().value.clone();
+        let widgets_invalidated = callbacks.len() as u64;
 
         if super::batch::is_batching() {
+            super::batch::record_rows_changed(1);
             // Defer each callback to the batch queue.
             for cb in callbacks {
-                let v = value.clone();
-                super::batch::defer_or_run(move || cb(&v));
+                let callback_key = Rc::as_ptr(&cb) as *const () as usize;
+                let source = self.clone();
+                super::batch::defer_or_run_keyed(callback_key, move || {
+                    let latest = source.get();
+                    cb(&latest);
+                });
             }
-        } else {
-            // Fire immediately.
-            for cb in &callbacks {
-                cb(&value);
-            }
+            return;
         }
+
+        // Clone the value once for all callbacks.
+        let value = self.inner.borrow().value.clone();
+        let propagation_start = Instant::now();
+        let _span = info_span!(
+            "bloodstream.delta",
+            rows_changed = 1_u64,
+            widgets_invalidated,
+            duration_us = tracing::field::Empty
+        )
+        .entered();
+
+        // Fire immediately.
+        for cb in &callbacks {
+            cb(&value);
+        }
+
+        let duration_us = propagation_start.elapsed().as_micros() as u64;
+        tracing::Span::current().record("duration_us", duration_us);
+        info!(
+            bloodstream_propagation_duration_us = duration_us,
+            rows_changed = 1_u64,
+            widgets_invalidated,
+            "bloodstream propagation duration histogram"
+        );
     }
 }
 
@@ -245,6 +272,98 @@ impl std::fmt::Debug for Subscription {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TableSnapshot {
+        schema_version: u64,
+        rows: Vec<String>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RenderMode {
+        PartialDelta,
+        FullRerender,
+    }
+
+    fn classify_render_mode(previous: &TableSnapshot, next: &TableSnapshot) -> RenderMode {
+        if previous.schema_version != next.schema_version {
+            RenderMode::FullRerender
+        } else {
+            RenderMode::PartialDelta
+        }
+    }
+
+    #[derive(Default)]
+    struct DeltaSpanVisitor {
+        rows_changed: Option<u64>,
+        widgets_invalidated: Option<u64>,
+    }
+
+    impl Visit for DeltaSpanVisitor {
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            match field.name() {
+                "rows_changed" => self.rows_changed = Some(value),
+                "widgets_invalidated" => self.widgets_invalidated = Some(value),
+                _ => {}
+            }
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            if value < 0 {
+                return;
+            }
+            self.record_u64(field, value as u64);
+        }
+
+        fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
+    }
+
+    struct DeltaSpanSubscriber {
+        next_id: AtomicU64,
+        spans: Arc<Mutex<Vec<(u64, u64)>>>,
+    }
+
+    impl tracing::Subscriber for DeltaSpanSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            if attrs.metadata().name() == "bloodstream.delta" {
+                let mut visitor = DeltaSpanVisitor::default();
+                attrs.record(&mut visitor);
+                self.spans.lock().expect("span capture lock").push((
+                    visitor.rows_changed.unwrap_or(0),
+                    visitor.widgets_invalidated.unwrap_or(0),
+                ));
+            }
+            tracing::span::Id::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed))
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, _event: &tracing::Event<'_>) {}
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn capture_delta_spans(run: impl FnOnce()) -> Vec<(u64, u64)> {
+        let spans = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = DeltaSpanSubscriber {
+            next_id: AtomicU64::new(1),
+            spans: Arc::clone(&spans),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+        run();
+        spans.lock().expect("span capture lock").clone()
+    }
 
     #[test]
     fn get_set_basic() {
@@ -500,6 +619,121 @@ mod tests {
         obs.set(2);
         assert_eq!(a.get(), 1); // A was unsubscribed.
         assert_eq!(b.get(), 2); // B still active.
+    }
+
+    #[test]
+    fn single_row_change_propagates_only_to_bound_widgets() {
+        let row_a = Observable::new(vec!["a".to_string()]);
+        let row_b = Observable::new(vec!["b".to_string()]);
+        let a_hits = Rc::new(Cell::new(0u32));
+        let b_hits = Rc::new(Cell::new(0u32));
+        let a_hits_clone = Rc::clone(&a_hits);
+        let b_hits_clone = Rc::clone(&b_hits);
+
+        let _sub_a = row_a.subscribe(move |_| a_hits_clone.set(a_hits_clone.get() + 1));
+        let _sub_b = row_b.subscribe(move |_| b_hits_clone.set(b_hits_clone.get() + 1));
+
+        row_a.set(vec!["a2".to_string()]);
+        assert_eq!(a_hits.get(), 1, "bound row-A widget should be invalidated");
+        assert_eq!(
+            b_hits.get(),
+            0,
+            "unbound row-B widget should remain untouched"
+        );
+    }
+
+    #[test]
+    fn batch_delta_propagates_atomically_without_stale_intermediate_values() {
+        let rows = Observable::new(vec!["r0".to_string()]);
+        let seen = Rc::new(RefCell::new(Vec::<Vec<String>>::new()));
+        let seen_clone = Rc::clone(&seen);
+        let _sub = rows.subscribe(move |current| seen_clone.borrow_mut().push(current.clone()));
+
+        {
+            let _batch = crate::reactive::batch::BatchScope::new();
+            rows.set(vec!["r1".to_string()]);
+            rows.set(vec!["r1".to_string(), "r2".to_string()]);
+            rows.update(|current| current.push("r3".to_string()));
+            assert!(
+                seen.borrow().is_empty(),
+                "callbacks must be deferred until batch exit"
+            );
+        }
+
+        let snapshots = seen.borrow();
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "batched updates should coalesce to one invalidation"
+        );
+        assert_eq!(
+            snapshots[0],
+            vec!["r1".to_string(), "r2".to_string(), "r3".to_string()],
+            "subscriber must observe only final state"
+        );
+    }
+
+    #[test]
+    fn unbound_table_updates_produce_no_bloodstream_delta() {
+        let table_rows = Observable::new(vec!["old".to_string()]);
+        let spans = capture_delta_spans(|| {
+            table_rows.set(vec!["new".to_string()]);
+        });
+        assert!(
+            spans.is_empty(),
+            "unbound table updates should not emit bloodstream deltas"
+        );
+    }
+
+    #[test]
+    fn bloodstream_delta_span_reports_rows_changed_and_widgets_invalidated() {
+        let table_rows = Observable::new(vec!["old".to_string()]);
+        let _sub_a = table_rows.subscribe(|_| {});
+        let _sub_b = table_rows.subscribe(|_| {});
+
+        let spans = capture_delta_spans(|| {
+            table_rows.set(vec!["new".to_string()]);
+        });
+        assert_eq!(
+            spans,
+            vec![(1, 2)],
+            "single-row change should report one row and two invalidated widgets"
+        );
+    }
+
+    #[test]
+    fn schema_change_requires_full_rerender_not_partial_delta() {
+        let table = Observable::new(TableSnapshot {
+            schema_version: 1,
+            rows: vec!["alpha".to_string()],
+        });
+        let previous = Rc::new(RefCell::new(Some(table.get())));
+        let decisions = Rc::new(RefCell::new(Vec::<RenderMode>::new()));
+        let previous_clone = Rc::clone(&previous);
+        let decisions_clone = Rc::clone(&decisions);
+
+        let _sub = table.subscribe(move |next| {
+            let mut prev = previous_clone.borrow_mut();
+            let current_mode =
+                classify_render_mode(prev.as_ref().expect("previous snapshot available"), next);
+            decisions_clone.borrow_mut().push(current_mode);
+            *prev = Some(next.clone());
+        });
+
+        table.set(TableSnapshot {
+            schema_version: 1,
+            rows: vec!["alpha".to_string(), "beta".to_string()],
+        });
+        table.set(TableSnapshot {
+            schema_version: 2,
+            rows: vec!["alpha".to_string(), "beta".to_string()],
+        });
+
+        assert_eq!(
+            *decisions.borrow(),
+            vec![RenderMode::PartialDelta, RenderMode::FullRerender],
+            "schema-version changes must force full rerender semantics"
+        );
     }
 
     #[test]

@@ -39,17 +39,40 @@
 //!   The first panic is re-raised after all callbacks have been attempted.
 
 use std::cell::RefCell;
+use tracing::{info, info_span};
+use web_time::Instant;
 
 /// A deferred notification: a closure that fires a subscriber callback
 /// with the latest value.
 type DeferredNotify = Box<dyn FnOnce()>;
+
+/// Deferred callback entry optionally keyed for in-batch coalescing.
+struct DeferredEntry {
+    key: Option<usize>,
+    notify: DeferredNotify,
+}
+
+impl DeferredEntry {
+    fn unkeyed(notify: DeferredNotify) -> Self {
+        Self { key: None, notify }
+    }
+
+    fn keyed(key: usize, notify: DeferredNotify) -> Self {
+        Self {
+            key: Some(key),
+            notify,
+        }
+    }
+}
 
 /// Thread-local batch context.
 struct BatchContext {
     /// Nesting depth. Only flush when this reaches 0.
     depth: u32,
     /// Queued notifications to fire on flush.
-    deferred: Vec<DeferredNotify>,
+    deferred: Vec<DeferredEntry>,
+    /// Number of source row updates coalesced into this batch.
+    rows_changed: u64,
 }
 
 thread_local! {
@@ -71,7 +94,7 @@ pub fn defer_or_run(f: impl FnOnce() + 'static) -> bool {
     BATCH_CTX.with(|ctx| {
         let mut guard = ctx.borrow_mut();
         if let Some(ref mut batch) = *guard {
-            batch.deferred.push(Box::new(f));
+            batch.deferred.push(DeferredEntry::unkeyed(Box::new(f)));
             true
         } else {
             drop(guard); // Release borrow before calling f.
@@ -81,16 +104,75 @@ pub fn defer_or_run(f: impl FnOnce() + 'static) -> bool {
     })
 }
 
-/// Flush all deferred notifications. Called internally by `BatchScope::drop`.
-fn flush() {
-    let deferred: Vec<DeferredNotify> = BATCH_CTX.with(|ctx| {
+/// Enqueue a deferred notification keyed by `key`.
+///
+/// If the key already exists in the current batch, the previously queued
+/// callback is replaced so the latest callback wins while preserving the
+/// original enqueue order.
+pub fn defer_or_run_keyed(key: usize, f: impl FnOnce() + 'static) -> bool {
+    BATCH_CTX.with(|ctx| {
         let mut guard = ctx.borrow_mut();
         if let Some(ref mut batch) = *guard {
-            std::mem::take(&mut batch.deferred)
+            if let Some(entry) = batch
+                .deferred
+                .iter_mut()
+                .find(|entry| entry.key == Some(key))
+            {
+                entry.notify = Box::new(f);
+            } else {
+                batch.deferred.push(DeferredEntry::keyed(key, Box::new(f)));
+            }
+            true
         } else {
-            Vec::new()
+            drop(guard); // Release borrow before calling f.
+            f();
+            false
+        }
+    })
+}
+
+/// Record row-level changes while a batch is active.
+pub fn record_rows_changed(rows: u64) {
+    if rows == 0 {
+        return;
+    }
+    BATCH_CTX.with(|ctx| {
+        if let Some(ref mut batch) = *ctx.borrow_mut() {
+            batch.rows_changed = batch.rows_changed.saturating_add(rows);
         }
     });
+}
+
+/// Flush all deferred notifications. Called internally by `BatchScope::drop`.
+fn flush() {
+    let (rows_changed, deferred): (u64, Vec<DeferredNotify>) = BATCH_CTX.with(|ctx| {
+        let mut guard = ctx.borrow_mut();
+        if let Some(ref mut batch) = *guard {
+            let rows = batch.rows_changed;
+            batch.rows_changed = 0;
+            let deferred = std::mem::take(&mut batch.deferred)
+                .into_iter()
+                .map(|entry| entry.notify)
+                .collect();
+            (rows, deferred)
+        } else {
+            (0, Vec::new())
+        }
+    });
+
+    if deferred.is_empty() {
+        return;
+    }
+
+    let widgets_invalidated = deferred.len() as u64;
+    let propagation_start = Instant::now();
+    let _span = info_span!(
+        "bloodstream.delta",
+        rows_changed,
+        widgets_invalidated,
+        duration_us = tracing::field::Empty
+    )
+    .entered();
 
     // Run all deferred notifications outside the borrow.
     // If a callback panics, we still try to run the rest.
@@ -103,6 +185,13 @@ fn flush() {
             first_panic = Some(payload);
         }
     }
+
+    let duration_us = propagation_start.elapsed().as_micros() as u64;
+    tracing::Span::current().record("duration_us", duration_us);
+    info!(
+        bloodstream_propagation_duration_us = duration_us,
+        rows_changed, widgets_invalidated, "bloodstream propagation duration histogram"
+    );
 
     if let Some(payload) = first_panic {
         std::panic::resume_unwind(payload);
@@ -138,6 +227,7 @@ impl BatchScope {
                     *guard = Some(BatchContext {
                         depth: 1,
                         deferred: Vec::new(),
+                        rows_changed: 0,
                     });
                     true
                 }
@@ -199,6 +289,7 @@ mod tests {
     use super::*;
     use crate::reactive::Observable;
     use std::cell::Cell;
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     #[test]
@@ -322,6 +413,53 @@ mod tests {
             assert!(!ran.get());
         }
         assert!(ran.get());
+    }
+
+    #[test]
+    fn defer_or_run_keyed_coalesces_to_latest_callback() {
+        let value = Rc::new(Cell::new(0u32));
+        let v1 = Rc::clone(&value);
+        let v2 = Rc::clone(&value);
+
+        let batch = BatchScope::new();
+        assert_eq!(batch.pending_count(), 0);
+
+        assert!(defer_or_run_keyed(7, move || v1.set(1)));
+        assert_eq!(batch.pending_count(), 1);
+        assert!(defer_or_run_keyed(7, move || v2.set(2)));
+        assert_eq!(batch.pending_count(), 1, "same key should be coalesced");
+        assert_eq!(value.get(), 0, "callback should remain deferred");
+        drop(batch);
+
+        assert_eq!(value.get(), 2, "latest keyed callback should run");
+    }
+
+    #[test]
+    fn defer_or_run_keyed_preserves_first_enqueue_order() {
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let o1 = Rc::clone(&order);
+        let o2 = Rc::clone(&order);
+        let o3 = Rc::clone(&order);
+
+        {
+            let batch = BatchScope::new();
+            assert!(defer_or_run_keyed(1, move || o1
+                .borrow_mut()
+                .push("first-old")));
+            assert!(defer_or_run_keyed(2, move || o2
+                .borrow_mut()
+                .push("second")));
+            assert!(defer_or_run_keyed(1, move || o3
+                .borrow_mut()
+                .push("first-new")));
+            assert_eq!(batch.pending_count(), 2);
+        }
+
+        assert_eq!(
+            *order.borrow(),
+            vec!["first-new", "second"],
+            "replaced keyed callback should keep its original queue position"
+        );
     }
 
     #[test]

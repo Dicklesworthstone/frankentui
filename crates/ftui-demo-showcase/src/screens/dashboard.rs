@@ -3259,6 +3259,7 @@ pub struct Dashboard {
     frame_times: VecDeque<u64>,
     last_frame: Option<Instant>,
     fps: f64,
+    deterministic_tick_us: Option<u64>,
 
     // Syntax highlighter (cached)
     highlighter: Arc<SyntaxHighlighter>,
@@ -3322,6 +3323,7 @@ impl Dashboard {
             frame_times: VecDeque::with_capacity(60),
             last_frame: None,
             fps: 0.0,
+            deterministic_tick_us: None,
             highlighter: Arc::clone(&highlighter),
             code_cache,
             md_renderer: MarkdownRenderer::new(MarkdownTheme::default())
@@ -3351,6 +3353,13 @@ impl Dashboard {
         self.highlighter = Arc::clone(&highlighter);
         self.md_renderer =
             MarkdownRenderer::new(MarkdownTheme::default()).with_syntax_highlighter(highlighter);
+    }
+
+    pub fn enable_deterministic_mode(&mut self, tick_ms: u64) {
+        self.deterministic_tick_us = Some(tick_ms.max(1) * 1000);
+        self.frame_times.clear();
+        self.last_frame = None;
+        self.fps = 0.0;
     }
 
     fn build_code_cache(highlighter: &SyntaxHighlighter) -> Vec<Text> {
@@ -3620,8 +3629,11 @@ impl Dashboard {
 
     /// Update FPS calculation.
     fn update_fps(&mut self) {
-        if determinism::is_demo_deterministic() {
-            let dt_us = determinism::demo_tick_ms(100).max(1) * 1000;
+        let deterministic_tick_us = self.deterministic_tick_us.or_else(|| {
+            determinism::is_demo_deterministic()
+                .then_some(determinism::demo_tick_ms(100).max(1) * 1000)
+        });
+        if let Some(dt_us) = deterministic_tick_us {
             self.frame_times.push_back(dt_us);
             if self.frame_times.len() > 30 {
                 self.frame_times.pop_front();
@@ -6080,6 +6092,24 @@ mod tests {
             !state.simulated_data.memory_history.is_empty(),
             "Memory history should be populated"
         );
+    }
+
+    #[test]
+    fn dashboard_deterministic_mode_stabilizes_fps_sampling() {
+        let mut a = Dashboard::new();
+        let mut b = Dashboard::new();
+        a.enable_deterministic_mode(100);
+        b.enable_deterministic_mode(100);
+
+        for t in 1..=8 {
+            a.tick(t);
+            b.tick(t);
+        }
+
+        assert_eq!(a.frame_times, b.frame_times);
+        assert_eq!(a.fps.to_bits(), b.fps.to_bits());
+        assert_eq!(a.last_frame, None);
+        assert_eq!(b.last_frame, None);
     }
 
     #[test]

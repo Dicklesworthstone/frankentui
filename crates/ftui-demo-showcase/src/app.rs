@@ -2688,6 +2688,9 @@ impl AppModel {
             let perf_tick_ms = determinism::demo_tick_ms(100);
             let vfx_tick_ms = determinism::demo_tick_ms(16);
             app.screens
+                .dashboard
+                .enable_deterministic_mode(perf_tick_ms);
+            app.screens
                 .performance_hud
                 .enable_deterministic_mode(perf_tick_ms);
             app.screens
@@ -2701,6 +2704,26 @@ impl AppModel {
     pub fn with_a11y_telemetry_hooks(mut self, hooks: A11yTelemetryHooks) -> Self {
         self.a11y_telemetry = Some(hooks);
         self
+    }
+
+    /// Force deterministic mode for parity/snapshot-style test harnesses.
+    ///
+    /// This avoids wall-clock drift in dashboard/perf metrics and aligns
+    /// animation cadence across terminal and web drivers.
+    pub fn enable_deterministic_mode_for_test(&mut self, tick_ms: u64, vfx_tick_ms: u64) {
+        let tick_ms = tick_ms.max(1);
+        let vfx_tick_ms = vfx_tick_ms.max(1);
+        self.deterministic_mode = true;
+        self.deterministic_tick_ms = Some(tick_ms);
+        self.perf_last_tick = None;
+        self.tick_last_seen = None;
+        self.tick_stall_last_log.set(None);
+        self.screens.dashboard.enable_deterministic_mode(tick_ms);
+        self.screens
+            .performance_hud
+            .enable_deterministic_mode(tick_ms);
+        self.screens
+            .set_visual_effects_deterministic_tick_ms(vfx_tick_ms);
     }
 
     fn display_screen(&self) -> ScreenId {

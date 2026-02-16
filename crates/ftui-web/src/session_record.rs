@@ -54,6 +54,8 @@ use ftui_runtime::render_trace::checksum_buffer;
 
 use crate::WebBackendError;
 use crate::step_program::{StepProgram, StepResult};
+#[cfg(feature = "tracing")]
+use tracing::{error, info_span};
 
 /// Schema version for session traces.
 pub const SCHEMA_VERSION: &str = "golden-trace-v1";
@@ -999,6 +1001,41 @@ fn json_unescape(input: &str) -> String {
     out
 }
 
+fn check_trace_schema_compat(schema_version: &str, line_num: usize) -> Result<(), TraceParseError> {
+    let incompatible = schema_version != SCHEMA_VERSION;
+
+    #[cfg(feature = "tracing")]
+    {
+        let span = info_span!(
+            "trace.compat_check",
+            reader_schema_version = SCHEMA_VERSION,
+            writer_schema_version = schema_version,
+            line = line_num,
+            compatible = !incompatible,
+        );
+        let _guard = span.enter();
+
+        if incompatible {
+            error!(
+                reader_schema_version = SCHEMA_VERSION,
+                writer_schema_version = schema_version,
+                line = line_num,
+                "trace schema version incompatible"
+            );
+        }
+    }
+
+    if incompatible {
+        return Err(TraceParseError {
+            line: line_num,
+            message: format!(
+                "unsupported schema_version: {schema_version} (reader={SCHEMA_VERSION}, migration required)"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn parse_trace_line(line: &str, line_num: usize) -> Result<TraceRecord, TraceParseError> {
     let err = |msg: &str| TraceParseError {
         line: line_num,
@@ -1007,11 +1044,7 @@ fn parse_trace_line(line: &str, line_num: usize) -> Result<TraceRecord, TracePar
 
     let schema_version = extract_str(line, "schema_version")
         .ok_or_else(|| err("missing \"schema_version\" field"))?;
-    if schema_version != SCHEMA_VERSION {
-        return Err(err(&format!(
-            "unsupported schema_version: {schema_version}"
-        )));
-    }
+    check_trace_schema_compat(schema_version, line_num)?;
 
     let event = extract_str(line, "event").ok_or_else(|| err("missing \"event\" field"))?;
 
@@ -1439,6 +1472,76 @@ mod tests {
     use ftui_render::frame::Frame;
     use ftui_runtime::program::{Cmd, Model};
     use pretty_assertions::assert_eq;
+    #[cfg(feature = "tracing")]
+    use std::sync::{Arc, Mutex};
+    #[cfg(feature = "tracing")]
+    use tracing::Subscriber;
+    #[cfg(feature = "tracing")]
+    use tracing::field::{Field, Visit};
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::Layer;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::filter::LevelFilter;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::registry::LookupSpan;
+
+    #[cfg(feature = "tracing")]
+    #[derive(Default, Clone)]
+    struct TraceCaptureLayer {
+        spans: Arc<Mutex<Vec<String>>>,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[cfg(feature = "tracing")]
+    #[derive(Default)]
+    struct EventMessageVisitor {
+        message: Option<String>,
+    }
+
+    #[cfg(feature = "tracing")]
+    impl Visit for EventMessageVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "message" {
+                self.message = Some(value.to_string());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    impl<S> Layer<S> for TraceCaptureLayer
+    where
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            self.spans
+                .lock()
+                .expect("span capture lock")
+                .push(attrs.metadata().name().to_string());
+        }
+
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = EventMessageVisitor::default();
+            event.record(&mut visitor);
+            let message = visitor.message.unwrap_or_default();
+            self.events
+                .lock()
+                .expect("event capture lock")
+                .push(format!("{}:{}", event.metadata().level(), message));
+        }
+    }
 
     // ---- Test model (same as step_program tests) ----
 
@@ -2291,15 +2394,50 @@ mod tests {
     }
 
     #[test]
-    fn from_jsonl_unknown_schema_version_fails() {
+    fn from_jsonl_schema_matrix_current_writer_version_passes() {
+        let line = format!(
+            r#"{{"schema_version":"{}","event":"tick","ts_ns":0}}"#,
+            SCHEMA_VERSION
+        );
+        let trace = SessionTrace::from_jsonl(&line).expect("matching schema should parse");
+        assert_eq!(trace.records, vec![TraceRecord::Tick { ts_ns: 0 }]);
+    }
+
+    #[test]
+    fn from_jsonl_schema_matrix_newer_writer_version_fails_with_migration_error() {
         let line = r#"{"schema_version":"golden-trace-v2","event":"tick","ts_ns":0}"#;
         let result = SessionTrace::from_jsonl(line);
         assert!(result.is_err());
+        let message = result.unwrap_err().message;
+        assert!(message.contains("unsupported schema_version"));
+        assert!(message.contains("migration required"));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn schema_incompatibility_emits_compat_span_and_error_log() {
+        let capture = TraceCaptureLayer::default();
+        let subscriber =
+            tracing_subscriber::registry().with(capture.clone().with_filter(LevelFilter::TRACE));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let line = r#"{"schema_version":"golden-trace-v2","event":"tick","ts_ns":0}"#;
+        let err = SessionTrace::from_jsonl(line).expect_err("newer schema should fail");
+        assert!(err.message.contains("migration required"));
+
+        let spans = capture.spans.lock().expect("span capture lock");
         assert!(
-            result
-                .unwrap_err()
-                .message
-                .contains("unsupported schema_version")
+            spans.iter().any(|name| name == "trace.compat_check"),
+            "expected trace.compat_check span, got {spans:?}"
+        );
+        drop(spans);
+
+        let events = capture.events.lock().expect("event capture lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.contains("ERROR:trace schema version incompatible")),
+            "expected incompatible schema ERROR log, got {events:?}"
         );
     }
 

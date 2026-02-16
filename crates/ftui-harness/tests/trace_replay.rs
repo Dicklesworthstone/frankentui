@@ -557,3 +557,386 @@ fn replay_nonexistent_file_fails() {
         .expect_err("should fail for nonexistent file");
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 }
+
+mod frankenlab_replay {
+    use super::*;
+    use ftui_harness::determinism::{JsonValue, LabScenario};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct ScenarioFrame {
+        width: u16,
+        height: u16,
+        cells: Vec<CellData>,
+        checksum: u64,
+    }
+
+    #[derive(Clone)]
+    struct ScenarioOutput {
+        frames: Vec<ScenarioFrame>,
+        async_completed: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TraceArtifacts {
+        trace_jsonl: String,
+        payloads: Vec<Vec<u8>>,
+        frame_count: usize,
+        last_checksum: u64,
+        async_completed: bool,
+        event_count: u64,
+    }
+
+    #[derive(Debug)]
+    struct SyntheticAppState {
+        width: u16,
+        height: u16,
+        timer_ticks: u64,
+        animation_ticks: u64,
+        resize_events: u64,
+        last_now_ms: u64,
+        keyboard: Vec<char>,
+        animation_phase: u8,
+    }
+
+    impl Default for SyntheticAppState {
+        fn default() -> Self {
+            Self {
+                width: 24,
+                height: 4,
+                timer_ticks: 0,
+                animation_ticks: 0,
+                resize_events: 0,
+                last_now_ms: 0,
+                keyboard: Vec::new(),
+                animation_phase: 0,
+            }
+        }
+    }
+
+    fn write_line(cells: &mut [CellData], width: u16, height: u16, row: u16, text: &str) {
+        if row >= height {
+            return;
+        }
+        let width = width as usize;
+        let row = row as usize;
+        for (col, ch) in text.chars().take(width).enumerate() {
+            let idx = row * width + col;
+            cells[idx] = CellData {
+                kind: 1,
+                char_code: ch as u32,
+                ..Default::default()
+            };
+        }
+    }
+
+    fn render_scenario_frame(state: &SyntheticAppState) -> ScenarioFrame {
+        let mut cells = vec![CellData::default(); state.width as usize * state.height as usize];
+        let keyboard: String = state.keyboard.iter().collect();
+        let line0 = format!("tick:{} t={}ms", state.timer_ticks, state.last_now_ms);
+        let line1 = format!("keys:{keyboard}");
+        let line2 = format!(
+            "resize:{} anim:{}",
+            state.resize_events, state.animation_phase
+        );
+        let line3 = format!("anim_ticks:{}", state.animation_ticks);
+        write_line(&mut cells, state.width, state.height, 0, &line0);
+        write_line(&mut cells, state.width, state.height, 1, &line1);
+        write_line(&mut cells, state.width, state.height, 2, &line2);
+        write_line(&mut cells, state.width, state.height, 3, &line3);
+        let checksum = checksum_grid(&cells);
+        ScenarioFrame {
+            width: state.width,
+            height: state.height,
+            cells,
+            checksum,
+        }
+    }
+
+    fn encode_full_buffer_payload(width: u16, height: u16, cells: &[CellData]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(
+            4 + cells
+                .iter()
+                .map(|cell| {
+                    1 + match cell.kind {
+                        1 => 4,
+                        2 => 2 + cell.grapheme.len(),
+                        _ => 0,
+                    } + 12
+                })
+                .sum::<usize>(),
+        );
+        out.extend_from_slice(&width.to_le_bytes());
+        out.extend_from_slice(&height.to_le_bytes());
+        for cell in cells {
+            out.push(cell.kind);
+            match cell.kind {
+                0 | 3 => {}
+                1 => out.extend_from_slice(&cell.char_code.to_le_bytes()),
+                2 => {
+                    let len = u16::try_from(cell.grapheme.len()).unwrap_or(u16::MAX);
+                    out.extend_from_slice(&len.to_le_bytes());
+                    out.extend_from_slice(&cell.grapheme);
+                }
+                _ => {}
+            }
+            out.extend_from_slice(&cell.fg.to_le_bytes());
+            out.extend_from_slice(&cell.bg.to_le_bytes());
+            out.extend_from_slice(&cell.attrs.to_le_bytes());
+        }
+        out
+    }
+
+    fn build_trace_artifacts(seed: u64) -> TraceArtifacts {
+        let scenario =
+            LabScenario::new_with("frankenlab_replay", "deterministic_full_app", seed, true, 1);
+        let run = scenario.run(|ctx| {
+            let mut state = SyntheticAppState::default();
+            let mut frames = Vec::new();
+
+            for step in 0_u16..12_u16 {
+                state.timer_ticks = state.timer_ticks.saturating_add(1);
+                state.last_now_ms = ctx.now_ms();
+                ctx.log_info(
+                    "lab.event.timer",
+                    &[
+                        ("step", JsonValue::u64(step as u64)),
+                        ("tick", JsonValue::u64(state.timer_ticks)),
+                    ],
+                );
+
+                let key = char::from(b'a'.wrapping_add(((seed + step as u64) % 26) as u8));
+                state.keyboard.push(key);
+                if state.keyboard.len() > 10 {
+                    state.keyboard.remove(0);
+                }
+                ctx.log_info(
+                    "lab.event.keyboard",
+                    &[
+                        ("step", JsonValue::u64(step as u64)),
+                        ("key", JsonValue::str(key.to_string())),
+                    ],
+                );
+
+                if step % 3 == 0 {
+                    state.width = 20 + (((seed as u16) + step) % 5);
+                    state.height = 3 + (((seed as u16) + step) % 2);
+                    state.resize_events = state.resize_events.saturating_add(1);
+                    ctx.log_info(
+                        "lab.event.resize",
+                        &[
+                            ("step", JsonValue::u64(step as u64)),
+                            ("cols", JsonValue::u64(state.width as u64)),
+                            ("rows", JsonValue::u64(state.height as u64)),
+                        ],
+                    );
+                }
+
+                state.animation_ticks = state.animation_ticks.saturating_add(1);
+                state.animation_phase =
+                    ((state.animation_phase as u64 + seed + state.last_now_ms + step as u64) % 32)
+                        as u8;
+                ctx.log_info(
+                    "lab.event.animation",
+                    &[
+                        ("step", JsonValue::u64(step as u64)),
+                        ("phase", JsonValue::u64(state.animation_phase as u64)),
+                    ],
+                );
+
+                frames.push(render_scenario_frame(&state));
+            }
+
+            ctx.log_info(
+                "lab.event.async_complete",
+                &[
+                    ("done", JsonValue::bool(true)),
+                    ("timer_events", JsonValue::u64(state.timer_ticks)),
+                    ("animation_events", JsonValue::u64(state.animation_ticks)),
+                ],
+            );
+
+            ScenarioOutput {
+                frames,
+                async_completed: true,
+            }
+        });
+
+        let mut trace = format!(
+            "{{\"event\":\"trace_header\",\"schema_version\":\"render-trace-v1\",\"run_id\":\"{}\",\"seed\":{}}}\n",
+            run.result.run_id, run.result.seed
+        );
+        let mut payloads = Vec::new();
+        for (frame_idx, frame) in run.output.frames.iter().enumerate() {
+            payloads.push(encode_full_buffer_payload(
+                frame.width,
+                frame.height,
+                &frame.cells,
+            ));
+            trace.push_str(&format!(
+                "{{\"event\":\"frame\",\"frame_idx\":{frame_idx},\"cols\":{},\"rows\":{},\"payload_kind\":\"full_buffer_v1\",\"payload_path\":\"frames/frame_{frame_idx:04}.bin\",\"checksum\":\"{:016x}\"}}\n",
+                frame.width, frame.height, frame.checksum
+            ));
+        }
+
+        let last_checksum = run.output.frames.last().map_or(0, |frame| frame.checksum);
+        trace.push_str(&format!(
+            "{{\"event\":\"trace_summary\",\"total_frames\":{},\"final_checksum_chain\":\"{:016x}\"}}\n",
+            run.output.frames.len(),
+            last_checksum
+        ));
+
+        TraceArtifacts {
+            trace_jsonl: trace,
+            payloads,
+            frame_count: run.output.frames.len(),
+            last_checksum,
+            async_completed: run.output.async_completed,
+            event_count: run.result.event_count,
+        }
+    }
+
+    fn write_trace_artifacts(
+        base_dir: &Path,
+        artifacts: &TraceArtifacts,
+    ) -> std::io::Result<PathBuf> {
+        let frames_dir = base_dir.join("frames");
+        fs::create_dir_all(&frames_dir)?;
+        for (idx, payload) in artifacts.payloads.iter().enumerate() {
+            let path = frames_dir.join(format!("frame_{idx:04}.bin"));
+            fs::write(path, payload)?;
+        }
+        let trace_path = base_dir.join("trace.jsonl");
+        fs::write(&trace_path, &artifacts.trace_jsonl)?;
+        Ok(trace_path)
+    }
+
+    #[derive(Default, Clone)]
+    struct SpanCapture {
+        spans: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct SpanSubscriber {
+        next_id: AtomicU64,
+        capture: SpanCapture,
+    }
+
+    impl tracing::Subscriber for SpanSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            if attrs.metadata().name() == "lab.scenario" {
+                self.capture
+                    .spans
+                    .lock()
+                    .expect("span capture lock")
+                    .push(attrs.metadata().name().to_string());
+            }
+            tracing::span::Id::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed))
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, _event: &tracing::Event<'_>) {}
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn capture_lab_scenario_spans(run: impl FnOnce()) -> Vec<String> {
+        let capture = SpanCapture::default();
+        let subscriber = SpanSubscriber {
+            next_id: AtomicU64::new(1),
+            capture: capture.clone(),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+        run();
+        capture.spans.lock().expect("span capture lock").clone()
+    }
+
+    #[test]
+    fn frankenlab_full_application_replay_is_byte_identical_for_100_seeds() {
+        let root = unique_temp_dir();
+        fs::create_dir_all(&root).expect("create root temp dir");
+
+        let mut divergence_count = 0usize;
+        let spans = capture_lab_scenario_spans(|| {
+            for seed in 0_u64..100_u64 {
+                let artifacts_a = build_trace_artifacts(seed);
+                let artifacts_b = build_trace_artifacts(seed);
+
+                assert!(
+                    artifacts_a.async_completed,
+                    "seed {seed}: async did not complete"
+                );
+                assert!(
+                    artifacts_b.async_completed,
+                    "seed {seed}: replay async did not complete"
+                );
+                assert_eq!(
+                    artifacts_a.event_count, artifacts_b.event_count,
+                    "seed {seed}: event_count diverged"
+                );
+                assert_eq!(
+                    artifacts_a.trace_jsonl, artifacts_b.trace_jsonl,
+                    "seed {seed}: trace JSONL diverged"
+                );
+                assert_eq!(
+                    artifacts_a.payloads, artifacts_b.payloads,
+                    "seed {seed}: payload bytes diverged"
+                );
+
+                let seed_a = root.join(format!("seed_{seed:03}_a"));
+                let seed_b = root.join(format!("seed_{seed:03}_b"));
+                fs::create_dir_all(&seed_a).expect("create seed_a dir");
+                fs::create_dir_all(&seed_b).expect("create seed_b dir");
+
+                let trace_a = write_trace_artifacts(&seed_a, &artifacts_a).expect("write trace_a");
+                let trace_b = write_trace_artifacts(&seed_b, &artifacts_b).expect("write trace_b");
+
+                let summary_a = replay_trace(&trace_a).expect("replay trace_a");
+                let summary_b = replay_trace(&trace_b).expect("replay trace_b");
+
+                if summary_a.frames != summary_b.frames
+                    || summary_a.last_checksum != summary_b.last_checksum
+                {
+                    divergence_count = divergence_count.saturating_add(1);
+                }
+
+                assert_eq!(
+                    summary_a.frames, artifacts_a.frame_count,
+                    "seed {seed}: unexpected frame count"
+                );
+                assert_eq!(
+                    summary_a.last_checksum,
+                    Some(artifacts_a.last_checksum),
+                    "seed {seed}: replay checksum mismatch"
+                );
+                assert_eq!(
+                    summary_a.frames, summary_b.frames,
+                    "seed {seed}: replay frame count diverged"
+                );
+                assert_eq!(
+                    summary_a.last_checksum, summary_b.last_checksum,
+                    "seed {seed}: replay checksum diverged"
+                );
+            }
+        });
+
+        assert_eq!(
+            divergence_count, 0,
+            "expected zero divergences across 100 seeds"
+        );
+        assert_eq!(
+            spans.len(),
+            200,
+            "expected one lab.scenario span per run (record + replay) for each seed"
+        );
+    }
+}

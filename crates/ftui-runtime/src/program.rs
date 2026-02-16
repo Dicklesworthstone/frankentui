@@ -79,8 +79,9 @@ use ftui_core::terminal_session::{SessionOptions, TerminalSession};
 use ftui_layout::{
     PANE_DRAG_RESIZE_DEFAULT_HYSTERESIS, PANE_DRAG_RESIZE_DEFAULT_THRESHOLD, PaneCancelReason,
     PaneDragResizeMachine, PaneDragResizeMachineError, PaneDragResizeState,
-    PaneDragResizeTransition, PaneLayout, PaneModifierSnapshot, PaneNodeKind, PanePointerButton,
-    PanePointerPosition, PaneResizeDirection, PaneResizeTarget, PaneSemanticInputEvent,
+    PaneDragResizeTransition, PaneInertialThrow, PaneLayout, PaneModifierSnapshot,
+    PaneMotionVector, PaneNodeKind, PanePointerButton, PanePointerPosition,
+    PanePressureSnapProfile, PaneResizeDirection, PaneResizeTarget, PaneSemanticInputEvent,
     PaneSemanticInputEventKind, PaneTree, Rect, SplitAxis,
 };
 use ftui_render::arena::FrameArena;
@@ -919,6 +920,12 @@ struct PaneTerminalActivePointer {
     target: PaneResizeTarget,
     button: PanePointerButton,
     last_position: PanePointerPosition,
+    cumulative_delta_x: i32,
+    cumulative_delta_y: i32,
+    direction_changes: u16,
+    sample_count: u32,
+    previous_step_delta_x: i32,
+    previous_step_delta_y: i32,
 }
 
 /// Lifecycle phase observed while translating a terminal event.
@@ -975,10 +982,13 @@ pub struct PaneTerminalLogEntry {
 /// `recovery_*` fields are populated when the adapter first emits an internal
 /// cancel (for stale/missing mouse-up recovery) and then forwards the incoming
 /// event as a fresh semantic event.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PaneTerminalDispatch {
     pub primary_event: Option<PaneSemanticInputEvent>,
     pub primary_transition: Option<PaneDragResizeTransition>,
+    pub motion: Option<PaneMotionVector>,
+    pub inertial_throw: Option<PaneInertialThrow>,
+    pub projected_position: Option<PanePointerPosition>,
     pub recovery_event: Option<PaneSemanticInputEvent>,
     pub recovery_transition: Option<PaneDragResizeTransition>,
     pub log: PaneTerminalLogEntry,
@@ -994,6 +1004,9 @@ impl PaneTerminalDispatch {
         Self {
             primary_event: None,
             primary_transition: None,
+            motion: None,
+            inertial_throw: None,
+            projected_position: None,
             recovery_event: None,
             recovery_transition: None,
             log: PaneTerminalLogEntry {
@@ -1018,6 +1031,9 @@ impl PaneTerminalDispatch {
         Self {
             primary_event: Some(event),
             primary_transition: Some(transition),
+            motion: None,
+            inertial_throw: None,
+            projected_position: None,
             recovery_event: None,
             recovery_transition: None,
             log: PaneTerminalLogEntry {
@@ -1029,6 +1045,12 @@ impl PaneTerminalDispatch {
                 outcome: PaneTerminalLogOutcome::SemanticForwarded,
             },
         }
+    }
+
+    /// Derive dynamic snap profile from translated pointer motion.
+    #[must_use]
+    pub fn pressure_snap_profile(&self) -> Option<PanePressureSnapProfile> {
+        self.motion.map(PanePressureSnapProfile::from_motion)
     }
 }
 
@@ -1181,6 +1203,12 @@ impl PaneTerminalAdapter {
                         target,
                         button: pane_button,
                         last_position: position,
+                        cumulative_delta_x: 0,
+                        cumulative_delta_y: 0,
+                        direction_changes: 0,
+                        sample_count: 0,
+                        previous_step_delta_x: 0,
+                        previous_step_delta_y: 0,
                     });
                 }
                 if let Some((cancel_event, cancel_transition)) = recovery {
@@ -1226,6 +1254,22 @@ impl PaneTerminalAdapter {
                         Some(active.target),
                     );
                 }
+                if active.sample_count > 0 {
+                    let flipped_x = delta_x.signum() != 0
+                        && active.previous_step_delta_x.signum() != 0
+                        && delta_x.signum() != active.previous_step_delta_x.signum();
+                    let flipped_y = delta_y.signum() != 0
+                        && active.previous_step_delta_y.signum() != 0
+                        && delta_y.signum() != active.previous_step_delta_y.signum();
+                    if flipped_x || flipped_y {
+                        active.direction_changes = active.direction_changes.saturating_add(1);
+                    }
+                }
+                active.cumulative_delta_x = active.cumulative_delta_x.saturating_add(delta_x);
+                active.cumulative_delta_y = active.cumulative_delta_y.saturating_add(delta_y);
+                active.sample_count = active.sample_count.saturating_add(1);
+                active.previous_step_delta_x = delta_x;
+                active.previous_step_delta_y = delta_y;
                 let kind = PaneSemanticInputEventKind::PointerMove {
                     target: active.target,
                     pointer_id: active.pointer_id,
@@ -1233,7 +1277,7 @@ impl PaneTerminalAdapter {
                     delta_x,
                     delta_y,
                 };
-                let dispatch = self.forward_semantic(
+                let mut dispatch = self.forward_semantic(
                     PaneTerminalLifecyclePhase::MouseDrag,
                     Some(active.pointer_id),
                     Some(active.target),
@@ -1243,6 +1287,12 @@ impl PaneTerminalAdapter {
                 if dispatch.primary_transition.is_some() {
                     active.last_position = position;
                     self.active = Some(active);
+                    dispatch.motion = Some(PaneMotionVector::from_delta(
+                        active.cumulative_delta_x,
+                        active.cumulative_delta_y,
+                        active.sample_count.saturating_mul(16),
+                        active.direction_changes,
+                    ));
                 }
                 dispatch
             }
@@ -1265,6 +1315,22 @@ impl PaneTerminalAdapter {
                         Some(active.target),
                     );
                 }
+                if active.sample_count > 0 {
+                    let flipped_x = delta_x.signum() != 0
+                        && active.previous_step_delta_x.signum() != 0
+                        && delta_x.signum() != active.previous_step_delta_x.signum();
+                    let flipped_y = delta_y.signum() != 0
+                        && active.previous_step_delta_y.signum() != 0
+                        && delta_y.signum() != active.previous_step_delta_y.signum();
+                    if flipped_x || flipped_y {
+                        active.direction_changes = active.direction_changes.saturating_add(1);
+                    }
+                }
+                active.cumulative_delta_x = active.cumulative_delta_x.saturating_add(delta_x);
+                active.cumulative_delta_y = active.cumulative_delta_y.saturating_add(delta_y);
+                active.sample_count = active.sample_count.saturating_add(1);
+                active.previous_step_delta_x = delta_x;
+                active.previous_step_delta_y = delta_y;
                 let kind = PaneSemanticInputEventKind::PointerMove {
                     target: active.target,
                     pointer_id: active.pointer_id,
@@ -1272,7 +1338,7 @@ impl PaneTerminalAdapter {
                     delta_x,
                     delta_y,
                 };
-                let dispatch = self.forward_semantic(
+                let mut dispatch = self.forward_semantic(
                     PaneTerminalLifecyclePhase::MouseMove,
                     Some(active.pointer_id),
                     Some(active.target),
@@ -1282,6 +1348,12 @@ impl PaneTerminalAdapter {
                 if dispatch.primary_transition.is_some() {
                     active.last_position = position;
                     self.active = Some(active);
+                    dispatch.motion = Some(PaneMotionVector::from_delta(
+                        active.cumulative_delta_x,
+                        active.cumulative_delta_y,
+                        active.sample_count.saturating_mul(16),
+                        active.direction_changes,
+                    ));
                 }
                 dispatch
             }
@@ -1309,7 +1381,7 @@ impl PaneTerminalAdapter {
                     button: active.button,
                     position,
                 };
-                let dispatch = self.forward_semantic(
+                let mut dispatch = self.forward_semantic(
                     PaneTerminalLifecyclePhase::MouseUp,
                     Some(active.pointer_id),
                     Some(active.target),
@@ -1317,6 +1389,16 @@ impl PaneTerminalAdapter {
                     modifiers,
                 );
                 if dispatch.primary_transition.is_some() {
+                    let motion = PaneMotionVector::from_delta(
+                        active.cumulative_delta_x,
+                        active.cumulative_delta_y,
+                        active.sample_count.saturating_mul(16),
+                        active.direction_changes,
+                    );
+                    let inertial_throw = PaneInertialThrow::from_motion(motion);
+                    dispatch.motion = Some(motion);
+                    dispatch.projected_position = Some(inertial_throw.projected_pointer(position));
+                    dispatch.inertial_throw = Some(inertial_throw);
                     self.active = None;
                 }
                 dispatch
@@ -5201,6 +5283,14 @@ mod tests {
                 delta_y: 0
             } if actual_target == target && position == PanePointerPosition::new(14, 4)
         ));
+        let drag_motion = drag_dispatch
+            .motion
+            .expect("drag should emit motion metadata");
+        assert_eq!(drag_motion.delta_x, 4);
+        assert_eq!(drag_motion.delta_y, 0);
+        assert_eq!(drag_motion.direction_changes, 0);
+        assert!(drag_motion.speed > 0.0);
+        assert!(drag_dispatch.pressure_snap_profile().is_some());
 
         let up = Event::Mouse(MouseEvent::new(
             MouseEventKind::Up(MouseButton::Left),
@@ -5222,6 +5312,19 @@ mod tests {
                 position
             } if actual_target == target && position == PanePointerPosition::new(14, 4)
         ));
+        let up_motion = up_dispatch
+            .motion
+            .expect("up should emit final motion metadata");
+        assert_eq!(up_motion.delta_x, 4);
+        assert_eq!(up_motion.delta_y, 0);
+        assert_eq!(up_motion.direction_changes, 0);
+        let inertial_throw = up_dispatch
+            .inertial_throw
+            .expect("up should emit inertial throw metadata");
+        assert_eq!(
+            up_dispatch.projected_position,
+            Some(inertial_throw.projected_pointer(PanePointerPosition::new(14, 4)))
+        );
         assert_eq!(adapter.active_pointer_id(), None);
         assert!(matches!(adapter.machine_state(), PaneDragResizeState::Idle));
     }
@@ -5417,6 +5520,53 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn pane_terminal_adapter_motion_tracks_direction_changes() {
+        let mut adapter =
+            PaneTerminalAdapter::new(PaneTerminalAdapterConfig::default()).expect("valid adapter");
+        let target = pane_target(SplitAxis::Horizontal);
+
+        let down = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            4,
+        ));
+        let _ = adapter.translate(&down, Some(target));
+
+        let drag_forward = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            14,
+            4,
+        ));
+        let forward_dispatch = adapter.translate(&drag_forward, None);
+        let forward_motion = forward_dispatch
+            .motion
+            .expect("forward drag should emit motion metadata");
+        assert_eq!(forward_motion.direction_changes, 0);
+
+        let drag_reverse = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            12,
+            4,
+        ));
+        let reverse_dispatch = adapter.translate(&drag_reverse, None);
+        let reverse_motion = reverse_dispatch
+            .motion
+            .expect("reverse drag should emit motion metadata");
+        assert_eq!(reverse_motion.direction_changes, 1);
+
+        let up = Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            12,
+            4,
+        ));
+        let up_dispatch = adapter.translate(&up, None);
+        let up_motion = up_dispatch
+            .motion
+            .expect("release should include cumulative motion metadata");
+        assert_eq!(up_motion.direction_changes, 1);
     }
 
     #[test]

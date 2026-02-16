@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![cfg(feature = "telemetry")]
 //! E2E tests for the Unified Evidence Ledger (bd-fp38v.1).
 //!
 //! Verifies that all 7 Bayesian decision points produce valid, parseable JSONL
@@ -8,12 +9,12 @@ use std::time::Instant;
 
 use ftui_runtime::telemetry::{BayesianEvidence, DecisionDomain, EvidenceTerm};
 use ftui_runtime::{
-    BocpdEvidence, ConformalPrediction, EvidenceSink, EvidenceSinkConfig, StrategyEvidence,
-    ThrottleDecision, ThrottleLog, VoiDecision, VoiObservation,
+    ConformalPrediction, EvidenceSink, EvidenceSinkConfig, StrategyEvidence, ThrottleDecision,
+    ThrottleLog, VoiDecision, VoiObservation,
 };
 
 use ftui_render::diff_strategy::DiffStrategy;
-use ftui_runtime::bocpd::BocpdRegime;
+use ftui_runtime::bocpd::{BocpdEvidence, BocpdRegime};
 use ftui_runtime::conformal_predictor::{BucketKey, DiffBucket, ModeBucket};
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ fn e2e_bayesian_evidence_all_domains_roundtrip() {
         (DecisionDomain::PaletteScoring, "palette_scoring"),
     ];
 
-    for (i, (domain, domain_str)) in domains.iter().enumerate() {
+    for (i, (domain, _domain_str)) in domains.iter().enumerate() {
         let evidence = BayesianEvidence {
             decision_id: format!("test-{i}"),
             timestamp_ns: 1_000_000 * (i as u64 + 1),
@@ -172,7 +173,7 @@ fn e2e_strategy_evidence_jsonl_schema() {
     assert_eq!(v["total_rows"].as_u64().unwrap(), 40);
     assert_eq!(v["total_cells"].as_u64().unwrap(), 3200);
     assert_eq!(v["guard"].as_str().unwrap(), "none");
-    assert_eq!(v["hysteresis"].as_bool().unwrap(), false);
+    assert!(!v["hysteresis"].as_bool().unwrap());
     assert!(v["hysteresis_ratio"].is_f64());
 }
 
@@ -221,7 +222,7 @@ fn e2e_bocpd_evidence_jsonl_schema() {
     assert_eq!(v["runlen_p95"].as_u64().unwrap(), 12);
     assert!(v["runlen_tail"].is_f64());
     assert_eq!(v["delay_ms"].as_u64().unwrap(), 50);
-    assert_eq!(v["forced_deadline"].as_bool().unwrap(), false);
+    assert!(!v["forced_deadline"].as_bool().unwrap());
     assert_eq!(v["n_obs"].as_u64().unwrap(), 100);
 }
 
@@ -327,11 +328,11 @@ fn e2e_throttle_decision_jsonl_schema() {
     let v = parse_json(&lines[0]);
 
     assert_eq!(v["schema"].as_str().unwrap(), "eprocess-throttle-v1");
-    assert_eq!(v["should_recompute"].as_bool().unwrap(), true);
+    assert!(v["should_recompute"].as_bool().unwrap());
     assert!(v["wealth"].is_f64());
     assert!(v["lambda"].is_f64());
     assert!(v["empirical_rate"].is_f64());
-    assert_eq!(v["forced_by_deadline"].as_bool().unwrap(), false);
+    assert!(!v["forced_by_deadline"].as_bool().unwrap());
     assert_eq!(v["obs_since_recompute"].as_u64().unwrap(), 42);
 }
 
@@ -358,7 +359,7 @@ fn e2e_throttle_log_jsonl_schema() {
 
     assert_eq!(v["schema"].as_str().unwrap(), "eprocess-log-v1");
     assert_eq!(v["obs_idx"].as_u64().unwrap(), 99);
-    assert_eq!(v["matched"].as_bool().unwrap(), true);
+    assert!(v["matched"].as_bool().unwrap());
     assert!(v["wealth_before"].is_f64());
     assert!(v["wealth_after"].is_f64());
     assert!(v["lambda"].is_f64());
@@ -401,9 +402,9 @@ fn e2e_voi_decision_jsonl_schema() {
 
     assert_eq!(v["event"].as_str().unwrap(), "voi_decision");
     assert_eq!(v["idx"].as_u64().unwrap(), 42);
-    assert_eq!(v["should_sample"].as_bool().unwrap(), true);
-    assert_eq!(v["forced"].as_bool().unwrap(), false);
-    assert_eq!(v["blocked"].as_bool().unwrap(), false);
+    assert!(v["should_sample"].as_bool().unwrap());
+    assert!(!v["forced"].as_bool().unwrap());
+    assert!(!v["blocked"].as_bool().unwrap());
     assert!(v["voi_gain"].is_f64());
     assert!(v["score"].is_f64());
     assert!(v["cost"].is_f64());
@@ -442,7 +443,7 @@ fn e2e_voi_observation_jsonl_schema() {
     assert_eq!(v["event"].as_str().unwrap(), "voi_observe");
     assert_eq!(v["idx"].as_u64().unwrap(), 50);
     assert_eq!(v["sample_idx"].as_u64().unwrap(), 5);
-    assert_eq!(v["violated"].as_bool().unwrap(), false);
+    assert!(!v["violated"].as_bool().unwrap());
     assert!(v["posterior_mean"].is_f64());
     assert!(v["posterior_variance"].is_f64());
     assert!(v["alpha"].is_f64());
@@ -590,7 +591,7 @@ fn e2e_mixed_evidence_stream_all_domains() {
             EvidenceTerm::new("trend", 0.3),
         ],
         posterior_log_odds: 0.8,
-        action: "degrade",
+        action: "degrade".to_string(),
         expected_loss: 0.05,
         confidence_level: 0.92,
         fallback_triggered: true,
@@ -606,20 +607,6 @@ fn e2e_mixed_evidence_stream_all_domains() {
         let v = parse_json(line);
         assert!(v.is_object(), "Line {i} must be a JSON object");
     }
-
-    // Verify schemas match expected order
-    let schemas: Vec<Option<&str>> = lines
-        .iter()
-        .map(|l| {
-            let v = parse_json(l);
-            v.get("schema")
-                .or(v.get("schema_version"))
-                .or(v.get("event"))
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string())
-        })
-        .map(|s| None) // we just need to verify they parse
-        .collect();
 
     // Actually verify specific schema identifiers
     let v0 = parse_json(&lines[0]);

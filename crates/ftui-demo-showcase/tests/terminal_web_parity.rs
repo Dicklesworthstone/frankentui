@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
+use ftui_core::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ftui_demo_showcase::app::AppModel;
 use ftui_demo_showcase::screens;
 use ftui_runtime::ProgramSimulator;
@@ -35,7 +37,18 @@ fn mouse_move(x: u16, y: u16) -> Event {
 }
 
 fn mouse_down(x: u16, y: u16) -> Event {
-    Event::Mouse(MouseEvent::new(MouseEventKind::Down(MouseButton::Left), x, y))
+    Event::Mouse(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        x,
+        y,
+    ))
+}
+
+fn apply_global_deterministic_fixtures(model: &mut AppModel) {
+    // Keep dashboard/perf/vfx paths deterministic across simulator + web stepper.
+    // Without this, wall-clock sampling can drift frame hashes between runs.
+    model.enable_deterministic_mode_for_test(100, 16);
+    model.seed_perf_hud_metrics_for_test(120, 120, 1.0, &[100_000; 32]);
 }
 
 fn apply_deterministic_profile(
@@ -46,7 +59,10 @@ fn apply_deterministic_profile(
     {
         match screen {
             ftui_demo_showcase::app::ScreenId::MermaidShowcase => {
-                model.screens.mermaid_showcase.stabilize_metrics_for_snapshot();
+                model
+                    .screens
+                    .mermaid_showcase
+                    .stabilize_metrics_for_snapshot();
                 true
             }
             ftui_demo_showcase::app::ScreenId::MermaidMegaShowcase => {
@@ -104,18 +120,22 @@ fn assert_signature_parity(signature: &FrameParitySignature) {
 fn run_screen_sweep_parity(cols: u16, rows: u16) -> Vec<FrameParitySignature> {
     let mut terminal = ProgramSimulator::new(AppModel::new());
     terminal.init();
+    apply_global_deterministic_fixtures(terminal.model_mut());
 
     let mut web = StepProgram::new(AppModel::new(), cols, rows);
     web.init().expect("web program init should succeed");
+    apply_global_deterministic_fixtures(web.model_mut());
 
     let mut signatures = Vec::new();
     for &screen in screens::screen_ids() {
         terminal.model_mut().current_screen = screen;
         web.model_mut().current_screen = screen;
-        let terminal_toggle_mermaid_metrics = apply_deterministic_profile(terminal.model_mut(), screen);
+        let terminal_toggle_mermaid_metrics =
+            apply_deterministic_profile(terminal.model_mut(), screen);
         let web_toggle_mermaid_metrics = apply_deterministic_profile(web.model_mut(), screen);
         assert_eq!(
-            terminal_toggle_mermaid_metrics, web_toggle_mermaid_metrics,
+            terminal_toggle_mermaid_metrics,
+            web_toggle_mermaid_metrics,
             "deterministic profile branch mismatch for {}",
             screen.title()
         );
@@ -128,7 +148,11 @@ fn run_screen_sweep_parity(cols: u16, rows: u16) -> Vec<FrameParitySignature> {
         terminal.inject_event(Event::Tick);
         web.push_event(Event::Tick);
         let step = web.step().expect("web step should succeed during sweep");
-        assert!(step.rendered, "screen sweep should render {}", screen.title());
+        assert!(
+            step.rendered,
+            "screen sweep should render {}",
+            screen.title()
+        );
 
         let signature = capture_signature(
             &mut terminal,
@@ -147,9 +171,11 @@ fn run_screen_sweep_parity(cols: u16, rows: u16) -> Vec<FrameParitySignature> {
 fn run_interaction_trace_parity(cols: u16, rows: u16) -> Vec<FrameParitySignature> {
     let mut terminal = ProgramSimulator::new(AppModel::new());
     terminal.init();
+    apply_global_deterministic_fixtures(terminal.model_mut());
 
     let mut web = StepProgram::new(AppModel::new(), cols, rows);
     web.init().expect("web program init should succeed");
+    apply_global_deterministic_fixtures(web.model_mut());
 
     let mut current_cols = cols;
     let mut current_rows = rows;
@@ -176,8 +202,19 @@ fn run_interaction_trace_parity(cols: u16, rows: u16) -> Vec<FrameParitySignatur
             ParityAction::Event(event) => {
                 terminal.inject_event(event.clone());
                 web.push_event(event.clone());
-                let step = web.step().expect("web step should succeed in interaction trace");
-                format!("interaction-step-{idx}:event:{event:?}:frame{}", step.frame_idx)
+                let step = web
+                    .step()
+                    .expect("web step should succeed in interaction trace");
+                let terminal_screen = terminal.model().current_screen.title();
+                let web_screen = web.model().current_screen.title();
+                assert_eq!(
+                    terminal_screen, web_screen,
+                    "terminal/web active screen mismatch at interaction step {idx}"
+                );
+                format!(
+                    "interaction-step-{idx}:event:{event:?}:screen:{terminal_screen}:frame{}",
+                    step.frame_idx,
+                )
             }
             ParityAction::Resize(next_cols, next_rows) => {
                 current_cols = next_cols;
@@ -191,17 +228,21 @@ fn run_interaction_trace_parity(cols: u16, rows: u16) -> Vec<FrameParitySignatur
                 let step = web
                     .step()
                     .expect("web step should succeed after resize in interaction trace");
-                format!("interaction-step-{idx}:resize:{next_cols}x{next_rows}:frame{}", step.frame_idx)
+                let terminal_screen = terminal.model().current_screen.title();
+                let web_screen = web.model().current_screen.title();
+                assert_eq!(
+                    terminal_screen, web_screen,
+                    "terminal/web active screen mismatch at interaction resize step {idx}"
+                );
+                format!(
+                    "interaction-step-{idx}:resize:{next_cols}x{next_rows}:screen:{terminal_screen}:frame{}",
+                    step.frame_idx,
+                )
             }
         };
 
-        let signature = capture_signature(
-            &mut terminal,
-            &web,
-            current_cols,
-            current_rows,
-            step_label,
-        );
+        let signature =
+            capture_signature(&mut terminal, &web, current_cols, current_rows, step_label);
         assert_signature_parity(&signature);
         signatures.push(signature);
     }

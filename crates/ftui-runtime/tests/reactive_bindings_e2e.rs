@@ -862,3 +862,276 @@ mod bind_lifecycle {
         assert_eq!(obs.subscriber_count(), 0);
     }
 }
+
+// =========================================================================
+// 6. Bloodstream DB → Terminal Round-Trip
+// =========================================================================
+
+mod bloodstream_roundtrip {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use web_time::Instant;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TableRow {
+        id: u64,
+        value: i64,
+    }
+
+    #[derive(Debug)]
+    struct FrankenSqliteMaterializedView {
+        rows: Observable<Vec<TableRow>>,
+        pending_delta_rows: Rc<Cell<usize>>,
+    }
+
+    impl FrankenSqliteMaterializedView {
+        fn new(initial_rows: Vec<TableRow>) -> Self {
+            Self {
+                rows: Observable::new(initial_rows),
+                pending_delta_rows: Rc::new(Cell::new(0)),
+            }
+        }
+
+        fn rows(&self) -> Observable<Vec<TableRow>> {
+            self.rows.clone()
+        }
+
+        fn pending_delta_handle(&self) -> Rc<Cell<usize>> {
+            Rc::clone(&self.pending_delta_rows)
+        }
+
+        fn insert_rows(&self, updates: &[(u64, i64)]) {
+            let _span = tracing::info_span!(
+                "sql.insert",
+                rows_changed = updates.len() as u64,
+                table = "franken_materialized_view"
+            )
+            .entered();
+            self.pending_delta_rows.set(updates.len());
+            self.rows.update(|rows| {
+                for &(id, value) in updates {
+                    if let Ok(index) = usize::try_from(id)
+                        && index < rows.len()
+                        && rows[index].id == id
+                    {
+                        rows[index].value = value;
+                        continue;
+                    }
+
+                    if let Some(existing) = rows.iter_mut().find(|row| row.id == id) {
+                        existing.value = value;
+                    } else {
+                        rows.push(TableRow { id, value });
+                    }
+                }
+            });
+        }
+    }
+
+    #[derive(Default, Debug)]
+    struct RenderStats {
+        propagation_count: usize,
+        rows_rendered_per_update: Vec<usize>,
+        full_table_rerenders: usize,
+    }
+
+    #[derive(Default)]
+    struct DurationEventVisitor {
+        duration_us: Option<u64>,
+    }
+
+    impl Visit for DurationEventVisitor {
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            if field.name() == "bloodstream_propagation_duration_us" {
+                self.duration_us = Some(value);
+            }
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            if value >= 0 {
+                self.record_u64(field, value as u64);
+            }
+        }
+
+        fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
+    }
+
+    #[derive(Clone, Default)]
+    struct TraceCapture {
+        spans: Arc<Mutex<Vec<String>>>,
+        propagation_histogram_us: Arc<Mutex<Vec<u64>>>,
+    }
+
+    struct TraceSubscriber {
+        next_id: AtomicU64,
+        capture: TraceCapture,
+    }
+
+    impl tracing::Subscriber for TraceSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            self.capture
+                .spans
+                .lock()
+                .expect("span capture lock")
+                .push(attrs.metadata().name().to_string());
+            tracing::span::Id::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed))
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = DurationEventVisitor::default();
+            event.record(&mut visitor);
+            if let Some(duration_us) = visitor.duration_us {
+                self.capture
+                    .propagation_histogram_us
+                    .lock()
+                    .expect("histogram capture lock")
+                    .push(duration_us);
+            }
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn capture_trace(run: impl FnOnce()) -> (Vec<String>, Vec<u64>) {
+        let capture = TraceCapture::default();
+        let subscriber = TraceSubscriber {
+            next_id: AtomicU64::new(1),
+            capture: capture.clone(),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+        run();
+        (
+            capture.spans.lock().expect("span capture lock").clone(),
+            capture
+                .propagation_histogram_us
+                .lock()
+                .expect("histogram capture lock")
+                .clone(),
+        )
+    }
+
+    fn contains_ordered_chain(spans: &[String], expected: &[&str]) -> bool {
+        let mut needle = 0usize;
+        for span in spans {
+            if span == expected[needle] {
+                needle += 1;
+                if needle == expected.len() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn bloodstream_database_to_terminal_roundtrip_is_delta_only() {
+        let initial_rows: Vec<TableRow> = (0..10_000_u64)
+            .map(|id| TableRow {
+                id,
+                value: id as i64,
+            })
+            .collect();
+        let materialized_view = FrankenSqliteMaterializedView::new(initial_rows);
+        let rows = materialized_view.rows();
+        let pending_delta_rows = materialized_view.pending_delta_handle();
+
+        let render_stats = Rc::new(RefCell::new(RenderStats::default()));
+        let render_stats_clone = Rc::clone(&render_stats);
+
+        let _sub = rows.subscribe(move |snapshot| {
+            let rows_changed = pending_delta_rows.get();
+            let _recompute_span = tracing::info_span!(
+                "incremental.recompute",
+                rows_changed = rows_changed as u64,
+                total_rows = snapshot.len() as u64
+            )
+            .entered();
+
+            let full_table_rerender = rows_changed == snapshot.len();
+            let _widget_span = tracing::info_span!(
+                "widget.render",
+                rows_rendered = rows_changed as u64,
+                total_rows = snapshot.len() as u64,
+                full_table_rerender
+            )
+            .entered();
+
+            let mut stats = render_stats_clone.borrow_mut();
+            stats.propagation_count += 1;
+            stats.rows_rendered_per_update.push(rows_changed);
+            if full_table_rerender {
+                stats.full_table_rerenders += 1;
+            }
+        });
+
+        let single_row_latency_us = Rc::new(Cell::new(0_u64));
+        let single_row_latency_clone = Rc::clone(&single_row_latency_us);
+        let (spans, durations_us) = capture_trace(|| {
+            let single_row_start = Instant::now();
+            materialized_view.insert_rows(&[(42, 4_242)]);
+            single_row_latency_clone.set(single_row_start.elapsed().as_micros() as u64);
+            assert_eq!(
+                render_stats.borrow().propagation_count,
+                1,
+                "single-row update should propagate without polling"
+            );
+
+            let ten_row_delta: Vec<(u64, i64)> = (100_u64..110_u64)
+                .map(|id| (id, (id as i64) * 10))
+                .collect();
+            materialized_view.insert_rows(&ten_row_delta);
+        });
+
+        let stats = render_stats.borrow();
+        assert_eq!(
+            stats.propagation_count, 2,
+            "expected two propagation passes for two inserts"
+        );
+        assert_eq!(
+            stats.rows_rendered_per_update,
+            vec![1, 10],
+            "render cost must scale with the changed row delta"
+        );
+        assert_eq!(
+            stats.full_table_rerenders, 0,
+            "delta updates should not trigger full-table rerenders"
+        );
+        drop(stats);
+
+        assert!(
+            single_row_latency_us.get() <= 1_000,
+            "single-row propagation target is sub-millisecond, got {}us",
+            single_row_latency_us.get()
+        );
+
+        assert!(
+            contains_ordered_chain(
+                &spans,
+                &[
+                    "sql.insert",
+                    "bloodstream.delta",
+                    "incremental.recompute",
+                    "widget.render",
+                ],
+            ),
+            "expected span chain sql.insert -> bloodstream.delta -> incremental.recompute -> widget.render, got {spans:?}"
+        );
+
+        assert!(
+            durations_us.len() >= 2,
+            "expected bloodstream_propagation_duration_us histogram emissions, got {durations_us:?}"
+        );
+    }
+}

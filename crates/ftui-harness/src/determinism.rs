@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tracing::info_span;
 
 /// Counter for total executed lab scenarios in-process.
 static LAB_SCENARIOS_RUN_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -457,6 +458,13 @@ impl LabScenario {
     pub fn run<T>(&self, run: impl FnOnce(&LabScenarioContext<'_>) -> T) -> LabScenarioRun<T> {
         let seed = self.fixture().seed();
         let deterministic = self.fixture().deterministic();
+        let _span = info_span!(
+            "lab.scenario",
+            scenario_name = self.scenario_name.as_str(),
+            seed,
+            deterministic
+        )
+        .entered();
         self.logger.log(
             "lab.scenario.start",
             &[

@@ -890,14 +890,14 @@ mod tests {
         let resolved = resolve_scripts(&chars);
 
         // H, e, l, l, o should be Latin
-        for i in 0..5 {
-            assert_eq!(resolved[i], Script::Latin, "char {i}");
+        for (i, script) in resolved.iter().enumerate().take(5) {
+            assert_eq!(*script, Script::Latin, "char {i}");
         }
         // Space should be Latin (preceding script)
         assert_eq!(resolved[5], Script::Latin, "space");
         // Arabic chars
-        for i in 6..11 {
-            assert_eq!(resolved[i], Script::Arabic, "char {i}");
+        for (i, script) in resolved.iter().enumerate().take(11).skip(6) {
+            assert_eq!(*script, Script::Arabic, "char {i}");
         }
     }
 
@@ -1259,7 +1259,7 @@ mod tests {
     #[test]
     fn script_enum_ord() {
         // Script has PartialOrd/Ord derived — verify it's usable for sorting
-        let mut scripts = vec![Script::Arabic, Script::Latin, Script::Common];
+        let mut scripts = [Script::Arabic, Script::Latin, Script::Common];
         scripts.sort();
         assert_eq!(scripts[0], Script::Common);
     }

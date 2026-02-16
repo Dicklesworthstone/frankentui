@@ -1059,11 +1059,11 @@ mod tests {
         let lower = ci[0].as_f64().unwrap();
         let upper = ci[1].as_f64().unwrap();
         assert!(
-            lower >= 0.0 && lower <= 1.0,
+            (0.0..=1.0).contains(&lower),
             "CI lower out of range: {lower}"
         );
         assert!(
-            upper >= 0.0 && upper <= 1.0,
+            (0.0..=1.0).contains(&upper),
             "CI upper out of range: {upper}"
         );
         assert!(lower <= upper, "CI lower > upper");
