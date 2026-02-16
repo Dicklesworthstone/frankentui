@@ -25,10 +25,11 @@ use crate::{
     FRANKENTERM_JS_EVENT_TYPES, FRANKENTERM_JS_PROTOCOL_VERSION, FRANKENTERM_JS_PUBLIC_METHODS,
     FRANKENTERM_JS_VERSIONING_POLICY,
 };
-use frankenterm_core::{HyperlinkId, ScrollbackWindow, TerminalEngine};
+use frankenterm_core::{Action, HyperlinkId, Parser, ScrollbackWindow, TerminalEngine};
 use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
 use std::collections::HashMap;
 use std::time::Duration;
+use tracing::{debug, trace, warn};
 use unicode_width::UnicodeWidthChar;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -43,6 +44,10 @@ const MAX_ENCODED_INPUT_EVENTS: usize = 4096;
 const MAX_ENCODED_INPUT_BYTE_CHUNKS: usize = 4096;
 const MAX_IME_TRACE_EVENTS: usize = 2048;
 const MAX_LINK_CLICKS: usize = 2048;
+const MAX_ACCESSIBILITY_ANNOUNCEMENTS: usize = 64;
+const DEFAULT_EVENT_SUBSCRIPTION_BUFFER_MAX: usize = 512;
+const MAX_EVENT_SUBSCRIPTION_BUFFER_MAX: usize = 8192;
+const MAX_EVENT_SUBSCRIPTIONS: usize = 256;
 
 fn empty_search_index(config: SearchConfig) -> SearchIndex {
     SearchIndex::build(std::iter::empty::<&str>(), "", config)
@@ -62,6 +67,16 @@ fn push_bounded<T>(queue: &mut Vec<T>, item: T, limit: usize) {
         queue.drain(..overflow);
     }
     queue.push(item);
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn trim_trailing_spaces(line: &mut String) {
@@ -118,6 +133,9 @@ pub struct FrankenTermWeb {
     encoded_input_bytes: Vec<Vec<u8>>,
     ime_trace_events: Vec<ImeTraceEvent>,
     link_clicks: Vec<LinkClickEvent>,
+    event_subscriptions: HashMap<u32, EventSubscription>,
+    next_event_subscription_id: u32,
+    next_host_event_seq: u64,
     auto_link_ids: Vec<u32>,
     auto_link_urls: HashMap<u32, String>,
     link_open_policy: LinkOpenPolicy,
@@ -146,6 +164,8 @@ pub struct FrankenTermWeb {
     follow_output: bool,
     attach_client: AttachClientStateMachine,
     next_auto_link_id: u32,
+    progress_parser: Parser,
+    progress_last_value: u8,
     engine: Option<TerminalEngine>,
     renderer: Option<WebGpuRenderer>,
 }
@@ -178,6 +198,228 @@ struct ImeTraceEvent {
     synthetic: bool,
     active_after: bool,
     preedit_after: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostEventType {
+    AttachTransition = 0,
+    InputAccessibility = 1,
+    InputComposition = 2,
+    InputCompositionTrace = 3,
+    InputFocus = 4,
+    InputKey = 5,
+    InputMouse = 6,
+    InputPaste = 7,
+    InputTouch = 8,
+    InputVtBytes = 9,
+    InputWheel = 10,
+    TerminalProgress = 11,
+    TerminalReplyBytes = 12,
+    UiAccessibilityAnnouncement = 13,
+    UiLinkClick = 14,
+}
+
+impl HostEventType {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AttachTransition => "attach.transition",
+            Self::InputAccessibility => "input.accessibility",
+            Self::InputComposition => "input.composition",
+            Self::InputCompositionTrace => "input.composition_trace",
+            Self::InputFocus => "input.focus",
+            Self::InputKey => "input.key",
+            Self::InputMouse => "input.mouse",
+            Self::InputPaste => "input.paste",
+            Self::InputTouch => "input.touch",
+            Self::InputVtBytes => "input.vt_bytes",
+            Self::InputWheel => "input.wheel",
+            Self::TerminalProgress => "terminal.progress",
+            Self::TerminalReplyBytes => "terminal.reply_bytes",
+            Self::UiAccessibilityAnnouncement => "ui.accessibility_announcement",
+            Self::UiLinkClick => "ui.link_click",
+        }
+    }
+
+    const fn bit(self) -> u32 {
+        1_u32 << (self as u32)
+    }
+
+    const fn all() -> [Self; 15] {
+        [
+            Self::AttachTransition,
+            Self::InputAccessibility,
+            Self::InputComposition,
+            Self::InputCompositionTrace,
+            Self::InputFocus,
+            Self::InputKey,
+            Self::InputMouse,
+            Self::InputPaste,
+            Self::InputTouch,
+            Self::InputVtBytes,
+            Self::InputWheel,
+            Self::TerminalProgress,
+            Self::TerminalReplyBytes,
+            Self::UiAccessibilityAnnouncement,
+            Self::UiLinkClick,
+        ]
+    }
+
+    fn from_input_event(event: &InputEvent) -> Self {
+        match event {
+            InputEvent::Accessibility(_) => Self::InputAccessibility,
+            InputEvent::Composition(_) => Self::InputComposition,
+            InputEvent::Focus(_) => Self::InputFocus,
+            InputEvent::Key(_) => Self::InputKey,
+            InputEvent::Mouse(_) => Self::InputMouse,
+            InputEvent::Paste(_) => Self::InputPaste,
+            InputEvent::Touch(_) => Self::InputTouch,
+            InputEvent::Wheel(_) => Self::InputWheel,
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "attach.transition" => Some(Self::AttachTransition),
+            "input.accessibility" => Some(Self::InputAccessibility),
+            "input.composition" => Some(Self::InputComposition),
+            "input.composition_trace" => Some(Self::InputCompositionTrace),
+            "input.focus" => Some(Self::InputFocus),
+            "input.key" => Some(Self::InputKey),
+            "input.mouse" => Some(Self::InputMouse),
+            "input.paste" => Some(Self::InputPaste),
+            "input.touch" => Some(Self::InputTouch),
+            "input.vt_bytes" => Some(Self::InputVtBytes),
+            "input.wheel" => Some(Self::InputWheel),
+            "terminal.progress" => Some(Self::TerminalProgress),
+            "terminal.reply_bytes" => Some(Self::TerminalReplyBytes),
+            "ui.accessibility_announcement" => Some(Self::UiAccessibilityAnnouncement),
+            "ui.link_click" => Some(Self::UiLinkClick),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressSignalState {
+    Remove = 0,
+    Normal = 1,
+    Error = 2,
+    Indeterminate = 3,
+    Warning = 4,
+}
+
+impl ProgressSignalState {
+    const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Remove),
+            1 => Some(Self::Normal),
+            2 => Some(Self::Error),
+            3 => Some(Self::Indeterminate),
+            4 => Some(Self::Warning),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Remove => "remove",
+            Self::Normal => "normal",
+            Self::Error => "error",
+            Self::Indeterminate => "indeterminate",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProgressSignalRecord {
+    accepted: bool,
+    reason: Option<&'static str>,
+    state: Option<ProgressSignalState>,
+    state_code: Option<u8>,
+    value: Option<u8>,
+    value_provided: bool,
+    raw_payload: String,
+    raw_state: Option<String>,
+    raw_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EventTypeMask(u32);
+
+impl EventTypeMask {
+    const fn contains(self, event_type: HostEventType) -> bool {
+        (self.0 & event_type.bit()) != 0
+    }
+
+    fn from_event_types(event_types: &[HostEventType]) -> Self {
+        let mut bits = 0_u32;
+        for event_type in event_types {
+            bits |= event_type.bit();
+        }
+        Self(bits)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SubscriptionEventRecord {
+    seq: u64,
+    event_type: HostEventType,
+    payload_json: String,
+    queue_depth_after: u32,
+    dropped_total: u64,
+}
+
+#[derive(Debug, Clone)]
+struct EventSubscription {
+    id: u32,
+    event_types: Vec<HostEventType>,
+    mask: EventTypeMask,
+    max_buffered: usize,
+    queue: Vec<SubscriptionEventRecord>,
+    emitted_total: u64,
+    drained_total: u64,
+    dropped_total: u64,
+}
+
+impl EventSubscription {
+    fn new(id: u32, mut event_types: Vec<HostEventType>, max_buffered: usize) -> Self {
+        if event_types.is_empty() {
+            event_types = HostEventType::all().to_vec();
+        }
+        event_types.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+        event_types.dedup();
+        let mask = EventTypeMask::from_event_types(&event_types);
+        Self {
+            id,
+            event_types,
+            mask,
+            max_buffered,
+            queue: Vec::new(),
+            emitted_total: 0,
+            drained_total: 0,
+            dropped_total: 0,
+        }
+    }
+
+    fn matches(&self, event_type: HostEventType) -> bool {
+        self.mask.contains(event_type)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EventSubscriptionOptions {
+    event_types: Vec<HostEventType>,
+    max_buffered: usize,
+}
+
+impl Default for EventSubscriptionOptions {
+    fn default() -> Self {
+        Self {
+            event_types: HostEventType::all().to_vec(),
+            max_buffered: DEFAULT_EVENT_SUBSCRIPTION_BUFFER_MAX,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -415,6 +657,9 @@ impl FrankenTermWeb {
             encoded_input_bytes: Vec::new(),
             ime_trace_events: Vec::new(),
             link_clicks: Vec::new(),
+            event_subscriptions: HashMap::new(),
+            next_event_subscription_id: 1,
+            next_host_event_seq: 1,
             auto_link_ids: Vec::new(),
             auto_link_urls: HashMap::new(),
             link_open_policy: LinkOpenPolicy::default(),
@@ -443,6 +688,8 @@ impl FrankenTermWeb {
             follow_output: true,
             attach_client: AttachClientStateMachine::default(),
             next_auto_link_id: AUTO_LINK_ID_BASE,
+            progress_parser: Parser::new(),
+            progress_last_value: 0,
             engine: None,
             renderer: None,
         }
@@ -807,16 +1054,177 @@ impl FrankenTermWeb {
         arr
     }
 
+    /// Register a typed host-event subscription with bounded buffering.
+    ///
+    /// `options` keys:
+    /// - `eventTypes` / `event_types`: string[] event taxonomy filter (defaults to all)
+    /// - `maxBuffered` / `max_buffered`: number in `1..=8192` (defaults to 512)
+    #[wasm_bindgen(js_name = createEventSubscription)]
+    pub fn create_event_subscription(
+        &mut self,
+        options: Option<JsValue>,
+    ) -> Result<JsValue, JsValue> {
+        if self.event_subscriptions.len() >= MAX_EVENT_SUBSCRIPTIONS {
+            return Err(JsValue::from_str(
+                "event subscription limit reached (max 256 active subscriptions)",
+            ));
+        }
+        let config = parse_event_subscription_options(options.as_ref())?;
+        let Some(subscription_id) = self.next_subscription_id() else {
+            return Err(JsValue::from_str(
+                "unable to allocate event subscription id",
+            ));
+        };
+        let subscription =
+            EventSubscription::new(subscription_id, config.event_types, config.max_buffered);
+        let snapshot = event_subscription_to_js(&subscription);
+        self.event_subscriptions
+            .insert(subscription_id, subscription);
+        debug!(
+            target: "frankenterm_web::events",
+            subscription_id,
+            max_buffered = config.max_buffered,
+            active_subscriptions = self.event_subscriptions.len(),
+            "created event subscription"
+        );
+        Ok(snapshot)
+    }
+
+    /// Dispose an event subscription handle and release its queued records.
+    #[wasm_bindgen(js_name = closeEventSubscription)]
+    pub fn close_event_subscription(&mut self, subscription_id: u32) -> bool {
+        let removed = self.event_subscriptions.remove(&subscription_id);
+        if let Some(subscription) = removed {
+            debug!(
+                target: "frankenterm_web::events",
+                subscription_id,
+                emitted_total = subscription.emitted_total,
+                drained_total = subscription.drained_total,
+                dropped_total = subscription.dropped_total,
+                "closed event subscription"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Snapshot subscription queue depth/drop counters for host observability.
+    ///
+    /// Returns `null` when the handle does not exist.
+    #[wasm_bindgen(js_name = eventSubscriptionState)]
+    pub fn event_subscription_state(&self, subscription_id: u32) -> JsValue {
+        self.event_subscriptions
+            .get(&subscription_id)
+            .map(event_subscription_to_js)
+            .unwrap_or(JsValue::NULL)
+    }
+
+    /// Drain queued subscription events as structured JS objects.
+    #[wasm_bindgen(js_name = drainEventSubscription)]
+    pub fn drain_event_subscription(&mut self, subscription_id: u32) -> Result<Array, JsValue> {
+        let Some(subscription) = self.event_subscriptions.get_mut(&subscription_id) else {
+            return Err(JsValue::from_str("unknown event subscription id"));
+        };
+
+        let drained: Vec<SubscriptionEventRecord> = subscription.queue.drain(..).collect();
+        subscription.drained_total = subscription
+            .drained_total
+            .saturating_add(drained.len() as u64);
+        let arr = Array::new();
+        for record in drained {
+            let obj = Object::new();
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("seq"),
+                &JsValue::from_f64(record.seq as f64),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("eventType"),
+                &JsValue::from_str(record.event_type.as_str()),
+            );
+            let payload = js_sys::JSON::parse(&record.payload_json)
+                .unwrap_or_else(|_| JsValue::from_str(&record.payload_json));
+            let _ = Reflect::set(&obj, &JsValue::from_str("payload"), &payload);
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("queueDepthAfter"),
+                &JsValue::from_f64(f64::from(record.queue_depth_after)),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("droppedTotal"),
+                &JsValue::from_f64(record.dropped_total as f64),
+            );
+            arr.push(&obj);
+        }
+        Ok(arr)
+    }
+
+    /// Drain queued subscription events as deterministic JSONL records.
+    #[wasm_bindgen(js_name = drainEventSubscriptionJsonl)]
+    pub fn drain_event_subscription_jsonl(
+        &mut self,
+        subscription_id: u32,
+        run_id: String,
+        seed: u64,
+        timestamp: String,
+    ) -> Result<Array, JsValue> {
+        let normalized = run_id.trim();
+        if normalized.is_empty() {
+            return Err(JsValue::from_str("run_id must not be empty"));
+        }
+        let Some(subscription) = self.event_subscriptions.get_mut(&subscription_id) else {
+            return Err(JsValue::from_str("unknown event subscription id"));
+        };
+        let drained: Vec<SubscriptionEventRecord> = subscription.queue.drain(..).collect();
+        subscription.drained_total = subscription
+            .drained_total
+            .saturating_add(drained.len() as u64);
+        let out = Array::new();
+        for (event_idx, record) in drained.into_iter().enumerate() {
+            let payload_value = serde_json::from_str::<serde_json::Value>(&record.payload_json)
+                .unwrap_or_else(|_| serde_json::Value::String(record.payload_json.clone()));
+            let line = serde_json::json!({
+                "schema_version": "e2e-jsonl-v1",
+                "type": "event_subscription",
+                "run_id": normalized,
+                "seed": seed,
+                "timestamp": timestamp,
+                "event_idx": event_idx as u64,
+                "subscription_id": subscription_id,
+                "seq": record.seq,
+                "event_type": record.event_type.as_str(),
+                "queue_depth_after": record.queue_depth_after,
+                "dropped_total": record.dropped_total,
+                "payload": payload_value,
+            });
+            if let Ok(line) = serde_json::to_string(&line) {
+                out.push(&JsValue::from_str(&line));
+            }
+        }
+        Ok(out)
+    }
+
     /// Drain pending terminal reply bytes generated by VT query sequences.
     ///
     /// Returned as `Array<Uint8Array>` chunks in FIFO order.
     #[wasm_bindgen(js_name = drainReplyBytes)]
     pub fn drain_reply_bytes(&mut self) -> Array {
         let arr = Array::new();
-        let Some(engine) = self.engine.as_mut() else {
+        let drained_replies = if let Some(engine) = self.engine.as_mut() {
+            engine.drain_replies()
+        } else {
             return arr;
         };
-        for bytes in engine.drain_replies() {
+        for bytes in drained_replies {
+            let payload_json = serde_json::json!({
+                "bytes_len": bytes.len(),
+                "bytes_hex": bytes_to_hex(bytes.as_slice()),
+            })
+            .to_string();
+            self.emit_host_event(HostEventType::TerminalReplyBytes, payload_json);
             let chunk = Uint8Array::from(bytes.as_slice());
             arr.push(&chunk.into());
         }
@@ -842,6 +1250,7 @@ impl FrankenTermWeb {
         let transition = self
             .attach_client
             .handle_event(u64::from(now_ms), AttachEvent::ConnectRequested);
+        self.emit_attach_transition_event(&transition);
         attach_transition_to_js(&transition)
     }
 
@@ -854,6 +1263,7 @@ impl FrankenTermWeb {
         let transition = self
             .attach_client
             .handle_event(u64::from(now_ms), AttachEvent::TransportOpened);
+        self.emit_attach_transition_event(&transition);
         attach_transition_to_js(&transition)
     }
 
@@ -874,6 +1284,7 @@ impl FrankenTermWeb {
                 session_id: normalized.to_owned(),
             },
         );
+        self.emit_attach_transition_event(&transition);
         Ok(attach_transition_to_js(&transition))
     }
 
@@ -894,6 +1305,7 @@ impl FrankenTermWeb {
                 reason: reason.to_owned(),
             },
         );
+        self.emit_attach_transition_event(&transition);
         attach_transition_to_js(&transition)
     }
 
@@ -916,6 +1328,7 @@ impl FrankenTermWeb {
                 fatal,
             },
         );
+        self.emit_attach_transition_event(&transition);
         Ok(attach_transition_to_js(&transition))
     }
 
@@ -928,6 +1341,7 @@ impl FrankenTermWeb {
                 reason: reason.to_owned(),
             },
         );
+        self.emit_attach_transition_event(&transition);
         attach_transition_to_js(&transition)
     }
 
@@ -940,6 +1354,7 @@ impl FrankenTermWeb {
                 reason: reason.to_owned(),
             },
         );
+        self.emit_attach_transition_event(&transition);
         attach_transition_to_js(&transition)
     }
 
@@ -949,6 +1364,7 @@ impl FrankenTermWeb {
         let transition = self
             .attach_client
             .handle_event(u64::from(now_ms), AttachEvent::Tick);
+        self.emit_attach_transition_event(&transition);
         attach_transition_to_js(&transition)
     }
 
@@ -958,6 +1374,7 @@ impl FrankenTermWeb {
         let transition = self
             .attach_client
             .handle_event(u64::from(now_ms), AttachEvent::Reset);
+        self.emit_attach_transition_event(&transition);
         attach_transition_to_js(&transition)
     }
 
@@ -1001,6 +1418,7 @@ impl FrankenTermWeb {
         if data.is_empty() {
             return;
         }
+        self.process_progress_signals(data);
         let Some(_) = self.engine.as_ref() else {
             return;
         };
@@ -1827,8 +2245,12 @@ impl FrankenTermWeb {
         self.encoded_input_bytes.clear();
         self.ime_trace_events.clear();
         self.link_clicks.clear();
+        self.event_subscriptions.clear();
+        self.next_event_subscription_id = 1;
+        self.next_host_event_seq = 1;
         self.auto_link_ids.clear();
         self.auto_link_urls.clear();
+        self.next_auto_link_id = AUTO_LINK_ID_BASE;
         self.text_shaping = TextShapingConfig::default();
         self.hovered_link_id = 0;
         self.cursor_offset = None;
@@ -1851,10 +2273,143 @@ impl FrankenTermWeb {
         self.scroll_state = ScrollState::with_defaults();
         self.follow_output = true;
         self.attach_client = AttachClientStateMachine::default();
+        self.progress_parser = Parser::new();
+        self.progress_last_value = 0;
     }
 }
 
 impl FrankenTermWeb {
+    fn next_subscription_id(&mut self) -> Option<u32> {
+        for _ in 0..=MAX_EVENT_SUBSCRIPTIONS {
+            let candidate = self.next_event_subscription_id.max(1);
+            self.next_event_subscription_id = candidate.saturating_add(1);
+            if !self.event_subscriptions.contains_key(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    fn emit_host_event(&mut self, event_type: HostEventType, payload_json: String) {
+        let seq = self.next_host_event_seq;
+        self.next_host_event_seq = self.next_host_event_seq.saturating_add(1);
+        if self.event_subscriptions.is_empty() {
+            return;
+        }
+
+        for subscription in self.event_subscriptions.values_mut() {
+            if !subscription.matches(event_type) {
+                continue;
+            }
+            let mut dropped_now = 0usize;
+            if subscription.queue.len() >= subscription.max_buffered {
+                let overflow = subscription.queue.len() - subscription.max_buffered + 1;
+                subscription.queue.drain(..overflow);
+                subscription.dropped_total =
+                    subscription.dropped_total.saturating_add(overflow as u64);
+                dropped_now = overflow;
+                warn!(
+                    target: "frankenterm_web::events",
+                    subscription_id = subscription.id,
+                    seq,
+                    event_type = event_type.as_str(),
+                    queue_max = subscription.max_buffered,
+                    overflow = overflow,
+                    dropped_total = subscription.dropped_total,
+                    "event subscription dropped oldest records"
+                );
+            }
+
+            subscription.emitted_total = subscription.emitted_total.saturating_add(1);
+            let queue_depth_after = subscription.queue.len().saturating_add(1);
+            let queue_depth_after_u32 = u32::try_from(queue_depth_after).unwrap_or(u32::MAX);
+            let dropped_total = subscription.dropped_total;
+            subscription.queue.push(SubscriptionEventRecord {
+                seq,
+                event_type,
+                payload_json: payload_json.clone(),
+                queue_depth_after: queue_depth_after_u32,
+                dropped_total,
+            });
+            trace!(
+                target: "frankenterm_web::events",
+                subscription_id = subscription.id,
+                seq,
+                event_type = event_type.as_str(),
+                queue_depth_after = queue_depth_after,
+                dropped_now = dropped_now,
+                dropped_total = dropped_total,
+                "event delivered to subscription queue"
+            );
+        }
+    }
+
+    fn emit_attach_transition_event(&mut self, transition: &AttachTransition) {
+        let payload_json = serde_json::json!({
+            "transition_seq": transition.seq,
+            "at_ms": transition.at_ms,
+            "event": transition.event.as_str(),
+            "from_state": transition.from_state.as_str(),
+            "to_state": transition.to_state.as_str(),
+            "attempt": transition.attempt,
+            "session_id": transition.session_id,
+            "close_code": transition.close_code,
+            "clean_close": transition.clean_close,
+            "reason": transition.reason,
+        })
+        .to_string();
+        self.emit_host_event(HostEventType::AttachTransition, payload_json);
+    }
+
+    fn process_progress_signals(&mut self, data: &[u8]) {
+        if self.event_subscriptions.is_empty() {
+            // Still advance parser state for deterministic chunk-boundary behavior.
+            let _ = self.progress_parser.feed(data);
+            return;
+        }
+        let actions = self.progress_parser.feed(data);
+        for action in actions {
+            let Action::Escape(sequence) = action else {
+                continue;
+            };
+            let Some((command, payload)) = parse_osc_command_and_payload(&sequence) else {
+                continue;
+            };
+            if command != 9 {
+                continue;
+            }
+            let Some(record) = parse_progress_signal_payload(&payload, self.progress_last_value)
+            else {
+                // OSC 9 with a non-progress subcommand is not part of this API.
+                continue;
+            };
+            if record.accepted {
+                if let Some(value) = record.value {
+                    self.progress_last_value = value;
+                }
+                trace!(
+                    target: "frankenterm_web::events",
+                    state = record.state.map(ProgressSignalState::as_str),
+                    state_code = record.state_code,
+                    value = record.value,
+                    value_provided = record.value_provided,
+                    "accepted OSC 9;4 progress signal"
+                );
+            } else {
+                warn!(
+                    target: "frankenterm_web::events",
+                    reason = record.reason.unwrap_or("unknown"),
+                    raw_payload = record.raw_payload,
+                    raw_state = record.raw_state,
+                    raw_value = record.raw_value,
+                    "rejected OSC 9;4 progress signal"
+                );
+            }
+            let payload_json = progress_signal_payload_json(&record, bytes_to_hex(&sequence));
+            self.emit_host_event(HostEventType::TerminalProgress, payload_json);
+        }
+    }
+
     fn scrollback_line_count(&self) -> usize {
         self.engine
             .as_ref()
@@ -2006,15 +2561,32 @@ impl FrankenTermWeb {
         let json = ev
             .to_json_string()
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
-        push_bounded(&mut self.encoded_inputs, json, MAX_ENCODED_INPUT_EVENTS);
+        push_bounded(
+            &mut self.encoded_inputs,
+            json.clone(),
+            MAX_ENCODED_INPUT_EVENTS,
+        );
+        let input_payload = serde_json::json!({
+            "kind": HostEventType::from_input_event(&ev).as_str(),
+            "encoded_input": json,
+            "encoded_queue_depth": self.encoded_inputs.len(),
+        })
+        .to_string();
+        self.emit_host_event(HostEventType::from_input_event(&ev), input_payload);
 
         let vt = encode_vt_input_event(&ev, self.encoder_features);
         if !vt.is_empty() {
+            let vt_payload = serde_json::json!({
+                "bytes_len": vt.len(),
+                "bytes_hex": bytes_to_hex(vt.as_slice()),
+            })
+            .to_string();
             push_bounded(
                 &mut self.encoded_input_bytes,
                 vt,
                 MAX_ENCODED_INPUT_BYTE_CHUNKS,
             );
+            self.emit_host_event(HostEventType::InputVtBytes, vt_payload);
         }
         Ok(())
     }
@@ -2023,33 +2595,47 @@ impl FrankenTermWeb {
         let InputEvent::Composition(comp) = event else {
             return;
         };
-        push_bounded(
-            &mut self.ime_trace_events,
-            ImeTraceEvent {
-                event_kind: "composition",
-                phase: Some(comp.phase),
-                data: comp.data.as_deref().map(ToOwned::to_owned),
-                synthetic,
-                active_after: self.composition.is_active(),
-                preedit_after: self.composition.preedit().map(ToOwned::to_owned),
-            },
-            MAX_IME_TRACE_EVENTS,
-        );
+        let record = ImeTraceEvent {
+            event_kind: "composition",
+            phase: Some(comp.phase),
+            data: comp.data.as_deref().map(ToOwned::to_owned),
+            synthetic,
+            active_after: self.composition.is_active(),
+            preedit_after: self.composition.preedit().map(ToOwned::to_owned),
+        };
+        let payload_json = serde_json::json!({
+            "event_kind": record.event_kind,
+            "phase": record.phase.map(composition_phase_label),
+            "data": record.data,
+            "synthetic": record.synthetic,
+            "active_after": record.active_after,
+            "preedit_after": record.preedit_after,
+        })
+        .to_string();
+        push_bounded(&mut self.ime_trace_events, record, MAX_IME_TRACE_EVENTS);
+        self.emit_host_event(HostEventType::InputCompositionTrace, payload_json);
     }
 
     fn record_ime_drop_key_trace(&mut self) {
-        push_bounded(
-            &mut self.ime_trace_events,
-            ImeTraceEvent {
-                event_kind: "drop_key",
-                phase: None,
-                data: None,
-                synthetic: false,
-                active_after: self.composition.is_active(),
-                preedit_after: self.composition.preedit().map(ToOwned::to_owned),
-            },
-            MAX_IME_TRACE_EVENTS,
-        );
+        let record = ImeTraceEvent {
+            event_kind: "drop_key",
+            phase: None,
+            data: None,
+            synthetic: false,
+            active_after: self.composition.is_active(),
+            preedit_after: self.composition.preedit().map(ToOwned::to_owned),
+        };
+        let payload_json = serde_json::json!({
+            "event_kind": record.event_kind,
+            "phase": serde_json::Value::Null,
+            "data": serde_json::Value::Null,
+            "synthetic": record.synthetic,
+            "active_after": record.active_after,
+            "preedit_after": record.preedit_after,
+        })
+        .to_string();
+        push_bounded(&mut self.ime_trace_events, record, MAX_IME_TRACE_EVENTS);
+        self.emit_host_event(HostEventType::InputCompositionTrace, payload_json);
     }
 
     fn set_focus_internal(&mut self, focused: bool) {
@@ -2457,12 +3043,17 @@ impl FrankenTermWeb {
             return;
         }
         // Keep the queue bounded so host-side consumers can poll lazily.
-        let limit = 64;
-        if self.live_announcements.len() >= limit {
-            let overflow = self.live_announcements.len() - limit + 1;
+        if self.live_announcements.len() >= MAX_ACCESSIBILITY_ANNOUNCEMENTS {
+            let overflow = self.live_announcements.len() - MAX_ACCESSIBILITY_ANNOUNCEMENTS + 1;
             self.live_announcements.drain(..overflow);
         }
         self.live_announcements.push(trimmed.to_string());
+        let payload_json = serde_json::json!({
+            "text": trimmed,
+            "queue_depth": self.live_announcements.len(),
+        })
+        .to_string();
+        self.emit_host_event(HostEventType::UiAccessibilityAnnouncement, payload_json);
     }
 
     fn build_screen_reader_mirror_text(&self) -> String {
@@ -2515,6 +3106,15 @@ impl FrankenTermWeb {
                     },
                     MAX_LINK_CLICKS,
                 );
+                let payload_json = serde_json::json!({
+                    "x": mouse.x,
+                    "y": mouse.y,
+                    "button": mouse.button.map(MouseButton::to_u8),
+                    "link_id": link_id,
+                    "queue_depth": self.link_clicks.len(),
+                })
+                .to_string();
+                self.emit_host_event(HostEventType::UiLinkClick, payload_json);
             }
         }
     }
@@ -3335,6 +3935,290 @@ fn attach_action_to_js(action: &AttachAction) -> JsValue {
     obj.into()
 }
 
+fn event_subscription_to_js(subscription: &EventSubscription) -> JsValue {
+    let obj = Object::new();
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("id"),
+        &JsValue::from_f64(f64::from(subscription.id)),
+    );
+    let event_types = Array::new();
+    for event_type in &subscription.event_types {
+        event_types.push(&JsValue::from_str(event_type.as_str()));
+    }
+    let _ = Reflect::set(&obj, &JsValue::from_str("eventTypes"), &event_types);
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("maxBuffered"),
+        &JsValue::from_f64(subscription.max_buffered as f64),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("buffered"),
+        &JsValue::from_f64(subscription.queue.len() as f64),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("emittedTotal"),
+        &JsValue::from_f64(subscription.emitted_total as f64),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("drainedTotal"),
+        &JsValue::from_f64(subscription.drained_total as f64),
+    );
+    let _ = Reflect::set(
+        &obj,
+        &JsValue::from_str("droppedTotal"),
+        &JsValue::from_f64(subscription.dropped_total as f64),
+    );
+    obj.into()
+}
+
+fn parse_osc_command_and_payload(sequence: &[u8]) -> Option<(u16, String)> {
+    if sequence.len() < 4 || sequence.first().copied() != Some(0x1b) || sequence[1] != b']' {
+        return None;
+    }
+    let content = if *sequence.last()? == 0x07 {
+        &sequence[2..sequence.len().saturating_sub(1)]
+    } else if sequence.len() >= 4
+        && sequence[sequence.len() - 2] == 0x1b
+        && sequence[sequence.len() - 1] == b'\\'
+    {
+        &sequence[2..sequence.len().saturating_sub(2)]
+    } else {
+        return None;
+    };
+    let content = core::str::from_utf8(content).ok()?;
+    let first_semi = content.find(';')?;
+    let command = parse_u16_ascii(&content[..first_semi])?;
+    Some((command, content[first_semi + 1..].to_string()))
+}
+
+fn parse_u16_ascii(raw: &str) -> Option<u16> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse::<u16>().ok()
+}
+
+fn parse_u8_percent(raw: &str) -> Option<u8> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let value = raw.parse::<u16>().ok()?;
+    Some(value.min(100) as u8)
+}
+
+fn parse_progress_signal_payload(payload: &str, last_value: u8) -> Option<ProgressSignalRecord> {
+    let mut parts = payload.split(';');
+    let discriminator = parts.next()?;
+    if discriminator != "4" {
+        return None;
+    }
+    let raw_state = parts.next().map(str::to_string);
+    let raw_value = parts.next().map(str::to_string);
+    if parts.next().is_some() {
+        return Some(ProgressSignalRecord {
+            accepted: false,
+            reason: Some("invalid_arity"),
+            state: None,
+            state_code: None,
+            value: None,
+            value_provided: raw_value.as_deref().is_some_and(|value| !value.is_empty()),
+            raw_payload: payload.to_string(),
+            raw_state,
+            raw_value,
+        });
+    }
+    let Some(raw_state_token) = raw_state.as_deref() else {
+        return Some(ProgressSignalRecord {
+            accepted: false,
+            reason: Some("missing_state"),
+            state: None,
+            state_code: None,
+            value: None,
+            value_provided: raw_value.as_deref().is_some_and(|value| !value.is_empty()),
+            raw_payload: payload.to_string(),
+            raw_state,
+            raw_value,
+        });
+    };
+    let Some(state_code) =
+        parse_u16_ascii(raw_state_token).and_then(|value| u8::try_from(value).ok())
+    else {
+        return Some(ProgressSignalRecord {
+            accepted: false,
+            reason: Some("invalid_state_code"),
+            state: None,
+            state_code: None,
+            value: None,
+            value_provided: raw_value.as_deref().is_some_and(|value| !value.is_empty()),
+            raw_payload: payload.to_string(),
+            raw_state,
+            raw_value,
+        });
+    };
+    let Some(state) = ProgressSignalState::from_code(state_code) else {
+        return Some(ProgressSignalRecord {
+            accepted: false,
+            reason: Some("unsupported_state_code"),
+            state: None,
+            state_code: Some(state_code),
+            value: None,
+            value_provided: raw_value.as_deref().is_some_and(|value| !value.is_empty()),
+            raw_payload: payload.to_string(),
+            raw_state,
+            raw_value,
+        });
+    };
+    let value_provided = raw_value.as_deref().is_some_and(|value| !value.is_empty());
+    let value = match state {
+        ProgressSignalState::Remove => Some(0),
+        ProgressSignalState::Normal => {
+            if value_provided {
+                match parse_u8_percent(raw_value.as_deref().unwrap_or_default()) {
+                    Some(value) => Some(value),
+                    None => {
+                        return Some(ProgressSignalRecord {
+                            accepted: false,
+                            reason: Some("invalid_value"),
+                            state: None,
+                            state_code: Some(state_code),
+                            value: None,
+                            value_provided,
+                            raw_payload: payload.to_string(),
+                            raw_state,
+                            raw_value,
+                        });
+                    }
+                }
+            } else {
+                Some(0)
+            }
+        }
+        ProgressSignalState::Error | ProgressSignalState::Warning => {
+            if value_provided {
+                match parse_u8_percent(raw_value.as_deref().unwrap_or_default()) {
+                    Some(0) => Some(last_value),
+                    Some(value) => Some(value),
+                    None => {
+                        return Some(ProgressSignalRecord {
+                            accepted: false,
+                            reason: Some("invalid_value"),
+                            state: None,
+                            state_code: Some(state_code),
+                            value: None,
+                            value_provided,
+                            raw_payload: payload.to_string(),
+                            raw_state,
+                            raw_value,
+                        });
+                    }
+                }
+            } else {
+                Some(last_value)
+            }
+        }
+        ProgressSignalState::Indeterminate => Some(last_value),
+    };
+    Some(ProgressSignalRecord {
+        accepted: true,
+        reason: None,
+        state: Some(state),
+        state_code: Some(state_code),
+        value,
+        value_provided,
+        raw_payload: payload.to_string(),
+        raw_state,
+        raw_value,
+    })
+}
+
+fn progress_signal_payload_json(record: &ProgressSignalRecord, sequence_hex: String) -> String {
+    serde_json::json!({
+        "protocol": "osc_9_4",
+        "accepted": record.accepted,
+        "reason": record.reason,
+        "state": record.state.map(ProgressSignalState::as_str),
+        "state_code": record.state_code,
+        "value": record.value,
+        "value_provided": record.value_provided,
+        "raw_payload": record.raw_payload,
+        "raw_state": record.raw_state,
+        "raw_value": record.raw_value,
+        "sequence_hex": sequence_hex,
+    })
+    .to_string()
+}
+
+fn parse_event_subscription_options(
+    options: Option<&JsValue>,
+) -> Result<EventSubscriptionOptions, JsValue> {
+    let mut config = EventSubscriptionOptions::default();
+    let Some(options) = options else {
+        return Ok(config);
+    };
+
+    if let Some(event_types) = get_event_type_list(options, &["eventTypes", "event_types"])? {
+        if event_types.is_empty() {
+            return Err(JsValue::from_str(
+                "eventTypes must contain at least one known event type",
+            ));
+        }
+        config.event_types = event_types;
+    }
+
+    if let Some(v) = get_u32_opt(options, "maxBuffered")?.or(get_u32_opt(options, "max_buffered")?)
+    {
+        let max_buffered =
+            usize::try_from(v).map_err(|_| JsValue::from_str("field maxBuffered out of range"))?;
+        if max_buffered == 0 || max_buffered > MAX_EVENT_SUBSCRIPTION_BUFFER_MAX {
+            return Err(JsValue::from_str("field maxBuffered must be in 1..=8192"));
+        }
+        config.max_buffered = max_buffered;
+    }
+
+    Ok(config)
+}
+
+fn get_event_type_list(
+    obj: &JsValue,
+    keys: &[&str],
+) -> Result<Option<Vec<HostEventType>>, JsValue> {
+    for key in keys {
+        let v = Reflect::get(obj, &JsValue::from_str(key))?;
+        if v.is_null() || v.is_undefined() {
+            continue;
+        }
+        if !Array::is_array(&v) {
+            return Err(JsValue::from_str(&format!(
+                "field {key} must be an array of event type strings"
+            )));
+        }
+        let arr = Array::from(&v);
+        let mut out = Vec::with_capacity(arr.length() as usize);
+        for entry in arr.iter() {
+            let Some(raw) = entry.as_string() else {
+                return Err(JsValue::from_str(&format!(
+                    "field {key} must contain only strings"
+                )));
+            };
+            let Some(event_type) = HostEventType::parse(raw.trim()) else {
+                return Err(JsValue::from_str(&format!(
+                    "field {key} contains unknown event type: {raw}"
+                )));
+            };
+            if !out.iter().any(|existing| *existing == event_type) {
+                out.push(event_type);
+            }
+        }
+        out.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+        return Ok(Some(out));
+    }
+    Ok(None)
+}
+
 fn parse_search_config(options: Option<&JsValue>) -> Result<SearchConfig, JsValue> {
     let mut config = SearchConfig::default();
 
@@ -4093,6 +4977,343 @@ mod tests {
             }
         }
         term.feed(&payload);
+    }
+
+    fn event_subscription_options(event_types: &[&str], max_buffered: Option<u32>) -> JsValue {
+        let options = Object::new();
+        if !event_types.is_empty() {
+            let event_types_array = Array::new();
+            for event_type in event_types {
+                event_types_array.push(&JsValue::from_str(event_type));
+            }
+            let _ = Reflect::set(
+                &options,
+                &JsValue::from_str("eventTypes"),
+                &event_types_array,
+            );
+        }
+        if let Some(max) = max_buffered {
+            let _ = Reflect::set(
+                &options,
+                &JsValue::from_str("maxBuffered"),
+                &JsValue::from_f64(f64::from(max)),
+            );
+        }
+        options.into()
+    }
+
+    fn subscription_id_from_snapshot(snapshot: &JsValue) -> u32 {
+        let id = Reflect::get(snapshot, &JsValue::from_str("id"))
+            .expect("subscription snapshot should expose id")
+            .as_f64()
+            .expect("subscription id should be numeric");
+        id as u32
+    }
+
+    #[test]
+    fn event_subscription_filters_types_and_preserves_fifo_seq() {
+        let mut term = FrankenTermWeb::new();
+        let snapshot = term
+            .create_event_subscription(Some(event_subscription_options(
+                &["input.paste", "input.focus"],
+                Some(8),
+            )))
+            .expect("create_event_subscription should succeed");
+        let subscription_id = subscription_id_from_snapshot(&snapshot);
+
+        assert!(
+            term.queue_input_event(InputEvent::Paste(PasteInput { data: "one".into() }))
+                .is_ok()
+        );
+        assert!(
+            term.queue_input_event(InputEvent::Wheel(WheelInput {
+                x: 0,
+                y: 0,
+                dx: 0,
+                dy: 1,
+                mods: Modifiers::default(),
+            }))
+            .is_ok()
+        );
+        assert!(
+            term.queue_input_event(InputEvent::Focus(FocusInput { focused: true }))
+                .is_ok()
+        );
+
+        let drained = term
+            .drain_event_subscription(subscription_id)
+            .expect("drain_event_subscription should succeed");
+        assert_eq!(drained.length(), 2);
+
+        let first = drained.get(0);
+        let second = drained.get(1);
+        assert_eq!(
+            Reflect::get(&first, &JsValue::from_str("eventType"))
+                .expect("event record should expose eventType")
+                .as_string()
+                .as_deref(),
+            Some("input.paste")
+        );
+        assert_eq!(
+            Reflect::get(&second, &JsValue::from_str("eventType"))
+                .expect("event record should expose eventType")
+                .as_string()
+                .as_deref(),
+            Some("input.focus")
+        );
+        let seq_first = Reflect::get(&first, &JsValue::from_str("seq"))
+            .expect("event record should expose seq")
+            .as_f64()
+            .expect("seq should be numeric");
+        let seq_second = Reflect::get(&second, &JsValue::from_str("seq"))
+            .expect("event record should expose seq")
+            .as_f64()
+            .expect("seq should be numeric");
+        assert!(seq_first < seq_second);
+    }
+
+    #[test]
+    fn event_subscription_queue_drops_oldest_and_tracks_drop_counters() {
+        let mut term = FrankenTermWeb::new();
+        let snapshot = term
+            .create_event_subscription(Some(event_subscription_options(&["input.paste"], Some(2))))
+            .expect("create_event_subscription should succeed");
+        let subscription_id = subscription_id_from_snapshot(&snapshot);
+
+        for idx in 0..5 {
+            assert!(
+                term.queue_input_event(InputEvent::Paste(PasteInput {
+                    data: format!("evt-{idx}").into_boxed_str(),
+                }))
+                .is_ok()
+            );
+        }
+
+        let state = term.event_subscription_state(subscription_id);
+        assert_eq!(
+            Reflect::get(&state, &JsValue::from_str("buffered"))
+                .expect("state should expose buffered")
+                .as_f64(),
+            Some(2.0)
+        );
+        assert_eq!(
+            Reflect::get(&state, &JsValue::from_str("droppedTotal"))
+                .expect("state should expose droppedTotal")
+                .as_f64(),
+            Some(3.0)
+        );
+
+        let drained = term
+            .drain_event_subscription(subscription_id)
+            .expect("drain_event_subscription should succeed");
+        assert_eq!(drained.length(), 2);
+
+        let first_payload = Reflect::get(&drained.get(0), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        let second_payload = Reflect::get(&drained.get(1), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        let first_json = js_sys::JSON::stringify(&first_payload)
+            .expect("payload should stringify")
+            .as_string()
+            .expect("stringified payload should be a string");
+        let second_json = js_sys::JSON::stringify(&second_payload)
+            .expect("payload should stringify")
+            .as_string()
+            .expect("stringified payload should be a string");
+        assert!(first_json.contains("evt-3"));
+        assert!(second_json.contains("evt-4"));
+    }
+
+    #[test]
+    fn event_subscription_close_disposes_handle_and_rejects_future_drains() {
+        let mut term = FrankenTermWeb::new();
+        let snapshot = term
+            .create_event_subscription(Some(event_subscription_options(&[], None)))
+            .expect("create_event_subscription should succeed");
+        let subscription_id = subscription_id_from_snapshot(&snapshot);
+
+        assert!(term.close_event_subscription(subscription_id));
+        assert!(!term.close_event_subscription(subscription_id));
+        assert!(term.event_subscription_state(subscription_id).is_null());
+        assert!(term.drain_event_subscription(subscription_id).is_err());
+        assert!(
+            term.drain_event_subscription_jsonl(
+                subscription_id,
+                "run-test".to_string(),
+                1,
+                "T000001".to_string()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn feed_emits_terminal_progress_events_with_normalization_and_rejections() {
+        let mut term = FrankenTermWeb::new();
+        term.resize(8, 4);
+        let snapshot = term
+            .create_event_subscription(Some(event_subscription_options(
+                &["terminal.progress"],
+                Some(16),
+            )))
+            .expect("create_event_subscription should succeed");
+        let subscription_id = subscription_id_from_snapshot(&snapshot);
+
+        term.feed(
+            b"\x1b]9;4;1;10\x07\x1b]9;4;3;\x07\x1b]9;4;2;0\x07\x1b]9;4;1;abc\x07\x1b]9;4;0;\x07",
+        );
+
+        let drained = term
+            .drain_event_subscription(subscription_id)
+            .expect("drain_event_subscription should succeed");
+        assert_eq!(drained.length(), 5);
+
+        for idx in 0..drained.length() {
+            assert_eq!(
+                Reflect::get(&drained.get(idx), &JsValue::from_str("eventType"))
+                    .expect("event record should expose eventType")
+                    .as_string()
+                    .as_deref(),
+                Some("terminal.progress")
+            );
+        }
+
+        let payload_0 = Reflect::get(&drained.get(0), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        assert_eq!(
+            Reflect::get(&payload_0, &JsValue::from_str("accepted"))
+                .expect("payload should expose accepted")
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            Reflect::get(&payload_0, &JsValue::from_str("state"))
+                .expect("payload should expose state")
+                .as_string()
+                .as_deref(),
+            Some("normal")
+        );
+        assert_eq!(
+            Reflect::get(&payload_0, &JsValue::from_str("value"))
+                .expect("payload should expose value")
+                .as_f64(),
+            Some(10.0)
+        );
+
+        let payload_1 = Reflect::get(&drained.get(1), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        assert_eq!(
+            Reflect::get(&payload_1, &JsValue::from_str("state"))
+                .expect("payload should expose state")
+                .as_string()
+                .as_deref(),
+            Some("indeterminate")
+        );
+        assert_eq!(
+            Reflect::get(&payload_1, &JsValue::from_str("value"))
+                .expect("payload should expose value")
+                .as_f64(),
+            Some(10.0)
+        );
+
+        let payload_2 = Reflect::get(&drained.get(2), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        assert_eq!(
+            Reflect::get(&payload_2, &JsValue::from_str("state"))
+                .expect("payload should expose state")
+                .as_string()
+                .as_deref(),
+            Some("error")
+        );
+        assert_eq!(
+            Reflect::get(&payload_2, &JsValue::from_str("value"))
+                .expect("payload should expose value")
+                .as_f64(),
+            Some(10.0)
+        );
+
+        let payload_3 = Reflect::get(&drained.get(3), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        assert_eq!(
+            Reflect::get(&payload_3, &JsValue::from_str("accepted"))
+                .expect("payload should expose accepted")
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            Reflect::get(&payload_3, &JsValue::from_str("reason"))
+                .expect("payload should expose reason")
+                .as_string()
+                .as_deref(),
+            Some("invalid_value")
+        );
+
+        let payload_4 = Reflect::get(&drained.get(4), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        assert_eq!(
+            Reflect::get(&payload_4, &JsValue::from_str("state"))
+                .expect("payload should expose state")
+                .as_string()
+                .as_deref(),
+            Some("remove")
+        );
+        assert_eq!(
+            Reflect::get(&payload_4, &JsValue::from_str("value"))
+                .expect("payload should expose value")
+                .as_f64(),
+            Some(0.0)
+        );
+
+        assert_eq!(term.progress_last_value, 0);
+    }
+
+    #[test]
+    fn progress_parser_preserves_chunk_boundaries_until_sequence_terminates() {
+        let mut term = FrankenTermWeb::new();
+        term.resize(8, 4);
+        let snapshot = term
+            .create_event_subscription(Some(event_subscription_options(
+                &["terminal.progress"],
+                Some(4),
+            )))
+            .expect("create_event_subscription should succeed");
+        let subscription_id = subscription_id_from_snapshot(&snapshot);
+
+        term.feed(b"\x1b]9;4;1");
+        assert_eq!(
+            term.drain_event_subscription(subscription_id)
+                .expect("drain_event_subscription should succeed")
+                .length(),
+            0
+        );
+
+        term.feed(b";25\x07");
+        let drained = term
+            .drain_event_subscription(subscription_id)
+            .expect("drain_event_subscription should succeed");
+        assert_eq!(drained.length(), 1);
+
+        let payload = Reflect::get(&drained.get(0), &JsValue::from_str("payload"))
+            .expect("event record should expose payload");
+        assert_eq!(
+            Reflect::get(&payload, &JsValue::from_str("accepted"))
+                .expect("payload should expose accepted")
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            Reflect::get(&payload, &JsValue::from_str("state"))
+                .expect("payload should expose state")
+                .as_string()
+                .as_deref(),
+            Some("normal")
+        );
+        assert_eq!(
+            Reflect::get(&payload, &JsValue::from_str("value"))
+                .expect("payload should expose value")
+                .as_f64(),
+            Some(25.0)
+        );
     }
 
     #[test]

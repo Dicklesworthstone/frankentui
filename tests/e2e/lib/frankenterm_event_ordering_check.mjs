@@ -7,10 +7,12 @@ import process from "node:process";
 const DEFAULT_REQUIRED_ORDERING_SNIPPETS = [
   "drainEncodedInputs() returns FIFO",
   "drainEncodedInputBytes() returns FIFO",
+  "feed() emits terminal.progress records",
   "drainImeCompositionJsonl() returns FIFO",
   "drainReplyBytes() returns FIFO",
   "drainAttachTransitionsJsonl() returns transitions",
   "drainLinkClicks() and drainAccessibilityAnnouncements() return FIFO",
+  "drainEventSubscription()/drainEventSubscriptionJsonl() preserve per-subscription FIFO",
 ];
 
 const REQUIRED_EVENT_TYPES = [
@@ -23,9 +25,18 @@ const REQUIRED_EVENT_TYPES = [
   "input.paste",
   "input.vt_bytes",
   "input.wheel",
+  "terminal.progress",
   "terminal.reply_bytes",
   "ui.accessibility_announcement",
   "ui.link_click",
+];
+
+const REQUIRED_SUBSCRIPTION_METHODS = [
+  "createEventSubscription",
+  "eventSubscriptionState",
+  "drainEventSubscription",
+  "drainEventSubscriptionJsonl",
+  "closeEventSubscription",
 ];
 
 function parseArgs(argv) {
@@ -162,6 +173,7 @@ async function main() {
   const contract = term.apiContract();
   const contractTypes = asArray(contract.eventTypes);
   const contractOrdering = asArray(contract.eventOrdering);
+  const contractMethods = asArray(contract.methods);
 
   emit("contract.snapshot", {
     event_schema_version: contract.eventSchemaVersion ?? "",
@@ -182,12 +194,44 @@ async function main() {
       `apiContract.eventTypes missing required type: ${requiredType}`,
     );
   }
+  for (const methodName of REQUIRED_SUBSCRIPTION_METHODS) {
+    expect(
+      contractMethods.includes(methodName),
+      errors,
+      `apiContract.methods missing required subscription method: ${methodName}`,
+    );
+  }
   expect(monotonic(contractTypes), errors, "apiContract.eventTypes must stay sorted");
 
   for (const snippet of DEFAULT_REQUIRED_ORDERING_SNIPPETS) {
     const found = contractOrdering.some((entry) => String(entry).includes(snippet));
     expect(found, errors, `apiContract.eventOrdering missing rule snippet: ${snippet}`);
   }
+
+  const subscriptionSnapshot = term.createEventSubscription({
+    eventTypes: ["input.paste", "input.focus"],
+    maxBuffered: 3,
+  });
+  const subscriptionId = Number(subscriptionSnapshot?.id ?? 0);
+  expect(
+    Number.isInteger(subscriptionId) && subscriptionId > 0,
+    errors,
+    `createEventSubscription should return a positive numeric id, got ${JSON.stringify(
+      subscriptionSnapshot,
+    )}`,
+  );
+  const progressSubscriptionSnapshot = term.createEventSubscription({
+    eventTypes: ["terminal.progress"],
+    maxBuffered: 16,
+  });
+  const progressSubscriptionId = Number(progressSubscriptionSnapshot?.id ?? 0);
+  expect(
+    Number.isInteger(progressSubscriptionId) && progressSubscriptionId > 0,
+    errors,
+    `createEventSubscription (progress) should return a positive numeric id, got ${JSON.stringify(
+      progressSubscriptionSnapshot,
+    )}`,
+  );
 
   // Mode transitions: attach state-machine transitions.
   term.attachConnect(0);
@@ -216,6 +260,12 @@ async function main() {
   term.feed(Buffer.from("\u001b[4;8H\u001b[6n", "utf8"));
   term.resize(5, 2);
   term.feed(Buffer.from("\u001b[6n", "utf8"));
+  term.feed(
+    Buffer.from(
+      "\u001b]9;4;1;10\u0007\u001b]9;4;3;\u0007\u001b]9;4;2;0\u0007\u001b]9;4;1;bad\u0007\u001b]9;4;0;\u0007",
+      "utf8",
+    ),
+  );
 
   // Burst + composition edge ordering.
   term.input({ kind: "composition", phase: "update", data: "x" });
@@ -303,6 +353,27 @@ async function main() {
     });
   }
 
+  const progressEvents = Array.from(term.drainEventSubscription(progressSubscriptionId));
+  const progressSeqs = progressEvents.map((entry) => Number(entry.seq ?? 0));
+  const progressStates = [];
+  const progressAccepted = [];
+  const progressReasons = [];
+  for (const [idx, entry] of progressEvents.entries()) {
+    const payload = entry.payload ?? {};
+    progressStates.push(payload.state ?? null);
+    progressAccepted.push(Boolean(payload.accepted));
+    progressReasons.push(payload.reason ?? null);
+    emit("terminal.progress", {
+      drain_index: idx,
+      seq: Number(entry.seq ?? 0),
+      accepted: Boolean(payload.accepted),
+      state: payload.state ?? null,
+      value: payload.value ?? null,
+      reason: payload.reason ?? null,
+    });
+  }
+  expect(monotonic(progressSeqs), errors, "progress subscription seq values must be monotonic");
+
   const linkClicks = Array.from(term.drainLinkClicks());
   for (const [idx, click] of linkClicks.entries()) {
     emit("ui.link_click", {
@@ -322,6 +393,86 @@ async function main() {
       text: String(text),
     });
   }
+
+  const subscriptionStateBeforeDrain = term.eventSubscriptionState(subscriptionId);
+  expect(
+    Number(subscriptionStateBeforeDrain?.buffered ?? -1) === 3,
+    errors,
+    `eventSubscriptionState.buffered expected 3, got ${JSON.stringify(
+      subscriptionStateBeforeDrain,
+    )}`,
+  );
+  expect(
+    Number(subscriptionStateBeforeDrain?.droppedTotal ?? -1) === 4,
+    errors,
+    `eventSubscriptionState.droppedTotal expected 4, got ${JSON.stringify(
+      subscriptionStateBeforeDrain,
+    )}`,
+  );
+
+  const subscriptionEvents = Array.from(term.drainEventSubscription(subscriptionId));
+  const subscriptionEventTypes = subscriptionEvents.map((entry) => String(entry.eventType ?? ""));
+  const subscriptionSeqs = subscriptionEvents.map((entry) => Number(entry.seq ?? 0));
+  const subscriptionPayloadKinds = subscriptionEvents.map((entry) =>
+    String(entry.payload?.kind ?? ""),
+  );
+  expect(
+    JSON.stringify(subscriptionEventTypes) ===
+      JSON.stringify(["input.paste", "input.paste", "input.focus"]),
+    errors,
+    `subscription event types mismatch: ${JSON.stringify(subscriptionEventTypes)}`,
+  );
+  expect(monotonic(subscriptionSeqs), errors, "subscription seq values must be monotonic");
+  expect(
+    JSON.stringify(subscriptionPayloadKinds) ===
+      JSON.stringify(["input.paste", "input.paste", "input.focus"]),
+    errors,
+    `subscription payload.kind mismatch: ${JSON.stringify(subscriptionPayloadKinds)}`,
+  );
+
+  term.input({ kind: "focus", focused: false });
+  const subscriptionJsonlTimestamp = args.deterministic ? "T999998" : isoNow();
+  const subscriptionJsonl = Array.from(
+    term.drainEventSubscriptionJsonl(subscriptionId, runId, args.seed, subscriptionJsonlTimestamp),
+  );
+  expect(
+    subscriptionJsonl.length === 1,
+    errors,
+    `expected exactly one post-drain subscription JSONL record, got ${subscriptionJsonl.length}`,
+  );
+  if (subscriptionJsonl.length > 0) {
+    const parsed = JSON.parse(String(subscriptionJsonl[0]));
+    expect(
+      parsed.event_type === "input.focus",
+      errors,
+      `subscription JSONL event_type mismatch: ${JSON.stringify(parsed)}`,
+    );
+    expect(
+      Number(parsed.subscription_id) === subscriptionId,
+      errors,
+      `subscription JSONL id mismatch: ${JSON.stringify(parsed)}`,
+    );
+  }
+  expect(
+    term.closeEventSubscription(subscriptionId) === true,
+    errors,
+    `closeEventSubscription should return true for active handle ${subscriptionId}`,
+  );
+  expect(
+    term.eventSubscriptionState(subscriptionId) == null,
+    errors,
+    `eventSubscriptionState should return null after close for ${subscriptionId}`,
+  );
+  expect(
+    term.closeEventSubscription(progressSubscriptionId) === true,
+    errors,
+    `closeEventSubscription should return true for active progress handle ${progressSubscriptionId}`,
+  );
+  expect(
+    term.eventSubscriptionState(progressSubscriptionId) == null,
+    errors,
+    `eventSubscriptionState should return null after close for ${progressSubscriptionId}`,
+  );
 
   const expectedKinds = [
     "composition",
@@ -364,6 +515,27 @@ async function main() {
     errors,
     `reply byte order mismatch: ${JSON.stringify(replyChunks)}`,
   );
+  expect(
+    progressEvents.length === 5,
+    errors,
+    `expected 5 progress events, got ${progressEvents.length}`,
+  );
+  expect(
+    JSON.stringify(progressStates) ===
+      JSON.stringify(["normal", "indeterminate", "error", null, "remove"]),
+    errors,
+    `progress state sequence mismatch: ${JSON.stringify(progressStates)}`,
+  );
+  expect(
+    JSON.stringify(progressAccepted) === JSON.stringify([true, true, true, false, true]),
+    errors,
+    `progress accepted sequence mismatch: ${JSON.stringify(progressAccepted)}`,
+  );
+  expect(
+    progressReasons[3] === "invalid_value",
+    errors,
+    `expected invalid progress payload rejection at index 3, got ${JSON.stringify(progressReasons)}`,
+  );
   expect(linkClicks.length === 1, errors, `expected 1 link click, got ${linkClicks.length}`);
   expect(
     announcements.length === 1 && String(announcements[0]) === "screen-reader-ready",
@@ -401,8 +573,11 @@ async function main() {
     encoded_vt_chunk_count: encodedByteChunks.length,
     ime_trace_count: imeTraceLines.length,
     reply_chunk_count: replyChunks.length,
+    progress_event_count: progressEvents.length,
     link_click_count: linkClicks.length,
     accessibility_announcement_count: announcements.length,
+    subscription_event_count: subscriptionEvents.length,
+    subscription_jsonl_count: subscriptionJsonl.length,
     outcome: errors.length === 0 ? "pass" : "fail",
     errors,
   };

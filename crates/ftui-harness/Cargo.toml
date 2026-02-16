@@ -29,5 +29,6 @@ blake3 = "1.6"
 
 [dev-dependencies]
 proptest = "1.7.0"
+tracing = "0.1.41"
 ftui-pty = { path = "../ftui-pty", version = "0.2.0" }
 portable-pty = "0.9.0"

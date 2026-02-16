@@ -47,13 +47,13 @@ use ftui_render::frame::Frame;
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::presenter::{Presenter, TerminalCapabilities};
 use ftui_text::Text;
+use ftui_widgets::Widget;
 use ftui_widgets::block::Block;
 use ftui_widgets::borders::Borders;
 use ftui_widgets::list::{List, ListItem};
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::progress::ProgressBar;
 use ftui_widgets::sparkline::Sparkline;
-use ftui_widgets::Widget;
 
 use ftui_harness::flicker_detection::analyze_stream_with_id;
 use ftui_harness::golden::compute_buffer_checksum;
@@ -145,9 +145,7 @@ impl WidgetTree {
                     data: (0..20).map(|x| ((x + i) % 15) as f64).collect(),
                 },
                 3 => WidgetKind::List {
-                    items: (0..8)
-                        .map(|j| format!("Item {j} of widget {i}"))
-                        .collect(),
+                    items: (0..8).map(|j| format!("Item {j} of widget {i}")).collect(),
                     selected: 0,
                 },
                 _ => WidgetKind::Block {
@@ -168,7 +166,10 @@ impl WidgetTree {
             let idx = rng.next_range(self.widgets.len());
             match &mut self.widgets[idx] {
                 WidgetKind::Paragraph { text } => {
-                    *text = format!("Widget {idx}: frame {frame_idx} updated content #{}", rng.next_u32() % 1000);
+                    *text = format!(
+                        "Widget {idx}: frame {frame_idx} updated content #{}",
+                        rng.next_u32() % 1000
+                    );
                 }
                 WidgetKind::Progress { ratio } => {
                     *ratio = ((frame_idx as f64 * 0.01) + (idx as f64 * 0.001)).fract();
@@ -237,9 +238,7 @@ impl WidgetTree {
                     List::new(list_items).render(cell_area, frame);
                 }
                 WidgetKind::Block { title, content } => {
-                    let block = Block::default()
-                        .title(title.as_str())
-                        .borders(Borders::ALL);
+                    let block = Block::default().title(title.as_str()).borders(Borders::ALL);
                     let inner = block.inner(cell_area);
                     block.render(cell_area, frame);
                     if inner.width > 0 && inner.height > 0 {
@@ -371,7 +370,10 @@ fn soak_1000_widgets_sustained_rendering() {
     eprintln!("Widgets: {WIDGET_COUNT}");
     eprintln!("Buffer: {WIDTH}x{HEIGHT}");
     eprintln!("Total time: {:.2}s", soak_elapsed.as_secs_f64());
-    eprintln!("Effective fps: {:.1}", timings.len() as f64 / soak_elapsed.as_secs_f64());
+    eprintln!(
+        "Effective fps: {:.1}",
+        timings.len() as f64 / soak_elapsed.as_secs_f64()
+    );
     eprintln!("Frame times (us): mean={mean:.0}, p50={p50}, p95={p95}, p99={p99}, max={max}");
     eprintln!("ANSI output: {} bytes total", all_ansi_output.len());
     eprintln!("Checksum samples: {}", checksums.len());
@@ -533,9 +535,7 @@ fn soak_sparklines_200_frames() {
     for _i in 0..200 {
         let mut frame = Frame::new(WIDTH, HEIGHT, &mut pool);
         for y in 0..HEIGHT {
-            let data: Vec<f64> = (0..WIDTH)
-                .map(|_| (rng.next_u32() % 20) as f64)
-                .collect();
+            let data: Vec<f64> = (0..WIDTH).map(|_| (rng.next_u32() % 20) as f64).collect();
             let r = Rect::new(0, y, WIDTH, 1);
             Sparkline::new(&data).render(r, &mut frame);
         }
@@ -594,10 +594,8 @@ fn soak_mixed_widgets_no_memory_growth() {
     // After the first few frames (warmup), output size should stabilize.
     // Check that the last 100 frames have similar output size to frames 50-150.
     if frame_alloc_sizes.len() >= 200 {
-        let early_avg: f64 =
-            frame_alloc_sizes[50..150].iter().sum::<usize>() as f64 / 100.0;
-        let late_avg: f64 =
-            frame_alloc_sizes[200..300].iter().sum::<usize>() as f64 / 100.0;
+        let early_avg: f64 = frame_alloc_sizes[50..150].iter().sum::<usize>() as f64 / 100.0;
+        let late_avg: f64 = frame_alloc_sizes[200..300].iter().sum::<usize>() as f64 / 100.0;
 
         // Allow up to 2x growth (some variation is expected due to content changes)
         if early_avg > 0.0 {

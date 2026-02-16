@@ -9,17 +9,22 @@ use core::time::Duration;
 
 use ftui_demo_showcase::app::AppModel;
 use ftui_demo_showcase::pane_interaction::{
-    DOCK_PREVIEW_CANDIDATE_LIMIT, PanePreviewState, PaneTimelineStatus, adaptive_dock_strength_bps,
-    adaptive_magnetic_field_cells, blend_preview_ghost_rect, build_preview_state_from_candidates,
-    dynamic_live_reflow_threshold_bps, dynamic_preview_switch_advantage_bps, edge_fling_projection,
+    ActivePaneGesture, PaneAutoPointerDownContext, PaneDragSemanticsContext,
+    PaneDragSemanticsInput, PaneGestureArmState, PaneGestureMode, PanePreviewState,
+    PaneTimelineApplyState, PaneTimelineStatus,
+    apply_drag_semantics as apply_drag_semantics_shared,
+    apply_operations_with_timeline as apply_operations_with_timeline_shared,
+    arm_active_gesture as arm_active_gesture_shared, default_pane_layout_tree,
+    pointer_down_context_at as shared_pointer_down_context_at,
+    rollback_timeline_to_cursor as rollback_timeline_to_cursor_shared,
+    update_selection_for_pointer_down,
 };
 use ftui_layout::{
     PANE_EDGE_GRIP_INSET_CELLS, PANE_MAGNETIC_FIELD_CELLS, PaneDockPreview, PaneDockZone,
-    PaneDragResizeEffect, PaneId, PaneInertialThrow, PaneInteractionTimeline,
-    PaneLayoutIntelligenceMode, PaneLeaf, PaneModifierSnapshot, PaneMotionVector, PaneNodeKind,
-    PaneOperation, PanePlacement, PanePointerButton, PanePointerPosition, PanePressureSnapProfile,
-    PaneResizeGrip, PaneResizeTarget, PaneSelectionState, PaneSplitRatio, PaneTree, Rect,
-    SplitAxis, WorkspaceMetadata, WorkspaceSnapshot,
+    PaneDragResizeEffect, PaneId, PaneInteractionTimeline, PaneLayoutIntelligenceMode,
+    PaneModifierSnapshot, PaneMotionVector, PaneNodeKind, PaneOperation, PanePointerButton,
+    PanePointerPosition, PanePressureSnapProfile, PaneResizeGrip, PaneResizeTarget,
+    PaneSelectionState, PaneTree, Rect, SplitAxis, WorkspaceMetadata, WorkspaceSnapshot,
 };
 use ftui_web::pane_pointer_capture::{
     PanePointerCaptureAdapter, PanePointerCaptureCommand, PanePointerCaptureConfig,
@@ -74,30 +79,6 @@ pub struct RunnerCore {
 const PATCH_HASH_ALGO: &str = "fnv1a64";
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
-const DEFAULT_SPRING_BLEND_BPS: u16 = 3_500;
-
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneGestureMode {
-    Move,
-    Resize(PaneResizeGrip),
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActivePaneGesture {
-    pointer_id: u32,
-    leaf: PaneId,
-    mode: PaneGestureMode,
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AutoPointerDownContext {
-    target: PaneResizeTarget,
-    leaf: PaneId,
-    mode: PaneGestureMode,
-}
 
 /// Host-facing outcome category for one pane lifecycle dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +111,7 @@ impl RunnerCore {
     /// Create a new runner with the given initial terminal dimensions.
     pub fn new(cols: u16, rows: u16) -> Self {
         let model = AppModel::default();
-        let layout_tree = default_layout_tree();
+        let layout_tree = default_pane_layout_tree();
         Self {
             inner: StepProgram::new(model, cols, rows),
             cached_patch_hash: None,
@@ -474,7 +455,7 @@ impl RunnerCore {
             .pointer_down(target, pointer_id, button, pointer, modifiers);
         let summary = self.record_pane_dispatch(dispatch);
         if summary.accepted() && self.active_gesture.is_none() {
-            self.update_selection_for_pointer_down(context.leaf, modifiers.shift);
+            update_selection_for_pointer_down(&mut self.selection, context.leaf, modifiers.shift);
             self.arm_gesture(pointer_id, context.leaf, context.mode);
         }
         summary
@@ -522,7 +503,7 @@ impl RunnerCore {
             && self.active_gesture.is_none()
             && let Some(context) = self.pointer_down_context_at(pointer)
         {
-            self.update_selection_for_pointer_down(context.leaf, modifiers.shift);
+            update_selection_for_pointer_down(&mut self.selection, context.leaf, modifiers.shift);
             self.arm_gesture(pointer_id, context.leaf, context.mode);
         }
         summary
@@ -606,107 +587,16 @@ impl RunnerCore {
         Rect::new(0, 0, width.max(1), height.max(1))
     }
 
-    fn leaf_at_pointer(&self, pointer: PanePointerPosition) -> Option<PaneId> {
-        let x = u16::try_from(pointer.x).ok()?;
-        let y = u16::try_from(pointer.y).ok()?;
-        let layout = self.layout_tree.solve_layout(self.viewport_rect()).ok()?;
-        let mut best: Option<(PaneId, u32)> = None;
-        for (node_id, rect) in layout.iter() {
-            let Some(node) = self.layout_tree.node(node_id) else {
-                continue;
-            };
-            if !matches!(node.kind, PaneNodeKind::Leaf(_)) {
-                continue;
-            }
-            if !rect.contains(x, y) {
-                continue;
-            }
-            let area = u32::from(rect.width) * u32::from(rect.height);
-            match best {
-                Some((_, best_area)) if best_area <= area => {}
-                _ => best = Some((node_id, area)),
-            }
-        }
-        best.map(|(node_id, _)| node_id)
-    }
-
-    fn nearest_axis_split_for_node(&self, node: PaneId, axis: SplitAxis) -> Option<PaneId> {
-        let mut cursor = Some(node);
-        while let Some(node_id) = cursor {
-            let parent_id = self.layout_tree.node(node_id)?.parent?;
-            let parent = self.layout_tree.node(parent_id)?;
-            if let PaneNodeKind::Split(split) = &parent.kind
-                && split.axis == axis
-            {
-                return Some(parent_id);
-            }
-            cursor = Some(parent_id);
-        }
-        None
-    }
-
-    fn nearest_split_for_node(&self, node: PaneId) -> Option<PaneId> {
-        let mut cursor = Some(node);
-        while let Some(node_id) = cursor {
-            let parent_id = self.layout_tree.node(node_id)?.parent?;
-            let parent = self.layout_tree.node(parent_id)?;
-            if matches!(parent.kind, PaneNodeKind::Split(_)) {
-                return Some(parent_id);
-            }
-            cursor = Some(parent_id);
-        }
-        None
-    }
-
-    fn set_single_selection(&mut self, pane_id: PaneId) {
-        self.selection.selected.clear();
-        let _ = self.selection.selected.insert(pane_id);
-        self.selection.anchor = Some(pane_id);
-    }
-
-    fn update_selection_for_pointer_down(&mut self, leaf: PaneId, shift: bool) {
-        if shift {
-            self.selection.shift_toggle(leaf);
-            if self.selection.anchor.is_none() {
-                self.selection.anchor = Some(leaf);
-            }
-            return;
-        }
-        if !(self.selection.selected.contains(&leaf) && self.selection.selected.len() > 1) {
-            self.set_single_selection(leaf);
-        }
-    }
-
-    fn grip_primary_axis(grip: PaneResizeGrip) -> SplitAxis {
-        match grip {
-            PaneResizeGrip::Left
-            | PaneResizeGrip::Right
-            | PaneResizeGrip::TopLeft
-            | PaneResizeGrip::TopRight
-            | PaneResizeGrip::BottomLeft
-            | PaneResizeGrip::BottomRight => SplitAxis::Horizontal,
-            PaneResizeGrip::Top | PaneResizeGrip::Bottom => SplitAxis::Vertical,
-        }
-    }
-
     fn pointer_down_context_at(
         &self,
         pointer: PanePointerPosition,
-    ) -> Option<AutoPointerDownContext> {
-        let layout = self.layout_tree.solve_layout(self.viewport_rect()).ok()?;
-        let leaf = self.leaf_at_pointer(pointer)?;
-        let grip = layout.classify_resize_grip(leaf, pointer, PANE_EDGE_GRIP_INSET_CELLS);
-        let mode = grip.map_or(PaneGestureMode::Move, PaneGestureMode::Resize);
-        let axis = grip.map_or(SplitAxis::Horizontal, Self::grip_primary_axis);
-        let split_id = self
-            .nearest_axis_split_for_node(leaf, axis)
-            .or_else(|| self.nearest_split_for_node(leaf))
-            .unwrap_or(self.layout_tree.root());
-        Some(AutoPointerDownContext {
-            target: PaneResizeTarget { split_id, axis },
-            leaf,
-            mode,
-        })
+    ) -> Option<PaneAutoPointerDownContext> {
+        shared_pointer_down_context_at(
+            &self.layout_tree,
+            self.viewport_rect(),
+            pointer,
+            PANE_EDGE_GRIP_INSET_CELLS,
+        )
     }
 
     fn apply_pane_dispatch_semantics(&mut self, dispatch: &PanePointerDispatch) {
@@ -762,209 +652,30 @@ impl RunnerCore {
         let motion = dispatch
             .motion
             .unwrap_or_else(|| PaneMotionVector::from_delta(0, 0, 16, 0));
-        let Ok(layout) = self.layout_tree.solve_layout(self.viewport_rect()) else {
-            return;
-        };
-
-        match active.mode {
-            PaneGestureMode::Resize(grip) => {
-                self.live_reflow_signature = None;
-                self.preview_state = PanePreviewState::default();
-                if self.selection.selected.len() > 1
-                    && self.selection.selected.contains(&active.leaf)
-                {
-                    let Ok(plan) = self.layout_tree.plan_group_resize(
-                        &self.selection,
-                        &layout,
-                        grip,
-                        pointer,
-                        pressure,
-                    ) else {
-                        return;
-                    };
-                    let _ = self.apply_operations_with_timeline(
-                        sequence,
-                        &plan.operations,
-                        pressure,
-                        !committed,
-                    );
-                } else {
-                    let Ok(plan) = self.layout_tree.plan_edge_resize(
-                        active.leaf,
-                        &layout,
-                        grip,
-                        pointer,
-                        pressure,
-                    ) else {
-                        return;
-                    };
-                    let _ = self.apply_operations_with_timeline(
-                        sequence,
-                        &plan.operations,
-                        pressure,
-                        !committed,
-                    );
-                }
-            }
-            PaneGestureMode::Move => {
-                let projected_pointer = if committed {
-                    edge_fling_projection(
-                        dispatch.projected_position.unwrap_or(pointer),
-                        motion,
-                        self.viewport_rect(),
-                    )
-                } else {
-                    pointer
-                };
-                let inertial = if committed {
-                    dispatch.inertial_throw
-                } else if motion.speed > 18.0 {
-                    Some(PaneInertialThrow::from_motion(motion))
-                } else {
-                    None
-                };
-                let magnetic_field =
-                    adaptive_magnetic_field_cells(PANE_MAGNETIC_FIELD_CELLS, motion, pressure);
-                let switch_advantage_bps = dynamic_preview_switch_advantage_bps(motion, pressure);
-                let live_reflow_threshold_bps = dynamic_live_reflow_threshold_bps(motion, pressure);
-
-                if self.selection.selected.len() > 1
-                    && self.selection.selected.contains(&active.leaf)
-                {
-                    let anchor = self.selection.anchor.unwrap_or(active.leaf);
-                    let selection_bounds = layout.cluster_bounds(&self.selection.selected);
-                    let Ok(preview_plan) = self.layout_tree.plan_reflow_move_with_preview(
-                        anchor,
-                        &layout,
-                        pointer,
-                        motion,
-                        inertial,
-                        magnetic_field,
-                    ) else {
-                        self.preview_state = PanePreviewState::default();
-                        return;
-                    };
-                    let dock_strength_bps = adaptive_dock_strength_bps(
-                        preview_plan.preview.score,
-                        motion,
-                        pressure,
-                        committed,
-                    );
-                    let ghost_rect = self.blend_preview_ghost(
-                        preview_plan.preview.ghost_rect,
-                        pressure,
-                        dock_strength_bps,
-                    );
-                    let mut ranked = self.layout_tree.ranked_dock_previews_with_motion(
-                        &layout,
-                        pointer,
-                        motion,
-                        magnetic_field,
-                        Some(anchor),
-                        DOCK_PREVIEW_CANDIDATE_LIMIT,
-                    );
-                    if ranked.is_empty() {
-                        ranked.push(preview_plan.preview);
-                    }
-                    let allow_switch = self.allow_preview_switch(
-                        preview_plan.preview.target,
-                        preview_plan.preview.zone,
-                        dock_strength_bps,
-                        switch_advantage_bps,
-                    );
-                    if allow_switch {
-                        self.preview_state = build_preview_state_from_candidates(
-                            anchor,
-                            preview_plan.preview,
-                            ghost_rect,
-                            dock_strength_bps,
-                            motion.speed.round().clamp(0.0, 65_535.0) as u16,
-                            &ranked,
-                            selection_bounds,
-                        );
-                    }
-                    let should_live_apply = !committed
-                        && allow_switch
-                        && dock_strength_bps >= live_reflow_threshold_bps;
-                    if committed || should_live_apply {
-                        let Ok(plan) = self.layout_tree.plan_group_move(
-                            &self.selection,
-                            &layout,
-                            if committed {
-                                projected_pointer
-                            } else {
-                                pointer
-                            },
-                            motion,
-                            inertial,
-                            magnetic_field,
-                        ) else {
-                            self.preview_state = PanePreviewState::default();
-                            return;
-                        };
-                        let _ =
-                            self.apply_live_reflow_if_needed(sequence, &plan.operations, pressure);
-                    }
-                } else {
-                    let selection_bounds = layout
-                        .visual_rect(active.leaf)
-                        .or_else(|| layout.rect(active.leaf));
-                    let Ok(plan) = self.layout_tree.plan_reflow_move_with_preview(
-                        active.leaf,
-                        &layout,
-                        pointer,
-                        motion,
-                        inertial,
-                        magnetic_field,
-                    ) else {
-                        self.preview_state = PanePreviewState::default();
-                        return;
-                    };
-                    let dock_strength_bps =
-                        adaptive_dock_strength_bps(plan.preview.score, motion, pressure, committed);
-                    let ghost_rect = self.blend_preview_ghost(
-                        plan.preview.ghost_rect,
-                        pressure,
-                        dock_strength_bps,
-                    );
-                    let mut ranked = self.layout_tree.ranked_dock_previews_with_motion(
-                        &layout,
-                        pointer,
-                        motion,
-                        magnetic_field,
-                        Some(active.leaf),
-                        DOCK_PREVIEW_CANDIDATE_LIMIT,
-                    );
-                    if ranked.is_empty() {
-                        ranked.push(plan.preview);
-                    }
-                    let allow_switch = self.allow_preview_switch(
-                        plan.preview.target,
-                        plan.preview.zone,
-                        dock_strength_bps,
-                        switch_advantage_bps,
-                    );
-                    if allow_switch {
-                        self.preview_state = build_preview_state_from_candidates(
-                            active.leaf,
-                            plan.preview,
-                            ghost_rect,
-                            dock_strength_bps,
-                            motion.speed.round().clamp(0.0, 65_535.0) as u16,
-                            &ranked,
-                            selection_bounds,
-                        );
-                    }
-                    let should_live_apply = !committed
-                        && allow_switch
-                        && dock_strength_bps >= live_reflow_threshold_bps;
-                    if committed || should_live_apply {
-                        let _ =
-                            self.apply_live_reflow_if_needed(sequence, &plan.operations, pressure);
-                    }
-                }
-            }
-        }
+        let viewport = self.viewport_rect();
+        let _ = apply_drag_semantics_shared(
+            PaneDragSemanticsContext {
+                layout_tree: &mut self.layout_tree,
+                timeline: &mut self.timeline,
+                next_operation_id: &mut self.next_operation_id,
+                workspace_generation: &mut self.workspace_generation,
+                selection: &self.selection,
+                preview_state: &mut self.preview_state,
+                live_reflow_signature: &mut self.live_reflow_signature,
+                viewport,
+                baseline_magnetic_field_cells: PANE_MAGNETIC_FIELD_CELLS,
+            },
+            PaneDragSemanticsInput {
+                sequence,
+                active,
+                pointer,
+                pressure,
+                motion,
+                projected_position: dispatch.projected_position,
+                inertial_throw: dispatch.inertial_throw,
+                committed,
+            },
+        );
     }
 
     fn apply_operations_with_timeline(
@@ -974,142 +685,48 @@ impl RunnerCore {
         pressure: PanePressureSnapProfile,
         spring_blend: bool,
     ) -> usize {
-        let mut applied = 0usize;
-        for operation in operations {
-            let operation = self.spring_adjust_operation(operation.clone(), pressure, spring_blend);
-            let operation_id = self.next_operation_id();
-            if self
-                .timeline
-                .apply_and_record(&mut self.layout_tree, sequence, operation_id, operation)
-                .is_ok()
-            {
-                applied = applied.saturating_add(1);
-            }
-        }
-        if applied > 0 {
-            self.workspace_generation = self.workspace_generation.saturating_add(1);
-        }
-        applied
-    }
-
-    fn apply_live_reflow_if_needed(
-        &mut self,
-        sequence: u64,
-        operations: &[PaneOperation],
-        pressure: PanePressureSnapProfile,
-    ) -> usize {
-        if operations.is_empty() {
-            return 0;
-        }
-        let signature = pane_operations_signature(operations);
-        if self.live_reflow_signature == Some(signature) {
-            return 0;
-        }
-        let applied = self.apply_operations_with_timeline(sequence, operations, pressure, false);
-        if applied > 0 {
-            self.live_reflow_signature = Some(signature);
-        }
-        applied
-    }
-
-    fn spring_adjust_operation(
-        &self,
-        operation: PaneOperation,
-        pressure: PanePressureSnapProfile,
-        spring_blend: bool,
-    ) -> PaneOperation {
-        if !spring_blend {
-            return operation;
-        }
-        let PaneOperation::SetSplitRatio { split, ratio } = operation else {
-            return operation;
-        };
-        let Some(node) = self.layout_tree.node(split) else {
-            return PaneOperation::SetSplitRatio { split, ratio };
-        };
-        let PaneNodeKind::Split(split_node) = &node.kind else {
-            return PaneOperation::SetSplitRatio { split, ratio };
-        };
-        let current = ratio_to_bps(split_node.ratio);
-        let target = ratio_to_bps(ratio);
-        let spring_bps = (u32::from(DEFAULT_SPRING_BLEND_BPS)
-            + (u32::from(pressure.strength_bps) / 3))
-            .clamp(1_500, 9_000) as u16;
-        let blended = blend_bps(current, target, spring_bps);
-        let denominator = 10_000_u32.saturating_sub(u32::from(blended)).max(1);
-        let ratio = PaneSplitRatio::new(u32::from(blended.max(1)), denominator).unwrap_or(ratio);
-        PaneOperation::SetSplitRatio { split, ratio }
-    }
-
-    fn blend_preview_ghost(
-        &self,
-        target: Rect,
-        pressure: PanePressureSnapProfile,
-        dock_strength_bps: u16,
-    ) -> Rect {
-        blend_preview_ghost_rect(
-            self.preview_state.ghost_rect,
-            target,
+        apply_operations_with_timeline_shared(
+            PaneTimelineApplyState {
+                layout_tree: &mut self.layout_tree,
+                timeline: &mut self.timeline,
+                next_operation_id: &mut self.next_operation_id,
+                workspace_generation: &mut self.workspace_generation,
+            },
+            sequence,
+            operations,
             pressure,
-            dock_strength_bps,
+            spring_blend,
         )
     }
 
     fn arm_gesture(&mut self, pointer_id: u32, leaf: PaneId, mode: PaneGestureMode) {
-        self.active_gesture = Some(ActivePaneGesture {
+        arm_active_gesture_shared(
+            PaneGestureArmState {
+                active_gesture: &mut self.active_gesture,
+                gesture_timeline_cursor_start: &mut self.gesture_timeline_cursor_start,
+                live_reflow_signature: &mut self.live_reflow_signature,
+                preview_state: &mut self.preview_state,
+            },
+            self.timeline.cursor,
             pointer_id,
             leaf,
             mode,
-        });
-        self.gesture_timeline_cursor_start = Some(self.timeline.cursor);
-        self.live_reflow_signature = None;
-        self.preview_state = PanePreviewState::default();
+        );
     }
 
     fn rollback_active_gesture_mutations(&mut self) {
-        let Some(start_cursor) = self.gesture_timeline_cursor_start else {
-            return;
-        };
-        let mut rolled_back = false;
-        while self.timeline.cursor > start_cursor {
-            match self.timeline.undo(&mut self.layout_tree) {
-                Ok(true) => rolled_back = true,
-                Ok(false) => break,
-                Err(err) => {
-                    self.pane_logs
-                        .push(format!("pane_timeline cancel_rollback error: {err}"));
-                    break;
-                }
+        match rollback_timeline_to_cursor_shared(
+            &mut self.layout_tree,
+            &mut self.timeline,
+            self.gesture_timeline_cursor_start,
+            &mut self.workspace_generation,
+        ) {
+            Ok(_) => {}
+            Err(err) => {
+                self.pane_logs
+                    .push(format!("pane_timeline cancel_rollback error: {err}"));
             }
         }
-        if rolled_back {
-            self.workspace_generation = self.workspace_generation.saturating_add(1);
-        }
-    }
-
-    fn allow_preview_switch(
-        &self,
-        next_target: PaneId,
-        next_zone: PaneDockZone,
-        next_strength_bps: u16,
-        switch_advantage_bps: u16,
-    ) -> bool {
-        if self.preview_state.target.is_none() || self.preview_state.zone.is_none() {
-            return true;
-        }
-        if self.preview_state.target == Some(next_target)
-            && self.preview_state.zone == Some(next_zone)
-        {
-            return true;
-        }
-        self.preview_state.dock_strength_bps
-            <= next_strength_bps.saturating_add(switch_advantage_bps)
-    }
-
-    fn next_operation_id(&mut self) -> u64 {
-        let operation_id = self.next_operation_id;
-        self.next_operation_id = self.next_operation_id.saturating_add(1);
-        operation_id
     }
 
     fn refresh_cached_patch_meta_from_live_outputs(&mut self) {
@@ -1167,89 +784,6 @@ impl RunnerCore {
         self.pane_logs.push(format_pane_log_entry(log));
         summary
     }
-}
-
-fn leaf_id_for_key(tree: &PaneTree, key: &str) -> Option<PaneId> {
-    tree.nodes().find_map(|node| match &node.kind {
-        PaneNodeKind::Leaf(leaf) if leaf.surface_key == key => Some(node.id),
-        _ => None,
-    })
-}
-
-fn default_layout_tree() -> PaneTree {
-    let mut tree = PaneTree::singleton("pane-1");
-    let ratio = PaneSplitRatio::new(1, 1).expect("1:1 split ratio must be valid");
-    let root_leaf = tree.root();
-    let _ = tree
-        .apply_operation(
-            1,
-            PaneOperation::SplitLeaf {
-                target: root_leaf,
-                axis: SplitAxis::Horizontal,
-                ratio,
-                placement: PanePlacement::ExistingFirst,
-                new_leaf: PaneLeaf::new("pane-2"),
-            },
-        )
-        .expect("default layout root split should succeed");
-
-    if let Some(left_leaf) = leaf_id_for_key(&tree, "pane-1") {
-        let _ = tree
-            .apply_operation(
-                2,
-                PaneOperation::SplitLeaf {
-                    target: left_leaf,
-                    axis: SplitAxis::Vertical,
-                    ratio,
-                    placement: PanePlacement::ExistingFirst,
-                    new_leaf: PaneLeaf::new("pane-3"),
-                },
-            )
-            .expect("default layout left split should succeed");
-    }
-
-    if let Some(right_leaf) = leaf_id_for_key(&tree, "pane-2") {
-        let _ = tree
-            .apply_operation(
-                3,
-                PaneOperation::SplitLeaf {
-                    target: right_leaf,
-                    axis: SplitAxis::Vertical,
-                    ratio,
-                    placement: PanePlacement::ExistingFirst,
-                    new_leaf: PaneLeaf::new("pane-4"),
-                },
-            )
-            .expect("default layout right split should succeed");
-    }
-
-    tree
-}
-
-fn ratio_to_bps(ratio: PaneSplitRatio) -> u16 {
-    let numerator = ratio.numerator() as f64;
-    let denominator = ratio.denominator() as f64;
-    let total = (numerator + denominator).max(1.0);
-    ((numerator / total) * 10_000.0).round().clamp(1.0, 9_999.0) as u16
-}
-
-fn blend_bps(current: u16, target: u16, blend_factor_bps: u16) -> u16 {
-    let blend = u32::from(blend_factor_bps.clamp(1, 10_000));
-    let current = i32::from(current);
-    let target = i32::from(target);
-    let delta = target.saturating_sub(current);
-    let blended = current + ((delta * i32::try_from(blend).unwrap_or(10_000)) / 10_000);
-    blended.clamp(1, 9_999) as u16
-}
-
-fn pane_operations_signature(operations: &[PaneOperation]) -> u64 {
-    let mut hash = FNV64_OFFSET_BASIS;
-    for operation in operations {
-        let debug = format!("{operation:?}");
-        hash = fnv1a64_extend(hash, debug.as_bytes());
-        hash = fnv1a64_extend(hash, b"|");
-    }
-    hash
 }
 
 fn format_split_axis(axis: SplitAxis) -> &'static str {
@@ -1385,6 +919,11 @@ fn hash_flat_patch_batch(spans: &[u32], cells: &[u32]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_demo_showcase::pane_interaction::{
+        adaptive_dock_strength_bps, build_preview_state_from_candidates,
+        dynamic_live_reflow_threshold_bps, dynamic_preview_switch_advantage_bps,
+        edge_fling_projection,
+    };
 
     #[test]
     fn live_reflow_threshold_drops_for_fast_confident_motion() {
