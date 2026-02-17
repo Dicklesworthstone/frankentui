@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn degradation_io_is_shutdown() {
-        let io = std::io::Error::new(std::io::ErrorKind::Other, "");
+        let io = std::io::Error::other("");
         let err: Error = Error::Io(io);
         assert_eq!(err.degradation(), DegradationAction::Shutdown);
     }
@@ -710,10 +710,7 @@ mod tests {
                 ProtocolError::InvalidSequence("x".into()).into(),
                 "protocol",
             ),
-            (
-                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "")),
-                "io",
-            ),
+            (Error::Io(std::io::Error::other("")), "io"),
         ];
 
         for (err, expected) in cases {
@@ -731,7 +728,7 @@ mod tests {
 
         // Unrecoverable
         assert!(!Error::from(TerminalError::SessionSetup("x".into())).is_recoverable());
-        assert!(!Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "")).is_recoverable());
+        assert!(!Error::Io(std::io::Error::other("")).is_recoverable());
     }
 
     // ── Error chain ─────────────────────────────────────────────────
@@ -740,7 +737,7 @@ mod tests {
     fn error_source_chain() {
         use std::error::Error as StdError;
 
-        let io = std::io::Error::new(std::io::ErrorKind::Other, "root cause");
+        let io = std::io::Error::other("root cause");
         let terminal = TerminalError::Io(io);
         let err: Error = terminal.into();
 

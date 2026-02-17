@@ -1,7 +1,5 @@
-use ftui_core::geometry::{Rect, Sides};
-use ftui_layout::pane::{
-    PANE_DEFAULT_MARGIN_CELLS, PANE_DEFAULT_PADDING_CELLS, PaneConstraints, PaneId, PaneLayout,
-};
+use ftui_core::geometry::Rect;
+use ftui_layout::pane::PaneId;
 use std::collections::BTreeMap;
 
 #[test]
