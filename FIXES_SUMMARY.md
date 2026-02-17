@@ -358,6 +358,6 @@ Coverage audit + deep review are still in progress (bd-2dui). Do not treat the c
 **File:** `crates/ftui-demo-showcase/src/app.rs`
 **Issue:** Fix #109 correctly removed the jitter-sensitive `PendingDrag` state for chrome elements but also inadvertently removed the `MouseDown` event consumption. This caused clicks on the tab bar and status bar to "fall through" to the underlying screen content, triggering unintended actions (e.g. drawing on the canvas when clicking a tab).
 **Fix:**
-    - Reinstated `MouseDown` event consumption for `chrome_hit` targets in `dispatch_mouse`.
-    - Events are now `Consumed` (preventing leakage) but do NOT initiate `PendingDrag`.
-    - This restores correct layering while maintaining the robust "stateless click" behavior established in #109.
+    - Reinstated `PendingDrag` for both `chrome_hit` and `pane_link_hit` to capture the mouse on `Down`.
+    - Disabled the `PendingDrag -> Dragging` transition logic in the `Drag` handler.
+    - This turns `PendingDrag` into a "robust capture" state that swallows jittery drag events while ensuring `Down` and `Drag` events are consumed, preventing leakage to the screen. `MouseUp` still triggers the click.
