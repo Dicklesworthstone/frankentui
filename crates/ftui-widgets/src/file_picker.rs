@@ -241,7 +241,9 @@ fn read_directory(path: &Path) -> std::io::Result<Vec<DirEntry>> {
         let full_path = entry.path();
 
         // If it's a symlink, check what it points to
-        if file_type.is_symlink() && let Ok(metadata) = std::fs::metadata(&full_path) {
+        if file_type.is_symlink()
+            && let Ok(metadata) = std::fs::metadata(&full_path)
+        {
             file_type = metadata.file_type();
         }
 
