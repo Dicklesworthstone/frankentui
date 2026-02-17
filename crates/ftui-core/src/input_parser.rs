@@ -106,6 +106,17 @@ pub struct InputParser {
     in_paste: bool,
     /// Event queued for the next iteration (allows emitting 2 events per byte).
     pending_event: Option<Event>,
+    /// Whether to expect X10-encoded mouse events (CSI M cb cx cy).
+    ///
+    /// Only enable this when the terminal has X10 mouse mode (mode 1000/9)
+    /// active WITHOUT SGR extended encoding (mode 1006). When SGR mode is
+    /// active, mouse events use the `CSI < params M/m` format instead.
+    ///
+    /// Defaults to `false` because the runtime enables SGR mouse by default.
+    /// When false, bare `CSI M` is treated as an unknown CSI sequence
+    /// (silently ignored) rather than triggering X10 mouse coordinate
+    /// collection, which would consume 3 bytes and corrupt the input stream.
+    expect_x10_mouse: bool,
 }
 
 impl Default for InputParser {
@@ -130,7 +141,19 @@ impl InputParser {
             utf8_buffer: [0; 4],
             in_paste: false,
             pending_event: None,
+            expect_x10_mouse: false,
         }
+    }
+
+    /// Enable or disable X10 mouse event parsing.
+    ///
+    /// When enabled, bare `CSI M` triggers X10 mouse coordinate collection
+    /// (3 raw bytes). Only enable this when the terminal has mode 1000/9
+    /// active WITHOUT SGR extended encoding (mode 1006).
+    ///
+    /// Default: `false` (SGR mouse assumed).
+    pub fn set_expect_x10_mouse(&mut self, enabled: bool) {
+        self.expect_x10_mouse = enabled;
     }
 
     /// Handle a timeout in the input stream.
@@ -366,10 +389,16 @@ impl InputParser {
             }
             // Final byte (0x40-0x7E) - parse and return
             0x40..=0x7E => {
-                // Check for X10 mouse trigger: CSI M (no params)
-                // Note: buffer contains the final byte 'M' at the end.
-                // If len == 1, it means buffer is just [b'M'].
-                if byte == b'M' && self.buffer.len() == 1 {
+                // X10 mouse trigger: CSI M (no params) enters X10 coordinate
+                // collection ONLY when X10 mouse mode is expected.
+                // When SGR mouse (mode 1006) is active, mouse events always
+                // use `CSI < params M/m` which has params before M, so
+                // buffer.len() > 1 and this branch is never reached.
+                //
+                // Without this guard, a bare CSI M from any source would
+                // consume the next 3 bytes as raw mouse coordinates,
+                // corrupting the input stream.
+                if self.expect_x10_mouse && byte == b'M' && self.buffer.len() == 1 {
                     self.state = ParserState::MouseX10 {
                         collected: 0,
                         buffer: [0; 3],
@@ -434,19 +463,13 @@ impl InputParser {
         }
 
         // Final byte (0x40-0x7E) - return to ground
-        // Intermediate bytes outside this range are ignored
         if (0x40..=0x7E).contains(&byte) {
             self.state = ParserState::Ground;
-            None
-        } else if (0x20..=0x3F).contains(&byte) {
-            // Intermediate byte - stay in ignore state
-            None
-        } else {
-            // Invalid character (e.g. newline, control char) - abort sequence
-            // and re-process the byte in Ground state.
+        } else if !(0x20..=0x7E).contains(&byte) {
+            // Invalid character (e.g. newline) - abort sequence
             self.state = ParserState::Ground;
-            self.process_ground(byte)
         }
+        None
     }
 
     /// Parse a complete CSI sequence from the buffer.
@@ -856,7 +879,7 @@ impl InputParser {
             // Abort on control characters to prevent swallowing logs (except DEL 0x7F)
             _ if byte < 0x20 => {
                 self.state = ParserState::Ground;
-                self.process_ground(byte)
+                None
             }
             // Continue ignoring
             _ => None,

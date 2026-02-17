@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ftui_core::geometry::Rect;
 use ftui_core::terminal_capabilities::{TerminalCapabilities, TerminalProfile};
-use ftui_layout::Constraint;
+use ftui_layout::{Constraint, Flex};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::PackedRgba;
 use ftui_render::diff::BufferDiff;
@@ -100,7 +100,7 @@ fn full_pipeline_checksum(
     let mut frame = Frame::new(width, height, &mut pool);
     render_fn(&mut frame);
 
-    let empty = Buffer::empty(width, height);
+    let empty = Buffer::new(width, height);
     let diff = BufferDiff::compute(&empty, &frame.buffer);
 
     let mut presenter = Presenter::new(Vec::<u8>::new(), caps.clone());
@@ -192,7 +192,7 @@ fn two_frame_pipeline_checksum(
     let mut frame1 = Frame::new(width, height, &mut pool1);
     render_first(&mut frame1);
 
-    let empty = Buffer::empty(width, height);
+    let empty = Buffer::new(width, height);
     let diff1 = BufferDiff::compute(&empty, &frame1.buffer);
     let mut presenter = Presenter::new(Vec::<u8>::new(), caps.clone());
     presenter.present(&frame1.buffer, &diff1).unwrap();
@@ -227,7 +227,7 @@ fn render_block_all_borders(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     Block::new()
         .borders(Borders::ALL)
-        .title(Span::raw("Block"))
+        .title("Block")
         .render(area, frame);
 }
 
@@ -236,7 +236,7 @@ fn render_block_rounded(frame: &mut Frame) {
     Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(Span::raw("Rounded"))
+        .title("Rounded")
         .render(area, frame);
 }
 
@@ -245,29 +245,31 @@ fn render_block_double(frame: &mut Frame) {
     Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .title(Span::raw("Double"))
+        .title("Double")
         .render(area, frame);
 }
 
 fn render_sparkline(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let data = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5, 4, 3, 2, 1, 0];
-    Sparkline::default().data(&data).render(area, frame);
+    let data: Vec<f64> = vec![
+        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0,
+    ];
+    Sparkline::new(&data).render(area, frame);
 }
 
 fn render_progress_50(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    ProgressBar::default().percent(50).render(area, frame);
+    ProgressBar::default().ratio(0.5).render(area, frame);
 }
 
 fn render_progress_100(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    ProgressBar::default().percent(100).render(area, frame);
+    ProgressBar::default().ratio(1.0).render(area, frame);
 }
 
 fn render_rule(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    Rule::horizontal("Section").render(area, frame);
+    Rule::new().title("Section").render(area, frame);
 }
 
 fn render_list_selected(frame: &mut Frame) {
@@ -287,11 +289,11 @@ fn render_table_selected(frame: &mut Frame) {
         .map(|i| Row::new(vec![format!("A{i}"), format!("B{i}"), format!("C{i}")]))
         .collect();
     let widths = [
-        Constraint::Length(10),
-        Constraint::Length(10),
-        Constraint::Length(10),
+        Constraint::Fixed(10),
+        Constraint::Fixed(10),
+        Constraint::Fixed(10),
     ];
-    let widget = Table::new(rows, widths).highlight_symbol(">> ");
+    let widget = Table::new(rows, widths).highlight_style(Style::new().reverse());
     let mut state = TableState::default();
     state.select(Some(2));
     StatefulWidget::render(&widget, area, frame, &mut state);
@@ -321,7 +323,7 @@ fn render_underline_text(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     Paragraph::new(Text::from_spans([Span::styled(
         "Underlined",
-        Style::new().underlined(),
+        Style::new().underline(),
     )]))
     .render(area, frame);
 }
@@ -383,7 +385,7 @@ fn render_reverse_video(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     Paragraph::new(Text::from_spans([Span::styled(
         "Reversed",
-        Style::new().reversed(),
+        Style::new().reverse(),
     )]))
     .render(area, frame);
 }
@@ -401,30 +403,31 @@ fn render_hidden_text(frame: &mut Frame) {
 
 fn render_horizontal_split(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks =
-        ftui_layout::Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+    let chunks = Flex::horizontal()
+        .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+        .split(area);
     Paragraph::new(Text::raw("Left")).render(chunks[0], frame);
     Paragraph::new(Text::raw("Right")).render(chunks[1], frame);
 }
 
 fn render_vertical_split(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks =
-        ftui_layout::Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+    let chunks = Flex::vertical()
+        .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+        .split(area);
     Paragraph::new(Text::raw("Top")).render(chunks[0], frame);
     Paragraph::new(Text::raw("Bottom")).render(chunks[1], frame);
 }
 
 fn render_three_column(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks = ftui_layout::Layout::horizontal([
-        Constraint::Ratio(1, 3),
-        Constraint::Ratio(1, 3),
-        Constraint::Ratio(1, 3),
-    ])
-    .split(area);
+    let chunks = Flex::horizontal()
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .split(area);
     for (i, chunk) in chunks.iter().enumerate() {
         Paragraph::new(Text::raw(format!("Col {i}"))).render(*chunk, frame);
     }
@@ -432,11 +435,12 @@ fn render_three_column(frame: &mut Frame) {
 
 fn render_nested_flex(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let outer =
-        ftui_layout::Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
-    let inner =
-        ftui_layout::Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-            .split(outer[1]);
+    let outer = Flex::vertical()
+        .constraints([Constraint::Fixed(3), Constraint::Fill])
+        .split(area);
+    let inner = Flex::horizontal()
+        .constraints([Constraint::Percentage(30.0), Constraint::Percentage(70.0)])
+        .split(outer[1]);
     Paragraph::new(Text::raw("Header")).render(outer[0], frame);
     Paragraph::new(Text::raw("Sidebar")).render(inner[0], frame);
     Paragraph::new(Text::raw("Main content area")).render(inner[1], frame);
@@ -444,15 +448,13 @@ fn render_nested_flex(frame: &mut Frame) {
 
 fn render_grid_2x2(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let rows =
-        ftui_layout::Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+    let rows = Flex::vertical()
+        .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+        .split(area);
     for (r, row_area) in rows.iter().enumerate() {
-        let cols = ftui_layout::Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
-        .split(*row_area);
+        let cols = Flex::horizontal()
+            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+            .split(*row_area);
         for (c, col_area) in cols.iter().enumerate() {
             Paragraph::new(Text::raw(format!("({r},{c})"))).render(*col_area, frame);
         }
@@ -461,23 +463,21 @@ fn render_grid_2x2(frame: &mut Frame) {
 
 fn render_sidebar_main(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks =
-        ftui_layout::Layout::horizontal([Constraint::Length(20), Constraint::Fill(1)]).split(area);
+    let chunks = Flex::horizontal()
+        .constraints([Constraint::Fixed(20), Constraint::Fill])
+        .split(area);
     Block::new()
         .borders(Borders::ALL)
-        .title(Span::raw("Nav"))
+        .title("Nav")
         .render(chunks[0], frame);
     Paragraph::new(Text::raw("Main content here.")).render(chunks[1], frame);
 }
 
 fn render_header_footer(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks = ftui_layout::Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let chunks = Flex::vertical()
+        .constraints([Constraint::Fixed(1), Constraint::Fill, Constraint::Fixed(1)])
+        .split(area);
     Paragraph::new(Text::raw("=== HEADER ===")).render(chunks[0], frame);
     Paragraph::new(Text::raw("Body content")).render(chunks[1], frame);
     Paragraph::new(Text::raw("=== FOOTER ===")).render(chunks[2], frame);
@@ -485,12 +485,13 @@ fn render_header_footer(frame: &mut Frame) {
 
 fn render_ratio_layout(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks = ftui_layout::Layout::horizontal([
-        Constraint::Ratio(1, 4),
-        Constraint::Ratio(2, 4),
-        Constraint::Ratio(1, 4),
-    ])
-    .split(area);
+    let chunks = Flex::horizontal()
+        .constraints([
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(2, 4),
+            Constraint::Ratio(1, 4),
+        ])
+        .split(area);
     Paragraph::new(Text::raw("25%")).render(chunks[0], frame);
     Paragraph::new(Text::raw("50%")).render(chunks[1], frame);
     Paragraph::new(Text::raw("25%")).render(chunks[2], frame);
@@ -498,12 +499,9 @@ fn render_ratio_layout(frame: &mut Frame) {
 
 fn render_mixed_constraints(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks = ftui_layout::Layout::horizontal([
-        Constraint::Length(10),
-        Constraint::Fill(1),
-        Constraint::Max(20),
-    ])
-    .split(area);
+    let chunks = Flex::horizontal()
+        .constraints([Constraint::Fixed(10), Constraint::Fill, Constraint::Max(20)])
+        .split(area);
     for (i, chunk) in chunks.iter().enumerate() {
         Paragraph::new(Text::raw(format!("Pane {i}"))).render(*chunk, frame);
     }
@@ -511,12 +509,12 @@ fn render_mixed_constraints(frame: &mut Frame) {
 
 fn render_deeply_nested(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let outer = Block::new().borders(Borders::ALL).title(Span::raw("L1"));
+    let outer = Block::new().borders(Borders::ALL).title("L1");
     let inner_area = outer.inner(area);
     outer.render(area, frame);
 
     if inner_area.width > 4 && inner_area.height > 2 {
-        let inner = Block::new().borders(Borders::ALL).title(Span::raw("L2"));
+        let inner = Block::new().borders(Borders::ALL).title("L2");
         let innermost_area = inner.inner(inner_area);
         inner.render(inner_area, frame);
         if innermost_area.width > 0 && innermost_area.height > 0 {
@@ -592,14 +590,14 @@ fn render_tabs(frame: &mut Frame) {
 fn render_scrollbar_vertical(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     let widget = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(100).position(25);
+    let mut state = ScrollbarState::new(100, 25, 24);
     StatefulWidget::render(&widget, area, frame, &mut state);
 }
 
 fn render_scrollbar_horizontal(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     let widget = Scrollbar::new(ScrollbarOrientation::HorizontalBottom);
-    let mut state = ScrollbarState::new(100).position(50);
+    let mut state = ScrollbarState::new(100, 50, 80);
     StatefulWidget::render(&widget, area, frame, &mut state);
 }
 
@@ -608,7 +606,7 @@ fn render_scrollbar_horizontal(frame: &mut Frame) {
 fn render_list_empty(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     let items: Vec<ListItem> = vec![];
-    List::new(items).render(area, frame);
+    Widget::render(&List::new(items), area, frame);
 }
 
 fn render_list_scrolled(frame: &mut Frame) {
@@ -627,51 +625,48 @@ fn render_table_many_rows(frame: &mut Frame) {
     let rows: Vec<Row> = (0..50)
         .map(|i| Row::new(vec![format!("Row {i}"), format!("Data {i}")]))
         .collect();
-    let widths = [Constraint::Length(15), Constraint::Fill(1)];
-    Table::new(rows, widths).render(area, frame);
+    let widths = [Constraint::Fixed(15), Constraint::Fill];
+    Widget::render(&Table::new(rows, widths), area, frame);
 }
 
 fn render_block_thick(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
     Block::new()
         .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .title(Span::raw("Thick"))
+        .border_type(BorderType::Heavy)
+        .title("Heavy")
         .render(area, frame);
 }
 
 fn render_progress_0(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    ProgressBar::default().percent(0).render(area, frame);
+    ProgressBar::default().ratio(0.0).render(area, frame);
 }
 
 fn render_composite_dashboard(frame: &mut Frame) {
     let area = Rect::new(0, 0, frame.buffer.width(), frame.buffer.height());
-    let chunks = ftui_layout::Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let chunks = Flex::vertical()
+        .constraints([Constraint::Fixed(1), Constraint::Fill, Constraint::Fixed(1)])
+        .split(area);
 
     Paragraph::new(Text::raw("Dashboard")).render(chunks[0], frame);
 
-    let body = ftui_layout::Layout::horizontal([Constraint::Length(20), Constraint::Fill(1)])
+    let body = Flex::horizontal()
+        .constraints([Constraint::Fixed(20), Constraint::Fill])
         .split(chunks[1]);
     Block::new()
         .borders(Borders::ALL)
-        .title(Span::raw("Nav"))
+        .title("Nav")
         .render(body[0], frame);
 
-    let main_chunks =
-        ftui_layout::Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(body[1]);
+    let main_chunks = Flex::vertical()
+        .constraints([Constraint::Fixed(3), Constraint::Fill])
+        .split(body[1]);
     ProgressBar::default()
-        .percent(75)
+        .ratio(0.75)
         .render(main_chunks[0], frame);
-    let data = vec![3, 5, 7, 2, 8, 4, 6, 1, 9, 5];
-    Sparkline::default()
-        .data(&data)
-        .render(main_chunks[1], frame);
+    let data: Vec<f64> = vec![3.0, 5.0, 7.0, 2.0, 8.0, 4.0, 6.0, 1.0, 9.0, 5.0];
+    Sparkline::new(&data).render(main_chunks[1], frame);
 
     Paragraph::new(Text::raw("Status: OK")).render(chunks[2], frame);
 }
@@ -681,10 +676,7 @@ fn render_styled_borders_with_content(frame: &mut Frame) {
     let block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(Span::styled(
-            "Styled",
-            Style::new().bold().fg(PackedRgba::rgb(255, 165, 0)),
-        ));
+        .title("Styled");
     let inner = block.inner(area);
     block.render(area, frame);
     if inner.width > 0 && inner.height > 0 {
@@ -1098,8 +1090,9 @@ fn e2e_56_styled_borders_with_content() {
 #[test]
 fn e2e_57_size_sensitivity() {
     let caps = TerminalCapabilities::from_profile(TerminalProfile::Xterm256Color);
-    let cs_80x24 = full_pipeline_checksum(&caps, 80, 24, &render_paragraph);
-    let cs_120x40 = full_pipeline_checksum(&caps, 120, 40, &render_paragraph);
+    // Use a layout-based render that produces different cell output at different sizes.
+    let cs_80x24 = full_pipeline_checksum(&caps, 80, 24, &render_composite_dashboard);
+    let cs_120x40 = full_pipeline_checksum(&caps, 120, 40, &render_composite_dashboard);
     assert_ne!(
         cs_80x24, cs_120x40,
         "Same content at different sizes should produce different ANSI output"
@@ -1112,8 +1105,8 @@ fn e2e_57_size_sensitivity() {
 
 #[test]
 fn e2e_tracing_present_span_emitted() {
-    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
 
     struct PresentSpanChecker {
         saw_present: Arc<AtomicBool>,

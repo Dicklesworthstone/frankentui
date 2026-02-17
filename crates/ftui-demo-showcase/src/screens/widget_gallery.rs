@@ -2179,6 +2179,6 @@ mod tests {
         ));
         gallery.update(&down_track);
 
-        assert_eq!(gallery.virtualized_state.borrow().scroll_offset, 3);
+        assert_eq!(gallery.virtualized_state.borrow().scroll_offset(), 3);
     }
 }

@@ -1,0 +1,70 @@
+#![forbid(unsafe_code)]
+
+//! Host-agnostic VT/ANSI terminal engine.
+//!
+//! `frankenterm-core` is the platform-independent terminal model at the heart of
+//! FrankenTerm. It owns grid state, VT/ANSI parsing, cursor positioning, and
+//! scrollback — all without any host I/O dependencies.
+//!
+//! # Primary responsibilities
+//!
+//! - **Grid**: 2D cell matrix representing the visible terminal viewport.
+//! - **Cell**: character content + SGR attributes (colors, bold, italic, etc.).
+//! - **Parser**: VT/ANSI state machine (Paul Flo Williams model, 12 states).
+//! - **Cursor**: position, visibility, and origin/autowrap mode tracking.
+//! - **Modes**: DEC private modes and ANSI standard modes.
+//! - **Patch**: minimal diff between two grid snapshots for efficient updates.
+//! - **Scrollback**: ring buffer for lines scrolled off the top of the viewport.
+//!
+//! # Design principles
+//!
+//! - **No I/O**: all types are pure data + logic; the host adapter supplies bytes.
+//! - **Deterministic**: identical byte sequences always produce identical state.
+//! - **`#![forbid(unsafe_code)]`**: safety enforced at compile time.
+
+pub mod cell;
+pub mod cursor;
+pub mod export;
+pub mod flow_control;
+pub mod grid;
+pub mod modes;
+pub mod parser;
+pub mod patch;
+pub mod reply;
+pub mod scrollback;
+pub mod selection;
+pub mod selection_state;
+pub mod terminal_engine;
+pub mod width_policy;
+#[cfg(feature = "ws-codec")]
+pub mod ws_codec;
+
+pub use cell::{
+    Cell, CellFlags, Color, HyperlinkId, HyperlinkRegistry, MAX_COMBINING, SgrAttrs, SgrFlags,
+};
+pub use cursor::{Cursor, SavedCursor, translate_charset};
+pub use export::{
+    AnsiExportOptions, ColorDepth, ExportContext, ExportRange, ExportRow, HtmlExportOptions,
+    LineEnding, TextExportOptions, export_ansi, export_html, export_text,
+};
+pub use flow_control::{
+    ActionLoss, BackpressureAction, DecisionReason, FlowControlConfig, FlowControlDecision,
+    FlowControlPolicy, FlowControlSnapshot, InputEventClass, LatencyWindowMs, LossWeights,
+    QueueDepthBytes, RateWindowBps, jain_fairness_index,
+};
+pub use grid::Grid;
+pub use modes::{AnsiModes, DecModes, Modes};
+pub use parser::{Action, CsiParams, Parser};
+pub use patch::{CellUpdate, ChangeRun, DirtySpan, DirtyTracker, GridDiff, Patch};
+pub use reply::{
+    ReplyContext, ReplyEngine, TerminalQuery, parse_terminal_query, reply_for_query,
+    reply_for_query_bytes,
+};
+pub use scrollback::{Scrollback, ScrollbackLine, ScrollbackWindow};
+pub use selection::{BufferPos, CopyOptions, Selection};
+pub use selection_state::{
+    AutoScrollHint, GestureConfig, SelectionDirection, SelectionGestureController,
+    SelectionGranularity, SelectionPhase, SelectionShape, SelectionState,
+};
+pub use terminal_engine::{DEFAULT_SCROLLBACK_CAPACITY, TerminalEngine, TerminalEngineConfig};
+pub use width_policy::WidthPolicy;

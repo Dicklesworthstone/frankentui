@@ -1549,6 +1549,7 @@ impl<W: Write> TerminalWriter<W> {
         cursor: Option<(u16, u16)>,
         cursor_visible: bool,
     ) -> io::Result<FrameEmitStats> {
+        let sync_output_enabled = self.capabilities.use_sync_output();
         let render_mode = inline_strategy_str(self.inline_strategy);
         let _inline_span = info_span!(
             "inline.render",
@@ -1567,7 +1568,7 @@ impl<W: Write> TerminalWriter<W> {
             };
 
             // Begin sync output if available
-            if self.capabilities.sync_output && !self.in_sync_block {
+            if sync_output_enabled && !self.in_sync_block {
                 self.writer().write_all(SYNC_BEGIN)?;
                 self.in_sync_block = true;
             }
@@ -1735,6 +1736,7 @@ impl<W: Write> TerminalWriter<W> {
         cursor: Option<(u16, u16)>,
         cursor_visible: bool,
     ) -> io::Result<FrameEmitStats> {
+        let sync_output_enabled = self.capabilities.use_sync_output();
         let diff_start = if self.timing_enabled {
             Some(Instant::now())
         } else {
@@ -1749,7 +1751,7 @@ impl<W: Write> TerminalWriter<W> {
             .unwrap_or(0);
 
         // Begin sync if available
-        if self.capabilities.sync_output {
+        if sync_output_enabled {
             self.writer().write_all(SYNC_BEGIN)?;
         }
 
@@ -1783,7 +1785,7 @@ impl<W: Write> TerminalWriter<W> {
             self.set_cursor_visibility(false)?;
         }
 
-        if self.capabilities.sync_output {
+        if sync_output_enabled {
             self.writer().write_all(SYNC_END)?;
         }
 
@@ -2370,10 +2372,11 @@ impl<W: Write> TerminalWriter<W> {
             return;
         };
         let writer = presenter.counting_writer_mut();
+        let sync_output_enabled = self.capabilities.use_sync_output();
 
         // Emit restorations unconditionally: write errors can occur after bytes
         // were partially written, so internal flags may be stale.
-        if self.capabilities.sync_output {
+        if sync_output_enabled {
             let _ = writer.write_all(SYNC_END);
         }
         self.in_sync_block = false;
@@ -2620,6 +2623,58 @@ mod tests {
         // Should contain sync begin and end
         assert!(output.windows(SYNC_BEGIN.len()).any(|w| w == SYNC_BEGIN));
         assert!(output.windows(SYNC_END.len()).any(|w| w == SYNC_END));
+    }
+
+    #[test]
+    fn present_ui_inline_skips_sync_output_in_mux() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                mux_caps(),
+            );
+            writer.set_size(10, 10);
+
+            let buffer = Buffer::new(10, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !output.windows(SYNC_BEGIN.len()).any(|w| w == SYNC_BEGIN),
+            "sync begin must be suppressed in tmux/screen/zellij environments"
+        );
+        assert!(
+            !output.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "sync end must be suppressed in tmux/screen/zellij environments"
+        );
+    }
+
+    #[test]
+    fn present_ui_altscreen_skips_sync_output_in_mux() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                mux_caps(),
+            );
+            writer.set_size(10, 10);
+
+            let buffer = Buffer::new(10, 5);
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !output.windows(SYNC_BEGIN.len()).any(|w| w == SYNC_BEGIN),
+            "sync begin must be suppressed in tmux/screen/zellij environments"
+        );
+        assert!(
+            !output.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "sync end must be suppressed in tmux/screen/zellij environments"
+        );
     }
 
     #[test]
