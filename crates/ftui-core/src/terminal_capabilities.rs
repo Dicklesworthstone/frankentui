@@ -125,6 +125,7 @@ struct DetectInputs {
     in_tmux: bool,
     in_screen: bool,
     in_zellij: bool,
+    wezterm_unix_socket: bool,
     kitty_window_id: bool,
     wt_session: bool,
 }
@@ -139,6 +140,7 @@ impl DetectInputs {
             in_tmux: env::var("TMUX").is_ok(),
             in_screen: env::var("STY").is_ok(),
             in_zellij: env::var("ZELLIJ").is_ok(),
+            wezterm_unix_socket: env::var("WEZTERM_UNIX_SOCKET").is_ok(),
             kitty_window_id: env::var("KITTY_WINDOW_ID").is_ok(),
             wt_session: env::var("WT_SESSION").is_ok(),
         }
@@ -324,6 +326,11 @@ pub struct TerminalCapabilities {
     pub in_screen: bool,
     /// Running inside Zellij.
     pub in_zellij: bool,
+    /// Running inside a WezTerm mux-served session.
+    ///
+    /// Detected via `WEZTERM_UNIX_SOCKET`, which WezTerm exports for
+    /// client sessions attached to its mux server.
+    pub in_wezterm_mux: bool,
 
     // Input features
     /// Kitty keyboard protocol support.
@@ -412,6 +419,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: true,
             focus_events: true,
             bracketed_paste: true,
@@ -439,6 +447,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: true,
@@ -465,6 +474,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: true,
@@ -491,6 +501,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: false,
@@ -517,6 +528,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: false,
@@ -544,6 +556,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: true,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: true,
@@ -571,6 +584,7 @@ impl TerminalCapabilities {
             in_tmux: true,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: true,
@@ -597,6 +611,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: true,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: true,
             bracketed_paste: true,
@@ -623,6 +638,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: true,
             bracketed_paste: true,
@@ -649,6 +665,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: true,
             focus_events: true,
             bracketed_paste: true,
@@ -675,6 +692,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: true,
@@ -744,6 +762,7 @@ impl CapabilityProfileBuilder {
                 in_tmux: false,
                 in_screen: false,
                 in_zellij: false,
+                in_wezterm_mux: false,
                 kitty_keyboard: false,
                 focus_events: false,
                 bracketed_paste: false,
@@ -884,6 +903,9 @@ impl TerminalCapabilities {
         let in_screen = env.in_screen;
         let in_zellij = env.in_zellij;
         let in_any_mux = in_tmux || in_screen || in_zellij;
+        // WezTerm mux sessions may not always preserve TERM_PROGRAM in all
+        // shell-launch scenarios; the UNIX socket marker is the reliable signal.
+        let in_wezterm_mux = env.wezterm_unix_socket;
 
         let term = env.term.as_str();
         let term_program = env.term_program.as_str();
@@ -974,6 +996,7 @@ impl TerminalCapabilities {
             in_tmux,
             in_screen,
             in_zellij,
+            in_wezterm_mux,
             kitty_keyboard,
             focus_events,
             bracketed_paste,
@@ -1001,6 +1024,7 @@ impl TerminalCapabilities {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            in_wezterm_mux: false,
             kitty_keyboard: false,
             focus_events: false,
             bracketed_paste: false,
@@ -1045,11 +1069,12 @@ impl TerminalCapabilities {
     /// Whether synchronized output (DEC 2026) should be used.
     ///
     /// Disabled in multiplexers because passthrough is unreliable
-    /// for mode-setting sequences.
+    /// for mode-setting sequences. Also disabled for WezTerm mux-served
+    /// sessions (`WEZTERM_UNIX_SOCKET`) due observed DEC 2026 instability.
     #[must_use]
     #[inline]
     pub const fn use_sync_output(&self) -> bool {
-        if self.in_tmux || self.in_screen || self.in_zellij {
+        if self.in_tmux || self.in_screen || self.in_zellij || self.in_wezterm_mux {
             return false;
         }
         self.sync_output
@@ -1250,6 +1275,7 @@ mod tests {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            wezterm_unix_socket: false,
             kitty_window_id: false,
             wt_session: true,
         };
@@ -1289,6 +1315,7 @@ mod tests {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            wezterm_unix_socket: false,
             kitty_window_id: false,
             wt_session: false,
         };
@@ -1327,6 +1354,14 @@ mod tests {
         let mut caps = TerminalCapabilities::basic();
         caps.sync_output = true;
         caps.in_zellij = true;
+        assert!(!caps.use_sync_output());
+    }
+
+    #[test]
+    fn use_sync_output_disabled_in_wezterm_mux() {
+        let mut caps = TerminalCapabilities::basic();
+        caps.sync_output = true;
+        caps.in_wezterm_mux = true;
         assert!(!caps.use_sync_output());
     }
 
@@ -1407,6 +1442,7 @@ mod tests {
             in_tmux: false,
             in_screen: false,
             in_zellij: false,
+            wezterm_unix_socket: false,
             kitty_window_id: false,
             wt_session: false,
         }
@@ -1502,6 +1538,34 @@ mod tests {
         assert!(caps.kitty_keyboard, "WezTerm supports kitty keyboard");
         assert!(caps.focus_events);
         assert!(caps.osc52_clipboard);
+    }
+
+    #[test]
+    fn detect_wezterm_mux_socket_disables_sync_policy() {
+        let mut env = make_env("xterm-256color", "WezTerm", "truecolor");
+        env.wezterm_unix_socket = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.sync_output, "raw capability remains detected");
+        assert!(caps.in_wezterm_mux, "wezterm mux marker should be detected");
+        assert!(
+            !caps.use_sync_output(),
+            "policy must suppress sync output in wezterm mux sessions"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_mux_socket_without_term_program_disables_sync_policy() {
+        let mut env = make_env("xterm-256color", "", "truecolor");
+        env.wezterm_unix_socket = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(
+            caps.in_wezterm_mux,
+            "socket marker alone must detect wezterm mux"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "policy must suppress sync output when wezterm mux socket is present"
+        );
     }
 
     #[test]
@@ -2598,6 +2662,7 @@ mod proptests {
                 in_tmux: false,
                 in_screen: false,
                 in_zellij: false,
+                wezterm_unix_socket: false,
                 kitty_window_id: false,
                 wt_session: false,
             };

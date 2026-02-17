@@ -722,6 +722,7 @@ impl TtyBackend {
     pub fn open(width: u16, height: u16, options: TtySessionOptions) -> io::Result<Self> {
         // Enter raw mode first — if this fails, nothing to clean up.
         let raw_mode = RawModeGuard::enter()?;
+        let capabilities = TerminalCapabilities::detect();
 
         let mut stdout = io::stdout();
         let mut alt_screen_active = false;
@@ -749,8 +750,12 @@ impl TtyBackend {
 
         if let Err(err) = setup {
             // Best-effort cleanup: we may have partially enabled features or entered alt screen.
-            let _ =
-                write_cleanup_sequence(&options.features, options.alternate_screen, &mut stdout);
+            let _ = write_cleanup_sequence_policy(
+                &options.features,
+                options.alternate_screen,
+                capabilities.use_sync_output(),
+                &mut stdout,
+            );
             let _ = stdout.flush();
             return Err(err);
         }
@@ -760,7 +765,7 @@ impl TtyBackend {
         Ok(Self {
             clock: TtyClock::new(),
             events,
-            presenter: TtyPresenter::live(TerminalCapabilities::detect()),
+            presenter: TtyPresenter::live(capabilities),
             alt_screen_active,
             raw_mode: Some(raw_mode),
         })
@@ -788,7 +793,9 @@ impl Drop for TtyBackend {
             let mut stdout = io::stdout();
 
             // End any in-progress synchronized output.
-            let _ = stdout.write_all(SYNC_END);
+            if self.presenter.capabilities.use_sync_output() {
+                let _ = stdout.write_all(SYNC_END);
+            }
 
             // Disable features in reverse order of typical enable.
             let _ = self.events.disable_all(&mut stdout);
@@ -864,7 +871,18 @@ pub fn write_cleanup_sequence(
     alt_screen: bool,
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    writer.write_all(SYNC_END)?;
+    write_cleanup_sequence_policy(features, alt_screen, true, writer)
+}
+
+fn write_cleanup_sequence_policy(
+    features: &BackendFeatures,
+    alt_screen: bool,
+    emit_sync_end: bool,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    if emit_sync_end {
+        writer.write_all(SYNC_END)?;
+    }
     // Disable features in reverse order.
     if features.kitty_keyboard {
         writer.write_all(KITTY_KEYBOARD_DISABLE)?;
@@ -1754,6 +1772,28 @@ mod tests {
             buf.windows(ALT_SCREEN_LEAVE.len())
                 .any(|w| w == ALT_SCREEN_LEAVE)
         );
+    }
+
+    #[test]
+    fn cleanup_sequence_policy_can_skip_sync_end() {
+        let features = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+        };
+        let mut buf = Vec::new();
+        write_cleanup_sequence_policy(&features, false, false, &mut buf).unwrap();
+
+        assert!(
+            !buf.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "sync_end must be omitted when policy disables synchronized output"
+        );
+        assert!(
+            buf.windows(MOUSE_DISABLE.len()).any(|w| w == MOUSE_DISABLE),
+            "other cleanup bytes must still be emitted"
+        );
+        assert!(buf.windows(CURSOR_SHOW.len()).any(|w| w == CURSOR_SHOW));
     }
 
     #[test]

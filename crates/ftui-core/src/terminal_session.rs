@@ -142,6 +142,11 @@ const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
 const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1002h\x1b[?1006h";
 const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1002l\x1b[?1006l";
 
+#[inline]
+fn should_emit_sync_cleanup() -> bool {
+    crate::terminal_capabilities::TerminalCapabilities::with_overrides().use_sync_output()
+}
+
 static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
@@ -336,6 +341,9 @@ impl TerminalSession {
         let mut stdout = io::stdout();
 
         if options.alternate_screen {
+            // Mark enabled before writing in case of partial write failures;
+            // drop cleanup must unwind any state that may already be active.
+            session.alternate_screen_enabled = true;
             // Enter alternate screen and explicitly clear it.
             // Some terminals (including WezTerm) may show stale content in the
             // alt-screen buffer without an explicit clear. We also position the
@@ -346,36 +354,35 @@ impl TerminalSession {
                 crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
                 crossterm::cursor::MoveTo(0, 0)
             )?;
-            session.alternate_screen_enabled = true;
             #[cfg(feature = "tracing")]
             tracing::info!("alternate screen enabled (with clear)");
         }
 
         if options.mouse_capture {
+            session.mouse_enabled = true;
             stdout.write_all(MOUSE_ENABLE_SEQ)?;
             stdout.flush()?;
-            session.mouse_enabled = true;
             #[cfg(feature = "tracing")]
             tracing::info!("mouse capture enabled");
         }
 
         if options.bracketed_paste {
-            crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)?;
             session.bracketed_paste_enabled = true;
+            crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)?;
             #[cfg(feature = "tracing")]
             tracing::info!("bracketed paste enabled");
         }
 
         if options.focus_events {
-            crossterm::execute!(stdout, crossterm::event::EnableFocusChange)?;
             session.focus_events_enabled = true;
+            crossterm::execute!(stdout, crossterm::event::EnableFocusChange)?;
             #[cfg(feature = "tracing")]
             tracing::info!("focus events enabled");
         }
 
         if options.kitty_keyboard {
-            Self::enable_kitty_keyboard(&mut stdout)?;
             session.kitty_keyboard_enabled = true;
+            Self::enable_kitty_keyboard(&mut stdout)?;
             #[cfg(feature = "tracing")]
             tracing::info!("kitty keyboard enabled");
         }
@@ -755,7 +762,9 @@ impl TerminalSession {
         let mut stdout = io::stdout();
 
         // End synchronized output first to ensure terminal updates resume
-        let _ = stdout.write_all(SYNC_END);
+        if should_emit_sync_cleanup() {
+            let _ = stdout.write_all(SYNC_END);
+        }
 
         // Reset scroll region (critical for inline mode recovery)
         let _ = stdout.write_all(RESET_SCROLL_REGION);
@@ -862,7 +871,9 @@ fn best_effort_cleanup() {
 
     // End synchronized output first to ensure any buffered content (like panic messages)
     // is flushed to the terminal.
-    let _ = stdout.write_all(SYNC_END);
+    if should_emit_sync_cleanup() {
+        let _ = stdout.write_all(SYNC_END);
+    }
     let _ = stdout.write_all(RESET_SCROLL_REGION);
 
     let _ = TerminalSession::disable_kitty_keyboard(&mut stdout);

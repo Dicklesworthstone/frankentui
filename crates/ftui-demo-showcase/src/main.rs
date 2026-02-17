@@ -11,9 +11,10 @@ use ftui_render::budget::{FrameBudgetConfig, PhaseBudgets};
 use ftui_runtime::{
     EvidenceSinkConfig, FrameTimingConfig, MouseCapturePolicy, Program, ProgramConfig, ScreenMode,
 };
+use std::process::ExitCode;
 use std::time::Duration;
 
-fn main() {
+fn main() -> ExitCode {
     let opts = cli::Opts::parse();
 
     let screen_mode = match opts.screen_mode.as_str() {
@@ -57,7 +58,7 @@ fn main() {
             Ok(model) => model,
             Err(e) => {
                 eprintln!("Failed to initialize VFX harness: {e}");
-                std::process::exit(1);
+                return ExitCode::FAILURE;
             }
         };
         let frame_timing = model.perf_logger().map(FrameTimingConfig::new);
@@ -72,9 +73,9 @@ fn main() {
         let config = apply_evidence_config(config);
         if let Err(e) = run_program(model, config) {
             eprintln!("Runtime error: {e}");
-            std::process::exit(1);
+            return ExitCode::FAILURE;
         }
-        return;
+        return ExitCode::SUCCESS;
     }
 
     #[cfg(feature = "screen-mermaid")]
@@ -92,7 +93,7 @@ fn main() {
             Ok(model) => model,
             Err(e) => {
                 eprintln!("Failed to initialize Mermaid harness: {e}");
-                std::process::exit(1);
+                return ExitCode::FAILURE;
             }
         };
         let budget = FrameBudgetConfig {
@@ -116,9 +117,9 @@ fn main() {
         let config = apply_evidence_config(config);
         if let Err(e) = run_program(model, config) {
             eprintln!("Runtime error: {e}");
-            std::process::exit(1);
+            return ExitCode::FAILURE;
         }
-        return;
+        return ExitCode::SUCCESS;
     }
 
     let start_screen = if opts.start_screen >= 1 {
@@ -168,8 +169,9 @@ fn main() {
     let config = apply_evidence_config(config);
     if let Err(e) = run_program(model, config) {
         eprintln!("Runtime error: {e}");
-        std::process::exit(1);
+        return ExitCode::FAILURE;
     }
+    ExitCode::SUCCESS
 }
 
 /// Run a program using the best available backend.

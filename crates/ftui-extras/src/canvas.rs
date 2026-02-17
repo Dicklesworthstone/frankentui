@@ -251,11 +251,130 @@ impl Painter {
         self.line_colored(x0, y0, x1, y1, None);
     }
 
+    #[inline]
+    fn line_out_code(x: i32, y: i32, max_x: i32, max_y: i32) -> u8 {
+        const LEFT: u8 = 1;
+        const RIGHT: u8 = 2;
+        const TOP: u8 = 4;
+        const BOTTOM: u8 = 8;
+
+        let mut code = 0u8;
+        if x < 0 {
+            code |= LEFT;
+        } else if x > max_x {
+            code |= RIGHT;
+        }
+        if y < 0 {
+            code |= TOP;
+        } else if y > max_y {
+            code |= BOTTOM;
+        }
+        code
+    }
+
+    /// Clip a segment to the drawable bounds using Cohen-Sutherland clipping.
+    ///
+    /// This prevents pathological Bresenham walks when callers pass huge off-screen
+    /// coordinates (for example, projection singularities in 3D effects).
+    #[inline]
+    fn clip_line_to_bounds(
+        &self,
+        mut x0: i32,
+        mut y0: i32,
+        mut x1: i32,
+        mut y1: i32,
+    ) -> Option<(i32, i32, i32, i32)> {
+        if self.width_i32 <= 0 || self.height_i32 <= 0 {
+            return None;
+        }
+
+        const RIGHT: u8 = 2;
+        const TOP: u8 = 4;
+        const BOTTOM: u8 = 8;
+
+        let max_x = self.width_i32 - 1;
+        let max_y = self.height_i32 - 1;
+
+        // Cohen-Sutherland converges quickly for axis-aligned clip rectangles.
+        // Guard iterations defensively to avoid non-progress loops from integer rounding.
+        for _ in 0..8 {
+            let c0 = Self::line_out_code(x0, y0, max_x, max_y);
+            let c1 = Self::line_out_code(x1, y1, max_x, max_y);
+
+            if (c0 | c1) == 0 {
+                return Some((x0, y0, x1, y1));
+            }
+            if (c0 & c1) != 0 {
+                return None;
+            }
+
+            let out = if c0 != 0 { c0 } else { c1 };
+            let (mut nx, mut ny);
+
+            if (out & TOP) != 0 {
+                if y1 == y0 {
+                    return None;
+                }
+                let num = (i64::from(x1) - i64::from(x0)) * (0_i64 - i64::from(y0));
+                let den = i64::from(y1) - i64::from(y0);
+                nx = x0.saturating_add((num / den) as i32);
+                ny = 0;
+            } else if (out & BOTTOM) != 0 {
+                if y1 == y0 {
+                    return None;
+                }
+                let num = (i64::from(x1) - i64::from(x0)) * (i64::from(max_y) - i64::from(y0));
+                let den = i64::from(y1) - i64::from(y0);
+                nx = x0.saturating_add((num / den) as i32);
+                ny = max_y;
+            } else if (out & RIGHT) != 0 {
+                if x1 == x0 {
+                    return None;
+                }
+                let num = (i64::from(y1) - i64::from(y0)) * (i64::from(max_x) - i64::from(x0));
+                let den = i64::from(x1) - i64::from(x0);
+                ny = y0.saturating_add((num / den) as i32);
+                nx = max_x;
+            } else {
+                if x1 == x0 {
+                    return None;
+                }
+                let num = (i64::from(y1) - i64::from(y0)) * (0_i64 - i64::from(x0));
+                let den = i64::from(x1) - i64::from(x0);
+                ny = y0.saturating_add((num / den) as i32);
+                nx = 0;
+            }
+
+            nx = nx.clamp(0, max_x);
+            ny = ny.clamp(0, max_y);
+
+            if out == c0 {
+                if nx == x0 && ny == y0 {
+                    return None;
+                }
+                x0 = nx;
+                y0 = ny;
+            } else {
+                if nx == x1 && ny == y1 {
+                    return None;
+                }
+                x1 = nx;
+                y1 = ny;
+            }
+        }
+
+        None
+    }
+
     /// Draw a colored line.
     #[inline]
     pub fn line_colored(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: Option<PackedRgba>) {
-        let dx = (x1 - x0).abs();
-        let dy = -(y1 - y0).abs();
+        let Some((x0, y0, x1, y1)) = self.clip_line_to_bounds(x0, y0, x1, y1) else {
+            return;
+        };
+
+        let dx = (i64::from(x1) - i64::from(x0)).abs() as i32;
+        let dy = -((i64::from(y1) - i64::from(y0)).abs() as i32);
         let sx: i32 = if x0 < x1 { 1 } else { -1 };
         let sy: i32 = if y0 < y1 { 1 } else { -1 };
         let mut err = dx + dy;
@@ -914,6 +1033,29 @@ mod tests {
         let mut p = Painter::new(10, 10, Mode::Braille);
         p.line(5, 5, 5, 5);
         assert!(p.get(5, 5));
+    }
+
+    #[test]
+    fn bresenham_clips_extreme_coordinates() {
+        let mut p = Painter::new(16, 16, Mode::Braille);
+        p.line(i32::MIN, i32::MIN, i32::MAX, i32::MAX);
+
+        // Clipped diagonal should still touch both corners.
+        assert!(p.get(0, 0));
+        assert!(p.get(15, 15));
+    }
+
+    #[test]
+    fn bresenham_rejects_fully_outside_extremes() {
+        let mut p = Painter::new(16, 16, Mode::Braille);
+        p.line(i32::MIN, 1000, i32::MAX, 1000);
+
+        // Horizontal line far below canvas should clip out entirely.
+        for y in 0..16 {
+            for x in 0..16 {
+                assert!(!p.get(x, y), "canvas should remain unchanged");
+            }
+        }
     }
 
     #[test]
