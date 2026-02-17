@@ -335,3 +335,29 @@ Coverage audit + deep review are still in progress (bd-2dui). Do not treat the c
     - Updated `record` to perform eviction *before* computing the new snapshot.
     - Added logic to force a `Full` snapshot if the history is empty after eviction, ensuring the first frame in the buffer is always self-contained.
     - This guarantees that `get(0)` always returns a valid base frame.
+
+## 108. Demo Showcase Dashboard Mouse Reliability
+**File:** `crates/ftui-demo-showcase/src/app.rs`
+**Issue:** The global `AppModel` mouse dispatcher initiated a `PendingDrag` state for "pane links" (dashboard tiles) on `MouseDown`. If the mouse moved more than 2 cells (the drag threshold) before `MouseUp`, the interaction was classified as a drag (which is not implemented for tiles) and the click event was cancelled. This caused clicks to be "unreliable" for users who moved the mouse slightly while clicking.
+**Fix:**
+    - Removed the `PendingDrag` initiation logic for `pane_link_hit` targets in `dispatch_mouse`.
+    - `MouseDown` events on tiles now fall through to screen-level handling (stateless).
+    - `MouseUp` events trigger navigation directly via `dispatch_click`, bypassing the drag state machine.
+    - This ensures tile clicks work reliably even if the mouse moves during the press, treating them as standard "activate on release" buttons.
+
+## 109. Demo Showcase Chrome Mouse Reliability
+**File:** `crates/ftui-demo-showcase/src/app.rs`
+**Issue:** Similar to #108, the global mouse dispatcher initiated a `PendingDrag` state for "chrome" elements (Tabs, Status Bar, Overlays) on `MouseDown`. Dragging is not implemented for these elements, so any mouse movement > 2 cells during a click would cause the click to be cancelled (consumed as a drag event). This made tab switching and button clicking flaky.
+**Fix:**
+    - Removed the `PendingDrag` initiation logic for `chrome_hit` targets in `dispatch_mouse`.
+    - Chrome interactions are now treated as stateless "click on release".
+    - `MouseDown` events on chrome are consumed but don't start a drag.
+    - `MouseUp` events on chrome trigger `dispatch_click` reliably, regardless of mouse jitter.
+
+## 110. Demo Showcase Chrome Mouse Event Leakage (Regression Fix)
+**File:** `crates/ftui-demo-showcase/src/app.rs`
+**Issue:** Fix #109 correctly removed the jitter-sensitive `PendingDrag` state for chrome elements but also inadvertently removed the `MouseDown` event consumption. This caused clicks on the tab bar and status bar to "fall through" to the underlying screen content, triggering unintended actions (e.g. drawing on the canvas when clicking a tab).
+**Fix:**
+    - Reinstated `MouseDown` event consumption for `chrome_hit` targets in `dispatch_mouse`.
+    - Events are now `Consumed` (preventing leakage) but do NOT initiate `PendingDrag`.
+    - This restores correct layering while maintaining the robust "stateless click" behavior established in #109.
