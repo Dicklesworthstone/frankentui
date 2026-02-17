@@ -22,6 +22,7 @@ use web_time::Instant;
 
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
+use ftui_core::with_panic_cleanup_suppressed;
 use ftui_extras::canvas::{CanvasRef, Mode, Painter};
 use ftui_extras::markdown::render_markdown;
 use ftui_extras::text_effects::{
@@ -4293,49 +4294,51 @@ impl Screen for VisualEffectsScreen {
 
             let mut effect_panicked = false;
             if !matches!(quality, FxQuality::Off) {
-                let result = catch_unwind(AssertUnwindSafe(|| match self.effect {
-                    EffectType::Shape3D => self.shape3d.render(&mut painter, pw, ph, self.time),
-                    EffectType::Particles => self.particles.render(&mut painter, pw, ph),
-                    EffectType::Matrix => self.matrix.render(&mut painter, pw, ph),
-                    EffectType::Tunnel => self.tunnel.render(&mut painter, pw, ph),
-                    EffectType::Fire => self.fire.render(&mut painter, pw, ph),
-                    EffectType::ReactionDiffusion => {
-                        self.reaction_diffusion.render(&mut painter, pw, ph)
-                    }
-                    EffectType::StrangeAttractor => self.attractor.render(&mut painter, pw, ph),
-                    EffectType::Mandelbrot => self.mandelbrot.render(&mut painter, pw, ph),
-                    EffectType::Lissajous => self.lissajous.render(&mut painter, pw, ph),
-                    EffectType::FlowField => self.flow_field.render(&mut painter, pw, ph),
-                    EffectType::Julia => self.julia.render(&mut painter, pw, ph),
-                    EffectType::WaveInterference => {
-                        self.wave_interference.render(&mut painter, pw, ph, quality)
-                    }
-                    EffectType::Spiral => self.spiral.render(&mut painter, pw, ph, quality),
-                    EffectType::SpinLattice => {
-                        self.spin_lattice.render(&mut painter, pw, ph, quality)
-                    }
-                    EffectType::DoomE1M1 => {
-                        self.with_doom_mut(|doom| {
-                            doom.render(&mut painter, pw, ph, quality, self.time, self.frame);
-                        });
-                    }
-                    EffectType::QuakeE1M1 => {
-                        self.with_quake_mut(|quake| {
-                            quake.render(&mut painter, pw, ph, quality, self.time, self.frame);
-                        });
-                    }
-                    // Canvas adapters for metaballs and plasma (bd-l8x9.5.3)
-                    EffectType::Metaballs => {
-                        self.with_metaballs_adapter_mut(|adapter| {
-                            adapter.fill_frame(&mut painter, self.time, quality, &theme_inputs);
-                        });
-                    }
-                    EffectType::Plasma => {
-                        self.with_plasma_adapter_mut(|adapter| {
-                            adapter.fill(&mut painter, self.time, quality, &theme_inputs);
-                        });
-                    }
-                }));
+                let result = with_panic_cleanup_suppressed(|| {
+                    catch_unwind(AssertUnwindSafe(|| match self.effect {
+                        EffectType::Shape3D => self.shape3d.render(&mut painter, pw, ph, self.time),
+                        EffectType::Particles => self.particles.render(&mut painter, pw, ph),
+                        EffectType::Matrix => self.matrix.render(&mut painter, pw, ph),
+                        EffectType::Tunnel => self.tunnel.render(&mut painter, pw, ph),
+                        EffectType::Fire => self.fire.render(&mut painter, pw, ph),
+                        EffectType::ReactionDiffusion => {
+                            self.reaction_diffusion.render(&mut painter, pw, ph)
+                        }
+                        EffectType::StrangeAttractor => self.attractor.render(&mut painter, pw, ph),
+                        EffectType::Mandelbrot => self.mandelbrot.render(&mut painter, pw, ph),
+                        EffectType::Lissajous => self.lissajous.render(&mut painter, pw, ph),
+                        EffectType::FlowField => self.flow_field.render(&mut painter, pw, ph),
+                        EffectType::Julia => self.julia.render(&mut painter, pw, ph),
+                        EffectType::WaveInterference => {
+                            self.wave_interference.render(&mut painter, pw, ph, quality)
+                        }
+                        EffectType::Spiral => self.spiral.render(&mut painter, pw, ph, quality),
+                        EffectType::SpinLattice => {
+                            self.spin_lattice.render(&mut painter, pw, ph, quality)
+                        }
+                        EffectType::DoomE1M1 => {
+                            self.with_doom_mut(|doom| {
+                                doom.render(&mut painter, pw, ph, quality, self.time, self.frame);
+                            });
+                        }
+                        EffectType::QuakeE1M1 => {
+                            self.with_quake_mut(|quake| {
+                                quake.render(&mut painter, pw, ph, quality, self.time, self.frame);
+                            });
+                        }
+                        // Canvas adapters for metaballs and plasma (bd-l8x9.5.3)
+                        EffectType::Metaballs => {
+                            self.with_metaballs_adapter_mut(|adapter| {
+                                adapter.fill_frame(&mut painter, self.time, quality, &theme_inputs);
+                            });
+                        }
+                        EffectType::Plasma => {
+                            self.with_plasma_adapter_mut(|adapter| {
+                                adapter.fill(&mut painter, self.time, quality, &theme_inputs);
+                            });
+                        }
+                    }))
+                });
                 if result.is_err() {
                     effect_panicked = true;
                     painter.clear();

@@ -28,6 +28,7 @@ use ftui_core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ftui_core::geometry::Rect;
+use ftui_core::with_panic_cleanup_suppressed;
 #[cfg(feature = "screen-mermaid")]
 use ftui_extras::mermaid::MermaidConfig;
 use ftui_layout::{Constraint, Flex};
@@ -1441,66 +1442,76 @@ impl ScreenStates {
             return;
         }
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            use screens::Screen;
-            match id {
-                ScreenId::GuidedTour => {}
-                ScreenId::Dashboard => self.dashboard.view(frame, area),
-                ScreenId::Shakespeare => self.shakespeare_mut(|screen| screen.view(frame, area)),
-                ScreenId::CodeExplorer => self.code_explorer_mut(|screen| screen.view(frame, area)),
-                ScreenId::WidgetGallery => self.widget_gallery.view(frame, area),
-                ScreenId::LayoutLab => self.layout_lab.view(frame, area),
-                ScreenId::FormsInput => self.forms_input.view(frame, area),
-                ScreenId::DataViz => self.data_viz.view(frame, area),
-                ScreenId::TableThemeGallery => self.table_theme_gallery.view(frame, area),
-                ScreenId::FileBrowser => self.file_browser_mut(|screen| screen.view(frame, area)),
-                ScreenId::AdvancedFeatures => self.advanced_features.view(frame, area),
-                ScreenId::TerminalCapabilities => self.terminal_capabilities.view(frame, area),
-                ScreenId::MacroRecorder => self.macro_recorder.view(frame, area),
-                ScreenId::Performance => self.performance.view(frame, area),
-                ScreenId::MarkdownRichText => self.markdown_rich_text.view(frame, area),
-                #[cfg(feature = "screen-mermaid")]
-                ScreenId::MermaidShowcase => self.mermaid_showcase.view(frame, area),
-                #[cfg(not(feature = "screen-mermaid"))]
-                ScreenId::MermaidShowcase => {}
-                #[cfg(feature = "screen-mermaid")]
-                ScreenId::MermaidMegaShowcase => self.mermaid_mega_showcase.view(frame, area),
-                #[cfg(not(feature = "screen-mermaid"))]
-                ScreenId::MermaidMegaShowcase => {}
-                ScreenId::VisualEffects => {
-                    self.visual_effects_mut(|screen| screen.view(frame, area))
+        let result = with_panic_cleanup_suppressed(|| {
+            catch_unwind(AssertUnwindSafe(|| {
+                use screens::Screen;
+                match id {
+                    ScreenId::GuidedTour => {}
+                    ScreenId::Dashboard => self.dashboard.view(frame, area),
+                    ScreenId::Shakespeare => {
+                        self.shakespeare_mut(|screen| screen.view(frame, area))
+                    }
+                    ScreenId::CodeExplorer => {
+                        self.code_explorer_mut(|screen| screen.view(frame, area))
+                    }
+                    ScreenId::WidgetGallery => self.widget_gallery.view(frame, area),
+                    ScreenId::LayoutLab => self.layout_lab.view(frame, area),
+                    ScreenId::FormsInput => self.forms_input.view(frame, area),
+                    ScreenId::DataViz => self.data_viz.view(frame, area),
+                    ScreenId::TableThemeGallery => self.table_theme_gallery.view(frame, area),
+                    ScreenId::FileBrowser => {
+                        self.file_browser_mut(|screen| screen.view(frame, area))
+                    }
+                    ScreenId::AdvancedFeatures => self.advanced_features.view(frame, area),
+                    ScreenId::TerminalCapabilities => self.terminal_capabilities.view(frame, area),
+                    ScreenId::MacroRecorder => self.macro_recorder.view(frame, area),
+                    ScreenId::Performance => self.performance.view(frame, area),
+                    ScreenId::MarkdownRichText => self.markdown_rich_text.view(frame, area),
+                    #[cfg(feature = "screen-mermaid")]
+                    ScreenId::MermaidShowcase => self.mermaid_showcase.view(frame, area),
+                    #[cfg(not(feature = "screen-mermaid"))]
+                    ScreenId::MermaidShowcase => {}
+                    #[cfg(feature = "screen-mermaid")]
+                    ScreenId::MermaidMegaShowcase => self.mermaid_mega_showcase.view(frame, area),
+                    #[cfg(not(feature = "screen-mermaid"))]
+                    ScreenId::MermaidMegaShowcase => {}
+                    ScreenId::VisualEffects => {
+                        self.visual_effects_mut(|screen| screen.view(frame, area))
+                    }
+                    ScreenId::ResponsiveDemo => self.responsive_demo.view(frame, area),
+                    ScreenId::LogSearch => self.log_search.view(frame, area),
+                    ScreenId::Notifications => self.notifications.view(frame, area),
+                    ScreenId::ActionTimeline => self.action_timeline.view(frame, area),
+                    ScreenId::IntrinsicSizing => self.intrinsic_sizing.view(frame, area),
+                    ScreenId::LayoutInspector => self.layout_inspector.view(frame, area),
+                    ScreenId::AdvancedTextEditor => self.advanced_text_editor.view(frame, area),
+                    ScreenId::MousePlayground => self.mouse_playground.view(frame, area),
+                    ScreenId::FormValidation => self.form_validation.view(frame, area),
+                    ScreenId::VirtualizedSearch => self.virtualized_search.view(frame, area),
+                    ScreenId::AsyncTasks => self.async_tasks.view(frame, area),
+                    ScreenId::ThemeStudio => self.theme_studio.view(frame, area),
+                    ScreenId::SnapshotPlayer => {
+                        self.snapshot_player_mut(|screen| screen.view(frame, area))
+                    }
+                    ScreenId::PerformanceHud => self.performance_hud.view(frame, area),
+                    ScreenId::ExplainabilityCockpit => {
+                        self.explainability_cockpit.view(frame, area)
+                    }
+                    ScreenId::I18nDemo => self.i18n_demo.view(frame, area),
+                    ScreenId::VoiOverlay => self.voi_overlay.view(frame, area),
+                    ScreenId::InlineModeStory => self.inline_mode_story.view(frame, area),
+                    ScreenId::AccessibilityPanel => self.accessibility_panel.view(frame, area),
+                    ScreenId::WidgetBuilder => self.widget_builder.view(frame, area),
+                    ScreenId::CommandPaletteLab => self.command_palette_lab.view(frame, area),
+                    ScreenId::DeterminismLab => self.determinism_lab.view(frame, area),
+                    ScreenId::HyperlinkPlayground => self.hyperlink_playground.view(frame, area),
+                    ScreenId::KanbanBoard => self.kanban_board.view(frame, area),
+                    ScreenId::MarkdownLiveEditor => self.markdown_live_editor.view(frame, area),
+                    ScreenId::DragDrop => self.drag_drop.view(frame, area),
+                    ScreenId::QuakeEasterEgg => self.quake_easter_egg.view(frame, area),
                 }
-                ScreenId::ResponsiveDemo => self.responsive_demo.view(frame, area),
-                ScreenId::LogSearch => self.log_search.view(frame, area),
-                ScreenId::Notifications => self.notifications.view(frame, area),
-                ScreenId::ActionTimeline => self.action_timeline.view(frame, area),
-                ScreenId::IntrinsicSizing => self.intrinsic_sizing.view(frame, area),
-                ScreenId::LayoutInspector => self.layout_inspector.view(frame, area),
-                ScreenId::AdvancedTextEditor => self.advanced_text_editor.view(frame, area),
-                ScreenId::MousePlayground => self.mouse_playground.view(frame, area),
-                ScreenId::FormValidation => self.form_validation.view(frame, area),
-                ScreenId::VirtualizedSearch => self.virtualized_search.view(frame, area),
-                ScreenId::AsyncTasks => self.async_tasks.view(frame, area),
-                ScreenId::ThemeStudio => self.theme_studio.view(frame, area),
-                ScreenId::SnapshotPlayer => {
-                    self.snapshot_player_mut(|screen| screen.view(frame, area))
-                }
-                ScreenId::PerformanceHud => self.performance_hud.view(frame, area),
-                ScreenId::ExplainabilityCockpit => self.explainability_cockpit.view(frame, area),
-                ScreenId::I18nDemo => self.i18n_demo.view(frame, area),
-                ScreenId::VoiOverlay => self.voi_overlay.view(frame, area),
-                ScreenId::InlineModeStory => self.inline_mode_story.view(frame, area),
-                ScreenId::AccessibilityPanel => self.accessibility_panel.view(frame, area),
-                ScreenId::WidgetBuilder => self.widget_builder.view(frame, area),
-                ScreenId::CommandPaletteLab => self.command_palette_lab.view(frame, area),
-                ScreenId::DeterminismLab => self.determinism_lab.view(frame, area),
-                ScreenId::HyperlinkPlayground => self.hyperlink_playground.view(frame, area),
-                ScreenId::KanbanBoard => self.kanban_board.view(frame, area),
-                ScreenId::MarkdownLiveEditor => self.markdown_live_editor.view(frame, area),
-                ScreenId::DragDrop => self.drag_drop.view(frame, area),
-                ScreenId::QuakeEasterEgg => self.quake_easter_egg.view(frame, area),
-            }
-        }));
+            }))
+        });
 
         if let Err(payload) = result {
             let msg = if let Some(s) = payload.downcast_ref::<&str>() {

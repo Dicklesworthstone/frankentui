@@ -74,6 +74,7 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 
+use std::cell::Cell;
 use std::env;
 use std::io::{self, Write};
 use std::sync::OnceLock;
@@ -96,6 +97,9 @@ static IO_WRITE_DURATION_SUM_US: AtomicU64 = AtomicU64::new(0);
 static IO_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 static IO_FLUSH_DURATION_SUM_US: AtomicU64 = AtomicU64::new(0);
 static IO_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static PANIC_CLEANUP_SUPPRESS_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
 
 /// Returns (sum_us, count) for read I/O operations.
 pub fn terminal_io_read_stats() -> (u64, u64) {
@@ -119,6 +123,34 @@ pub fn terminal_io_flush_stats() -> (u64, u64) {
         IO_FLUSH_DURATION_SUM_US.load(Ordering::Relaxed),
         IO_FLUSH_COUNT.load(Ordering::Relaxed),
     )
+}
+
+/// Run a closure while suppressing best-effort terminal cleanup in the panic hook.
+///
+/// Use this around intentional `catch_unwind` boundaries. Panic hooks still run,
+/// but terminal cleanup is skipped for panics that are expected to be recovered.
+pub fn with_panic_cleanup_suppressed<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    struct SuppressGuard;
+    impl Drop for SuppressGuard {
+        fn drop(&mut self) {
+            PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
+                depth.set(depth.get().saturating_sub(1));
+            });
+        }
+    }
+
+    PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
+        depth.set(depth.get().saturating_add(1));
+    });
+    let _guard = SuppressGuard;
+    f()
+}
+
+fn panic_cleanup_suppressed() -> bool {
+    PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| depth.get() > 0)
 }
 
 /// Convert `web_time::Duration` to `std::time::Duration`, clamping to avoid
@@ -852,7 +884,9 @@ fn install_panic_hook() {
     HOOK.get_or_init(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            best_effort_cleanup();
+            if !panic_cleanup_suppressed() {
+                best_effort_cleanup();
+            }
             previous(info);
         }));
     });
@@ -1368,6 +1402,31 @@ mod tests {
         assert!(debug.contains("TerminalSession"), "{debug}");
         assert!(debug.contains("mouse_enabled"), "{debug}");
         assert!(debug.contains("alternate_screen_enabled"), "{debug}");
+    }
+
+    #[test]
+    fn panic_cleanup_suppression_scope_restores_state() {
+        assert!(
+            !panic_cleanup_suppressed(),
+            "suppression should start disabled"
+        );
+        with_panic_cleanup_suppressed(|| {
+            assert!(panic_cleanup_suppressed(), "suppression should be enabled");
+            with_panic_cleanup_suppressed(|| {
+                assert!(
+                    panic_cleanup_suppressed(),
+                    "nested suppression should remain enabled"
+                );
+            });
+            assert!(
+                panic_cleanup_suppressed(),
+                "outer suppression should still be enabled after nested scope"
+            );
+        });
+        assert!(
+            !panic_cleanup_suppressed(),
+            "suppression should be disabled after scope exits"
+        );
     }
 
     // -----------------------------------------------------------------------

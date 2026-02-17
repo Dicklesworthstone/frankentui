@@ -42,6 +42,16 @@ pub mod semantic_event;
 pub mod terminal_capabilities;
 #[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
 pub mod terminal_session;
+#[cfg(all(not(target_arch = "wasm32"), feature = "crossterm"))]
+pub use terminal_session::with_panic_cleanup_suppressed;
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "crossterm")))]
+#[inline]
+pub fn with_panic_cleanup_suppressed<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    f()
+}
 
 #[cfg(feature = "caps-probe")]
 pub mod caps_probe;
