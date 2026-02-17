@@ -18,6 +18,15 @@
 use ahash::AHashMap;
 
 const MAX_LINK_ID: u32 = 0x00FF_FFFF;
+const MAX_URL_BYTES: usize = 4096;
+
+#[inline]
+fn is_safe_osc8_url(url: &str) -> bool {
+    if url.len() > MAX_URL_BYTES {
+        return false;
+    }
+    !url.chars().any(char::is_control)
+}
 
 /// Registry for OSC 8 hyperlink URLs.
 #[derive(Debug, Clone, Default)]
@@ -44,6 +53,10 @@ impl LinkRegistry {
     ///
     /// If the URL is already registered, returns the existing ID.
     pub fn register(&mut self, url: &str) -> u32 {
+        if !is_safe_osc8_url(url) {
+            return 0;
+        }
+
         if let Some(&id) = self.lookup.get(url) {
             return id;
         }
@@ -548,6 +561,23 @@ mod tests {
         // Clone should have id1 in free list
         let id3 = cloned.register("https://c.com");
         assert_eq!(id3, id1); // Reuses freed slot
+    }
+
+    #[test]
+    fn register_rejects_control_chars() {
+        let mut registry = LinkRegistry::new();
+        let id = registry.register("https://example.com/\x1b]52;c;boom");
+        assert_eq!(id, 0);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn register_rejects_overlong_urls() {
+        let mut registry = LinkRegistry::new();
+        let overlong = format!("https://example.com/{}", "a".repeat(MAX_URL_BYTES));
+        let id = registry.register(&overlong);
+        assert_eq!(id, 0);
+        assert!(registry.is_empty());
     }
 
     mod property {

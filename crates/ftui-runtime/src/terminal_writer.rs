@@ -76,6 +76,7 @@ use ftui_render::diff_strategy::{DiffStrategy, DiffStrategyConfig, DiffStrategyS
 use ftui_render::grapheme_pool::GraphemePool;
 use ftui_render::link_registry::LinkRegistry;
 use ftui_render::presenter::Presenter;
+use ftui_render::sanitize::sanitize;
 use tracing::{debug_span, info, info_span, trace, warn};
 
 /// Size of the internal write buffer (64KB).
@@ -93,6 +94,9 @@ const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 
 /// Synchronized output end (DEC 2026).
 const SYNC_END: &[u8] = b"\x1b[?2026l";
+
+/// Maximum hyperlink URL length allowed in OSC 8 payloads.
+const MAX_SAFE_HYPERLINK_URL_BYTES: usize = 4096;
 
 /// Erase entire line (CSI 2 K).
 const ERASE_LINE: &[u8] = b"\x1b[2K";
@@ -196,6 +200,11 @@ fn sanitize_auto_bounds(min_height: u16, max_height: u16) -> (u16, u16) {
     let min = min_height.max(1);
     let max = max_height.max(min);
     (min, max)
+}
+
+#[inline]
+fn is_safe_hyperlink_url(url: &str) -> bool {
+    url.len() <= MAX_SAFE_HYPERLINK_URL_BYTES && !url.chars().any(char::is_control)
 }
 
 /// Screen mode determines whether we use alternate screen or inline mode.
@@ -1690,9 +1699,13 @@ impl<W: Write> TerminalWriter<W> {
                 self.set_cursor_visibility(false)?;
             }
 
-            // End sync output
-            if self.in_sync_block {
+            // End sync output (mux-aware policy).
+            if sync_output_enabled && self.in_sync_block {
                 self.writer().write_all(SYNC_END)?;
+                self.in_sync_block = false;
+            } else if !sync_output_enabled {
+                // Defensive stale-state cleanup: clear internal state without
+                // emitting DEC 2026 in mux/unsupported environments.
                 self.in_sync_block = false;
             }
 
@@ -1750,57 +1763,79 @@ impl<W: Write> TerminalWriter<W> {
             .map(|start| start.elapsed().as_micros() as u64)
             .unwrap_or(0);
 
-        // Begin sync if available
-        if sync_output_enabled {
+        // Begin sync if available. Track state so we can reliably close the
+        // block even on early-return error paths.
+        if sync_output_enabled && !self.in_sync_block {
             self.writer().write_all(SYNC_BEGIN)?;
+            self.in_sync_block = true;
         }
 
-        let emit_stats = {
-            let _span = debug_span!("ftui.render.emit").entered();
-            if decision.has_diff {
-                let diff = std::mem::take(&mut self.diff_scratch);
-                let result = self.emit_diff(buffer, &diff, None, 0);
-                self.diff_scratch = diff;
-                result?
+        let operation_result = (|| -> io::Result<FrameEmitStats> {
+            let emit_stats = {
+                let _span = debug_span!("ftui.render.emit").entered();
+                if decision.has_diff {
+                    let diff = std::mem::take(&mut self.diff_scratch);
+                    let result = self.emit_diff(buffer, &diff, None, 0);
+                    self.diff_scratch = diff;
+                    result?
+                } else {
+                    self.emit_full_redraw(buffer, None, 0)?
+                }
+            };
+
+            // Reset style at end
+            self.writer().write_all(b"\x1b[0m")?;
+
+            if cursor_visible {
+                // Apply requested cursor position
+                if let Some((cx, cy)) = cursor {
+                    write!(
+                        self.writer(),
+                        "\x1b[{};{}H",
+                        cy.saturating_add(1),
+                        cx.saturating_add(1)
+                    )?;
+                }
+                self.set_cursor_visibility(true)?;
             } else {
-                self.emit_full_redraw(buffer, None, 0)?
+                self.set_cursor_visibility(false)?;
             }
-        };
 
-        // Reset style at end
-        self.writer().write_all(b"\x1b[0m")?;
-
-        if cursor_visible {
-            // Apply requested cursor position
-            if let Some((cx, cy)) = cursor {
-                write!(
-                    self.writer(),
-                    "\x1b[{};{}H",
-                    cy.saturating_add(1),
-                    cx.saturating_add(1)
-                )?;
+            if self.timing_enabled {
+                self.last_present_timings = Some(PresentTimings { diff_us });
             }
-            self.set_cursor_visibility(true)?;
+
+            Ok(FrameEmitStats {
+                diff_strategy: decision.strategy,
+                diff_cells: emit_stats.diff_cells,
+                diff_runs: emit_stats.diff_runs,
+                ui_height: 0,
+            })
+        })();
+
+        // Always attempt to close sync and flush, regardless of operation_result.
+        let sync_end_result = if sync_output_enabled && self.in_sync_block {
+            let res = self.writer().write_all(SYNC_END);
+            if res.is_ok() {
+                self.in_sync_block = false;
+            }
+            Some(res)
         } else {
-            self.set_cursor_visibility(false)?;
+            if !sync_output_enabled {
+                // Defensive stale-state cleanup: do not emit DEC 2026 when
+                // policy disallows synchronized output.
+                self.in_sync_block = false;
+            }
+            None
+        };
+        let flush_result = self.writer().flush();
+
+        let frame_stats = operation_result?;
+        if let Some(res) = sync_end_result {
+            res?;
         }
-
-        if sync_output_enabled {
-            self.writer().write_all(SYNC_END)?;
-        }
-
-        self.writer().flush()?;
-
-        if self.timing_enabled {
-            self.last_present_timings = Some(PresentTimings { diff_us });
-        }
-
-        Ok(FrameEmitStats {
-            diff_strategy: decision.strategy,
-            diff_cells: emit_stats.diff_cells,
-            diff_runs: emit_stats.diff_runs,
-            ui_height: 0,
-        })
+        flush_result?;
+        Ok(frame_stats)
     }
 
     /// Emit a diff directly to the writer.
@@ -1832,6 +1867,7 @@ impl<W: Write> TerminalWriter<W> {
             .as_mut()
             .expect("presenter consumed")
             .counting_writer_mut();
+        let hyperlinks_enabled = self.capabilities.use_hyperlinks();
 
         for run in &self.runs_buf {
             if let Some(limit) = max_height
@@ -1905,7 +1941,12 @@ impl<W: Write> TerminalWriter<W> {
                     Some(raw_link_id)
                 };
 
-                if current_link != new_link {
+                if !hyperlinks_enabled {
+                    if current_link.is_some() {
+                        writer.write_all(b"\x1b]8;;\x1b\\")?;
+                        current_link = None;
+                    }
+                } else if current_link != new_link {
                     // Close current link
                     if current_link.is_some() {
                         writer.write_all(b"\x1b]8;;\x1b\\")?;
@@ -1913,6 +1954,7 @@ impl<W: Write> TerminalWriter<W> {
                     // Open new link if present and resolvable
                     let actually_opened = if let Some(link_id) = new_link
                         && let Some(url) = self.links.get(link_id)
+                        && is_safe_hyperlink_url(url)
                     {
                         write!(writer, "\x1b]8;;{}\x1b\\", url)?;
                         true
@@ -1931,13 +1973,22 @@ impl<W: Write> TerminalWriter<W> {
                 if is_zero_width_content {
                     writer.write_all(b"\xEF\xBF\xBD")?;
                 } else if let Some(ch) = effective_cell.content.as_char() {
+                    let safe_ch = if ch.is_control() { ' ' } else { ch };
                     let mut buf = [0u8; 4];
-                    let encoded = ch.encode_utf8(&mut buf);
+                    let encoded = safe_ch.encode_utf8(&mut buf);
                     writer.write_all(encoded.as_bytes())?;
                 } else if let Some(gid) = effective_cell.content.grapheme_id() {
                     // Use pool directly with writer (no clone needed)
                     if let Some(text) = self.pool.get(gid) {
-                        writer.write_all(text.as_bytes())?;
+                        let safe = sanitize(text);
+                        if !safe.is_empty() {
+                            writer.write_all(safe.as_bytes())?;
+                        } else {
+                            // Fallback: emit placeholder cells to preserve width.
+                            for _ in 0..raw_width.max(1) {
+                                writer.write_all(b"?")?;
+                            }
+                        }
                     } else {
                         // Fallback: emit placeholder cells to preserve width.
                         for _ in 0..raw_width.max(1) {
@@ -2002,6 +2053,7 @@ impl<W: Write> TerminalWriter<W> {
             .as_mut()
             .expect("presenter consumed")
             .counting_writer_mut();
+        let hyperlinks_enabled = self.capabilities.use_hyperlinks();
 
         for y in 0..height {
             write!(
@@ -2068,7 +2120,12 @@ impl<W: Write> TerminalWriter<W> {
                     Some(raw_link_id)
                 };
 
-                if current_link != new_link {
+                if !hyperlinks_enabled {
+                    if current_link.is_some() {
+                        writer.write_all(b"\x1b]8;;\x1b\\")?;
+                        current_link = None;
+                    }
+                } else if current_link != new_link {
                     // Close current link
                     if current_link.is_some() {
                         writer.write_all(b"\x1b]8;;\x1b\\")?;
@@ -2076,6 +2133,7 @@ impl<W: Write> TerminalWriter<W> {
                     // Open new link if present and resolvable
                     let actually_opened = if let Some(link_id) = new_link
                         && let Some(url) = self.links.get(link_id)
+                        && is_safe_hyperlink_url(url)
                     {
                         write!(writer, "\x1b]8;;{}\x1b\\", url)?;
                         true
@@ -2094,13 +2152,22 @@ impl<W: Write> TerminalWriter<W> {
                 if is_zero_width_content {
                     writer.write_all(b"\xEF\xBF\xBD")?;
                 } else if let Some(ch) = effective_cell.content.as_char() {
+                    let safe_ch = if ch.is_control() { ' ' } else { ch };
                     let mut buf = [0u8; 4];
-                    let encoded = ch.encode_utf8(&mut buf);
+                    let encoded = safe_ch.encode_utf8(&mut buf);
                     writer.write_all(encoded.as_bytes())?;
                 } else if let Some(gid) = effective_cell.content.grapheme_id() {
                     // Use pool directly with writer (no clone needed)
                     if let Some(text) = self.pool.get(gid) {
-                        writer.write_all(text.as_bytes())?;
+                        let safe = sanitize(text);
+                        if !safe.is_empty() {
+                            writer.write_all(safe.as_bytes())?;
+                        } else {
+                            // Fallback: emit placeholder cells to preserve width.
+                            for _ in 0..raw_width.max(1) {
+                                writer.write_all(b"?")?;
+                            }
+                        }
                     } else {
                         // Fallback: emit placeholder cells to preserve width.
                         for _ in 0..raw_width.max(1) {
@@ -2193,6 +2260,11 @@ impl<W: Write> TerminalWriter<W> {
     ///
     /// In AltScreen mode, logs are typically not shown (returns Ok silently).
     pub fn write_log(&mut self, text: &str) -> io::Result<()> {
+        // Defense in depth: callers usually sanitize before logging, but the
+        // terminal writer is the final emission boundary and must never pass
+        // through escape/control injection payloads.
+        let sanitized = sanitize(text);
+        let text = sanitized.as_ref();
         match self.screen_mode {
             ScreenMode::Inline { ui_height } => {
                 if !self.position_cursor_for_log(ui_height)? {
@@ -2372,14 +2444,15 @@ impl<W: Write> TerminalWriter<W> {
             return;
         };
         let writer = presenter.counting_writer_mut();
-        let sync_output_enabled = self.capabilities.use_sync_output();
 
         // Emit restorations unconditionally: write errors can occur after bytes
         // were partially written, so internal flags may be stale.
-        if sync_output_enabled {
-            let _ = writer.write_all(SYNC_END);
+        if self.in_sync_block {
+            if self.capabilities.use_sync_output() {
+                let _ = writer.write_all(SYNC_END);
+            }
+            self.in_sync_block = false;
         }
-        self.in_sync_block = false;
 
         let _ = writer.write_all(CURSOR_RESTORE);
         self.cursor_saved = false;
@@ -2402,7 +2475,9 @@ impl<W: Write> TerminalWriter<W> {
 
         // End any pending sync block
         if self.in_sync_block {
-            let _ = writer.write_all(SYNC_END);
+            if self.capabilities.use_sync_output() {
+                let _ = writer.write_all(SYNC_END);
+            }
             self.in_sync_block = false;
         }
 
@@ -2450,7 +2525,7 @@ impl<W: Write> Drop for TerminalWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ftui_render::cell::{Cell, PackedRgba};
+    use ftui_render::cell::{Cell, CellAttrs, CellContent, PackedRgba, StyleFlags};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2626,6 +2701,100 @@ mod tests {
     }
 
     #[test]
+    fn present_ui_altscreen_closes_stale_sync_block_when_policy_allows_sync() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                full_caps(),
+            );
+            writer.set_size(8, 2);
+            writer.in_sync_block = true;
+
+            let mut buffer = Buffer::new(8, 2);
+            buffer.set_raw(0, 0, Cell::from_char('X'));
+            writer.present_ui(&buffer, None, true).unwrap();
+
+            assert!(
+                !writer.in_sync_block,
+                "present_altscreen must close stale sync blocks"
+            );
+        }
+
+        assert!(
+            output.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "sync end should be emitted when stale sync state is detected"
+        );
+    }
+
+    #[test]
+    fn present_ui_altscreen_stale_sync_block_skips_sync_end_in_mux() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                mux_caps(),
+            );
+            writer.set_size(8, 2);
+            writer.in_sync_block = true;
+
+            let mut buffer = Buffer::new(8, 2);
+            buffer.set_raw(0, 0, Cell::from_char('X'));
+            writer.present_ui(&buffer, None, true).unwrap();
+
+            assert!(
+                !writer.in_sync_block,
+                "present_altscreen must clear stale sync state"
+            );
+        }
+
+        assert!(
+            !output.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "sync end must be suppressed when policy disables synchronized output"
+        );
+    }
+
+    #[test]
+    fn present_ui_altscreen_sanitizes_grapheme_escape_payloads() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::AltScreen,
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(12, 1);
+
+            let gid = writer
+                .pool_mut()
+                .intern("ok\x1b]52;c;SGVsbG8=\x1b\\tail\u{009d}", 6);
+            let mut buffer = Buffer::new(12, 1);
+            buffer.set_raw(0, 0, Cell::new(CellContent::from_grapheme(gid)));
+
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(
+            output_str.contains("oktail"),
+            "sanitized grapheme content should preserve visible payload"
+        );
+        assert!(
+            !output_str.contains("52;c;SGVsbG8"),
+            "OSC payload must not be forwarded by alt-screen emitter"
+        );
+        assert!(
+            !output_str.contains('\u{009d}'),
+            "C1 controls must be stripped from alt-screen grapheme output"
+        );
+    }
+
+    #[test]
     fn present_ui_inline_skips_sync_output_in_mux() {
         let mut output = Vec::new();
         {
@@ -2674,6 +2843,64 @@ mod tests {
         assert!(
             !output.windows(SYNC_END.len()).any(|w| w == SYNC_END),
             "sync end must be suppressed in tmux/screen/zellij environments"
+        );
+    }
+
+    #[test]
+    fn present_ui_inline_skips_hyperlinks_in_mux() {
+        let mut output = Vec::new();
+        {
+            let mut caps = mux_caps();
+            caps.osc8_hyperlinks = true;
+
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 2 },
+                UiAnchor::Bottom,
+                caps,
+            );
+            writer.set_size(8, 4);
+
+            let link_id = writer.links_mut().register("https://example.com");
+            let mut buffer = Buffer::new(8, 2);
+            buffer.set_raw(
+                0,
+                0,
+                Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)),
+            );
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !output.windows(b"\x1b]8;".len()).any(|w| w == b"\x1b]8;"),
+            "OSC 8 sequences must be suppressed by mux hyperlink policy"
+        );
+    }
+
+    #[test]
+    fn present_ui_altscreen_skips_hyperlinks_in_mux() {
+        let mut output = Vec::new();
+        {
+            let mut caps = mux_caps();
+            caps.osc8_hyperlinks = true;
+
+            let mut writer =
+                TerminalWriter::new(&mut output, ScreenMode::AltScreen, UiAnchor::Bottom, caps);
+            writer.set_size(8, 4);
+
+            let link_id = writer.links_mut().register("https://example.com");
+            let mut buffer = Buffer::new(8, 2);
+            buffer.set_raw(
+                0,
+                0,
+                Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)),
+            );
+            writer.present_ui(&buffer, None, true).unwrap();
+        }
+
+        assert!(
+            !output.windows(b"\x1b]8;".len()).any(|w| w == b"\x1b]8;"),
+            "OSC 8 sequences must be suppressed by mux hyperlink policy"
         );
     }
 
@@ -2853,6 +3080,26 @@ mod tests {
 
         // Should contain sync end
         assert!(output.windows(SYNC_END.len()).any(|w| w == SYNC_END));
+    }
+
+    #[test]
+    fn drop_cleanup_skips_sync_end_in_mux_even_with_stale_state() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                mux_caps(),
+            );
+            writer.in_sync_block = true;
+            // Dropped here
+        }
+
+        assert!(
+            !output.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "drop cleanup must not emit sync_end in mux environments"
+        );
     }
 
     #[test]
@@ -3579,6 +3826,34 @@ mod tests {
 
         let output_str = String::from_utf8_lossy(&output);
         assert!(output_str.contains("hello world"));
+    }
+
+    #[test]
+    fn write_log_sanitizes_escape_injection_payloads() {
+        let mut output = Vec::new();
+        {
+            let mut writer = TerminalWriter::new(
+                &mut output,
+                ScreenMode::Inline { ui_height: 5 },
+                UiAnchor::Bottom,
+                basic_caps(),
+            );
+            writer.set_size(80, 24);
+            writer
+                .write_log("safe\x1b]52;c;SGVsbG8=\x1b\\tail\u{009d}x\n")
+                .unwrap();
+        }
+
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(output_str.contains("safetailx"));
+        assert!(
+            !output_str.contains("52;c;SGVsbG8"),
+            "OSC payload must not be forwarded to terminal output"
+        );
+        assert!(
+            !output_str.contains('\u{009d}'),
+            "C1 controls must be stripped from log output"
+        );
     }
 
     #[test]

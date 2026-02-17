@@ -28,6 +28,13 @@ use std::io::{self, Write};
 
 use crate::cell::{PackedRgba, StyleFlags};
 
+const MAX_OSC8_FIELD_BYTES: usize = 4096;
+
+#[inline]
+fn osc8_field_is_safe(value: &str) -> bool {
+    value.len() <= MAX_OSC8_FIELD_BYTES && !value.chars().any(char::is_control)
+}
+
 // =============================================================================
 // SGR (Select Graphic Rendition)
 // =============================================================================
@@ -553,6 +560,9 @@ pub fn sync_end<W: Write>(w: &mut W) -> io::Result<()> {
 /// Format: `OSC 8 ; params ; uri ST`
 /// Uses ST (String Terminator) = `ESC \`
 pub fn hyperlink_start<W: Write>(w: &mut W, url: &str) -> io::Result<()> {
+    if !osc8_field_is_safe(url) {
+        return Ok(());
+    }
     write!(w, "\x1b]8;;{url}\x1b\\")
 }
 
@@ -568,6 +578,9 @@ pub fn hyperlink_end<W: Write>(w: &mut W) -> io::Result<()> {
 /// The ID allows grouping multiple link spans.
 /// Format: `OSC 8 ; id=ID ; uri ST`
 pub fn hyperlink_start_with_id<W: Write>(w: &mut W, id: &str, url: &str) -> io::Result<()> {
+    if !osc8_field_is_safe(url) || !osc8_field_is_safe(id) || id.contains(';') {
+        return Ok(());
+    }
     write!(w, "\x1b]8;id={id};{url}\x1b\\")
 }
 
@@ -878,6 +891,38 @@ mod tests {
         assert_eq!(
             to_bytes(|w| hyperlink_start_with_id(w, "link1", "https://example.com")),
             b"\x1b]8;id=link1;https://example.com\x1b\\"
+        );
+    }
+
+    #[test]
+    fn hyperlink_rejects_control_chars() {
+        assert_eq!(
+            to_bytes(|w| hyperlink_start(w, "https://exa\x1bmple.com")),
+            b""
+        );
+        assert_eq!(
+            to_bytes(|w| hyperlink_start_with_id(w, "id", "https://exa\u{009d}mple.com")),
+            b""
+        );
+    }
+
+    #[test]
+    fn hyperlink_with_id_rejects_parameter_breakout() {
+        assert_eq!(
+            to_bytes(|w| hyperlink_start_with_id(w, "id;malicious=1", "https://example.com")),
+            b""
+        );
+    }
+
+    #[test]
+    fn hyperlink_rejects_overlong_fields() {
+        let long_url = "x".repeat(MAX_OSC8_FIELD_BYTES + 1);
+        assert_eq!(to_bytes(|w| hyperlink_start(w, &long_url)), b"");
+
+        let long_id = "x".repeat(MAX_OSC8_FIELD_BYTES + 1);
+        assert_eq!(
+            to_bytes(|w| hyperlink_start_with_id(w, &long_id, "https://example.com")),
+            b""
         );
     }
 

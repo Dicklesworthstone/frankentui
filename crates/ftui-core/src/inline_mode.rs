@@ -94,10 +94,10 @@ impl InlineStrategy {
         if caps.in_any_mux() {
             // Muxes may not handle scroll regions correctly
             InlineStrategy::OverlayRedraw
-        } else if caps.scroll_region && caps.sync_output {
+        } else if caps.use_scroll_region() && caps.use_sync_output() {
             // Modern terminal with full support
             InlineStrategy::ScrollRegion
-        } else if caps.scroll_region {
+        } else if caps.use_scroll_region() {
             // Scroll region available but no sync output - use hybrid
             InlineStrategy::Hybrid
         } else {
@@ -266,7 +266,10 @@ impl<W: Write> InlineRenderer<W> {
         match self.config.strategy {
             InlineStrategy::ScrollRegion => {
                 // Cursor should be in scroll region; just write
-                self.writer.write_all(text.as_bytes())?;
+                let safe_text = Self::sanitize_scroll_region_log_text(text);
+                if !safe_text.is_empty() {
+                    self.writer.write_all(safe_text.as_bytes())?;
+                }
             }
             InlineStrategy::OverlayRedraw | InlineStrategy::Hybrid => {
                 // Save cursor, move to log area, write, restore
@@ -344,13 +347,18 @@ impl<W: Write> InlineRenderer<W> {
             self.cursor_saved = false;
         }
 
-        let sync_end_result = if self.in_sync_block {
+        let sync_end_result = if self.config.use_sync_output && self.in_sync_block {
             let res = self.writer.write_all(SYNC_END);
             if res.is_ok() {
                 self.in_sync_block = false;
             }
             Some(res)
         } else {
+            if !self.config.use_sync_output {
+                // Defensive stale-state cleanup: clear internal state without
+                // emitting DEC 2026 when policy disables synchronized output.
+                self.in_sync_block = false;
+            }
             None
         };
 
@@ -362,6 +370,150 @@ impl<W: Write> InlineRenderer<W> {
             res?;
         }
         flush_result
+    }
+
+    fn sanitize_scroll_region_log_text(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+
+        while i < bytes.len() {
+            match bytes[i] {
+                // ESC - strip full sequence payload (CSI/OSC/DCS/APC/single-char escapes).
+                0x1B => {
+                    i = Self::skip_escape_sequence(bytes, i);
+                }
+                // Preserve LF and normalize CR to LF.
+                0x0A => {
+                    out.push('\n');
+                    i += 1;
+                }
+                0x0D => {
+                    out.push('\n');
+                    i += 1;
+                }
+                // Strip remaining C0 controls and DEL.
+                0x00..=0x1F | 0x7F => {
+                    i += 1;
+                }
+                // Printable ASCII.
+                0x20..=0x7E => {
+                    out.push(bytes[i] as char);
+                    i += 1;
+                }
+                // UTF-8: decode and drop C1 controls (U+0080..U+009F).
+                _ => {
+                    if let Some((ch, len)) = Self::decode_utf8_char(&bytes[i..]) {
+                        if !('\u{0080}'..='\u{009F}').contains(&ch) {
+                            out.push(ch);
+                        }
+                        i += len;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {
+        let mut i = start + 1; // Skip ESC
+        if i >= bytes.len() {
+            return i;
+        }
+
+        match bytes[i] {
+            // CSI sequence: ESC [ params... final_byte
+            b'[' => {
+                i += 1;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    if (0x40..=0x7E).contains(&b) {
+                        return i + 1;
+                    }
+                    if !(0x20..=0x3F).contains(&b) {
+                        return i;
+                    }
+                    i += 1;
+                }
+            }
+            // OSC sequence: ESC ] ... (BEL or ST)
+            b']' => {
+                i += 1;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    if b == 0x07 {
+                        return i + 1;
+                    }
+                    if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                        return i + 2;
+                    }
+                    if b == 0x1B || b < 0x20 {
+                        return i;
+                    }
+                    i += 1;
+                }
+            }
+            // DCS/PM/APC: ESC P/^/_ ... ST
+            b'P' | b'^' | b'_' => {
+                i += 1;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                        return i + 2;
+                    }
+                    if b == 0x1B || b < 0x20 {
+                        return i;
+                    }
+                    i += 1;
+                }
+            }
+            // Single-char escape sequences.
+            0x20..=0x7E => return i + 1,
+            _ => {}
+        }
+
+        i
+    }
+
+    fn decode_utf8_char(bytes: &[u8]) -> Option<(char, usize)> {
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let first = bytes[0];
+        let (expected_len, mut codepoint) = match first {
+            0x00..=0x7F => return Some((first as char, 1)),
+            0xC0..=0xDF => (2, (first & 0x1F) as u32),
+            0xE0..=0xEF => (3, (first & 0x0F) as u32),
+            0xF0..=0xF7 => (4, (first & 0x07) as u32),
+            _ => return None,
+        };
+
+        if bytes.len() < expected_len {
+            return None;
+        }
+
+        for &b in bytes.iter().take(expected_len).skip(1) {
+            if (b & 0xC0) != 0x80 {
+                return None;
+            }
+            codepoint = (codepoint << 6) | (b & 0x3F) as u32;
+        }
+
+        let min_codepoint = match expected_len {
+            2 => 0x80,
+            3 => 0x800,
+            4 => 0x1_0000,
+            _ => return None,
+        };
+        if codepoint < min_codepoint {
+            return None;
+        }
+
+        char::from_u32(codepoint).map(|c| (c, expected_len))
     }
 
     fn sanitize_overlay_log_line(text: &str, max_cols: usize) -> String {
@@ -409,7 +561,9 @@ impl<W: Write> InlineRenderer<W> {
     fn cleanup_internal(&mut self) -> io::Result<()> {
         // End any pending sync block
         if self.in_sync_block {
-            let _ = self.writer.write_all(SYNC_END);
+            if self.config.use_sync_output {
+                let _ = self.writer.write_all(SYNC_END);
+            }
             self.in_sync_block = false;
         }
 
@@ -731,6 +885,29 @@ mod tests {
     }
 
     #[test]
+    fn write_log_in_scroll_region_mode_sanitizes_escape_payloads() {
+        let writer = test_writer();
+        let config = InlineConfig::new(6, 24, 80).with_strategy(InlineStrategy::ScrollRegion);
+        let mut renderer = InlineRenderer::new(writer, config);
+
+        renderer.enter().unwrap();
+        renderer
+            .write_log("safe\x1b]52;c;SGVsbG8=\x1b\\tail\u{009d}x\n")
+            .unwrap();
+
+        let output = String::from_utf8_lossy(renderer.writer.get_ref());
+        assert!(output.contains("safetailx\n"));
+        assert!(
+            !output.contains("52;c;SGVsbG8"),
+            "OSC payload should not survive scroll-region log sanitization"
+        );
+        assert!(
+            !output.contains('\u{009d}'),
+            "C1 controls must be stripped in scroll-region logging"
+        );
+    }
+
+    #[test]
     fn present_ui_clears_ui_lines() {
         let writer = test_writer();
         let config = InlineConfig::new(2, 10, 80).with_strategy(InlineStrategy::OverlayRedraw);
@@ -764,6 +941,24 @@ mod tests {
         assert!(writer_contains_sequence(&renderer.writer, CURSOR_RESTORE));
         assert!(writer_contains_sequence(&renderer.writer, SYNC_END));
         assert!(!renderer.cursor_saved);
+        assert!(!renderer.in_sync_block);
+    }
+
+    #[test]
+    fn cleanup_skips_sync_end_when_sync_output_disabled() {
+        let writer = test_writer();
+        let config = InlineConfig::new(2, 10, 80)
+            .with_strategy(InlineStrategy::OverlayRedraw)
+            .with_sync_output(false);
+        let mut renderer = InlineRenderer::new(writer, config);
+        renderer.in_sync_block = true;
+
+        renderer.cleanup_internal().unwrap();
+
+        assert!(
+            !writer_contains_sequence(&renderer.writer, SYNC_END),
+            "sync_end must not be emitted when synchronized output is disabled"
+        );
         assert!(!renderer.in_sync_block);
     }
 

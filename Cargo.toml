@@ -22,6 +22,7 @@ members = [
   "crates/ftui-tty",
   "crates/ftui-web",
   "crates/ftui-showcase-wasm",
+  "crates/doctor_franktentui",
 ]
 
 [profile.release]

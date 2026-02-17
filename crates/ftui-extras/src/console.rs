@@ -71,6 +71,7 @@
 use std::borrow::Cow;
 use std::io::{self, Write};
 
+use ftui_render::sanitize::sanitize;
 use ftui_style::Style;
 use ftui_text::{Segment, display_width, grapheme_width};
 use unicode_segmentation::UnicodeSegmentation;
@@ -136,7 +137,8 @@ impl ConsoleSink {
             Self::Writer(w) => {
                 // Write plain text (styles are captured but not rendered)
                 for seg in &line.segments {
-                    w.write_all(seg.text.as_bytes())?;
+                    let safe = sanitize(&seg.text);
+                    w.write_all(safe.as_bytes())?;
                 }
                 w.write_all(b"\n")?;
                 Ok(())
@@ -943,6 +945,49 @@ mod tests {
         // into_captured returns empty string for writer sinks
         let output = console.into_captured();
         assert_eq!(output, "");
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| io::Error::other("poisoned test writer"))?
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn console_sink_writer_sanitizes_escape_injection_payloads() {
+        let shared = SharedWriter::default();
+        let probe = shared.clone();
+        let sink = ConsoleSink::writer(shared);
+        let mut console = Console::new(80, sink);
+
+        console.println_text("safe\x1b]52;c;SGVsbG8=\x1b\\tail\u{009d}x");
+        console.flush().unwrap();
+
+        let bytes = probe.0.lock().unwrap().clone();
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(
+            output.contains("safetailx\n"),
+            "visible payload should be preserved"
+        );
+        assert!(
+            !output.contains("52;c;SGVsbG8"),
+            "OSC payload must not be forwarded by writer sink"
+        );
+        assert!(
+            !output.contains('\u{009d}'),
+            "C1 controls must be stripped from writer sink output"
+        );
     }
 
     #[test]

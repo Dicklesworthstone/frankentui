@@ -41,11 +41,19 @@ use crate::counting_writer::{CountingWriter, PresentStats, StatsCollector};
 use crate::diff::{BufferDiff, ChangeRun};
 use crate::grapheme_pool::GraphemePool;
 use crate::link_registry::LinkRegistry;
+use crate::sanitize::sanitize;
 
 pub use ftui_core::terminal_capabilities::TerminalCapabilities;
 
 /// Size of the internal write buffer (64KB).
 const BUFFER_CAPACITY: usize = 64 * 1024;
+/// Maximum hyperlink URL length allowed in OSC 8 payloads.
+const MAX_SAFE_HYPERLINK_URL_BYTES: usize = 4096;
+
+#[inline]
+fn is_safe_hyperlink_url(url: &str) -> bool {
+    url.len() <= MAX_SAFE_HYPERLINK_URL_BYTES && !url.chars().any(char::is_control)
+}
 
 // =============================================================================
 // DP Cost Model for ANSI Emission
@@ -410,7 +418,7 @@ impl<W: Write> Presenter<W> {
         pool: Option<&GraphemePool>,
         links: Option<&LinkRegistry>,
     ) -> io::Result<PresentStats> {
-        let bracket_supported = self.capabilities.sync_output;
+        let bracket_supported = self.capabilities.use_sync_output();
 
         #[cfg(feature = "tracing")]
         let _span = tracing::info_span!(
@@ -454,27 +462,38 @@ impl<W: Write> Presenter<W> {
             ansi::cursor_hide(&mut self.writer)?;
         }
 
-        // Emit diff using run grouping for efficiency
-        self.emit_diff_runs(buffer, pool, links)?;
+        // Emit diff using run grouping for efficiency.
+        let emit_result = self.emit_diff_runs(buffer, pool, links);
 
-        // Reset style at end (clean state for next frame)
-        ansi::sgr_reset(&mut self.writer)?;
+        // Always attempt to restore terminal state, even if diff emission failed.
+        let reset_result = ansi::sgr_reset(&mut self.writer);
         self.current_style = None;
 
-        // Close any open hyperlink
-        if self.current_link.is_some() {
-            ansi::hyperlink_end(&mut self.writer)?;
-            self.current_link = None;
-        }
-
-        // End synchronized output / restore cursor visibility
-        if bracket_supported {
-            ansi::sync_end(&mut self.writer)?;
+        let hyperlink_close_result = if self.current_link.is_some() {
+            let res = ansi::hyperlink_end(&mut self.writer);
+            if res.is_ok() {
+                self.current_link = None;
+            }
+            Some(res)
         } else {
-            ansi::cursor_show(&mut self.writer)?;
-        }
+            None
+        };
 
-        self.writer.flush()?;
+        let bracket_end_result = if bracket_supported {
+            ansi::sync_end(&mut self.writer)
+        } else {
+            ansi::cursor_show(&mut self.writer)
+        };
+
+        let flush_result = self.writer.flush();
+
+        emit_result?;
+        reset_result?;
+        if let Some(res) = hyperlink_close_result {
+            res?;
+        }
+        bracket_end_result?;
+        flush_result?;
 
         let stats = collector.finish(self.writer.bytes_written());
 
@@ -818,6 +837,16 @@ impl<W: Write> Presenter<W> {
 
     /// Emit hyperlink changes if the cell link differs from current.
     fn emit_link_changes(&mut self, cell: &Cell, links: Option<&LinkRegistry>) -> io::Result<()> {
+        // Respect capability policy so callers running in mux contexts don't
+        // emit OSC 8 sequences even if the raw capability flag is set.
+        if !self.capabilities.use_hyperlinks() {
+            if self.current_link.is_some() {
+                ansi::hyperlink_end(&mut self.writer)?;
+            }
+            self.current_link = None;
+            return Ok(());
+        }
+
         let raw_link_id = cell.attrs.link_id();
         let new_link = if raw_link_id == CellAttrs::LINK_ID_NONE {
             None
@@ -838,6 +867,7 @@ impl<W: Write> Presenter<W> {
         // Open new link if present and resolvable
         let actually_opened = if let (Some(link_id), Some(registry)) = (new_link, links)
             && let Some(url) = registry.get(link_id)
+            && is_safe_hyperlink_url(url)
         {
             ansi::hyperlink_start(&mut self.writer, url)?;
             true
@@ -857,7 +887,10 @@ impl<W: Write> Presenter<W> {
             if let Some(pool) = pool
                 && let Some(text) = pool.get(grapheme_id)
             {
-                return self.writer.write_all(text.as_bytes());
+                let safe = sanitize(text);
+                if !safe.is_empty() {
+                    return self.writer.write_all(safe.as_bytes());
+                }
             }
             // Fallback: emit replacement characters matching expected width
             // to maintain cursor synchronization.
@@ -1006,7 +1039,7 @@ impl<W: Write> Presenter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cell::CellAttrs;
+    use crate::cell::{CellAttrs, CellContent};
     use crate::link_registry::LinkRegistry;
 
     fn test_presenter() -> Presenter<Vec<u8>> {
@@ -1017,6 +1050,12 @@ mod tests {
     fn test_presenter_with_sync() -> Presenter<Vec<u8>> {
         let mut caps = TerminalCapabilities::basic();
         caps.sync_output = true;
+        Presenter::new(Vec::new(), caps)
+    }
+
+    fn test_presenter_with_hyperlinks() -> Presenter<Vec<u8>> {
+        let mut caps = TerminalCapabilities::basic();
+        caps.osc8_hyperlinks = true;
         Presenter::new(Vec::new(), caps)
     }
 
@@ -1150,8 +1189,38 @@ mod tests {
     }
 
     #[test]
+    fn sync_output_obeys_mux_policy() {
+        let caps = TerminalCapabilities::builder()
+            .sync_output(true)
+            .in_tmux(true)
+            .build();
+        let mut presenter = Presenter::new(Vec::new(), caps);
+
+        let mut buffer = Buffer::new(2, 1);
+        buffer.set_raw(0, 0, Cell::from_char('X'));
+        let old = Buffer::new(2, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+
+        presenter.present(&buffer, &diff).unwrap();
+        let output = get_output(presenter);
+
+        assert!(
+            !output
+                .windows(ansi::SYNC_BEGIN.len())
+                .any(|w| w == ansi::SYNC_BEGIN),
+            "tmux policy should suppress sync begin"
+        );
+        assert!(
+            !output
+                .windows(ansi::SYNC_END.len())
+                .any(|w| w == ansi::SYNC_END),
+            "tmux policy should suppress sync end"
+        );
+    }
+
+    #[test]
     fn hyperlink_sequences_emitted_and_closed() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(3, 1);
 
         let mut registry = LinkRegistry::new();
@@ -1476,7 +1545,7 @@ mod tests {
 
     #[test]
     fn hyperlink_emitted_with_registry() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(10, 1);
         let mut links = LinkRegistry::new();
 
@@ -1509,7 +1578,7 @@ mod tests {
 
     #[test]
     fn hyperlink_not_emitted_without_registry() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(10, 1);
 
         // Set a link ID without providing a registry
@@ -1534,7 +1603,7 @@ mod tests {
 
     #[test]
     fn hyperlink_not_emitted_for_unknown_id() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(10, 1);
         let links = LinkRegistry::new();
 
@@ -1560,7 +1629,7 @@ mod tests {
 
     #[test]
     fn hyperlink_closed_at_frame_end() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(10, 1);
         let mut links = LinkRegistry::new();
 
@@ -1592,7 +1661,7 @@ mod tests {
 
     #[test]
     fn hyperlink_transitions_between_links() {
-        let mut presenter = test_presenter();
+        let mut presenter = test_presenter_with_hyperlinks();
         let mut buffer = Buffer::new(10, 1);
         let mut links = LinkRegistry::new();
 
@@ -1631,6 +1700,99 @@ mod tests {
             "Expected at least 2 link close sequences (transition + frame end), got {}",
             close_count
         );
+    }
+
+    #[test]
+    fn hyperlink_obeys_mux_policy_even_when_capability_flag_set() {
+        let caps = TerminalCapabilities::builder()
+            .osc8_hyperlinks(true)
+            .in_tmux(true)
+            .build();
+        let mut presenter = Presenter::new(Vec::new(), caps);
+        let mut buffer = Buffer::new(3, 1);
+        let mut links = LinkRegistry::new();
+        let link_id = links.register("https://example.com");
+        buffer.set_raw(
+            0,
+            0,
+            Cell::from_char('L').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)),
+        );
+
+        let old = Buffer::new(3, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+        presenter
+            .present_with_pool(&buffer, &diff, None, Some(&links))
+            .unwrap();
+
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(
+            !output_str.contains("\x1b]8;"),
+            "tmux policy should suppress OSC 8 sequences"
+        );
+        assert!(output_str.contains('L'));
+    }
+
+    #[test]
+    fn hyperlink_unsafe_url_not_emitted() {
+        let mut presenter = test_presenter_with_hyperlinks();
+        let mut buffer = Buffer::new(3, 1);
+        let mut links = LinkRegistry::new();
+        let link_id = links.register("https://example.com/\x1b[?2026h");
+        buffer.set_raw(
+            0,
+            0,
+            Cell::from_char('X').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)),
+        );
+
+        let old = Buffer::new(3, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+        presenter
+            .present_with_pool(&buffer, &diff, None, Some(&links))
+            .unwrap();
+
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(
+            !output_str.contains("\x1b]8;;https://example.com/"),
+            "unsafe hyperlink URL should be suppressed"
+        );
+        assert!(
+            !output_str.contains("\x1b[?2026h"),
+            "control payload must never be emitted via OSC 8"
+        );
+        assert!(output_str.contains('X'));
+    }
+
+    #[test]
+    fn hyperlink_overlong_url_not_emitted() {
+        let mut presenter = test_presenter_with_hyperlinks();
+        let mut buffer = Buffer::new(3, 1);
+        let mut links = LinkRegistry::new();
+        let long_url = format!(
+            "https://example.com/{}",
+            "a".repeat(MAX_SAFE_HYPERLINK_URL_BYTES + 1)
+        );
+        let link_id = links.register(&long_url);
+        buffer.set_raw(
+            0,
+            0,
+            Cell::from_char('Y').with_attrs(CellAttrs::new(StyleFlags::empty(), link_id)),
+        );
+
+        let old = Buffer::new(3, 1);
+        let diff = BufferDiff::compute(&old, &buffer);
+        presenter
+            .present_with_pool(&buffer, &diff, None, Some(&links))
+            .unwrap();
+
+        let output = get_output(presenter);
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(
+            !output_str.contains("\x1b]8;;https://example.com/"),
+            "overlong hyperlink URL should be suppressed"
+        );
+        assert!(output_str.contains('Y'));
     }
 
     // =========================================================================
@@ -3687,6 +3849,29 @@ mod tests {
         presenter.emit_cell(0, &cell, None, None).unwrap();
         let output = presenter.into_inner().unwrap();
         assert!(output.contains(&b' '), "Empty cell should emit space");
+    }
+
+    #[test]
+    fn emit_content_grapheme_sanitizes_escape_sequences() {
+        let mut presenter = test_presenter();
+        presenter.cursor_x = Some(0);
+        presenter.cursor_y = Some(0);
+
+        let mut pool = GraphemePool::new();
+        let gid = pool.intern("A\x1b[31mB\x1b[0m", 2);
+        let cell = Cell::new(CellContent::from_grapheme(gid));
+        presenter.emit_cell(0, &cell, Some(&pool), None).unwrap();
+
+        let output = presenter.into_inner().unwrap();
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(
+            output_str.contains("AB"),
+            "sanitized grapheme should preserve visible payload"
+        );
+        assert!(
+            !output_str.contains("\x1b[31m"),
+            "raw escape sequence must not be emitted"
+        );
     }
 
     // --- Continuation cell cursor_x variants ---
