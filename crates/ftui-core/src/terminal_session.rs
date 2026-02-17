@@ -138,6 +138,9 @@ fn cx_deadline_remaining_us(cx: &crate::cx::Cx) -> u64 {
 const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
 const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
+const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
+const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1002h\x1b[?1006h";
+const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1002l\x1b[?1006l";
 
 static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -349,7 +352,8 @@ impl TerminalSession {
         }
 
         if options.mouse_capture {
-            crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)?;
+            stdout.write_all(MOUSE_ENABLE_SEQ)?;
+            stdout.flush()?;
             session.mouse_enabled = true;
             #[cfg(feature = "tracing")]
             tracing::info!("mouse capture enabled");
@@ -606,13 +610,15 @@ impl TerminalSession {
 
         let mut stdout = io::stdout();
         if enabled {
-            crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)?;
+            stdout.write_all(MOUSE_ENABLE_SEQ)?;
+            stdout.flush()?;
             self.mouse_enabled = true;
             self.options.mouse_capture = true;
             #[cfg(feature = "tracing")]
             tracing::info!("mouse capture enabled (runtime toggle)");
         } else {
-            crossterm::execute!(stdout, crossterm::event::DisableMouseCapture)?;
+            stdout.write_all(MOUSE_DISABLE_SEQ)?;
+            stdout.flush()?;
             self.mouse_enabled = false;
             self.options.mouse_capture = false;
             #[cfg(feature = "tracing")]
@@ -643,14 +649,18 @@ impl TerminalSession {
         let start = web_time::Instant::now();
         let mut stdout = io::stdout();
         let result = if enabled {
-            let r = crossterm::execute!(stdout, crossterm::event::EnableMouseCapture);
+            let r = stdout
+                .write_all(MOUSE_ENABLE_SEQ)
+                .and_then(|_| stdout.flush());
             if r.is_ok() {
                 self.mouse_enabled = true;
                 self.options.mouse_capture = true;
             }
             r
         } else {
-            let r = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+            let r = stdout
+                .write_all(MOUSE_DISABLE_SEQ)
+                .and_then(|_| stdout.flush());
             if r.is_ok() {
                 self.mouse_enabled = false;
                 self.options.mouse_capture = false;
@@ -747,6 +757,9 @@ impl TerminalSession {
         // End synchronized output first to ensure terminal updates resume
         let _ = stdout.write_all(SYNC_END);
 
+        // Reset scroll region (critical for inline mode recovery)
+        let _ = stdout.write_all(RESET_SCROLL_REGION);
+
         // Disable features in reverse order of enabling
         if self.kitty_keyboard_enabled {
             let _ = Self::disable_kitty_keyboard(&mut stdout);
@@ -770,7 +783,7 @@ impl TerminalSession {
         }
 
         if self.mouse_enabled {
-            let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+            let _ = stdout.write_all(MOUSE_DISABLE_SEQ);
             self.mouse_enabled = false;
             #[cfg(feature = "tracing")]
             tracing::info!("mouse capture disabled");
@@ -850,11 +863,12 @@ fn best_effort_cleanup() {
     // End synchronized output first to ensure any buffered content (like panic messages)
     // is flushed to the terminal.
     let _ = stdout.write_all(SYNC_END);
+    let _ = stdout.write_all(RESET_SCROLL_REGION);
 
     let _ = TerminalSession::disable_kitty_keyboard(&mut stdout);
     let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
     let _ = crossterm::execute!(stdout, crossterm::event::DisableBracketedPaste);
-    let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+    let _ = stdout.write_all(MOUSE_DISABLE_SEQ);
     let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
     let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
     let _ = crossterm::terminal::disable_raw_mode();

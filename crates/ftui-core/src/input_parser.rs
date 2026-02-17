@@ -79,6 +79,8 @@ enum ParserState {
         /// Total bytes expected.
         expected: u8,
     },
+    /// Collecting X10 mouse coordinates (3 bytes).
+    MouseX10 { collected: u8, buffer: [u8; 3] },
 }
 
 /// Terminal input parser with DoS protection.
@@ -128,6 +130,28 @@ impl InputParser {
             utf8_buffer: [0; 4],
             in_paste: false,
             pending_event: None,
+        }
+    }
+
+    /// Handle a timeout in the input stream.
+    ///
+    /// If the parser is waiting for more bytes to complete an ambiguous sequence
+    /// (specifically a bare ESC), a timeout indicates the sequence has ended.
+    pub fn timeout(&mut self) -> Option<Event> {
+        match self.state {
+            ParserState::Escape => {
+                self.state = ParserState::Ground;
+                Some(Event::Key(KeyEvent::new(KeyCode::Escape)))
+            }
+            ParserState::Utf8 { .. } => {
+                // Incomplete UTF-8 sequence at timeout -> replacement char
+                self.state = ParserState::Ground;
+                self.utf8_buffer = [0; 4];
+                Some(Event::Key(KeyEvent::new(KeyCode::Char(
+                    std::char::REPLACEMENT_CHARACTER,
+                ))))
+            }
+            _ => None,
         }
     }
 
@@ -194,6 +218,7 @@ impl InputParser {
                 collected,
                 expected,
             } => self.process_utf8(byte, collected, expected),
+            ParserState::MouseX10 { .. } => self.process_mouse_x10(byte),
         }
     }
 
@@ -341,6 +366,18 @@ impl InputParser {
             }
             // Final byte (0x40-0x7E) - parse and return
             0x40..=0x7E => {
+                // Check for X10 mouse trigger: CSI M (no params)
+                // Note: buffer contains the final byte 'M' at the end.
+                // If len == 1, it means buffer is just [b'M'].
+                if byte == b'M' && self.buffer.len() == 1 {
+                    self.state = ParserState::MouseX10 {
+                        collected: 0,
+                        buffer: [0; 3],
+                    };
+                    self.buffer.clear();
+                    return None;
+                }
+
                 self.state = ParserState::Ground;
                 self.parse_csi_sequence()
             }
@@ -400,11 +437,16 @@ impl InputParser {
         // Intermediate bytes outside this range are ignored
         if (0x40..=0x7E).contains(&byte) {
             self.state = ParserState::Ground;
-        } else if !(0x20..=0x7E).contains(&byte) {
-            // Invalid character (e.g. newline) - abort sequence
+            None
+        } else if (0x20..=0x3F).contains(&byte) {
+            // Intermediate byte - stay in ignore state
+            None
+        } else {
+            // Invalid character (e.g. newline, control char) - abort sequence
+            // and re-process the byte in Ground state.
             self.state = ParserState::Ground;
+            self.process_ground(byte)
         }
-        None
     }
 
     /// Parse a complete CSI sequence from the buffer.
@@ -811,10 +853,10 @@ impl InputParser {
                 self.state = ParserState::OscEscape;
                 None
             }
-            // Abort on control characters to prevent swallowing logs
+            // Abort on control characters to prevent swallowing logs (except DEL 0x7F)
             _ if byte < 0x20 => {
                 self.state = ParserState::Ground;
-                None
+                self.process_ground(byte)
             }
             // Continue ignoring
             _ => None,
@@ -936,6 +978,60 @@ impl InputParser {
             };
             None
         }
+    }
+
+    /// Process bytes while in X10 mouse mode.
+    fn process_mouse_x10(&mut self, byte: u8) -> Option<Event> {
+        if let ParserState::MouseX10 {
+            ref mut collected,
+            ref mut buffer,
+        } = self.state
+        {
+            buffer[*collected as usize] = byte;
+            *collected += 1;
+
+            if *collected == 3 {
+                // Copy buffer before reassigning state (borrow of self.state).
+                let buf = *buffer;
+                self.state = ParserState::Ground;
+
+                // X10 encoding: byte = value + 32
+                let cb = buf[0].saturating_sub(32) as u16;
+                let cx = buf[1].saturating_sub(33) as u16; // 1-based -> 0-based
+                let cy = buf[2].saturating_sub(33) as u16;
+
+                let (button, mods) = self.decode_mouse_button(cb);
+
+                // Check for release (button 3)
+                // Note: X10 release doesn't track which button was released,
+                // so we default to Left for the event kind, or rely on logic downstream.
+                // However, decode_mouse_button(3) returns Left.
+                // We check low 2 bits: 0=Btn1, 1=Btn2, 2=Btn3, 3=Release
+                let kind = if (cb & 3) == 3 {
+                    // Release event
+                    MouseEventKind::Up(MouseButton::Left)
+                } else if cb & 64 != 0 {
+                    // Scroll event (bit 6 set)
+                    match cb & 3 {
+                        0 => MouseEventKind::ScrollUp,
+                        1 => MouseEventKind::ScrollDown,
+                        // X10 doesn't support left/right scroll usually
+                        _ => MouseEventKind::ScrollUp,
+                    }
+                } else {
+                    // Press event
+                    MouseEventKind::Down(button)
+                };
+
+                return Some(Event::Mouse(MouseEvent {
+                    kind,
+                    x: cx,
+                    y: cy,
+                    modifiers: mods,
+                }));
+            }
+        }
+        None
     }
 
     /// Process bytes while in paste mode.

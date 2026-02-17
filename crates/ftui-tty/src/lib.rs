@@ -39,8 +39,8 @@ use signal_hook::iterator::Signals;
 const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
 
-const MOUSE_ENABLE: &[u8] = b"\x1b[?1000;1002;1006h";
-const MOUSE_DISABLE: &[u8] = b"\x1b[?1000;1002;1006l";
+const MOUSE_ENABLE: &[u8] = b"\x1b[?1002h\x1b[?1006h";
+const MOUSE_DISABLE: &[u8] = b"\x1b[?1002l\x1b[?1006l";
 
 const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
 const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
@@ -534,6 +534,11 @@ impl BackendEventSource for TtyEventSource {
             loop {
                 let now = std::time::Instant::now();
                 if now >= deadline {
+                    // Overall timeout reached. Check for pending incomplete sequences (e.g. bare Escape).
+                    if let Some(event) = self.parser.timeout() {
+                        self.event_queue.push_back(event);
+                        return Ok(true);
+                    }
                     return Ok(false);
                 }
                 let remaining = deadline.duration_since(now);
@@ -546,7 +551,15 @@ impl BackendEventSource for TtyEventSource {
             }
         }
 
-        self.poll_tty(timeout)
+        let ready = self.poll_tty(timeout)?;
+        if !ready && timeout > Duration::ZERO {
+            // Timeout reached. Check for pending incomplete sequences (e.g. bare Escape).
+            if let Some(event) = self.parser.timeout() {
+                self.event_queue.push_back(event);
+                return Ok(true);
+            }
+        }
+        Ok(!self.event_queue.is_empty())
     }
 
     fn read_event(&mut self) -> Result<Option<Event>, Self::Error> {

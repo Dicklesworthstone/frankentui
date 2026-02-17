@@ -4,7 +4,7 @@ use crate::Widget;
 use crate::borders::{BorderSet, BorderType, Borders};
 use crate::measurable::{MeasurableWidget, SizeConstraints};
 use crate::{apply_style, draw_text_span, set_style_area};
-use ftui_core::geometry::{Rect, Size};
+use ftui_core::geometry::{Rect, Sides, Size};
 use ftui_render::buffer::Buffer;
 use ftui_render::cell::Cell;
 use ftui_render::frame::Frame;
@@ -20,6 +20,7 @@ pub struct Block<'a> {
     title: Option<&'a str>,
     title_alignment: Alignment,
     style: Style,
+    padding: Sides,
 }
 
 /// Text alignment.
@@ -41,10 +42,10 @@ impl<'a> Block<'a> {
         Self::default()
     }
 
-    /// Create a block with all borders enabled.
+    /// Create a block with all borders enabled and default padding.
     #[must_use]
     pub fn bordered() -> Self {
-        Self::default().borders(Borders::ALL)
+        Self::default().borders(Borders::ALL).padding(Sides::all(1))
     }
 
     /// Set which borders to render.
@@ -65,6 +66,13 @@ impl<'a> Block<'a> {
     #[must_use]
     pub fn border_type(mut self, border_type: BorderType) -> Self {
         self.border_type = border_type;
+        self
+    }
+
+    /// Set the padding inside the borders.
+    #[must_use]
+    pub fn padding(mut self, padding: impl Into<Sides>) -> Self {
+        self.padding = padding.into();
         self
     }
 
@@ -94,7 +102,7 @@ impl<'a> Block<'a> {
         self
     }
 
-    /// Compute the inner area inside the block's borders.
+    /// Compute the inner area inside the block's borders and padding.
     #[must_use]
     pub fn inner(&self, area: Rect) -> Rect {
         let mut inner = area;
@@ -114,20 +122,27 @@ impl<'a> Block<'a> {
             inner.height = inner.height.saturating_sub(1);
         }
 
-        inner
+        inner.inner(self.padding)
     }
 
-    /// Calculate the chrome (border) size consumed by this block.
+    /// Calculate the chrome (border + padding) size consumed by this block.
     ///
     /// Returns `(horizontal_chrome, vertical_chrome)` representing the
-    /// total width and height consumed by borders.
+    /// total width and height consumed by borders and padding.
     #[must_use]
     pub fn chrome_size(&self) -> (u16, u16) {
-        let horizontal = self.borders.contains(Borders::LEFT) as u16
+        let border_h = self.borders.contains(Borders::LEFT) as u16
             + self.borders.contains(Borders::RIGHT) as u16;
-        let vertical = self.borders.contains(Borders::TOP) as u16
+        let border_v = self.borders.contains(Borders::TOP) as u16
             + self.borders.contains(Borders::BOTTOM) as u16;
-        (horizontal, vertical)
+
+        let padding_h = self.padding.left + self.padding.right;
+        let padding_v = self.padding.top + self.padding.bottom;
+
+        (
+            border_h.saturating_add(padding_h),
+            border_v.saturating_add(padding_v),
+        )
     }
 
     /// Create a styled border cell.

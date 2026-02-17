@@ -357,8 +357,13 @@ impl Tree {
             }
         } else if depth > 0 {
             // Minimal rendering: indent with spaces
-            let indent = "    ".repeat(depth);
-            x = draw_text_span(frame, x, y, &indent, Style::default(), max_x);
+            // Avoid allocation by drawing chunks iteratively
+            for _ in 0..depth {
+                x = draw_text_span(frame, x, y, "    ", Style::default(), max_x);
+                if x >= max_x {
+                    break;
+                }
+            }
         }
 
         // Draw label

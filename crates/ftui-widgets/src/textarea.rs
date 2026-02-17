@@ -876,20 +876,25 @@ impl Widget for TextArea {
         self.last_viewport_width.set(text_area_w);
 
         let cursor = self.editor.cursor();
-        // Use a mutable copy for scroll adjustment
+
+        // Initialize scroll_top from state, handling sentinel
         let mut scroll_top = if self.scroll_top.get() == usize::MAX {
             0
         } else {
             self.scroll_top.get()
         };
-        if vp_height > 0 {
+
+        // If NOT soft wrapping, scroll_top is a logical line index.
+        // Ensure cursor is visible by adjusting scroll_top.
+        // (If soft wrapping, this adjustment is done in virtual space inside the soft_wrap block)
+        if !self.soft_wrap && vp_height > 0 {
             if cursor.line < scroll_top {
                 scroll_top = cursor.line;
             } else if cursor.line >= scroll_top + vp_height {
                 scroll_top = cursor.line.saturating_sub(vp_height - 1);
             }
+            self.scroll_top.set(scroll_top);
         }
-        self.scroll_top.set(scroll_top);
 
         let mut scroll_left = self.scroll_left.get();
         if !self.soft_wrap && text_area_w > 0 {

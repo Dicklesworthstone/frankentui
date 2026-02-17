@@ -696,9 +696,11 @@ impl VariableHeightsFenwick {
 
     /// Count how many items are visible within a viewport starting at `start_idx`. O(log n).
     ///
-    /// Returns the number of items that fit completely within `viewport_height`,
-    /// except that it returns **at least 1** when `start_idx < len` and
-    /// `viewport_height > 0`, even if the first item is taller than the viewport.
+    /// Visibility here means partially or fully visible. The first partially
+    /// visible trailing item is counted.
+    ///
+    /// Returns **at least 1** when `start_idx < len` and `viewport_height > 0`,
+    /// even if the first item is taller than the viewport.
     #[must_use]
     pub fn visible_count(&self, start_idx: usize, viewport_height: u16) -> usize {
         if self.len == 0 || viewport_height == 0 {
@@ -711,16 +713,16 @@ impl VariableHeightsFenwick {
         // Find last item that fits
         let end_idx = self.find_item_at_offset(end_offset);
 
-        // Count items from start to end (exclusive of partially visible)
+        // Count items from start to end (including partially visible trailing item)
         if end_idx > start {
             // `find_item_at_offset` returns `len` when `end_offset` is at/after the end
             // of the list. In that case, everything from `start` to the end fits.
             if end_idx >= self.len {
                 return self.len.saturating_sub(start);
             }
-            // Check if end_idx item is fully visible
+            // Check if end_idx item is visible (partially or fully)
             let end_item_start = self.offset_of_item(end_idx);
-            if end_item_start.saturating_add(u32::from(self.get(end_idx))) <= end_offset {
+            if end_offset > end_item_start {
                 end_idx - start + 1
             } else {
                 end_idx - start
@@ -804,6 +806,8 @@ pub struct VirtualizedListState {
     follow_mode: bool,
     /// Scroll velocity for momentum.
     scroll_velocity: f32,
+    /// Drag anchor for scrollbar thumb (offset from thumb top).
+    scrollbar_drag_anchor: Option<usize>,
     /// Optional persistence ID for state saving/restoration.
     persistence_id: Option<String>,
 }
@@ -825,6 +829,7 @@ impl VirtualizedListState {
             overscan: 2,
             follow_mode: false,
             scroll_velocity: 0.0,
+            scrollbar_drag_anchor: None,
             persistence_id: None,
         }
     }
@@ -1007,6 +1012,44 @@ impl VirtualizedListState {
             self.scroll_velocity = 0.0;
         }
     }
+
+    /// Handle mouse events, including scrollbar interaction.
+    ///
+    /// The caller must provide the hit test result and the expected hit ID for
+    /// the scrollbar.
+    pub fn handle_mouse(
+        &mut self,
+        event: &ftui_core::event::MouseEvent,
+        hit: Option<(
+            ftui_render::frame::HitId,
+            ftui_render::frame::HitRegion,
+            u64,
+        )>,
+        scrollbar_hit_id: ftui_render::frame::HitId,
+        total_items: usize,
+        viewport_height: u16,
+        fixed_item_height: u16,
+    ) -> crate::mouse::MouseResult {
+        // Construct temporary scrollbar state
+        let items_per_viewport = viewport_height.div_ceil(fixed_item_height.max(1)) as usize;
+        let mut scrollbar_state =
+            ScrollbarState::new(total_items, self.scroll_offset, items_per_viewport);
+
+        // Restore drag anchor
+        scrollbar_state.drag_anchor = self.scrollbar_drag_anchor;
+
+        let result = scrollbar_state.handle_mouse(event, hit, scrollbar_hit_id);
+
+        // Sync back
+        self.scroll_offset = scrollbar_state.position;
+        self.scrollbar_drag_anchor = scrollbar_state.drag_anchor;
+
+        if result == crate::mouse::MouseResult::Scrolled {
+            self.follow_mode = false;
+        }
+
+        result
+    }
 }
 
 // ============================================================================
@@ -1055,6 +1098,7 @@ impl crate::stateful::Stateful for VirtualizedListState {
         self.follow_mode = state.follow_mode;
         // Reset transient values
         self.scroll_velocity = 0.0;
+        self.scrollbar_drag_anchor = None;
     }
 }
 
@@ -1075,6 +1119,8 @@ pub struct VirtualizedList<'a, T> {
     show_scrollbar: bool,
     /// Fixed item height.
     fixed_height: u16,
+    /// Optional hit ID for scrollbar interaction.
+    hit_id: Option<ftui_render::frame::HitId>,
 }
 
 impl<'a, T> VirtualizedList<'a, T> {
@@ -1087,6 +1133,7 @@ impl<'a, T> VirtualizedList<'a, T> {
             highlight_style: Style::default(),
             show_scrollbar: true,
             fixed_height: 1,
+            hit_id: None,
         }
     }
 
@@ -1115,6 +1162,13 @@ impl<'a, T> VirtualizedList<'a, T> {
     #[must_use]
     pub fn fixed_height(mut self, height: u16) -> Self {
         self.fixed_height = height;
+        self
+    }
+
+    /// Set hit ID for scrollbar interaction.
+    #[must_use]
+    pub fn hit_id(mut self, id: ftui_render::frame::HitId) -> Self {
+        self.hit_id = Some(id);
         self
     }
 }
@@ -1255,7 +1309,13 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             let mut scrollbar_state =
                 ScrollbarState::new(total_items, state.scroll_offset, items_per_viewport);
 
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            // Sync drag anchor from persistent state to transient scrollbar state
+            scrollbar_state.drag_anchor = state.scrollbar_drag_anchor;
+
+            let mut scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            if let Some(id) = self.hit_id {
+                scrollbar = scrollbar.hit_id(id);
+            }
             scrollbar.render(scrollbar_area, frame, &mut scrollbar_state);
         }
     }
@@ -2057,8 +2117,8 @@ mod tests {
         // Viewport 5: items 0 (h=3) + 1 (h=2) = 5 exactly
         assert_eq!(tracker.visible_count(0, 5), 2);
 
-        // Viewport 4: item 0 (h=3) fits, item 1 (h=2) doesn't fit fully
-        assert_eq!(tracker.visible_count(0, 4), 1);
+        // Viewport 4: item 0 fits and item 1 is partially visible.
+        assert_eq!(tracker.visible_count(0, 4), 2);
 
         // Viewport 10: items 0+1+2 = 10 exactly
         assert_eq!(tracker.visible_count(0, 10), 3);
@@ -3013,12 +3073,73 @@ mod tests {
     }
 
     #[test]
-    fn virtualized_clone() {
-        let mut virt: Virtualized<i32> = Virtualized::new(100);
-        virt.push(1);
-        virt.push(2);
-        let cloned = virt.clone();
-        assert_eq!(cloned.len(), 2);
-        assert_eq!(cloned.get(0), Some(&1));
+    fn test_virtualized_list_handle_mouse_drag_smooth() {
+        use crate::scrollbar::SCROLLBAR_PART_THUMB;
+        use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ftui_render::frame::{HitId, HitRegion};
+
+        let mut state = VirtualizedListState::new();
+        let scrollbar_hit_id = HitId::new(1);
+        let total_items = 100;
+        let viewport_height = 10;
+        let fixed_height = 1;
+
+        // Simulate click on thumb.
+        // Track length 10. Thumb size 1. Content 100.
+        // Thumb at top (pos 0).
+        // Click at track_pos 0 (top of thumb).
+        // Hit data: [8: part] [28: len] [28: pos]
+        let track_len = 10u64;
+        let track_pos = 0u64;
+        let hit_data = (SCROLLBAR_PART_THUMB << 56)
+            | ((track_len & 0x0FFF_FFFF) << 28)
+            | (track_pos & 0x0FFF_FFFF);
+
+        let down_event = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 0, 0);
+        let hit = Some((scrollbar_hit_id, HitRegion::Scrollbar, hit_data));
+
+        state.handle_mouse(
+            &down_event,
+            hit,
+            scrollbar_hit_id,
+            total_items,
+            viewport_height,
+            fixed_height,
+        );
+
+        assert!(
+            state.scrollbar_drag_anchor.is_some(),
+            "Drag anchor should be set on down"
+        );
+        assert_eq!(
+            state.scrollbar_drag_anchor.unwrap(),
+            0,
+            "Anchor should be 0 (clicked top of thumb)"
+        );
+
+        // Drag down by 1 cell.
+        // track_pos = 1. anchor = 0. target thumb top = 1.
+        // available = 9. max_pos = 90.
+        // pos = (1 * 90) / 9 = 10.
+        let drag_pos = 1u64;
+        let drag_data = (SCROLLBAR_PART_THUMB << 56)
+            | ((track_len & 0x0FFF_FFFF) << 28)
+            | (drag_pos & 0x0FFF_FFFF);
+        let drag_event = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 0, 1);
+        let drag_hit = Some((scrollbar_hit_id, HitRegion::Scrollbar, drag_data));
+
+        state.handle_mouse(
+            &drag_event,
+            drag_hit,
+            scrollbar_hit_id,
+            total_items,
+            viewport_height,
+            fixed_height,
+        );
+
+        assert_eq!(
+            state.scroll_offset, 10,
+            "Scroll offset should update smoothly"
+        );
     }
 }

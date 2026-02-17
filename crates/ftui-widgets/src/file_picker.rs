@@ -237,8 +237,15 @@ fn read_directory(path: &Path) -> std::io::Result<Vec<DirEntry>> {
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
-        let file_type = entry.file_type()?;
+        let mut file_type = entry.file_type()?;
         let full_path = entry.path();
+
+        // If it's a symlink, check what it points to
+        if file_type.is_symlink() {
+            if let Ok(metadata) = std::fs::metadata(&full_path) {
+                file_type = metadata.file_type();
+            }
+        }
 
         if file_type.is_dir() {
             dirs.push(DirEntry::dir(name, full_path));

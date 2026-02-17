@@ -131,6 +131,10 @@ pub struct PaneConstraints {
     pub max_width: Option<u16>,
     pub max_height: Option<u16>,
     pub collapsible: bool,
+    #[serde(default)]
+    pub margin: Option<u16>,
+    #[serde(default)]
+    pub padding: Option<u16>,
 }
 
 impl PaneConstraints {
@@ -168,6 +172,8 @@ impl Default for PaneConstraints {
             max_width: None,
             max_height: None,
             collapsible: false,
+            margin: Some(PANE_DEFAULT_MARGIN_CELLS),
+            padding: Some(PANE_DEFAULT_PADDING_CELLS),
         }
     }
 }
@@ -496,6 +502,25 @@ impl PaneLayout {
         let rect = self.rect(node_id)?;
         let with_margin = rect.inner(Sides::all(PANE_DEFAULT_MARGIN_CELLS));
         let with_padding = with_margin.inner(Sides::all(PANE_DEFAULT_PADDING_CELLS));
+        if with_padding.width == 0 || with_padding.height == 0 {
+            Some(with_margin)
+        } else {
+            Some(with_padding)
+        }
+    }
+
+    /// Visual pane rectangle with custom margin/padding from constraints.
+    #[must_use]
+    pub fn visual_rect_with_constraints(
+        &self,
+        node_id: PaneId,
+        constraints: &PaneConstraints,
+    ) -> Option<Rect> {
+        let rect = self.rect(node_id)?;
+        let margin = constraints.margin.unwrap_or(PANE_DEFAULT_MARGIN_CELLS);
+        let padding = constraints.padding.unwrap_or(PANE_DEFAULT_PADDING_CELLS);
+        let with_margin = rect.inner(Sides::all(margin));
+        let with_padding = with_margin.inner(Sides::all(padding));
         if with_padding.width == 0 || with_padding.height == 0 {
             Some(with_margin)
         } else {
@@ -2972,10 +2997,26 @@ fn classify_resize_grip(
         return None;
     }
 
-    let near_left = (px - left).abs() <= inset;
-    let near_right = (px - right).abs() <= inset;
-    let near_top = (py - top).abs() <= inset;
-    let near_bottom = (py - bottom).abs() <= inset;
+    let mut near_left = (px - left).abs() <= inset;
+    let mut near_right = (px - right).abs() <= inset;
+    let mut near_top = (py - top).abs() <= inset;
+    let mut near_bottom = (py - bottom).abs() <= inset;
+
+    // Disambiguate overlapping zones (small panes) by proximity
+    if near_left && near_right {
+        if (px - left).abs() < (px - right).abs() {
+            near_right = false;
+        } else {
+            near_left = false;
+        }
+    }
+    if near_top && near_bottom {
+        if (py - top).abs() < (py - bottom).abs() {
+            near_bottom = false;
+        } else {
+            near_top = false;
+        }
+    }
 
     match (near_left, near_right, near_top, near_bottom) {
         (true, false, true, false) => Some(PaneResizeGrip::TopLeft),
@@ -8417,6 +8458,28 @@ mod tests {
             )
             .expect("group resize plan should build");
         assert!(!resize_plan.operations.is_empty());
+    }
+
+    #[test]
+    fn classify_resize_grip_handles_small_panes() {
+        // 1x1 pane at (10, 10)
+        let rect = Rect::new(10, 10, 1, 1);
+        let pointer = PanePointerPosition::new(10, 10);
+        let grip = classify_resize_grip(rect, pointer, 1.5).expect("should classify");
+        // Tie-break prefers BottomRight (Right/Bottom)
+        assert_eq!(grip, PaneResizeGrip::BottomRight);
+
+        // 2x1 pane at (10, 10)
+        let rect2 = Rect::new(10, 10, 2, 1);
+        // Left pixel (10, 10)
+        let ptr_left = PanePointerPosition::new(10, 10);
+        let grip_left = classify_resize_grip(rect2, ptr_left, 1.5).expect("left pixel");
+        assert_eq!(grip_left, PaneResizeGrip::BottomLeft);
+
+        // Right pixel (11, 10)
+        let ptr_right = PanePointerPosition::new(11, 10);
+        let grip_right = classify_resize_grip(rect2, ptr_right, 1.5).expect("right pixel");
+        assert_eq!(grip_right, PaneResizeGrip::BottomRight);
     }
 
     #[test]

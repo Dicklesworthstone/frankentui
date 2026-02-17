@@ -3436,10 +3436,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             let timeout = self.effective_timeout();
 
             // Poll for events with timeout
-            if self.events.poll_event(timeout)? {
+            let poll_result = self.events.poll_event(timeout)?;
+            if poll_result {
                 // Drain all pending events
                 loop {
-                    // read_event returns Option<Event> after converting from crossterm
                     if let Some(event) = self.events.read_event()? {
                         self.handle_event(event)?;
                     }
@@ -3847,9 +3847,10 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
             return;
         }
 
-        let mut remaining = Vec::with_capacity(self.task_handles.len());
-        for handle in self.task_handles.drain(..) {
-            if handle.is_finished() {
+        let mut i = 0;
+        while i < self.task_handles.len() {
+            if self.task_handles[i].is_finished() {
+                let handle = self.task_handles.swap_remove(i);
                 if let Err(payload) = handle.join() {
                     let msg = if let Some(s) = payload.downcast_ref::<&str>() {
                         (*s).to_owned()
@@ -3864,10 +3865,9 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                     eprintln!("ftui: spawned task panicked: {msg}");
                 }
             } else {
-                remaining.push(handle);
+                i += 1;
             }
         }
-        self.task_handles = remaining;
     }
 
     /// Render a frame with budget tracking.

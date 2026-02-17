@@ -172,7 +172,8 @@ impl<'a> Sparkline<'a> {
         let r = (low.r() as f32 * (1.0 - t) + high.r() as f32 * t).round() as u8;
         let g = (low.g() as f32 * (1.0 - t) + high.g() as f32 * t).round() as u8;
         let b = (low.b() as f32 * (1.0 - t) + high.b() as f32 * t).round() as u8;
-        PackedRgba::rgb(r, g, b)
+        let a = (low.a() as f32 * (1.0 - t) + high.a() as f32 * t).round() as u8;
+        PackedRgba::rgba(r, g, b, a)
     }
 
     /// Render the sparkline as a string (for testing/debugging).
@@ -535,6 +536,18 @@ mod tests {
         assert_eq!(mid.r(), 128);
         assert_eq!(mid.g(), 128);
         assert_eq!(mid.b(), 128);
+    }
+
+    #[test]
+    fn lerp_color_interpolates_alpha() {
+        let low = PackedRgba::rgba(0, 0, 0, 0);
+        let high = PackedRgba::rgba(255, 255, 255, 255);
+        let mid = Sparkline::lerp_color(low, high, 0.5);
+
+        assert_eq!(mid.r(), 128);
+        assert_eq!(mid.g(), 128);
+        assert_eq!(mid.b(), 128);
+        assert_eq!(mid.a(), 128);
     }
 
     // --- MeasurableWidget tests ---

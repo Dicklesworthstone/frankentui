@@ -111,6 +111,8 @@ pub struct ScrollbarState {
     pub position: usize,
     /// Number of content units visible in the viewport.
     pub viewport_length: usize,
+    /// Drag anchor point (offset from thumb top) to prevent jumping.
+    pub drag_anchor: Option<usize>,
 }
 
 impl ScrollbarState {
@@ -121,7 +123,34 @@ impl ScrollbarState {
             content_length,
             position,
             viewport_length,
+            drag_anchor: None,
         }
+    }
+
+    /// Calculate thumb offset and size for a given track length.
+    fn calc_thumb_geometry(&self, track_len: usize) -> (usize, usize) {
+        if track_len == 0 {
+            return (0, 0);
+        }
+        if self.content_length == 0 {
+            return (0, track_len);
+        }
+
+        let viewport_ratio = self.viewport_length as f64 / self.content_length as f64;
+        let thumb_size = (track_len as f64 * viewport_ratio).max(1.0).round() as usize;
+        let thumb_size = thumb_size.min(track_len);
+
+        let max_pos = self.content_length.saturating_sub(self.viewport_length);
+        let pos_ratio = if max_pos == 0 {
+            0.0
+        } else {
+            self.position.min(max_pos) as f64 / max_pos as f64
+        };
+
+        let available_track = track_len.saturating_sub(thumb_size);
+        let thumb_offset = (available_track as f64 * pos_ratio).round() as usize;
+
+        (thumb_offset, thumb_size)
     }
 
     /// Handle a mouse event for this scrollbar.
@@ -161,22 +190,29 @@ impl ScrollbarState {
                             self.scroll_down(1);
                             return MouseResult::Scrolled;
                         }
-                        SCROLLBAR_PART_TRACK | SCROLLBAR_PART_THUMB => {
-                            // Decode track length and position
+                        SCROLLBAR_PART_THUMB => {
                             let track_len = ((data >> 28) & 0x0FFF_FFFF) as usize;
                             let track_pos = (data & 0x0FFF_FFFF) as usize;
-
+                            let (thumb_offset, _) = self.calc_thumb_geometry(track_len);
+                            // Store where we grabbed the thumb (relative to thumb top)
+                            self.drag_anchor = Some(track_pos.saturating_sub(thumb_offset));
+                            // No scroll on initial grab, just setup
+                            return MouseResult::Ignored;
+                        }
+                        SCROLLBAR_PART_TRACK => {
+                            let track_len = ((data >> 28) & 0x0FFF_FFFF) as usize;
+                            let track_pos = (data & 0x0FFF_FFFF) as usize;
                             if track_len == 0 {
                                 return MouseResult::Ignored;
                             }
 
+                            // Map click position directly onto content position.
                             let max_pos = self.content_length.saturating_sub(self.viewport_length);
                             let denom = track_len.saturating_sub(1).max(1);
                             let clamped_pos = track_pos.min(denom);
                             self.position = if max_pos == 0 {
                                 0
                             } else {
-                                // Round-to-nearest integer
                                 let num = (clamped_pos as u128) * (max_pos as u128);
                                 let pos = (num + (denom as u128 / 2)) / denom as u128;
                                 pos as usize
@@ -201,19 +237,35 @@ impl ScrollbarState {
                             return MouseResult::Ignored;
                         }
 
+                        let (_, thumb_size) = self.calc_thumb_geometry(track_len);
+                        let available = track_len.saturating_sub(thumb_size);
+                        let denom = available.max(1);
+
+                        // If we have an anchor, align that point on thumb to mouse.
+                        // Otherwise (drag started outside thumb?), center it or use raw pos.
+                        let anchor = self.drag_anchor.unwrap_or(thumb_size / 2);
+
+                        // Desired top of thumb
+                        let target_thumb_top = track_pos.saturating_sub(anchor);
+                        let clamped_top = target_thumb_top.min(denom);
+
                         let max_pos = self.content_length.saturating_sub(self.viewport_length);
-                        let denom = track_len.saturating_sub(1).max(1);
-                        let clamped_pos = track_pos.min(denom);
                         self.position = if max_pos == 0 {
                             0
                         } else {
-                            let num = (clamped_pos as u128) * (max_pos as u128);
+                            // Map thumb top range [0, available] to content range [0, max_pos]
+                            let num = (clamped_top as u128) * (max_pos as u128);
+                            // Round to nearest
                             let pos = (num + (denom as u128 / 2)) / denom as u128;
                             pos as usize
                         };
                         return MouseResult::Scrolled;
                     }
                 }
+                MouseResult::Ignored
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag_anchor = None;
                 MouseResult::Ignored
             }
             MouseEventKind::ScrollUp => {
@@ -284,24 +336,7 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
         let track_len = length.saturating_sub(start_offset + end_offset);
 
         // Calculate thumb size and position within the effective track
-        let (thumb_offset, thumb_size) = if track_len > 0 {
-            let viewport_ratio = state.viewport_length as f64 / state.content_length as f64;
-            let size = (track_len as f64 * viewport_ratio).max(1.0).round() as usize;
-            let size = size.min(track_len);
-
-            let max_pos = state.content_length.saturating_sub(state.viewport_length);
-            let pos_ratio = if max_pos == 0 {
-                0.0
-            } else {
-                state.position.min(max_pos) as f64 / max_pos as f64
-            };
-
-            let available_track = track_len.saturating_sub(size);
-            let offset = (available_track as f64 * pos_ratio).round() as usize;
-            (offset, size)
-        } else {
-            (0, 0)
-        };
+        let (thumb_offset, thumb_size) = state.calc_thumb_geometry(track_len);
 
         // Symbols
         let track_char = self
@@ -818,21 +853,27 @@ mod tests {
     #[test]
     fn scrollbar_state_track_click() {
         let mut state = ScrollbarState::new(100, 0, 20);
+        let track_len = 20u64;
         let track_pos = 10u64;
-        let data = (SCROLLBAR_PART_TRACK << 56) | track_pos;
+        let data = (SCROLLBAR_PART_TRACK << 56)
+            | ((track_len & 0x0FFF_FFFF) << 28)
+            | (track_pos & 0x0FFF_FFFF);
         let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 0, 0);
         let hit = Some((HitId::new(1), HitRegion::Scrollbar, data));
         let result = state.handle_mouse(&event, hit, HitId::new(1));
         assert_eq!(result, MouseResult::Scrolled);
-        // track_len is inferred from viewport_length (20), so track_pos 10 maps proportionally to 42.
+        // Track click maps proportionally to content position.
         assert_eq!(state.position, 42);
     }
 
     #[test]
     fn scrollbar_state_track_click_clamps() {
         let mut state = ScrollbarState::new(100, 0, 20);
+        let track_len = 20u64;
         let track_pos = 95u64;
-        let data = (SCROLLBAR_PART_TRACK << 56) | track_pos;
+        let data = (SCROLLBAR_PART_TRACK << 56)
+            | ((track_len & 0x0FFF_FFFF) << 28)
+            | (track_pos & 0x0FFF_FFFF);
         let event = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), 0, 0);
         let hit = Some((HitId::new(1), HitRegion::Scrollbar, data));
         let result = state.handle_mouse(&event, hit, HitId::new(1));
@@ -843,8 +884,11 @@ mod tests {
     #[test]
     fn scrollbar_state_thumb_drag_updates_position() {
         let mut state = ScrollbarState::new(100, 0, 20);
+        let track_len = 20u64;
         let track_pos = 19u64;
-        let data = (SCROLLBAR_PART_THUMB << 56) | track_pos;
+        let data = (SCROLLBAR_PART_THUMB << 56)
+            | ((track_len & 0x0FFF_FFFF) << 28)
+            | (track_pos & 0x0FFF_FFFF);
         let event = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), 0, 0);
         let hit = Some((HitId::new(1), HitRegion::Scrollbar, data));
         let result = state.handle_mouse(&event, hit, HitId::new(1));
