@@ -247,6 +247,7 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
         write_string(&suite_dir.join("suite_manifest.json"), &content)?;
     }
 
+    let mut report_failed = false;
     if !args.skip_report {
         let report_result = run_report(ReportArgs {
             suite_dir: suite_dir.clone(),
@@ -256,11 +257,21 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
         });
 
         if let Err(error) = report_result {
-            write_string(&report_log, &format!("report generation failed: {error}"))?;
+            report_failed = true;
+            let message = format!("report generation failed: {error}");
+            write_string(&report_log, &message)?;
+            ui.error(&message);
         }
     }
 
-    ui.success(&format!("suite complete: {}", suite_dir.display()));
+    if report_failed {
+        ui.warning(&format!(
+            "suite complete with report failures: {}",
+            suite_dir.display()
+        ));
+    } else {
+        ui.success(&format!("suite complete: {}", suite_dir.display()));
+    }
     ui.info(&format!(
         "suite counts success={} failure={}",
         success_count, failure_count
@@ -281,10 +292,11 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
             "{}",
             serde_json::json!({
                 "command": "suite",
-                "status": if failure_count > 0 { "failed" } else { "ok" },
+                "status": if failure_count > 0 || report_failed { "failed" } else { "ok" },
                 "suite_dir": suite_dir.display().to_string(),
                 "success_count": success_count,
                 "failure_count": failure_count,
+                "report_failed": report_failed,
                 "integration": integration,
             })
         );
@@ -292,6 +304,10 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
 
     if failure_count > 0 {
         return Err(DoctorError::exit(1, "suite contains failed runs"));
+    }
+
+    if report_failed {
+        return Err(DoctorError::exit(1, "suite report generation failed"));
     }
 
     Ok(())

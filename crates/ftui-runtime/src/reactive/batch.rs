@@ -38,6 +38,7 @@
 //! - **Callback panics during flush**: Remaining callbacks are still called.
 //!   The first panic is re-raised after all callbacks have been attempted.
 
+use ftui_core::with_panic_cleanup_suppressed;
 use std::cell::RefCell;
 use tracing::{info, info_span};
 use web_time::Instant;
@@ -178,7 +179,9 @@ fn flush() {
     // If a callback panics, we still try to run the rest.
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     for notify in deferred {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(notify));
+        let result = with_panic_cleanup_suppressed(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(notify))
+        });
         if let Err(payload) = result
             && first_panic.is_none()
         {
