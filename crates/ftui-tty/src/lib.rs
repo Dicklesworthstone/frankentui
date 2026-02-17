@@ -39,8 +39,8 @@ use signal_hook::iterator::Signals;
 const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
 
-const MOUSE_ENABLE: &[u8] = b"\x1b[?1002h\x1b[?1006h";
-const MOUSE_DISABLE: &[u8] = b"\x1b[?1002l\x1b[?1006l";
+const MOUSE_ENABLE: &[u8] = b"\x1b[?1000;1002;1006h";
+const MOUSE_DISABLE: &[u8] = b"\x1b[?1000;1002;1006l";
 
 const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
 const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";

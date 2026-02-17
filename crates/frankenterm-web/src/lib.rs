@@ -1,0 +1,273 @@
+#![forbid(unsafe_code)]
+
+//! WASM frontend for FrankenTerm.
+//!
+//! This crate is intentionally host-specific (web/WASM). The initial goal is to
+//! provide a stable `wasm-bindgen` API surface for:
+//! - feeding bytes (remote VT/ANSI streams),
+//! - applying cell patches (client-side ftui mode),
+//! - capturing web input events,
+//! - driving rendering.
+//!
+//! The actual WebGPU renderer and full input system will be implemented behind
+//! this API.
+
+pub mod attach;
+pub mod builtin_font;
+pub mod coordinate_guard;
+pub mod frame_harness;
+pub mod glyph_atlas;
+pub mod input;
+pub mod markers;
+pub mod patch_feed;
+pub mod renderer;
+pub mod resize_arbiter;
+pub mod scroll;
+
+/// Stable JS API namespace (independent from crate semver).
+pub const FRANKENTERM_JS_API_LINE: &str = "frankenterm-js";
+/// Stable JS API semver. Breaking JS contract changes must bump major.
+pub const FRANKENTERM_JS_API_VERSION: &str = "1.0.0";
+/// Wire protocol line for remote attach, mirrored from protocol spec.
+pub const FRANKENTERM_JS_PROTOCOL_VERSION: &str = "frankenterm-ws-v1";
+/// Stable JS API policy summary for host integrators and migration tooling.
+pub const FRANKENTERM_JS_VERSIONING_POLICY: [&str; 3] = [
+    "major: breaking change to public JS method names, argument semantics, return-shape fields, or event ordering",
+    "minor: additive behavior only (new optional options/fields/methods), backwards compatible for existing host code",
+    "patch: bugfixes/perf/internal changes with no JS contract change",
+];
+/// Stable schema version for host-observable event taxonomy.
+pub const FRANKENTERM_JS_EVENT_SCHEMA_VERSION: &str = "1.0.0";
+/// Canonical list of supported public FrankenTermWeb JS methods.
+///
+/// Keep sorted for deterministic contract hashing/comparison.
+pub const FRANKENTERM_JS_PUBLIC_METHODS: [&str; 80] = [
+    "accessibilityClassNames",
+    "accessibilityDomSnapshot",
+    "accessibilityState",
+    "apiContract",
+    "apiVersion",
+    "applyPatch",
+    "applyPatchBatch",
+    "applyPatchBatchFlat",
+    "attachClose",
+    "attachConnect",
+    "attachHandshakeAck",
+    "attachProtocolError",
+    "attachReset",
+    "attachSessionEnded",
+    "attachState",
+    "attachTick",
+    "attachTransportClosed",
+    "attachTransportOpened",
+    "clearSearch",
+    "clearSelection",
+    "clipboardPolicy",
+    "closeEventSubscription",
+    "copySelection",
+    "createDecoration",
+    "createEventSubscription",
+    "createMarker",
+    "decorationsState",
+    "destroy",
+    "drainAccessibilityAnnouncements",
+    "drainAttachTransitionsJsonl",
+    "drainEncodedInputBytes",
+    "drainEncodedInputs",
+    "drainEventSubscription",
+    "drainEventSubscriptionJsonl",
+    "drainImeCompositionJsonl",
+    "drainLinkClicks",
+    "drainLinkClicksJsonl",
+    "drainMarkerDecorationJsonl",
+    "drainReplyBytes",
+    "dropDecoration",
+    "dropMarker",
+    "eventSubscriptionState",
+    "extractSelectionText",
+    "feed",
+    "fitToContainer",
+    "imeState",
+    "init",
+    "input",
+    "linkAt",
+    "linkOpenPolicy",
+    "linkUrlAt",
+    "markersState",
+    "pasteText",
+    "render",
+    "rendererBackend",
+    "resize",
+    "screenReaderMirrorText",
+    "scrollLines",
+    "scrollPages",
+    "scrollToBottom",
+    "scrollToLine",
+    "scrollToTop",
+    "searchNext",
+    "searchPrev",
+    "searchState",
+    "setAccessibility",
+    "setClipboardPolicy",
+    "setCursor",
+    "setHoveredLinkId",
+    "setLinkOpenPolicy",
+    "setScale",
+    "setSearchQuery",
+    "setSelectionRange",
+    "setTextShaping",
+    "setZoom",
+    "snapshotResizeStormFrameJsonl",
+    "snapshotScrollbackFrameJsonl",
+    "textShapingState",
+    "viewportLines",
+    "viewportState",
+];
+/// Canonical host-facing event taxonomy (sorted).
+pub const FRANKENTERM_JS_EVENT_TYPES: [&str; 15] = [
+    "attach.transition",
+    "input.accessibility",
+    "input.composition",
+    "input.composition_trace",
+    "input.focus",
+    "input.key",
+    "input.mouse",
+    "input.paste",
+    "input.touch",
+    "input.vt_bytes",
+    "input.wheel",
+    "terminal.progress",
+    "terminal.reply_bytes",
+    "ui.accessibility_announcement",
+    "ui.link_click",
+];
+/// Deterministic ordering guarantees for host-observable event drains.
+pub const FRANKENTERM_JS_EVENT_ORDERING_RULES: [&str; 11] = [
+    "input() emits normalized events in rewrite order; synthetic composition event (if any) always precedes primary event",
+    "while composition is active, key events are dropped until composition end/cancel to prevent duplicate insertion",
+    "drainEncodedInputs() returns FIFO order across input() calls and destructively drains queued events",
+    "drainEncodedInputBytes() returns FIFO VT chunks aligned to the same input() event order and destructively drains chunks",
+    "feed() emits terminal.progress records in completed parser-sequence order for OSC 9;4 signals",
+    "drainImeCompositionJsonl() returns FIFO IME rewrite traces including synthetic and dropped-key records",
+    "drainReplyBytes() returns FIFO terminal query replies generated by feed() and destructively drains them",
+    "drainAttachTransitionsJsonl() returns transitions in state-machine transition order with stable transition indices",
+    "drainLinkClicks() and drainAccessibilityAnnouncements() return FIFO order and destructively drain queues",
+    "drainMarkerDecorationJsonl() returns FIFO marker/decoration diagnostics with monotonic seq values and destructively drains the queue",
+    "drainEventSubscription()/drainEventSubscriptionJsonl() preserve per-subscription FIFO by global event seq for selected event types",
+];
+/// Bounded-delivery policy for host-observable queues.
+pub const FRANKENTERM_JS_EVENT_BUFFER_POLICY: [&str; 9] = [
+    "encoded_inputs_queue_max=4096; drop_oldest_on_overflow",
+    "encoded_input_bytes_queue_max=4096; drop_oldest_on_overflow",
+    "ime_trace_queue_max=2048; drop_oldest_on_overflow",
+    "link_click_queue_max=2048; drop_oldest_on_overflow",
+    "marker_decoration_diagnostic_queue_max=2048; drop_oldest_on_overflow",
+    "accessibility_announcement_queue_max=64; drop_oldest_on_overflow",
+    "attach_transition_queue_max=512; drop_oldest_on_overflow",
+    "event_subscription_queue_default_max=512; configurable_max=8192; drop_oldest_on_overflow",
+    "event_subscription_registry_max=256; createEventSubscription() rejects beyond limit",
+];
+
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm::FrankenTermWeb;
+
+/// Native builds compile this crate as a stub so `cargo check --workspace` stays
+/// green on non-wasm targets.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Default)]
+pub struct FrankenTermWeb;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FrankenTermWeb {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FRANKENTERM_JS_API_VERSION, FRANKENTERM_JS_EVENT_BUFFER_POLICY,
+        FRANKENTERM_JS_EVENT_ORDERING_RULES, FRANKENTERM_JS_EVENT_SCHEMA_VERSION,
+        FRANKENTERM_JS_EVENT_TYPES, FRANKENTERM_JS_PUBLIC_METHODS,
+        FRANKENTERM_JS_VERSIONING_POLICY,
+    };
+
+    #[test]
+    fn api_version_is_semver_triplet() {
+        let parts: Vec<&str> = FRANKENTERM_JS_API_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(parts.iter().all(|part| !part.is_empty()));
+        assert!(
+            parts
+                .iter()
+                .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        );
+    }
+
+    #[test]
+    fn public_methods_list_is_sorted_unique_and_non_empty() {
+        assert!(!FRANKENTERM_JS_PUBLIC_METHODS.is_empty());
+        let mut sorted = FRANKENTERM_JS_PUBLIC_METHODS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, FRANKENTERM_JS_PUBLIC_METHODS);
+        assert!(
+            FRANKENTERM_JS_PUBLIC_METHODS
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+    }
+
+    #[test]
+    fn versioning_policy_has_major_minor_patch_rules() {
+        assert_eq!(FRANKENTERM_JS_VERSIONING_POLICY.len(), 3);
+        assert!(FRANKENTERM_JS_VERSIONING_POLICY[0].starts_with("major:"));
+        assert!(FRANKENTERM_JS_VERSIONING_POLICY[1].starts_with("minor:"));
+        assert!(FRANKENTERM_JS_VERSIONING_POLICY[2].starts_with("patch:"));
+    }
+
+    #[test]
+    fn event_schema_version_is_semver_triplet() {
+        let parts: Vec<&str> = FRANKENTERM_JS_EVENT_SCHEMA_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(
+            parts
+                .iter()
+                .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        );
+    }
+
+    #[test]
+    fn event_types_are_sorted_unique_and_non_empty() {
+        assert!(!FRANKENTERM_JS_EVENT_TYPES.is_empty());
+        let mut sorted = FRANKENTERM_JS_EVENT_TYPES.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, FRANKENTERM_JS_EVENT_TYPES);
+        assert!(
+            FRANKENTERM_JS_EVENT_TYPES
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+    }
+
+    #[test]
+    fn event_ordering_and_buffer_policy_have_required_entries() {
+        assert!(FRANKENTERM_JS_EVENT_ORDERING_RULES.len() >= 5);
+        assert!(FRANKENTERM_JS_EVENT_BUFFER_POLICY.len() >= 3);
+        assert!(
+            FRANKENTERM_JS_EVENT_BUFFER_POLICY
+                .iter()
+                .filter(|entry| entry.contains("queue_"))
+                .all(|entry| entry.contains("drop_oldest_on_overflow"))
+        );
+        assert!(
+            FRANKENTERM_JS_EVENT_BUFFER_POLICY
+                .iter()
+                .any(|entry| entry.contains("event_subscription_registry_max=256"))
+        );
+    }
+}

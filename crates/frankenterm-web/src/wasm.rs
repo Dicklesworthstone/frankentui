@@ -26,18 +26,14 @@ use crate::{
     FRANKENTERM_JS_EVENT_TYPES, FRANKENTERM_JS_PROTOCOL_VERSION, FRANKENTERM_JS_PUBLIC_METHODS,
     FRANKENTERM_JS_VERSIONING_POLICY,
 };
-use frankenterm_core::{
-    Action, BufferPos, CopyOptions, HyperlinkId, Parser, ScrollbackWindow, Selection,
-    TerminalEngine,
-};
+use frankenterm_core::{Action, HyperlinkId, Parser, ScrollbackWindow, TerminalEngine};
 use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 use unicode_width::UnicodeWidthChar;
-use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlCanvasElement, HtmlTextAreaElement};
+use web_sys::HtmlCanvasElement;
 
 /// Synthetic link-id range reserved for auto-detected plaintext URLs.
 const AUTO_LINK_ID_BASE: u32 = 0x00F0_0001;
@@ -118,22 +114,6 @@ fn infer_wide_continuations(cells: &[CellData], cols: usize) -> Vec<bool> {
     continuation
 }
 
-fn selection_offset_to_buffer_pos(
-    offset: usize,
-    cols: usize,
-    scrollback_lines: usize,
-) -> BufferPos {
-    if cols == 0 {
-        let line = u32::try_from(scrollback_lines).unwrap_or(u32::MAX);
-        return BufferPos::new(line, 0);
-    }
-    let row = offset / cols;
-    let col = offset % cols;
-    let row_u16 = u16::try_from(row).unwrap_or(u16::MAX);
-    let col_u16 = u16::try_from(col).unwrap_or(u16::MAX);
-    BufferPos::from_viewport(scrollback_lines, row_u16, col_u16)
-}
-
 /// Web/WASM terminal surface.
 ///
 /// This is the minimal JS-facing API surface. Implementation will evolve to:
@@ -190,24 +170,6 @@ pub struct FrankenTermWeb {
     marker_store: MarkerStore,
     engine: Option<TerminalEngine>,
     renderer: Option<WebGpuRenderer>,
-    hidden_input: Option<HtmlTextAreaElement>,
-    on_canvas_touch: Option<Closure<dyn FnMut(web_sys::Event)>>,
-}
-
-impl Drop for FrankenTermWeb {
-    fn drop(&mut self) {
-        if let (Some(canvas), Some(closure)) = (&self.canvas, &self.on_canvas_touch) {
-            let _ = canvas.remove_event_listener_with_callback(
-                "touchstart",
-                closure.as_ref().unchecked_ref(),
-            );
-            let _ = canvas
-                .remove_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref());
-        }
-        if let Some(input) = &self.hidden_input {
-            let _ = input.remove();
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -733,8 +695,6 @@ impl FrankenTermWeb {
             marker_store: MarkerStore::new(),
             engine: None,
             renderer: None,
-            hidden_input: None,
-            on_canvas_touch: None,
         }
     }
 
@@ -843,7 +803,7 @@ impl FrankenTermWeb {
         self.auto_link_urls.clear();
         self.follow_output = true;
         self.sync_terminal_engine_size(cols, rows);
-        self.canvas = Some(canvas.clone()); // Store clone for cleanup
+        self.canvas = Some(canvas);
         self.renderer = Some(renderer);
         self.encoder_features = parse_encoder_features(&options);
         self.screen_reader_enabled = parse_init_bool(&options, "screenReader")
@@ -862,46 +822,6 @@ impl FrankenTermWeb {
         self.initialized = true;
         self.refresh_viewport_snapshot();
         self.sync_canvas_css_size(geometry);
-
-        // --- Hidden Input for Mobile Keyboard Trigger ---
-        if let Some(doc) = canvas.owner_document() {
-            if let Ok(input) = doc.create_element("textarea") {
-                if let Ok(input) = input.dyn_into::<HtmlTextAreaElement>() {
-                    // Position fixed, top-left, 1px transparent to avoid scrolling/layout issues
-                    let _ = input.set_attribute("style", "position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; z-index: -1; padding: 0; border: none; outline: none; resize: none; overflow: hidden;");
-                    // Disable helpful features that interfere with raw input
-                    let _ = input.set_attribute("autocapitalize", "off");
-                    let _ = input.set_attribute("autocomplete", "off");
-                    let _ = input.set_attribute("autocorrect", "off");
-                    let _ = input.set_attribute("spellcheck", "false");
-
-                    if let Some(body) = doc.body() {
-                        let _ = body.append_child(&input);
-
-                        let input_clone = input.clone();
-                        // Use a closure to focus the input on touch/click interactions
-                        let closure = Closure::wrap(Box::new(move |_: web_sys::Event| {
-                            let _ = input_clone.focus();
-                        })
-                            as Box<dyn FnMut(_)>);
-
-                        // Attach to canvas to capture taps
-                        let _ = canvas.add_event_listener_with_callback(
-                            "touchstart",
-                            closure.as_ref().unchecked_ref(),
-                        );
-                        let _ = canvas.add_event_listener_with_callback(
-                            "mousedown",
-                            closure.as_ref().unchecked_ref(),
-                        );
-
-                        self.hidden_input = Some(input);
-                        self.on_canvas_touch = Some(closure);
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -2423,44 +2343,13 @@ impl FrankenTermWeb {
         let Some((start, end)) = self.selection_range else {
             return String::new();
         };
+        let cols = usize::from(self.cols.max(1));
         let total = self.shadow_cells.len() as u32;
         let start = start.min(total);
         let end = end.min(total);
         if start >= end {
             return String::new();
         }
-        if let Some(text) = self.extract_selection_text_from_engine(start, end) {
-            return text;
-        }
-        self.extract_selection_text_from_shadow(start, end)
-    }
-
-    fn extract_selection_text_from_engine(&self, start: u32, end: u32) -> Option<String> {
-        let engine = self.engine.as_ref()?;
-        let cols = usize::from(engine.cols().max(1));
-        let rows = usize::from(engine.rows());
-        let max_cells = cols.saturating_mul(rows);
-        if max_cells == 0 {
-            return Some(String::new());
-        }
-
-        let start_idx = usize::try_from(start).unwrap_or(max_cells).min(max_cells);
-        let end_idx = usize::try_from(end).unwrap_or(max_cells).min(max_cells);
-        if start_idx >= end_idx {
-            return Some(String::new());
-        }
-
-        let scrollback_lines = engine.scrollback().len();
-        let start_pos = selection_offset_to_buffer_pos(start_idx, cols, scrollback_lines);
-        let end_pos =
-            selection_offset_to_buffer_pos(end_idx.saturating_sub(1), cols, scrollback_lines);
-        let selection = Selection::new(start_pos, end_pos);
-        let opts = CopyOptions::default();
-        Some(selection.extract_copy(engine.grid(), engine.scrollback(), &opts))
-    }
-
-    fn extract_selection_text_from_shadow(&self, start: u32, end: u32) -> String {
-        let cols = usize::from(self.cols.max(1));
         let wide_continuation = infer_wide_continuations(&self.shadow_cells, cols);
         let mut lines = Vec::new();
         let mut line = String::new();
@@ -6150,26 +6039,6 @@ mod tests {
         term.selection_range = Some((0, 8));
 
         assert_eq!(term.extract_selection_text(), "AB\nCD");
-    }
-
-    #[test]
-    fn extract_selection_text_with_engine_includes_combining_marks() {
-        let mut term = FrankenTermWeb::new();
-        term.resize(4, 1);
-        term.feed("e\u{0301}x".as_bytes());
-        term.selection_range = Some((0, 1));
-
-        assert_eq!(term.extract_selection_text(), "e\u{0301}");
-    }
-
-    #[test]
-    fn extract_selection_text_with_engine_matches_grid_boundary_newlines() {
-        let mut term = FrankenTermWeb::new();
-        term.resize(4, 2);
-        term.feed("ABCDEFGH".as_bytes());
-        term.selection_range = Some((1, 7));
-
-        assert_eq!(term.extract_selection_text(), "BCD\nEFG");
     }
 
     #[test]

@@ -6482,6 +6482,8 @@ mod tests {
             max_width: Some(4),
             max_height: None,
             collapsible: false,
+            margin: None,
+            padding: None,
         };
         let err = constraints
             .validate(id(5))
