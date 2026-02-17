@@ -4276,6 +4276,14 @@ impl AppModel {
                 if chrome_hit {
                     emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
                     return MouseDispatchResult::Consumed;
+                }
+                //
+                // CRITICAL: We MUST consume the event here to prevent it from falling
+                // through to the screen (e.g. clicking a tab shouldn't click the
+                // canvas below it).
+                if chrome_hit {
+                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
+                    return MouseDispatchResult::Consumed;
                 } MATCHED
                 //
                 // CRITICAL: We MUST consume the event here to prevent it from falling
@@ -4286,15 +4294,41 @@ impl AppModel {
                     return MouseDispatchResult::Consumed;
                 }
                 //
-                // CRITICAL: We MUST consume the event here to prevent it from falling
-                // through to the screen (e.g. clicking a tab shouldn't click the
-                // canvas below it).
+                // CRITICAL: We use PendingDrag to CAPTURE the mouse (preventing event leakage
+                // to the screen) but we deliberately do NOT promote it to a real Drag.
+                // This gives us "stateless click" behavior that is robust to jitter.
                 if chrome_hit {
-                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
+                    self.mouse_dispatcher.drag = DragPhase::PendingDrag {
+                        button,
+                        start_x: mouse.x,
+                        start_y: mouse.y,
+                        hit_id,
+                    };
+                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_capture", None, current);
                     return MouseDispatchResult::Consumed;
                 }
 
-                // Dashboard tile "pane links" should activate on MouseUp, but we
+                if pane_link_hit {
+                    self.mouse_dispatcher.drag = DragPhase::PendingDrag {
+                        button,
+                        start_x: mouse.x,
+                        start_y: mouse.y,
+                        hit_id,
+                    };
+                    emit_mouse_jsonl(mouse, hit_id, "down_pane_capture", None, current);
+                    return MouseDispatchResult::Consumed;
+                }
+                if pane_link_hit {
+                    self.mouse_dispatcher.drag = DragPhase::PendingDrag {
+                        button,
+                        start_x: mouse.x,
+                        start_y: mouse.y,
+                        hit_id,
+                    };
+                    emit_mouse_jsonl(mouse, hit_id, "down_pane_capture", None, current);
+                    return MouseDispatchResult::Consumed;
+                }
+
                 // still track drag threshold to avoid accidental navigation.
                 //
                 // UPDATE: We deliberately DO NOT capture drag state for pane links
@@ -4325,11 +4359,17 @@ impl AppModel {
             MouseEventKind::Drag(button) => {
                 match self.mouse_dispatcher.drag {
                     DragPhase::PendingDrag {
-                        start_x,
-                        start_y,
                         hit_id: drag_hit,
                         ..
                     } => {
+                        // UPDATE: We deliberately prevent promotion to Dragging.
+                        // PendingDrag now serves as a "robust click capture" state for
+                        // chrome elements, swallowing jittery moves until MouseUp.
+                        /*
+                        // UPDATE: We deliberately prevent promotion to Dragging.
+                        // PendingDrag now serves as a "robust click capture" state for
+                        // chrome elements, swallowing jittery moves until MouseUp.
+                        /*
                         let dx = mouse.x.abs_diff(start_x);
                         let dy = mouse.y.abs_diff(start_y);
                         if dx >= DRAG_THRESHOLD || dy >= DRAG_THRESHOLD {
@@ -4343,7 +4383,10 @@ impl AppModel {
                             };
                             emit_mouse_jsonl(mouse, drag_hit, "drag_start", None, current);
                         }
+                        */
+                        */
                         // Still pending — absorb the event.
+                        emit_mouse_jsonl(mouse, drag_hit, "drag_suppressed", None, current);
                         MouseDispatchResult::Consumed
                     }
                     DragPhase::Dragging {
