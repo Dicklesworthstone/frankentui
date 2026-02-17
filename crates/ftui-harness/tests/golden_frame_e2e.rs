@@ -103,7 +103,7 @@ fn full_pipeline_checksum(
     let empty = Buffer::new(width, height);
     let diff = BufferDiff::compute(&empty, &frame.buffer);
 
-    let mut presenter = Presenter::new(Vec::<u8>::new(), caps.clone());
+    let mut presenter = Presenter::new(Vec::<u8>::new(), *caps);
     presenter.present(&frame.buffer, &diff).unwrap();
     let bytes = presenter.into_inner().unwrap();
 
@@ -194,7 +194,7 @@ fn two_frame_pipeline_checksum(
 
     let empty = Buffer::new(width, height);
     let diff1 = BufferDiff::compute(&empty, &frame1.buffer);
-    let mut presenter = Presenter::new(Vec::<u8>::new(), caps.clone());
+    let mut presenter = Presenter::new(Vec::<u8>::new(), *caps);
     presenter.present(&frame1.buffer, &diff1).unwrap();
 
     // Frame 2 (diff against frame 1)
@@ -203,7 +203,7 @@ fn two_frame_pipeline_checksum(
     render_second(&mut frame2);
 
     let diff2 = BufferDiff::compute(&frame1.buffer, &frame2.buffer);
-    let mut presenter2 = Presenter::new(Vec::<u8>::new(), caps.clone());
+    let mut presenter2 = Presenter::new(Vec::<u8>::new(), *caps);
     presenter2.present(&frame2.buffer, &diff2).unwrap();
     let bytes = presenter2.into_inner().unwrap();
 
@@ -1105,8 +1105,8 @@ fn e2e_57_size_sensitivity() {
 
 #[test]
 fn e2e_tracing_present_span_emitted() {
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     struct PresentSpanChecker {
         saw_present: Arc<AtomicBool>,
