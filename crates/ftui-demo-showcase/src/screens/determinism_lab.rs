@@ -1151,18 +1151,9 @@ impl Screen for DeterminismLab {
             return;
         }
 
-        let border = Block::new()
-            .title("Determinism Lab")
-            .title_alignment(Alignment::Center)
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .style(theme::content_border());
-        let inner = border.inner(area);
-        border.render(area, frame);
-
         let rows = Flex::vertical()
             .constraints([Constraint::Fixed(2), Constraint::Fill])
-            .split(inner);
+            .split(area);
 
         self.render_header(frame, rows[0]);
 

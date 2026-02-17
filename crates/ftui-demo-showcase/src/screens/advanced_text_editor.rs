@@ -593,6 +593,8 @@ enum Focus {
     Search,
     /// Replace text input.
     Replace,
+    /// View-only mode (no text input).
+    View,
 }
 
 impl Focus {
@@ -601,6 +603,7 @@ impl Focus {
             Self::Editor => Self::Search,
             Self::Search => Self::Replace,
             Self::Replace => Self::Editor,
+            Self::View => Self::Editor,
         }
     }
 
@@ -609,6 +612,7 @@ impl Focus {
             Self::Editor => Self::Replace,
             Self::Search => Self::Editor,
             Self::Replace => Self::Search,
+            Self::View => Self::Editor,
         }
     }
 
@@ -617,6 +621,7 @@ impl Focus {
             Self::Editor => "editor",
             Self::Search => "search",
             Self::Replace => "replace",
+            Self::View => "view",
         }
     }
 }
@@ -1337,37 +1342,6 @@ impl Screen for AdvancedTextEditor {
             return Cmd::None;
         }
 
-        // Tab / Shift+Tab focus cycling when search panel is visible
-        if let Event::Key(KeyEvent {
-            code: KeyCode::Tab,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
-            && self.search_visible
-        {
-            let old_focus = self.focus;
-            if modifiers.contains(Modifiers::SHIFT) {
-                self.focus = self.focus.prev();
-            } else {
-                self.focus = self.focus.next();
-            }
-            self.update_focus_states();
-
-            // Log focus change
-            let direction = if modifiers.contains(Modifiers::SHIFT) {
-                "Shift+Tab"
-            } else {
-                "Tab"
-            };
-            let entry = DiagnosticEntry::new(DiagnosticEventKind::FocusChanged)
-                .with_focus(self.focus.as_str())
-                .with_context(format!("from {} via {direction}", old_focus.as_str()));
-            self.log_event(entry);
-
-            return Cmd::None;
-        }
-
         // Global shortcuts
         if let Event::Key(KeyEvent {
             code,
@@ -1431,7 +1405,7 @@ impl Screen for AdvancedTextEditor {
 
                     return Cmd::None;
                 }
-                // Escape: Close search panel if open, or clear selection
+                // Escape: Close search panel if open, or switch to View mode
                 (KeyCode::Escape, false, false) => {
                     if self.search_visible {
                         self.search_visible = false;
@@ -1443,11 +1417,14 @@ impl Screen for AdvancedTextEditor {
                             .with_focus("editor")
                             .with_panel_visible(false);
                         self.log_event(entry);
-                    } else {
+                    } else if self.focus != Focus::View {
+                        self.focus = Focus::View;
+                        self.update_focus_states();
                         self.editor.clear_selection();
 
-                        // Log selection cleared
-                        let entry = DiagnosticEntry::new(DiagnosticEventKind::SelectionCleared);
+                        // Log selection cleared / view mode
+                        let entry = DiagnosticEntry::new(DiagnosticEventKind::FocusChanged)
+                            .with_focus("view");
                         self.log_event(entry);
                     }
                     self.update_status();
@@ -1463,6 +1440,33 @@ impl Screen for AdvancedTextEditor {
                     self.prev_match();
                     return Cmd::None;
                 }
+                // Panel Navigation (Up/Down) - only when modifiers empty to avoid conflicts
+                (KeyCode::Down, false, false) => match self.focus {
+                    Focus::Search => {
+                        self.focus = Focus::Replace;
+                        self.update_focus_states();
+                        return Cmd::None;
+                    }
+                    Focus::Replace => {
+                        self.focus = Focus::Editor;
+                        self.update_focus_states();
+                        return Cmd::None;
+                    }
+                    _ => {}
+                },
+                (KeyCode::Up, false, false) => match self.focus {
+                    Focus::Replace => {
+                        self.focus = Focus::Search;
+                        self.update_focus_states();
+                        return Cmd::None;
+                    }
+                    Focus::Editor if self.search_visible && self.editor.cursor().line == 0 => {
+                        self.focus = Focus::Replace;
+                        self.update_focus_states();
+                        return Cmd::None;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -1533,6 +1537,9 @@ impl Screen for AdvancedTextEditor {
                     }
                 }
                 self.replace_input.handle_event(event);
+            }
+            Focus::View => {
+                // No input handling in View mode
             }
         }
 
@@ -1641,10 +1648,6 @@ impl Screen for AdvancedTextEditor {
                 action: "Replace current",
             },
             HelpEntry {
-                key: "Tab / Shift+Tab",
-                action: "Cycle focus (search open)",
-            },
-            HelpEntry {
                 key: "Ctrl+Left/Right",
                 action: "Cycle focus (search open)",
             },
@@ -1654,7 +1657,11 @@ impl Screen for AdvancedTextEditor {
             },
             HelpEntry {
                 key: "Esc",
-                action: "Close search / Clear selection",
+                action: "Close search / View mode",
+            },
+            HelpEntry {
+                key: "↑/↓",
+                action: "Navigate panels",
             },
         ]
     }
@@ -1682,7 +1689,7 @@ impl Screen for AdvancedTextEditor {
     }
 
     fn consumes_text_input(&self) -> bool {
-        true
+        self.focus != Focus::View
     }
 
     fn title(&self) -> &'static str {

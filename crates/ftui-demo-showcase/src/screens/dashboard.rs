@@ -3184,6 +3184,12 @@ impl DashboardFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashboardSplitterDrag {
+    BottomPrimary,
+    BottomSecondary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScrollHintKind {
     Scrolling,
     NotScrollable,
@@ -3291,8 +3297,16 @@ pub struct Dashboard {
     layout_code: StdCell<Rect>,
     layout_info: StdCell<Rect>,
     layout_text_fx: StdCell<Rect>,
+    layout_text_fx_primary: StdCell<Rect>,
+    layout_text_fx_secondary: StdCell<Rect>,
     layout_activity: StdCell<Rect>,
     layout_markdown: StdCell<Rect>,
+    layout_bottom_row: StdCell<Rect>,
+    layout_bottom_split_primary: StdCell<Rect>,
+    layout_bottom_split_secondary: StdCell<Rect>,
+    bottom_primary_bps: u16,
+    bottom_secondary_bps: u16,
+    active_splitter_drag: Option<DashboardSplitterDrag>,
 }
 
 impl Default for Dashboard {
@@ -3340,8 +3354,16 @@ impl Dashboard {
             layout_code: StdCell::new(Rect::default()),
             layout_info: StdCell::new(Rect::default()),
             layout_text_fx: StdCell::new(Rect::default()),
+            layout_text_fx_primary: StdCell::new(Rect::default()),
+            layout_text_fx_secondary: StdCell::new(Rect::default()),
             layout_activity: StdCell::new(Rect::default()),
             layout_markdown: StdCell::new(Rect::default()),
+            layout_bottom_row: StdCell::new(Rect::default()),
+            layout_bottom_split_primary: StdCell::new(Rect::default()),
+            layout_bottom_split_secondary: StdCell::new(Rect::default()),
+            bottom_primary_bps: 2_500,
+            bottom_secondary_bps: 5_350,
+            active_splitter_drag: None,
         }
     }
 
@@ -3415,6 +3437,62 @@ impl Dashboard {
         } else {
             DashboardFocus::None
         }
+    }
+
+    fn bottom_column_bps(&self) -> (u16, u16, u16) {
+        let first = self.bottom_primary_bps.clamp(1_800, 4_500);
+        let second_of_rest = self.bottom_secondary_bps.clamp(2_200, 7_800);
+        let rest = 10_000u16.saturating_sub(first).max(2);
+        let mut second = ((u32::from(rest) * u32::from(second_of_rest)) / 10_000) as u16;
+        second = second.clamp(1, rest.saturating_sub(1));
+        let third = rest.saturating_sub(second).max(1);
+        (first, second, third)
+    }
+
+    fn update_bottom_splitter_drag(&mut self, pointer_x: u16) {
+        let Some(active_drag) = self.active_splitter_drag else {
+            return;
+        };
+        let row = self.layout_bottom_row.get();
+        if row.is_empty() || row.width < 24 {
+            return;
+        }
+
+        let rel_x = pointer_x
+            .saturating_sub(row.x)
+            .min(row.width.saturating_sub(1));
+
+        match active_drag {
+            DashboardSplitterDrag::BottomPrimary => {
+                let min_left = 8u16;
+                let max_left = row.width.saturating_sub(16).max(min_left + 1);
+                let left_cells = rel_x.clamp(min_left, max_left);
+                let bps = ((u32::from(left_cells) * 10_000) / u32::from(row.width)) as u16;
+                self.bottom_primary_bps = bps.clamp(1_800, 4_500);
+            }
+            DashboardSplitterDrag::BottomSecondary => {
+                let first_cells =
+                    ((u32::from(row.width) * u32::from(self.bottom_primary_bps)) / 10_000) as u16;
+                let min_mid = first_cells.saturating_add(8);
+                let max_mid = row.width.saturating_sub(8).max(min_mid + 1);
+                let split_cells = rel_x.clamp(min_mid, max_mid);
+                let rest = row.width.saturating_sub(first_cells).max(1);
+                let second_cells = split_cells.saturating_sub(first_cells);
+                let bps = ((u32::from(second_cells) * 10_000) / u32::from(rest)) as u16;
+                self.bottom_secondary_bps = bps.clamp(2_200, 7_800);
+            }
+        }
+    }
+
+    /// True when `(x, y)` intersects either bottom-row splitter handle.
+    pub fn is_splitter_hit(&self, x: u16, y: u16) -> bool {
+        self.layout_bottom_split_primary.get().contains(x, y)
+            || self.layout_bottom_split_secondary.get().contains(x, y)
+    }
+
+    /// True while a bottom-row splitter drag gesture is active.
+    pub const fn is_splitter_drag_active(&self) -> bool {
+        self.active_splitter_drag.is_some()
     }
 
     fn focus_from_point(&mut self, x: u16, y: u16) {
@@ -5256,6 +5334,12 @@ impl Dashboard {
                 Constraint::Fixed(1),
             ])
             .split(inner);
+        self.layout_text_fx_primary.set(rows[1]);
+        self.layout_text_fx_secondary.set(if rows[2].is_empty() {
+            Rect::default()
+        } else {
+            rows[2]
+        });
 
         let sample_index = self.effect_index % EFFECT_GFM_SAMPLES.len();
         let header = format!(
@@ -5311,10 +5395,14 @@ impl Dashboard {
             }
         }
 
-        let hint = self
-            .scroll_hint_text(DashboardFocus::TextFx)
-            .unwrap_or("e: next set · click → Layout Lab (Pane Studio)");
-        self.render_panel_hint(frame, rows[2], hint);
+        if !rows[2].is_empty() {
+            let hint = self
+                .scroll_hint_text(DashboardFocus::TextFx)
+                .unwrap_or(
+                    "e: next set · click body → Layout Lab · click hint row → DragDrop · drag bottom dividers to resize",
+                );
+            self.render_panel_hint(frame, rows[2], hint);
+        }
     }
 
     /// Render activity feed showing recent simulated events.
@@ -5500,7 +5588,7 @@ impl Dashboard {
             return;
         }
 
-        let hint = "g:charts c:code e:fx m:md | 1-9:screens | Tab:next | t:theme | ?:help | q:quit";
+        let hint = "g:charts c:code e:fx m:md | drag bottom dividers: resize | 1-9:screens | t:theme | q:quit";
         Paragraph::new(hint)
             .style(Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE))
             .render(area, frame);
@@ -5511,12 +5599,62 @@ impl Dashboard {
         chrome::register_pane_hit(frame, self.layout_charts.get(), ScreenId::DataViz);
         chrome::register_pane_hit(frame, self.layout_code.get(), ScreenId::CodeExplorer);
         chrome::register_pane_hit(frame, self.layout_info.get(), ScreenId::Performance);
-        chrome::register_pane_hit(frame, self.layout_text_fx.get(), ScreenId::LayoutLab);
+        chrome::register_pane_hit(
+            frame,
+            self.layout_text_fx_primary.get(),
+            ScreenId::LayoutLab,
+        );
+        chrome::register_pane_hit(
+            frame,
+            self.layout_text_fx_secondary.get(),
+            ScreenId::DragDrop,
+        );
         chrome::register_pane_hit(frame, self.layout_activity.get(), ScreenId::ActionTimeline);
         chrome::register_pane_hit(
             frame,
             self.layout_markdown.get(),
             ScreenId::MarkdownRichText,
+        );
+    }
+
+    fn render_bottom_splitter_handles(&self, frame: &mut Frame) {
+        fn render_handle(frame: &mut Frame, rect: Rect, active: bool) {
+            if rect.is_empty() {
+                return;
+            }
+            let mut glyphs = String::with_capacity((rect.height as usize).saturating_mul(2));
+            for row in 0..rect.height {
+                glyphs.push(if row == rect.height / 2 { '⋮' } else { '│' });
+                if row + 1 < rect.height {
+                    glyphs.push('\n');
+                }
+            }
+            let style = if active {
+                Style::new()
+                    .fg(theme::accent::PRIMARY)
+                    .bg(theme::alpha::SURFACE)
+                    .attrs(StyleFlags::BOLD)
+            } else {
+                Style::new().fg(theme::fg::MUTED).bg(theme::alpha::SURFACE)
+            };
+            Paragraph::new(glyphs).style(style).render(rect, frame);
+        }
+
+        render_handle(
+            frame,
+            self.layout_bottom_split_primary.get(),
+            matches!(
+                self.active_splitter_drag,
+                Some(DashboardSplitterDrag::BottomPrimary)
+            ),
+        );
+        render_handle(
+            frame,
+            self.layout_bottom_split_secondary.get(),
+            matches!(
+                self.active_splitter_drag,
+                Some(DashboardSplitterDrag::BottomSecondary)
+            ),
         );
     }
 
@@ -5563,20 +5701,37 @@ impl Dashboard {
         self.render_info(frame, top_cols[3], (area.width, area.height));
 
         // Bottom row: stats, activity feed, markdown
+        let (b1, b2, b3) = self.bottom_column_bps();
         let bottom_cols = Flex::horizontal()
             .constraints([
-                Constraint::Percentage(25.0),
-                Constraint::Percentage(40.0),
-                Constraint::Percentage(35.0),
+                Constraint::Ratio(u32::from(b1), 10_000),
+                Constraint::Ratio(u32::from(b2), 10_000),
+                Constraint::Ratio(u32::from(b3), 10_000),
             ])
             .split(content_rows[1]);
+        self.layout_bottom_row.set(content_rows[1]);
+        self.layout_bottom_split_primary.set(Rect::new(
+            bottom_cols[0].right().saturating_sub(1),
+            content_rows[1].y,
+            1,
+            content_rows[1].height,
+        ));
+        self.layout_bottom_split_secondary.set(Rect::new(
+            bottom_cols[1].right().saturating_sub(1),
+            content_rows[1].y,
+            1,
+            content_rows[1].height,
+        ));
 
         self.layout_text_fx.set(bottom_cols[0]);
+        self.layout_text_fx_primary.set(bottom_cols[0]);
+        self.layout_text_fx_secondary.set(Rect::default());
         self.layout_activity.set(bottom_cols[1]);
         self.layout_markdown.set(bottom_cols[2]);
         self.render_text_effects(frame, bottom_cols[0]);
         self.render_activity_feed(frame, bottom_cols[1]);
         self.render_markdown(frame, bottom_cols[2]);
+        self.render_bottom_splitter_handles(frame);
     }
 
     /// Medium layout (70x20+).
@@ -5622,20 +5777,37 @@ impl Dashboard {
         self.render_info(frame, right_split[1], (area.width, area.height));
 
         // Bottom row: text effects, activity feed, markdown stream
+        let (b1, b2, b3) = self.bottom_column_bps();
         let bottom_cols = Flex::horizontal()
             .constraints([
-                Constraint::Percentage(30.0),
-                Constraint::Percentage(40.0),
-                Constraint::Percentage(30.0),
+                Constraint::Ratio(u32::from(b1), 10_000),
+                Constraint::Ratio(u32::from(b2), 10_000),
+                Constraint::Ratio(u32::from(b3), 10_000),
             ])
             .split(content_rows[1]);
+        self.layout_bottom_row.set(content_rows[1]);
+        self.layout_bottom_split_primary.set(Rect::new(
+            bottom_cols[0].right().saturating_sub(1),
+            content_rows[1].y,
+            1,
+            content_rows[1].height,
+        ));
+        self.layout_bottom_split_secondary.set(Rect::new(
+            bottom_cols[1].right().saturating_sub(1),
+            content_rows[1].y,
+            1,
+            content_rows[1].height,
+        ));
 
         self.layout_text_fx.set(bottom_cols[0]);
+        self.layout_text_fx_primary.set(bottom_cols[0]);
+        self.layout_text_fx_secondary.set(Rect::default());
         self.layout_activity.set(bottom_cols[1]);
         self.layout_markdown.set(bottom_cols[2]);
         self.render_text_effects(frame, bottom_cols[0]);
         self.render_activity_feed(frame, bottom_cols[1]);
         self.render_markdown(frame, bottom_cols[2]);
+        self.render_bottom_splitter_handles(frame);
     }
 
     /// Tiny layout (<70x20).
@@ -5673,8 +5845,13 @@ impl Dashboard {
         self.layout_info.set(right_rows[1]);
         self.layout_code.set(Rect::default());
         self.layout_text_fx.set(Rect::default());
+        self.layout_text_fx_primary.set(Rect::default());
+        self.layout_text_fx_secondary.set(Rect::default());
         self.layout_activity.set(Rect::default());
         self.layout_markdown.set(Rect::default());
+        self.layout_bottom_row.set(Rect::default());
+        self.layout_bottom_split_primary.set(Rect::default());
+        self.layout_bottom_split_secondary.set(Rect::default());
 
         // Sparklines (just CPU and MEM)
         if !right_rows[0].is_empty() && !self.simulated_data.cpu_history.is_empty() {
@@ -5830,11 +6007,52 @@ impl Screen for Dashboard {
         if let Event::Mouse(mouse) = event {
             match mouse.kind {
                 MouseEventKind::Moved => {
-                    self.hover = self.panel_from_point(mouse.x, mouse.y);
+                    if self.active_splitter_drag.is_some() {
+                        self.update_bottom_splitter_drag(mouse.x);
+                        self.hover = DashboardFocus::None;
+                    } else {
+                        self.hover = self.panel_from_point(mouse.x, mouse.y);
+                    }
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    if self
+                        .layout_bottom_split_primary
+                        .get()
+                        .contains(mouse.x, mouse.y)
+                    {
+                        self.active_splitter_drag = Some(DashboardSplitterDrag::BottomPrimary);
+                        self.update_bottom_splitter_drag(mouse.x);
+                        self.hover = DashboardFocus::None;
+                        return Cmd::None;
+                    }
+                    if self
+                        .layout_bottom_split_secondary
+                        .get()
+                        .contains(mouse.x, mouse.y)
+                    {
+                        self.active_splitter_drag = Some(DashboardSplitterDrag::BottomSecondary);
+                        self.update_bottom_splitter_drag(mouse.x);
+                        self.hover = DashboardFocus::None;
+                        return Cmd::None;
+                    }
                     self.focus_from_point(mouse.x, mouse.y);
                     self.hover = self.focus;
+                }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if self.active_splitter_drag.is_some() {
+                        self.update_bottom_splitter_drag(mouse.x);
+                        self.hover = DashboardFocus::None;
+                    }
+                }
+                MouseEventKind::Up(button) => {
+                    if self.active_splitter_drag.is_some() {
+                        if button == MouseButton::Left {
+                            self.update_bottom_splitter_drag(mouse.x);
+                        }
+                        self.active_splitter_drag = None;
+                        self.hover = self.panel_from_point(mouse.x, mouse.y);
+                        return Cmd::None;
+                    }
                 }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     let panel = self.panel_from_point(mouse.x, mouse.y);
@@ -5878,6 +6096,9 @@ impl Screen for Dashboard {
             ..
         }) = event
         {
+            // Defensive: any keyboard interaction cancels an in-flight splitter
+            // drag so state cannot remain latched across mode/screen changes.
+            self.active_splitter_drag = None;
             match code {
                 // Focus navigation
                 KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
@@ -6013,6 +6234,14 @@ impl Screen for Dashboard {
                 key: "Mouse",
                 action: "Hover tile to highlight; click to open",
             },
+            HelpEntry {
+                key: "Drag divider",
+                action: "Resize bottom panes (TextFX/Activity/Markdown)",
+            },
+            HelpEntry {
+                key: "TextFX hint row",
+                action: "Open Drag & Drop lab",
+            },
         ]
     }
 
@@ -6082,6 +6311,131 @@ mod tests {
         let mut state = Dashboard::new();
         state.hover = DashboardFocus::TextFx;
         assert_eq!(state.preferred_link_target(), Some(ScreenId::LayoutLab));
+    }
+
+    #[test]
+    fn dashboard_text_fx_secondary_link_area_is_exposed() {
+        let mut state = Dashboard::new();
+        state.tick(1);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let text_fx = state.layout_text_fx.get();
+        let secondary = state.layout_text_fx_secondary.get();
+        assert!(!text_fx.is_empty(), "text fx panel should be laid out");
+        assert!(
+            !secondary.is_empty(),
+            "text fx hint row should be mapped to secondary link area"
+        );
+        assert!(
+            text_fx.contains(secondary.x, secondary.y),
+            "secondary link row should live inside text fx panel"
+        );
+    }
+
+    #[test]
+    fn dashboard_dragging_bottom_splitter_updates_layout_ratios() {
+        let mut state = Dashboard::new();
+        state.tick(1);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let splitter = state.layout_bottom_split_primary.get();
+        assert!(!splitter.is_empty(), "bottom splitter should be visible");
+        let before = state.bottom_primary_bps;
+        let y = splitter.y + splitter.height / 2;
+        let x = splitter.x;
+
+        state.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        )));
+        state.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            x.saturating_add(6),
+            y,
+        )));
+        state.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            x.saturating_add(6),
+            y,
+        )));
+
+        assert_ne!(
+            state.bottom_primary_bps, before,
+            "dragging splitter should resize bottom-pane ratios"
+        );
+    }
+
+    #[test]
+    fn dashboard_splitter_drag_clears_on_non_left_up() {
+        let mut state = Dashboard::new();
+        state.tick(1);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let splitter = state.layout_bottom_split_primary.get();
+        assert!(!splitter.is_empty(), "bottom splitter should be visible");
+        let y = splitter.y + splitter.height / 2;
+        let x = splitter.x;
+
+        state.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        )));
+        assert!(state.is_splitter_drag_active());
+
+        state.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Right),
+            x,
+            y,
+        )));
+
+        assert!(
+            !state.is_splitter_drag_active(),
+            "splitter drag state should clear on any mouse-up"
+        );
+    }
+
+    #[test]
+    fn dashboard_splitter_drag_clears_on_key_press() {
+        let mut state = Dashboard::new();
+        state.tick(1);
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        state.view(&mut frame, Rect::new(0, 0, 120, 40));
+
+        let splitter = state.layout_bottom_split_primary.get();
+        assert!(!splitter.is_empty(), "bottom splitter should be visible");
+        let y = splitter.y + splitter.height / 2;
+        let x = splitter.x;
+
+        state.update(&Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        )));
+        assert!(state.is_splitter_drag_active());
+
+        state.update(&Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: ftui_core::event::Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        }));
+
+        assert!(
+            !state.is_splitter_drag_active(),
+            "splitter drag state should clear when keyboard navigation occurs"
+        );
     }
 
     #[test]

@@ -577,18 +577,27 @@ impl Screen for MarkdownLiveEditor {
         }) = event
         {
             match code {
-                KeyCode::Tab => {
-                    self.focus = self.focus.toggle();
+                KeyCode::Escape => {
+                    self.focus = Focus::Preview;
+                    self.sync_focus();
+                    return Cmd::None;
+                }
+                KeyCode::Down if self.focus == Focus::Search && modifiers.is_empty() => {
+                    self.focus = Focus::Editor;
+                    self.sync_focus();
+                    return Cmd::None;
+                }
+                KeyCode::Up
+                    if self.focus == Focus::Editor
+                        && modifiers.is_empty()
+                        && self.editor.cursor().line == 0 =>
+                {
+                    self.focus = Focus::Search;
                     self.sync_focus();
                     return Cmd::None;
                 }
                 KeyCode::Char('f') if modifiers.contains(Modifiers::CTRL) => {
                     self.focus = Focus::Search;
-                    self.sync_focus();
-                    return Cmd::None;
-                }
-                KeyCode::Escape if self.focus == Focus::Search => {
-                    self.focus = Focus::Editor;
                     self.sync_focus();
                     return Cmd::None;
                 }
@@ -664,29 +673,10 @@ impl Screen for MarkdownLiveEditor {
             return;
         }
 
-        // Clear the full area to avoid stale borders in gaps.
-        Paragraph::new("")
-            .style(Style::new().bg(theme::alpha::SURFACE))
-            .render(area, frame);
-
-        let outer = Block::new()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("Live Markdown Editor")
-            .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::MARKDOWN));
-
-        let inner = outer.inner(area);
-        outer.render(area, frame);
-
-        if inner.is_empty() {
-            return;
-        }
-
         let rows = Flex::vertical()
             .gap(theme::spacing::XS)
             .constraints([Constraint::Fixed(3), Constraint::Min(1)])
-            .split(inner);
+            .split(area);
 
         self.layout_search.set(rows[0]);
         self.render_search_bar(frame, rows[0]);
@@ -709,8 +699,8 @@ impl Screen for MarkdownLiveEditor {
     fn keybindings(&self) -> Vec<HelpEntry> {
         vec![
             HelpEntry {
-                key: "Tab",
-                action: "Toggle focus",
+                key: "Esc",
+                action: "Preview mode",
             },
             HelpEntry {
                 key: "Mouse",

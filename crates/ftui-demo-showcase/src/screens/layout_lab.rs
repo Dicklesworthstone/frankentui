@@ -24,7 +24,6 @@ use ftui_widgets::block::{Alignment, Block};
 use ftui_widgets::borders::{BorderType, Borders};
 use ftui_widgets::columns::Columns;
 use ftui_widgets::group::Group;
-use ftui_widgets::layout_debugger::LayoutDebugger;
 use ftui_widgets::padding::Padding;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::rule::Rule;
@@ -32,9 +31,9 @@ use ftui_widgets::rule::Rule;
 use super::{HelpEntry, Screen};
 use crate::pane_interaction::{
     ActivePaneGesture, PaneDragSemanticsContext, PaneDragSemanticsInput, PaneGestureArmState,
-    PanePreviewState, PaneTimelineApplyState, apply_drag_semantics, apply_operations_with_timeline,
-    arm_active_gesture, default_pane_layout_tree, pointer_down_context_at,
-    rollback_timeline_to_cursor, update_selection_for_pointer_down,
+    PanePreviewState, PaneTimelineApplyState, PaneTimelineStatus, apply_drag_semantics,
+    apply_operations_with_timeline, arm_active_gesture, default_pane_layout_tree,
+    pointer_down_context_at, rollback_timeline_to_cursor, update_selection_for_pointer_down,
 };
 use crate::theme;
 
@@ -91,8 +90,8 @@ pub struct LayoutLab {
     padding_amount: u16,
     /// Align demo position index (0-8 for 9 positions).
     align_pos: usize,
-    /// Layout debugger instance.
-    debugger: LayoutDebugger,
+    /// Mutable preset constraints (one vector per preset).
+    preset_constraints_by_preset: Vec<Vec<Constraint>>,
     /// Show debug overlay.
     show_debug: bool,
     /// Cached preview area for mouse hit-testing.
@@ -168,8 +167,6 @@ impl Default for LayoutLab {
 
 impl LayoutLab {
     pub fn new() -> Self {
-        let mut debugger = LayoutDebugger::new();
-        debugger.set_enabled(true);
         let pane_tree = default_pane_layout_tree();
         let mut pane_selection = PaneSelectionState::default();
         if let Some(primary) = first_leaf_id(&pane_tree) {
@@ -185,7 +182,9 @@ impl LayoutLab {
             margin: 0,
             padding_amount: theme::spacing::XS,
             align_pos: 4, // Center/Middle
-            debugger,
+            preset_constraints_by_preset: (0..PRESET_COUNT)
+                .map(Self::default_constraints_for_preset)
+                .collect(),
             show_debug: false,
             layout_preview: Cell::new(Rect::default()),
             layout_controls: Cell::new(Rect::default()),
@@ -210,9 +209,8 @@ impl LayoutLab {
         }
     }
 
-    /// Get the constraints for the current preset.
-    fn preset_constraints(&self) -> Vec<Constraint> {
-        match self.current_preset {
+    fn default_constraints_for_preset(preset: usize) -> Vec<Constraint> {
+        match preset {
             0 | 1 => vec![
                 Constraint::Fixed(5),
                 Constraint::Percentage(30.0),
@@ -241,6 +239,14 @@ impl LayoutLab {
         }
     }
 
+    /// Get the constraints for the current preset.
+    fn preset_constraints(&self) -> Vec<Constraint> {
+        self.preset_constraints_by_preset
+            .get(self.current_preset)
+            .cloned()
+            .unwrap_or_else(|| Self::default_constraints_for_preset(self.current_preset))
+    }
+
     fn constraint_label(c: &Constraint) -> String {
         match c {
             Constraint::Fixed(v) => format!("Fixed({v})"),
@@ -257,6 +263,13 @@ impl LayoutLab {
 
     fn current_alignment(&self) -> FlexAlignment {
         ALIGNMENTS[self.alignment_idx]
+    }
+
+    fn pane_timeline_status(&self) -> PaneTimelineStatus {
+        PaneTimelineStatus {
+            cursor: self.pane_timeline.cursor,
+            len: self.pane_timeline.entries.len(),
+        }
     }
 }
 
@@ -462,19 +475,31 @@ impl Screen for LayoutLab {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
-        if area.height < 8 || area.width < 40 {
+        if area.height < 4 || area.width < 8 {
+            self.layout_preview.set(Rect::default());
+            self.layout_controls.set(Rect::default());
+            self.pane_preview.set(Rect::default());
             Paragraph::new("Terminal too small for Layout Lab")
                 .style(theme::muted())
                 .render(area, frame);
             return;
         }
 
+        // Keep pane interactions available at smaller heights by rendering the
+        // preview region only instead of hard-gating the entire screen.
+        if area.height < 11 {
+            self.layout_preview.set(area);
+            self.layout_controls.set(Rect::default());
+            self.render_preview(frame, area);
+            return;
+        }
+
         // Top-level: upper preview + lower controls/demos
         let main_chunks = Flex::vertical()
             .constraints([
-                Constraint::Percentage(55.0),
+                Constraint::Percentage(58.0),
                 Constraint::Fixed(1),
-                Constraint::Min(8),
+                Constraint::Min(6),
             ])
             .split(area);
 
@@ -571,9 +596,45 @@ impl Screen for LayoutLab {
 impl LayoutLab {
     /// Adjust the selected constraint's value by delta.
     fn adjust_constraint(&mut self, delta: i16) {
-        // Only presets 0, 1, 4 have meaningfully adjustable constraints
-        let _ = delta; // Constraint values are fixed in our presets for simplicity
-        // The interactive preview already shows the effect of gap/margin/alignment
+        let step = delta.signum();
+        if step == 0 {
+            return;
+        }
+        let Some(constraints) = self
+            .preset_constraints_by_preset
+            .get_mut(self.current_preset)
+        else {
+            return;
+        };
+        if constraints.is_empty() {
+            return;
+        }
+        let idx = self
+            .selected_constraint
+            .min(constraints.len().saturating_sub(1));
+        match &mut constraints[idx] {
+            Constraint::Fixed(v) | Constraint::Min(v) | Constraint::Max(v) => {
+                let next = i32::from(*v) + i32::from(step);
+                *v = next.clamp(1, 400) as u16;
+            }
+            Constraint::Percentage(v) => {
+                *v = (*v + f32::from(step) * 2.5).clamp(5.0, 95.0);
+            }
+            Constraint::Ratio(n, d) => {
+                let next_num = i32::try_from(*n).unwrap_or(1) + i32::from(step);
+                *n = next_num.clamp(1, 24) as u32;
+                if *d == 0 {
+                    *d = 1;
+                }
+            }
+            Constraint::FitContentBounded { min, max } => {
+                let min_i = i32::from(*min);
+                let max_i = i32::from(*max);
+                let next_min = (min_i + i32::from(step)).clamp(1, max_i.max(1));
+                *min = next_min as u16;
+            }
+            Constraint::Fill | Constraint::FitContent | Constraint::FitMin => {}
+        }
     }
 
     /// Render the upper half: layout preview with colored blocks.
@@ -587,14 +648,6 @@ impl LayoutLab {
         let inner = block.inner(area);
         block.render(area, frame);
 
-        if inner.width < 36 || inner.height < 8 {
-            self.pane_preview.set(Rect::default());
-            Paragraph::new("Resize wider to unlock Pane Studio.")
-                .style(theme::muted())
-                .render(inner, frame);
-            return;
-        }
-
         if inner.width >= 84 {
             let cols = Flex::horizontal()
                 .gap(theme::spacing::XS)
@@ -602,9 +655,17 @@ impl LayoutLab {
                 .split(inner);
             self.render_layout_preview_panel(frame, cols[0]);
             self.render_pane_preview_panel(frame, cols[1]);
+        } else if inner.height >= 14 {
+            let rows = Flex::vertical()
+                .gap(theme::spacing::XS)
+                .constraints([Constraint::Percentage(54.0), Constraint::Percentage(46.0)])
+                .split(inner);
+            self.render_layout_preview_panel(frame, rows[0]);
+            self.render_pane_preview_panel(frame, rows[1]);
         } else {
-            self.pane_preview.set(Rect::default());
-            self.render_layout_preview_panel(frame, inner);
+            // Ultra-compact mode keeps pane interactions available instead of
+            // hard-disabling them at narrower widths.
+            self.render_pane_preview_panel(frame, inner);
         }
     }
 
@@ -687,7 +748,7 @@ impl LayoutLab {
         block.render(area, frame);
         self.pane_preview.set(inner);
 
-        if inner.width < 20 || inner.height < 8 {
+        if inner.width < 8 || inner.height < 4 {
             Paragraph::new("Pane studio needs a bit more space.")
                 .style(theme::muted())
                 .render(inner, frame);
@@ -768,11 +829,12 @@ impl LayoutLab {
         self.render_pane_preview_overlays(frame, inner);
 
         let mode_label = pane_mode_label(self.pane_intelligence_mode);
+        let timeline_status = self.pane_timeline_status();
         let status = format!(
             "mode:{mode_label}  sel:{}  tl:{}/{}  ops:{}",
             self.pane_selection.selected.len(),
-            self.pane_timeline.cursor,
-            self.pane_timeline.entries.len(),
+            timeline_status.cursor,
+            timeline_status.len,
             self.pane_last_applied_ops,
         );
         let status_area = Rect::new(inner.x, inner.y, inner.width.min(48), 1);
@@ -1303,6 +1365,7 @@ impl LayoutLab {
             .zone
             .map(pane_zone_label)
             .unwrap_or("none");
+        let timeline_status = self.pane_timeline_status();
 
         let info = format!(
             "Preset: [{}] {}\n\
@@ -1332,8 +1395,8 @@ impl LayoutLab {
             gesture,
             preview,
             self.pane_preview_state.dock_strength_bps / 100,
-            self.pane_timeline.cursor,
-            self.pane_timeline.entries.len(),
+            timeline_status.cursor,
+            timeline_status.len,
             self.pane_magnetic_field_cells,
             self.pane_workspace_generation,
         );
@@ -2481,6 +2544,34 @@ mod tests {
         assert!(
             !lab.pane_preview.get().is_empty(),
             "pane preview area should be available at wide sizes"
+        );
+    }
+
+    #[test]
+    fn pane_preview_area_remains_available_on_narrow_layout() {
+        let lab = LayoutLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(72, 24, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 72, 24));
+        assert!(
+            !lab.pane_preview.get().is_empty(),
+            "pane preview should remain available on narrower layouts"
+        );
+    }
+
+    #[test]
+    fn compact_height_mode_keeps_pane_preview_connected() {
+        let lab = LayoutLab::new();
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(72, 10, &mut pool);
+        lab.view(&mut frame, Rect::new(0, 0, 72, 10));
+        assert!(
+            !lab.pane_preview.get().is_empty(),
+            "compact-height mode should still expose pane preview"
+        );
+        assert!(
+            lab.layout_controls.get().is_empty(),
+            "compact-height mode should skip controls instead of hard-gating the screen"
         );
     }
 

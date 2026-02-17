@@ -798,24 +798,13 @@ impl Screen for WidgetBuilder {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::new()
-            .title("Widget Builder Sandbox")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .style(theme::panel_border_style(
-                true,
-                theme::screen_accent::WIDGET_GALLERY,
-            ));
-        let inner = block.inner(area);
-        block.render(area, frame);
-
-        if inner.is_empty() {
+        if area.is_empty() {
             return;
         }
 
         let rows = Flex::vertical()
             .constraints([Constraint::Fixed(2), Constraint::Fill, Constraint::Fixed(6)])
-            .split(inner);
+            .split(area);
         if rows.is_empty() {
             return;
         }

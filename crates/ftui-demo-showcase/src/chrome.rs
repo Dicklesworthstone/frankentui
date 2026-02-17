@@ -1340,6 +1340,8 @@ pub fn accent_for(id: ScreenId) -> theme::ColorToken {
         ScreenId::MermaidShowcase => theme::screen_accent::DATA_VIZ,
         ScreenId::MermaidMegaShowcase => theme::screen_accent::DATA_VIZ,
         ScreenId::MarkdownLiveEditor => theme::screen_accent::MARKDOWN,
+        ScreenId::DragDrop => theme::screen_accent::DRAG_DROP,
+        ScreenId::QuakeEasterEgg => theme::screen_accent::QUAKE,
     }
 }
 

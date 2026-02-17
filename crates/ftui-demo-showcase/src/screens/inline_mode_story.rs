@@ -456,20 +456,13 @@ impl Screen for InlineModeStory {
         self.layout_inline_bar.set(Rect::default());
         self.layout_alt_header.set(Rect::default());
 
-        let outer = Block::new()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("Inline Mode Story")
-            .style(Style::new().fg(theme::fg::PRIMARY));
-        let inner = outer.inner(area);
-        outer.render(area, frame);
-        if inner.is_empty() {
+        if area.is_empty() {
             return;
         }
 
-        self.layout_content.set(inner);
+        self.layout_content.set(area);
 
-        let header_height = match inner.height {
+        let header_height = match area.height {
             0 | 1 => 0,
             2 | 3 => 1,
             _ => 2,
@@ -477,16 +470,16 @@ impl Screen for InlineModeStory {
 
         if header_height == 0 {
             if self.compare {
-                self.render_compare(frame, inner);
+                self.render_compare(frame, area);
             } else {
-                self.render_single(frame, inner);
+                self.render_single(frame, area);
             }
             return;
         }
 
         let chunks = Flex::vertical()
             .constraints([Constraint::Fixed(header_height), Constraint::Fill])
-            .split(inner);
+            .split(area);
         self.layout_header.set(chunks[0]);
         self.render_header(frame, chunks[0]);
 

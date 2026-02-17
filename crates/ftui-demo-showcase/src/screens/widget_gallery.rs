@@ -7,7 +7,7 @@ use std::cell::Cell;
 use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_layout::{Constraint, Flex};
-use ftui_render::frame::Frame;
+use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_runtime::Cmd;
 use ftui_style::{Style, StyleFlags};
 use ftui_text::WrapMode;
@@ -39,7 +39,9 @@ use ftui_widgets::panel::Panel;
 use ftui_widgets::paragraph::Paragraph;
 use ftui_widgets::progress::{MiniBar, MiniBarColors, ProgressBar};
 use ftui_widgets::rule::Rule;
-use ftui_widgets::scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ftui_widgets::scrollbar::{
+    SCROLLBAR_PART_TRACK, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ftui_widgets::sparkline::Sparkline;
 use ftui_widgets::spinner::SpinnerState;
 use ftui_widgets::status_line::{StatusItem, StatusLine};
@@ -73,6 +75,8 @@ const SECTION_NAMES: [&str; SECTION_COUNT] = [
     "H: Advanced",
 ];
 
+const VIRTUALIZED_SCROLLBAR_HIT_ID: HitId = HitId::new(0x1777);
+
 #[derive(Debug, Clone)]
 struct GalleryVirtualItem {
     label: &'static str,
@@ -102,6 +106,7 @@ pub struct WidgetGallery {
     virtualized_items: Vec<GalleryVirtualItem>,
     virtualized_state: RefCell<VirtualizedListState>,
     layout_tabs: Cell<Rect>,
+    layout_virtualized: Cell<Rect>,
 }
 
 impl Default for WidgetGallery {
@@ -176,6 +181,7 @@ impl WidgetGallery {
             virtualized_items,
             virtualized_state: RefCell::new(virtualized_state),
             layout_tabs: Cell::new(Rect::default()),
+            layout_virtualized: Cell::new(Rect::default()),
         }
     }
 }
@@ -193,6 +199,43 @@ impl Screen for WidgetGallery {
                     if idx < SECTION_COUNT {
                         self.current_section = idx;
                     }
+                }
+            }
+
+            // Wire the virtualized list mouse semantics (including scrollbar drag/click)
+            // in the Advanced section.
+            if self.current_section == 7 {
+                let viewport = self.layout_virtualized.get();
+                if !viewport.is_empty() && viewport.contains(mouse.x, mouse.y) {
+                    let total_items = self.virtualized_items.len();
+                    let fixed_height = 1u16;
+                    let viewport_height = viewport.height;
+                    let items_per_viewport = viewport_height.div_ceil(fixed_height.max(1)) as usize;
+                    let needs_scrollbar = total_items > items_per_viewport;
+
+                    let hit = if needs_scrollbar
+                        && viewport.width > 0
+                        && mouse.x == viewport.right().saturating_sub(1)
+                    {
+                        let track_len = u64::from(viewport_height);
+                        let track_pos = u64::from(mouse.y.saturating_sub(viewport.y));
+                        let data = (SCROLLBAR_PART_TRACK << 56)
+                            | ((track_len & 0x0FFF_FFFF) << 28)
+                            | (track_pos & 0x0FFF_FFFF);
+                        Some((VIRTUALIZED_SCROLLBAR_HIT_ID, HitRegion::Scrollbar, data))
+                    } else {
+                        None
+                    };
+
+                    let mut state = self.virtualized_state.borrow_mut();
+                    let _ = state.handle_mouse(
+                        mouse,
+                        hit,
+                        VIRTUALIZED_SCROLLBAR_HIT_ID,
+                        total_items,
+                        viewport_height,
+                        fixed_height,
+                    );
                 }
             }
             return Cmd::None;
@@ -320,6 +363,7 @@ impl WidgetGallery {
     }
 
     fn render_section_content(&self, frame: &mut Frame, area: Rect) {
+        self.layout_virtualized.set(Rect::default());
         match self.current_section {
             0 => self.render_inputs(frame, area),
             1 => self.render_display_widgets(frame, area),
@@ -1791,6 +1835,7 @@ impl WidgetGallery {
             .style(theme::content_border());
         let inner = block.inner(area);
         block.render(area, frame);
+        self.layout_virtualized.set(inner);
 
         if inner.is_empty() {
             return;
@@ -1798,6 +1843,7 @@ impl WidgetGallery {
 
         let list = VirtualizedList::new(&self.virtualized_items)
             .fixed_height(1)
+            .hit_id(VIRTUALIZED_SCROLLBAR_HIT_ID)
             .style(Style::new().fg(theme::fg::SECONDARY))
             .highlight_style(
                 Style::new()
@@ -2118,5 +2164,21 @@ mod tests {
         assert_eq!(gallery.spinner_state.current_frame, 1);
         gallery.tick(2);
         assert_eq!(gallery.spinner_state.current_frame, 2);
+    }
+
+    #[test]
+    fn gallery_virtualized_section_wires_mouse_scrollbar_input() {
+        let mut gallery = WidgetGallery::new();
+        gallery.current_section = 7;
+        gallery.layout_virtualized.set(Rect::new(0, 0, 10, 3));
+
+        let down_track = Event::Mouse(ftui_core::event::MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            9,
+            2,
+        ));
+        gallery.update(&down_track);
+
+        assert_eq!(gallery.virtualized_state.borrow().scroll_offset, 3);
     }
 }

@@ -258,16 +258,32 @@ impl DragDropDemo {
     /// Switch focus between lists.
     fn switch_list(&mut self) {
         self.focused_list = 1 - self.focused_list;
+        self.normalize_selection();
+    }
+
+    /// Keep selected index within the focused list bounds.
+    fn normalize_selection(&mut self) {
         let len = self.focused_items().len();
-        if self.selected_index >= len {
-            self.selected_index = len.saturating_sub(1);
+        if len == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= len {
+            self.selected_index = len - 1;
         }
     }
 
     /// Move the selected item up in the list (reorder).
     fn move_item_up(&mut self) {
         let idx = self.selected_index;
+        let len = self.focused_items().len();
+        if len == 0 {
+            self.selected_index = 0;
+            return;
+        }
         if idx == 0 {
+            return;
+        }
+        if idx >= len {
+            self.selected_index = len - 1;
             return;
         }
         let items = self.focused_items_mut();
@@ -330,7 +346,9 @@ impl DragDropDemo {
             self.right_list.len()
         };
 
-        if self.selected_index >= new_from_len && new_from_len > 0 {
+        if new_from_len == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= new_from_len {
             self.selected_index = new_from_len - 1;
         }
         self.announcements
@@ -365,6 +383,14 @@ impl DragDropDemo {
                 let targets = self.build_drop_targets();
 
                 if !self.keyboard_drag.is_active() && key == KeyboardDragKey::Activate {
+                    let len = self.focused_items().len();
+                    if len == 0 {
+                        self.selected_index = 0;
+                        self.announcements
+                            .push("No items available to drag".to_string());
+                        return true;
+                    }
+                    self.normalize_selection();
                     // Start drag from selected item - copy data before borrowing keyboard_drag
                     let (item_label, item_id) = {
                         let item = &self.focused_items()[self.selected_index];
@@ -418,14 +444,39 @@ impl DragDropDemo {
 
     /// Build drop targets from both lists.
     fn build_drop_targets(&self) -> Vec<DropTargetInfo> {
+        fn fallback_area(x: u16, y: u16, width: u16, rows: usize) -> Rect {
+            Rect::new(x, y, width, rows.max(1).min(u16::MAX as usize) as u16)
+        }
+
         let mut targets = Vec::new();
+        let left_area = {
+            let rect = self.layout_left.get();
+            if rect.is_empty() {
+                fallback_area(0, 0, 30, self.left_list.len())
+            } else {
+                rect
+            }
+        };
+        let right_area = {
+            let rect = self.layout_right.get();
+            if rect.is_empty() {
+                fallback_area(40, 0, 30, self.right_list.len())
+            } else {
+                rect
+            }
+        };
 
         // Left list items as targets
         for (i, item) in self.left_list.iter().enumerate() {
             targets.push(DropTargetInfo::new(
                 ftui_widgets::measure_cache::WidgetId(item.id as u64),
                 format!("Left: {}", item.label),
-                Rect::new(0, i as u16, 30, 1), // Simplified bounds
+                Rect::new(
+                    left_area.x,
+                    left_area.y.saturating_add(i as u16),
+                    left_area.width.max(1),
+                    1,
+                ),
             ));
         }
 
@@ -434,7 +485,12 @@ impl DragDropDemo {
             targets.push(DropTargetInfo::new(
                 ftui_widgets::measure_cache::WidgetId(item.id as u64),
                 format!("Right: {}", item.label),
-                Rect::new(40, i as u16, 30, 1), // Simplified bounds
+                Rect::new(
+                    right_area.x,
+                    right_area.y.saturating_add(i as u16),
+                    right_area.width.max(1),
+                    1,
+                ),
             ));
         }
 
@@ -503,6 +559,7 @@ impl Screen for DragDropDemo {
 
                 _ => {}
             }
+            self.normalize_selection();
         }
 
         Cmd::None
@@ -519,21 +576,32 @@ impl Screen for DragDropDemo {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
-        if area.height < 8 || area.width < 40 {
-            Paragraph::new("Terminal too small for drag demo")
+        if area.height < 4 || area.width < 12 {
+            self.layout_tabs.set(Rect::default());
+            self.layout_left.set(Rect::default());
+            self.layout_right.set(Rect::default());
+            Paragraph::new("Drag & Drop needs a little more space.")
                 .style(theme::muted())
                 .render(area, frame);
             return;
         }
 
-        // Layout: mode tabs (1) + content + instructions (3)
-        let rows = Flex::vertical()
-            .constraints([
-                Constraint::Fixed(1),
-                Constraint::Min(6),
-                Constraint::Fixed(3),
-            ])
-            .split(area);
+        // Layout: mode tabs + content + optional instructions row.
+        let show_instructions = area.height >= 7;
+        let rows = if show_instructions {
+            let instruction_height = if area.height >= 11 { 3 } else { 2 };
+            Flex::vertical()
+                .constraints([
+                    Constraint::Fixed(1),
+                    Constraint::Min(3),
+                    Constraint::Fixed(instruction_height),
+                ])
+                .split(area)
+        } else {
+            Flex::vertical()
+                .constraints([Constraint::Fixed(1), Constraint::Min(1)])
+                .split(area)
+        };
 
         self.layout_tabs.set(rows[0]);
         self.render_mode_tabs(frame, rows[0]);
@@ -544,7 +612,9 @@ impl Screen for DragDropDemo {
             DemoMode::KeyboardDrag => self.render_keyboard_drag(frame, rows[1]),
         }
 
-        self.render_instructions(frame, rows[2]);
+        if show_instructions {
+            self.render_instructions(frame, rows[2]);
+        }
     }
 
     fn keybindings(&self) -> Vec<HelpEntry> {
@@ -646,6 +716,7 @@ impl DragDropDemo {
         block.render(area, frame);
 
         self.layout_left.set(inner);
+        self.layout_right.set(Rect::default());
 
         if inner.is_empty() {
             return;
@@ -656,9 +727,24 @@ impl DragDropDemo {
     }
 
     fn render_cross_container(&self, frame: &mut Frame, area: Rect) {
-        let cols = Flex::horizontal()
-            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
-            .split(area);
+        if area.is_empty() {
+            self.layout_left.set(Rect::default());
+            self.layout_right.set(Rect::default());
+            return;
+        }
+
+        let stacked = area.width < 56 || area.height < 10;
+        let (left_area, right_area) = if stacked {
+            let rows = Flex::vertical()
+                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+                .split(area);
+            (rows[0], rows[1])
+        } else {
+            let cols = Flex::horizontal()
+                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+                .split(area);
+            (cols[0], cols[1])
+        };
 
         // Left panel
         let left_block = Block::new()
@@ -670,8 +756,8 @@ impl DragDropDemo {
             } else {
                 theme::content_border()
             });
-        let left_inner = left_block.inner(cols[0]);
-        left_block.render(cols[0], frame);
+        let left_inner = left_block.inner(left_area);
+        left_block.render(left_area, frame);
 
         // Right panel
         let right_block = Block::new()
@@ -683,8 +769,8 @@ impl DragDropDemo {
             } else {
                 theme::content_border()
             });
-        let right_inner = right_block.inner(cols[1]);
-        right_block.render(cols[1], frame);
+        let right_inner = right_block.inner(right_area);
+        right_block.render(right_area, frame);
 
         self.layout_left.set(left_inner);
         self.layout_right.set(right_inner);
@@ -693,13 +779,33 @@ impl DragDropDemo {
     }
 
     fn render_keyboard_drag(&self, frame: &mut Frame, area: Rect) {
-        let rows = Flex::vertical()
-            .constraints([Constraint::Min(4), Constraint::Fixed(3)])
-            .split(area);
+        if area.is_empty() {
+            self.layout_left.set(Rect::default());
+            self.layout_right.set(Rect::default());
+            return;
+        }
 
-        let cols = Flex::horizontal()
-            .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
-            .split(rows[0]);
+        let (lists_area, status_area) = if area.height >= 6 {
+            let rows = Flex::vertical()
+                .constraints([Constraint::Min(3), Constraint::Fixed(3)])
+                .split(area);
+            (rows[0], Some(rows[1]))
+        } else {
+            (area, None)
+        };
+
+        let stacked = lists_area.width < 56 || lists_area.height < 8;
+        let (left_area, right_area) = if stacked {
+            let rows = Flex::vertical()
+                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+                .split(lists_area);
+            (rows[0], rows[1])
+        } else {
+            let cols = Flex::horizontal()
+                .constraints([Constraint::Percentage(50.0), Constraint::Percentage(50.0)])
+                .split(lists_area);
+            (cols[0], cols[1])
+        };
 
         // Left panel
         let left_highlight = self.keyboard_drag.is_active() && self.focused_list == 0;
@@ -714,8 +820,8 @@ impl DragDropDemo {
             } else {
                 theme::content_border()
             });
-        let left_inner = left_block.inner(cols[0]);
-        left_block.render(cols[0], frame);
+        let left_inner = left_block.inner(left_area);
+        left_block.render(left_area, frame);
 
         // Right panel
         let right_highlight = self.keyboard_drag.is_active() && self.focused_list == 1;
@@ -730,8 +836,8 @@ impl DragDropDemo {
             } else {
                 theme::content_border()
             });
-        let right_inner = right_block.inner(cols[1]);
-        right_block.render(cols[1], frame);
+        let right_inner = right_block.inner(right_area);
+        right_block.render(right_area, frame);
 
         self.layout_left.set(left_inner);
         self.layout_right.set(right_inner);
@@ -739,7 +845,9 @@ impl DragDropDemo {
         self.render_list(&self.right_list, right_inner, frame, self.focused_list == 1);
 
         // Drag status and announcements
-        self.render_drag_status(frame, rows[1]);
+        if let Some(status_area) = status_area {
+            self.render_drag_status(frame, status_area);
+        }
     }
 
     fn render_list(&self, items: &[DragItem], area: Rect, frame: &mut Frame, is_focused: bool) {
@@ -822,6 +930,9 @@ impl DragDropDemo {
     }
 
     fn render_instructions(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
         Rule::new()
             .title("Instructions")
             .title_alignment(Alignment::Left)
@@ -849,6 +960,9 @@ impl DragDropDemo {
             area.width,
             area.height.saturating_sub(1),
         );
+        if text_area.is_empty() {
+            return;
+        }
         Paragraph::new(instructions)
             .style(Style::new().fg(theme::fg::SECONDARY))
             .render(text_area, frame);
@@ -923,6 +1037,7 @@ impl DragDropDemo {
             }
             _ => {}
         }
+        self.normalize_selection();
     }
 }
 
@@ -930,6 +1045,14 @@ impl DragDropDemo {
 mod tests {
     use super::*;
     use ftui_render::grapheme_pool::GraphemePool;
+
+    fn press(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: Modifiers::NONE,
+            kind: KeyEventKind::Press,
+        })
+    }
 
     #[test]
     fn demo_initial_state() {
@@ -1037,9 +1160,9 @@ mod tests {
     fn demo_handles_small_terminal() {
         let demo = DragDropDemo::new();
         let mut pool = GraphemePool::new();
-        let mut frame = Frame::new(30, 5, &mut pool);
-        demo.view(&mut frame, Rect::new(0, 0, 30, 5));
-        // Should show "too small" message without panic
+        let mut frame = Frame::new(10, 3, &mut pool);
+        demo.view(&mut frame, Rect::new(0, 0, 10, 3));
+        // Should show compact fallback message without panic.
     }
 
     #[test]
@@ -1097,5 +1220,56 @@ mod tests {
         demo.layout_left.set(Rect::new(0, 0, 30, 10));
         demo.handle_mouse(MouseEventKind::Moved, 10, 5);
         assert_eq!(demo.selected_index, 0);
+    }
+
+    #[test]
+    fn keyboard_drag_start_on_empty_focused_list_is_safe() {
+        let mut demo = DragDropDemo::new();
+        demo.mode = DemoMode::KeyboardDrag;
+        demo.left_list.clear();
+        demo.focused_list = 0;
+        demo.selected_index = 5;
+
+        let _ = demo.update(&press(KeyCode::Char(' ')));
+
+        assert_eq!(demo.selected_index, 0);
+        assert!(
+            demo.announcements
+                .iter()
+                .any(|ann| ann.contains("No items available to drag"))
+        );
+    }
+
+    #[test]
+    fn transfer_item_from_single_item_list_resets_selection() {
+        let mut demo = DragDropDemo::new();
+        demo.mode = DemoMode::CrossContainer;
+        demo.left_list = vec![DragItem::new(99, "Only", theme::accent::PRIMARY.into())];
+        demo.right_list.clear();
+        demo.focused_list = 0;
+        demo.selected_index = 0;
+
+        demo.transfer_item();
+
+        assert!(demo.left_list.is_empty());
+        assert_eq!(demo.selected_index, 0);
+    }
+
+    #[test]
+    fn keyboard_targets_follow_rendered_list_layouts() {
+        let demo = DragDropDemo::new();
+        demo.layout_left.set(Rect::new(2, 4, 24, 8));
+        demo.layout_right.set(Rect::new(2, 13, 24, 8));
+
+        let targets = demo.build_drop_targets();
+        let left_first = &targets[0];
+        let right_first = &targets[demo.left_list.len()];
+
+        assert_eq!(left_first.bounds.x, 2);
+        assert_eq!(left_first.bounds.y, 4);
+        assert_eq!(left_first.bounds.width, 24);
+        assert_eq!(right_first.bounds.x, 2);
+        assert_eq!(right_first.bounds.y, 13);
+        assert_eq!(right_first.bounds.width, 24);
     }
 }

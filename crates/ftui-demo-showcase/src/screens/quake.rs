@@ -1,8 +1,20 @@
+use std::cell::RefCell;
 use std::f32::consts::TAU;
 
-use ftui_extras::canvas::Painter;
+use ftui_core::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
+use ftui_core::geometry::Rect;
+use ftui_extras::canvas::{Canvas, Mode, Painter};
 use ftui_extras::visual_fx::FxQuality;
+use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
+use ftui_render::frame::Frame;
+use ftui_runtime::Cmd;
+use ftui_style::{Style, StyleFlags};
+use ftui_widgets::Widget;
+use ftui_widgets::paragraph::Paragraph;
+
+use super::{HelpEntry, Screen};
+use crate::theme;
 
 mod three_d_data {
     include!("3d_data.rs");
@@ -747,6 +759,199 @@ impl QuakeE1M1State {
         painter.line_colored(cx, cy - 4, cx, cy - 2, Some(cross));
         painter.line_colored(cx, cy + 2, cx, cy + 4, Some(cross));
         painter.point_colored(cx, cy, PackedRgba::rgb(255, 50, 50));
+    }
+}
+
+/// Dedicated easter-egg screen for the Quake E1M1 renderer.
+pub struct QuakeEasterEggScreen {
+    quake: RefCell<QuakeE1M1State>,
+    quality: FxQuality,
+    tick_count: u64,
+    time: f64,
+}
+
+impl Default for QuakeEasterEggScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QuakeEasterEggScreen {
+    pub fn new() -> Self {
+        Self {
+            quake: RefCell::new(QuakeE1M1State::default()),
+            quality: FxQuality::Reduced,
+            tick_count: 0,
+            time: 0.0,
+        }
+    }
+
+    fn cycle_quality(&mut self) {
+        self.quality = match self.quality {
+            FxQuality::Full => FxQuality::Reduced,
+            FxQuality::Reduced => FxQuality::Minimal,
+            FxQuality::Minimal | FxQuality::Off => FxQuality::Full,
+        };
+    }
+
+    fn quality_label(&self) -> &'static str {
+        match self.quality {
+            FxQuality::Full => "Full",
+            FxQuality::Reduced => "Reduced",
+            FxQuality::Minimal => "Minimal",
+            FxQuality::Off => "Off",
+        }
+    }
+}
+
+impl Screen for QuakeEasterEggScreen {
+    type Message = Event;
+
+    fn update(&mut self, event: &Event) -> Cmd<Self::Message> {
+        if let Event::Mouse(mouse) = event {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => self.quake.borrow_mut().fire(),
+                MouseEventKind::ScrollUp => self.quake.borrow_mut().look(0.0, -0.06),
+                MouseEventKind::ScrollDown => self.quake.borrow_mut().look(0.0, 0.06),
+                _ => {}
+            }
+            return Cmd::None;
+        }
+
+        if let Event::Key(key) = event {
+            match key.kind {
+                KeyEventKind::Press | KeyEventKind::Repeat => match key.code {
+                    KeyCode::Char('w') | KeyCode::Up => self.quake.borrow_mut().set_move_fwd(1.0),
+                    KeyCode::Char('s') | KeyCode::Down => {
+                        self.quake.borrow_mut().set_move_fwd(-1.0)
+                    }
+                    KeyCode::Char('a') => self.quake.borrow_mut().set_move_side(-1.0),
+                    KeyCode::Char('d') => self.quake.borrow_mut().set_move_side(1.0),
+                    KeyCode::Left => self.quake.borrow_mut().look(-0.11, 0.0),
+                    KeyCode::Right => self.quake.borrow_mut().look(0.11, 0.0),
+                    KeyCode::Char('j') => self.quake.borrow_mut().look(0.0, 0.07),
+                    KeyCode::Char('k') => self.quake.borrow_mut().look(0.0, -0.07),
+                    KeyCode::Char(' ') => self.quake.borrow_mut().jump(),
+                    KeyCode::Char('f') => self.quake.borrow_mut().fire(),
+                    KeyCode::Char('v') => self.cycle_quality(),
+                    KeyCode::Char('r') => *self.quake.borrow_mut() = QuakeE1M1State::default(),
+                    _ => {}
+                },
+                KeyEventKind::Release => match key.code {
+                    KeyCode::Char('w') | KeyCode::Char('s') | KeyCode::Up | KeyCode::Down => {
+                        self.quake.borrow_mut().set_move_fwd(0.0)
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('d') => {
+                        self.quake.borrow_mut().set_move_side(0.0)
+                    }
+                    _ => {}
+                },
+            }
+        }
+
+        Cmd::None
+    }
+
+    fn tick(&mut self, tick_count: u64) {
+        self.tick_count = tick_count;
+        self.time = tick_count as f64 * 0.1;
+        self.quake.borrow_mut().update();
+    }
+
+    fn view(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
+
+        if area.width < 20 || area.height < 6 {
+            Paragraph::new("Need a bit more space for Quake.")
+                .style(theme::muted())
+                .render(area, frame);
+            return;
+        }
+
+        let rows = Flex::vertical()
+            .constraints([
+                Constraint::Fixed(1),
+                Constraint::Min(1),
+                Constraint::Fixed(1),
+            ])
+            .split(area);
+
+        let header = format!(
+            "WASD move · Arrows look · Space jump · F fire · V quality [{}] · R reset",
+            self.quality_label()
+        );
+        Paragraph::new(header)
+            .style(Style::new().fg(theme::fg::SECONDARY).attrs(StyleFlags::DIM))
+            .render(rows[0], frame);
+
+        let mut painter = Painter::for_area(rows[1], Mode::Braille);
+        let (pw, ph) = painter.size();
+        self.quake.borrow_mut().render(
+            &mut painter,
+            pw,
+            ph,
+            self.quality,
+            self.time,
+            self.tick_count,
+        );
+        Canvas::from_painter(&painter).render(rows[1], frame);
+
+        let player = self.quake.borrow();
+        let status = format!(
+            "pos=({:.2},{:.2},{:.2}) yaw={:.2} pitch={:.2} quality={}",
+            player.player.pos.x,
+            player.player.pos.y,
+            player.player.pos.z,
+            player.player.yaw,
+            player.player.pitch,
+            self.quality_label()
+        );
+        Paragraph::new(status)
+            .style(theme::muted())
+            .render(rows[2], frame);
+    }
+
+    fn keybindings(&self) -> Vec<HelpEntry> {
+        vec![
+            HelpEntry {
+                key: "W/A/S/D",
+                action: "Move",
+            },
+            HelpEntry {
+                key: "←/→",
+                action: "Look yaw",
+            },
+            HelpEntry {
+                key: "j/k",
+                action: "Look pitch",
+            },
+            HelpEntry {
+                key: "Space",
+                action: "Jump",
+            },
+            HelpEntry {
+                key: "f",
+                action: "Fire flash",
+            },
+            HelpEntry {
+                key: "v",
+                action: "Cycle quality",
+            },
+            HelpEntry {
+                key: "r",
+                action: "Reset run",
+            },
+        ]
+    }
+
+    fn title(&self) -> &'static str {
+        "Quake E1M1 (Easter Egg)"
+    }
+
+    fn tab_label(&self) -> &'static str {
+        "Quake"
     }
 }
 

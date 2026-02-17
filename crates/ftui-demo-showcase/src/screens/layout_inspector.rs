@@ -506,23 +506,14 @@ impl Screen for LayoutInspector {
     }
 
     fn view(&self, frame: &mut Frame, area: Rect) {
-        let border_style = theme::panel_border_style(true, theme::screen_accent::LAYOUT_LAB);
-        let container = Block::new()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("Layout Inspector")
-            .title_alignment(Alignment::Center)
-            .style(border_style);
-        let inner = container.inner(area);
-        container.render(area, frame);
-        if inner.is_empty() {
+        if area.is_empty() {
             return;
         }
 
         let cols = Flex::horizontal()
             .constraints([Constraint::Percentage(36.0), Constraint::Percentage(64.0)])
             .gap(theme::spacing::SM)
-            .split(inner);
+            .split(area);
         let info_area = cols[0];
         let viz_area = cols[1];
         self.layout_info.set(info_area);

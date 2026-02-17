@@ -779,6 +779,10 @@ pub enum ScreenId {
     KanbanBoard,
     /// Live Markdown editor with split preview (bd-iuvb.13).
     MarkdownLiveEditor,
+    /// Drag-and-drop interaction lab (sortable/cross-container/keyboard).
+    DragDrop,
+    /// Quake E1M1 easter egg renderer.
+    QuakeEasterEgg,
 }
 
 impl ScreenId {
@@ -855,6 +859,8 @@ impl ScreenId {
             Self::HyperlinkPlayground => "HyperlinkPlayground",
             Self::KanbanBoard => "KanbanBoard",
             Self::MarkdownLiveEditor => "MarkdownLiveEditor",
+            Self::DragDrop => "DragDrop",
+            Self::QuakeEasterEgg => "QuakeEasterEgg",
         }
     }
 
@@ -1001,6 +1007,10 @@ pub struct ScreenStates {
     pub kanban_board: screens::kanban_board::KanbanBoard,
     /// Live Markdown editor screen state (bd-iuvb.13).
     pub markdown_live_editor: screens::markdown_live_editor::MarkdownLiveEditor,
+    /// Drag-and-drop interaction lab screen state.
+    pub drag_drop: screens::drag_drop::DragDropDemo,
+    /// Quake E1M1 easter-egg screen state.
+    pub quake_easter_egg: screens::quake::QuakeEasterEggScreen,
     /// Tracks whether each screen has errored during rendering.
     /// Indexed by `ScreenId::index()`.
     screen_errors: Vec<Option<String>>,
@@ -1055,6 +1065,8 @@ impl Default for ScreenStates {
             hyperlink_playground: Default::default(),
             kanban_board: Default::default(),
             markdown_live_editor: Default::default(),
+            drag_drop: Default::default(),
+            quake_easter_egg: Default::default(),
             screen_errors: vec![None; screens::screen_registry().len()],
             visual_effects_deterministic_tick_ms: None,
         }
@@ -1301,6 +1313,12 @@ impl ScreenStates {
             ScreenId::MarkdownLiveEditor => {
                 self.markdown_live_editor.update(event);
             }
+            ScreenId::DragDrop => {
+                self.drag_drop.update(event);
+            }
+            ScreenId::QuakeEasterEgg => {
+                self.quake_easter_egg.update(event);
+            }
         }
     }
 
@@ -1387,6 +1405,8 @@ impl ScreenStates {
             ScreenId::HyperlinkPlayground => self.hyperlink_playground.tick(tick_count),
             ScreenId::KanbanBoard => self.kanban_board.tick(tick_count),
             ScreenId::MarkdownLiveEditor => self.markdown_live_editor.tick(tick_count),
+            ScreenId::DragDrop => self.drag_drop.tick(tick_count),
+            ScreenId::QuakeEasterEgg => self.quake_easter_egg.tick(tick_count),
         }
     }
 
@@ -1477,6 +1497,8 @@ impl ScreenStates {
                 ScreenId::HyperlinkPlayground => self.hyperlink_playground.view(frame, area),
                 ScreenId::KanbanBoard => self.kanban_board.view(frame, area),
                 ScreenId::MarkdownLiveEditor => self.markdown_live_editor.view(frame, area),
+                ScreenId::DragDrop => self.drag_drop.view(frame, area),
+                ScreenId::QuakeEasterEgg => self.quake_easter_egg.view(frame, area),
             }
         }));
 
@@ -3477,10 +3499,9 @@ impl AppModel {
                         kind: KeyEventKind::Press,
                         ..
                     }) = &event
-                    && modifiers.is_empty()
                 {
                     match *code {
-                        KeyCode::Char(' ') => {
+                        KeyCode::Char(' ') if modifiers.is_empty() => {
                             self.tour.toggle_pause();
                             let action = if self.tour.is_paused() {
                                 "pause"
@@ -3490,13 +3511,13 @@ impl AppModel {
                             self.emit_tour_jsonl(action, "ok", self.tour.current_step());
                             return Cmd::None;
                         }
-                        KeyCode::Right | KeyCode::Char('n') => {
+                        KeyCode::Right | KeyCode::Char('n') if modifiers.is_empty() => {
                             if let Some(evt) = self.tour.next_step(TourAdvanceReason::ManualNext) {
                                 self.handle_tour_event(evt);
                             }
                             return Cmd::None;
                         }
-                        KeyCode::Left | KeyCode::Char('p') => {
+                        KeyCode::Left | KeyCode::Char('p') if modifiers.is_empty() => {
                             if let Some(evt) = self.tour.prev_step() {
                                 self.handle_tour_event(evt);
                             }
@@ -3506,13 +3527,13 @@ impl AppModel {
                             self.stop_tour(false, "exit");
                             return Cmd::None;
                         }
-                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                        KeyCode::Char('+') | KeyCode::Char('=') if modifiers.is_empty() => {
                             let speed = self.tour.speed() * 1.25;
                             self.tour.set_speed(speed);
                             self.emit_tour_jsonl("speed_up", "ok", self.tour.current_step());
                             return Cmd::None;
                         }
-                        KeyCode::Char('-') => {
+                        KeyCode::Char('-') if modifiers.is_empty() => {
                             let speed = self.tour.speed() / 1.25;
                             self.tour.set_speed(speed);
                             self.emit_tour_jsonl("speed_down", "ok", self.tour.current_step());
@@ -3798,9 +3819,8 @@ impl AppModel {
                             }
                         }
                         // Tab cycling (Tab/BackTab, or Shift+H/Shift+L for Vim users)
-                        // Guarded so Tab/BackTab reach FormState for field navigation
-                        // when a text input or form is active.
-                        (KeyCode::Tab, Modifiers::NONE) if !text_input_active => {
+                        // Always handled at app level for screen navigation.
+                        (KeyCode::Tab, Modifiers::NONE) => {
                             let target = self.display_screen().next();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "tab_next");
@@ -3808,7 +3828,7 @@ impl AppModel {
                             self.current_screen = target;
                             return Cmd::None;
                         }
-                        (KeyCode::BackTab, _) if !text_input_active => {
+                        (KeyCode::BackTab, _) => {
                             let target = self.display_screen().prev();
                             if self.tour.is_active() {
                                 self.stop_tour(false, "tab_prev");
@@ -4118,6 +4138,8 @@ impl AppModel {
             ScreenId::HyperlinkPlayground => self.screens.hyperlink_playground.keybindings(),
             ScreenId::KanbanBoard => self.screens.kanban_board.keybindings(),
             ScreenId::MarkdownLiveEditor => self.screens.markdown_live_editor.keybindings(),
+            ScreenId::DragDrop => self.screens.drag_drop.keybindings(),
+            ScreenId::QuakeEasterEgg => self.screens.quake_easter_egg.keybindings(),
         };
         if self.tour.is_active() {
             entries.push(screens::HelpEntry {
@@ -4213,6 +4235,10 @@ impl AppModel {
                     | crate::chrome::HitLayer::Category(_)
             )
         );
+        let dashboard_splitter_hotspot = current == ScreenId::Dashboard
+            && self.screens.dashboard.is_splitter_hit(mouse.x, mouse.y);
+        let dashboard_splitter_active =
+            current == ScreenId::Dashboard && self.screens.dashboard.is_splitter_drag_active();
         // Dashboard registers pane hit regions as "links" to other screens.
         // Treat these as click targets (MouseUp activation + drag-threshold),
         // but do NOT treat them as chrome for hover-move consumption; the
@@ -4221,29 +4247,62 @@ impl AppModel {
             hit_layer,
             Some(crate::chrome::HitLayer::Pane(target))
                 if current == ScreenId::Dashboard && target != ScreenId::Dashboard
-        );
+        ) && !dashboard_splitter_hotspot
+            && !dashboard_splitter_active;
 
         // Handle drag state machine transitions.
         match mouse.kind {
-            MouseEventKind::Down(button) => {
+            MouseEventKind::Down(_button) => {
                 // Only capture chrome/overlay Down events; pane/screen events
                 // must flow through to the active screen.
+                //
+                // UPDATE: We deliberately DO NOT capture drag state for chrome/overlay
+                // elements here. Tracking `PendingDrag` causes clicks to be dropped if
+                // the mouse moves > 2 cells (jitter/flakiness). By falling through, we
+                // treat chrome interactions as stateless "click on release", which is
+                // more reliable given that we don't support dragging these elements anyway.
+                //
+                // CRITICAL: We MUST consume the event here to prevent it from falling
+                // through to the screen (e.g. clicking a tab shouldn't click the
+                // canvas below it).
                 if chrome_hit {
-                    // Start a pending drag — will become click (on Up) or drag
-                    // (on sufficient movement).
-                    self.mouse_dispatcher.drag = DragPhase::PendingDrag {
-                        button,
-                        start_x: mouse.x,
-                        start_y: mouse.y,
-                        hit_id,
-                    };
-                    emit_mouse_jsonl(mouse, hit_id, "down", None, current);
-                    // Down alone does not activate — wait for Up or drag.
+                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
+                    return MouseDispatchResult::Consumed;
+                }
+                //
+                // CRITICAL: We MUST consume the event here to prevent it from falling
+                // through to the screen (e.g. clicking a tab shouldn't click the
+                // canvas below it).
+                if chrome_hit {
+                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
+                    return MouseDispatchResult::Consumed;
+                } MATCHED
+                //
+                // CRITICAL: We MUST consume the event here to prevent it from falling
+                // through to the screen (e.g. clicking a tab shouldn't click the
+                // canvas below it).
+                if chrome_hit {
+                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
+                    return MouseDispatchResult::Consumed;
+                }
+                //
+                // CRITICAL: We MUST consume the event here to prevent it from falling
+                // through to the screen (e.g. clicking a tab shouldn't click the
+                // canvas below it).
+                if chrome_hit {
+                    emit_mouse_jsonl(mouse, hit_id, "down_chrome_consumed", None, current);
                     return MouseDispatchResult::Consumed;
                 }
 
                 // Dashboard tile "pane links" should activate on MouseUp, but we
                 // still track drag threshold to avoid accidental navigation.
+                //
+                // UPDATE: We deliberately DO NOT capture drag state for pane links
+                // here. Tracking `PendingDrag` causes clicks to be dropped if the
+                // mouse moves > 2 cells (jitter/flakiness). By falling through, we
+                // treat tile interactions as stateless "click on release", which is
+                // more reliable for this specific UI element.
+                /*
                 if pane_link_hit {
                     self.mouse_dispatcher.drag = DragPhase::PendingDrag {
                         button,
@@ -4255,6 +4314,7 @@ impl AppModel {
                     // Allow the Dashboard screen to also update focus/hover.
                     return MouseDispatchResult::NotConsumed;
                 }
+                */
 
                 // Screen-level input: do not interfere. Also clear any stale
                 // chrome drag state.
@@ -4323,6 +4383,14 @@ impl AppModel {
                 // Not dragging — this may be a click activation (MouseUp) for
                 // chrome/overlay targets, or a screen-level Up event.
                 self.mouse_dispatcher.cancel_drag();
+
+                // Dashboard splitter drags are tracked at screen level (not by
+                // the chrome drag state machine). While that gesture is active,
+                // always forward MouseUp so the screen can complete cleanup.
+                if dashboard_splitter_active {
+                    emit_mouse_jsonl(mouse, hit_id, "up_forward_splitter", None, current);
+                    return MouseDispatchResult::NotConsumed;
+                }
 
                 if chrome_hit || pane_link_hit {
                     // Only left-click activates chrome/overlay targets.
@@ -5713,6 +5781,88 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_mouse_drag_on_dashboard_splitter_is_forwarded() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let mut splitter_xy = None;
+        for y in 0..40u16 {
+            for x in 0..120u16 {
+                if app.screens.dashboard.is_splitter_hit(x, y) {
+                    splitter_xy = Some((x, y));
+                    break;
+                }
+            }
+            if splitter_xy.is_some() {
+                break;
+            }
+        }
+        let (x, y) = splitter_xy.expect("Should find dashboard splitter hit area");
+        let drag_x = x.saturating_add(3).min(119);
+
+        let down = MouseEvent::new(MouseEventKind::Down(MouseButton::Left), x, y);
+        assert_eq!(app.dispatch_mouse(&down), MouseDispatchResult::NotConsumed);
+        assert!(matches!(app.mouse_dispatcher.drag, DragPhase::Idle));
+
+        let drag = MouseEvent::new(MouseEventKind::Drag(MouseButton::Left), drag_x, y);
+        assert_eq!(app.dispatch_mouse(&drag), MouseDispatchResult::NotConsumed);
+        assert!(matches!(app.mouse_dispatcher.drag, DragPhase::Idle));
+
+        let up = MouseEvent::new(MouseEventKind::Up(MouseButton::Left), drag_x, y);
+        assert_eq!(app.dispatch_mouse(&up), MouseDispatchResult::NotConsumed);
+    }
+
+    #[test]
+    fn splitter_drag_release_over_tab_does_not_trigger_tab_click() {
+        let mut app = AppModel::new();
+        app.terminal_width = 120;
+        app.terminal_height = 40;
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(120, 40, &mut pool);
+        app.view(&mut frame);
+
+        let mut splitter_xy = None;
+        for y in 0..40u16 {
+            for x in 0..120u16 {
+                if app.screens.dashboard.is_splitter_hit(x, y) {
+                    splitter_xy = Some((x, y));
+                    break;
+                }
+            }
+            if splitter_xy.is_some() {
+                break;
+            }
+        }
+        let (x, y) = splitter_xy.expect("Should find dashboard splitter hit area");
+
+        app.update(AppMsg::Event(Event::Mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+        ))));
+        app.update(AppMsg::Event(Event::Mouse(MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            x.saturating_add(4).min(119),
+            0,
+        ))));
+        app.update(AppMsg::Event(Event::Mouse(MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            1,
+            0,
+        ))));
+
+        assert_eq!(
+            app.current_screen,
+            ScreenId::Dashboard,
+            "splitter drag release must not activate tab clicks"
+        );
+    }
+
+    #[test]
     fn dispatch_mouse_click_on_dashboard_tile_switches_screen() {
         let mut app = AppModel::new();
         app.terminal_width = 120;
@@ -6365,7 +6515,7 @@ mod tests {
     /// Verify all screens have the expected count.
     #[test]
     fn all_screens_count() {
-        assert_eq!(screens::screen_registry().len(), 43);
+        assert_eq!(screens::screen_registry().len(), 45);
     }
 
     // -----------------------------------------------------------------------

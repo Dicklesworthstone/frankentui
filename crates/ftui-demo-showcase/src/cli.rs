@@ -86,6 +86,8 @@ SCREENS:
    41  Links              OSC-8 hyperlink playground + hit regions
    42  Kanban Board       Interactive Kanban board with drag-drop
    43  MD Live Editor     Split-pane editor with live Markdown preview
+   44  Drag & Drop Lab    Sortable/cross-container drag-drop interactions
+   45  Quake Easter Egg   Quake E1M1 retro renderer (final easter egg)
 
 KEYBINDINGS:
     1-9, 0                Switch to screens 1-10 by number
@@ -772,6 +774,16 @@ mod tests {
     #[test]
     fn help_text_contains_visual_effects_as_screen_18() {
         assert!(HELP_TEXT.contains("18  Visual Effects"));
+    }
+
+    #[test]
+    fn help_text_contains_drag_drop_as_screen_44() {
+        assert!(HELP_TEXT.contains("44  Drag & Drop Lab"));
+    }
+
+    #[test]
+    fn help_text_contains_quake_easter_egg_as_screen_45() {
+        assert!(HELP_TEXT.contains("45  Quake Easter Egg"));
     }
 
     #[test]

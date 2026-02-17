@@ -566,6 +566,26 @@ pub const SCREEN_REGISTRY: &[ScreenMeta] = &[
         default_hotkey: None,
         tour_step_hint: None,
     },
+    ScreenMeta {
+        id: ScreenId::DragDrop,
+        title: "Drag & Drop Lab",
+        short_label: "DragDrop",
+        category: ScreenCategory::Interaction,
+        palette_tags: &["drag", "drop", "sortable", "keyboard", "accessibility"],
+        blurb: "Sortable and cross-container drag/drop interactions with keyboard parity.",
+        default_hotkey: None,
+        tour_step_hint: Some("Drag + drop interactions"),
+    },
+    ScreenMeta {
+        id: ScreenId::QuakeEasterEgg,
+        title: "Quake E1M1 (Easter Egg)",
+        short_label: "Quake",
+        category: ScreenCategory::Visuals,
+        palette_tags: &["quake", "3d", "easter-egg", "braille", "renderer"],
+        blurb: "Retro Quake E1M1 renderer as the final easter-egg screen.",
+        default_hotkey: None,
+        tour_step_hint: Some("Final easter egg"),
+    },
 ];
 
 /// Return the filtered registry (ordered), excluding feature-gated screens.

@@ -4043,21 +4043,39 @@ impl Screen for VisualEffectsScreen {
         }
 
         if let Event::Key(KeyEvent { code, kind, .. }) = event {
-            // 't' toggles between Canvas and TextEffects modes
-            if matches!(code, KeyCode::Char('t')) && matches!(kind, KeyEventKind::Press) {
-                self.demo_mode = match self.demo_mode {
-                    DemoMode::Canvas => DemoMode::TextEffects,
-                    DemoMode::TextEffects => DemoMode::Canvas,
-                };
-                self.fps_last_mouse = None;
-                self.fps_input = FpsInputState::default();
-                return Cmd::None;
+            if matches!(kind, KeyEventKind::Press) {
+                // 't' toggles between Canvas and TextEffects modes
+                if matches!(code, KeyCode::Char('t')) {
+                    self.demo_mode = match self.demo_mode {
+                        DemoMode::Canvas => DemoMode::TextEffects,
+                        DemoMode::TextEffects => DemoMode::Canvas,
+                    };
+                    self.fps_last_mouse = None;
+                    self.fps_input = FpsInputState::default();
+                    return Cmd::None;
+                }
+
+                // Escape in TextEffects mode returns to Canvas mode
+                if matches!(code, KeyCode::Escape)
+                    && matches!(self.demo_mode, DemoMode::TextEffects)
+                {
+                    self.demo_mode = DemoMode::Canvas;
+                    self.fps_last_mouse = None;
+                    self.fps_input = FpsInputState::default();
+                    return Cmd::None;
+                }
             }
 
             match self.demo_mode {
                 DemoMode::Canvas => {
                     if self.is_fps_effect() {
                         self.handle_fps_key(*code, *kind);
+                        // FPS mode must not fall through to the canvas
+                        // effect-switching handler — otherwise keys like 'h',
+                        // 'l', and 'p' would trigger effect/palette changes
+                        // mid-game.  Global shortcuts (Tab, q, Escape, etc.)
+                        // are already handled at the app level before this
+                        // screen receives the event.
                         return Cmd::None;
                     }
                     let is_press = matches!(kind, KeyEventKind::Press);

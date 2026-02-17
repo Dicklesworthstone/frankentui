@@ -880,24 +880,11 @@ impl Screen for TableThemeGallery {
             return;
         }
 
-        let outer = Block::new()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("Table Theme Gallery")
-            .title_alignment(Alignment::Center)
-            .style(Style::new().fg(theme::screen_accent::DATA_VIZ));
-
-        let inner = outer.inner(area);
-        outer.render(area, frame);
-        if inner.is_empty() {
-            return;
-        }
-
-        let preview_height = PREVIEW_PANEL_HEIGHT.min(inner.height.saturating_sub(4));
+        let preview_height = PREVIEW_PANEL_HEIGHT.min(area.height.saturating_sub(4));
         let rows = Flex::vertical()
             .gap(theme::spacing::XS)
             .constraints([Constraint::Min(6), Constraint::Fixed(preview_height)])
-            .split(inner);
+            .split(area);
 
         let grid_area = rows[0];
         let preview_area = rows[1];

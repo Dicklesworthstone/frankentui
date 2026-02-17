@@ -277,6 +277,8 @@ pub mod screen_accent {
     pub const ACTION_TIMELINE: ColorToken = accent::ACCENT_2;
     pub const INTRINSIC_SIZING: ColorToken = accent::ACCENT_8;
     pub const PERFORMANCE_HUD: ColorToken = accent::ACCENT_9;
+    pub const DRAG_DROP: ColorToken = accent::ACCENT_6;
+    pub const QUAKE: ColorToken = accent::ACCENT_11;
 }
 
 // ---------------------------------------------------------------------------
