@@ -1,0 +1,32 @@
+[package]
+name = "frankenterm-web"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "WebGPU renderer and input stack for FrankenTUI."
+repository = "https://github.com/Dicklesworthstone/frankentui"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+unicode-width = "0.1.13"
+frankenterm-core = { path = "../frankenterm-core", version = "0.2.0" }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Document",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlTextAreaElement",
+    "Node",
+]
