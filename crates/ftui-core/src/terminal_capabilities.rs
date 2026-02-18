@@ -67,7 +67,8 @@
 //!
 //! 1. **Sync-output safety**: `use_sync_output()` returns `false` for any
 //!    multiplexer environment (tmux, screen, zellij, wezterm mux) because CSI ?2026 h/l
-//!    sequences are unreliable through passthrough.
+//!    sequences are unreliable through passthrough. Detection also hard-disables
+//!    synchronized output in WezTerm sessions as a safety fallback.
 //!
 //! 2. **Scroll region safety**: `use_scroll_region()` returns `false` in
 //!    multiplexers because DECSTBM behavior varies across versions.
@@ -127,6 +128,7 @@ struct DetectInputs {
     in_zellij: bool,
     wezterm_unix_socket: bool,
     wezterm_pane: bool,
+    wezterm_executable: bool,
     kitty_window_id: bool,
     wt_session: bool,
 }
@@ -143,6 +145,7 @@ impl DetectInputs {
             in_zellij: env::var("ZELLIJ").is_ok(),
             wezterm_unix_socket: env::var("WEZTERM_UNIX_SOCKET").is_ok(),
             wezterm_pane: env::var("WEZTERM_PANE").is_ok(),
+            wezterm_executable: env::var("WEZTERM_EXECUTABLE").is_ok(),
             kitty_window_id: env::var("KITTY_WINDOW_ID").is_ok(),
             wt_session: env::var("WT_SESSION").is_ok(),
         }
@@ -174,7 +177,10 @@ const KITTY_KEYBOARD_TERMINALS: &[&str] = &[
 ];
 
 /// Terminal programs that support synchronized output (DEC 2026).
-const SYNC_OUTPUT_TERMINALS: &[&str] = &["WezTerm", "Alacritty", "Ghostty", "kitty", "Contour"];
+///
+/// NOTE: WezTerm is intentionally excluded as a safety fallback due to observed
+/// mux/terminal instability around DEC ?2026 h/l in real-world setups.
+const SYNC_OUTPUT_TERMINALS: &[&str] = &["Alacritty", "Ghostty", "kitty", "Contour"];
 
 /// Known terminal profile identifiers.
 ///
@@ -910,17 +916,21 @@ impl TerminalCapabilities {
         let in_tmux = env.in_tmux;
         let in_screen = env.in_screen;
         let in_zellij = env.in_zellij;
-        // WezTerm mux sessions may not always preserve TERM_PROGRAM in all
-        // shell-launch scenarios; use both socket and pane markers.
-        let in_wezterm_mux = env.wezterm_unix_socket || env.wezterm_pane;
-        let in_any_mux = in_tmux || in_screen || in_zellij || in_wezterm_mux;
-
         let term = env.term.as_str();
         let term_program = env.term_program.as_str();
         let colorterm = env.colorterm.as_str();
         let term_lower = term.to_ascii_lowercase();
         let term_program_lower = term_program.to_ascii_lowercase();
         let colorterm_lower = colorterm.to_ascii_lowercase();
+
+        // WezTerm mux sessions may not always preserve TERM_PROGRAM in all
+        // shell-launch scenarios; use pane/socket markers and a conservative
+        // fallback when only WEZTERM_EXECUTABLE is present.
+        let term_program_is_wezterm = term_program_lower.contains("wezterm");
+        let in_wezterm_mux = env.wezterm_unix_socket
+            || env.wezterm_pane
+            || (env.wezterm_executable && !term_program_is_wezterm);
+        let in_any_mux = in_tmux || in_screen || in_zellij || in_wezterm_mux;
 
         // Windows Terminal detection
         let is_windows_terminal = env.wt_session;
@@ -953,8 +963,12 @@ impl TerminalCapabilities {
             && !is_dumb
             && (true_color || term_lower.contains("256color") || term_lower.contains("256"));
 
+        let is_wezterm =
+            term_program_is_wezterm || term_lower.contains("wezterm") || env.wezterm_executable;
+
         // Synchronized output detection
         let sync_output = !is_dumb
+            && !is_wezterm
             && (is_kitty
                 || SYNC_OUTPUT_TERMINALS.iter().any(|t| {
                     let t_lower = t.to_ascii_lowercase();
@@ -1077,9 +1091,8 @@ impl TerminalCapabilities {
     /// Whether synchronized output (DEC 2026) should be used.
     ///
     /// Disabled in multiplexers because passthrough is unreliable
-    /// for mode-setting sequences. Also disabled for WezTerm mux-served
-    /// sessions (`WEZTERM_UNIX_SOCKET` / `WEZTERM_PANE`) due observed
-    /// DEC 2026 instability.
+    /// for mode-setting sequences. Also disabled for all WezTerm sessions as
+    /// a safety fallback due observed DEC 2026 instability in mux workflows.
     #[must_use]
     #[inline]
     pub const fn use_sync_output(&self) -> bool {
@@ -1289,6 +1302,7 @@ mod tests {
             in_zellij: false,
             wezterm_unix_socket: false,
             wezterm_pane: false,
+            wezterm_executable: false,
             kitty_window_id: false,
             wt_session: true,
         };
@@ -1330,6 +1344,7 @@ mod tests {
             in_zellij: false,
             wezterm_unix_socket: false,
             wezterm_pane: false,
+            wezterm_executable: false,
             kitty_window_id: false,
             wt_session: false,
         };
@@ -1470,6 +1485,7 @@ mod tests {
             in_zellij: false,
             wezterm_unix_socket: false,
             wezterm_pane: false,
+            wezterm_executable: false,
             kitty_window_id: false,
             wt_session: false,
         }
@@ -1560,7 +1576,10 @@ mod tests {
         let env = make_env("xterm-256color", "WezTerm", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.true_color);
-        assert!(caps.sync_output, "WezTerm supports sync output");
+        assert!(
+            !caps.sync_output,
+            "WezTerm sync output is hard-disabled as a safety fallback"
+        );
         assert!(caps.osc8_hyperlinks, "WezTerm supports hyperlinks");
         assert!(caps.kitty_keyboard, "WezTerm supports kitty keyboard");
         assert!(caps.focus_events);
@@ -1572,7 +1591,7 @@ mod tests {
         let mut env = make_env("xterm-256color", "WezTerm", "truecolor");
         env.wezterm_unix_socket = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.sync_output, "raw capability remains detected");
+        assert!(!caps.sync_output);
         assert!(caps.in_wezterm_mux, "wezterm mux marker should be detected");
         assert!(
             caps.in_any_mux(),
@@ -1620,7 +1639,7 @@ mod tests {
         let mut env = make_env("xterm-256color", "WezTerm", "truecolor");
         env.wezterm_pane = true;
         let caps = TerminalCapabilities::detect_from_inputs(&env);
-        assert!(caps.sync_output, "raw capability remains detected");
+        assert!(!caps.sync_output);
         assert!(
             caps.in_wezterm_mux,
             "wezterm pane marker should be detected"
@@ -1651,6 +1670,21 @@ mod tests {
         assert!(
             !caps.use_sync_output(),
             "policy must suppress sync output when wezterm pane marker is present"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_executable_without_term_program_is_conservative_mux() {
+        let mut env = make_env("xterm-256color", "", "truecolor");
+        env.wezterm_executable = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(
+            caps.in_wezterm_mux,
+            "WEZTERM_EXECUTABLE fallback should conservatively mark mux context"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "fallback mux detection must suppress sync output policy"
         );
     }
 
@@ -1748,7 +1782,7 @@ mod tests {
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         // Feature detection still works
         assert!(caps.true_color);
-        assert!(caps.sync_output);
+        assert!(!caps.sync_output);
         // But policies disable features in mux
         assert!(!caps.use_sync_output());
         assert!(!caps.use_hyperlinks());
@@ -1766,7 +1800,7 @@ mod tests {
         assert!(!caps.colors_256);
         assert!(!caps.osc8_hyperlinks);
         // But non-color features still work
-        assert!(caps.sync_output);
+        assert!(!caps.sync_output);
         assert!(caps.bracketed_paste);
         assert!(caps.mouse_sgr);
     }
@@ -1878,7 +1912,7 @@ mod tests {
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         // Modern terminal detection still works via TERM_PROGRAM
         assert!(caps.true_color, "WezTerm is modern, implies truecolor");
-        assert!(caps.sync_output);
+        assert!(!caps.sync_output);
         assert!(caps.osc8_hyperlinks);
     }
 
@@ -1950,7 +1984,7 @@ mod tests {
         assert!(!caps.colors_256);
         assert!(!caps.osc8_hyperlinks);
         // Non-visual features preserved
-        assert!(caps.sync_output);
+        assert!(!caps.sync_output);
         assert!(caps.kitty_keyboard);
         assert!(caps.focus_events);
         assert!(caps.bracketed_paste);
@@ -2384,8 +2418,8 @@ mod tests {
                 "{mux_name}: true_color detection should work"
             );
             assert!(
-                caps.sync_output,
-                "{mux_name}: sync_output detection should work"
+                !caps.sync_output,
+                "{mux_name}: sync_output hard-disabled for WezTerm safety"
             );
 
             // But POLICIES disable features
@@ -2785,6 +2819,7 @@ mod proptests {
                 in_zellij: false,
                 wezterm_unix_socket: false,
                 wezterm_pane: false,
+                wezterm_executable: false,
                 kitty_window_id: false,
                 wt_session: false,
             };
@@ -2797,7 +2832,10 @@ mod proptests {
             }
 
             // Non-visual features preserved regardless of NO_COLOR
-            prop_assert!(caps.sync_output, "sync_output preserved despite NO_COLOR");
+            prop_assert!(
+                !caps.sync_output,
+                "WezTerm sync_output stays disabled despite NO_COLOR"
+            );
             prop_assert!(caps.bracketed_paste, "bracketed_paste preserved despite NO_COLOR");
         }
     }

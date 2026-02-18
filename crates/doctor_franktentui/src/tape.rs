@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::keyseq::emit_token;
-use crate::util::{duration_literal, tape_escape};
+use crate::util::{duration_literal, shell_single_quote, tape_escape};
 
 #[derive(Debug, Clone)]
 pub struct TapeSpec<'a> {
@@ -22,8 +22,11 @@ pub struct TapeSpec<'a> {
 
 #[must_use]
 pub fn build_capture_tape(spec: &TapeSpec<'_>) -> String {
+    let output_literal = tape_escape(&spec.output.display().to_string());
+    let project_dir_literal = shell_single_quote(&spec.project_dir.display().to_string());
+
     let mut lines = vec![
-        format!("Output \"{}\"", spec.output.display()),
+        format!("Output \"{output_literal}\""),
         String::new(),
         "Set Shell \"bash\"".to_string(),
         format!("Set FontSize {}", spec.font_size),
@@ -36,7 +39,7 @@ pub fn build_capture_tape(spec: &TapeSpec<'_>) -> String {
         "Hide".to_string(),
         format!(
             "Type \"{}\"",
-            tape_escape(&format!("cd {}", spec.project_dir.display()))
+            tape_escape(&format!("cd {project_dir_literal}"))
         ),
         "Enter".to_string(),
         format!("Type \"{}\"", tape_escape(spec.server_command)),
@@ -47,7 +50,10 @@ pub fn build_capture_tape(spec: &TapeSpec<'_>) -> String {
     ];
 
     if let Some(binary) = spec.required_binary {
-        lines.insert(2, format!("Require \"{}\"", binary.display()));
+        lines.insert(
+            2,
+            format!("Require \"{}\"", tape_escape(&binary.display().to_string())),
+        );
         lines.insert(3, String::new());
     }
 
@@ -71,7 +77,7 @@ pub fn build_capture_tape(spec: &TapeSpec<'_>) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{TapeSpec, build_capture_tape};
+    use super::{build_capture_tape, TapeSpec};
 
     #[test]
     fn tape_contains_required_sections() {
@@ -144,5 +150,29 @@ mod tests {
         assert_eq!(step_sleep_count, 2);
         assert!(tape.contains("Sleep 2s"));
         assert!(tape.contains("Sleep 11s"));
+    }
+
+    #[test]
+    fn tape_quotes_project_dir_and_escapes_output_and_require_paths() {
+        let spec = TapeSpec {
+            output: Path::new("/tmp/out \"quoted\".mp4"),
+            required_binary: Some(Path::new("/tmp/bin \"quoted\"")),
+            project_dir: Path::new("/tmp/project dir"),
+            server_command: "echo run",
+            font_size: 20,
+            width: 1600,
+            height: 900,
+            framerate: 30,
+            theme: "Theme",
+            boot_sleep: "1",
+            step_sleep: "1",
+            tail_sleep: "1",
+            keys: "q",
+        };
+
+        let tape = build_capture_tape(&spec);
+        assert!(tape.contains("Output \"/tmp/out \\\"quoted\\\".mp4\""));
+        assert!(tape.contains("Require \"/tmp/bin \\\"quoted\\\"\""));
+        assert!(tape.contains("Type \"cd '/tmp/project dir'\""));
     }
 }

@@ -12,6 +12,7 @@
     "type": "string",
     "timestamp": "string",
     "run_id": "string",
+    "correlation_id": "string",
     "seed": ["number", "null"]
   },
   "events": {

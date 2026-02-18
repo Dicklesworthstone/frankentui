@@ -711,6 +711,8 @@ pub enum PaneMuxEnvironment {
     Screen,
     /// Zellij (ZELLIJ env var set).
     Zellij,
+    /// WezTerm mux-served pane/session.
+    WeztermMux,
 }
 
 /// Resolved capability matrix describing which pane interaction features
@@ -778,6 +780,8 @@ impl PaneCapabilityMatrix {
             PaneMuxEnvironment::Screen
         } else if caps.in_zellij {
             PaneMuxEnvironment::Zellij
+        } else if caps.in_wezterm_mux {
+            PaneMuxEnvironment::WeztermMux
         } else {
             PaneMuxEnvironment::None
         };
@@ -796,6 +800,7 @@ impl PaneCapabilityMatrix {
         // multiplexer passes them through. Screen does not.
         let focus_events = match mux {
             PaneMuxEnvironment::Screen => false,
+            PaneMuxEnvironment::WeztermMux => false,
             _ => caps.focus_events,
         };
 
@@ -3105,12 +3110,14 @@ impl<M: Model> Program<M, CrosstermEventSource, Stdout> {
     {
         let capabilities = TerminalCapabilities::with_overrides();
         let mouse_capture = config.resolved_mouse_capture();
-        let initial_features = BackendFeatures {
+        let requested_features = BackendFeatures {
             mouse_capture,
             bracketed_paste: config.bracketed_paste,
             focus_events: config.focus_reporting,
             kitty_keyboard: config.kitty_keyboard,
         };
+        let initial_features =
+            sanitize_backend_features_for_capabilities(requested_features, &capabilities);
         let session = TerminalSession::new(SessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
             mouse_capture: initial_features.mouse_capture,
@@ -3348,6 +3355,23 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 // Native TTY backend constructor (feature-gated)
 // =============================================================================
 
+#[inline]
+const fn sanitize_backend_features_for_capabilities(
+    requested: BackendFeatures,
+    capabilities: &ftui_core::terminal_capabilities::TerminalCapabilities,
+) -> BackendFeatures {
+    let focus_events_supported =
+        capabilities.focus_events && !capabilities.in_screen && !capabilities.in_wezterm_mux;
+    let kitty_keyboard_supported = capabilities.kitty_keyboard && !capabilities.in_any_mux();
+
+    BackendFeatures {
+        mouse_capture: requested.mouse_capture && capabilities.mouse_sgr,
+        bracketed_paste: requested.bracketed_paste && capabilities.bracketed_paste,
+        focus_events: requested.focus_events && focus_events_supported,
+        kitty_keyboard: requested.kitty_keyboard && kitty_keyboard_supported,
+    }
+}
+
 #[cfg(feature = "native-backend")]
 impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
     /// Create a program backed by the native TTY backend (no Crossterm).
@@ -3359,20 +3383,22 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
     where
         M::Message: Send + 'static,
     {
+        let capabilities = ftui_core::terminal_capabilities::TerminalCapabilities::detect();
         let mouse_capture = config.resolved_mouse_capture();
-        let features = BackendFeatures {
+        let requested_features = BackendFeatures {
             mouse_capture,
             bracketed_paste: config.bracketed_paste,
             focus_events: config.focus_reporting,
             kitty_keyboard: config.kitty_keyboard,
         };
+        let features =
+            sanitize_backend_features_for_capabilities(requested_features, &capabilities);
         let options = ftui_tty::TtySessionOptions {
             alternate_screen: matches!(config.screen_mode, ScreenMode::AltScreen),
             features,
         };
         let backend = ftui_tty::TtyBackend::open(0, 0, options)?;
 
-        let capabilities = ftui_core::terminal_capabilities::TerminalCapabilities::detect();
         let writer = TerminalWriter::with_diff_config(
             io::stdout(),
             config.screen_mode,
@@ -5096,6 +5122,44 @@ mod tests {
         let config = ProgramConfig::default().with_mouse();
         assert_eq!(config.mouse_capture_policy, MouseCapturePolicy::On);
         assert!(config.resolved_mouse_capture());
+    }
+
+    #[cfg(feature = "native-backend")]
+    #[test]
+    fn sanitize_backend_features_disables_unsupported_features() {
+        let requested = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let sanitized =
+            sanitize_backend_features_for_capabilities(requested, &TerminalCapabilities::basic());
+        assert_eq!(sanitized, BackendFeatures::default());
+    }
+
+    #[cfg(feature = "native-backend")]
+    #[test]
+    fn sanitize_backend_features_is_conservative_in_wezterm_mux() {
+        let requested = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .bracketed_paste(true)
+            .focus_events(true)
+            .kitty_keyboard(true)
+            .in_wezterm_mux(true)
+            .build();
+        let sanitized = sanitize_backend_features_for_capabilities(requested, &caps);
+
+        assert!(sanitized.mouse_capture);
+        assert!(sanitized.bracketed_paste);
+        assert!(!sanitized.focus_events);
+        assert!(!sanitized.kitty_keyboard);
     }
 
     #[test]
@@ -9391,6 +9455,7 @@ mod tests {
             PaneMuxEnvironment::Tmux => caps.in_tmux = true,
             PaneMuxEnvironment::Screen => caps.in_screen = true,
             PaneMuxEnvironment::Zellij => caps.in_zellij = true,
+            PaneMuxEnvironment::WeztermMux => caps.in_wezterm_mux = true,
             PaneMuxEnvironment::None => {}
         }
         caps
@@ -9453,6 +9518,19 @@ mod tests {
         assert!(mat.mouse_drag_reliable);
         assert!(mat.focus_events);
         assert!(mat.drag_enabled());
+    }
+
+    #[test]
+    fn capability_matrix_wezterm_mux_disables_focus_cancel_path() {
+        let caps = caps_with_mux(PaneMuxEnvironment::WeztermMux);
+        let mat = PaneCapabilityMatrix::from_capabilities(&caps);
+
+        assert_eq!(mat.mux, PaneMuxEnvironment::WeztermMux);
+        assert!(mat.mouse_drag_reliable);
+        assert!(!mat.focus_events);
+        assert!(mat.drag_enabled());
+        assert!(!mat.focus_cancel_effective());
+        assert!(mat.degraded);
     }
 
     #[test]

@@ -455,7 +455,13 @@ impl<W: Write> Presenter<W> {
         // When sync brackets are supported, use DEC 2026 for atomic frame display.
         // Otherwise, fall back to cursor-hiding to reduce visual flicker.
         if bracket_supported {
-            ansi::sync_begin(&mut self.writer)?;
+            if let Err(err) = ansi::sync_begin(&mut self.writer) {
+                // Begin writes can fail after partial bytes; best-effort close
+                // avoids leaving the terminal parser in sync-output mode.
+                let _ = ansi::sync_end(&mut self.writer);
+                let _ = self.writer.flush();
+                return Err(err);
+            }
         } else {
             #[cfg(feature = "tracing")]
             tracing::warn!("sync brackets unsupported; falling back to cursor-hide strategy");

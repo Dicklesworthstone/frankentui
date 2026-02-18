@@ -2649,6 +2649,8 @@ pub struct AppModel {
     a11y_telemetry: Option<A11yTelemetryHooks>,
     /// Central mouse dispatcher for priority-based event routing (bd-iuvb.17.2).
     mouse_dispatcher: MouseDispatcher,
+    /// Pending terminal mouse-capture command requested by a status-bar click.
+    pending_mouse_capture_cmd: Option<bool>,
 }
 
 impl Default for AppModel {
@@ -2712,6 +2714,7 @@ impl AppModel {
             history: HistoryManager::default(),
             a11y_telemetry: None,
             mouse_dispatcher: MouseDispatcher::default(),
+            pending_mouse_capture_cmd: None,
         };
         app.refresh_palette_actions();
         app.screens
@@ -3557,6 +3560,9 @@ impl AppModel {
                 if let Event::Mouse(mouse) = &event
                     && self.handle_mouse_tab_click(mouse)
                 {
+                    if let Some(enabled) = self.pending_mouse_capture_cmd.take() {
+                        return Cmd::set_mouse_capture(enabled);
+                    }
                     return Cmd::None;
                 }
 
@@ -4624,12 +4630,11 @@ impl AppModel {
                 "status_toggle_debug"
             }
             chrome::STATUS_MOUSE_TOGGLE => {
-                self.mouse_capture_enabled = !self.mouse_capture_enabled;
-                self.mouse_capture_policy = if self.mouse_capture_enabled {
-                    MouseCapturePolicy::On
-                } else {
-                    MouseCapturePolicy::Off
-                };
+                if let Cmd::SetMouseCapture(enabled) =
+                    self.handle_msg(AppMsg::ToggleMouseCapture, EventSource::User)
+                {
+                    self.pending_mouse_capture_cmd = Some(enabled);
+                }
                 "status_toggle_mouse"
             }
             _ => "status_unknown",
@@ -7461,8 +7466,13 @@ mod tests {
                 x,
                 status_y,
             ));
-            let _ = app.update(AppMsg::from(down));
-            let _ = app.update(AppMsg::from(up));
+            let down_cmd = app.update(AppMsg::from(down));
+            let up_cmd = app.update(AppMsg::from(up));
+            assert!(
+                matches!(down_cmd, Cmd::SetMouseCapture(_))
+                    || matches!(up_cmd, Cmd::SetMouseCapture(_)),
+                "status-bar mouse toggle must emit a backend mouse-capture command"
+            );
             assert_ne!(
                 app.mouse_capture_enabled, initial_capture,
                 "Mouse capture should toggle"

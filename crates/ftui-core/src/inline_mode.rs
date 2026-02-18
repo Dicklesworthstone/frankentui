@@ -315,8 +315,17 @@ impl<W: Write> InlineRenderer<W> {
 
         // Begin sync output to prevent flicker
         if self.config.use_sync_output && !self.in_sync_block {
-            self.writer.write_all(SYNC_BEGIN)?;
+            // Mark active before write so cleanup conservatively emits SYNC_END
+            // even if begin write fails after partial bytes.
             self.in_sync_block = true;
+            if let Err(err) = self.writer.write_all(SYNC_BEGIN) {
+                // Best-effort immediate close to avoid leaving terminal state
+                // in synchronized-output mode on begin-write failure.
+                let _ = self.writer.write_all(SYNC_END);
+                self.in_sync_block = false;
+                let _ = self.writer.flush();
+                return Err(err);
+            }
         }
 
         // Save cursor position
