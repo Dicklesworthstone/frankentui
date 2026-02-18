@@ -844,10 +844,13 @@ impl TtyBackend {
 
         if let Err(err) = setup {
             // Best-effort cleanup: we may have partially enabled features or entered alt screen.
+            //
+            // No synchronized-output block has been opened during setup, so avoid
+            // emitting a standalone DEC ?2026l on this path.
             let _ = write_cleanup_sequence_policy(
                 &options.features,
                 options.alternate_screen,
-                capabilities.use_sync_output(),
+                false,
                 &mut stdout,
             );
             let _ = stdout.flush();
@@ -885,11 +888,9 @@ impl Drop for TtyBackend {
         #[cfg(unix)]
         if self.raw_mode.is_some() {
             let mut stdout = io::stdout();
-
-            // End any in-progress synchronized output.
-            if self.presenter.capabilities.use_sync_output() {
-                let _ = stdout.write_all(SYNC_END);
-            }
+            // TerminalWriter owns synchronized-output bracketing in the runtime.
+            // Avoid emitting a standalone DEC ?2026l here to prevent teardown
+            // sequences from mutating terminal state outside an active bracket.
 
             // Disable features in reverse order of typical enable.
             let _ = self.events.disable_all(&mut stdout);
