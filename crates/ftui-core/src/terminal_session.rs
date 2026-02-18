@@ -36,7 +36,7 @@
 //! | Feature | Enable | Disable |
 //! |---------|--------|---------|
 //! | Alternate screen | `CSI ? 1049 h` | `CSI ? 1049 l` |
-//! | Mouse (SGR) | `CSI ? 1000;1002;1006 h` | `CSI ? 1000;1002;1006 l` |
+//! | Mouse (SGR) | `CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h` | `CSI ? 1000 l` + `CSI ? 1002 l` + `CSI ? 1006 l` |
 //! | Bracketed paste | `CSI ? 2004 h` | `CSI ? 2004 l` |
 //! | Focus events | `CSI ? 1004 h` | `CSI ? 1004 l` |
 //! | Kitty keyboard | `CSI > 15 u` | `CSI < u` |
@@ -171,8 +171,8 @@ const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
 const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
 const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
-const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1002h\x1b[?1006h";
-const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1002l\x1b[?1006l";
+const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
 
 #[inline]
 fn should_emit_sync_cleanup() -> bool {
@@ -241,7 +241,7 @@ pub struct SessionOptions {
     /// scrollback), leave this `false`.
     pub alternate_screen: bool,
 
-    /// Enable mouse capture with SGR encoding (`CSI ? 1000;1002;1006 h`).
+    /// Enable mouse capture with SGR encoding (`CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h`).
     ///
     /// Enables:
     /// - Normal mouse tracking (1000)
@@ -1441,6 +1441,7 @@ mod tests {
             "terminal_session::tests::terminal_session_panic_cleanup_idempotent";
         const ALT_SCREEN_EXIT_SEQS: &[&[u8]] = &[b"\x1b[?1049l", b"\x1b[?1047l"];
         const MOUSE_DISABLE_SEQS: &[&[u8]] = &[
+            b"\x1b[?1000l\x1b[?1002l\x1b[?1006l",
             b"\x1b[?1000;1002;1006l",
             b"\x1b[?1000;1002l",
             b"\x1b[?1000l",

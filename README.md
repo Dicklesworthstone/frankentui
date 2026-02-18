@@ -369,6 +369,49 @@ cargo clippy --all-targets -- -D warnings
 ./tests/e2e/check_pane_traceability.sh
 ```
 
+### doctor_franktentui Verification
+
+Run the full `doctor_franktentui` verification stack locally:
+
+Prerequisites:
+
+- `cargo`
+- `python3`
+- `jq`
+- `rg` (ripgrep)
+- `cargo-llvm-cov` (`cargo install cargo-llvm-cov`)
+- Python TOML parser support:
+  - Python `3.11+` (built-in `tomllib`), or
+  - `python3 -m pip install tomli` for Python `<3.11`
+
+```bash
+# Unit + integration tests
+cargo test -p doctor_franktentui --all-targets -- --nocapture
+
+# Workflow-level E2E
+./scripts/doctor_franktentui_happy_e2e.sh /tmp/doctor_franktentui_ci/happy
+./scripts/doctor_franktentui_failure_e2e.sh /tmp/doctor_franktentui_ci/failure
+
+# Coverage gate
+./scripts/doctor_franktentui_coverage.sh /tmp/doctor_franktentui_ci/coverage
+```
+
+Artifact contract (CI and local):
+
+- `.../happy/meta/summary.json`: happy-path pass/fail and per-step timing.
+- `.../happy/meta/artifact_manifest.json`: checksums, sizes, and mtimes for expected outputs.
+- `.../failure/meta/summary.json`: failure-matrix pass/fail counts.
+- `.../failure/meta/case_results.json`: per-case expected vs actual exits and key artifacts.
+- `.../coverage/coverage_gate_report.json`: machine-readable threshold decision.
+- `.../coverage/coverage_gate_report.txt`: human-readable coverage gate details.
+
+Troubleshooting map:
+
+- `doctor`/`capture`/`suite`/`report` chain failures: inspect `.../happy/logs/*.stderr.log` and `.../happy/meta/command_manifest.txt`.
+- failure-case assertion mismatches: inspect `.../failure/meta/case_results.json` and `.../failure/cases/<case_id>/logs/`.
+- JSON contract regressions: inspect `json_*` case stdout logs under `.../failure/cases/`.
+- coverage regressions: inspect `.../coverage/coverage_gate_report.json` for failing group + threshold delta.
+
 ---
 
 ## Configuration

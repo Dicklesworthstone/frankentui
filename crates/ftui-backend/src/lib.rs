@@ -19,7 +19,8 @@ use ftui_render::diff::BufferDiff;
 /// Backends translate these into platform-specific escape sequences or API calls.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BackendFeatures {
-    /// SGR mouse capture (CSI ? 1000;1002;1006 h/l on native).
+    /// SGR mouse capture
+    /// (`CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h`, and matching `l` disables).
     pub mouse_capture: bool,
     /// Bracketed paste mode (CSI ? 2004 h/l on native).
     pub bracketed_paste: bool,

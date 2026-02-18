@@ -600,16 +600,18 @@ pub const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
 /// Disable bracketed paste: `CSI ? 2004 l`
 pub const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
 
-/// Enable SGR mouse reporting: `CSI ? 1000;1002;1006 h`
+/// Enable SGR mouse reporting using split DECSET toggles:
+/// `CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h`
 ///
 /// Enables:
 /// - 1000: Normal mouse tracking
 /// - 1002: Button event tracking (motion while pressed)
 /// - 1006: SGR extended coordinates (supports > 223)
-pub const MOUSE_ENABLE: &[u8] = b"\x1b[?1000;1002;1006h";
+pub const MOUSE_ENABLE: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 
-/// Disable mouse reporting: `CSI ? 1000;1002;1006 l`
-pub const MOUSE_DISABLE: &[u8] = b"\x1b[?1000;1002;1006l";
+/// Disable mouse reporting using split DECRST toggles:
+/// `CSI ? 1000 l` + `CSI ? 1002 l` + `CSI ? 1006 l`
+pub const MOUSE_DISABLE: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
 
 /// Enable focus reporting: `CSI ? 1004 h`
 pub const FOCUS_ENABLE: &[u8] = b"\x1b[?1004h";
@@ -942,8 +944,11 @@ mod tests {
 
     #[test]
     fn mouse_mode() {
-        assert_eq!(to_bytes(mouse_enable), b"\x1b[?1000;1002;1006h");
-        assert_eq!(to_bytes(mouse_disable), b"\x1b[?1000;1002;1006l");
+        assert_eq!(to_bytes(mouse_enable), b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+        assert_eq!(
+            to_bytes(mouse_disable),
+            b"\x1b[?1000l\x1b[?1002l\x1b[?1006l"
+        );
     }
 
     #[test]

@@ -874,16 +874,16 @@ impl Default for MarkdownTheme {
 }
 
 fn default_markdown_table_theme() -> TableTheme {
-    let border = Style::new().fg(PackedRgba::rgb(145, 160, 190));
+    let base_bg = PackedRgba::rgb(34, 40, 56);
+    let alt_bg = PackedRgba::rgb(40, 47, 65);
+    let border = Style::new().fg(PackedRgba::rgb(145, 160, 190)).bg(base_bg);
     let header = Style::new()
         .fg(PackedRgba::rgb(250, 250, 255))
         .bg(PackedRgba::rgb(55, 75, 115))
         .bold();
-    let row = Style::new().fg(PackedRgba::rgb(225, 230, 240));
-    let row_alt = Style::new()
-        .fg(PackedRgba::rgb(225, 230, 240))
-        .bg(PackedRgba::rgb(30, 35, 50));
-    let divider = Style::new().fg(PackedRgba::rgb(120, 135, 165));
+    let row = Style::new().fg(PackedRgba::rgb(225, 230, 240)).bg(base_bg);
+    let row_alt = Style::new().fg(PackedRgba::rgb(225, 230, 240)).bg(alt_bg);
+    let divider = Style::new().fg(PackedRgba::rgb(120, 135, 165)).bg(base_bg);
 
     TableTheme {
         border,

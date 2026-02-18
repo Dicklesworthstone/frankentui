@@ -730,7 +730,7 @@ fn capability_sim_mux_detection_flags() {
         assert_eq!(caps.in_zellij, *zellij, "QUIRK-1: {profile:?} in_zellij");
         assert_eq!(
             caps.in_any_mux(),
-            *tmux || *screen || *zellij,
+            *tmux || *screen || *zellij || caps.in_wezterm_mux,
             "QUIRK-1: {profile:?} in_any_mux"
         );
         logger.log_invariant("QUIRK-1", true, &format!("{profile:?}_mux_flags"));

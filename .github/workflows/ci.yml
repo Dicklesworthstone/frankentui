@@ -377,7 +377,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -440,7 +440,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -754,6 +754,101 @@ jobs:
             /tmp/ftui_schedule_trace_e2e/
           retention-days: 7
           if-no-files-found: ignore
+
+  # ==========================================================================
+  # doctor_franktentui Verification (unit + integration + e2e + coverage gate)
+  # ==========================================================================
+  doctor-franktentui-verification:
+    name: doctor_franktentui Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DOCTOR_FTUI_ARTIFACT_ROOT: /tmp/doctor_franktentui_ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install shell dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq ripgrep
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-doctor-franktentui-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run doctor_franktentui unit + integration tests
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs"
+          cargo test -p doctor_franktentui --all-targets -- --nocapture \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/unit_integration.log"
+
+      - name: Run doctor_franktentui happy-path E2E
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_happy_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/happy" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/happy_e2e.log"
+
+      - name: Run doctor_franktentui failure-path E2E
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_failure_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/failure_e2e.log"
+
+      - name: Run doctor_franktentui coverage gate
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_coverage.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage" \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/coverage_gate.log"
+
+      - name: Write artifact map
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCTOR_FTUI_ARTIFACT_ROOT}"
+          {
+            echo "doctor_franktentui artifact map"
+            echo "artifact_root=${DOCTOR_FTUI_ARTIFACT_ROOT}"
+            echo "unit_integration_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/unit_integration.log"
+            echo "happy_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/happy_e2e.log"
+            echo "happy_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/happy/meta/summary.json"
+            echo "failure_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/failure_e2e.log"
+            echo "failure_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/summary.json"
+            echo "failure_case_results=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/case_results.json"
+            echo "coverage_gate_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/coverage_gate.log"
+            echo "coverage_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/coverage_gate_report.json"
+            echo "coverage_report_txt=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/coverage_gate_report.txt"
+          } > "${DOCTOR_FTUI_ARTIFACT_ROOT}/artifact_map.txt"
+
+      - name: Upload doctor_franktentui verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doctor-franktentui-verification
+          path: /tmp/doctor_franktentui_ci/
+          retention-days: 14
+          if-no-files-found: error
 
   # ==========================================================================
   # Fuzz Build Check
