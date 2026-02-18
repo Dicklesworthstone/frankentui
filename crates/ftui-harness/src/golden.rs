@@ -109,7 +109,10 @@ pub struct GoldenEnv {
     pub colorterm: String,
     pub no_color: bool,
     pub tmux: bool,
+    pub screen: bool,
     pub zellij: bool,
+    pub wezterm_unix_socket: bool,
+    pub wezterm_pane: bool,
     pub seed: u64,
     pub rust_version: String,
     pub git_commit: String,
@@ -124,7 +127,10 @@ impl GoldenEnv {
             colorterm: std::env::var("COLORTERM").unwrap_or_default(),
             no_color: std::env::var("NO_COLOR").is_ok(),
             tmux: std::env::var("TMUX").is_ok(),
+            screen: std::env::var("STY").is_ok(),
             zellij: std::env::var("ZELLIJ").is_ok(),
+            wezterm_unix_socket: std::env::var("WEZTERM_UNIX_SOCKET").is_ok(),
+            wezterm_pane: std::env::var("WEZTERM_PANE").is_ok(),
             seed: std::env::var("GOLDEN_SEED")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -138,12 +144,15 @@ impl GoldenEnv {
     /// Convert to JSON string.
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"term":"{}","colorterm":"{}","no_color":{},"tmux":{},"zellij":{},"seed":{},"rust_version":"{}","git_commit":"{}","git_branch":"{}"}}"#,
+            r#"{{"term":"{}","colorterm":"{}","no_color":{},"tmux":{},"screen":{},"zellij":{},"wezterm_unix_socket":{},"wezterm_pane":{},"seed":{},"rust_version":"{}","git_commit":"{}","git_branch":"{}"}}"#,
             escape_json(&self.term),
             escape_json(&self.colorterm),
             self.no_color,
             self.tmux,
+            self.screen,
             self.zellij,
+            self.wezterm_unix_socket,
+            self.wezterm_pane,
             self.seed,
             escape_json(&self.rust_version),
             escape_json(&self.git_commit),

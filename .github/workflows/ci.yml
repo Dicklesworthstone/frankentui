@@ -816,6 +816,23 @@ jobs:
           ./scripts/doctor_franktentui_failure_e2e.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure" \
             2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/failure_e2e.log"
 
+      - name: Build doctor_franktentui replay/triage summary
+        if: always()
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_replay_triage.py \
+            --run-root "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure" \
+            --output-json "${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/replay_triage_report.json" \
+            --max-signals 8 \
+            --max-timeline 80 \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/replay_triage.log"
+
+      - name: Run doctor_franktentui determinism soak
+        run: |
+          set -euo pipefail
+          ./scripts/doctor_franktentui_determinism_soak.sh "${DOCTOR_FTUI_ARTIFACT_ROOT}/determinism" 2 \
+            2>&1 | tee "${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/determinism_soak.log"
+
       - name: Run doctor_franktentui coverage gate
         run: |
           set -euo pipefail
@@ -836,6 +853,11 @@ jobs:
             echo "failure_e2e_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/failure_e2e.log"
             echo "failure_summary=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/summary.json"
             echo "failure_case_results=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/case_results.json"
+            echo "replay_triage_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/replay_triage.log"
+            echo "replay_triage_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/failure/meta/replay_triage_report.json"
+            echo "determinism_soak_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/determinism_soak.log"
+            echo "determinism_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/determinism/meta/determinism_report.json"
+            echo "determinism_report_txt=${DOCTOR_FTUI_ARTIFACT_ROOT}/determinism/meta/determinism_report.txt"
             echo "coverage_gate_log=${DOCTOR_FTUI_ARTIFACT_ROOT}/logs/coverage_gate.log"
             echo "coverage_report_json=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/coverage_gate_report.json"
             echo "coverage_report_txt=${DOCTOR_FTUI_ARTIFACT_ROOT}/coverage/coverage_gate_report.txt"

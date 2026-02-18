@@ -1066,12 +1066,31 @@ impl Shape3DState {
         (screen_x, screen_y, z2)
     }
 
-    fn render(&self, painter: &mut Painter, width: u16, height: u16, time: f64) {
+    fn render(
+        &self,
+        painter: &mut Painter,
+        width: u16,
+        height: u16,
+        time: f64,
+        quality: FxQuality,
+    ) {
+        if matches!(quality, FxQuality::Off) {
+            return;
+        }
         let w = width as f64;
         let h = height as f64;
+        let star_step = match quality {
+            FxQuality::Full => 1,
+            FxQuality::Reduced => 2,
+            FxQuality::Minimal => 4,
+            FxQuality::Off => return,
+        };
 
         // Render starfield first
-        for star in &self.stars {
+        for (idx, star) in self.stars.iter().enumerate() {
+            if star_step > 1 && !idx.is_multiple_of(star_step) {
+                continue;
+            }
             let scale = 1.0 / star.z;
             let sx = (w / 2.0 + star.x * scale * w * 0.5) as i32;
             let sy = (h / 2.0 + star.y * scale * h * 0.5) as i32;
@@ -1094,10 +1113,10 @@ impl Shape3DState {
 
         // Render shape
         match self.shape {
-            Shape3DType::Cube => self.render_cube(painter, w, h, time),
-            Shape3DType::Octahedron => self.render_octahedron(painter, w, h, time),
-            Shape3DType::Icosahedron => self.render_icosahedron(painter, w, h, time),
-            Shape3DType::Torus => self.render_torus(painter, w, h, time),
+            Shape3DType::Cube => self.render_cube(painter, w, h, time, quality),
+            Shape3DType::Octahedron => self.render_octahedron(painter, w, h, time, quality),
+            Shape3DType::Icosahedron => self.render_icosahedron(painter, w, h, time, quality),
+            Shape3DType::Torus => self.render_torus(painter, w, h, time, quality),
         }
     }
 
@@ -1113,16 +1132,23 @@ impl Shape3DState {
         y1: i32,
         depth: f64,
         color: PackedRgba,
+        quality: FxQuality,
     ) {
         // Closer edges (lower depth) get thicker lines
         // z ranges roughly from -2 to 2, normalize to thickness 1-3
-        let thickness = if depth < -0.5 {
+        let base_thickness = if depth < -0.5 {
             3 // Very close: 3-pixel wide
         } else if depth < 0.5 {
             2 // Medium: 2-pixel wide
         } else {
             1 // Far: 1-pixel wide
         };
+        let max_thickness = match quality {
+            FxQuality::Full => 3,
+            FxQuality::Reduced => 2,
+            FxQuality::Minimal | FxQuality::Off => 1,
+        };
+        let thickness = base_thickness.min(max_thickness);
 
         painter.line_colored(x0, y0, x1, y1, Some(color));
 
@@ -1161,7 +1187,7 @@ impl Shape3DState {
         }
     }
 
-    fn render_cube(&self, painter: &mut Painter, w: f64, h: f64, time: f64) {
+    fn render_cube(&self, painter: &mut Painter, w: f64, h: f64, time: f64, quality: FxQuality) {
         let vertices = [
             (-1.0, -1.0, -1.0),
             (1.0, -1.0, -1.0),
@@ -1201,11 +1227,27 @@ impl Shape3DState {
             let hue = (i as f64 / edges.len() as f64 + time * 0.1) % 1.0;
             let (r, g, b) = hsv_to_rgb(hue * 360.0, 0.8, brightness);
 
-            self.draw_thick_line(painter, x0, y0, x1, y1, avg_z, PackedRgba::rgb(r, g, b));
+            self.draw_thick_line(
+                painter,
+                x0,
+                y0,
+                x1,
+                y1,
+                avg_z,
+                PackedRgba::rgb(r, g, b),
+                quality,
+            );
         }
     }
 
-    fn render_octahedron(&self, painter: &mut Painter, w: f64, h: f64, time: f64) {
+    fn render_octahedron(
+        &self,
+        painter: &mut Painter,
+        w: f64,
+        h: f64,
+        time: f64,
+        quality: FxQuality,
+    ) {
         let s = 1.5;
         let vertices = [
             (0.0, -s, 0.0),
@@ -1249,11 +1291,27 @@ impl Shape3DState {
             );
 
             // Depth-based line thickness (bd-3vbf.27 polish)
-            self.draw_thick_line(painter, x0, y0, x1, y1, avg_z, PackedRgba::rgb(r, g, b_val));
+            self.draw_thick_line(
+                painter,
+                x0,
+                y0,
+                x1,
+                y1,
+                avg_z,
+                PackedRgba::rgb(r, g, b_val),
+                quality,
+            );
         }
     }
 
-    fn render_icosahedron(&self, painter: &mut Painter, w: f64, h: f64, time: f64) {
+    fn render_icosahedron(
+        &self,
+        painter: &mut Painter,
+        w: f64,
+        h: f64,
+        time: f64,
+        quality: FxQuality,
+    ) {
         let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
         let vertices = [
             (-1.0, phi, 0.0),
@@ -1321,15 +1379,28 @@ impl Shape3DState {
             );
 
             // Depth-based line thickness (bd-3vbf.27 polish)
-            self.draw_thick_line(painter, x0, y0, x1, y1, avg_z, PackedRgba::rgb(r, g, b_val));
+            self.draw_thick_line(
+                painter,
+                x0,
+                y0,
+                x1,
+                y1,
+                avg_z,
+                PackedRgba::rgb(r, g, b_val),
+                quality,
+            );
         }
     }
 
-    fn render_torus(&self, painter: &mut Painter, w: f64, h: f64, time: f64) {
+    fn render_torus(&self, painter: &mut Painter, w: f64, h: f64, time: f64, quality: FxQuality) {
         let major_r = 1.2;
         let minor_r = 0.5;
-        let u_steps = 24;
-        let v_steps = 12;
+        let (u_steps, v_steps, draw_cross_links) = match quality {
+            FxQuality::Full => (24, 12, true),
+            FxQuality::Reduced => (16, 8, true),
+            FxQuality::Minimal => (10, 6, false),
+            FxQuality::Off => return,
+        };
 
         let mut points = Vec::new();
         for u in 0..u_steps {
@@ -1366,7 +1437,9 @@ impl Shape3DState {
                 );
 
                 painter.line_colored(x0, y0, x1, y1, Some(PackedRgba::rgb(r, g, b)));
-                painter.line_colored(x0, y0, x2, y2, Some(PackedRgba::rgb(r, g, b)));
+                if draw_cross_links {
+                    painter.line_colored(x0, y0, x2, y2, Some(PackedRgba::rgb(r, g, b)));
+                }
             }
         }
     }
@@ -4320,7 +4393,10 @@ impl Screen for VisualEffectsScreen {
             if !matches!(quality, FxQuality::Off) {
                 let result = with_panic_cleanup_suppressed(|| {
                     catch_unwind(AssertUnwindSafe(|| match self.effect {
-                        EffectType::Shape3D => self.shape3d.render(&mut painter, pw, ph, self.time),
+                        EffectType::Shape3D => {
+                            self.shape3d
+                                .render(&mut painter, pw, ph, self.time, quality)
+                        }
                         EffectType::Particles => self.particles.render(&mut painter, pw, ph),
                         EffectType::Matrix => self.matrix.render(&mut painter, pw, ph),
                         EffectType::Tunnel => self.tunnel.render(&mut painter, pw, ph),
@@ -5106,6 +5182,7 @@ mod tests {
             i32::MAX,
             -1.0,
             PackedRgba::rgb(255, 255, 255),
+            FxQuality::Full,
         );
     }
 

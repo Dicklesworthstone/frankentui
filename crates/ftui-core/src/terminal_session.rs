@@ -36,7 +36,7 @@
 //! | Feature | Enable | Disable |
 //! |---------|--------|---------|
 //! | Alternate screen | `CSI ? 1049 h` | `CSI ? 1049 l` |
-//! | Mouse (SGR) | reset legacy encodings, then `CSI ? 1000;1002;1003;1006 h` (+ split compatibility) | `CSI ? 1000;1002;1006 l` (+ split compatibility, plus legacy resets) |
+//! | Mouse (SGR) | reset legacy encodings, then `CSI ? 1000;1002;1006 h` (+ split compatibility) | `CSI ? 1000;1002;1006 l` (+ split compatibility, plus legacy resets) |
 //! | Bracketed paste | `CSI ? 2004 h` | `CSI ? 2004 l` |
 //! | Focus events | `CSI ? 1004 h` | `CSI ? 1004 l` |
 //! | Kitty keyboard | `CSI > 15 u` | `CSI < u` |
@@ -46,14 +46,15 @@
 //! # Cleanup Order
 //!
 //! On drop, cleanup happens in reverse order of enabling:
-//! 1. Disable kitty keyboard (if enabled)
-//! 2. Disable focus events (if enabled)
-//! 3. Disable bracketed paste (if enabled)
-//! 4. Disable mouse capture (if enabled)
-//! 5. Show cursor (always)
-//! 6. Leave alternate screen (if enabled)
-//! 7. Exit raw mode (always)
-//! 8. Flush stdout
+//! 1. Reset scroll region and style (`CSI r`, `CSI 0 m`)
+//! 2. Disable kitty keyboard (if enabled)
+//! 3. Disable focus events (if enabled)
+//! 4. Disable bracketed paste (if enabled)
+//! 5. Disable mouse capture (if enabled)
+//! 6. Show cursor (always)
+//! 7. Leave alternate screen (if enabled)
+//! 8. Exit raw mode (always)
+//! 9. Flush stdout
 //!
 //! # Usage
 //!
@@ -82,6 +83,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::event::Event;
+use crate::terminal_capabilities::TerminalCapabilities;
 
 // Import tracing macros (no-op when tracing feature is disabled).
 #[cfg(feature = "tracing")]
@@ -181,8 +183,21 @@ fn cx_deadline_remaining_us(cx: &crate::cx::Cx) -> u64 {
 const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
 const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
 const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
-const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1000;1002;1003;1006h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+const RESET_STYLE: &[u8] = b"\x1b[0m";
+// Mouse mode hygiene:
+// 1) Reset legacy and alternate encodings.
+// 2) Enable canonical SGR cell mouse modes (1000 + 1002 + 1006).
+// 3) Clear 1016 before enabling SGR to avoid terminals that treat 1016l
+//    as a hard fallback to X10 when sent after 1006h.
+const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1000;1002;1006h\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+// Conservative mouse enable sequence for mux sessions and runtime toggles.
+// Keep parser surface minimal and avoid legacy reset storms in mux pipelines.
+const MOUSE_ENABLE_MUX_SAFE_SEQ: &[u8] = b"\x1b[?1016l\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1000;1002;1006l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l";
+// Conservative mouse disable sequence for mux/panic cleanup paths. Keeps
+// parser surface minimal while still restoring canonical capture modes and
+// clearing any leaked SGR-pixel mode.
+const MOUSE_DISABLE_MUX_SAFE_SEQ: &[u8] = b"\x1b[?1016l\x1b[?1000l\x1b[?1002l\x1b[?1006l";
 
 static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -208,7 +223,7 @@ impl Drop for SessionLock {
 }
 
 #[cfg(unix)]
-use signal_hook::consts::signal::{SIGINT, SIGTERM, SIGWINCH};
+use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGWINCH};
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 
@@ -247,7 +262,7 @@ pub struct SessionOptions {
     pub alternate_screen: bool,
 
     /// Enable mouse capture with SGR encoding, resetting legacy/alternate
-    /// mouse encodings first and then applying `CSI ? 1000;1002;1003;1006 h`
+    /// mouse encodings first and then applying `CSI ? 1000;1002;1006 h`
     /// (plus split-form compatibility).
     ///
     /// Enables:
@@ -277,6 +292,21 @@ pub struct SessionOptions {
     /// Uses the kitty protocol to report repeat/release events and disambiguate
     /// keys. This is optional and only supported by select terminals.
     pub kitty_keyboard: bool,
+}
+
+#[inline]
+fn sanitize_session_options(
+    mut requested: SessionOptions,
+    capabilities: &TerminalCapabilities,
+) -> SessionOptions {
+    let focus_events_supported = capabilities.focus_events && !capabilities.in_any_mux();
+    let kitty_keyboard_supported = capabilities.kitty_keyboard && !capabilities.in_any_mux();
+
+    requested.mouse_capture = requested.mouse_capture && capabilities.mouse_sgr;
+    requested.bracketed_paste = requested.bracketed_paste && capabilities.bracketed_paste;
+    requested.focus_events = requested.focus_events && focus_events_supported;
+    requested.kitty_keyboard = requested.kitty_keyboard && kitty_keyboard_supported;
+    requested
 }
 
 /// A terminal session that manages raw mode and cleanup.
@@ -343,6 +373,24 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
+    #[inline]
+    fn mouse_enable_sequence_for_caps(caps: &TerminalCapabilities) -> &'static [u8] {
+        if caps.in_any_mux() {
+            MOUSE_ENABLE_MUX_SAFE_SEQ
+        } else {
+            MOUSE_ENABLE_SEQ
+        }
+    }
+
+    #[inline]
+    fn mouse_disable_sequence_for_caps(caps: &TerminalCapabilities) -> &'static [u8] {
+        if caps.in_any_mux() {
+            MOUSE_DISABLE_MUX_SAFE_SEQ
+        } else {
+            MOUSE_DISABLE_SEQ
+        }
+    }
+
     /// Enter raw mode and optionally enable additional features.
     ///
     /// # Errors
@@ -350,6 +398,8 @@ impl TerminalSession {
     /// Returns an error if raw mode cannot be enabled.
     pub fn new(options: SessionOptions) -> io::Result<Self> {
         install_panic_hook();
+        let capabilities = TerminalCapabilities::with_overrides();
+        let options = sanitize_session_options(options, &capabilities);
 
         let session_lock = SessionLock::acquire()?;
 
@@ -399,7 +449,8 @@ impl TerminalSession {
 
         if options.mouse_capture {
             session.mouse_enabled = true;
-            stdout.write_all(MOUSE_ENABLE_SEQ)?;
+            let enable_seq = Self::mouse_enable_sequence_for_caps(&capabilities);
+            stdout.write_all(enable_seq)?;
             stdout.flush()?;
             #[cfg(feature = "tracing")]
             tracing::info!("mouse capture enabled");
@@ -649,6 +700,10 @@ impl TerminalSession {
     /// from the terminal's native scrollback. In inline mode, prefer leaving
     /// this off unless the user explicitly opts in.
     pub fn set_mouse_capture(&mut self, enabled: bool) -> io::Result<()> {
+        let caps = TerminalCapabilities::with_overrides();
+        let mouse_supported = caps.mouse_sgr;
+        let enabled = enabled && mouse_supported;
+
         if enabled == self.mouse_enabled {
             self.options.mouse_capture = enabled;
             return Ok(());
@@ -656,13 +711,11 @@ impl TerminalSession {
 
         let mut stdout = io::stdout();
         let write_result = if enabled {
-            stdout
-                .write_all(MOUSE_ENABLE_SEQ)
-                .and_then(|_| stdout.flush())
+            let enable_seq = Self::mouse_enable_sequence_for_caps(&caps);
+            stdout.write_all(enable_seq).and_then(|_| stdout.flush())
         } else {
-            stdout
-                .write_all(MOUSE_DISABLE_SEQ)
-                .and_then(|_| stdout.flush())
+            let disable_seq = Self::mouse_disable_sequence_for_caps(&caps);
+            stdout.write_all(disable_seq).and_then(|_| stdout.flush())
         };
 
         if let Err(err) = write_result {
@@ -702,6 +755,10 @@ impl TerminalSession {
         if cx.is_done() {
             return Ok(());
         }
+        let caps = TerminalCapabilities::with_overrides();
+        let mouse_supported = caps.mouse_sgr;
+        let enabled = enabled && mouse_supported;
+
         if enabled == self.mouse_enabled {
             self.options.mouse_capture = enabled;
             return Ok(());
@@ -709,9 +766,8 @@ impl TerminalSession {
         let start = web_time::Instant::now();
         let mut stdout = io::stdout();
         let result = if enabled {
-            let r = stdout
-                .write_all(MOUSE_ENABLE_SEQ)
-                .and_then(|_| stdout.flush());
+            let enable_seq = Self::mouse_enable_sequence_for_caps(&caps);
+            let r = stdout.write_all(enable_seq).and_then(|_| stdout.flush());
             if r.is_ok() {
                 self.mouse_enabled = true;
                 self.options.mouse_capture = true;
@@ -723,9 +779,8 @@ impl TerminalSession {
             }
             r
         } else {
-            let r = stdout
-                .write_all(MOUSE_DISABLE_SEQ)
-                .and_then(|_| stdout.flush());
+            let disable_seq = Self::mouse_disable_sequence_for_caps(&caps);
+            let r = stdout.write_all(disable_seq).and_then(|_| stdout.flush());
             if r.is_ok() {
                 self.mouse_enabled = false;
                 self.options.mouse_capture = false;
@@ -822,12 +877,12 @@ impl TerminalSession {
         let _ = self.signal_guard.take();
 
         let mut stdout = io::stdout();
-
-        // Normal session teardown should not emit a standalone DEC ?2026l.
-        // Frame bracketing is owned by the renderer/writer and closed there.
+        let caps = TerminalCapabilities::with_overrides();
 
         // Reset scroll region (critical for inline mode recovery)
         let _ = stdout.write_all(RESET_SCROLL_REGION);
+        // Reset style so shell prompt does not inherit UI SGR state.
+        let _ = stdout.write_all(RESET_STYLE);
 
         // Disable features in reverse order of enabling
         if self.kitty_keyboard_enabled {
@@ -852,7 +907,7 @@ impl TerminalSession {
         }
 
         if self.mouse_enabled {
-            let _ = stdout.write_all(MOUSE_DISABLE_SEQ);
+            let _ = stdout.write_all(Self::mouse_disable_sequence_for_caps(&caps));
             self.mouse_enabled = false;
             #[cfg(feature = "tracing")]
             tracing::info!("mouse capture disabled");
@@ -930,16 +985,21 @@ pub fn best_effort_cleanup_for_exit() {
 
 fn best_effort_cleanup() {
     let mut stdout = io::stdout();
+    let caps = TerminalCapabilities::with_overrides();
 
-    // Avoid emitting standalone DEC ?2026l here. Panic/termination cleanup can
-    // run outside an active sync block, and muxed terminals may treat this
-    // sequence poorly.
     let _ = stdout.write_all(RESET_SCROLL_REGION);
+    let _ = stdout.write_all(RESET_STYLE);
 
-    let _ = TerminalSession::disable_kitty_keyboard(&mut stdout);
-    let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
+    // Keep panic/signal cleanup conservative: only emit mux-sensitive mode
+    // disables when policy says they could have been enabled.
+    if caps.kitty_keyboard && !caps.in_any_mux() {
+        let _ = TerminalSession::disable_kitty_keyboard(&mut stdout);
+    }
+    if caps.focus_events && !caps.in_any_mux() {
+        let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
+    }
     let _ = crossterm::execute!(stdout, crossterm::event::DisableBracketedPaste);
-    let _ = stdout.write_all(MOUSE_DISABLE_SEQ);
+    let _ = stdout.write_all(TerminalSession::mouse_disable_sequence_for_caps(&caps));
     let _ = crossterm::execute!(stdout, crossterm::cursor::Show);
     let _ = crossterm::execute!(stdout, crossterm::terminal::LeaveAlternateScreen);
     let _ = crossterm::terminal::disable_raw_mode();
@@ -956,7 +1016,8 @@ struct SignalGuard {
 #[cfg(unix)]
 impl SignalGuard {
     fn new() -> io::Result<Self> {
-        let mut signals = Signals::new([SIGINT, SIGTERM, SIGWINCH]).map_err(io::Error::other)?;
+        let mut signals =
+            Signals::new([SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH]).map_err(io::Error::other)?;
         let handle = signals.handle();
         let thread = std::thread::spawn(move || {
             for signal in signals.forever() {
@@ -965,7 +1026,7 @@ impl SignalGuard {
                         #[cfg(feature = "tracing")]
                         tracing::debug!("SIGWINCH received");
                     }
-                    SIGINT | SIGTERM => {
+                    SIGINT | SIGTERM | SIGHUP | SIGQUIT => {
                         #[cfg(feature = "tracing")]
                         tracing::warn!("termination signal received, cleaning up");
                         best_effort_cleanup();
@@ -1088,6 +1149,106 @@ mod tests {
     }
 
     #[test]
+    fn mouse_enable_omits_any_event_mode() {
+        assert!(
+            !MOUSE_ENABLE_SEQ
+                .windows(b"\x1b[?1003h".len())
+                .any(|w| w == b"\x1b[?1003h"),
+            "mouse enable should avoid 1003 any-event mode"
+        );
+        assert!(
+            MOUSE_ENABLE_SEQ
+                .windows(b"\x1b[?1000h".len())
+                .any(|w| w == b"\x1b[?1000h"),
+            "mouse enable should include 1000 normal tracking"
+        );
+        assert!(
+            MOUSE_ENABLE_SEQ
+                .windows(b"\x1b[?1002h".len())
+                .any(|w| w == b"\x1b[?1002h"),
+            "mouse enable should include 1002 button-event tracking"
+        );
+        assert!(
+            MOUSE_ENABLE_SEQ
+                .windows(b"\x1b[?1006h".len())
+                .any(|w| w == b"\x1b[?1006h"),
+            "mouse enable should include 1006 SGR tracking"
+        );
+        let pos_1016l = MOUSE_ENABLE_SEQ
+            .windows(b"\x1b[?1016l".len())
+            .position(|w| w == b"\x1b[?1016l")
+            .expect("mouse enable should clear 1016 before enabling SGR");
+        let pos_1006h = MOUSE_ENABLE_SEQ
+            .windows(b"\x1b[?1006h".len())
+            .position(|w| w == b"\x1b[?1006h")
+            .expect("mouse enable should include 1006 SGR mode");
+        assert!(
+            pos_1016l < pos_1006h,
+            "1016l must be emitted before 1006h to preserve SGR mode on Ghostty-like terminals"
+        );
+    }
+
+    #[test]
+    fn mouse_enable_mux_safe_sequence_is_minimal() {
+        let mux_caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .in_tmux(true)
+            .build();
+        assert_eq!(
+            TerminalSession::mouse_enable_sequence_for_caps(&mux_caps),
+            MOUSE_ENABLE_MUX_SAFE_SEQ
+        );
+        assert!(
+            !MOUSE_ENABLE_MUX_SAFE_SEQ
+                .windows(b"\x1b[?1001l".len())
+                .any(|w| w == b"\x1b[?1001l"),
+            "mux-safe mouse enable must not emit legacy reset noise"
+        );
+        assert!(
+            MOUSE_ENABLE_MUX_SAFE_SEQ
+                .windows(b"\x1b[?1006h".len())
+                .any(|w| w == b"\x1b[?1006h"),
+            "mux-safe mouse enable must keep SGR mode"
+        );
+        let pos_1016l = MOUSE_ENABLE_MUX_SAFE_SEQ
+            .windows(b"\x1b[?1016l".len())
+            .position(|w| w == b"\x1b[?1016l")
+            .expect("mux-safe mouse enable should clear 1016 before enabling SGR");
+        let pos_1006h = MOUSE_ENABLE_MUX_SAFE_SEQ
+            .windows(b"\x1b[?1006h".len())
+            .position(|w| w == b"\x1b[?1006h")
+            .expect("mux-safe mouse enable should include 1006 SGR mode");
+        assert!(
+            pos_1016l < pos_1006h,
+            "mux-safe mouse enable must emit 1016l before 1006h to preserve SGR mode"
+        );
+    }
+
+    #[test]
+    fn mouse_disable_mux_safe_sequence_clears_1016() {
+        let mux_caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .in_tmux(true)
+            .build();
+        assert_eq!(
+            TerminalSession::mouse_disable_sequence_for_caps(&mux_caps),
+            MOUSE_DISABLE_MUX_SAFE_SEQ
+        );
+        let pos_1016l = MOUSE_DISABLE_MUX_SAFE_SEQ
+            .windows(b"\x1b[?1016l".len())
+            .position(|w| w == b"\x1b[?1016l")
+            .expect("mux-safe mouse disable should clear 1016");
+        let pos_1006l = MOUSE_DISABLE_MUX_SAFE_SEQ
+            .windows(b"\x1b[?1006l".len())
+            .position(|w| w == b"\x1b[?1006l")
+            .expect("mux-safe mouse disable should disable 1006");
+        assert!(
+            pos_1016l < pos_1006l,
+            "mux-safe mouse disable should clear 1016 before dropping SGR mode"
+        );
+    }
+
+    #[test]
     fn session_options_partial_config() {
         let opts = SessionOptions {
             alternate_screen: true,
@@ -1100,6 +1261,75 @@ mod tests {
         assert!(opts.bracketed_paste);
         assert!(!opts.focus_events);
         assert!(!opts.kitty_keyboard);
+    }
+
+    #[test]
+    fn sanitize_session_options_disables_unsupported_capabilities() {
+        let requested = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let caps = TerminalCapabilities::basic();
+        let sanitized = sanitize_session_options(requested, &caps);
+
+        assert!(sanitized.alternate_screen);
+        assert!(!sanitized.mouse_capture);
+        assert!(!sanitized.bracketed_paste);
+        assert!(!sanitized.focus_events);
+        assert!(!sanitized.kitty_keyboard);
+    }
+
+    #[test]
+    fn sanitize_session_options_is_conservative_in_wezterm_mux() {
+        let requested = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .bracketed_paste(true)
+            .focus_events(true)
+            .kitty_keyboard(true)
+            .in_wezterm_mux(true)
+            .build();
+        let sanitized = sanitize_session_options(requested, &caps);
+
+        assert!(sanitized.alternate_screen);
+        assert!(sanitized.mouse_capture);
+        assert!(sanitized.bracketed_paste);
+        assert!(!sanitized.focus_events);
+        assert!(!sanitized.kitty_keyboard);
+    }
+
+    #[test]
+    fn sanitize_session_options_is_conservative_in_tmux() {
+        let requested = SessionOptions {
+            alternate_screen: true,
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .bracketed_paste(true)
+            .focus_events(true)
+            .kitty_keyboard(true)
+            .in_tmux(true)
+            .build();
+        let sanitized = sanitize_session_options(requested, &caps);
+
+        assert!(sanitized.alternate_screen);
+        assert!(sanitized.mouse_capture);
+        assert!(sanitized.bracketed_paste);
+        assert!(!sanitized.focus_events);
+        assert!(!sanitized.kitty_keyboard);
     }
 
     #[cfg(unix)]
@@ -1474,6 +1704,8 @@ mod tests {
         const FOCUS_DISABLE_SEQS: &[&[u8]] = &[b"\x1b[?1004l"];
         const KITTY_DISABLE_SEQS: &[&[u8]] = &[b"\x1b[<u"];
         const CURSOR_SHOW_SEQS: &[&[u8]] = &[b"\x1b[?25h"];
+        const SCROLL_REGION_RESET_SEQS: &[&[u8]] = &[b"\x1b[r"];
+        const STYLE_RESET_SEQS: &[&[u8]] = &[b"\x1b[0m"];
 
         if std::env::var("FTUI_CORE_PANIC_CHILD").is_ok() {
             let _ = std::panic::catch_unwind(|| {
@@ -1561,6 +1793,8 @@ mod tests {
         assert_contains_any(&captured, FOCUS_DISABLE_SEQS, "focus disable");
         assert_contains_any(&captured, KITTY_DISABLE_SEQS, "kitty disable");
         assert_contains_any(&captured, CURSOR_SHOW_SEQS, "cursor show");
+        assert_contains_any(&captured, SCROLL_REGION_RESET_SEQS, "scroll-region reset");
+        assert_contains_any(&captured, STYLE_RESET_SEQS, "style reset");
     }
 
     #[cfg(unix)]

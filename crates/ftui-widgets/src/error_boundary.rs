@@ -9,6 +9,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use web_time::Instant;
 
 use ftui_core::geometry::Rect;
+use ftui_core::with_panic_cleanup_suppressed;
 use ftui_render::cell::{Cell, PackedRgba};
 use ftui_render::frame::Frame;
 use ftui_style::Style;
@@ -190,9 +191,11 @@ impl<W: Widget> StatefulWidget for ErrorBoundary<W> {
 
         match state {
             ErrorBoundaryState::Healthy | ErrorBoundaryState::Recovering { .. } => {
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    self.inner.render(area, frame);
-                }));
+                let result = with_panic_cleanup_suppressed(|| {
+                    catch_unwind(AssertUnwindSafe(|| {
+                        self.inner.render(area, frame);
+                    }))
+                });
 
                 match result {
                     Ok(()) => {
@@ -490,9 +493,11 @@ impl<W: Widget> StatefulWidget for CustomErrorBoundary<W> {
 
         match state {
             ErrorBoundaryState::Healthy | ErrorBoundaryState::Recovering { .. } => {
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    self.inner.render(area, frame);
-                }));
+                let result = with_panic_cleanup_suppressed(|| {
+                    catch_unwind(AssertUnwindSafe(|| {
+                        self.inner.render(area, frame);
+                    }))
+                });
 
                 match result {
                     Ok(()) => {

@@ -1582,6 +1582,11 @@ impl<W: Write> TerminalWriter<W> {
                 // SYNC_END even if the begin write fails after partial bytes.
                 self.in_sync_block = true;
                 if let Err(err) = self.writer().write_all(SYNC_BEGIN) {
+                    // Attempt immediate close to avoid leaving the terminal in a
+                    // potentially open synchronized-output state.
+                    let _ = self.writer().write_all(SYNC_END);
+                    self.in_sync_block = false;
+                    let _ = self.writer().flush();
                     return Err(err);
                 }
             }
@@ -1843,12 +1848,15 @@ impl<W: Write> TerminalWriter<W> {
         };
         let flush_result = self.writer().flush();
 
-        let frame_stats = operation_result?;
-        if let Some(res) = sync_end_result {
-            res?;
+        // Cleanup failures (sync-end/flush) take precedence so terminal-state
+        // restoration errors are never hidden by a concurrent render failure.
+        let cleanup_error = sync_end_result
+            .and_then(Result::err)
+            .or_else(|| flush_result.err());
+        if let Some(err) = cleanup_error {
+            return Err(err);
         }
-        flush_result?;
-        Ok(frame_stats)
+        operation_result
     }
 
     /// Emit a diff directly to the writer.

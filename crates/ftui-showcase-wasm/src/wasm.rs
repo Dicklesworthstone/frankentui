@@ -68,8 +68,8 @@ fn pane_axis_from_u8(axis: u8) -> Option<SplitAxis> {
 fn pane_button_from_u8(button: u8) -> Option<PanePointerButton> {
     match button {
         0 => Some(PanePointerButton::Primary),
-        1 => Some(PanePointerButton::Secondary),
-        2 => Some(PanePointerButton::Middle),
+        1 => Some(PanePointerButton::Middle),
+        2 => Some(PanePointerButton::Secondary),
         _ => None,
     }
 }
@@ -542,7 +542,7 @@ impl ShowcaseRunner {
     /// Pane-specific pointer-down path with direct capture semantics.
     ///
     /// `axis`: `0` = horizontal, `1` = vertical.
-    /// `button`: `0` = primary, `1` = secondary, `2` = middle.
+    /// `button`: DOM semantics (`0` = primary, `1` = middle, `2` = secondary).
     /// `mods` bitmask: `1=shift`, `2=alt`, `4=ctrl`, `8=meta`.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = panePointerDown)]
@@ -679,7 +679,7 @@ impl ShowcaseRunner {
 
     /// Pane-specific pointer-up path.
     ///
-    /// `button`: `0` = primary, `1` = secondary, `2` = middle.
+    /// `button`: DOM semantics (`0` = primary, `1` = middle, `2` = secondary).
     /// `mods` bitmask: `1=shift`, `2=alt`, `4=ctrl`, `8=meta`.
     #[wasm_bindgen(js_name = panePointerUp)]
     pub fn pane_pointer_up(

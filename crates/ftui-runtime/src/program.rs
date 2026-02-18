@@ -796,13 +796,8 @@ impl PaneCapabilityMatrix {
         // Without it, X10/normal mode reports button 3 for all releases.
         let mouse_button_discrimination = mouse_sgr;
 
-        // Focus events: available if the terminal supports them and the
-        // multiplexer passes them through. Screen does not.
-        let focus_events = match mux {
-            PaneMuxEnvironment::Screen => false,
-            PaneMuxEnvironment::WeztermMux => false,
-            _ => caps.focus_events,
-        };
+        // Focus events are conservatively disabled in any mux context.
+        let focus_events = caps.focus_events && !caps.in_any_mux();
 
         let bracketed_paste = caps.bracketed_paste;
         let unicode_box_drawing = caps.unicode_box_drawing;
@@ -3355,13 +3350,13 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
 // Native TTY backend constructor (feature-gated)
 // =============================================================================
 
+#[cfg(any(feature = "crossterm-compat", feature = "native-backend"))]
 #[inline]
 const fn sanitize_backend_features_for_capabilities(
     requested: BackendFeatures,
     capabilities: &ftui_core::terminal_capabilities::TerminalCapabilities,
 ) -> BackendFeatures {
-    let focus_events_supported =
-        capabilities.focus_events && !capabilities.in_screen && !capabilities.in_wezterm_mux;
+    let focus_events_supported = capabilities.focus_events && !capabilities.in_any_mux();
     let kitty_keyboard_supported = capabilities.kitty_keyboard && !capabilities.in_any_mux();
 
     BackendFeatures {
@@ -3383,7 +3378,7 @@ impl<M: Model> Program<M, ftui_tty::TtyBackend, Stdout> {
     where
         M::Message: Send + 'static,
     {
-        let capabilities = ftui_core::terminal_capabilities::TerminalCapabilities::detect();
+        let capabilities = ftui_core::terminal_capabilities::TerminalCapabilities::with_overrides();
         let mouse_capture = config.resolved_mouse_capture();
         let requested_features = BackendFeatures {
             mouse_capture,
@@ -5153,6 +5148,30 @@ mod tests {
             .focus_events(true)
             .kitty_keyboard(true)
             .in_wezterm_mux(true)
+            .build();
+        let sanitized = sanitize_backend_features_for_capabilities(requested, &caps);
+
+        assert!(sanitized.mouse_capture);
+        assert!(sanitized.bracketed_paste);
+        assert!(!sanitized.focus_events);
+        assert!(!sanitized.kitty_keyboard);
+    }
+
+    #[cfg(feature = "native-backend")]
+    #[test]
+    fn sanitize_backend_features_is_conservative_in_tmux() {
+        let requested = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .bracketed_paste(true)
+            .focus_events(true)
+            .kitty_keyboard(true)
+            .in_tmux(true)
             .build();
         let sanitized = sanitize_backend_features_for_capabilities(requested, &caps);
 
@@ -9485,11 +9504,12 @@ mod tests {
         let mat = PaneCapabilityMatrix::from_capabilities(&caps);
 
         assert_eq!(mat.mux, PaneMuxEnvironment::Tmux);
-        // tmux forwards mouse drags and focus events correctly
+        // Focus cancel path is conservatively disabled in all muxes.
         assert!(mat.mouse_drag_reliable);
-        assert!(mat.focus_events);
+        assert!(!mat.focus_events);
         assert!(mat.drag_enabled());
-        assert!(mat.focus_cancel_effective());
+        assert!(!mat.focus_cancel_effective());
+        assert!(mat.degraded);
     }
 
     #[test]
@@ -9516,8 +9536,10 @@ mod tests {
 
         assert_eq!(mat.mux, PaneMuxEnvironment::Zellij);
         assert!(mat.mouse_drag_reliable);
-        assert!(mat.focus_events);
+        assert!(!mat.focus_events);
         assert!(mat.drag_enabled());
+        assert!(!mat.focus_cancel_effective());
+        assert!(mat.degraded);
     }
 
     #[test]

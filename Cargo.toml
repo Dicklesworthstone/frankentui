@@ -16,8 +16,6 @@ members = [
   "crates/ftui-pty",
   "crates/ftui-simd",
   "crates/ftui-demo-showcase",
-  "crates/frankenterm-core",
-  "crates/frankenterm-web",
   "crates/ftui-backend",
   "crates/ftui-tty",
   "crates/ftui-web",

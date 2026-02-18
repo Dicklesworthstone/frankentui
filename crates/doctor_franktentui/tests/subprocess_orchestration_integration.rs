@@ -1,5 +1,5 @@
+use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -10,48 +10,89 @@ fn doctor_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_doctor_franktentui"))
 }
 
-fn make_fake_vhs(tool_dir: &Path) {
-    let vhs_path = tool_dir.join("vhs");
-    let script = r#"#!/usr/bin/env bash
-set -euo pipefail
-mode="${FAKE_VHS_MODE:-success}"
-if [[ "$mode" == "fail" ]]; then
-  exit "${FAKE_VHS_EXIT_CODE:-7}"
-fi
-if [[ "$mode" == "slow" ]]; then
-  sleep "${FAKE_VHS_SLEEP_SECONDS:-3}"
-  exit 0
-fi
-if [[ "$mode" == "poison_report_outputs" ]]; then
-  tape_path="${1:-}"
-  if [[ -n "$tape_path" ]]; then
-    run_dir="$(dirname "$tape_path")"
-    suite_dir="$(dirname "$run_dir")"
-    mkdir -p "$suite_dir/report.json" "$suite_dir/index.html"
-  fi
-  exit 0
-fi
-exit 0
-"#;
-    fs::write(&vhs_path, script).expect("write fake vhs");
-
-    let mut perms = fs::metadata(&vhs_path)
-        .expect("metadata fake vhs")
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&vhs_path, perms).expect("set fake vhs executable");
+fn resolve_command_path(command: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|entry| entry.join(command))
+        .find(|candidate| candidate.is_file())
 }
 
-fn make_fake_ffmpeg_fail(tool_dir: &Path) {
-    let ffmpeg_path = tool_dir.join("ffmpeg");
-    let script = "#!/usr/bin/env bash\nexit 1\n";
-    fs::write(&ffmpeg_path, script).expect("write fake ffmpeg");
+fn missing_commands(commands: &[&str]) -> Vec<String> {
+    commands
+        .iter()
+        .filter_map(|command| {
+            if resolve_command_path(command).is_none() {
+                Some((*command).to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+}
 
-    let mut perms = fs::metadata(&ffmpeg_path)
-        .expect("metadata fake ffmpeg")
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&ffmpeg_path, perms).expect("set fake ffmpeg executable");
+fn skip_if_missing(commands: &[&str], test_name: &str) -> bool {
+    let missing = missing_commands(commands);
+    if missing.is_empty() {
+        return false;
+    }
+
+    eprintln!(
+        "skipping {test_name}: missing required commands: {}",
+        missing.join(", ")
+    );
+    true
+}
+
+fn skip_without_real_tool_opt_in(test_name: &str) -> bool {
+    match std::env::var("DOCTOR_REAL_TOOL_INTEGRATION").as_deref() {
+        Ok("1") => false,
+        _ => {
+            eprintln!(
+                "skipping {test_name}: set DOCTOR_REAL_TOOL_INTEGRATION=1 to run real-tool integration coverage"
+            );
+            true
+        }
+    }
+}
+
+fn build_path_with_selected_commands(tool_dir: &Path, commands: &[&str]) -> String {
+    fs::create_dir_all(tool_dir).expect("tool dir");
+
+    for command in commands {
+        let source = resolve_command_path(command)
+            .unwrap_or_else(|| panic!("required command not found in PATH: {command}"));
+        let target = tool_dir.join(command);
+        if target.exists() {
+            fs::remove_file(&target).expect("remove existing symlink target");
+        }
+        link_or_copy_command(&source, &target);
+    }
+
+    tool_dir.display().to_string()
+}
+
+fn link_or_copy_command(source: &Path, target: &Path) {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, target).unwrap_or_else(|error| {
+            panic!(
+                "failed creating command symlink {} -> {}: {error}",
+                target.display(),
+                source.display()
+            )
+        });
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::copy(source, target).unwrap_or_else(|error| {
+            panic!(
+                "failed copying command binary {} -> {}: {error}",
+                source.display(),
+                target.display()
+            )
+        });
+    }
 }
 
 fn run_doctor_command_with_path(
@@ -69,12 +110,11 @@ fn run_doctor_command_with_path(
     command.output().expect("run doctor_franktentui binary")
 }
 
-fn run_doctor_command(args: &[&str], tool_dir: &Path, extra_env: &[(&str, &str)]) -> Output {
-    let path_env = format!(
-        "{}:{}",
-        tool_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+fn run_doctor_command(args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+    let path_env = std::env::var_os("PATH")
+        .unwrap_or_else(|| OsString::from(""))
+        .to_string_lossy()
+        .into_owned();
     run_doctor_command_with_path(args, &path_env, extra_env)
 }
 
@@ -102,15 +142,25 @@ fn parse_stderr_json(output: &Output) -> Value {
 
 #[test]
 fn doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts() {
+    if skip_without_real_tool_opt_in(
+        "doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts",
+    ) {
+        return;
+    }
+
+    if skip_if_missing(
+        &["bash", "vhs"],
+        "doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts",
+    ) {
+        return;
+    }
+
     let temp = tempdir().expect("tempdir");
-    let tool_dir = temp.path().join("tools");
     let project_dir = temp.path().join("project");
     let dry_root = temp.path().join("doctor_dry");
     let full_root = temp.path().join("doctor_full");
 
-    fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::create_dir_all(&project_dir).expect("project dir");
-    make_fake_vhs(&tool_dir);
 
     let dry_output = run_doctor_command(
         &[
@@ -122,7 +172,6 @@ fn doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts() {
             "--app-command",
             "echo demo",
         ],
-        &tool_dir,
         &[],
     );
     assert!(
@@ -151,7 +200,6 @@ fn doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts() {
             "--app-command",
             "echo demo",
         ],
-        &tool_dir,
         &[],
     );
     assert!(
@@ -173,15 +221,25 @@ fn doctor_subprocess_dry_and_full_smoke_generate_expected_artifacts() {
 
 #[test]
 fn capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics() {
+    if skip_without_real_tool_opt_in(
+        "capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics",
+    ) {
+        return;
+    }
+
+    if skip_if_missing(
+        &["bash", "vhs"],
+        "capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics",
+    ) {
+        return;
+    }
+
     let temp = tempdir().expect("tempdir");
-    let tool_dir = temp.path().join("tools");
     let project_dir = temp.path().join("project");
     let capture_root = temp.path().join("capture_runs");
     let suite_root = temp.path().join("suite_runs");
 
-    fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::create_dir_all(&project_dir).expect("project dir");
-    make_fake_vhs(&tool_dir);
 
     let capture_output = run_doctor_command(
         &[
@@ -198,7 +256,6 @@ fn capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics() 
             "echo demo",
             "--dry-run",
         ],
-        &tool_dir,
         &[],
     );
     assert!(
@@ -226,7 +283,6 @@ fn capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics() 
             "--app-command",
             "echo demo",
         ],
-        &tool_dir,
         &[],
     );
     assert!(
@@ -266,7 +322,6 @@ fn capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics() 
             "--title",
             "Subprocess Report",
         ],
-        &tool_dir,
         &[],
     );
     assert!(
@@ -281,7 +336,7 @@ fn capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics() 
         &[
             "suite",
             "--profiles",
-            "analytics-empty",
+            "not-a-real-profile",
             "--project-dir",
             project_dir.to_str().expect("project dir str"),
             "--run-root",
@@ -291,8 +346,7 @@ fn capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics() 
             "--app-command",
             "echo demo",
         ],
-        &tool_dir,
-        &[("FAKE_VHS_MODE", "fail"), ("FAKE_VHS_EXIT_CODE", "7")],
+        &[],
     );
 
     assert_eq!(suite_failure_output.status.code(), Some(1));
@@ -311,13 +365,10 @@ fn capture_suite_and_report_subprocesses_enforce_artifacts_and_exit_semantics() 
 #[test]
 fn doctor_missing_dependency_and_json_output_contract() {
     let temp = tempdir().expect("tempdir");
-    let tool_dir = temp.path().join("tools");
     let project_dir = temp.path().join("project");
     let run_root = temp.path().join("doctor_json");
 
-    fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::create_dir_all(&project_dir).expect("project dir");
-    make_fake_vhs(&tool_dir);
 
     let missing_output = run_doctor_command_with_path(
         &[
@@ -329,7 +380,7 @@ fn doctor_missing_dependency_and_json_output_contract() {
             "--app-command",
             "echo demo",
         ],
-        tool_dir.to_str().expect("tool dir str"),
+        "",
         &[],
     );
     assert_eq!(missing_output.status.code(), Some(1));
@@ -338,6 +389,13 @@ fn doctor_missing_dependency_and_json_output_contract() {
         "expected missing bash dependency, got: {}",
         stderr_text(&missing_output)
     );
+
+    if skip_if_missing(
+        &["bash", "vhs"],
+        "doctor_missing_dependency_and_json_output_contract",
+    ) {
+        return;
+    }
 
     let json_output = run_doctor_command(
         &[
@@ -349,7 +407,6 @@ fn doctor_missing_dependency_and_json_output_contract() {
             "--app-command",
             "echo demo",
         ],
-        &tool_dir,
         &[("SQLMODEL_JSON", "1")],
     );
     assert!(
@@ -368,13 +425,10 @@ fn doctor_missing_dependency_and_json_output_contract() {
 #[test]
 fn json_mode_failure_emits_machine_readable_stderr_payload() {
     let temp = tempdir().expect("tempdir");
-    let tool_dir = temp.path().join("tools");
     let project_dir = temp.path().join("project");
     let run_root = temp.path().join("capture_json_error");
 
-    fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::create_dir_all(&project_dir).expect("project dir");
-    make_fake_vhs(&tool_dir);
 
     let output = run_doctor_command(
         &[
@@ -388,7 +442,6 @@ fn json_mode_failure_emits_machine_readable_stderr_payload() {
             "--app-command",
             "echo demo",
         ],
-        &tool_dir,
         &[("SQLMODEL_JSON", "1")],
     );
 
@@ -413,13 +466,21 @@ fn json_mode_failure_emits_machine_readable_stderr_payload() {
 
 #[test]
 fn capture_timeout_snapshot_json_and_evidence_ledger_contracts() {
+    if skip_without_real_tool_opt_in("capture_timeout_snapshot_json_and_evidence_ledger_contracts")
+    {
+        return;
+    }
+
+    if skip_if_missing(
+        &["bash", "vhs"],
+        "capture_timeout_snapshot_json_and_evidence_ledger_contracts",
+    ) {
+        return;
+    }
+
     let temp = tempdir().expect("tempdir");
-    let tool_dir = temp.path().join("tools");
     let project_dir = temp.path().join("project");
-    fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::create_dir_all(&project_dir).expect("project dir");
-    make_fake_vhs(&tool_dir);
-    make_fake_ffmpeg_fail(&tool_dir);
 
     let timeout_root = temp.path().join("capture_timeout_runs");
     let timeout_output = run_doctor_command(
@@ -434,12 +495,12 @@ fn capture_timeout_snapshot_json_and_evidence_ledger_contracts() {
             "--run-name",
             "timeout_case",
             "--app-command",
-            "echo demo",
+            "sleep 3",
             "--capture-timeout-seconds",
             "1",
+            "--no-snapshot",
         ],
-        &tool_dir,
-        &[("FAKE_VHS_MODE", "slow"), ("FAKE_VHS_SLEEP_SECONDS", "3")],
+        &[],
     );
     assert_eq!(timeout_output.status.code(), Some(124));
 
@@ -458,7 +519,11 @@ fn capture_timeout_snapshot_json_and_evidence_ledger_contracts() {
     );
 
     let snapshot_root = temp.path().join("capture_snapshot_runs");
-    let snapshot_output = run_doctor_command(
+    let snapshot_path = build_path_with_selected_commands(
+        &temp.path().join("path_without_ffmpeg"),
+        &["bash", "vhs"],
+    );
+    let snapshot_output = run_doctor_command_with_path(
         &[
             "capture",
             "--profile",
@@ -473,7 +538,7 @@ fn capture_timeout_snapshot_json_and_evidence_ledger_contracts() {
             "echo demo",
             "--snapshot-required",
         ],
-        &tool_dir,
+        &snapshot_path,
         &[],
     );
     assert_eq!(snapshot_output.status.code(), Some(21));
@@ -506,7 +571,6 @@ fn capture_timeout_snapshot_json_and_evidence_ledger_contracts() {
             "echo demo",
             "--dry-run",
         ],
-        &tool_dir,
         &[("SQLMODEL_JSON", "1")],
     );
     assert!(
@@ -534,7 +598,6 @@ fn capture_timeout_snapshot_json_and_evidence_ledger_contracts() {
             "echo demo",
             "--no-snapshot",
         ],
-        &tool_dir,
         &[],
     );
     assert!(
@@ -561,14 +624,25 @@ fn capture_timeout_snapshot_json_and_evidence_ledger_contracts() {
 
 #[test]
 fn suite_report_failure_and_json_output_contracts() {
+    if skip_without_real_tool_opt_in("suite_report_failure_and_json_output_contracts") {
+        return;
+    }
+
+    if skip_if_missing(
+        &["bash", "vhs"],
+        "suite_report_failure_and_json_output_contracts",
+    ) {
+        return;
+    }
+
     let temp = tempdir().expect("tempdir");
-    let tool_dir = temp.path().join("tools");
     let project_dir = temp.path().join("project");
     let suite_root = temp.path().join("suite_runs");
 
-    fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::create_dir_all(&project_dir).expect("project dir");
-    make_fake_vhs(&tool_dir);
+    let poisoned_suite_dir = suite_root.join("report_fail_suite");
+    fs::create_dir_all(poisoned_suite_dir.join("report.json")).expect("poison report.json dir");
+    fs::create_dir_all(poisoned_suite_dir.join("index.html")).expect("poison index.html dir");
 
     let report_fail_output = run_doctor_command(
         &[
@@ -584,8 +658,7 @@ fn suite_report_failure_and_json_output_contracts() {
             "--app-command",
             "echo demo",
         ],
-        &tool_dir,
-        &[("FAKE_VHS_MODE", "poison_report_outputs")],
+        &[],
     );
     assert_eq!(report_fail_output.status.code(), Some(1));
     assert!(
@@ -618,7 +691,6 @@ fn suite_report_failure_and_json_output_contracts() {
             "echo demo",
             "--skip-report",
         ],
-        &tool_dir,
         &[("SQLMODEL_JSON", "1")],
     );
     assert!(
@@ -636,7 +708,7 @@ fn suite_report_failure_and_json_output_contracts() {
         &[
             "suite",
             "--profiles",
-            "analytics-empty",
+            "not-a-real-profile",
             "--project-dir",
             project_dir.to_str().expect("project dir str"),
             "--run-root",
@@ -647,12 +719,7 @@ fn suite_report_failure_and_json_output_contracts() {
             "echo demo",
             "--skip-report",
         ],
-        &tool_dir,
-        &[
-            ("SQLMODEL_JSON", "1"),
-            ("FAKE_VHS_MODE", "fail"),
-            ("FAKE_VHS_EXIT_CODE", "7"),
-        ],
+        &[("SQLMODEL_JSON", "1")],
     );
     assert_eq!(json_fail_output.status.code(), Some(1));
     let json_fail_payload = parse_stdout_json(&json_fail_output);
@@ -672,7 +739,6 @@ fn suite_report_failure_and_json_output_contracts() {
             "--title",
             "JSON Report Contract",
         ],
-        &tool_dir,
         &[("SQLMODEL_JSON", "1")],
     );
     assert!(

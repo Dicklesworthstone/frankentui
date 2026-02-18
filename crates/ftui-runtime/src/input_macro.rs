@@ -284,7 +284,7 @@ impl<'a> MacroPlayer<'a> {
         let timed = &self.input_macro.events[self.position];
         #[cfg(feature = "tracing")]
         tracing::debug!(event = ?timed.event, delay = ?timed.delay, "macro playback event");
-        self.elapsed += timed.delay;
+        self.elapsed = self.elapsed.saturating_add(timed.delay);
         sim.inject_events(std::slice::from_ref(&timed.event));
         self.position += 1;
         true
@@ -344,7 +344,7 @@ impl<'a> MacroPlayer<'a> {
     ) {
         while !self.is_done() && sim.is_running() {
             let timed = &self.input_macro.events[self.position];
-            let next_elapsed = self.elapsed + timed.delay;
+            let next_elapsed = self.elapsed.saturating_add(timed.delay);
             if next_elapsed > until {
                 break;
             }
@@ -385,6 +385,10 @@ pub struct MacroPlayback {
     stop_logged: bool,
     error_logged: bool,
 }
+
+/// Safety cap to prevent pathological looping replays from monopolizing a
+/// frame when elapsed time spikes (e.g. host clock jumps / extreme speed).
+const MAX_DUE_EVENTS_PER_ADVANCE: usize = 4096;
 
 impl MacroPlayback {
     /// Create a new playback scheduler for the given macro.
@@ -507,7 +511,16 @@ impl MacroPlayback {
             self.start_logged = true;
         }
 
-        self.elapsed += scale_duration(delta, self.speed);
+        let scaled = scale_duration(delta, self.speed);
+        let total_duration = self.input_macro.total_duration();
+        if self.looping && total_duration > Duration::ZERO && scaled == Duration::MAX {
+            // Overflowed speed scaling can produce effectively infinite backlog.
+            // Collapse to a single bounded loop window for this advance tick.
+            self.elapsed =
+                loop_elapsed_remainder(self.elapsed, total_duration).saturating_add(total_duration);
+        } else {
+            self.elapsed = self.elapsed.saturating_add(scaled);
+        }
         let events = self.drain_due_events();
 
         #[cfg(feature = "tracing")]
@@ -532,13 +545,7 @@ impl MacroPlayback {
         let total_duration = self.input_macro.total_duration();
         let can_loop = self.looping && total_duration > Duration::ZERO;
         if can_loop && self.position >= self.input_macro.len() {
-            let total_secs = total_duration.as_secs_f64();
-            if total_secs > 0.0 {
-                let elapsed_secs = self.elapsed.as_secs_f64() % total_secs;
-                self.elapsed = Duration::from_secs_f64(elapsed_secs);
-            } else {
-                self.elapsed = Duration::ZERO;
-            }
+            self.elapsed = loop_elapsed_remainder(self.elapsed, total_duration);
             self.position = 0;
             self.next_due = self
                 .input_macro
@@ -548,17 +555,37 @@ impl MacroPlayback {
                 .unwrap_or(Duration::ZERO);
         }
 
-        while self.position < self.input_macro.len() && self.elapsed >= self.next_due {
+        while out.len() < MAX_DUE_EVENTS_PER_ADVANCE
+            && self.position < self.input_macro.len()
+            && self.elapsed >= self.next_due
+        {
             let timed = &self.input_macro.events[self.position];
             #[cfg(feature = "tracing")]
             tracing::debug!(event = ?timed.event, delay = ?timed.delay, "macro playback event");
             out.push(timed.event.clone());
             self.position += 1;
             if self.position < self.input_macro.len() {
-                self.next_due += self.input_macro.events[self.position].delay;
+                self.next_due = self
+                    .next_due
+                    .saturating_add(self.input_macro.events[self.position].delay);
             } else if can_loop {
                 // Carry any overflow elapsed time into the next loop.
                 self.elapsed = self.elapsed.saturating_sub(total_duration);
+                self.position = 0;
+                self.next_due = self
+                    .input_macro
+                    .events()
+                    .first()
+                    .map(|e| e.delay)
+                    .unwrap_or(Duration::ZERO);
+            }
+        }
+
+        if can_loop && out.len() == MAX_DUE_EVENTS_PER_ADVANCE {
+            // Collapse extreme backlog so a single advance cannot spin for
+            // unbounded time under huge elapsed/speed spikes.
+            self.elapsed = loop_elapsed_remainder(self.elapsed, total_duration);
+            if self.position >= self.input_macro.len() {
                 self.position = 0;
                 self.next_due = self
                     .input_macro
@@ -588,10 +615,29 @@ fn scale_duration(delta: Duration, speed: f64) -> Duration {
         return Duration::ZERO;
     }
     let speed = normalize_speed(speed);
+    if speed == 0.0 {
+        return Duration::ZERO;
+    }
     if speed == 1.0 {
         return delta;
     }
-    Duration::from_secs_f64(delta.as_secs_f64() * speed)
+    duration_from_secs_f64_saturating(delta.as_secs_f64() * speed)
+}
+
+fn duration_from_secs_f64_saturating(secs: f64) -> Duration {
+    if secs.is_nan() || secs <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::try_from_secs_f64(secs).unwrap_or(Duration::MAX)
+}
+
+fn loop_elapsed_remainder(elapsed: Duration, total_duration: Duration) -> Duration {
+    let total_secs = total_duration.as_secs_f64();
+    if total_secs <= 0.0 {
+        return Duration::ZERO;
+    }
+    let elapsed_secs = elapsed.as_secs_f64() % total_secs;
+    duration_from_secs_f64_saturating(elapsed_secs)
 }
 
 // ---------------------------------------------------------------------------
@@ -1304,6 +1350,44 @@ mod tests {
         let mut playback = MacroPlayback::new(m.clone()).with_speed(2.0);
         let events = playback.advance(Duration::from_millis(5));
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn playback_speed_huge_value_does_not_panic() {
+        let events = vec![TimedEvent::new(key_event('+'), Duration::from_millis(10))];
+        let m = InputMacro::new(
+            events,
+            MacroMetadata {
+                name: "huge-speed".to_string(),
+                terminal_size: (80, 24),
+                total_duration: Duration::from_millis(10),
+            },
+        );
+
+        let mut playback = MacroPlayback::new(m).with_speed(f64::MAX);
+        let events = playback.advance(Duration::from_millis(1));
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn playback_speed_huge_looping_multiple_advances_do_not_panic() {
+        let events = vec![TimedEvent::new(key_event('+'), Duration::from_millis(10))];
+        let m = InputMacro::new(
+            events,
+            MacroMetadata {
+                name: "huge-speed-looping".to_string(),
+                terminal_size: (80, 24),
+                total_duration: Duration::from_millis(10),
+            },
+        );
+
+        let mut playback = MacroPlayback::new(m)
+            .with_speed(f64::MAX)
+            .with_looping(true);
+        let first = playback.advance(Duration::from_millis(1));
+        assert_eq!(first.len(), 1);
+        let second = playback.advance(Duration::from_millis(1));
+        assert_eq!(second.len(), 1);
     }
 
     #[test]

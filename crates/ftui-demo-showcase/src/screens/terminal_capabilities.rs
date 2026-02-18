@@ -483,6 +483,8 @@ pub struct EnvSnapshot {
     tmux: bool,
     screen: bool,
     zellij: bool,
+    wezterm_unix_socket: bool,
+    wezterm_pane: bool,
     kitty: bool,
     wt_session: bool,
 }
@@ -497,6 +499,8 @@ impl EnvSnapshot {
             tmux: std::env::var("TMUX").is_ok(),
             screen: std::env::var("STY").is_ok(),
             zellij: std::env::var("ZELLIJ").is_ok(),
+            wezterm_unix_socket: std::env::var("WEZTERM_UNIX_SOCKET").is_ok(),
+            wezterm_pane: std::env::var("WEZTERM_PANE").is_ok(),
             kitty: std::env::var("KITTY_WINDOW_ID").is_ok(),
             wt_session: std::env::var("WT_SESSION").is_ok(),
         }
@@ -511,6 +515,8 @@ impl EnvSnapshot {
         tmux: bool,
         screen: bool,
         zellij: bool,
+        wezterm_unix_socket: bool,
+        wezterm_pane: bool,
         kitty: bool,
         wt_session: bool,
     ) -> Self {
@@ -522,6 +528,8 @@ impl EnvSnapshot {
             tmux,
             screen,
             zellij,
+            wezterm_unix_socket,
+            wezterm_pane,
             kitty,
             wt_session,
         }
@@ -1476,10 +1484,12 @@ impl TerminalCapabilitiesScreen {
             format!("COLORTERM={}", EnvSnapshot::format_value(&env.colorterm)),
             format!("NO_COLOR={}", yes_no(env.no_color)),
             format!(
-                "MUX: tmux={} screen={} zellij={}",
+                "MUX: tmux={} screen={} zellij={} wezterm_socket={} wezterm_pane={}",
                 yes_no(env.tmux),
                 yes_no(env.screen),
-                yes_no(env.zellij)
+                yes_no(env.zellij),
+                yes_no(env.wezterm_unix_socket),
+                yes_no(env.wezterm_pane)
             ),
             format!(
                 "KITTY_WINDOW_ID={} WT_SESSION={}",
@@ -1564,6 +1574,8 @@ impl TerminalCapabilitiesScreen {
                 "TMUX": env.tmux,
                 "SCREEN": env.screen,
                 "ZELLIJ": env.zellij,
+                "WEZTERM_UNIX_SOCKET": env.wezterm_unix_socket,
+                "WEZTERM_PANE": env.wezterm_pane,
                 "KITTY_WINDOW_ID": env.kitty,
                 "WT_SESSION": env.wt_session,
             },
@@ -2182,6 +2194,8 @@ mod tests {
             "xterm-256color",
             "ftui-test",
             "truecolor",
+            false,
+            false,
             false,
             false,
             false,

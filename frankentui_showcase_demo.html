@@ -29,6 +29,21 @@
     -webkit-user-select: none;
     user-select: none;
   }
+	  #mobile-kb-proxy {
+	    position: fixed;
+	    left: 0;
+	    top: 0;
+	    width: 1px;
+	    height: 1px;
+	    opacity: 0;
+	    pointer-events: none;
+	    border: 0;
+	    padding: 0;
+	    margin: 0;
+	    background: transparent;
+	    color: transparent;
+	    caret-color: transparent;
+	  }
 	  #status {
 	    position: fixed; bottom: 8px; right: 12px;
 	    color: #666; font: 12px/1 "Pragmasevka NF", monospace;
@@ -172,6 +187,15 @@
 <div id="container">
   <canvas id="terminal-canvas" tabindex="0"></canvas>
 </div>
+<textarea
+  id="mobile-kb-proxy"
+  aria-hidden="true"
+  tabindex="-1"
+  inputmode="text"
+  autocomplete="off"
+  autocorrect="off"
+  autocapitalize="off"
+  spellcheck="false"></textarea>
 <div id="pane-ghost" aria-hidden="true"></div>
 <div id="pane-ghost-alt-1" aria-hidden="true"></div>
 <div id="pane-ghost-alt-2" aria-hidden="true"></div>
@@ -211,6 +235,7 @@ const errorDiv       = document.getElementById("error-overlay");
 const loadingOverlay = document.getElementById("loading-overlay");
 const loadingLabel   = document.getElementById("loading-label");
 const loadingBar     = document.getElementById("loading-bar");
+const keyboardProxy  = document.getElementById("mobile-kb-proxy");
 const paneGhost      = document.getElementById("pane-ghost");
 const paneGhostAlt1  = document.getElementById("pane-ghost-alt-1");
 const paneGhostAlt2  = document.getElementById("pane-ghost-alt-2");
@@ -220,6 +245,7 @@ const paneDockHint   = document.getElementById("pane-dock-hint");
 const PANE_WORKSPACE_KEY = "ftui-pane-workspace-v1";
 let paneWorkspaceToken = "";
 const paneActivePointers = new Set();
+const paneTouchPointers = new Set();
 let paneGhostDecay = null;
 
 function showError(msg) {
@@ -336,8 +362,55 @@ try {
   throw e;
 }
 
+// ── Host storage + media helpers ──────────────────────────────────────
+function storageGet(key) {
+  try {
+    return window.localStorage ? window.localStorage.getItem(key) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    if (window.localStorage) {
+      window.localStorage.setItem(key, value);
+    }
+  } catch (_) {}
+}
+
+function mediaQueryMatches(query) {
+  try {
+    return window.matchMedia(query).matches;
+  } catch (_) {
+    return false;
+  }
+}
+
+function addMediaQueryChangeListener(query, handler) {
+  let mql;
+  try {
+    mql = window.matchMedia(query);
+  } catch (_) {
+    return () => {};
+  }
+  if (typeof mql.addEventListener === "function") {
+    mql.addEventListener("change", handler);
+    return () => {
+      try { mql.removeEventListener("change", handler); } catch (_) {}
+    };
+  }
+  if (typeof mql.addListener === "function") {
+    mql.addListener(handler);
+    return () => {
+      try { mql.removeListener(handler); } catch (_) {}
+    };
+  }
+  return () => {};
+}
+
 // ── User zoom (Ctrl+/- font sizing) ──────────────────────────────────
-let userZoom = URL_ZOOM || parseFloat(localStorage.getItem("ftui-zoom")) || 1.0;
+let userZoom = URL_ZOOM || parseFloat(storageGet("ftui-zoom")) || 1.0;
 
 function applyZoom() {
   if (typeof term.setZoom === "function") {
@@ -357,7 +430,7 @@ function applyZoom() {
     status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
   }
   syncPaneOverlayFromRunner();
-  localStorage.setItem("ftui-zoom", String(userZoom));
+  storageSet("ftui-zoom", String(userZoom));
   // Update URL without reload.
   const url = new URL(window.location);
   if (Math.abs(userZoom - 1.0) > 0.01) {
@@ -369,8 +442,8 @@ function applyZoom() {
 }
 
 // Auto-zoom on narrow touch devices if user has no saved preference.
-const isTouchDevice = matchMedia("(pointer: coarse)").matches;
-if (isTouchDevice && !URL_ZOOM && !localStorage.getItem("ftui-zoom")) {
+const isTouchDevice = mediaQueryMatches("(pointer: coarse)");
+if (isTouchDevice && !URL_ZOOM && !storageGet("ftui-zoom")) {
   const vw = document.documentElement.clientWidth;
   const TARGET_COLS = 40;
   const autoZoom = vw / (TARGET_COLS * CELL_WIDTH);
@@ -602,7 +675,7 @@ function persistPaneWorkspace(state) {
   if (typeof runner.paneExportWorkspaceSnapshot !== "function") return;
   const snapshot = runner.paneExportWorkspaceSnapshot();
   if (snapshot) {
-    localStorage.setItem(PANE_WORKSPACE_KEY, snapshot);
+    storageSet(PANE_WORKSPACE_KEY, snapshot);
     const tokenState = state || paneStateSnapshot();
     paneWorkspaceToken = paneWorkspaceSnapshotToken(tokenState);
   }
@@ -619,7 +692,7 @@ function persistPaneWorkspaceIfChanged(state) {
 
 function restorePaneWorkspace() {
   if (typeof runner.paneImportWorkspaceSnapshot !== "function") return false;
-  const snapshot = localStorage.getItem(PANE_WORKSPACE_KEY);
+  const snapshot = storageGet(PANE_WORKSPACE_KEY);
   if (!snapshot) return false;
   const restored = runner.paneImportWorkspaceSnapshot(snapshot);
   if (restored) {
@@ -633,31 +706,45 @@ function paneModsFromDomEvent(e) {
 }
 
 function panePointerIdFromEvent(e) {
-  if (e && Number.isFinite(e.pointerId)) {
-    return Math.max(0, Math.trunc(e.pointerId));
-  }
-  return 1;
+  if (!e) return 1;
+  return clampPointerId(e.pointerId);
+}
+
+function clampPointerId(value) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(0xFFFFFFFF, Math.trunc(value)));
 }
 
 function applyPaneCaptureCommand(dispatch, options = {}) {
   if (!dispatch || !dispatch.capture_command) return dispatch;
   const command = dispatch.capture_command;
-  const pointerId = Number(command.pointer_id);
-  if (!Number.isFinite(pointerId)) return dispatch;
-  const pointerInt = Math.max(0, Math.trunc(pointerId));
+  const pointerInt = clampPointerId(Number(command.pointer_id));
   if (command.kind === "acquire") {
+    let captureAcquired = false;
     try {
       if (typeof canvas.setPointerCapture === "function") {
         canvas.setPointerCapture(pointerInt);
+        captureAcquired = typeof canvas.hasPointerCapture === "function"
+          ? canvas.hasPointerCapture(pointerInt)
+          : true;
       }
-    } catch (_) {}
-    if (!options.skipAcquireAck && typeof runner.panePointerCaptureAcquired === "function") {
+    } catch (_) {
+      captureAcquired = false;
+    }
+    if (
+      !options.skipAcquireAck &&
+      captureAcquired &&
+      typeof runner.panePointerCaptureAcquired === "function"
+    ) {
       const ack = runner.panePointerCaptureAcquired(pointerInt);
       return ack || dispatch;
     }
   } else if (command.kind === "release") {
     try {
-      if (typeof canvas.releasePointerCapture === "function") {
+      if (
+        typeof canvas.releasePointerCapture === "function" &&
+        (typeof canvas.hasPointerCapture !== "function" || canvas.hasPointerCapture(pointerInt))
+      ) {
         canvas.releasePointerCapture(pointerInt);
       }
     } catch (_) {}
@@ -859,7 +946,7 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(container);
 
 // Handle DPR changes via visualViewport API (more reliable than matchMedia).
-if (window.visualViewport) {
+if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
   window.visualViewport.addEventListener("resize", () => {
     const newDpr = window.devicePixelRatio || 1.0;
     const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
@@ -871,7 +958,7 @@ if (window.visualViewport) {
   });
 } else {
   // Fallback: matchMedia for DPR changes (only fires once per threshold).
-  window.matchMedia(`(resolution: ${dpr}dppx)`).addEventListener("change", () => {
+  addMediaQueryChangeListener(`(resolution: ${dpr}dppx)`, () => {
     const newDpr = window.devicePixelRatio || 1.0;
     const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
     if (geo.cols !== currentCols || geo.rows !== currentRows) {
@@ -893,6 +980,212 @@ function safeTermInput(ev) {
   }
 }
 
+function isCoarsePointerDevice() {
+  return mediaQueryMatches("(pointer: coarse)");
+}
+
+function shouldUseMobileKeyboardProxy() {
+  return Boolean(keyboardProxy) && isCoarsePointerDevice();
+}
+
+function focusCanvasInput() {
+  try {
+    canvas.focus({ preventScroll: true });
+  } catch (_) {
+    canvas.focus();
+  }
+}
+
+function resetKeyboardProxyValue() {
+  if (!keyboardProxy) return;
+  keyboardProxy.value = "";
+  try {
+    keyboardProxy.setSelectionRange(0, 0);
+  } catch (_) {}
+}
+
+function focusKeyboardProxyInput() {
+  if (!keyboardProxy) {
+    focusCanvasInput();
+    return;
+  }
+  try {
+    keyboardProxy.focus({ preventScroll: true });
+  } catch (_) {
+    keyboardProxy.focus();
+  }
+  resetKeyboardProxyValue();
+}
+
+function focusTerminalInputTarget(preferMobileKeyboard) {
+  if (preferMobileKeyboard && shouldUseMobileKeyboardProxy()) {
+    focusKeyboardProxyInput();
+    return;
+  }
+  focusCanvasInput();
+}
+
+let keyboardProxyComposing = false;
+let keyboardProxyExpectedInputEcho = null;
+let keyboardProxySuppressNextInput = false;
+
+function markKeyboardProxyBeforeInputHandled(expectedEcho = "", suppressNextInput = false) {
+  keyboardProxyExpectedInputEcho = expectedEcho;
+  keyboardProxySuppressNextInput = suppressNextInput;
+}
+
+function emitSyntheticKeyPress(key, code) {
+  const down = { kind: "key", phase: "down", key, code, mods: 0, repeat: false };
+  const up = { kind: "key", phase: "up", key, code, mods: 0, repeat: false };
+  safeTermInput(down);
+  safeTermInput(up);
+}
+
+function emitTextAsKeyPresses(text) {
+  if (!text) return;
+  for (const ch of text) {
+    emitSyntheticKeyPress(ch, ch);
+  }
+}
+
+function handleKeyboardProxyBeforeInput(e) {
+  const inputType = typeof e.inputType === "string" ? e.inputType : "";
+  const data = typeof e.data === "string" ? e.data : "";
+  if (
+    keyboardProxyComposing ||
+    e.isComposing ||
+    inputType === "insertCompositionText" ||
+    inputType === "deleteCompositionText"
+  ) {
+    return;
+  }
+  if (inputType === "insertFromComposition") {
+    e.preventDefault();
+    // Composition commits are forwarded from compositionend -> rust parser.
+    markKeyboardProxyBeforeInputHandled("", true);
+    resetKeyboardProxyValue();
+    return;
+  }
+
+  if (inputType === "insertLineBreak" || inputType === "insertParagraph") {
+    e.preventDefault();
+    emitSyntheticKeyPress("Enter", "Enter");
+    markKeyboardProxyBeforeInputHandled("", true);
+    resetKeyboardProxyValue();
+    return;
+  }
+  if (inputType === "insertTab") {
+    e.preventDefault();
+    emitSyntheticKeyPress("Tab", "Tab");
+    markKeyboardProxyBeforeInputHandled("", true);
+    resetKeyboardProxyValue();
+    return;
+  }
+  if (
+    inputType === "deleteContentBackward" ||
+    inputType === "deleteWordBackward" ||
+    inputType === "deleteSoftLineBackward"
+  ) {
+    e.preventDefault();
+    emitSyntheticKeyPress("Backspace", "Backspace");
+    markKeyboardProxyBeforeInputHandled("", true);
+    resetKeyboardProxyValue();
+    return;
+  }
+  if (
+    inputType === "deleteContentForward" ||
+    inputType === "deleteWordForward" ||
+    inputType === "deleteSoftLineForward"
+  ) {
+    e.preventDefault();
+    emitSyntheticKeyPress("Delete", "Delete");
+    markKeyboardProxyBeforeInputHandled("", true);
+    resetKeyboardProxyValue();
+    return;
+  }
+  if (inputType.startsWith("insert") && data.length > 0) {
+    e.preventDefault();
+    emitTextAsKeyPresses(data);
+    markKeyboardProxyBeforeInputHandled(data);
+    resetKeyboardProxyValue();
+  }
+}
+
+function handleKeyboardProxyInput(e) {
+  if (!keyboardProxy) return;
+  if (keyboardProxyComposing || e.isComposing) return;
+  const inputType = typeof e.inputType === "string" ? e.inputType : "";
+  if (inputType === "insertFromComposition") {
+    keyboardProxySuppressNextInput = false;
+    keyboardProxyExpectedInputEcho = null;
+    resetKeyboardProxyValue();
+    return;
+  }
+  if (keyboardProxySuppressNextInput) {
+    keyboardProxySuppressNextInput = false;
+    keyboardProxyExpectedInputEcho = null;
+    resetKeyboardProxyValue();
+    return;
+  }
+  const eventData = typeof e.data === "string" ? e.data : "";
+  const proxyData = keyboardProxy.value || "";
+  if (keyboardProxyExpectedInputEcho !== null) {
+    const expected = keyboardProxyExpectedInputEcho;
+    keyboardProxyExpectedInputEcho = null;
+    const expectedEmptyEcho = expected.length === 0 && eventData.length === 0 && proxyData.length === 0;
+    const expectedEventDataEcho = eventData.length > 0 && eventData === expected;
+    const expectedProxyDataEcho = proxyData.length > 0 && proxyData === expected;
+    if (expectedEmptyEcho || expectedEventDataEcho || expectedProxyDataEcho) {
+      resetKeyboardProxyValue();
+      return;
+    }
+  }
+  let data = eventData;
+  if (!data && proxyData) {
+    data = proxyData;
+  }
+  if (data) {
+    emitTextAsKeyPresses(data);
+  }
+  resetKeyboardProxyValue();
+}
+
+function isEditableTarget(target) {
+  if (!(target instanceof Element)) return false;
+  if (keyboardProxy && target === keyboardProxy) return false;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return true;
+  }
+  return Boolean(target.closest("[contenteditable]"));
+}
+
+function shouldHandleKeyboardViaProxyBeforeInput(e) {
+  if (!keyboardProxy || document.activeElement !== keyboardProxy) return false;
+  if (e.ctrlKey || e.altKey || e.metaKey) return false;
+  const key = typeof e.key === "string" ? e.key : "";
+  if (key === "Enter" || key === "Tab" || key === "Backspace" || key === "Delete") {
+    return true;
+  }
+  return (
+    key.length === 1 ||
+    key === "Dead" ||
+    key === "Unidentified"
+  );
+}
+
+function terminalDomHasFocus() {
+  const active = document.activeElement;
+  return active === canvas || (keyboardProxy && active === keyboardProxy);
+}
+
+function syncTerminalFocusFromDom() {
+  safeTermInput({ kind: "focus", focused: terminalDomHasFocus() });
+}
+
 function domKeyToInput(e, phase) {
   return {
     kind: "key",
@@ -909,30 +1202,38 @@ function domKeyToInput(e, phase) {
 
 function domMouseToInput(e, phase) {
   const rect = canvas.getBoundingClientRect();
-  const cellW = rect.width / currentCols;
-  const cellH = rect.height / currentRows;
+  const cols = Math.max(1, currentCols | 0);
+  const rows = Math.max(1, currentRows | 0);
+  const cellW = Math.max(1e-6, rect.width / cols);
+  const cellH = Math.max(1e-6, rect.height / rows);
   const x = Math.floor((e.clientX - rect.left) / cellW);
   const y = Math.floor((e.clientY - rect.top)  / cellH);
+  const maxX = cols - 1;
+  const maxY = rows - 1;
   return {
     kind: "mouse",
     phase,
     button: e.button,
-    x: Math.max(0, Math.min(x, currentCols - 1)),
-    y: Math.max(0, Math.min(y, currentRows - 1)),
+    x: Math.max(0, Math.min(x, maxX)),
+    y: Math.max(0, Math.min(y, maxY)),
     mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),
   };
 }
 
 function domWheelToInput(e) {
   const rect = canvas.getBoundingClientRect();
-  const cellW = rect.width / currentCols;
-  const cellH = rect.height / currentRows;
+  const cols = Math.max(1, currentCols | 0);
+  const rows = Math.max(1, currentRows | 0);
+  const cellW = Math.max(1e-6, rect.width / cols);
+  const cellH = Math.max(1e-6, rect.height / rows);
   const x = Math.floor((e.clientX - rect.left) / cellW);
   const y = Math.floor((e.clientY - rect.top)  / cellH);
+  const maxX = cols - 1;
+  const maxY = rows - 1;
   return {
     kind: "wheel",
-    x: Math.max(0, Math.min(x, currentCols - 1)),
-    y: Math.max(0, Math.min(y, currentRows - 1)),
+    x: Math.max(0, Math.min(x, maxX)),
+    y: Math.max(0, Math.min(y, maxY)),
     dx: Math.round(e.deltaX),
     dy: Math.round(e.deltaY),
     mods: (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0),
@@ -941,7 +1242,10 @@ function domWheelToInput(e) {
 
 function shouldForwardKeyEvent(e) {
   // Avoid double-encoding during IME composition.
-  return !(e.isComposing || e.key === "Process");
+  if (e.isComposing || e.key === "Process") return false;
+  if (isEditableTarget(e.target)) return false;
+  if (shouldHandleKeyboardViaProxyBeforeInput(e)) return false;
+  return true;
 }
 
 // Intercept Ctrl+/- (or Cmd+/- on Mac) for zoom, forward everything else.
@@ -1034,13 +1338,20 @@ let dragButton = 0;
 if ("PointerEvent" in window) {
   canvas.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    canvas.focus();
+    focusTerminalInputTarget(e.pointerType !== "mouse");
     const pointerId = panePointerIdFromEvent(e);
     mouseButtonsDown = e.pointerType === "mouse" ? e.buttons : mouseButtonsDown;
     dragButton = e.pointerType === "mouse" ? e.button : dragButton;
     const dispatch = paneDispatchPointerDown(e);
     if (!dispatch || dispatch.accepted !== false) {
       paneActivePointers.add(pointerId);
+    }
+    if (e.pointerType !== "mouse") {
+      if (!dispatch || dispatch.accepted !== false) {
+        paneTouchPointers.add(pointerId);
+      } else {
+        paneTouchPointers.delete(pointerId);
+      }
     }
     syncPaneOverlayFromRunner();
     if (e.pointerType === "mouse") {
@@ -1052,6 +1363,7 @@ if ("PointerEvent" in window) {
     e.preventDefault();
     const pointerId = panePointerIdFromEvent(e);
     paneActivePointers.delete(pointerId);
+    paneTouchPointers.delete(pointerId);
     if (e.pointerType === "mouse") {
       mouseButtonsDown = e.buttons;
     }
@@ -1094,9 +1406,15 @@ if ("PointerEvent" in window) {
 
   canvas.addEventListener("pointercancel", (e) => {
     const pointerId = panePointerIdFromEvent(e);
+    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
     paneActivePointers.delete(pointerId);
+    paneTouchPointers.delete(pointerId);
     paneDispatchPointerCancel(e);
     syncPaneOverlayFromRunner();
+    if (hadMouseButtonsDown) {
+      mouseButtonsDown = 0;
+      safeTermInput(domMouseToInput(e, "up"));
+    }
   });
 
   canvas.addEventListener("pointerleave", (e) => {
@@ -1109,17 +1427,33 @@ if ("PointerEvent" in window) {
   canvas.addEventListener("lostpointercapture", (e) => {
     const pointerId = panePointerIdFromEvent(e);
     paneActivePointers.delete(pointerId);
+    paneTouchPointers.delete(pointerId);
     paneDispatchLostPointerCapture(e);
     syncPaneOverlayFromRunner();
   });
 
   window.addEventListener("pointerup", (e) => {
-    paneActivePointers.delete(panePointerIdFromEvent(e));
+    const pointerId = panePointerIdFromEvent(e);
+    const wasPaneActive = paneActivePointers.has(pointerId);
+    const hadMouseButtonsDown = e.pointerType === "mouse" && mouseButtonsDown !== 0;
+    if (wasPaneActive) {
+      paneDispatchPointerUp(e);
+      persistPaneWorkspace();
+      syncPaneOverlayFromRunner();
+    }
+    paneActivePointers.delete(pointerId);
+    paneTouchPointers.delete(pointerId);
+    if (e.pointerType === "mouse") {
+      if (hadMouseButtonsDown) {
+        safeTermInput(domMouseToInput(e, "up"));
+      }
+      mouseButtonsDown = 0;
+    }
   });
 } else {
   canvas.addEventListener("mousedown", (e) => {
     e.preventDefault();
-    canvas.focus();
+    focusTerminalInputTarget(false);
     mouseButtonsDown = e.buttons;
     dragButton = e.button;
     paneDispatchPointerDown(e);
@@ -1146,12 +1480,26 @@ if ("PointerEvent" in window) {
       safeTermInput(domMouseToInput(e, "move"));
     }
   });
-  window.addEventListener("mouseup", () => { mouseButtonsDown = 0; });
+  window.addEventListener("mouseup", (e) => {
+    const hadMouseButtonsDown = mouseButtonsDown !== 0;
+    mouseButtonsDown = 0;
+    if (hadMouseButtonsDown) {
+      safeTermInput(domMouseToInput(e, "up"));
+    }
+  });
 }
 
 window.addEventListener("blur", () => {
+  if (paneActivePointers.size > 0 && typeof runner.panePointerCancel === "function") {
+    for (const pointerId of paneActivePointers) {
+      const dispatch = runner.panePointerCancel(pointerId);
+      applyPaneCaptureCommand(dispatch, { skipAcquireAck: true });
+    }
+    syncPaneOverlayFromRunner();
+  }
   mouseButtonsDown = 0;
   paneActivePointers.clear();
+  paneTouchPointers.clear();
 });
 // Suppress context menu on canvas (right-click is forwarded to terminal).
 canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); });
@@ -1160,11 +1508,27 @@ canvas.addEventListener("wheel", (e) => {
   safeTermInput(domWheelToInput(e));
 }, { passive: false });
 window.addEventListener("paste", (e) => {
+  if (!terminalDomHasFocus()) return;
   const text = (e.clipboardData || window.clipboardData).getData("text");
-  if (text) safeTermInput({ kind: "paste", data: text });
+  if (!text) return;
+  e.preventDefault();
+  safeTermInput({ kind: "paste", data: text });
+  resetKeyboardProxyValue();
 }, { capture: true });
-canvas.addEventListener("focus", () => { safeTermInput({ kind: "focus", focused: true }); });
-canvas.addEventListener("blur",  () => { safeTermInput({ kind: "focus", focused: false }); });
+canvas.addEventListener("focus", syncTerminalFocusFromDom);
+canvas.addEventListener("blur", () => { queueMicrotask(syncTerminalFocusFromDom); });
+if (keyboardProxy) {
+  keyboardProxy.addEventListener("focus", syncTerminalFocusFromDom);
+  keyboardProxy.addEventListener("blur", () => {
+    keyboardProxyComposing = false;
+    keyboardProxyExpectedInputEcho = null;
+    keyboardProxySuppressNextInput = false;
+    resetKeyboardProxyValue();
+    queueMicrotask(syncTerminalFocusFromDom);
+  });
+  keyboardProxy.addEventListener("beforeinput", handleKeyboardProxyBeforeInput, { capture: true });
+  keyboardProxy.addEventListener("input", handleKeyboardProxyInput, { capture: true });
+}
 
 window.addEventListener("blur", () => {
   safeTermInput({ kind: "focus", focused: false });
@@ -1173,9 +1537,9 @@ window.addEventListener("blur", () => {
     syncPaneOverlayFromRunner();
   }
 });
-window.addEventListener("focus", () => { safeTermInput({ kind: "focus", focused: true }); });
+window.addEventListener("focus", () => { queueMicrotask(syncTerminalFocusFromDom); });
 document.addEventListener("visibilitychange", () => {
-  safeTermInput({ kind: "focus", focused: !document.hidden });
+  safeTermInput({ kind: "focus", focused: !document.hidden && terminalDomHasFocus() });
   if (document.hidden && typeof runner.paneVisibilityHidden === "function") {
     runner.paneVisibilityHidden();
     syncPaneOverlayFromRunner();
@@ -1183,31 +1547,48 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // Composition (IME) events.
-canvas.addEventListener("compositionstart", () => {
+function handleCompositionStart(e) {
+  if (keyboardProxy && e && e.target === keyboardProxy) {
+    keyboardProxyComposing = true;
+  }
   safeTermInput({ kind: "composition", phase: "start" });
-});
-canvas.addEventListener("compositionupdate", (e) => {
+}
+function handleCompositionUpdate(e) {
   safeTermInput({ kind: "composition", phase: "update", data: e.data || "" });
-});
-canvas.addEventListener("compositionend", (e) => {
+}
+function handleCompositionEnd(e) {
+  if (keyboardProxy && e && e.target === keyboardProxy) {
+    keyboardProxyComposing = false;
+    keyboardProxyExpectedInputEcho = null;
+    keyboardProxySuppressNextInput = false;
+    resetKeyboardProxyValue();
+  }
   safeTermInput({ kind: "composition", phase: "end", data: e.data || "" });
-});
+}
+canvas.addEventListener("compositionstart", handleCompositionStart);
+canvas.addEventListener("compositionupdate", handleCompositionUpdate);
+canvas.addEventListener("compositionend", handleCompositionEnd);
+if (keyboardProxy) {
+  keyboardProxy.addEventListener("compositionstart", handleCompositionStart);
+  keyboardProxy.addEventListener("compositionupdate", handleCompositionUpdate);
+  keyboardProxy.addEventListener("compositionend", handleCompositionEnd);
+}
 
 // ── Touch zoom buttons ──────────────────────────────────────────────────
 document.getElementById("zoom-in").addEventListener("click", () => {
   userZoom = Math.min(3.0, userZoom * 1.15);
   applyZoom();
-  canvas.focus();
+  focusTerminalInputTarget(shouldUseMobileKeyboardProxy());
 });
 document.getElementById("zoom-out").addEventListener("click", () => {
   userZoom = Math.max(0.3, userZoom / 1.15);
   applyZoom();
-  canvas.focus();
+  focusTerminalInputTarget(shouldUseMobileKeyboardProxy());
 });
 document.getElementById("zoom-reset").addEventListener("click", () => {
   userZoom = 1.0;
   applyZoom();
-  canvas.focus();
+  focusTerminalInputTarget(shouldUseMobileKeyboardProxy());
 });
 
 // ── Orientation change + visual viewport scroll pinning ──────────────
@@ -1227,8 +1608,11 @@ window.addEventListener("orientationchange", () => {
   }, 150);
 });
 
-if (window.visualViewport) {
+if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
   window.visualViewport.addEventListener("scroll", () => {
+    if (keyboardProxy && document.activeElement === keyboardProxy) {
+      return;
+    }
     window.scrollTo(0, 0);
   });
 }
@@ -1242,8 +1626,10 @@ let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
 let touchLastX = 0, touchLastY = 0;
 let touchScrollAccX = 0, touchScrollAccY = 0;
 let pinchStartDist = 0, pinchStartZoom = 1.0;
+let touchGestureSuppressedByPane = false;
 const TAP_MAX_DIST = 10;   // px
 const TAP_MAX_TIME = 300;  // ms
+const MAX_TOUCH_WHEEL_STEPS_PER_MOVE = 16;
 
 function touchScrollStepsPx() {
   const rect = canvas.getBoundingClientRect();
@@ -1257,11 +1643,15 @@ function touchScrollStepsPx() {
 
 function touchCellCoords(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  const cellW = rect.width / currentCols;
-  const cellH = rect.height / currentRows;
+  const cols = Math.max(1, currentCols | 0);
+  const rows = Math.max(1, currentRows | 0);
+  const cellW = Math.max(1e-6, rect.width / cols);
+  const cellH = Math.max(1e-6, rect.height / rows);
+  const maxX = cols - 1;
+  const maxY = rows - 1;
   return {
-    x: Math.max(0, Math.min(Math.floor((clientX - rect.left) / cellW), currentCols - 1)),
-    y: Math.max(0, Math.min(Math.floor((clientY - rect.top) / cellH), currentRows - 1)),
+    x: Math.max(0, Math.min(Math.floor((clientX - rect.left) / cellW), maxX)),
+    y: Math.max(0, Math.min(Math.floor((clientY - rect.top) / cellH), maxY)),
   };
 }
 
@@ -1273,7 +1663,16 @@ function pinchDistance(t0, t1) {
 
 canvas.addEventListener("touchstart", (e) => {
   e.preventDefault();
-  canvas.focus();
+  focusTerminalInputTarget(true);
+  if ("PointerEvent" in window && paneTouchPointers.size > 0) {
+    touchGestureSuppressedByPane = true;
+    touchState = TOUCH_IDLE;
+    touchScrollAccX = 0;
+    touchScrollAccY = 0;
+    pinchStartDist = 0;
+    return;
+  }
+  touchGestureSuppressedByPane = false;
   const touches = e.touches;
   if (touches.length === 1) {
     touchState = TOUCH_TRACKING;
@@ -1292,6 +1691,17 @@ canvas.addEventListener("touchstart", (e) => {
 canvas.addEventListener("touchmove", (e) => {
   e.preventDefault();
   const touches = e.touches;
+  if ("PointerEvent" in window && paneTouchPointers.size > 0) {
+    touchGestureSuppressedByPane = true;
+    touchState = TOUCH_IDLE;
+    touchScrollAccX = 0;
+    touchScrollAccY = 0;
+    pinchStartDist = 0;
+    return;
+  }
+  if (touchGestureSuppressedByPane) {
+    return;
+  }
 
   if (touches.length === 2 && touchState !== TOUCH_IDLE) {
     // Two fingers always means pinch, even if we started as single-finger tracking.
@@ -1336,21 +1746,44 @@ canvas.addEventListener("touchmove", (e) => {
     touchScrollAccY += dy;
     const scrollStep = touchScrollStepsPx();
     const cell = touchCellCoords(cx, cy);
-    while (Math.abs(touchScrollAccY) >= scrollStep.y) {
-      const sign = touchScrollAccY > 0 ? -1 : 1;
-      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: 0, dy: sign, mods: 0 });
-      touchScrollAccY -= (touchScrollAccY > 0 ? scrollStep.y : -scrollStep.y);
+    const rawYSteps = touchScrollAccY / scrollStep.y;
+    let ySteps = rawYSteps > 0 ? Math.floor(rawYSteps) : Math.ceil(rawYSteps);
+    ySteps = Math.max(-MAX_TOUCH_WHEEL_STEPS_PER_MOVE, Math.min(MAX_TOUCH_WHEEL_STEPS_PER_MOVE, ySteps));
+    if (ySteps !== 0) {
+      // Natural scrolling: finger down means wheel-up (negative dy).
+      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: 0, dy: -ySteps, mods: 0 });
+      touchScrollAccY -= ySteps * scrollStep.y;
+      if (Math.abs(rawYSteps) > MAX_TOUCH_WHEEL_STEPS_PER_MOVE) {
+        touchScrollAccY = Math.sign(touchScrollAccY) * Math.max(0, scrollStep.y - 1);
+      }
     }
-    while (Math.abs(touchScrollAccX) >= scrollStep.x) {
-      const sign = touchScrollAccX > 0 ? -1 : 1;
-      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: sign, dy: 0, mods: 0 });
-      touchScrollAccX -= (touchScrollAccX > 0 ? scrollStep.x : -scrollStep.x);
+
+    const rawXSteps = touchScrollAccX / scrollStep.x;
+    let xSteps = rawXSteps > 0 ? Math.floor(rawXSteps) : Math.ceil(rawXSteps);
+    xSteps = Math.max(-MAX_TOUCH_WHEEL_STEPS_PER_MOVE, Math.min(MAX_TOUCH_WHEEL_STEPS_PER_MOVE, xSteps));
+    if (xSteps !== 0) {
+      // Match vertical direction convention for horizontal wheel.
+      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: -xSteps, dy: 0, mods: 0 });
+      touchScrollAccX -= xSteps * scrollStep.x;
+      if (Math.abs(rawXSteps) > MAX_TOUCH_WHEEL_STEPS_PER_MOVE) {
+        touchScrollAccX = Math.sign(touchScrollAccX) * Math.max(0, scrollStep.x - 1);
+      }
     }
   }
 }, { passive: false });
 
 canvas.addEventListener("touchend", (e) => {
   e.preventDefault();
+  if (touchGestureSuppressedByPane) {
+    if (e.touches.length === 0) {
+      touchGestureSuppressedByPane = false;
+      touchState = TOUCH_IDLE;
+      touchScrollAccX = 0;
+      touchScrollAccY = 0;
+      pinchStartDist = 0;
+    }
+    return;
+  }
   // If we were tracking a single finger and it ended quickly without much movement, it's a tap.
   if (touchState === TOUCH_TRACKING && e.changedTouches.length > 0) {
     const elapsed = Date.now() - touchStartTime;
@@ -1358,6 +1791,21 @@ canvas.addEventListener("touchend", (e) => {
     const dist = Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY);
     if (elapsed < TAP_MAX_TIME && dist < TAP_MAX_DIST) {
       const cell = touchCellCoords(t.clientX, t.clientY);
+      // Pointer Events are unavailable on this browser, so synthesize pane
+      // tap lifecycle directly to keep pane interactions functional on touch.
+      if (!("PointerEvent" in window)) {
+        const pointerId = clampPointerId(Number(t.identifier ?? 0) + 1);
+        if (typeof runner.panePointerDownAt === "function") {
+          const downDispatch = runner.panePointerDownAt(pointerId, 0, cell.x, cell.y, 0);
+          applyPaneCaptureCommand(downDispatch);
+        }
+        if (typeof runner.panePointerUpAt === "function") {
+          const upDispatch = runner.panePointerUpAt(pointerId, 0, cell.x, cell.y, 0);
+          applyPaneCaptureCommand(upDispatch, { skipAcquireAck: true });
+        }
+        persistPaneWorkspace();
+        syncPaneOverlayFromRunner();
+      }
       safeTermInput({ kind: "mouse", phase: "down", button: 0, x: cell.x, y: cell.y, mods: 0 });
       safeTermInput({ kind: "mouse", phase: "up",   button: 0, x: cell.x, y: cell.y, mods: 0 });
     }
@@ -1365,6 +1813,9 @@ canvas.addEventListener("touchend", (e) => {
   // If all fingers lifted, reset state.
   if (e.touches.length === 0) {
     touchState = TOUCH_IDLE;
+    touchScrollAccX = 0;
+    touchScrollAccY = 0;
+    pinchStartDist = 0;
   } else if (e.touches.length === 1 && touchState === TOUCH_PINCHING) {
     // Went from two fingers to one — restart tracking from current position.
     touchState = TOUCH_TRACKING;
@@ -1378,7 +1829,11 @@ canvas.addEventListener("touchend", (e) => {
 
 canvas.addEventListener("touchcancel", (e) => {
   e.preventDefault();
+  touchGestureSuppressedByPane = false;
   touchState = TOUCH_IDLE;
+  touchScrollAccX = 0;
+  touchScrollAccY = 0;
+  pinchStartDist = 0;
 }, { passive: false });
 
 // ── Host frame loop ────────────────────────────────────────────────────
@@ -1442,7 +1897,7 @@ function frame(timestamp) {
 }
 
 // Focus the canvas and start.
-canvas.focus();
+focusTerminalInputTarget(false);
 requestAnimationFrame(frame);
 </script>
 </body>

@@ -106,17 +106,22 @@ pub struct InputParser {
     in_paste: bool,
     /// Event queued for the next iteration (allows emitting 2 events per byte).
     pending_event: Option<Event>,
-    /// Whether to expect X10-encoded mouse events (CSI M cb cx cy).
+    /// Whether to expect X10-encoded mouse events (`CSI M cb cx cy`).
     ///
-    /// Only enable this when the terminal has X10 mouse mode (mode 1000/9)
-    /// active WITHOUT SGR extended encoding (mode 1006). When SGR mode is
-    /// active, mouse events use the `CSI < params M/m` format instead.
+    /// In practice some terminals/muxes can fall back to raw X10 packets even
+    /// after SGR negotiation. This flag should track whether mouse capture is
+    /// active for the current session.
     ///
-    /// Defaults to `false` because the runtime enables SGR mouse by default.
-    /// When false, bare `CSI M` is treated as an unknown CSI sequence
-    /// (silently ignored) rather than triggering X10 mouse coordinate
-    /// collection, which would consume 3 bytes and corrupt the input stream.
+    /// Defaults to `false`. When false, bare `CSI M` is treated as an unknown
+    /// CSI sequence (silently ignored) rather than entering X10 decode mode.
     expect_x10_mouse: bool,
+    /// Whether to accept legacy xterm/rxvt mouse packets (`CSI Cb;Cx;Cy M`).
+    ///
+    /// Some terminals/muxes may ignore SGR mode requests and continue emitting
+    /// legacy numeric mouse packets. This flag enables that fallback parser
+    /// while keeping raw X10 byte-triplet decoding separately gated by
+    /// `expect_x10_mouse`.
+    allow_legacy_mouse: bool,
 }
 
 impl Default for InputParser {
@@ -142,18 +147,33 @@ impl InputParser {
             in_paste: false,
             pending_event: None,
             expect_x10_mouse: false,
+            allow_legacy_mouse: false,
         }
     }
 
     /// Enable or disable X10 mouse event parsing.
     ///
-    /// When enabled, bare `CSI M` triggers X10 mouse coordinate collection
-    /// (3 raw bytes). Only enable this when the terminal has mode 1000/9
-    /// active WITHOUT SGR extended encoding (mode 1006).
-    ///
-    /// Default: `false` (SGR mouse assumed).
+    /// When enabled, bare `CSI M` triggers X10 coordinate collection
+    /// (3 raw bytes). This should generally follow mouse-capture state.
     pub fn set_expect_x10_mouse(&mut self, enabled: bool) {
         self.expect_x10_mouse = enabled;
+    }
+
+    /// Enable or disable legacy numeric mouse fallback parsing.
+    ///
+    /// When enabled, parse `CSI Cb;Cx;Cy M` as mouse input. This is useful when
+    /// mouse capture is active but the terminal does not honor SGR 1006 mode.
+    ///
+    /// Default: `false`.
+    pub fn set_allow_legacy_mouse(&mut self, enabled: bool) {
+        self.allow_legacy_mouse = enabled;
+    }
+
+    /// Whether the parser is currently waiting on additional bytes for a
+    /// timeout-resolved sequence (bare ESC or partial UTF-8).
+    #[must_use]
+    pub const fn has_pending_timeout_state(&self) -> bool {
+        matches!(self.state, ParserState::Escape | ParserState::Utf8 { .. })
     }
 
     /// Handle a timeout in the input stream.
@@ -406,15 +426,9 @@ impl InputParser {
             }
             // Final byte (0x40-0x7E) - parse and return
             0x40..=0x7E => {
-                // X10 mouse trigger: CSI M (no params) enters X10 coordinate
-                // collection ONLY when X10 mouse mode is expected.
-                // When SGR mouse (mode 1006) is active, mouse events always
-                // use `CSI < params M/m` which has params before M, so
-                // buffer.len() > 1 and this branch is never reached.
-                //
-                // Without this guard, a bare CSI M from any source would
-                // consume the next 3 bytes as raw mouse coordinates,
-                // corrupting the input stream.
+                // X10 mouse trigger: bare `CSI M` enters raw X10 coordinate
+                // collection only when the runtime currently expects possible
+                // X10 fallback traffic.
                 if self.expect_x10_mouse && byte == b'M' && self.buffer.len() == 1 {
                     self.state = ParserState::MouseX10 {
                         collected: 0,
@@ -526,9 +540,10 @@ impl InputParser {
             // Legacy mouse protocol fallback (xterm/rxvt 1015):
             // CSI Cb ; Cx ; Cy M
             //
-            // Gate this behind expect_x10_mouse so we don't reinterpret generic
-            // CSI ... M sequences as mouse input when mouse capture is off.
-            _ if self.expect_x10_mouse && final_byte == b'M' => {
+            // Gate this behind explicit mouse fallback toggles so we don't
+            // reinterpret generic CSI ... M sequences as mouse input when
+            // mouse capture is off.
+            _ if (self.allow_legacy_mouse || self.expect_x10_mouse) && final_byte == b'M' => {
                 if let Some(event) = self.parse_legacy_mouse(params) {
                     return Some(event);
                 }
@@ -719,9 +734,10 @@ impl InputParser {
 
         // Accept numeric prefixes in each token so sequences with sub-params
         // (e.g. `10:0`) still decode to their base coordinate/button values.
-        let button_code = Self::parse_u16_prefix(parts.next()?)?;
-        let x = Self::parse_u16_prefix(parts.next()?)?;
-        let y = Self::parse_u16_prefix(parts.next()?)?;
+        let button_code_u32 = Self::parse_u32_prefix(parts.next()?)?;
+        let button_code = button_code_u32.min(u16::MAX as u32) as u16;
+        let x_raw = Self::parse_i32_prefix(parts.next()?)?;
+        let y_raw = Self::parse_i32_prefix(parts.next()?)?;
 
         // Decode button and modifiers
         let (button, mods) = self.decode_mouse_button(button_code);
@@ -757,23 +773,50 @@ impl InputParser {
 
         Some(Event::Mouse(MouseEvent {
             kind,
-            x: x.saturating_sub(1), // Convert to 0-indexed
-            y: y.saturating_sub(1),
+            x: Self::normalize_sgr_coord(x_raw),
+            y: Self::normalize_sgr_coord(y_raw),
             modifiers: mods,
         }))
     }
 
     #[inline]
-    fn parse_u16_prefix(token: &str) -> Option<u16> {
-        let digits = token
-            .as_bytes()
+    fn parse_u32_prefix(token: &str) -> Option<u32> {
+        let bytes = token.as_bytes();
+        let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+        if digits == 0 {
+            return None;
+        }
+        token[..digits].parse().ok()
+    }
+
+    #[inline]
+    fn parse_i32_prefix(token: &str) -> Option<i32> {
+        let bytes = token.as_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+        let start = if bytes[0] == b'-' || bytes[0] == b'+' {
+            1
+        } else {
+            0
+        };
+        let digits = bytes[start..]
             .iter()
             .take_while(|b| b.is_ascii_digit())
             .count();
         if digits == 0 {
             return None;
         }
-        token[..digits].parse().ok()
+        token[..start + digits].parse().ok()
+    }
+
+    #[inline]
+    fn normalize_sgr_coord(raw: i32) -> u16 {
+        if raw <= 1 {
+            return 0;
+        }
+        let zero_indexed = raw - 1;
+        zero_indexed.min(i32::from(u16::MAX)) as u16
     }
 
     /// Parse legacy xterm/rxvt 1015 mouse events: `CSI Cb;Cx;Cy M`.
@@ -1114,7 +1157,12 @@ impl InputParser {
                 let buf = *buffer;
                 self.state = ParserState::Ground;
 
-                // X10 encoding: byte = value + 32
+                // X10 encoding: byte = value + 32.
+                // Reject malformed packets so noise bytes do not become bogus
+                // pointer events.
+                if buf[0] < 32 || buf[1] < 33 || buf[2] < 33 {
+                    return None;
+                }
                 let cb = buf[0].saturating_sub(32) as u16;
                 let cx = buf[1].saturating_sub(33) as u16; // 1-based -> 0-based
                 let cy = buf[2].saturating_sub(33) as u16;
@@ -1531,6 +1579,37 @@ mod tests {
                 if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
                     && m.x == 9
                     && m.y == 19
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_protocol_large_coords_clamped() {
+        let mut parser = InputParser::new();
+
+        // Coordinates beyond u16 range should be clamped instead of dropped.
+        let events = parser.parse(b"\x1b[<0;70000;80000M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m))
+                if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                    && m.x == u16::MAX
+                    && m.y == u16::MAX
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_protocol_negative_coords_clamped() {
+        let mut parser = InputParser::new();
+
+        // Some pixel-mouse emitters can report negative coords near edges.
+        // Clamp to origin rather than dropping the event.
+        let events = parser.parse(b"\x1b[<0;-12;-3M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m))
+                if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                    && m.x == 0
+                    && m.y == 0
         ));
     }
 
@@ -2058,12 +2137,51 @@ mod tests {
     }
 
     #[test]
+    fn mouse_legacy_1015_with_fallback_enabled() {
+        let mut parser = InputParser::new();
+        parser.set_allow_legacy_mouse(true);
+
+        let events = parser.parse(b"\x1b[0;10;20M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                && m.x == 9 && m.y == 19
+        ));
+    }
+
+    #[test]
     fn mouse_legacy_1015_ignored_when_disabled() {
         let mut parser = InputParser::new();
         let events = parser.parse(b"\x1b[0;10;20M");
         assert!(
             events.is_empty(),
             "legacy mouse should require explicit opt-in"
+        );
+    }
+
+    #[test]
+    fn mouse_x10_when_enabled() {
+        let mut parser = InputParser::new();
+        parser.set_expect_x10_mouse(true);
+
+        let events = parser.parse(&[0x1B, b'[', b'M', 32, 42, 52]);
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                && m.x == 9 && m.y == 19
+        ));
+    }
+
+    #[test]
+    fn mouse_x10_malformed_packet_ignored() {
+        let mut parser = InputParser::new();
+        parser.set_expect_x10_mouse(true);
+
+        // Invalid X10 payload bytes (<32 / <33) should be dropped.
+        let events = parser.parse(&[0x1B, b'[', b'M', 31, 0, 10]);
+        assert!(
+            events.iter().all(|event| !matches!(event, Event::Mouse(_))),
+            "malformed X10 payload must not emit mouse events"
         );
     }
 

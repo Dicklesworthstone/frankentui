@@ -108,19 +108,56 @@ impl PaneDispatchSummary {
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 impl RunnerCore {
+    fn pane_adapter_with_fallback(
+        config: PanePointerCaptureConfig,
+    ) -> (PanePointerCaptureAdapter, Option<String>) {
+        match PanePointerCaptureAdapter::new(config) {
+            Ok(adapter) => (adapter, None),
+            Err(err) => {
+                let fallback = PanePointerCaptureConfig {
+                    drag_threshold: 1,
+                    update_hysteresis: 1,
+                    activation_button: config.activation_button,
+                    cancel_on_leave_without_capture: config.cancel_on_leave_without_capture,
+                };
+                match PanePointerCaptureAdapter::new(fallback) {
+                    Ok(adapter) => (
+                        adapter,
+                        Some(format!(
+                            "pane_pointer_adapter_config_error: {err}; applied fallback thresholds=1/1"
+                        )),
+                    ),
+                    Err(fallback_err) => (
+                        PanePointerCaptureAdapter::default(),
+                        Some(format!(
+                            "pane_pointer_adapter_config_error: {err}; \
+                             fallback thresholds=1/1 rejected: {fallback_err}; \
+                             using default pane pointer adapter"
+                        )),
+                    ),
+                }
+            }
+        }
+    }
+
     /// Create a new runner with the given initial terminal dimensions.
     pub fn new(cols: u16, rows: u16) -> Self {
         let model = AppModel::default();
         let layout_tree = default_pane_layout_tree();
+        let (pane_adapter, pane_adapter_log) =
+            Self::pane_adapter_with_fallback(PanePointerCaptureConfig::default());
+        let mut cached_logs = Vec::new();
+        if let Some(log) = pane_adapter_log {
+            cached_logs.push(log);
+        }
         Self {
             inner: StepProgram::new(model, cols, rows),
             cached_patch_hash: None,
             cached_patch_stats: None,
-            cached_logs: Vec::new(),
+            cached_logs,
             flat_cells_buf: Vec::new(),
             flat_spans_buf: Vec::new(),
-            pane_adapter: PanePointerCaptureAdapter::new(PanePointerCaptureConfig::default())
-                .expect("default pane pointer adapter config should be valid"),
+            pane_adapter,
             pane_logs: Vec::new(),
             timeline: PaneInteractionTimeline::with_baseline(&layout_tree),
             layout_tree,
@@ -137,21 +174,38 @@ impl RunnerCore {
 
     /// Initialize the model and render the first frame. Call exactly once.
     pub fn init(&mut self) {
-        self.inner
-            .init()
-            .expect("StepProgram init should not fail on WebBackend");
+        if self.inner.is_initialized() {
+            return;
+        }
+        if let Err(err) = self.inner.init() {
+            self.cached_logs.push(format!("runner_init_error: {err}"));
+            return;
+        }
         self.refresh_cached_patch_meta_from_live_outputs();
     }
 
     /// Advance the deterministic clock by `dt_ms` milliseconds.
     pub fn advance_time_ms(&mut self, dt_ms: f64) {
-        let duration = Duration::from_secs_f64(dt_ms / 1000.0);
+        // Host input can be noisy (NaN/inf/negative spikes). Clamp to a safe,
+        // finite non-negative duration so frame scheduling never panics.
+        if !dt_ms.is_finite() || dt_ms <= 0.0 {
+            return;
+        }
+        let max_secs = Duration::MAX.as_secs_f64();
+        let secs = (dt_ms / 1000.0).min(max_secs);
+        let duration = Duration::try_from_secs_f64(secs).unwrap_or(Duration::MAX);
         self.inner.advance_time(duration);
     }
 
     /// Set the deterministic clock to absolute nanoseconds.
     pub fn set_time_ns(&mut self, ts_ns: f64) {
-        let duration = Duration::from_nanos(ts_ns as u64);
+        // Be robust to host-provided non-finite/negative timestamps.
+        let nanos = if !ts_ns.is_finite() || ts_ns <= 0.0 {
+            0
+        } else {
+            ts_ns.min(u64::MAX as f64) as u64
+        };
+        let duration = Duration::from_nanos(nanos);
         self.inner.set_time(duration);
     }
 
@@ -177,10 +231,29 @@ impl RunnerCore {
 
     /// Process pending events and render if dirty.
     pub fn step(&mut self) -> StepResult {
-        let result = self
-            .inner
-            .step()
-            .expect("StepProgram step should not fail on WebBackend");
+        if !self.inner.is_initialized() {
+            self.init();
+            if !self.inner.is_initialized() {
+                return StepResult {
+                    running: false,
+                    rendered: false,
+                    events_processed: 0,
+                    frame_idx: self.inner.frame_idx(),
+                };
+            }
+        }
+        let result = match self.inner.step() {
+            Ok(result) => result,
+            Err(err) => {
+                self.cached_logs.push(format!("runner_step_error: {err}"));
+                return StepResult {
+                    running: self.inner.is_running(),
+                    rendered: false,
+                    events_processed: 0,
+                    frame_idx: self.inner.frame_idx(),
+                };
+            }
+        };
         if result.rendered {
             self.refresh_cached_patch_meta_from_live_outputs();
         }
@@ -782,8 +855,11 @@ impl RunnerCore {
 
     fn reset_pointer_capture_adapter(&mut self) {
         let config = self.pane_adapter.config();
-        self.pane_adapter = PanePointerCaptureAdapter::new(config)
-            .expect("existing pane pointer adapter config should remain valid");
+        let (adapter, log) = Self::pane_adapter_with_fallback(config);
+        self.pane_adapter = adapter;
+        if let Some(log) = log {
+            self.cached_logs.push(log);
+        }
     }
 
     fn refresh_next_operation_id_from_timeline(&mut self) {
@@ -1146,6 +1222,25 @@ mod tests {
             }) => {}
             other => panic!("expected top-left resize gesture, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn init_is_idempotent() {
+        let mut runner = RunnerCore::new(100, 32);
+        runner.init();
+        runner.init();
+        assert!(runner.inner.is_initialized());
+        let result = runner.step();
+        assert!(result.running);
+    }
+
+    #[test]
+    fn step_auto_initializes_when_needed() {
+        let mut runner = RunnerCore::new(100, 32);
+        let result = runner.step();
+        assert!(runner.inner.is_initialized());
+        assert!(result.running);
+        assert!(result.frame_idx >= 1);
     }
 
     #[test]

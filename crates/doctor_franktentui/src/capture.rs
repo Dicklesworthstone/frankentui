@@ -1088,11 +1088,60 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::{Path, PathBuf};
+
+    use tempfile::tempdir;
 
     use super::{
         CaptureArgs, FinalizationInput, ResolvedCaptureConfig, resolve_finalization_result,
     };
+
+    fn minimal_args() -> CaptureArgs {
+        CaptureArgs {
+            profile: "analytics-empty".to_string(),
+            list_profiles: false,
+            binary: None,
+            app_command: None,
+            project_dir: None,
+            host: None,
+            port: None,
+            http_path: None,
+            auth_token: None,
+            run_root: None,
+            run_name: None,
+            output: None,
+            video_ext: None,
+            snapshot: None,
+            snapshot_second: None,
+            no_snapshot: false,
+            keys: None,
+            legacy_jump_key: None,
+            boot_sleep: None,
+            step_sleep: None,
+            tail_sleep: None,
+            legacy_capture_sleep: None,
+            theme: None,
+            font_size: None,
+            width: None,
+            height: None,
+            framerate: None,
+            seed_demo: false,
+            no_seed_demo: false,
+            seed_timeout: None,
+            seed_project: None,
+            seed_agent_a: None,
+            seed_agent_b: None,
+            seed_messages: None,
+            seed_delay: None,
+            seed_required: false,
+            snapshot_required: false,
+            dry_run: false,
+            conservative: false,
+            capture_timeout_seconds: None,
+            no_evidence_ledger: false,
+        }
+    }
 
     #[test]
     fn defaults_set_expected_values() {
@@ -1165,6 +1214,17 @@ mod tests {
         assert!(!cfg.seed_demo);
         assert!(cfg.seed_required);
         assert!(!cfg.evidence_ledger);
+    }
+
+    #[test]
+    fn apply_args_keeps_explicit_app_command_when_legacy_runtime_requested() {
+        let mut cfg = ResolvedCaptureConfig::defaults("analytics-empty");
+        let mut args = minimal_args();
+        args.binary = Some(PathBuf::from("/tmp/custom-binary"));
+        args.host = Some("127.0.0.1".to_string());
+        args.app_command = Some("echo explicit-command".to_string());
+        cfg.apply_args(&args);
+        assert_eq!(cfg.app_command.as_deref(), Some("echo explicit-command"));
     }
 
     #[test]
@@ -1285,6 +1345,66 @@ mod tests {
         assert!(command.contains("--host '127.0.0.1; echo injected'"));
         assert!(command.contains("--port '8879 && whoami'"));
         assert!(command.contains("--path '/mcp custom/'"));
+    }
+
+    #[test]
+    fn runtime_command_uses_trimmed_app_command_when_not_legacy() {
+        let mut cfg = ResolvedCaptureConfig::defaults("analytics-empty");
+        cfg.app_command = Some("  cargo run --bin demo  ".to_string());
+        let label = super::resolved_binary_label(&cfg);
+        assert_eq!(label, "cargo run --bin demo");
+
+        let runtime =
+            super::build_runtime_command(&cfg, "sqlite:///tmp/db", Path::new("/tmp/storage"));
+        assert_eq!(runtime, "cargo run --bin demo");
+    }
+
+    #[test]
+    fn append_decision_disabled_skips_ledger_write() {
+        let temp = tempdir().expect("tempdir");
+        let ledger_path = temp.path().join("evidence_ledger.jsonl");
+        super::append_decision(
+            false,
+            &ledger_path,
+            super::DecisionEvent {
+                trace_id: "trace-disabled",
+                decision_id: "decision-disabled",
+                action: "capture_config_resolved",
+                evidence_terms: vec!["seed_demo=false".to_string()],
+                fallback_active: false,
+                fallback_reason: None,
+            },
+        )
+        .expect("append_decision disabled path should succeed");
+        assert!(!ledger_path.exists());
+    }
+
+    #[test]
+    fn append_decision_enabled_writes_single_jsonl_record() {
+        let temp = tempdir().expect("tempdir");
+        let ledger_path = temp.path().join("evidence_ledger.jsonl");
+        super::append_decision(
+            true,
+            &ledger_path,
+            super::DecisionEvent {
+                trace_id: "trace-enabled",
+                decision_id: "decision-enabled",
+                action: "capture_finalize",
+                evidence_terms: vec!["snapshot_required=true".to_string()],
+                fallback_active: true,
+                fallback_reason: Some("capture timeout exceeded 1s".to_string()),
+            },
+        )
+        .expect("append_decision enabled path should succeed");
+
+        let payload = fs::read_to_string(&ledger_path).expect("read decision ledger");
+        let lines = payload.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "expected one decision record line");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("parse decision record");
+        assert_eq!(parsed["action"], "capture_finalize");
+        assert_eq!(parsed["trace_id"], "trace-enabled");
     }
 
     #[test]
@@ -1444,5 +1564,39 @@ mod tests {
             timed_out.fallback_reason.as_deref(),
             Some("capture timeout exceeded 42s")
         );
+    }
+
+    #[test]
+    fn finalization_seed_required_with_missing_seed_exit_uses_exit_20() {
+        let result = resolve_finalization_result(&FinalizationInput {
+            vhs_exit: 0,
+            seed_required: true,
+            seed_exit: None,
+            snapshot_required: false,
+            no_snapshot: false,
+            snapshot_status: "ok".to_string(),
+            timed_out: false,
+            conservative: false,
+            capture_timeout_seconds: 120,
+        });
+        assert_eq!(result.final_status, "failed");
+        assert_eq!(result.final_exit, 20);
+    }
+
+    #[test]
+    fn finalization_snapshot_required_ignored_when_snapshots_disabled() {
+        let result = resolve_finalization_result(&FinalizationInput {
+            vhs_exit: 0,
+            seed_required: false,
+            seed_exit: None,
+            snapshot_required: true,
+            no_snapshot: true,
+            snapshot_status: "failed".to_string(),
+            timed_out: false,
+            conservative: false,
+            capture_timeout_seconds: 120,
+        });
+        assert_eq!(result.final_status, "ok");
+        assert_eq!(result.final_exit, 0);
     }
 }

@@ -77,7 +77,7 @@ pub fn build_capture_tape(spec: &TapeSpec<'_>) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{build_capture_tape, TapeSpec};
+    use super::{TapeSpec, build_capture_tape};
 
     #[test]
     fn tape_contains_required_sections() {

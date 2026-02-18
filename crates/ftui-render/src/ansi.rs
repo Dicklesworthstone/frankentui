@@ -603,6 +603,8 @@ pub const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
 /// Enable SGR mouse reporting with mode-hygiene pre-reset:
 /// - reset legacy/alternate encodings (`1001/1003/1005/1015/1016`)
 /// - enable canonical SGR modes (`1000 + 1002 + 1006`)
+/// - emit `1016l` before `1006h` so SGR mode remains active on terminals
+///   where trailing `1016l` forces X10 fallback.
 ///
 /// Enables:
 /// - 1000: Normal mouse tracking
@@ -951,6 +953,24 @@ mod tests {
         assert_eq!(
             to_bytes(mouse_disable),
             b"\x1b[?1000;1002;1006l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l"
+        );
+
+        let enabled = to_bytes(mouse_enable);
+        assert!(
+            !enabled.ends_with(b"\x1b[?1016l"),
+            "mouse enable should not end with 1016l (can force X10 fallback)"
+        );
+        let pos_1016l = enabled
+            .windows(b"\x1b[?1016l".len())
+            .position(|w| w == b"\x1b[?1016l")
+            .expect("mouse enable should clear 1016 before enabling SGR");
+        let pos_1006h = enabled
+            .windows(b"\x1b[?1006h".len())
+            .position(|w| w == b"\x1b[?1006h")
+            .expect("mouse enable should include 1006h");
+        assert!(
+            pos_1016l < pos_1006h,
+            "1016l must be emitted before 1006h to preserve SGR mode"
         );
     }
 

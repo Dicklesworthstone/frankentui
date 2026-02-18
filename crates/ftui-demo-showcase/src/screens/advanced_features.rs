@@ -64,6 +64,14 @@ const MACRO_SPEED_MAX: f64 = 4.0;
 const MACRO_SPEED_STEP: f64 = 0.25;
 const MACRO_TICK: Duration = Duration::from_millis(100);
 
+#[inline]
+fn duration_from_secs_f64_saturating(secs: f64) -> Duration {
+    if secs.is_nan() || secs <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::try_from_secs_f64(secs).unwrap_or(Duration::MAX)
+}
+
 #[derive(Debug, Clone)]
 struct MacroPlayback {
     playing: bool,
@@ -325,8 +333,9 @@ impl AdvancedFeatures {
             return;
         }
 
-        let scaled = Duration::from_secs_f64(tick_delta.as_secs_f64() * self.macro_playback.speed);
-        self.macro_playback.elapsed += scaled;
+        let scaled =
+            duration_from_secs_f64_saturating(tick_delta.as_secs_f64() * self.macro_playback.speed);
+        self.macro_playback.elapsed = self.macro_playback.elapsed.saturating_add(scaled);
 
         while self.macro_playback.index < events_len {
             let next_at = self.macro_playback.next_at;
@@ -350,7 +359,8 @@ impl AdvancedFeatures {
             self.apply_event(&event);
             self.macro_playback.index += 1;
             if self.macro_playback.index < events_len {
-                self.macro_playback.next_at += next_delay;
+                self.macro_playback.next_at =
+                    self.macro_playback.next_at.saturating_add(next_delay);
             }
         }
 

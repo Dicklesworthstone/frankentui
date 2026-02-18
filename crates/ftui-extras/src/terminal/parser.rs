@@ -20,6 +20,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ftui_core::with_panic_cleanup_suppressed;
 use vte::{Parser, Perform};
 
 /// Opaque identifier returned when registering a parser hook.
@@ -356,7 +357,9 @@ where
 {
     for entry in hooks {
         let started = Instant::now();
-        let outcome = catch_unwind(AssertUnwindSafe(|| (entry.callback)(event)));
+        let outcome = with_panic_cleanup_suppressed(|| {
+            catch_unwind(AssertUnwindSafe(|| (entry.callback)(event)))
+        });
         let elapsed = started.elapsed();
 
         push_hook_trace(

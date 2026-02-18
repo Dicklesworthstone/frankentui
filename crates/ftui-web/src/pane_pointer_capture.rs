@@ -212,6 +212,17 @@ pub struct PanePointerCaptureAdapter {
     next_sequence: u64,
 }
 
+impl Default for PanePointerCaptureAdapter {
+    fn default() -> Self {
+        Self {
+            machine: PaneDragResizeMachine::default(),
+            config: PanePointerCaptureConfig::default(),
+            active: None,
+            next_sequence: 1,
+        }
+    }
+}
+
 impl PanePointerCaptureAdapter {
     /// Construct a new adapter with validated thresholds.
     pub fn new(config: PanePointerCaptureConfig) -> Result<Self, PaneDragResizeMachineError> {

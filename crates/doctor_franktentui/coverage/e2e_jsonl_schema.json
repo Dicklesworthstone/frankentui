@@ -1,0 +1,89 @@
+{
+  "schema_name": "doctor_franktentui_e2e_event",
+  "schema_version": "1.0.0",
+  "required_fields": [
+    "schema_version",
+    "timestamp_utc",
+    "run_id",
+    "correlation_id",
+    "case_id",
+    "step_id",
+    "event_type",
+    "command",
+    "env_hash",
+    "duration_ms",
+    "exit_code",
+    "stdout_sha256",
+    "stderr_sha256",
+    "artifact_hashes",
+    "expected",
+    "actual"
+  ],
+  "field_types": {
+    "schema_version": ["string"],
+    "timestamp_utc": ["string"],
+    "run_id": ["string"],
+    "correlation_id": ["string"],
+    "case_id": ["string", "null"],
+    "step_id": ["string", "null"],
+    "event_type": ["string"],
+    "command": ["string"],
+    "env_hash": ["string"],
+    "duration_ms": ["integer"],
+    "exit_code": ["integer"],
+    "stdout_sha256": ["string", "null"],
+    "stderr_sha256": ["string", "null"],
+    "artifact_hashes": ["object"],
+    "expected": ["object"],
+    "actual": ["object"]
+  },
+  "sha256_fields": [
+    "env_hash",
+    "stdout_sha256",
+    "stderr_sha256"
+  ],
+  "event_type_enum": [
+    "run_start",
+    "step_start",
+    "step_end",
+    "case_start",
+    "case_end",
+    "artifact",
+    "run_end"
+  ],
+  "workflow_rules": {
+    "generic": {
+      "required_event_types": ["run_start", "run_end"],
+      "require_case_id": false,
+      "expected_actual_required_keys": [],
+      "expected_actual_enforced_event_types": [],
+      "require_unique_correlation_ids": true,
+      "require_monotonic_correlation_suffix": false,
+      "required_step_event_pairs": [],
+      "required_case_event_pairs": [],
+      "min_artifact_events": 0
+    },
+    "happy": {
+      "required_event_types": ["run_start", "step_start", "step_end", "run_end"],
+      "require_case_id": false,
+      "expected_actual_required_keys": [],
+      "expected_actual_enforced_event_types": [],
+      "require_unique_correlation_ids": true,
+      "require_monotonic_correlation_suffix": true,
+      "required_step_event_pairs": ["step_start", "step_end"],
+      "required_case_event_pairs": [],
+      "min_artifact_events": 1
+    },
+    "failure": {
+      "required_event_types": ["run_start", "case_start", "case_end", "run_end"],
+      "require_case_id": true,
+      "expected_actual_required_keys": ["exit_code", "regex_match", "json_valid"],
+      "expected_actual_enforced_event_types": ["case_end", "run_end"],
+      "require_unique_correlation_ids": true,
+      "require_monotonic_correlation_suffix": true,
+      "required_step_event_pairs": [],
+      "required_case_event_pairs": ["case_start", "case_end"],
+      "min_artifact_events": 1
+    }
+  }
+}

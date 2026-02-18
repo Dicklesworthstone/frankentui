@@ -5,20 +5,22 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_ROOT="${1:-/tmp/doctor_franktentui/e2e/failure_${TIMESTAMP_UTC}}"
 CASES_DIR="${RUN_ROOT}/cases"
-TOOLS_DIR="${RUN_ROOT}/tools"
 LOG_DIR="${RUN_ROOT}/logs"
 META_DIR="${RUN_ROOT}/meta"
 CASE_RESULTS_TSV="${META_DIR}/case_results.tsv"
 CASE_RESULTS_JSON="${META_DIR}/case_results.json"
 SUMMARY_JSON="${META_DIR}/summary.json"
 SUMMARY_TXT="${META_DIR}/summary.txt"
+EVENTS_JSONL="${META_DIR}/events.jsonl"
+EVENT_VALIDATION_REPORT_JSON="${META_DIR}/events_validation_report.json"
 COMMAND_MANIFEST="${META_DIR}/command_manifest.txt"
 ENV_SNAPSHOT="${META_DIR}/env_snapshot.txt"
 VERSIONS_TXT="${META_DIR}/tool_versions.txt"
 TARGET_DIR=""
 BIN_PATH=""
+MISSING_RUNTIME_TOOLS=()
 
-mkdir -p "${CASES_DIR}" "${TOOLS_DIR}" "${LOG_DIR}" "${META_DIR}"
+mkdir -p "${CASES_DIR}" "${LOG_DIR}" "${META_DIR}"
 
 require_command() {
   local command="$1"
@@ -29,45 +31,81 @@ require_command() {
   fi
 }
 
+detect_runtime_toolchain_gaps() {
+  local command
+  for command in vhs ffmpeg ffprobe; do
+    if ! command -v "${command}" >/dev/null 2>&1; then
+      MISSING_RUNTIME_TOOLS+=("${command}")
+    fi
+  done
+}
+
+emit_skip_and_exit() {
+  local missing_json
+  missing_json="$(printf '%s\n' "${MISSING_RUNTIME_TOOLS[@]}" | jq -R . | jq -s .)"
+  local reason="missing runtime tools required for real-behavior e2e failure matrix"
+
+  : > "${CASE_RESULTS_TSV}"
+  : > "${COMMAND_MANIFEST}"
+  : > "${EVENTS_JSONL}"
+
+  jq -n \
+    --argjson missing_tools "${missing_json}" \
+    '{cases: [], skipped: true, missing_tools: $missing_tools}' > "${CASE_RESULTS_JSON}"
+
+  jq -n \
+    --arg status "skipped" \
+    --arg reason "${reason}" \
+    --arg run_root "${RUN_ROOT}" \
+    --arg case_results "${CASE_RESULTS_JSON}" \
+    --arg events_jsonl "${EVENTS_JSONL}" \
+    --arg events_validation_report "${EVENT_VALIDATION_REPORT_JSON}" \
+    --argjson missing_tools "${missing_json}" \
+    '{
+      status: $status,
+      reason: $reason,
+      run_root: $run_root,
+      total_cases: 0,
+      passed_cases: 0,
+      failed_cases: 0,
+      case_results: $case_results,
+      events_jsonl: $events_jsonl,
+      events_validation_report: $events_validation_report,
+      missing_tools: $missing_tools
+    }' > "${SUMMARY_JSON}"
+
+  jq -n \
+    --arg status "skipped" \
+    --argjson missing_tools "${missing_json}" \
+    '{
+      status: $status,
+      errors: [],
+      total_events: 0,
+      workflow: "failure",
+      missing_tools: $missing_tools
+    }' > "${EVENT_VALIDATION_REPORT_JSON}"
+
+  {
+    echo "status=skipped"
+    echo "reason=${reason}"
+    echo "run_root=${RUN_ROOT}"
+    echo "total_cases=0"
+    echo "passed_cases=0"
+    echo "failed_cases=0"
+    echo "case_results=${CASE_RESULTS_JSON}"
+    echo "events_jsonl=${EVENTS_JSONL}"
+    echo "events_validation_report=${EVENT_VALIDATION_REPORT_JSON}"
+    echo "missing_tools=$(IFS=,; echo "${MISSING_RUNTIME_TOOLS[*]}")"
+  } > "${SUMMARY_TXT}"
+
+  cat "${SUMMARY_TXT}"
+  exit 0
+}
+
 require_command "cargo" "install Rust/Cargo toolchain"
 require_command "jq" "install jq for JSON parsing"
 require_command "rg" "install ripgrep for regex checks"
 require_command "python3" "install Python 3"
-
-cat > "${TOOLS_DIR}/vhs" <<'VHS'
-#!/usr/bin/env bash
-set -euo pipefail
-tape_path="${1:-}"
-if [[ -n "$tape_path" && -f "$tape_path" ]]; then
-  output_path="$(grep -E '^Output "' "$tape_path" | sed -E 's/^Output "(.*)"$/\1/' | head -n 1 || true)"
-  if [[ -n "$output_path" ]]; then
-    mkdir -p "$(dirname "$output_path")"
-    : > "$output_path"
-  fi
-fi
-exit 0
-VHS
-chmod +x "${TOOLS_DIR}/vhs"
-
-cat > "${TOOLS_DIR}/ffmpeg" <<'FFMPEG'
-#!/usr/bin/env bash
-set -euo pipefail
-out="${@: -1}"
-mkdir -p "$(dirname "$out")"
-: > "$out"
-exit 0
-FFMPEG
-chmod +x "${TOOLS_DIR}/ffmpeg"
-
-cat > "${TOOLS_DIR}/ffprobe" <<'FFPROBE'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "1.0"
-exit 0
-FFPROBE
-chmod +x "${TOOLS_DIR}/ffprobe"
-
-export PATH="${TOOLS_DIR}:${PATH}"
 
 {
   env | sort | grep -E '^(CI|TERM|SHELL|USER|HOME|PATH|RUSTUP_TOOLCHAIN|SQLMODEL_|FASTAPI_)=' || true
@@ -78,12 +116,22 @@ export PATH="${TOOLS_DIR}:${PATH}"
   echo "timestamp_utc=${TIMESTAMP_UTC}"
   echo "git_rev=$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "cargo_version=$(cargo --version)"
-  echo "rustc_version=$(rustc --version)"
-  echo "vhs_version=$("${TOOLS_DIR}/vhs" --version 2>/dev/null || echo fake-vhs)"
+  echo "rustc_version=$(rustc --version 2>/dev/null || echo rustc-missing)"
+  echo "vhs_path=$(command -v vhs 2>/dev/null || echo missing)"
+  echo "ffmpeg_path=$(command -v ffmpeg 2>/dev/null || echo missing)"
+  echo "ffprobe_path=$(command -v ffprobe 2>/dev/null || echo missing)"
+  echo "vhs_version=$(vhs --version 2>/dev/null | head -n 1 || echo unknown)"
+  echo "ffmpeg_version=$(ffmpeg -version 2>/dev/null | head -n 1 || echo unknown)"
+  echo "ffprobe_version=$(ffprobe -version 2>/dev/null | head -n 1 || echo unknown)"
 } > "${VERSIONS_TXT}"
 
 : > "${CASE_RESULTS_TSV}"
 : > "${COMMAND_MANIFEST}"
+
+detect_runtime_toolchain_gaps
+if [[ "${#MISSING_RUNTIME_TOOLS[@]}" -gt 0 ]]; then
+  emit_skip_and_exit
+fi
 
 run_build() {
   local stdout_log="${LOG_DIR}/build_doctor.stdout.log"
@@ -216,12 +264,13 @@ run_case() {
     append_artifact "${artifact_list}" "${extras[@]}"
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${case_id}" \
     "${expected_exit}" \
     "${actual_exit}" \
     "${pass}" \
     "${regex_matched}" \
+    "${expected_regex}" \
     "${expect_json}" \
     "${json_valid}" \
     "${duration_seconds}" \
@@ -561,9 +610,25 @@ run_case \
   "${extra_files}" \
   env SQLMODEL_JSON=1 "${case_root}/run_case.sh"
 
-python3 - "${CASE_RESULTS_TSV}" "${CASE_RESULTS_JSON}" "${SUMMARY_JSON}" "${SUMMARY_TXT}" "${RUN_ROOT}" <<'PY'
+python3 - \
+  "${CASE_RESULTS_TSV}" \
+  "${CASE_RESULTS_JSON}" \
+  "${SUMMARY_JSON}" \
+  "${SUMMARY_TXT}" \
+  "${RUN_ROOT}" \
+  "${EVENTS_JSONL}" \
+  "${EVENT_VALIDATION_REPORT_JSON}" \
+  "${LOG_DIR}" \
+  "${ROOT_DIR}/scripts/doctor_franktentui_validate_jsonl.py" \
+  "${ENV_SNAPSHOT}" <<'PY'
+from __future__ import annotations
+
+import hashlib
 import json
+import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 rows_path = Path(sys.argv[1])
@@ -571,6 +636,26 @@ case_results_json = Path(sys.argv[2])
 summary_json = Path(sys.argv[3])
 summary_txt = Path(sys.argv[4])
 run_root = Path(sys.argv[5])
+events_jsonl = Path(sys.argv[6])
+event_validation_report_json = Path(sys.argv[7])
+log_dir = Path(sys.argv[8])
+validator_script = Path(sys.argv[9])
+global_env_snapshot = Path(sys.argv[10])
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def sha256_or_none(path: Path) -> str | None:
+    if path.exists():
+        return sha256_file(path)
+    return None
+
+
+def now_utc_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 rows = []
 for line in rows_path.read_text(encoding="utf-8").splitlines():
@@ -582,6 +667,7 @@ for line in rows_path.read_text(encoding="utf-8").splitlines():
         actual_exit,
         pass_flag,
         regex_matched,
+        expected_regex,
         expect_json,
         json_valid,
         duration_seconds,
@@ -593,6 +679,7 @@ for line in rows_path.read_text(encoding="utf-8").splitlines():
 
     key_artifacts = []
     missing_artifacts = []
+    artifact_hashes = {}
     artifact_file = Path(artifact_list)
     if artifact_file.exists():
         for raw_path in artifact_file.read_text(encoding="utf-8").splitlines():
@@ -600,7 +687,10 @@ for line in rows_path.read_text(encoding="utf-8").splitlines():
             if not path:
                 continue
             key_artifacts.append(path)
-            if not Path(path).exists():
+            artifact_path = Path(path)
+            if artifact_path.exists():
+                artifact_hashes[path] = sha256_file(artifact_path)
+            else:
                 missing_artifacts.append(path)
     else:
         missing_artifacts.append(str(artifact_file))
@@ -615,6 +705,7 @@ for line in rows_path.read_text(encoding="utf-8").splitlines():
             "actual_exit": int(actual_exit),
             "pass": case_pass,
             "regex_matched": regex_matched == "1",
+            "expected_regex": expected_regex,
             "expect_json": expect_json == "1",
             "json_valid": json_valid == "1",
             "duration_seconds": int(duration_seconds),
@@ -622,6 +713,7 @@ for line in rows_path.read_text(encoding="utf-8").splitlines():
             "stderr_log": stderr_log,
             "env_snapshot": env_snapshot,
             "key_artifact_paths": key_artifacts,
+            "artifact_hashes": artifact_hashes,
             "missing_artifacts": missing_artifacts,
         }
     )
@@ -631,13 +723,195 @@ failed = [row for row in rows if not row["pass"]]
 
 case_results_json.write_text(json.dumps({"cases": rows}, indent=2) + "\n", encoding="utf-8")
 
+run_id = f"failure-{run_root.name}"
+env_hash = sha256_file(global_env_snapshot)
+counter = {"value": 0}
+
+
+def next_correlation_id() -> str:
+    counter["value"] += 1
+    return f"{run_id}-corr-{counter['value']:04d}"
+
+
+events = []
+events.append(
+    {
+        "schema_version": "1.0.0",
+        "timestamp_utc": now_utc_timestamp(),
+        "run_id": run_id,
+        "correlation_id": next_correlation_id(),
+        "case_id": "__run__",
+        "step_id": None,
+        "event_type": "run_start",
+        "command": "doctor_franktentui_failure_e2e",
+        "env_hash": env_hash,
+        "duration_ms": 0,
+        "exit_code": 0,
+        "stdout_sha256": None,
+        "stderr_sha256": None,
+        "artifact_hashes": {},
+        "expected": {},
+        "actual": {"status": "started"},
+    }
+)
+
+for row in rows:
+    stdout_path = Path(row["stdout_log"])
+    stderr_path = Path(row["stderr_log"])
+
+    events.append(
+        {
+            "schema_version": "1.0.0",
+            "timestamp_utc": now_utc_timestamp(),
+            "run_id": run_id,
+            "correlation_id": next_correlation_id(),
+            "case_id": row["case_id"],
+            "step_id": row["case_id"],
+            "event_type": "case_start",
+            "command": "case_runner",
+            "env_hash": env_hash,
+            "duration_ms": 0,
+            "exit_code": 0,
+            "stdout_sha256": None,
+            "stderr_sha256": None,
+            "artifact_hashes": {},
+            "expected": {},
+            "actual": {},
+        }
+    )
+
+    events.append(
+        {
+            "schema_version": "1.0.0",
+            "timestamp_utc": now_utc_timestamp(),
+            "run_id": run_id,
+            "correlation_id": next_correlation_id(),
+            "case_id": row["case_id"],
+            "step_id": row["case_id"],
+            "event_type": "case_end",
+            "command": "case_runner",
+            "env_hash": env_hash,
+            "duration_ms": int(row["duration_seconds"]) * 1000,
+            "exit_code": int(row["actual_exit"]),
+            "stdout_sha256": sha256_or_none(stdout_path),
+            "stderr_sha256": sha256_or_none(stderr_path),
+            "artifact_hashes": row["artifact_hashes"],
+            "expected": {
+                "exit_code": int(row["expected_exit"]),
+                "regex_match": True,
+                "json_valid": bool(row["expect_json"]),
+                "regex_pattern": row["expected_regex"],
+            },
+            "actual": {
+                "exit_code": int(row["actual_exit"]),
+                "regex_match": bool(row["regex_matched"]),
+                "json_valid": bool(row["json_valid"]),
+                "pass": bool(row["pass"]),
+                "stdout_log": row["stdout_log"],
+                "stderr_log": row["stderr_log"],
+                "env_snapshot": row["env_snapshot"],
+                "missing_artifacts": row["missing_artifacts"],
+            },
+        }
+    )
+
+    for artifact_path, artifact_sha in row["artifact_hashes"].items():
+        artifact_size = 0
+        artifact_file = Path(artifact_path)
+        if artifact_file.exists():
+            artifact_size = int(artifact_file.stat().st_size)
+        events.append(
+            {
+                "schema_version": "1.0.0",
+                "timestamp_utc": now_utc_timestamp(),
+                "run_id": run_id,
+                "correlation_id": next_correlation_id(),
+                "case_id": row["case_id"],
+                "step_id": None,
+                "event_type": "artifact",
+                "command": "case_artifacts",
+                "env_hash": env_hash,
+                "duration_ms": 0,
+                "exit_code": 0,
+                "stdout_sha256": None,
+                "stderr_sha256": None,
+                "artifact_hashes": {artifact_path: artifact_sha},
+                "expected": {},
+                "actual": {"size_bytes": artifact_size},
+            }
+        )
+
+events.append(
+    {
+        "schema_version": "1.0.0",
+        "timestamp_utc": now_utc_timestamp(),
+        "run_id": run_id,
+        "correlation_id": next_correlation_id(),
+        "case_id": "__run__",
+        "step_id": None,
+        "event_type": "run_end",
+        "command": "doctor_franktentui_failure_e2e",
+        "env_hash": env_hash,
+        "duration_ms": 0,
+        "exit_code": 0 if not failed else 1,
+        "stdout_sha256": None,
+        "stderr_sha256": None,
+        "artifact_hashes": {},
+        "expected": {
+            "exit_code": 0,
+            "regex_match": True,
+            "json_valid": True,
+        },
+        "actual": {
+            "exit_code": 0 if not failed else 1,
+            "regex_match": all(row["regex_matched"] for row in rows),
+            "json_valid": all(row["json_valid"] for row in rows if row["expect_json"]),
+            "failed_case_ids": [row["case_id"] for row in failed],
+            "total_cases": len(rows),
+            "passed_cases": len(passed),
+            "failed_cases": len(failed),
+        },
+    }
+)
+
+events_jsonl.write_text(
+    "".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events),
+    encoding="utf-8",
+)
+
+validator_stdout_log = log_dir / "validate_failure_jsonl.stdout.log"
+validator_stderr_log = log_dir / "validate_failure_jsonl.stderr.log"
+validator_start = time.monotonic()
+validator_proc = subprocess.run(
+    [
+        str(validator_script),
+        "--input",
+        str(events_jsonl),
+        "--workflow",
+        "failure",
+        "--report-json",
+        str(event_validation_report_json),
+    ],
+    capture_output=True,
+    text=True,
+)
+validator_duration_ms = int((time.monotonic() - validator_start) * 1000)
+validator_stdout_log.write_text(validator_proc.stdout, encoding="utf-8")
+validator_stderr_log.write_text(validator_proc.stderr, encoding="utf-8")
+
 summary = {
-    "status": "passed" if not failed else "failed",
+    "status": "passed" if not failed and validator_proc.returncode == 0 else "failed",
     "run_root": str(run_root),
     "total_cases": len(rows),
     "passed_cases": len(passed),
     "failed_cases": len(failed),
     "case_results": str(case_results_json),
+    "events_jsonl": str(events_jsonl),
+    "events_validation_report": str(event_validation_report_json),
+    "events_validation_exit_code": int(validator_proc.returncode),
+    "events_validation_duration_ms": validator_duration_ms,
+    "events_validation_stdout_log": str(validator_stdout_log),
+    "events_validation_stderr_log": str(validator_stderr_log),
 }
 summary_json.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
@@ -648,6 +922,9 @@ lines = [
     f"passed_cases={summary['passed_cases']}",
     f"failed_cases={summary['failed_cases']}",
     f"case_results={case_results_json}",
+    f"events_jsonl={events_jsonl}",
+    f"events_validation_report={event_validation_report_json}",
+    f"events_validation_exit_code={validator_proc.returncode}",
 ]
 
 if failed:
@@ -658,7 +935,7 @@ if failed:
 summary_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 print("\n".join(lines))
 
-if failed:
+if failed or validator_proc.returncode != 0:
     raise SystemExit(1)
 PY
 

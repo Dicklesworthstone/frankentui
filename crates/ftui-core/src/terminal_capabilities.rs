@@ -923,13 +923,16 @@ impl TerminalCapabilities {
         let term_program_lower = term_program.to_ascii_lowercase();
         let colorterm_lower = colorterm.to_ascii_lowercase();
 
-        // WezTerm mux sessions may not always preserve TERM_PROGRAM in all
-        // shell-launch scenarios; use pane/socket markers and a conservative
-        // fallback when only WEZTERM_EXECUTABLE is present.
+        // WezTerm mux sessions may not always preserve WEZTERM_* env markers
+        // across shell launch paths. Treat explicit WezTerm identity itself as
+        // conservative mux evidence so policy remains fail-safe.
         let term_program_is_wezterm = term_program_lower.contains("wezterm");
-        let in_wezterm_mux = env.wezterm_unix_socket
+        let term_is_wezterm = term_lower.contains("wezterm");
+        let in_wezterm_mux = term_program_is_wezterm
+            || term_is_wezterm
+            || env.wezterm_unix_socket
             || env.wezterm_pane
-            || (env.wezterm_executable && !term_program_is_wezterm);
+            || env.wezterm_executable;
         let in_any_mux = in_tmux || in_screen || in_zellij || in_wezterm_mux;
 
         // Windows Terminal detection
@@ -963,8 +966,9 @@ impl TerminalCapabilities {
             && !is_dumb
             && (true_color || term_lower.contains("256color") || term_lower.contains("256"));
 
-        let is_wezterm =
-            term_program_is_wezterm || term_lower.contains("wezterm") || env.wezterm_executable;
+        // Keep WezTerm inference conservative: any explicit WezTerm marker
+        // should disable risky capabilities even if terminal identity is mixed.
+        let is_wezterm = term_program_is_wezterm || term_is_wezterm || env.wezterm_executable;
 
         // Synchronized output detection
         let sync_output = !is_dumb
@@ -1577,13 +1581,24 @@ mod tests {
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.true_color);
         assert!(
+            caps.in_wezterm_mux,
+            "WezTerm identity is treated as conservative mux evidence"
+        );
+        assert!(caps.in_any_mux());
+        assert!(
             !caps.sync_output,
             "WezTerm sync output is hard-disabled as a safety fallback"
         );
         assert!(caps.osc8_hyperlinks, "WezTerm supports hyperlinks");
         assert!(caps.kitty_keyboard, "WezTerm supports kitty keyboard");
         assert!(caps.focus_events);
-        assert!(caps.osc52_clipboard);
+        assert!(
+            !caps.osc52_clipboard,
+            "conservative mux policy should disable raw OSC52 detection"
+        );
+        assert!(!caps.use_scroll_region());
+        assert!(!caps.use_hyperlinks());
+        assert!(!caps.use_clipboard());
     }
 
     #[test]
@@ -1685,6 +1700,70 @@ mod tests {
         assert!(
             !caps.use_sync_output(),
             "fallback mux detection must suppress sync output policy"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_executable_overrides_explicit_non_wezterm_program() {
+        let mut env = make_env("xterm-ghostty", "Ghostty", "truecolor");
+        env.wezterm_executable = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(
+            caps.in_wezterm_mux,
+            "WEZTERM_EXECUTABLE should conservatively force wezterm mux policy"
+        );
+        assert!(
+            !caps.sync_output,
+            "raw sync_output capability should be disabled under conservative wezterm marker handling"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "mux policy should disable sync output under WEZTERM_EXECUTABLE marker"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_socket_overrides_explicit_non_wezterm_program() {
+        let mut env = make_env("xterm-ghostty", "Ghostty", "truecolor");
+        env.wezterm_unix_socket = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(
+            caps.in_wezterm_mux,
+            "WEZTERM_UNIX_SOCKET should conservatively force wezterm mux policy"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "mux policy should disable sync output with socket marker"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_pane_overrides_explicit_non_wezterm_program() {
+        let mut env = make_env("xterm-ghostty", "Ghostty", "truecolor");
+        env.wezterm_pane = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(
+            caps.in_wezterm_mux,
+            "WEZTERM_PANE should conservatively force wezterm mux policy"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "mux policy should disable sync output with pane marker"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_socket_overrides_explicit_non_wezterm_term_identity() {
+        let mut env = make_env("xterm-ghostty", "", "truecolor");
+        env.wezterm_unix_socket = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(
+            caps.in_wezterm_mux,
+            "WEZTERM_UNIX_SOCKET should conservatively force wezterm mux policy"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "mux policy should disable sync output with socket marker"
         );
     }
 
@@ -1950,7 +2029,7 @@ mod tests {
 
     #[test]
     fn use_clipboard_enabled_when_no_mux_and_modern() {
-        let env = make_env("xterm-256color", "WezTerm", "truecolor");
+        let env = make_env("xterm-256color", "Alacritty", "truecolor");
         let caps = TerminalCapabilities::detect_from_inputs(&env);
         assert!(caps.osc52_clipboard);
         assert!(caps.use_clipboard());

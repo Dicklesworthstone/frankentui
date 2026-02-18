@@ -232,6 +232,12 @@ cargo test -p doctor_franktentui --all-targets -- --nocapture
 ./scripts/doctor_franktentui_happy_e2e.sh /tmp/doctor_franktentui_ci/happy
 ./scripts/doctor_franktentui_failure_e2e.sh /tmp/doctor_franktentui_ci/failure
 
+# Determinism soak (fails on non-volatile divergence)
+./scripts/doctor_franktentui_determinism_soak.sh /tmp/doctor_franktentui_ci/determinism 3
+
+# Replay/triage helper for failure artifacts
+./scripts/doctor_franktentui_replay_triage.py --run-root /tmp/doctor_franktentui_ci/failure --max-signals 8
+
 # Coverage gate
 ./scripts/doctor_franktentui_coverage.sh /tmp/doctor_franktentui_ci/coverage
 ```
@@ -241,7 +247,8 @@ artifacts under `/tmp/doctor_franktentui_ci/`:
 
 - `artifact_map.txt` (artifact index + paths)
 - `happy/meta/summary.json` and `happy/meta/artifact_manifest.json`
-- `failure/meta/summary.json` and `failure/meta/case_results.json`
+- `failure/meta/summary.json`, `failure/meta/case_results.json`, and `failure/meta/replay_triage_report.json`
+- `determinism/meta/determinism_report.json` and `determinism/meta/determinism_report.txt`
 - `coverage/coverage_gate_report.json` and `coverage/coverage_gate_report.txt`
 
 ---

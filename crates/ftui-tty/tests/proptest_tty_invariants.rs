@@ -2,9 +2,9 @@
 //!
 //! Verifies structural guarantees of cleanup sequences and headless backend:
 //!
-//! 1.  write_cleanup_sequence always includes SYNC_END and CURSOR_SHOW
+//! 1.  write_cleanup_sequence always includes CURSOR_SHOW and omits SYNC_END by default
 //! 2.  write_cleanup_sequence deterministic
-//! 3.  write_cleanup_sequence ordering: sync_end < cursor_show < alt_screen_leave
+//! 3.  write_cleanup_sequence ordering: cursor_show < alt_screen_leave
 //! 4.  write_cleanup_sequence without alt_screen omits ALT_SCREEN_LEAVE
 //! 5.  write_cleanup_sequence includes per-feature disable sequences
 //! 6.  TtyEventSource headless: size matches constructor
@@ -50,18 +50,18 @@ fn find_seq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 1. write_cleanup_sequence always includes SYNC_END and CURSOR_SHOW
+// 1. write_cleanup_sequence omits SYNC_END by default and includes CURSOR_SHOW
 // ═════════════════════════════════════════════════════════════════════════
 
 proptest! {
     #[test]
-    fn cleanup_always_has_sync_and_cursor(
+    fn cleanup_default_omits_sync_and_has_cursor(
         features in arb_features(),
         alt_screen in any::<bool>(),
     ) {
         let mut buf = Vec::new();
         write_cleanup_sequence(&features, alt_screen, &mut buf).unwrap();
-        prop_assert!(contains_seq(&buf, SYNC_END), "must include SYNC_END");
+        prop_assert!(!contains_seq(&buf, SYNC_END), "must omit SYNC_END by default");
         prop_assert!(contains_seq(&buf, CURSOR_SHOW), "must include CURSOR_SHOW");
     }
 }
@@ -94,15 +94,9 @@ proptest! {
         let mut buf = Vec::new();
         write_cleanup_sequence(&features, true, &mut buf).unwrap();
 
-        let sync_pos = find_seq(&buf, SYNC_END).expect("sync_end present");
         let cursor_pos = find_seq(&buf, CURSOR_SHOW).expect("cursor_show present");
         let alt_pos = find_seq(&buf, ALT_SCREEN_LEAVE).expect("alt_screen_leave present");
 
-        prop_assert!(
-            sync_pos < cursor_pos,
-            "sync_end ({}) must precede cursor_show ({})",
-            sync_pos, cursor_pos
-        );
         prop_assert!(
             cursor_pos < alt_pos,
             "cursor_show ({}) must precede alt_screen_leave ({})",

@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::console::{Console, ConsoleSink};
+use ftui_render::sanitize::sanitize;
 
 // ============================================================================
 // Configuration
@@ -74,6 +75,25 @@ impl Default for LiveConfig {
             refresh_per_second: 4.0,
         }
     }
+}
+
+const AUTO_REFRESH_MIN_INTERVAL: Duration = Duration::from_millis(1);
+const AUTO_REFRESH_SLEEP_SLICE: Duration = Duration::from_millis(50);
+
+#[inline]
+fn auto_refresh_interval(rate: f64) -> Option<Duration> {
+    if !rate.is_finite() || rate <= 0.0 {
+        return None;
+    }
+
+    // Guard both extremes:
+    // - Very high rates can round to zero and spin.
+    // - Very low positive rates can produce multi-hour sleeps that make
+    //   stop/join appear hung.
+    let secs = (1.0 / rate)
+        .max(AUTO_REFRESH_MIN_INTERVAL.as_secs_f64())
+        .min(Duration::MAX.as_secs_f64());
+    Some(Duration::try_from_secs_f64(secs).unwrap_or(Duration::MAX))
 }
 
 // ============================================================================
@@ -226,7 +246,9 @@ impl Live {
         // Write new content
         for (i, line) in lines.iter().enumerate() {
             let _ = erase_line(&mut *writer);
-            let _ = write!(writer, "{}", line.plain_text());
+            let plain_text = line.plain_text();
+            let safe_text = sanitize(&plain_text);
+            let _ = write!(writer, "{safe_text}");
             if i < lines.len() - 1 {
                 let _ = writeln!(writer);
             }
@@ -278,18 +300,22 @@ impl Live {
         // Stop any existing refresh thread before starting a new one.
         self.stop_refresh_thread();
 
-        let rate = self.config.refresh_per_second;
-        if !rate.is_finite() || rate <= 0.0 {
+        let Some(interval) = auto_refresh_interval(self.config.refresh_per_second) else {
             return;
-        }
+        };
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
-        let interval = Duration::from_secs_f64(1.0 / rate);
 
         let handle = std::thread::spawn(move || {
             while !stop_thread.load(Ordering::Relaxed) {
-                std::thread::sleep(interval);
+                let mut slept = Duration::ZERO;
+                while slept < interval && !stop_thread.load(Ordering::Relaxed) {
+                    let remaining = interval.saturating_sub(slept);
+                    let step = remaining.min(AUTO_REFRESH_SLEEP_SLICE);
+                    std::thread::sleep(step);
+                    slept = slept.saturating_add(step);
+                }
                 if !stop_thread.load(Ordering::Relaxed) {
                     callback();
                 }
@@ -602,6 +628,34 @@ mod tests {
         });
 
         assert!(w.output().contains("Hello"), "Should contain rendered text");
+        live.stop().unwrap();
+    }
+
+    #[test]
+    fn update_sanitizes_escape_injection_payloads() {
+        let w = TestWriter::new();
+        let live = Live::new(Box::new(w.clone()), 80);
+        live.start().unwrap();
+        w.clear();
+
+        live.update(|console| {
+            console.print(Segment::text("safe\x1b]52;c;SGVsbG8=\x1b\\tail"));
+            console.newline();
+        });
+
+        let output = w.output();
+        assert!(
+            output.contains("safetail"),
+            "sanitized output should preserve visible payload"
+        );
+        assert!(
+            !output.contains("\x1b]52"),
+            "OSC 52 payload must not be emitted from live output"
+        );
+        assert!(
+            !output.contains("SGVsbG8="),
+            "clipboard base64 payload must be stripped"
+        );
         live.stop().unwrap();
     }
 
@@ -945,6 +999,36 @@ mod tests {
         live.start_auto_refresh(|| {});
         let refresh = live.refresh_thread.lock().unwrap();
         assert!(refresh.is_none(), "infinite rate should not spawn thread");
+    }
+
+    #[test]
+    fn auto_refresh_tiny_positive_rate_stops_promptly() {
+        let w = TestWriter::new();
+        let cfg = LiveConfig {
+            refresh_per_second: f64::MIN_POSITIVE,
+            ..Default::default()
+        };
+        let live = Live::with_config(Box::new(w), 80, cfg);
+        live.start_auto_refresh(|| {});
+
+        {
+            let refresh = live.refresh_thread.lock().unwrap();
+            assert!(
+                refresh.is_some(),
+                "tiny positive rate should still spawn thread"
+            );
+        }
+
+        let started = std::time::Instant::now();
+        live.stop_refresh_thread();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "stop_refresh_thread should not block on huge sleep intervals: {elapsed:?}"
+        );
+
+        let refresh = live.refresh_thread.lock().unwrap();
+        assert!(refresh.is_none(), "refresh thread should be stopped");
     }
 
     #[test]

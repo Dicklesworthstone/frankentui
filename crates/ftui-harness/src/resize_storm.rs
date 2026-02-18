@@ -724,6 +724,12 @@ fn detect_mux() -> (bool, Option<String>) {
     if std::env::var("ZELLIJ").is_ok() {
         return (true, Some("zellij".to_string()));
     }
+    if std::env::var("WEZTERM_UNIX_SOCKET").is_ok() || std::env::var("WEZTERM_PANE").is_ok() {
+        return (true, Some("wezterm-mux".to_string()));
+    }
+    if std::env::var("WEZTERM_EXECUTABLE").is_ok() {
+        return (true, Some("wezterm-mux".to_string()));
+    }
     if let Ok(prog) = std::env::var("TERM_PROGRAM")
         && prog.to_lowercase().contains("tmux")
     {

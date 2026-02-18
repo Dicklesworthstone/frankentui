@@ -220,6 +220,11 @@ impl<W: Write> InlineRenderer<W> {
         }
     }
 
+    #[inline]
+    fn sync_output_enabled(&self) -> bool {
+        self.config.use_sync_output && TerminalCapabilities::with_overrides().use_sync_output()
+    }
+
     /// Initialize inline mode on the terminal.
     ///
     /// For scroll-region strategy, this sets up DECSTBM.
@@ -313,8 +318,10 @@ impl<W: Write> InlineRenderer<W> {
             ));
         }
 
-        // Begin sync output to prevent flicker
-        if self.config.use_sync_output && !self.in_sync_block {
+        let sync_output_enabled = self.sync_output_enabled();
+
+        // Begin sync output to prevent flicker.
+        if sync_output_enabled && !self.in_sync_block {
             // Mark active before write so cleanup conservatively emits SYNC_END
             // even if begin write fails after partial bytes.
             self.in_sync_block = true;
@@ -356,14 +363,14 @@ impl<W: Write> InlineRenderer<W> {
             self.cursor_saved = false;
         }
 
-        let sync_end_result = if self.config.use_sync_output && self.in_sync_block {
+        let sync_end_result = if sync_output_enabled && self.in_sync_block {
             let res = self.writer.write_all(SYNC_END);
             if res.is_ok() {
                 self.in_sync_block = false;
             }
             Some(res)
         } else {
-            if !self.config.use_sync_output {
+            if !sync_output_enabled {
                 // Defensive stale-state cleanup: clear internal state without
                 // emitting DEC 2026 when policy disables synchronized output.
                 self.in_sync_block = false;
@@ -373,12 +380,16 @@ impl<W: Write> InlineRenderer<W> {
 
         let flush_result = self.writer.flush();
 
-        operation_result?;
-        restore_result?;
-        if let Some(res) = sync_end_result {
-            res?;
+        // If cleanup fails, surface that first so callers can treat terminal
+        // state restoration issues as higher-severity than render errors.
+        let cleanup_error = restore_result
+            .err()
+            .or_else(|| sync_end_result.and_then(Result::err))
+            .or_else(|| flush_result.err());
+        if let Some(err) = cleanup_error {
+            return Err(err);
         }
-        flush_result
+        operation_result
     }
 
     fn sanitize_scroll_region_log_text(text: &str) -> String {
@@ -568,9 +579,11 @@ impl<W: Write> InlineRenderer<W> {
 
     /// Internal cleanup - guaranteed to run on drop.
     fn cleanup_internal(&mut self) -> io::Result<()> {
+        let sync_output_enabled = self.sync_output_enabled();
+
         // End any pending sync block
         if self.in_sync_block {
-            if self.config.use_sync_output {
+            if sync_output_enabled {
                 let _ = self.writer.write_all(SYNC_END);
             }
             self.in_sync_block = false;
@@ -623,6 +636,10 @@ mod tests {
 
     fn writer_clear(writer: &mut TestWriter) {
         writer.get_mut().clear();
+    }
+
+    fn sync_policy_allows() -> bool {
+        TerminalCapabilities::with_overrides().use_sync_output()
     }
 
     #[test]
@@ -718,9 +735,13 @@ mod tests {
 
         renderer.present_ui(|_, _| Ok(())).unwrap();
 
-        // Should have sync begin and end
-        assert!(writer_contains_sequence(&renderer.writer, SYNC_BEGIN));
-        assert!(writer_contains_sequence(&renderer.writer, SYNC_END));
+        if sync_policy_allows() {
+            assert!(writer_contains_sequence(&renderer.writer, SYNC_BEGIN));
+            assert!(writer_contains_sequence(&renderer.writer, SYNC_END));
+        } else {
+            assert!(!writer_contains_sequence(&renderer.writer, SYNC_BEGIN));
+            assert!(!writer_contains_sequence(&renderer.writer, SYNC_END));
+        }
     }
 
     #[test]
@@ -948,7 +969,11 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::Other);
 
         assert!(writer_contains_sequence(&renderer.writer, CURSOR_RESTORE));
-        assert!(writer_contains_sequence(&renderer.writer, SYNC_END));
+        if sync_policy_allows() {
+            assert!(writer_contains_sequence(&renderer.writer, SYNC_END));
+        } else {
+            assert!(!writer_contains_sequence(&renderer.writer, SYNC_END));
+        }
         assert!(!renderer.cursor_saved);
         assert!(!renderer.in_sync_block);
     }

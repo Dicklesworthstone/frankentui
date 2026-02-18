@@ -142,10 +142,31 @@ mod tests {
     }
 
     #[test]
+    fn runner_core_advance_time_ignores_invalid_inputs() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        core.advance_time_ms(f64::NAN);
+        core.advance_time_ms(f64::INFINITY);
+        core.advance_time_ms(-1.0);
+        let _ = core.step();
+    }
+
+    #[test]
     fn runner_core_set_time() {
         let mut core = RunnerCore::new(80, 24);
         core.init();
         core.set_time_ns(16_000_000.0);
+        let _ = core.step();
+    }
+
+    #[test]
+    fn runner_core_set_time_handles_invalid_inputs() {
+        let mut core = RunnerCore::new(80, 24);
+        core.init();
+        core.set_time_ns(f64::NAN);
+        core.set_time_ns(f64::NEG_INFINITY);
+        core.set_time_ns(-123.0);
+        core.set_time_ns(f64::INFINITY);
         let _ = core.step();
     }
 

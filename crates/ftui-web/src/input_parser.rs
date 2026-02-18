@@ -50,21 +50,23 @@ struct RawInput {
     #[serde(default)]
     phase: Option<String>,
     #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
     code: Option<String>,
     #[serde(default)]
-    mods: Option<u8>,
+    mods: Option<i32>,
     #[serde(default)]
     repeat: Option<bool>,
     #[serde(default)]
-    button: Option<u8>,
+    button: Option<i32>,
     #[serde(default)]
-    x: Option<u16>,
+    x: Option<i32>,
     #[serde(default)]
-    y: Option<u16>,
+    y: Option<i32>,
     #[serde(default)]
-    dx: Option<i16>,
+    dx: Option<i32>,
     #[serde(default)]
-    dy: Option<i16>,
+    dy: Option<i32>,
     #[serde(default)]
     data: Option<String>,
     #[serde(default)]
@@ -100,48 +102,73 @@ pub fn parse_encoded_input_to_event(json: &str) -> Result<Option<Event>, InputPa
     }
 }
 
-fn parse_modifiers(mods: Option<u8>) -> Modifiers {
-    Modifiers::from_bits_truncate(mods.unwrap_or(0))
+fn parse_modifiers(mods: Option<i32>) -> Modifiers {
+    let bits = mods.unwrap_or(0).clamp(0, i32::from(u8::MAX)) as u8;
+    Modifiers::from_bits_truncate(bits)
 }
 
-fn parse_key_code(code: &str) -> KeyCode {
+fn parse_key_code_opt(code: &str) -> Option<KeyCode> {
     match code {
-        "Enter" => KeyCode::Enter,
-        "Escape" | "Esc" => KeyCode::Escape,
-        "Backspace" => KeyCode::Backspace,
-        "Tab" => KeyCode::Tab,
-        "BackTab" => KeyCode::BackTab,
-        "Delete" => KeyCode::Delete,
-        "Insert" => KeyCode::Insert,
-        "Home" => KeyCode::Home,
-        "End" => KeyCode::End,
-        "PageUp" => KeyCode::PageUp,
-        "PageDown" => KeyCode::PageDown,
-        "Up" => KeyCode::Up,
-        "Down" => KeyCode::Down,
-        "Left" => KeyCode::Left,
-        "Right" => KeyCode::Right,
+        "Enter" => Some(KeyCode::Enter),
+        "NumpadEnter" => Some(KeyCode::Enter),
+        "Escape" | "Esc" => Some(KeyCode::Escape),
+        "Backspace" => Some(KeyCode::Backspace),
+        "Tab" => Some(KeyCode::Tab),
+        "BackTab" => Some(KeyCode::BackTab),
+        "Delete" => Some(KeyCode::Delete),
+        "Insert" => Some(KeyCode::Insert),
+        "Home" => Some(KeyCode::Home),
+        "End" => Some(KeyCode::End),
+        "PageUp" => Some(KeyCode::PageUp),
+        "PageDown" => Some(KeyCode::PageDown),
+        "Up" | "ArrowUp" => Some(KeyCode::Up),
+        "Down" | "ArrowDown" => Some(KeyCode::Down),
+        "Left" | "ArrowLeft" => Some(KeyCode::Left),
+        "Right" | "ArrowRight" => Some(KeyCode::Right),
+        "Space" | "Spacebar" => Some(KeyCode::Char(' ')),
         other => {
+            // DOM KeyboardEvent.code fallback: KeyA..KeyZ
+            if let Some(tail) = other.strip_prefix("Key") {
+                let mut chars = tail.chars();
+                if let Some(c) = chars.next()
+                    && chars.next().is_none()
+                {
+                    return Some(KeyCode::Char(c.to_ascii_lowercase()));
+                }
+            }
+            // DOM KeyboardEvent.code fallback: Digit0..Digit9
+            if let Some(tail) = other.strip_prefix("Digit") {
+                let mut chars = tail.chars();
+                if let Some(c) = chars.next()
+                    && chars.next().is_none()
+                    && c.is_ascii_digit()
+                {
+                    return Some(KeyCode::Char(c));
+                }
+            }
             // Check for function keys: F1..F24
             if let Some(n) = other
                 .strip_prefix('F')
                 .and_then(|s| s.parse::<u8>().ok())
                 .filter(|&n| (1..=24).contains(&n))
             {
-                return KeyCode::F(n);
+                return Some(KeyCode::F(n));
             }
             // Single character
             let mut chars = other.chars();
             if let Some(c) = chars.next()
                 && chars.next().is_none()
             {
-                return KeyCode::Char(c);
+                return Some(KeyCode::Char(c));
             }
-            // Multi-char unknown key — map to Escape as a safe fallback.
-            // This shouldn't happen with well-formed inputs.
-            KeyCode::Escape
+            // Unknown multi-char key label.
+            None
         }
     }
+}
+
+fn parse_key_code(code: &str) -> KeyCode {
+    parse_key_code_opt(code).unwrap_or(KeyCode::Null)
 }
 
 fn parse_key_event(raw: &RawInput) -> Result<Event, InputParseError> {
@@ -152,10 +179,21 @@ fn parse_key_event(raw: &RawInput) -> Result<Event, InputParseError> {
         other => return Err(InputParseError::UnknownPhase(other.to_string())),
     };
 
+    let key_str = raw
+        .key
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(raw.raw_key.as_deref().filter(|s| !s.is_empty()));
+
     let code_str = raw
         .code
         .as_deref()
-        .ok_or(InputParseError::MissingField("code"))?;
+        .filter(|s| !s.is_empty())
+        .or(raw.raw_code.as_deref().filter(|s| !s.is_empty()));
+
+    if key_str.is_none() && code_str.is_none() {
+        return Err(InputParseError::MissingField("code"));
+    }
 
     // Handle repeat as Press (ftui-core doesn't have a Repeat kind)
     let kind = if raw.repeat.unwrap_or(false) && kind == KeyEventKind::Press {
@@ -164,14 +202,23 @@ fn parse_key_event(raw: &RawInput) -> Result<Event, InputParseError> {
         kind
     };
 
+    // Prefer logical `key` when it maps cleanly (captures shifted punctuation
+    // and mobile keyboard text). Fall back to physical `code` labels.
+    let parsed_code = key_str
+        .and_then(parse_key_code_opt)
+        .or_else(|| code_str.and_then(parse_key_code_opt))
+        .or_else(|| key_str.map(parse_key_code))
+        .or_else(|| code_str.map(parse_key_code))
+        .unwrap_or(KeyCode::Null);
+
     Ok(Event::Key(KeyEvent {
-        code: parse_key_code(code_str),
+        code: parsed_code,
         modifiers: parse_modifiers(raw.mods),
         kind,
     }))
 }
 
-fn parse_mouse_button(button: Option<u8>) -> MouseButton {
+fn parse_mouse_button(button: Option<i32>) -> MouseButton {
     match button {
         Some(0) | None => MouseButton::Left,
         Some(1) => MouseButton::Middle,
@@ -180,10 +227,20 @@ fn parse_mouse_button(button: Option<u8>) -> MouseButton {
     }
 }
 
+#[inline]
+fn clamp_coord_u16(coord: Option<i32>) -> u16 {
+    let value = coord.unwrap_or(0);
+    if value <= 0 {
+        0
+    } else {
+        value.min(i32::from(u16::MAX)) as u16
+    }
+}
+
 fn parse_mouse_event(raw: &RawInput) -> Result<Event, InputParseError> {
     let phase = raw.phase.as_deref().unwrap_or("down");
-    let x = raw.x.unwrap_or(0);
-    let y = raw.y.unwrap_or(0);
+    let x = clamp_coord_u16(raw.x);
+    let y = clamp_coord_u16(raw.y);
     let modifiers = parse_modifiers(raw.mods);
     let button = parse_mouse_button(raw.button);
 
@@ -204,8 +261,8 @@ fn parse_mouse_event(raw: &RawInput) -> Result<Event, InputParseError> {
 }
 
 fn parse_wheel_event(raw: &RawInput) -> Result<Option<Event>, InputParseError> {
-    let x = raw.x.unwrap_or(0);
-    let y = raw.y.unwrap_or(0);
+    let x = clamp_coord_u16(raw.x);
+    let y = clamp_coord_u16(raw.y);
     let dx = raw.dx.unwrap_or(0);
     let dy = raw.dy.unwrap_or(0);
     let modifiers = parse_modifiers(raw.mods);
@@ -372,6 +429,125 @@ mod tests {
     }
 
     #[test]
+    fn key_dom_code_fallback_key_a_maps_to_char() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"key","phase":"down","code":"KeyA","mods":0,"repeat":false}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
+    fn key_dom_code_fallback_digit_maps_to_char() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"key","phase":"down","code":"Digit7","mods":0,"repeat":false}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('7'),
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
+    fn key_dom_arrow_label_maps_to_arrow() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"key","phase":"down","code":"ArrowLeft","mods":0,"repeat":false}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Left,
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
+    fn key_unknown_multichar_maps_to_null_not_escape() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"key","phase":"down","code":"Unidentified","mods":0,"repeat":false}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Null,
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
+    fn key_uses_raw_key_fallback_when_code_missing() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"key","phase":"down","raw_key":"Enter","mods":0,"repeat":false}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
+    fn key_field_preferred_for_shifted_symbol() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"key","phase":"down","key":"!","code":"Digit1","mods":1,"repeat":false}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('!'),
+                modifiers: Modifiers::SHIFT,
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
+    fn key_field_fallback_handles_punctuation_code_labels() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"key","phase":"down","key":"/","code":"Slash","mods":0,"repeat":false}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('/'),
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
     fn mouse_down() {
         let ev = parse_encoded_input_to_event(
             r#"{"kind":"mouse","phase":"down","button":0,"x":10,"y":5,"mods":0}"#,
@@ -426,6 +602,76 @@ mod tests {
     }
 
     #[test]
+    fn mouse_negative_button_defaults_left_instead_of_parse_error() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"mouse","phase":"up","button":-1,"x":5,"y":3,"mods":0}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                x: 5,
+                y: 3,
+                modifiers: Modifiers::NONE,
+            })
+        );
+    }
+
+    #[test]
+    fn modifiers_negative_values_are_clamped_to_zero() {
+        let ev =
+            parse_encoded_input_to_event(r#"{"kind":"key","phase":"down","code":"a","mods":-9}"#)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            ev,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers: Modifiers::NONE,
+                kind: KeyEventKind::Press,
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_negative_coords_are_clamped() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"mouse","phase":"move","x":-9,"y":-3,"mods":0}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                x: 0,
+                y: 0,
+                modifiers: Modifiers::empty(),
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_large_coords_are_clamped() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"mouse","phase":"down","button":0,"x":1000000,"y":999999,"mods":0}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                x: u16::MAX,
+                y: u16::MAX,
+                modifiers: Modifiers::empty(),
+            })
+        );
+    }
+
+    #[test]
     fn wheel_scroll_up() {
         let ev = parse_encoded_input_to_event(
             r#"{"kind":"wheel","x":10,"y":5,"dx":0,"dy":-3,"mods":0}"#,
@@ -472,6 +718,24 @@ mod tests {
                 kind: MouseEventKind::ScrollRight,
                 x: 0,
                 y: 0,
+                modifiers: Modifiers::empty(),
+            })
+        );
+    }
+
+    #[test]
+    fn wheel_coords_are_clamped() {
+        let ev = parse_encoded_input_to_event(
+            r#"{"kind":"wheel","x":-1,"y":70000,"dx":0,"dy":1,"mods":0}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            ev,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                x: 0,
+                y: u16::MAX,
                 modifiers: Modifiers::empty(),
             })
         );

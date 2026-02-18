@@ -116,7 +116,7 @@ impl Clipboard {
     /// For auto-detection across terminals, use [`detect`](Self::detect).
     #[must_use]
     pub const fn new(caps: TerminalCapabilities) -> Self {
-        let backend = if caps.osc52_clipboard {
+        let backend = if caps.use_clipboard() {
             ClipboardBackend::Osc52
         } else {
             ClipboardBackend::Unavailable
@@ -139,7 +139,7 @@ impl Clipboard {
     #[must_use]
     pub fn detect(caps: TerminalCapabilities) -> Self {
         let external = detect_external_backend();
-        let (backend, fallback) = if caps.osc52_clipboard {
+        let (backend, fallback) = if caps.use_clipboard() {
             (ClipboardBackend::Osc52, external)
         } else if let Some(ext) = external {
             (ClipboardBackend::External(ext), None)
@@ -185,7 +185,7 @@ impl Clipboard {
         let external = detect_external_backend();
 
         // Direct OSC 52 (no mux, terminal supports it)
-        if caps.osc52_clipboard {
+        if caps.use_clipboard() {
             let (backend, fallback) =
                 apply_backend_override(caps, ClipboardBackend::Osc52, external);
             log_detected(backend);
@@ -273,7 +273,7 @@ impl Clipboard {
     /// Return true if OSC 52 is supported.
     #[must_use]
     pub const fn supports_osc52(&self) -> bool {
-        self.caps.osc52_clipboard
+        self.caps.use_clipboard() || !matches!(self.passthrough, PassthroughMode::None)
     }
 
     /// Return the maximum allowed OSC 52 base64 payload size.
@@ -308,7 +308,7 @@ impl Clipboard {
     /// Return true when OSC 52 is usable (directly or via passthrough).
     #[must_use]
     const fn is_osc52_usable(&self) -> bool {
-        self.caps.osc52_clipboard || !matches!(self.passthrough, PassthroughMode::None)
+        self.caps.use_clipboard() || !matches!(self.passthrough, PassthroughMode::None)
     }
 
     /// Write an OSC 52 query sequence to request clipboard content.
@@ -514,7 +514,10 @@ fn apply_backend_override(
     let override_val = override_val.to_ascii_lowercase();
     match override_val.as_str() {
         "osc52" => {
-            if caps.osc52_clipboard {
+            // Keep direct OSC52 gated by mux-aware policy. However, if the
+            // caller already selected Osc52 (for example `auto()` passthrough
+            // mode in tmux/screen), allow the override to preserve that choice.
+            if caps.use_clipboard() || matches!(backend, ClipboardBackend::Osc52) {
                 (ClipboardBackend::Osc52, fallback)
             } else {
                 (ClipboardBackend::Unavailable, None)
@@ -1587,15 +1590,16 @@ mod tests {
     // --- Passthrough + auto interactions ---
 
     #[test]
-    fn auto_tmux_with_osc52_prefers_direct() {
-        // If terminal supports OSC 52 natively AND is in tmux, prefer direct
+    fn auto_tmux_with_osc52_uses_passthrough_policy() {
+        // Even if raw OSC52 capability is set, tmux policy should avoid direct
+        // OSC52 and use explicit passthrough wrapping.
         let mut caps = TerminalCapabilities::basic();
         caps.osc52_clipboard = true;
         caps.in_tmux = true;
         let clipboard = Clipboard::auto(caps);
-        // Should use direct OSC 52 (no passthrough needed)
+        // Must use passthrough in tmux.
         assert_eq!(clipboard.backend(), ClipboardBackend::Osc52);
-        assert_eq!(clipboard.passthrough, PassthroughMode::None);
+        assert_eq!(clipboard.passthrough, PassthroughMode::Tmux);
     }
 
     #[test]

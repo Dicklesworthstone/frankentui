@@ -493,13 +493,18 @@ impl<W: Write> Presenter<W> {
 
         let flush_result = self.writer.flush();
 
-        emit_result?;
-        reset_result?;
-        if let Some(res) = hyperlink_close_result {
-            res?;
+        // Prioritize terminal-state restoration errors over emission errors:
+        // if cleanup fails (reset/link-close/sync-end/flush), callers need that
+        // failure surfaced immediately to avoid leaving the terminal wedged.
+        let cleanup_error = reset_result
+            .err()
+            .or_else(|| hyperlink_close_result.and_then(Result::err))
+            .or_else(|| bracket_end_result.err())
+            .or_else(|| flush_result.err());
+        if let Some(err) = cleanup_error {
+            return Err(err);
         }
-        bracket_end_result?;
-        flush_result?;
+        emit_result?;
 
         let stats = collector.finish(self.writer.bytes_written());
 

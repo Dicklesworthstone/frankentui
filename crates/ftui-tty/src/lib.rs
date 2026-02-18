@@ -9,7 +9,7 @@
 //! | Feature           | Enable                    | Disable                   |
 //! |-------------------|---------------------------|---------------------------|
 //! | Alternate screen  | `CSI ? 1049 h`            | `CSI ? 1049 l`            |
-//! | Mouse (SGR)       | `CSI ? 1000;1002;1003;1006 h` (+ split compatibility) | `CSI ? 1000;1002;1006 l` (+ split compatibility) |
+//! | Mouse (SGR)       | `CSI ? 1000;1002;1006 h` (+ split compatibility) | `CSI ? 1000;1002;1006 l` (+ split compatibility) |
 //! | Bracketed paste   | `CSI ? 2004 h`            | `CSI ? 2004 l`            |
 //! | Focus events      | `CSI ? 1004 h`            | `CSI ? 1004 l`            |
 //! | Kitty keyboard    | `CSI > 15 u`              | `CSI < u`                 |
@@ -20,9 +20,10 @@ use core::time::Duration;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::sync::{Mutex, OnceLock, mpsc};
+use std::time::Instant;
 
 use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures, BackendPresenter};
-use ftui_core::event::Event;
+use ftui_core::event::{Event, MouseEventKind};
 use ftui_core::input_parser::InputParser;
 use ftui_core::terminal_capabilities::TerminalCapabilities;
 use ftui_render::buffer::Buffer;
@@ -30,7 +31,7 @@ use ftui_render::diff::BufferDiff;
 use ftui_render::presenter::Presenter;
 
 #[cfg(unix)]
-use signal_hook::consts::signal::SIGWINCH;
+use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGWINCH};
 #[cfg(unix)]
 use signal_hook::iterator::Signals;
 
@@ -43,8 +44,12 @@ const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
 // 1) Reset legacy/alternate encodings that can linger across sessions.
 // 2) Enable canonical SGR mouse (1000 + 1002 + 1006) using both combined and
 //    split forms for emulator/mux compatibility.
-const MOUSE_ENABLE: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1000;1002;1003;1006h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+// 3) Clear 1016 before enabling SGR to avoid terminals that interpret 1016l
+//    after 1006h as a fallback to X10 mode.
+const MOUSE_ENABLE: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1000;1002;1006h\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_ENABLE_MUX_SAFE: &[u8] = b"\x1b[?1016l\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const MOUSE_DISABLE: &[u8] = b"\x1b[?1000;1002;1006l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l";
+const MOUSE_DISABLE_MUX_SAFE: &[u8] = b"\x1b[?1016l\x1b[?1000l\x1b[?1002l\x1b[?1006l";
 
 const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
 const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
@@ -60,6 +65,30 @@ const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
 const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
 
 const SYNC_END: &[u8] = b"\x1b[?2026l";
+const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
+const SGR_RESET: &[u8] = b"\x1b[0m";
+
+#[inline]
+const fn mouse_disable_sequence_for_capabilities(
+    capabilities: TerminalCapabilities,
+) -> &'static [u8] {
+    if capabilities.in_any_mux() {
+        MOUSE_DISABLE_MUX_SAFE
+    } else {
+        MOUSE_DISABLE
+    }
+}
+
+#[inline]
+const fn mouse_enable_sequence_for_capabilities(
+    capabilities: TerminalCapabilities,
+) -> &'static [u8] {
+    if capabilities.in_any_mux() {
+        MOUSE_ENABLE_MUX_SAFE
+    } else {
+        MOUSE_ENABLE
+    }
+}
 
 #[inline]
 const fn sanitize_feature_request(
@@ -69,9 +98,8 @@ const fn sanitize_feature_request(
     // Conservative policy for terminal mode toggles:
     // - Never request unsupported modes.
     // - Keep kitty keyboard off in all mux environments.
-    // - Keep focus events off where passthrough is known-unreliable.
-    let focus_events_supported =
-        capabilities.focus_events && !capabilities.in_screen && !capabilities.in_wezterm_mux;
+    // - Keep focus events off in all mux contexts; passthrough behavior varies.
+    let focus_events_supported = capabilities.focus_events && !capabilities.in_any_mux();
     let kitty_keyboard_supported = capabilities.kitty_keyboard && !capabilities.in_any_mux();
 
     BackendFeatures {
@@ -96,6 +124,13 @@ const CLEAR_SCREEN: &[u8] = b"\x1b[2J";
 const CURSOR_HOME: &[u8] = b"\x1b[H";
 const READ_BUFFER_BYTES: usize = 8192;
 const MAX_DRAIN_BYTES_PER_POLL: usize = READ_BUFFER_BYTES;
+const INFERRED_PIXEL_WIDTH_PER_CELL: u16 = 8;
+const INFERRED_PIXEL_HEIGHT_PER_CELL: u16 = 16;
+/// Grace period before resolving a pending ambiguous escape/UTF-8 sequence.
+///
+/// This prevents split escape sequences (`ESC` then `[` in a later read) from
+/// being prematurely emitted as a literal Escape key event.
+const PARSER_TIMEOUT_GRACE: Duration = Duration::from_millis(50);
 
 #[cfg(unix)]
 fn raw_mode_snapshot_slot() -> &'static Mutex<Option<nix::sys::termios::Termios>> {
@@ -135,21 +170,40 @@ fn restore_raw_mode_snapshot() {
     let _ = nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSAFLUSH, &original);
 }
 
-fn all_cleanup_features_on() -> BackendFeatures {
+#[inline]
+const fn cleanup_features_for_capabilities(capabilities: TerminalCapabilities) -> BackendFeatures {
     BackendFeatures {
-        mouse_capture: true,
-        bracketed_paste: true,
-        focus_events: true,
-        kitty_keyboard: true,
+        mouse_capture: capabilities.mouse_sgr,
+        bracketed_paste: capabilities.bracketed_paste,
+        focus_events: capabilities.focus_events && !capabilities.in_any_mux(),
+        kitty_keyboard: capabilities.kitty_keyboard && !capabilities.in_any_mux(),
     }
+}
+
+#[cfg(unix)]
+fn write_terminal_state_resets(writer: &mut impl Write) -> io::Result<()> {
+    writer.write_all(RESET_SCROLL_REGION)?;
+    writer.write_all(SGR_RESET)?;
+    Ok(())
 }
 
 #[cfg(unix)]
 fn best_effort_termination_cleanup() {
     let mut stdout = io::stdout();
-    // Panic-abort cleanup can run without a known matching DEC 2026 begin; avoid
-    // standalone sync-end emission on this path.
-    let _ = write_cleanup_sequence_policy(&all_cleanup_features_on(), true, false, &mut stdout);
+    let caps = TerminalCapabilities::with_overrides();
+    let _ = write_terminal_state_resets(&mut stdout);
+    // This path cannot prove ownership of an active sync block; avoid emitting
+    // standalone DEC ?2026l during panic/signal cleanup.
+    let emit_sync_end = false;
+    let features = cleanup_features_for_capabilities(caps);
+    let mouse_disable = mouse_disable_sequence_for_capabilities(caps);
+    let _ = write_cleanup_sequence_policy_with_mouse(
+        &features,
+        true,
+        emit_sync_end,
+        mouse_disable,
+        &mut stdout,
+    );
     let _ = stdout.flush();
     restore_raw_mode_snapshot();
 }
@@ -166,6 +220,25 @@ fn install_abort_panic_hook() {
             best_effort_termination_cleanup();
             previous(info);
         }));
+    });
+}
+
+#[cfg(unix)]
+fn install_termination_signal_hook() {
+    static HOOK: OnceLock<()> = OnceLock::new();
+    HOOK.get_or_init(|| {
+        let mut signals = match Signals::new([SIGINT, SIGTERM, SIGHUP, SIGQUIT]) {
+            Ok(signals) => signals,
+            Err(_) => return,
+        };
+        let _ = std::thread::Builder::new()
+            .name("ftui-tty-term-signal".to_string())
+            .spawn(move || {
+                if let Some(signal) = signals.forever().next() {
+                    best_effort_termination_cleanup();
+                    std::process::exit(128 + signal);
+                }
+            });
     });
 }
 
@@ -317,6 +390,23 @@ pub struct TtyEventSource {
     capabilities: TerminalCapabilities,
     width: u16,
     height: u16,
+    /// Terminal pixel width reported by `TIOCGWINSZ` (0 if unavailable).
+    pixel_width: u16,
+    /// Terminal pixel height reported by `TIOCGWINSZ` (0 if unavailable).
+    pixel_height: u16,
+    /// Sticky detector for SGR-pixel mouse leakage (1016-style coordinates).
+    ///
+    /// Once we observe pixel-like coordinates, normalize subsequent mouse
+    /// reports in this capture session so low-column clicks also map correctly.
+    mouse_coords_pixels: bool,
+    /// Inferred pixel width when `TIOCGWINSZ.ws_xpixel` is unavailable.
+    ///
+    /// Some terminals emit pixel-space SGR coordinates but report zero
+    /// pixel geometry via winsize. Track observed maxima so we can project
+    /// coordinates back into cells instead of clamping everything to edges.
+    inferred_pixel_width: u16,
+    /// Inferred pixel height when `TIOCGWINSZ.ws_ypixel` is unavailable.
+    inferred_pixel_height: u16,
     /// When true, escape sequences are actually written to stdout.
     /// False in test/headless mode.
     live: bool,
@@ -334,6 +424,8 @@ pub struct TtyEventSource {
     tty_reader: Option<std::fs::File>,
     /// True when tty_reader is configured as nonblocking and may be drained in a loop.
     reader_nonblocking: bool,
+    /// Monotonic timestamp of the most recent byte read from the tty.
+    last_input_byte_at: Option<Instant>,
 }
 
 impl TtyEventSource {
@@ -345,6 +437,11 @@ impl TtyEventSource {
             capabilities: TerminalCapabilities::basic(),
             width,
             height,
+            pixel_width: 0,
+            pixel_height: 0,
+            mouse_coords_pixels: false,
+            inferred_pixel_width: 0,
+            inferred_pixel_height: 0,
             live: false,
             #[cfg(unix)]
             resize_rx: None,
@@ -354,6 +451,7 @@ impl TtyEventSource {
             event_queue: VecDeque::new(),
             tty_reader: None,
             reader_nonblocking: false,
+            last_input_byte_at: None,
         }
     }
 
@@ -364,13 +462,16 @@ impl TtyEventSource {
         let reader_nonblocking = Self::try_enable_nonblocking(&tty_reader);
         let mut w = width;
         let mut h = height;
+        let mut pw = 0;
+        let mut ph = 0;
         #[cfg(unix)]
-        if let Ok(ws) = rustix::termios::tcgetwinsize(&tty_reader)
-            && ws.ws_col > 0
-            && ws.ws_row > 0
-        {
-            w = ws.ws_col;
-            h = ws.ws_row;
+        if let Ok(ws) = rustix::termios::tcgetwinsize(&tty_reader) {
+            if ws.ws_col > 0 && ws.ws_row > 0 {
+                w = ws.ws_col;
+                h = ws.ws_row;
+            }
+            pw = ws.ws_xpixel;
+            ph = ws.ws_ypixel;
         }
 
         #[cfg(unix)]
@@ -387,6 +488,11 @@ impl TtyEventSource {
             capabilities,
             width: w,
             height: h,
+            pixel_width: pw,
+            pixel_height: ph,
+            mouse_coords_pixels: false,
+            inferred_pixel_width: 0,
+            inferred_pixel_height: 0,
             live: true,
             #[cfg(unix)]
             resize_rx,
@@ -396,6 +502,7 @@ impl TtyEventSource {
             event_queue: VecDeque::new(),
             tty_reader: Some(tty_reader),
             reader_nonblocking,
+            last_input_byte_at: None,
         })
     }
 
@@ -411,6 +518,11 @@ impl TtyEventSource {
             capabilities: TerminalCapabilities::basic(),
             width,
             height,
+            pixel_width: 0,
+            pixel_height: 0,
+            mouse_coords_pixels: false,
+            inferred_pixel_width: 0,
+            inferred_pixel_height: 0,
             live: false,
             #[cfg(unix)]
             resize_rx: None,
@@ -420,6 +532,7 @@ impl TtyEventSource {
             event_queue: VecDeque::new(),
             tty_reader: Some(reader),
             reader_nonblocking,
+            last_input_byte_at: None,
         }
     }
 
@@ -458,12 +571,23 @@ impl TtyEventSource {
     /// Apply feature state to internal parser/runtime flags without emitting
     /// terminal escape sequences.
     ///
-    /// We keep X10 parsing enabled whenever mouse capture is enabled so we can
-    /// still decode mouse input if a terminal falls back to X10 despite SGR
-    /// mouse enable requests (observed in some emulator/config combinations).
+    /// Keep both legacy mouse fallbacks enabled whenever mouse capture is on.
+    ///
+    /// Some terminals/mux stacks (notably Ghostty edge cases) can fall back to
+    /// raw X10 `CSI M cb cx cy` packets despite SGR mode negotiation. We keep
+    /// numeric legacy and X10 parsing active while capture is enabled so these
+    /// sessions remain interactive.
     fn apply_feature_state(&mut self, features: BackendFeatures) {
         self.features = features;
+        if !features.mouse_capture {
+            self.mouse_coords_pixels = false;
+            self.inferred_pixel_width = 0;
+            self.inferred_pixel_height = 0;
+        }
         self.parser.set_expect_x10_mouse(features.mouse_capture);
+        // Always allow numeric legacy mouse fallback when capture is enabled.
+        // Some terminals/muxes may ignore SGR mode requests in edge cases.
+        self.parser.set_allow_legacy_mouse(features.mouse_capture);
     }
 
     fn push_resize(&mut self, new_width: u16, new_height: u16) {
@@ -481,13 +605,106 @@ impl TtyEventSource {
         });
     }
 
+    /// Normalize mouse coordinates when terminals report SGR-pixel coordinates
+    /// despite requesting cell mode.
+    ///
+    /// Some emulators can leak pixel-space coordinates (`1016h`) in mixed
+    /// environments. If we detect obviously pixel-scale values and have tty
+    /// pixel dimensions, project them back into the cell grid.
+    fn normalize_event(&mut self, event: Event) -> Event {
+        let Event::Mouse(mut mouse) = event else {
+            return event;
+        };
+
+        let outside_grid = mouse.x >= self.width || mouse.y >= self.height;
+        let strongly_outside =
+            mouse.x >= self.width.saturating_mul(2) || mouse.y >= self.height.saturating_mul(2);
+        let kind_implies_in_viewport = matches!(
+            mouse.kind,
+            MouseEventKind::Down(_)
+                | MouseEventKind::Up(_)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight
+        );
+        if !self.mouse_coords_pixels
+            && (strongly_outside || (outside_grid && kind_implies_in_viewport))
+        {
+            self.mouse_coords_pixels = true;
+        }
+        let likely_pixel_space = self.mouse_coords_pixels || strongly_outside;
+        if !self.features.mouse_capture || !self.capabilities.mouse_sgr || !likely_pixel_space {
+            return Event::Mouse(mouse);
+        }
+
+        if self.width == 0 || self.height == 0 {
+            return Event::Mouse(mouse);
+        }
+        if self.pixel_width > 0 && self.pixel_height > 0 {
+            mouse.x = Self::scale_mouse_coord(mouse.x, self.width, self.pixel_width);
+            mouse.y = Self::scale_mouse_coord(mouse.y, self.height, self.pixel_height);
+        } else {
+            // Fallback when winsize pixel dimensions are unavailable:
+            // seed with conservative per-cell estimates so the first event does
+            // not collapse toward viewport edges, then expand from observations.
+            if self.inferred_pixel_width == 0 {
+                self.inferred_pixel_width = self
+                    .width
+                    .saturating_mul(INFERRED_PIXEL_WIDTH_PER_CELL)
+                    .max(self.width);
+            }
+            if self.inferred_pixel_height == 0 {
+                self.inferred_pixel_height = self
+                    .height
+                    .saturating_mul(INFERRED_PIXEL_HEIGHT_PER_CELL)
+                    .max(self.height);
+            }
+            self.inferred_pixel_width = self
+                .inferred_pixel_width
+                .max(mouse.x.saturating_add(1))
+                .max(self.width);
+            self.inferred_pixel_height = self
+                .inferred_pixel_height
+                .max(mouse.y.saturating_add(1))
+                .max(self.height);
+
+            mouse.x =
+                Self::scale_mouse_coord(mouse.x, self.width, self.inferred_pixel_width.max(1));
+            mouse.y =
+                Self::scale_mouse_coord(mouse.y, self.height, self.inferred_pixel_height.max(1));
+        }
+        Event::Mouse(mouse)
+    }
+
+    #[inline]
+    fn scale_mouse_coord(coord: u16, cells: u16, pixels: u16) -> u16 {
+        if cells <= 1 {
+            return 0;
+        }
+        if pixels <= 1 {
+            return coord.min(cells.saturating_sub(1));
+        }
+
+        let num = u32::from(coord).saturating_mul(u32::from(cells.saturating_sub(1)));
+        let den = u32::from(pixels.saturating_sub(1));
+        let scaled = num / den.max(1);
+        let scaled_u16 = u16::try_from(scaled).unwrap_or(u16::MAX);
+        scaled_u16.min(cells.saturating_sub(1))
+    }
+
     #[cfg(unix)]
-    fn query_tty_size(&self) -> Option<(u16, u16)> {
+    fn query_tty_winsize(&self) -> Option<rustix::termios::Winsize> {
         if !self.live {
             return None;
         }
         let tty = self.tty_reader.as_ref()?;
-        let ws = rustix::termios::tcgetwinsize(tty).ok()?;
+        rustix::termios::tcgetwinsize(tty).ok()
+    }
+
+    #[cfg(unix)]
+    fn query_tty_size(&self) -> Option<(u16, u16)> {
+        let ws = self.query_tty_winsize()?;
         if ws.ws_col == 0 || ws.ws_row == 0 {
             return None;
         }
@@ -510,25 +727,41 @@ impl TtyEventSource {
         } else {
             false
         };
-        if got_resize && let Some((w, h)) = self.query_tty_size() {
-            self.push_resize(w, h);
+        if got_resize && let Some(ws) = self.query_tty_winsize() {
+            self.pixel_width = ws.ws_xpixel;
+            self.pixel_height = ws.ws_ypixel;
+            if ws.ws_col > 0 && ws.ws_row > 0 {
+                self.push_resize(ws.ws_col, ws.ws_row);
+            }
         }
     }
 
     /// Read available bytes from the tty reader and feed them to the parser.
     fn drain_available_bytes(&mut self) -> io::Result<()> {
-        let Some(ref mut tty) = self.tty_reader else {
+        if self.tty_reader.is_none() {
             return Ok(());
-        };
+        }
         let mut buf = [0u8; READ_BUFFER_BYTES];
         let mut drained_bytes = 0usize;
+        let mut parsed_events = Vec::new();
         loop {
-            match tty.read(&mut buf) {
+            let read_result = {
+                let Some(tty) = self.tty_reader.as_mut() else {
+                    return Ok(());
+                };
+                tty.read(&mut buf)
+            };
+            match read_result {
                 Ok(0) => return Ok(()),
                 Ok(n) => {
-                    let queue = &mut self.event_queue;
+                    self.last_input_byte_at = Some(Instant::now());
+                    parsed_events.clear();
                     self.parser
-                        .parse_with(&buf[..n], |event| queue.push_back(event));
+                        .parse_with(&buf[..n], |event| parsed_events.push(event));
+                    for event in parsed_events.drain(..) {
+                        let normalized = self.normalize_event(event);
+                        self.event_queue.push_back(normalized);
+                    }
                     drained_bytes = drained_bytes.saturating_add(n);
                     if !self.reader_nonblocking {
                         return Ok(());
@@ -542,6 +775,23 @@ impl TtyEventSource {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    #[inline]
+    fn parser_timeout_event_if_due(&mut self) -> Option<Event> {
+        if !self.parser.has_pending_timeout_state() {
+            return None;
+        }
+        if let Some(last) = self.last_input_byte_at
+            && last.elapsed() < PARSER_TIMEOUT_GRACE
+        {
+            return None;
+        }
+        let event = self.parser.timeout();
+        if event.is_some() {
+            self.last_input_byte_at = None;
+        }
+        event
     }
 
     /// Poll the tty fd for available data using `poll(2)`.
@@ -584,13 +834,32 @@ impl TtyEventSource {
     fn write_feature_delta(
         current: &BackendFeatures,
         new: &BackendFeatures,
+        capabilities: TerminalCapabilities,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        let mouse_enable_seq = mouse_enable_sequence_for_capabilities(capabilities);
+        let mouse_disable_seq = mouse_disable_sequence_for_capabilities(capabilities);
+        Self::write_feature_delta_with_mouse(
+            current,
+            new,
+            mouse_enable_seq,
+            mouse_disable_seq,
+            writer,
+        )
+    }
+
+    fn write_feature_delta_with_mouse(
+        current: &BackendFeatures,
+        new: &BackendFeatures,
+        mouse_enable_seq: &[u8],
+        mouse_disable_seq: &[u8],
         writer: &mut impl Write,
     ) -> io::Result<()> {
         if new.mouse_capture != current.mouse_capture {
             writer.write_all(if new.mouse_capture {
-                MOUSE_ENABLE
+                mouse_enable_seq
             } else {
-                MOUSE_DISABLE
+                mouse_disable_seq
             })?;
         }
         if new.bracketed_paste != current.bracketed_paste {
@@ -620,7 +889,7 @@ impl TtyEventSource {
     /// Disable all active features, writing escape sequences to `writer`.
     fn disable_all(&mut self, writer: &mut impl Write) -> io::Result<()> {
         let off = BackendFeatures::default();
-        Self::write_feature_delta(&self.features, &off, writer)?;
+        Self::write_feature_delta(&self.features, &off, self.capabilities, writer)?;
         self.apply_feature_state(off);
         Ok(())
     }
@@ -641,9 +910,13 @@ impl BackendEventSource for TtyEventSource {
         let effective_features = self.sanitize_features(features);
         if self.live {
             let mut stdout = io::stdout();
-            if let Err(err) =
-                Self::write_feature_delta(&self.features, &effective_features, &mut stdout)
-                    .and_then(|_| stdout.flush())
+            if let Err(err) = Self::write_feature_delta(
+                &self.features,
+                &effective_features,
+                self.capabilities,
+                &mut stdout,
+            )
+            .and_then(|_| stdout.flush())
             {
                 // A failed write can still partially apply terminal modes.
                 // Track a conservative superset so drop-time cleanup disables
@@ -680,7 +953,7 @@ impl BackendEventSource for TtyEventSource {
                 let now = std::time::Instant::now();
                 if now >= deadline {
                     // Overall timeout reached. Check for pending incomplete sequences (e.g. bare Escape).
-                    if let Some(event) = self.parser.timeout() {
+                    if let Some(event) = self.parser_timeout_event_if_due() {
                         self.event_queue.push_back(event);
                         return Ok(true);
                     }
@@ -697,9 +970,10 @@ impl BackendEventSource for TtyEventSource {
         }
 
         let ready = self.poll_tty(timeout)?;
-        if !ready && timeout > Duration::ZERO {
-            // Timeout reached. Check for pending incomplete sequences (e.g. bare Escape).
-            if let Some(event) = self.parser.timeout() {
+        if !ready {
+            // No bytes became ready. Even for zero-timeout polls, resolve
+            // pending ambiguous parser states once grace has elapsed.
+            if let Some(event) = self.parser_timeout_event_if_due() {
                 self.event_queue.push_back(event);
                 return Ok(true);
             }
@@ -868,7 +1142,8 @@ impl TtyBackend {
         // Enter raw mode first — if this fails, nothing to clean up.
         let raw_mode = RawModeGuard::enter()?;
         install_abort_panic_hook();
-        let capabilities = TerminalCapabilities::detect();
+        install_termination_signal_hook();
+        let capabilities = TerminalCapabilities::with_overrides();
         let requested_features = options.features;
         let effective_features = sanitize_feature_request(requested_features, capabilities);
 
@@ -889,6 +1164,7 @@ impl TtyBackend {
             TtyEventSource::write_feature_delta(
                 &BackendFeatures::default(),
                 &effective_features,
+                capabilities,
                 &mut stdout,
             )?;
 
@@ -901,10 +1177,13 @@ impl TtyBackend {
             //
             // No synchronized-output block has been opened during setup, so avoid
             // emitting a standalone DEC ?2026l on this path.
-            let _ = write_cleanup_sequence_policy(
+            let mouse_disable_seq = mouse_disable_sequence_for_capabilities(capabilities);
+            let _ = write_terminal_state_resets(&mut stdout);
+            let _ = write_cleanup_sequence_policy_with_mouse(
                 &effective_features,
                 options.alternate_screen,
                 false,
+                mouse_disable_seq,
                 &mut stdout,
             );
             let _ = stdout.flush();
@@ -942,9 +1221,7 @@ impl Drop for TtyBackend {
         #[cfg(unix)]
         if self.raw_mode.is_some() {
             let mut stdout = io::stdout();
-            // TerminalWriter owns synchronized-output bracketing in the runtime.
-            // Avoid emitting a standalone DEC ?2026l here to prevent teardown
-            // sequences from mutating terminal state outside an active bracket.
+            let _ = write_terminal_state_resets(&mut stdout);
 
             // Disable features in reverse order of typical enable.
             let _ = self.events.disable_all(&mut stdout);
@@ -1014,8 +1291,20 @@ impl Backend for TtyBackend {
 /// Write the full cleanup sequence for the given feature state to `writer`.
 ///
 /// This is useful for verifying cleanup in PTY tests without needing
-/// a real terminal session.
+/// a real terminal session. By default this omits DEC ?2026l because no
+/// synchronized-output ownership is implied by this utility API.
 pub fn write_cleanup_sequence(
+    features: &BackendFeatures,
+    alt_screen: bool,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    write_cleanup_sequence_policy(features, alt_screen, false, writer)
+}
+
+/// Write cleanup with an explicit DEC ?2026l prefix.
+///
+/// Use this only when the caller owns a matching synchronized-output begin.
+pub fn write_cleanup_sequence_with_sync_end(
     features: &BackendFeatures,
     alt_screen: bool,
     writer: &mut impl Write,
@@ -1027,6 +1316,22 @@ fn write_cleanup_sequence_policy(
     features: &BackendFeatures,
     alt_screen: bool,
     emit_sync_end: bool,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    write_cleanup_sequence_policy_with_mouse(
+        features,
+        alt_screen,
+        emit_sync_end,
+        MOUSE_DISABLE,
+        writer,
+    )
+}
+
+fn write_cleanup_sequence_policy_with_mouse(
+    features: &BackendFeatures,
+    alt_screen: bool,
+    emit_sync_end: bool,
+    mouse_disable_seq: &[u8],
     writer: &mut impl Write,
 ) -> io::Result<()> {
     if emit_sync_end {
@@ -1043,7 +1348,7 @@ fn write_cleanup_sequence_policy(
         writer.write_all(BRACKETED_PASTE_DISABLE)?;
     }
     if features.mouse_capture {
-        writer.write_all(MOUSE_DISABLE)?;
+        writer.write_all(mouse_disable_seq)?;
     }
     writer.write_all(CURSOR_SHOW)?;
     if alt_screen {
@@ -1717,6 +2022,35 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn zero_timeout_poll_resolves_pending_escape_after_grace() {
+        use ftui_core::event::{KeyCode, KeyEvent};
+        let (reader, mut writer) = pipe_pair();
+        let mut src = TtyEventSource::from_reader(80, 24, reader);
+
+        // Begin an ambiguous escape sequence with a lone ESC byte.
+        writer.write_all(b"\x1b").unwrap();
+
+        // Immediate zero-timeout poll should not resolve it yet.
+        let ready = src.poll_event(Duration::ZERO).unwrap();
+        assert!(!ready, "pending ESC should wait for timeout grace");
+
+        // After grace elapses, a zero-timeout poll should emit Escape.
+        std::thread::sleep(PARSER_TIMEOUT_GRACE + Duration::from_millis(10));
+        let ready = src.poll_event(Duration::ZERO).unwrap();
+        assert!(ready, "zero-timeout poll should resolve overdue ESC");
+
+        let event = src.read_event().unwrap();
+        assert!(matches!(
+            event,
+            Some(Event::Key(KeyEvent {
+                code: KeyCode::Escape,
+                ..
+            }))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn malformed_sgr_mouse_does_not_block() {
         use ftui_core::event::{KeyCode, KeyEvent};
         let (reader, mut writer) = pipe_pair();
@@ -1925,10 +2259,37 @@ mod tests {
             kitty_keyboard: true,
         };
         let mut buf = Vec::new();
-        TtyEventSource::write_feature_delta(&current, &new, &mut buf).unwrap();
+        TtyEventSource::write_feature_delta(
+            &current,
+            &new,
+            TerminalCapabilities::modern(),
+            &mut buf,
+        )
+        .unwrap();
         assert!(
             buf.windows(MOUSE_ENABLE.len()).any(|w| w == MOUSE_ENABLE),
             "expected mouse enable sequence"
+        );
+        assert!(
+            !buf.windows(b"\x1b[?1003h".len())
+                .any(|w| w == b"\x1b[?1003h"),
+            "mouse enable should avoid 1003 any-event mode"
+        );
+        assert!(
+            !buf.ends_with(b"\x1b[?1016l"),
+            "mouse enable should not end with 1016l (can force X10 fallback on some terminals)"
+        );
+        let pos_1016l = buf
+            .windows(b"\x1b[?1016l".len())
+            .position(|w| w == b"\x1b[?1016l")
+            .expect("mouse enable should clear 1016 before enabling SGR");
+        let pos_1006h = buf
+            .windows(b"\x1b[?1006h".len())
+            .position(|w| w == b"\x1b[?1006h")
+            .expect("mouse enable should include 1006 SGR mode");
+        assert!(
+            pos_1016l < pos_1006h,
+            "1016l must be emitted before 1006h to preserve SGR mode on Ghostty-like terminals"
         );
         assert!(
             buf.windows(BRACKETED_PASTE_ENABLE.len())
@@ -1947,6 +2308,93 @@ mod tests {
     }
 
     #[test]
+    fn mouse_enable_sequence_for_mux_capabilities_is_safe() {
+        let mux_caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .in_wezterm_mux(true)
+            .build();
+        assert_eq!(
+            mouse_enable_sequence_for_capabilities(mux_caps),
+            MOUSE_ENABLE_MUX_SAFE
+        );
+        assert!(
+            !MOUSE_ENABLE_MUX_SAFE
+                .windows(b"\x1b[?1001l".len())
+                .any(|w| w == b"\x1b[?1001l"),
+            "mux-safe enable should avoid legacy reset bundle"
+        );
+        assert!(
+            MOUSE_ENABLE_MUX_SAFE
+                .windows(b"\x1b[?1006h".len())
+                .any(|w| w == b"\x1b[?1006h"),
+            "mux-safe enable should keep SGR mouse mode"
+        );
+        let pos_1016l = MOUSE_ENABLE_MUX_SAFE
+            .windows(b"\x1b[?1016l".len())
+            .position(|w| w == b"\x1b[?1016l")
+            .expect("mux-safe enable should clear 1016 before enabling SGR");
+        let pos_1006h = MOUSE_ENABLE_MUX_SAFE
+            .windows(b"\x1b[?1006h".len())
+            .position(|w| w == b"\x1b[?1006h")
+            .expect("mux-safe enable should include 1006 SGR mode");
+        assert!(
+            pos_1016l < pos_1006h,
+            "mux-safe enable must emit 1016l before 1006h to preserve SGR mode"
+        );
+    }
+
+    #[test]
+    fn mouse_disable_sequence_for_mux_capabilities_clears_1016() {
+        let mux_caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .in_wezterm_mux(true)
+            .build();
+        assert_eq!(
+            mouse_disable_sequence_for_capabilities(mux_caps),
+            MOUSE_DISABLE_MUX_SAFE
+        );
+        let pos_1016l = MOUSE_DISABLE_MUX_SAFE
+            .windows(b"\x1b[?1016l".len())
+            .position(|w| w == b"\x1b[?1016l")
+            .expect("mux-safe disable should clear 1016");
+        let pos_1006l = MOUSE_DISABLE_MUX_SAFE
+            .windows(b"\x1b[?1006l".len())
+            .position(|w| w == b"\x1b[?1006l")
+            .expect("mux-safe disable should include 1006 reset");
+        assert!(
+            pos_1016l < pos_1006l,
+            "mux-safe disable should clear 1016 before disabling 1006"
+        );
+    }
+
+    #[test]
+    fn feature_delta_uses_mux_safe_mouse_sequence() {
+        let current = BackendFeatures::default();
+        let new = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+        };
+        let mux_caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .in_wezterm_mux(true)
+            .build();
+        let mut buf = Vec::new();
+        TtyEventSource::write_feature_delta(&current, &new, mux_caps, &mut buf).unwrap();
+        assert!(
+            buf.windows(MOUSE_ENABLE_MUX_SAFE.len())
+                .any(|w| w == MOUSE_ENABLE_MUX_SAFE),
+            "feature delta should use mux-safe mouse enable sequence in mux contexts"
+        );
+        assert!(
+            !buf.windows(b"\x1b[?1001l".len())
+                .any(|w| w == b"\x1b[?1001l"),
+            "feature delta must avoid legacy reset bundle in mux contexts"
+        );
+    }
+
+    #[test]
     fn feature_delta_writes_disable_sequences() {
         let current = BackendFeatures {
             mouse_capture: true,
@@ -1956,7 +2404,13 @@ mod tests {
         };
         let new = BackendFeatures::default();
         let mut buf = Vec::new();
-        TtyEventSource::write_feature_delta(&current, &new, &mut buf).unwrap();
+        TtyEventSource::write_feature_delta(
+            &current,
+            &new,
+            TerminalCapabilities::modern(),
+            &mut buf,
+        )
+        .unwrap();
         assert!(buf.windows(MOUSE_DISABLE.len()).any(|w| w == MOUSE_DISABLE));
         assert!(
             buf.windows(BRACKETED_PASTE_DISABLE.len())
@@ -1978,7 +2432,13 @@ mod tests {
             kitty_keyboard: false,
         };
         let mut buf = Vec::new();
-        TtyEventSource::write_feature_delta(&features, &features, &mut buf).unwrap();
+        TtyEventSource::write_feature_delta(
+            &features,
+            &features,
+            TerminalCapabilities::modern(),
+            &mut buf,
+        )
+        .unwrap();
         assert!(buf.is_empty(), "no output expected when features unchanged");
     }
 
@@ -1993,8 +2453,11 @@ mod tests {
         let mut buf = Vec::new();
         write_cleanup_sequence(&features, true, &mut buf).unwrap();
 
-        // Verify all expected sequences are present.
-        assert!(buf.windows(SYNC_END.len()).any(|w| w == SYNC_END));
+        // Verify expected cleanup disables are present.
+        assert!(
+            !buf.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "default cleanup utility must not emit standalone sync_end"
+        );
         assert!(buf.windows(MOUSE_DISABLE.len()).any(|w| w == MOUSE_DISABLE));
         assert!(
             buf.windows(BRACKETED_PASTE_DISABLE.len())
@@ -2009,6 +2472,35 @@ mod tests {
         assert!(
             buf.windows(ALT_SCREEN_LEAVE.len())
                 .any(|w| w == ALT_SCREEN_LEAVE)
+        );
+    }
+
+    #[test]
+    fn cleanup_sequence_with_sync_end_opt_in() {
+        let features = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: false,
+            focus_events: false,
+            kitty_keyboard: false,
+        };
+        let mut buf = Vec::new();
+        write_cleanup_sequence_with_sync_end(&features, true, &mut buf).unwrap();
+
+        assert!(
+            buf.windows(SYNC_END.len()).any(|w| w == SYNC_END),
+            "opt-in cleanup helper should include sync_end"
+        );
+        let sync_pos = buf
+            .windows(SYNC_END.len())
+            .position(|w| w == SYNC_END)
+            .expect("sync_end present");
+        let cursor_pos = buf
+            .windows(CURSOR_SHOW.len())
+            .position(|w| w == CURSOR_SHOW)
+            .expect("cursor_show present");
+        assert!(
+            sync_pos < cursor_pos,
+            "sync_end should precede cursor_show in opt-in cleanup"
         );
     }
 
@@ -2104,6 +2596,245 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_feature_request_disables_focus_in_tmux() {
+        let requested = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .bracketed_paste(true)
+            .focus_events(true)
+            .kitty_keyboard(true)
+            .in_tmux(true)
+            .build();
+        let sanitized = sanitize_feature_request(requested, caps);
+
+        assert!(sanitized.mouse_capture);
+        assert!(sanitized.bracketed_paste);
+        assert!(!sanitized.focus_events);
+        assert!(!sanitized.kitty_keyboard);
+    }
+
+    #[test]
+    fn apply_feature_state_enables_legacy_fallbacks_when_mouse_capture_on() {
+        let mut src = TtyEventSource::new(80, 24);
+        src.capabilities = TerminalCapabilities::builder().mouse_sgr(true).build();
+        src.apply_feature_state(BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        });
+
+        // With SGR support, keep numeric and raw X10 fallbacks enabled for
+        // mux/terminal edge-cases that ignore SGR mode requests.
+        let modern_events = src.parser.parse(b"\x1b[0;10;20M");
+        assert!(
+            modern_events.iter().any(|e| matches!(e, Event::Mouse(_))),
+            "legacy numeric fallback should remain available with mouse capture on"
+        );
+        let modern_x10 = src.parser.parse(&[0x1B, b'[', b'M', 32, 42, 52]);
+        assert!(
+            modern_x10.iter().any(|e| matches!(e, Event::Mouse(_))),
+            "raw X10 fallback should stay available with mouse capture on"
+        );
+
+        src.capabilities = TerminalCapabilities::basic();
+        src.apply_feature_state(BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        });
+
+        // Without SGR support, fallback remains enabled.
+        let legacy_events = src.parser.parse(b"\x1b[0;10;20M");
+        assert!(
+            legacy_events.iter().any(|e| matches!(e, Event::Mouse(_))),
+            "legacy mouse fallback should be enabled when SGR is unavailable"
+        );
+        let legacy_x10 = src.parser.parse(&[0x1B, b'[', b'M', 32, 42, 52]);
+        assert!(
+            legacy_x10.iter().any(|e| matches!(e, Event::Mouse(_))),
+            "raw X10 decoding should be enabled when SGR is unavailable"
+        );
+
+        src.apply_feature_state(BackendFeatures::default());
+        let disabled_x10 = src.parser.parse(&[0x1B, b'[', b'M', 32, 42, 52]);
+        assert!(
+            disabled_x10.iter().all(|e| !matches!(e, Event::Mouse(_))),
+            "raw X10 fallback must be disabled when mouse capture is off"
+        );
+    }
+
+    #[test]
+    fn normalize_event_maps_pixel_space_mouse_to_cell_grid() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut src = TtyEventSource::new(100, 40);
+        src.capabilities = TerminalCapabilities::builder().mouse_sgr(true).build();
+        src.features = BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        };
+        src.pixel_width = 1000;
+        src.pixel_height = 800;
+
+        let event = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 500,
+            y: 400,
+            modifiers: Modifiers::NONE,
+        });
+        let normalized = src.normalize_event(event);
+
+        let mouse = match normalized {
+            Event::Mouse(mouse) => mouse,
+            other => {
+                panic!("expected mouse event, got {other:?}");
+            }
+        };
+        assert!(mouse.x < src.width, "x should be mapped into cell bounds");
+        assert!(mouse.y < src.height, "y should be mapped into cell bounds");
+        assert!(
+            mouse.x > 0 && mouse.y > 0,
+            "pixel-space event should not collapse to origin"
+        );
+    }
+
+    #[test]
+    fn normalize_event_keeps_cell_space_mouse_unchanged() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut src = TtyEventSource::new(100, 40);
+        src.capabilities = TerminalCapabilities::builder().mouse_sgr(true).build();
+        src.features = BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        };
+        src.pixel_width = 1000;
+        src.pixel_height = 800;
+
+        let event = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 50,
+            y: 10,
+            modifiers: Modifiers::NONE,
+        });
+        let normalized = src.normalize_event(event.clone());
+        assert_eq!(
+            normalized, event,
+            "cell-space coordinates must be preserved"
+        );
+    }
+
+    #[test]
+    fn normalize_event_sticky_pixel_mode_maps_subsequent_low_coordinates() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut src = TtyEventSource::new(100, 40);
+        src.capabilities = TerminalCapabilities::builder().mouse_sgr(true).build();
+        src.features = BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        };
+        src.pixel_width = 1000;
+        src.pixel_height = 800;
+
+        let first = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 500,
+            y: 400,
+            modifiers: Modifiers::NONE,
+        });
+        let _ = src.normalize_event(first);
+        assert!(
+            src.mouse_coords_pixels,
+            "large out-of-grid mouse event should arm sticky pixel normalization"
+        );
+
+        let second = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 100,
+            y: 20,
+            modifiers: Modifiers::NONE,
+        });
+        let normalized = src.normalize_event(second);
+        let mouse = match normalized {
+            Event::Mouse(mouse) => mouse,
+            other => {
+                panic!("expected mouse event, got {other:?}");
+            }
+        };
+        assert!(mouse.x < src.width, "sticky mode should normalize x");
+        assert!(mouse.y < src.height, "sticky mode should normalize y");
+    }
+
+    #[test]
+    fn apply_feature_state_disabling_mouse_resets_pixel_detector() {
+        let mut src = TtyEventSource::new(80, 24);
+        src.mouse_coords_pixels = true;
+        src.inferred_pixel_width = 1234;
+        src.inferred_pixel_height = 777;
+        src.apply_feature_state(BackendFeatures::default());
+        assert!(
+            !src.mouse_coords_pixels,
+            "disabling mouse capture should clear sticky pixel-mode detector"
+        );
+        assert_eq!(src.inferred_pixel_width, 0);
+        assert_eq!(src.inferred_pixel_height, 0);
+    }
+
+    #[test]
+    fn normalize_event_infers_pixel_grid_when_winsize_pixels_missing() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut src = TtyEventSource::new(100, 40);
+        src.capabilities = TerminalCapabilities::builder().mouse_sgr(true).build();
+        src.features = BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        };
+        // Simulate terminals that leak pixel coordinates but report 0x0 pixel winsize.
+        src.pixel_width = 0;
+        src.pixel_height = 0;
+
+        let first = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            x: 500,
+            y: 400,
+            modifiers: Modifiers::NONE,
+        });
+        let normalized_first = src.normalize_event(first);
+        let first_mouse = match normalized_first {
+            Event::Mouse(mouse) => mouse,
+            other => {
+                panic!("expected mouse event, got {other:?}");
+            }
+        };
+        assert!(first_mouse.x > 0 && first_mouse.x < src.width.saturating_sub(1));
+        assert!(first_mouse.y > 0 && first_mouse.y < src.height.saturating_sub(1));
+
+        let second = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            x: 250,
+            y: 200,
+            modifiers: Modifiers::NONE,
+        });
+        let normalized = src.normalize_event(second);
+        let mouse = match normalized {
+            Event::Mouse(mouse) => mouse,
+            other => {
+                panic!("expected mouse event, got {other:?}");
+            }
+        };
+
+        assert!(mouse.x < src.width);
+        assert!(mouse.y < src.height);
+        assert!(mouse.x > 0 && mouse.x < src.width.saturating_sub(1));
+        assert!(mouse.y > 0 && mouse.y < src.height.saturating_sub(1));
+    }
+
+    #[test]
     fn cleanup_sequence_ordering() {
         let features = BackendFeatures {
             mouse_capture: true,
@@ -2114,11 +2845,7 @@ mod tests {
         let mut buf = Vec::new();
         write_cleanup_sequence(&features, true, &mut buf).unwrap();
 
-        // Verify ordering: sync_end first, cursor_show before alt_screen_leave.
-        let sync_pos = buf
-            .windows(SYNC_END.len())
-            .position(|w| w == SYNC_END)
-            .expect("sync_end present");
+        // Verify ordering: cursor_show before alt_screen_leave.
         let cursor_pos = buf
             .windows(CURSOR_SHOW.len())
             .position(|w| w == CURSOR_SHOW)
@@ -2128,10 +2855,6 @@ mod tests {
             .position(|w| w == ALT_SCREEN_LEAVE)
             .expect("alt_screen_leave present");
 
-        assert!(
-            sync_pos < cursor_pos,
-            "sync_end must come before cursor_show"
-        );
         assert!(
             cursor_pos < alt_pos,
             "cursor_show must come before alt_screen_leave"
@@ -2258,6 +2981,7 @@ mod tests {
                 TtyEventSource::write_feature_delta(
                     &BackendFeatures::default(),
                     &all_on,
+                    TerminalCapabilities::modern(),
                     &mut stdout_buf,
                 )
                 .unwrap();
@@ -2482,7 +3206,7 @@ mod tests {
                     kitty_keyboard: true,
                 };
                 let mut seq = Vec::new();
-                write_cleanup_sequence(&features, true, &mut seq).unwrap();
+                write_cleanup_sequence_with_sync_end(&features, true, &mut seq).unwrap();
 
                 let output = write_to_slave_and_read_master(&mut master, &slave_dup, &seq);
 
