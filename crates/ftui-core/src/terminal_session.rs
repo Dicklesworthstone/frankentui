@@ -129,24 +129,35 @@ pub fn terminal_io_flush_stats() -> (u64, u64) {
 ///
 /// Use this around intentional `catch_unwind` boundaries. Panic hooks still run,
 /// but terminal cleanup is skipped for panics that are expected to be recovered.
+///
+/// In `panic = "abort"` builds, panics cannot be recovered by `catch_unwind`,
+/// so suppression is disabled and this executes `f` directly.
 pub fn with_panic_cleanup_suppressed<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    struct SuppressGuard;
-    impl Drop for SuppressGuard {
-        fn drop(&mut self) {
-            PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
-                depth.set(depth.get().saturating_sub(1));
-            });
-        }
+    #[cfg(panic = "abort")]
+    {
+        return f();
     }
 
-    PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
-        depth.set(depth.get().saturating_add(1));
-    });
-    let _guard = SuppressGuard;
-    f()
+    #[cfg(not(panic = "abort"))]
+    {
+        struct SuppressGuard;
+        impl Drop for SuppressGuard {
+            fn drop(&mut self) {
+                PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
+                    depth.set(depth.get().saturating_sub(1));
+                });
+            }
+        }
+
+        PANIC_CLEANUP_SUPPRESS_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_add(1));
+        });
+        let _guard = SuppressGuard;
+        f()
+    }
 }
 
 fn panic_cleanup_suppressed() -> bool {
@@ -1411,6 +1422,13 @@ mod tests {
             "suppression should start disabled"
         );
         with_panic_cleanup_suppressed(|| {
+            if cfg!(panic = "abort") {
+                assert!(
+                    !panic_cleanup_suppressed(),
+                    "abort profile must not suppress panic cleanup"
+                );
+                return;
+            }
             assert!(panic_cleanup_suppressed(), "suppression should be enabled");
             with_panic_cleanup_suppressed(|| {
                 assert!(

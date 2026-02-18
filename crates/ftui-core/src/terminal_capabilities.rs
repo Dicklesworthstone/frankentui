@@ -1078,7 +1078,8 @@ impl TerminalCapabilities {
     ///
     /// Disabled in multiplexers because passthrough is unreliable
     /// for mode-setting sequences. Also disabled for WezTerm mux-served
-    /// sessions (`WEZTERM_UNIX_SOCKET`) due observed DEC 2026 instability.
+    /// sessions (`WEZTERM_UNIX_SOCKET` / `WEZTERM_PANE`) due observed
+    /// DEC 2026 instability.
     #[must_use]
     #[inline]
     pub const fn use_sync_output(&self) -> bool {
@@ -1611,6 +1612,45 @@ mod tests {
         assert!(
             !caps.use_sync_output(),
             "policy must suppress sync output when wezterm mux socket is present"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_mux_pane_disables_sync_policy() {
+        let mut env = make_env("xterm-256color", "WezTerm", "truecolor");
+        env.wezterm_pane = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(caps.sync_output, "raw capability remains detected");
+        assert!(
+            caps.in_wezterm_mux,
+            "wezterm pane marker should be detected"
+        );
+        assert!(
+            caps.in_any_mux(),
+            "wezterm mux must participate in in_any_mux()"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "policy must suppress sync output when wezterm pane marker is present"
+        );
+    }
+
+    #[test]
+    fn detect_wezterm_mux_pane_without_term_program_disables_sync_policy() {
+        let mut env = make_env("xterm-256color", "", "truecolor");
+        env.wezterm_pane = true;
+        let caps = TerminalCapabilities::detect_from_inputs(&env);
+        assert!(
+            caps.in_wezterm_mux,
+            "pane marker alone must detect wezterm mux"
+        );
+        assert!(
+            caps.in_any_mux(),
+            "wezterm mux must participate in in_any_mux()"
+        );
+        assert!(
+            !caps.use_sync_output(),
+            "policy must suppress sync output when wezterm pane marker is present"
         );
     }
 
