@@ -253,6 +253,23 @@ impl InputParser {
                 self.state = ParserState::Escape;
                 None
             }
+            // C1 CSI (S8C1T): start CSI sequence without ESC prefix.
+            0x9B => {
+                self.state = ParserState::Csi;
+                self.buffer.clear();
+                None
+            }
+            // C1 SS3: start SS3 sequence without ESC prefix.
+            0x8F => {
+                self.state = ParserState::Ss3;
+                None
+            }
+            // C1 OSC: start OSC sequence without ESC prefix.
+            0x9D => {
+                self.state = ParserState::Osc;
+                self.buffer.clear();
+                None
+            }
             // NUL - Ctrl+Space or Ctrl+@
             0x00 => Some(Event::Key(KeyEvent::new(KeyCode::Null))),
             // Backspace alternate (Ctrl+H)
@@ -1266,6 +1283,31 @@ mod tests {
         assert!(matches!(
             parser.parse(b"\x1b[D").first(),
             Some(Event::Key(k)) if k.code == KeyCode::Left
+        ));
+    }
+
+    #[test]
+    fn c1_csi_arrow_keys() {
+        let mut parser = InputParser::new();
+
+        assert!(matches!(
+            parser.parse(&[0x9B, b'A']).first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Up
+        ));
+        assert!(matches!(
+            parser.parse(&[0x9B, b'B']).first(),
+            Some(Event::Key(k)) if k.code == KeyCode::Down
+        ));
+    }
+
+    #[test]
+    fn c1_csi_mouse_sgr_protocol() {
+        let mut parser = InputParser::new();
+
+        let events = parser.parse(&[0x9B, b'<', b'0', b';', b'1', b'0', b';', b'2', b'0', b'M']);
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if m.x == 9 && m.y == 19
         ));
     }
 

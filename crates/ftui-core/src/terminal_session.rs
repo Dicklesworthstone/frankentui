@@ -804,10 +804,8 @@ impl TerminalSession {
 
         let mut stdout = io::stdout();
 
-        // End synchronized output first to ensure terminal updates resume
-        if should_emit_sync_cleanup() {
-            let _ = stdout.write_all(SYNC_END);
-        }
+        // Normal session teardown should not emit a standalone DEC ?2026l.
+        // Frame bracketing is owned by the renderer/writer and closed there.
 
         // Reset scroll region (critical for inline mode recovery)
         let _ = stdout.write_all(RESET_SCROLL_REGION);
