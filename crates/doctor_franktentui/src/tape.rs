@@ -98,4 +98,51 @@ mod tests {
         assert!(tape.contains("Sleep 2s"));
         assert!(tape.contains("Ctrl+C"));
     }
+
+    #[test]
+    fn tape_omits_require_when_no_binary_is_needed() {
+        let spec = TapeSpec {
+            output: Path::new("/tmp/out.mp4"),
+            required_binary: None,
+            project_dir: Path::new("/tmp/project"),
+            server_command: "echo run",
+            font_size: 20,
+            width: 1600,
+            height: 900,
+            framerate: 30,
+            theme: "Light",
+            boot_sleep: "1",
+            step_sleep: "1",
+            tail_sleep: "1",
+            keys: "a,q",
+        };
+
+        let tape = build_capture_tape(&spec);
+        assert!(!tape.contains("Require "));
+    }
+
+    #[test]
+    fn tape_inserts_step_sleep_only_after_non_sleep_tokens() {
+        let spec = TapeSpec {
+            output: Path::new("/tmp/out.mp4"),
+            required_binary: None,
+            project_dir: Path::new("/tmp/project"),
+            server_command: "echo run",
+            font_size: 20,
+            width: 1600,
+            height: 900,
+            framerate: 30,
+            theme: "Theme",
+            boot_sleep: "7",
+            step_sleep: "9",
+            tail_sleep: "11",
+            keys: "a,sleep:2,b",
+        };
+
+        let tape = build_capture_tape(&spec);
+        let step_sleep_count = tape.matches("Sleep 9s").count();
+        assert_eq!(step_sleep_count, 2);
+        assert!(tape.contains("Sleep 2s"));
+        assert!(tape.contains("Sleep 11s"));
+    }
 }

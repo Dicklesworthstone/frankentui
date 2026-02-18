@@ -1,0 +1,18 @@
+[total]
+lines = 89.0
+branches = 69.0
+functions = 86.0
+
+[group.orchestration]
+# command-heavy modules where branch complexity is highest
+files = ["src/capture.rs", "src/doctor.rs", "src/report.rs", "src/seed.rs", "src/suite.rs"]
+lines = 88.0
+branches = 66.0
+functions = 81.0
+
+[group.foundations]
+# lower-level parsing/format/helpers expected to stay highly covered
+files = ["src/cli.rs", "src/error.rs", "src/keyseq.rs", "src/main.rs", "src/profile.rs", "src/runmeta.rs", "src/tape.rs", "src/util.rs"]
+lines = 93.0
+branches = 80.0
+functions = 92.0

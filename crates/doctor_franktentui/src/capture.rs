@@ -491,9 +491,9 @@ fn build_runtime_command(
             shell_single_quote(&storage_root.display().to_string()),
             shell_single_quote(&cfg.auth_token),
             shell_single_quote(&cfg.binary.display().to_string()),
-            cfg.host,
-            cfg.port,
-            cfg.http_path,
+            shell_single_quote(&cfg.host),
+            shell_single_quote(&cfg.port),
+            shell_single_quote(&cfg.http_path),
         )
     } else {
         cfg.app_command
@@ -501,6 +501,66 @@ fn build_runtime_command(
             .map(str::trim)
             .unwrap_or_default()
             .to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FinalizationResult {
+    final_status: String,
+    final_exit: i32,
+    fallback_active: bool,
+    fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FinalizationInput {
+    vhs_exit: i32,
+    seed_required: bool,
+    seed_exit: Option<i32>,
+    snapshot_required: bool,
+    no_snapshot: bool,
+    snapshot_status: String,
+    timed_out: bool,
+    conservative: bool,
+    capture_timeout_seconds: u64,
+}
+
+fn resolve_finalization_result(input: &FinalizationInput) -> FinalizationResult {
+    let mut final_status = "ok".to_string();
+    let mut final_exit = 0;
+    let mut fallback_active = input.conservative;
+    let mut fallback_reason = input
+        .conservative
+        .then(|| "conservative mode enabled".to_string());
+
+    if input.vhs_exit != 0 {
+        final_status = "failed".to_string();
+        final_exit = input.vhs_exit;
+    }
+
+    if input.seed_required && input.seed_exit.unwrap_or(1) != 0 {
+        final_status = "failed".to_string();
+        final_exit = 20;
+    }
+
+    if input.snapshot_required && !input.no_snapshot && input.snapshot_status != "ok" {
+        final_status = "failed".to_string();
+        final_exit = 21;
+    }
+
+    if input.timed_out {
+        fallback_active = true;
+        fallback_reason = Some(format!(
+            "capture timeout exceeded {}s",
+            input.capture_timeout_seconds
+        ));
+    }
+
+    FinalizationResult {
+        final_status,
+        final_exit,
+        fallback_active,
+        fallback_reason,
     }
 }
 
@@ -903,35 +963,21 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
         .duration_since(start_epoch)
         .map_or(0_i64, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
 
-    let mut final_status = "ok".to_string();
-    let mut final_exit = 0;
-    let mut fallback_active = cfg.conservative;
-    let mut fallback_reason = cfg
-        .conservative
-        .then(|| "conservative mode enabled".to_string());
-
-    if vhs_exit != 0 {
-        final_status = "failed".to_string();
-        final_exit = vhs_exit;
-    }
-
-    if cfg.seed_required && seed_exit.unwrap_or(1) != 0 {
-        final_status = "failed".to_string();
-        final_exit = 20;
-    }
-
-    if cfg.snapshot_required && !cfg.no_snapshot && snapshot_status != "ok" {
-        final_status = "failed".to_string();
-        final_exit = 21;
-    }
-
-    if timed_out {
-        fallback_active = true;
-        fallback_reason = Some(format!(
-            "capture timeout exceeded {}s",
-            cfg.capture_timeout_seconds
-        ));
-    }
+    let finalization = resolve_finalization_result(&FinalizationInput {
+        vhs_exit,
+        seed_required: cfg.seed_required,
+        seed_exit,
+        snapshot_required: cfg.snapshot_required,
+        no_snapshot: cfg.no_snapshot,
+        snapshot_status: snapshot_status.clone(),
+        timed_out,
+        conservative: cfg.conservative,
+        capture_timeout_seconds: cfg.capture_timeout_seconds,
+    });
+    let final_status = finalization.final_status.clone();
+    let final_exit = finalization.final_exit;
+    let fallback_active = finalization.fallback_active;
+    let fallback_reason = finalization.fallback_reason.clone();
 
     append_decision(
         cfg.evidence_ledger,
@@ -1042,7 +1088,11 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureArgs, ResolvedCaptureConfig};
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        CaptureArgs, FinalizationInput, ResolvedCaptureConfig, resolve_finalization_result,
+    };
 
     #[test]
     fn defaults_set_expected_values() {
@@ -1164,5 +1214,235 @@ mod tests {
         };
 
         assert!(super::run_capture(args).is_ok());
+    }
+
+    #[test]
+    fn legacy_runtime_selected_when_legacy_flags_present_without_app_command() {
+        let mut cfg = ResolvedCaptureConfig::defaults("analytics-empty");
+        cfg.apply_args(&CaptureArgs {
+            profile: "analytics-empty".to_string(),
+            list_profiles: false,
+            binary: Some(PathBuf::from("/tmp/custom-binary")),
+            app_command: None,
+            project_dir: None,
+            host: Some("0.0.0.0".to_string()),
+            port: None,
+            http_path: None,
+            auth_token: None,
+            run_root: None,
+            run_name: None,
+            output: None,
+            video_ext: None,
+            snapshot: None,
+            snapshot_second: None,
+            no_snapshot: false,
+            keys: None,
+            legacy_jump_key: None,
+            boot_sleep: None,
+            step_sleep: None,
+            tail_sleep: None,
+            legacy_capture_sleep: None,
+            theme: None,
+            font_size: None,
+            width: None,
+            height: None,
+            framerate: None,
+            seed_demo: false,
+            no_seed_demo: false,
+            seed_timeout: None,
+            seed_project: None,
+            seed_agent_a: None,
+            seed_agent_b: None,
+            seed_messages: None,
+            seed_delay: None,
+            seed_required: false,
+            snapshot_required: false,
+            dry_run: false,
+            conservative: false,
+            capture_timeout_seconds: None,
+            no_evidence_ledger: false,
+        });
+
+        assert_eq!(cfg.app_command, None);
+    }
+
+    #[test]
+    fn legacy_runtime_command_quotes_network_arguments() {
+        let mut cfg = ResolvedCaptureConfig::defaults("analytics-empty");
+        cfg.app_command = None;
+        cfg.binary = PathBuf::from("/tmp/demo binary");
+        cfg.host = "127.0.0.1; echo injected".to_string();
+        cfg.port = "8879 && whoami".to_string();
+        cfg.http_path = "/mcp custom/".to_string();
+        cfg.auth_token = "token'one".to_string();
+
+        let command = super::build_runtime_command(
+            &cfg,
+            "sqlite:///tmp/db path",
+            Path::new("/tmp/storage root"),
+        );
+
+        assert!(command.contains("--host '127.0.0.1; echo injected'"));
+        assert!(command.contains("--port '8879 && whoami'"));
+        assert!(command.contains("--path '/mcp custom/'"));
+    }
+
+    #[test]
+    fn seed_required_without_seed_demo_is_rejected_before_runtime_checks() {
+        let result = super::run_capture(CaptureArgs {
+            profile: "analytics-empty".to_string(),
+            list_profiles: false,
+            binary: None,
+            app_command: None,
+            project_dir: None,
+            host: None,
+            port: None,
+            http_path: None,
+            auth_token: None,
+            run_root: None,
+            run_name: None,
+            output: None,
+            video_ext: None,
+            snapshot: None,
+            snapshot_second: None,
+            no_snapshot: true,
+            keys: None,
+            legacy_jump_key: None,
+            boot_sleep: None,
+            step_sleep: None,
+            tail_sleep: None,
+            legacy_capture_sleep: None,
+            theme: None,
+            font_size: None,
+            width: None,
+            height: None,
+            framerate: None,
+            seed_demo: false,
+            no_seed_demo: false,
+            seed_timeout: None,
+            seed_project: None,
+            seed_agent_a: None,
+            seed_agent_b: None,
+            seed_messages: None,
+            seed_delay: None,
+            seed_required: true,
+            snapshot_required: false,
+            dry_run: false,
+            conservative: false,
+            capture_timeout_seconds: None,
+            no_evidence_ledger: false,
+        });
+
+        let error = result.expect_err("seed-required should fail without seed-demo");
+        assert!(
+            error
+                .to_string()
+                .contains("--seed-required requires demo seeding to be enabled")
+        );
+    }
+
+    #[test]
+    fn conflicting_seed_enable_disable_flags_are_rejected() {
+        let result = super::run_capture(CaptureArgs {
+            profile: "analytics-empty".to_string(),
+            list_profiles: false,
+            binary: None,
+            app_command: None,
+            project_dir: None,
+            host: None,
+            port: None,
+            http_path: None,
+            auth_token: None,
+            run_root: None,
+            run_name: None,
+            output: None,
+            video_ext: None,
+            snapshot: None,
+            snapshot_second: None,
+            no_snapshot: true,
+            keys: None,
+            legacy_jump_key: None,
+            boot_sleep: None,
+            step_sleep: None,
+            tail_sleep: None,
+            legacy_capture_sleep: None,
+            theme: None,
+            font_size: None,
+            width: None,
+            height: None,
+            framerate: None,
+            seed_demo: true,
+            no_seed_demo: true,
+            seed_timeout: None,
+            seed_project: None,
+            seed_agent_a: None,
+            seed_agent_b: None,
+            seed_messages: None,
+            seed_delay: None,
+            seed_required: false,
+            snapshot_required: false,
+            dry_run: false,
+            conservative: false,
+            capture_timeout_seconds: None,
+            no_evidence_ledger: false,
+        });
+
+        let error = result.expect_err("conflicting seed flags should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot pass both --seed-demo and --no-seed-demo")
+        );
+    }
+
+    #[test]
+    fn finalization_prefers_seed_and_snapshot_failure_codes() {
+        let seed_failure = resolve_finalization_result(&FinalizationInput {
+            vhs_exit: 0,
+            seed_required: true,
+            seed_exit: Some(1),
+            snapshot_required: false,
+            no_snapshot: false,
+            snapshot_status: "ok".to_string(),
+            timed_out: false,
+            conservative: false,
+            capture_timeout_seconds: 300,
+        });
+        assert_eq!(seed_failure.final_status, "failed");
+        assert_eq!(seed_failure.final_exit, 20);
+
+        let snapshot_failure = resolve_finalization_result(&FinalizationInput {
+            vhs_exit: 0,
+            seed_required: false,
+            seed_exit: None,
+            snapshot_required: true,
+            no_snapshot: false,
+            snapshot_status: "failed".to_string(),
+            timed_out: false,
+            conservative: false,
+            capture_timeout_seconds: 300,
+        });
+        assert_eq!(snapshot_failure.final_status, "failed");
+        assert_eq!(snapshot_failure.final_exit, 21);
+    }
+
+    #[test]
+    fn finalization_sets_timeout_fallback_reason() {
+        let timed_out = resolve_finalization_result(&FinalizationInput {
+            vhs_exit: 0,
+            seed_required: false,
+            seed_exit: None,
+            snapshot_required: false,
+            no_snapshot: false,
+            snapshot_status: "ok".to_string(),
+            timed_out: true,
+            conservative: false,
+            capture_timeout_seconds: 42,
+        });
+        assert!(timed_out.fallback_active);
+        assert_eq!(
+            timed_out.fallback_reason.as_deref(),
+            Some("capture timeout exceeded 42s")
+        );
     }
 }

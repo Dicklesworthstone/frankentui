@@ -68,23 +68,79 @@ struct SuiteManifest {
     runs: Vec<RunMeta>,
 }
 
-pub fn run_suite(args: SuiteArgs) -> Result<()> {
-    let integration = OutputIntegration::detect();
-    let ui = output_for(&integration);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuiteOutcome {
+    Ok,
+    FailedRuns,
+    ReportFailed,
+}
 
-    let binary = args.binary.clone();
+fn resolve_app_command(
+    app_command: Option<String>,
+    binary: &Option<PathBuf>,
+    host: &Option<String>,
+    port: &Option<String>,
+    http_path: &Option<String>,
+    auth_token: &Option<String>,
+) -> Option<String> {
     let requested_legacy_runtime = binary.is_some()
-        || args.host.is_some()
-        || args.port.is_some()
-        || args.http_path.is_some()
-        || args.auth_token.is_some();
-    let app_command = if let Some(command) = args.app_command.clone() {
+        || host.is_some()
+        || port.is_some()
+        || http_path.is_some()
+        || auth_token.is_some();
+
+    if let Some(command) = app_command {
         Some(command)
     } else if requested_legacy_runtime {
         None
     } else {
         Some("cargo run -q -p ftui-demo-showcase".to_string())
-    };
+    }
+}
+
+fn effective_fail_fast(fail_fast: bool, keep_going: bool) -> bool {
+    if keep_going { false } else { fail_fast }
+}
+
+fn resolve_suite_outcome(failure_count: usize, report_failed: bool) -> SuiteOutcome {
+    if failure_count > 0 {
+        SuiteOutcome::FailedRuns
+    } else if report_failed {
+        SuiteOutcome::ReportFailed
+    } else {
+        SuiteOutcome::Ok
+    }
+}
+
+fn suite_status_label(outcome: SuiteOutcome) -> &'static str {
+    if matches!(outcome, SuiteOutcome::Ok) {
+        "ok"
+    } else {
+        "failed"
+    }
+}
+
+fn suite_outcome_error(outcome: SuiteOutcome) -> Option<DoctorError> {
+    match outcome {
+        SuiteOutcome::Ok => None,
+        SuiteOutcome::FailedRuns => Some(DoctorError::exit(1, "suite contains failed runs")),
+        SuiteOutcome::ReportFailed => Some(DoctorError::exit(1, "suite report generation failed")),
+    }
+}
+
+pub fn run_suite(args: SuiteArgs) -> Result<()> {
+    let integration = OutputIntegration::detect();
+    let ui = output_for(&integration);
+
+    let binary = args.binary.clone();
+    let app_command = resolve_app_command(
+        args.app_command.clone(),
+        &binary,
+        &args.host,
+        &args.port,
+        &args.http_path,
+        &args.auth_token,
+    );
     let project_dir = args
         .project_dir
         .unwrap_or_else(|| PathBuf::from("/data/projects/frankentui"));
@@ -139,11 +195,7 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
 
     let mut success_count = 0_usize;
     let mut failure_count = 0_usize;
-    let fail_fast = if args.keep_going {
-        false
-    } else {
-        args.fail_fast
-    };
+    let fail_fast = effective_fail_fast(args.fail_fast, args.keep_going);
 
     let current_exe = std::env::current_exe()?;
 
@@ -287,12 +339,14 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
         ui.info(&format!("report={}", html_path.display()));
     }
 
+    let suite_outcome = resolve_suite_outcome(failure_count, report_failed);
+
     if integration.should_emit_json() {
         println!(
             "{}",
             serde_json::json!({
                 "command": "suite",
-                "status": if failure_count > 0 || report_failed { "failed" } else { "ok" },
+                "status": suite_status_label(suite_outcome),
                 "suite_dir": suite_dir.display().to_string(),
                 "success_count": success_count,
                 "failure_count": failure_count,
@@ -302,12 +356,8 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
         );
     }
 
-    if failure_count > 0 {
-        return Err(DoctorError::exit(1, "suite contains failed runs"));
-    }
-
-    if report_failed {
-        return Err(DoctorError::exit(1, "suite report generation failed"));
+    if let Some(error) = suite_outcome_error(suite_outcome) {
+        return Err(error);
     }
 
     Ok(())
@@ -315,6 +365,8 @@ pub fn run_suite(args: SuiteArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::SuiteArgs;
 
     #[test]
@@ -337,5 +389,85 @@ mod tests {
 
         assert!(args.keep_going);
         assert!(args.fail_fast);
+        assert!(!super::effective_fail_fast(args.fail_fast, args.keep_going));
+    }
+
+    #[test]
+    fn resolve_app_command_prefers_explicit_value() {
+        let command = super::resolve_app_command(
+            Some("custom run".to_string()),
+            &Some(PathBuf::from("/tmp/bin")),
+            &Some("0.0.0.0".to_string()),
+            &None,
+            &None,
+            &None,
+        );
+        assert_eq!(command.as_deref(), Some("custom run"));
+    }
+
+    #[test]
+    fn resolve_app_command_returns_none_for_legacy_runtime_without_explicit_command() {
+        let command = super::resolve_app_command(
+            None,
+            &Some(PathBuf::from("/tmp/bin")),
+            &None,
+            &None,
+            &None,
+            &None,
+        );
+        assert_eq!(command, None);
+    }
+
+    #[test]
+    fn resolve_app_command_defaults_to_showcase_when_no_legacy_flags() {
+        let command = super::resolve_app_command(None, &None, &None, &None, &None, &None);
+        assert_eq!(
+            command.as_deref(),
+            Some("cargo run -q -p ftui-demo-showcase")
+        );
+    }
+
+    #[test]
+    fn resolve_suite_outcome_prioritizes_failed_runs_over_report_failure() {
+        assert_eq!(
+            super::resolve_suite_outcome(1, true),
+            super::SuiteOutcome::FailedRuns
+        );
+        assert_eq!(
+            super::resolve_suite_outcome(0, true),
+            super::SuiteOutcome::ReportFailed
+        );
+        assert_eq!(
+            super::resolve_suite_outcome(0, false),
+            super::SuiteOutcome::Ok
+        );
+    }
+
+    #[test]
+    fn suite_outcome_error_messages_match_status() {
+        let failed_runs_error = super::suite_outcome_error(super::SuiteOutcome::FailedRuns)
+            .expect("failed runs should return an error");
+        assert_eq!(failed_runs_error.exit_code(), 1);
+        assert!(
+            failed_runs_error
+                .to_string()
+                .contains("suite contains failed runs")
+        );
+
+        let report_error = super::suite_outcome_error(super::SuiteOutcome::ReportFailed)
+            .expect("report failure should return an error");
+        assert_eq!(report_error.exit_code(), 1);
+        assert!(
+            report_error
+                .to_string()
+                .contains("suite report generation failed")
+        );
+
+        assert!(super::suite_outcome_error(super::SuiteOutcome::Ok).is_none());
+        assert_eq!(super::suite_status_label(super::SuiteOutcome::Ok), "ok");
+        assert_eq!(
+            super::suite_status_label(super::SuiteOutcome::ReportFailed),
+            "failed"
+        );
     }
 }

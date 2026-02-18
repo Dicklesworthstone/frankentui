@@ -254,3 +254,95 @@ pub fn tape_escape(value: &str) -> String {
 pub fn relative_to(base: &Path, path: &Path) -> Option<PathBuf> {
     pathdiff::diff_paths(path, base)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use super::{
+        OutputIntegration, duration_literal, normalize_http_path, output_for, parse_duration_value,
+        relative_to, shell_single_quote, tape_escape,
+    };
+
+    #[test]
+    fn parse_duration_supports_ms_s_and_plain_seconds() {
+        assert_eq!(
+            parse_duration_value("250ms").expect("ms duration"),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            parse_duration_value("7s").expect("seconds duration"),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            parse_duration_value("9").expect("plain seconds duration"),
+            Duration::from_secs(9)
+        );
+    }
+
+    #[test]
+    fn parse_duration_rejects_invalid_values() {
+        let empty = parse_duration_value("").expect_err("empty duration should fail");
+        assert!(empty.to_string().contains("duration value cannot be empty"));
+
+        let malformed = parse_duration_value("bad").expect_err("malformed duration should fail");
+        assert!(malformed.to_string().contains("invalid duration value"));
+    }
+
+    #[test]
+    fn normalize_http_path_enforces_boundaries() {
+        assert_eq!(normalize_http_path("mcp"), "/mcp/");
+        assert_eq!(normalize_http_path("/mcp"), "/mcp/");
+        assert_eq!(normalize_http_path("/mcp/"), "/mcp/");
+        assert_eq!(normalize_http_path("  custom/path "), "/custom/path/");
+    }
+
+    #[test]
+    fn shell_single_quote_escapes_embedded_quote() {
+        let escaped = shell_single_quote("a'b");
+        assert_eq!(escaped, "'a'\"'\"'b'");
+    }
+
+    #[test]
+    fn duration_literal_appends_seconds_only_when_missing_units() {
+        assert_eq!(duration_literal("5"), "5s");
+        assert_eq!(duration_literal("500ms"), "500ms");
+    }
+
+    #[test]
+    fn tape_escape_escapes_quotes_and_backslashes() {
+        let escaped = tape_escape("a\\b\"c");
+        assert_eq!(escaped, "a\\\\b\\\"c");
+    }
+
+    #[test]
+    fn relative_to_returns_path_relative_to_base() {
+        let base = Path::new("/tmp/root");
+        let target = Path::new("/tmp/root/a/b.txt");
+        let relative = relative_to(base, target).expect("relative path");
+        assert_eq!(relative, Path::new("a/b.txt"));
+    }
+
+    #[test]
+    fn output_for_disables_human_output_when_json_mode_requested() {
+        let json_integration = OutputIntegration {
+            fastapi_mode: "plain".to_string(),
+            fastapi_agent: true,
+            fastapi_ci: false,
+            fastapi_tty: false,
+            sqlmodel_mode: "json".to_string(),
+            sqlmodel_agent: true,
+        };
+        let human_integration = OutputIntegration {
+            sqlmodel_mode: "plain".to_string(),
+            ..json_integration.clone()
+        };
+
+        let json_output = output_for(&json_integration);
+        let human_output = output_for(&human_integration);
+
+        assert!(!json_output.enabled);
+        assert!(human_output.enabled);
+    }
+}

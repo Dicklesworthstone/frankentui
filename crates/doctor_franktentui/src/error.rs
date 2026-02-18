@@ -65,3 +65,24 @@ impl DoctorError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DoctorError;
+
+    #[test]
+    fn exit_constructor_preserves_code_and_message() {
+        let error = DoctorError::exit(42, "boom");
+        assert_eq!(error.exit_code(), 42);
+        assert_eq!(error.to_string(), "boom");
+    }
+
+    #[test]
+    fn external_command_failed_exit_code_is_propagated() {
+        let error = DoctorError::ExternalCommandFailed {
+            command: "vhs".to_string(),
+            exit_code: 17,
+        };
+        assert_eq!(error.exit_code(), 17);
+    }
+}

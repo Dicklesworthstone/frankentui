@@ -225,6 +225,23 @@ pub fn run_seed_demo(args: SeedDemoArgs) -> Result<()> {
     run_seed_with_config(args.into())
 }
 
+fn seed_summary_payload(
+    config: &SeedDemoConfig,
+    endpoint: &str,
+    integration: &OutputIntegration,
+) -> Value {
+    json!({
+        "command": "seed-demo",
+        "status": "ok",
+        "project_key": config.project_key,
+        "agent_a": config.agent_a,
+        "agent_b": config.agent_b,
+        "messages": config.messages,
+        "endpoint": endpoint,
+        "integration": integration,
+    })
+}
+
 pub fn run_seed_with_config(config: SeedDemoConfig) -> Result<()> {
     let integration = OutputIntegration::detect();
     let ui = output_for(&integration);
@@ -319,18 +336,106 @@ pub fn run_seed_with_config(config: SeedDemoConfig) -> Result<()> {
     if integration.should_emit_json() {
         println!(
             "{}",
-            json!({
-                "command": "seed-demo",
-                "status": "ok",
-                "project_key": config.project_key,
-                "agent_a": config.agent_a,
-                "agent_b": config.agent_b,
-                "messages": config.messages,
-                "endpoint": client.endpoint,
-                "integration": integration,
-            })
+            seed_summary_payload(&config, &client.endpoint, &integration)
         );
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RpcClient, SeedDemoConfig, wait_for_server};
+    use crate::error::DoctorError;
+    use crate::util::OutputIntegration;
+
+    #[test]
+    fn should_retry_matches_retryable_invalid_argument_messages() {
+        let empty_response = DoctorError::invalid("RPC empty response for health_check");
+        let non_json = DoctorError::invalid("RPC non-JSON-RPC response for health_check: nope");
+        let rpc_error = DoctorError::invalid("RPC error for send_message: {\"error\":true}");
+        let other_invalid = DoctorError::invalid("some other validation error");
+
+        assert!(RpcClient::should_retry(&empty_response));
+        assert!(RpcClient::should_retry(&non_json));
+        assert!(RpcClient::should_retry(&rpc_error));
+        assert!(!RpcClient::should_retry(&other_invalid));
+        assert!(!RpcClient::should_retry(&DoctorError::MissingCommand {
+            command: "vhs".to_string(),
+        }));
+    }
+
+    #[test]
+    fn rpc_client_new_normalizes_http_path_in_endpoint() {
+        let config = SeedDemoConfig {
+            host: "127.0.0.1".to_string(),
+            port: "8879".to_string(),
+            http_path: "mcp".to_string(),
+            auth_token: String::new(),
+            project_key: "/tmp/project".to_string(),
+            agent_a: "A".to_string(),
+            agent_b: "B".to_string(),
+            messages: 1,
+            timeout_seconds: 2,
+            log_file: None,
+        };
+
+        let client = RpcClient::new(&config).expect("rpc client");
+        assert_eq!(client.endpoint, "http://127.0.0.1:8879/mcp/");
+    }
+
+    #[test]
+    fn wait_for_server_times_out_for_unreachable_endpoint() {
+        let config = SeedDemoConfig {
+            host: "127.0.0.1".to_string(),
+            port: "1".to_string(),
+            http_path: "/mcp/".to_string(),
+            auth_token: String::new(),
+            project_key: "/tmp/project".to_string(),
+            agent_a: "A".to_string(),
+            agent_b: "B".to_string(),
+            messages: 1,
+            timeout_seconds: 1,
+            log_file: None,
+        };
+
+        let mut client = RpcClient::new(&config).expect("rpc client");
+        let error = wait_for_server(&mut client, 1).expect_err("server should time out");
+        assert!(error.to_string().contains("Timed out waiting for server"));
+    }
+
+    #[test]
+    fn seed_summary_payload_contains_expected_machine_fields() {
+        let config = SeedDemoConfig {
+            host: "127.0.0.1".to_string(),
+            port: "8879".to_string(),
+            http_path: "/mcp/".to_string(),
+            auth_token: String::new(),
+            project_key: "/tmp/project".to_string(),
+            agent_a: "Alpha".to_string(),
+            agent_b: "Beta".to_string(),
+            messages: 3,
+            timeout_seconds: 5,
+            log_file: None,
+        };
+        let integration = OutputIntegration {
+            fastapi_mode: "plain".to_string(),
+            fastapi_agent: true,
+            fastapi_ci: false,
+            fastapi_tty: false,
+            sqlmodel_mode: "json".to_string(),
+            sqlmodel_agent: true,
+        };
+
+        let payload =
+            super::seed_summary_payload(&config, "http://127.0.0.1:8879/mcp/", &integration);
+        assert_eq!(payload["command"], "seed-demo");
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["project_key"], "/tmp/project");
+        assert_eq!(payload["agent_a"], "Alpha");
+        assert_eq!(payload["agent_b"], "Beta");
+        assert_eq!(payload["messages"], 3);
+        assert_eq!(payload["endpoint"], "http://127.0.0.1:8879/mcp/");
+        assert_eq!(payload["integration"]["sqlmodel_mode"], "json");
+    }
 }

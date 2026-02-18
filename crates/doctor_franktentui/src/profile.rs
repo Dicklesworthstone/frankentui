@@ -103,7 +103,9 @@ pub fn parse_profile_content(content: &str) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{list_profile_names, parse_profile_content};
+    use crate::error::DoctorError;
+
+    use super::{Profile, list_profile_names, load_profile, parse_profile_content};
 
     #[test]
     fn parse_env_fragment() {
@@ -125,5 +127,47 @@ mod tests {
         assert_eq!(names.len(), 4);
         assert!(names.contains(&"analytics-empty".to_string()));
         assert!(names.contains(&"tour-seeded".to_string()));
+    }
+
+    #[test]
+    fn typed_getters_parse_and_reject_values_as_expected() {
+        let parsed = parse_profile_content(
+            r#"
+                bool_true=true
+                bool_false=no
+                u16_value=42
+                u32_value=60000
+                u64_value=900000
+                bad_u16=70000
+                bad_u32=-1
+                bad_u64=NaN
+            "#,
+        );
+        let profile = Profile {
+            name: "typed".to_string(),
+            values: parsed,
+        };
+
+        assert_eq!(profile.get_bool("bool_true"), Some(true));
+        assert_eq!(profile.get_bool("bool_false"), Some(false));
+        assert_eq!(profile.get_u16("u16_value"), Some(42));
+        assert_eq!(profile.get_u32("u32_value"), Some(60_000));
+        assert_eq!(profile.get_u64("u64_value"), Some(900_000));
+        assert_eq!(profile.get_u16("bad_u16"), None);
+        assert_eq!(profile.get_u32("bad_u32"), None);
+        assert_eq!(profile.get_u64("bad_u64"), None);
+    }
+
+    #[test]
+    fn load_profile_unknown_name_returns_profile_not_found() {
+        let error =
+            load_profile("definitely-not-a-real-profile").expect_err("unknown profile should fail");
+
+        match error {
+            DoctorError::ProfileNotFound { name } => {
+                assert_eq!(name, "definitely-not-a-real-profile")
+            }
+            other => panic!("expected ProfileNotFound error, got {other}"),
+        }
     }
 }

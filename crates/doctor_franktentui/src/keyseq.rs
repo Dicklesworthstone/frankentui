@@ -88,4 +88,25 @@ mod tests {
         assert_eq!(result.line, "Tab");
         assert!(!result.is_sleep);
     }
+
+    #[test]
+    fn wait_alias_token_maps_to_sleep() {
+        let result = emit_token("wait:500ms");
+        assert_eq!(result.line, "Sleep 500ms");
+        assert!(result.is_sleep);
+    }
+
+    #[test]
+    fn text_token_escapes_quotes_and_backslashes() {
+        let result = emit_token(r#"text:he"llo\world"#);
+        assert_eq!(result.line, r#"Type "he\"llo\\world""#);
+        assert!(!result.is_sleep);
+    }
+
+    #[test]
+    fn single_character_token_is_typed_directly() {
+        let result = emit_token("#");
+        assert_eq!(result.line, "Type \"#\"");
+        assert!(!result.is_sleep);
+    }
 }
