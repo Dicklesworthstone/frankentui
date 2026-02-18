@@ -109,11 +109,11 @@ def aggregate_group(group_files: list[str], metric: str) -> float:
         if not matches:
             raise RuntimeError(f"group pattern did not match any files: {pattern}")
 
-        normalized_pattern = normalize_path(pattern).lstrip("./")
-        if "/" not in normalized_pattern and len(matches) > 1:
+        if len(matches) > 1:
             raise RuntimeError(
                 f"ambiguous group file pattern '{pattern}' matched multiple files: {matches}. "
-                "Use a repo-relative path like 'src/<file>.rs'."
+                "Use a more specific repo-relative path like "
+                "'crates/doctor_franktentui/src/<file>.rs'."
             )
 
         selected_paths.update(matches)

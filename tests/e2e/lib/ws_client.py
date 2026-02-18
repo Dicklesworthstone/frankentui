@@ -32,10 +32,12 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 from pathlib import Path
 from typing import Any
@@ -241,6 +243,164 @@ def histogram_summary(values_ms: list[float]) -> dict[str, Any]:
     }
 
 
+def _normalize_text(text: str, normalization: str) -> str:
+    mode = normalization.lower()
+    if mode == "none":
+        return text
+    if mode not in {"nfc", "nfd", "nfkc", "nfkd"}:
+        raise ValueError(f"unsupported normalization mode: {normalization}")
+    return unicodedata.normalize(mode.upper(), text)
+
+
+def _assertion_excerpt(text: str, start: int, span: int = 96) -> str:
+    if not text:
+        return ""
+    safe_start = max(0, start - 20)
+    end = min(len(text), safe_start + span)
+    return text[safe_start:end].replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _evaluate_scenario_assertions(
+    assertions: Any,
+    output: bytes,
+    recorder: "SessionRecorder",
+) -> list[str]:
+    errors: list[str] = []
+    if assertions is None:
+        return errors
+    if not isinstance(assertions, list):
+        msg = "scenario assertions must be an array"
+        recorder.emit("assert", {
+            "assertion": "scenario_assertions_schema",
+            "status": "failed",
+            "details": msg,
+        })
+        recorder.emit("error", {"message": msg})
+        return [msg]
+
+    output_text = output.decode("utf-8", errors="replace")
+    for idx, raw in enumerate(assertions):
+        assertion_id = f"scenario_assert_{idx:03d}"
+        if not isinstance(raw, dict):
+            msg = f"{assertion_id}: assertion entry must be an object"
+            recorder.emit("assert", {
+                "assertion": assertion_id,
+                "status": "failed",
+                "details": msg,
+            })
+            recorder.emit("error", {"message": msg})
+            errors.append(msg)
+            continue
+
+        if isinstance(raw.get("id"), str) and raw["id"]:
+            assertion_id = raw["id"]
+        category = raw.get("category", "unspecified")
+        if not isinstance(category, str):
+            category = "unspecified"
+        kind = raw.get("kind", "contains")
+        if not isinstance(kind, str):
+            kind = "contains"
+        kind = kind.lower()
+        pattern = raw.get("pattern")
+        normalization = raw.get("normalization", "none")
+        if not isinstance(normalization, str):
+            normalization = "none"
+        normalization = normalization.lower()
+
+        if not isinstance(pattern, str) or pattern == "":
+            msg = f"{assertion_id}: pattern must be a non-empty string"
+            recorder.emit("assert", {
+                "assertion": assertion_id,
+                "status": "failed",
+                "details": f"category={category} {msg}",
+            })
+            recorder.emit("error", {"message": msg, "details": f"category={category}"})
+            errors.append(msg)
+            continue
+
+        try:
+            haystack = _normalize_text(output_text, normalization)
+        except ValueError as exc:
+            msg = f"{assertion_id}: {exc}"
+            recorder.emit("assert", {
+                "assertion": assertion_id,
+                "status": "failed",
+                "details": f"category={category} {msg}",
+            })
+            recorder.emit("error", {"message": msg, "details": f"category={category}"})
+            errors.append(msg)
+            continue
+
+        min_count = _as_positive_int(raw.get("min_count")) or 1
+        passed = False
+        detail = ""
+
+        if kind == "contains":
+            count = haystack.count(pattern)
+            passed = count >= min_count
+            first = haystack.find(pattern)
+            excerpt = _assertion_excerpt(haystack, first if first >= 0 else 0)
+            detail = (
+                f"category={category} kind=contains normalization={normalization} "
+                f"pattern={pattern!r} count={count} min_count={min_count} excerpt={excerpt!r}"
+            )
+        elif kind == "not_contains":
+            count = haystack.count(pattern)
+            passed = count == 0
+            first = haystack.find(pattern)
+            excerpt = _assertion_excerpt(haystack, first if first >= 0 else 0)
+            detail = (
+                f"category={category} kind=not_contains normalization={normalization} "
+                f"pattern={pattern!r} count={count} excerpt={excerpt!r}"
+            )
+        elif kind == "regex":
+            regex_flags = re.MULTILINE
+            if raw.get("case_insensitive") is True:
+                regex_flags |= re.IGNORECASE
+            try:
+                matches = list(re.finditer(pattern, haystack, flags=regex_flags))
+            except re.error as exc:
+                msg = f"{assertion_id}: invalid regex {pattern!r}: {exc}"
+                recorder.emit("assert", {
+                    "assertion": assertion_id,
+                    "status": "failed",
+                    "details": f"category={category} {msg}",
+                })
+                recorder.emit("error", {"message": msg, "details": f"category={category}"})
+                errors.append(msg)
+                continue
+            count = len(matches)
+            passed = count >= min_count
+            first = matches[0].start() if matches else 0
+            excerpt = _assertion_excerpt(haystack, first)
+            detail = (
+                f"category={category} kind=regex normalization={normalization} "
+                f"pattern={pattern!r} count={count} min_count={min_count} excerpt={excerpt!r}"
+            )
+        else:
+            msg = f"{assertion_id}: unsupported assertion kind: {kind}"
+            recorder.emit("assert", {
+                "assertion": assertion_id,
+                "status": "failed",
+                "details": f"category={category} {msg}",
+            })
+            recorder.emit("error", {"message": msg, "details": f"category={category}"})
+            errors.append(msg)
+            continue
+
+        recorder.emit("assert", {
+            "assertion": assertion_id,
+            "status": "passed" if passed else "failed",
+            "details": detail,
+        })
+        if not passed:
+            msg = f"{assertion_id}: assertion failed ({category})"
+            recorder.emit("error", {"message": msg, "details": detail})
+            errors.append(msg)
+
+    return errors
+
+
 class SessionRecorder:
     """Records session events and computes rolling checksums."""
 
@@ -271,6 +431,10 @@ class SessionRecorder:
         self.last_frame_monotonic = self.start_monotonic
         self.frame_gap_ms: list[float] = []
         self.seed = int(os.environ.get("E2E_SEED", "0"))
+        self.correlation_id = os.environ.get(
+            "E2E_CORRELATION_ID",
+            f"{self.run_id}:{self.scenario_name}",
+        )
 
         if jsonl_path:
             self.jsonl_file = open(jsonl_path, "w", encoding="utf-8")
@@ -283,6 +447,7 @@ class SessionRecorder:
             "timestamp": self._timestamp(),
             "run_id": self.run_id,
             "seed": self.seed,
+            "correlation_id": self.correlation_id,
         }
         if data:
             event.update(data)
@@ -417,6 +582,8 @@ async def run_session(url: str, scenario: dict, recorder: SessionRecorder,
     log_dir = str(Path(recorder.jsonl_path).resolve().parent) if recorder.jsonl_path else os.environ.get("E2E_LOG_DIR", "")
     results_dir = os.environ.get("E2E_RESULTS_DIR", log_dir)
     command = f"python3 tests/e2e/lib/ws_client.py --url {url} --scenario {scenario.get('name', 'unknown')}"
+    scenario_assertions = scenario.get("assertions", [])
+    assertion_count = len(scenario_assertions) if isinstance(scenario_assertions, list) else 0
 
     recorder.emit("env", {
         "host": platform.node() or platform.platform(),
@@ -449,7 +616,19 @@ async def run_session(url: str, scenario: dict, recorder: SessionRecorder,
         "scenario": scenario["name"],
         "step_count": len(steps),
         "timeout_s": timeout_s,
+        "assertion_count": assertion_count,
     })
+    fixture_categories = scenario.get("fixture_categories", [])
+    if isinstance(fixture_categories, list) and fixture_categories:
+        categories = [item for item in fixture_categories if isinstance(item, str) and item]
+        recorder.emit("assert", {
+            "assertion": "fixture_categories_declared",
+            "status": "passed",
+            "details": (
+                f"count={len(categories)} categories="
+                + ",".join(categories)
+            ),
+        })
 
     result = {"outcome": "pass", "errors": []}
 
@@ -525,6 +704,8 @@ async def run_session(url: str, scenario: dict, recorder: SessionRecorder,
                 elif step_type == "drain":
                     # Wait for output to settle.
                     await asyncio.sleep(0.5)
+                else:
+                    raise ValueError(f"unknown step type: {step_type}")
 
                 recorder.emit("step_end", {
                     "step": step_name,
@@ -583,6 +764,17 @@ async def run_session(url: str, scenario: dict, recorder: SessionRecorder,
                 "status": "passed",
                 "details": f"checksum={summary['checksum_chain']} frames={summary['frames']}",
             })
+
+    assertion_errors = _evaluate_scenario_assertions(
+        scenario_assertions,
+        recorder.full_output(),
+        recorder,
+    )
+    if assertion_errors:
+        result["outcome"] = "fail"
+        result["errors"].extend(assertion_errors)
+    result["assertions_failed"] = len(assertion_errors)
+    result["assertions_total"] = assertion_count
 
     recorder.emit("ws_metrics", {
         "label": scenario["name"],
@@ -763,6 +955,58 @@ def run_self_tests() -> int:
                 "rows": True,
             })
             self.assertEqual(out, {})
+
+        def test_emit_includes_correlation_id(self) -> None:
+            recorder = SessionRecorder("run-1", "scenario", None, 80, 24)
+            recorder.emit("run_start", {"command": "x"})
+            self.assertEqual(recorder.events[0]["correlation_id"], "run-1:scenario")
+
+        def test_scenario_assertions_support_normalization(self) -> None:
+            recorder = SessionRecorder("run-1", "scenario", None, 80, 24)
+            assertions = [
+                {
+                    "id": "norm_nfc",
+                    "kind": "contains",
+                    "pattern": "é",
+                    "normalization": "nfc",
+                    "category": "normalization",
+                },
+                {
+                    "id": "regex_emoji",
+                    "kind": "regex",
+                    "pattern": r"emoji:\s+😀",
+                    "normalization": "none",
+                    "category": "emoji_zwj",
+                },
+            ]
+            output = "combining: e\u0301\nemoji: 😀\n".encode("utf-8")
+            errors = _evaluate_scenario_assertions(assertions, output, recorder)
+            self.assertEqual(errors, [])
+            assert_events = [e for e in recorder.events if e["type"] == "assert"]
+            statuses = {e["assertion"]: e["status"] for e in assert_events}
+            self.assertEqual(statuses.get("norm_nfc"), "passed")
+            self.assertEqual(statuses.get("regex_emoji"), "passed")
+
+        def test_scenario_assertions_emit_failure_context(self) -> None:
+            recorder = SessionRecorder("run-1", "scenario", None, 80, 24)
+            assertions = [
+                {
+                    "id": "expected_missing_marker",
+                    "kind": "contains",
+                    "pattern": "THIS_MARKER_DOES_NOT_EXIST",
+                    "category": "failure_injection",
+                }
+            ]
+            errors = _evaluate_scenario_assertions(assertions, b"hello world\n", recorder)
+            self.assertEqual(len(errors), 1)
+            assert_event = next(
+                e for e in recorder.events
+                if e["type"] == "assert" and e["assertion"] == "expected_missing_marker"
+            )
+            self.assertEqual(assert_event["status"], "failed")
+            self.assertIn("failure_injection", assert_event["details"])
+            error_event = next(e for e in recorder.events if e["type"] == "error")
+            self.assertIn("expected_missing_marker", error_event["message"])
 
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(WsClientTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)

@@ -36,7 +36,7 @@
 //! | Feature | Enable | Disable |
 //! |---------|--------|---------|
 //! | Alternate screen | `CSI ? 1049 h` | `CSI ? 1049 l` |
-//! | Mouse (SGR) | `CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h` | `CSI ? 1000 l` + `CSI ? 1002 l` + `CSI ? 1006 l` |
+//! | Mouse (SGR) | reset legacy encodings, then `CSI ? 1000;1002;1003;1006 h` (+ split compatibility) | `CSI ? 1000;1002;1006 l` (+ split compatibility, plus legacy resets) |
 //! | Bracketed paste | `CSI ? 2004 h` | `CSI ? 2004 l` |
 //! | Focus events | `CSI ? 1004 h` | `CSI ? 1004 l` |
 //! | Kitty keyboard | `CSI > 15 u` | `CSI < u` |
@@ -180,15 +180,9 @@ fn cx_deadline_remaining_us(cx: &crate::cx::Cx) -> u64 {
 
 const KITTY_KEYBOARD_ENABLE: &[u8] = b"\x1b[>15u";
 const KITTY_KEYBOARD_DISABLE: &[u8] = b"\x1b[<u";
-const SYNC_END: &[u8] = b"\x1b[?2026l";
 const RESET_SCROLL_REGION: &[u8] = b"\x1b[r";
-const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
-const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
-
-#[inline]
-fn should_emit_sync_cleanup() -> bool {
-    crate::terminal_capabilities::TerminalCapabilities::with_overrides().use_sync_output()
-}
+const MOUSE_ENABLE_SEQ: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1000;1002;1003;1006h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+const MOUSE_DISABLE_SEQ: &[u8] = b"\x1b[?1000;1002;1006l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l";
 
 static TERMINAL_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -252,7 +246,9 @@ pub struct SessionOptions {
     /// scrollback), leave this `false`.
     pub alternate_screen: bool,
 
-    /// Enable mouse capture with SGR encoding (`CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h`).
+    /// Enable mouse capture with SGR encoding, resetting legacy/alternate
+    /// mouse encodings first and then applying `CSI ? 1000;1002;1003;1006 h`
+    /// (plus split-form compatibility).
     ///
     /// Enables:
     /// - Normal mouse tracking (1000)
@@ -659,16 +655,30 @@ impl TerminalSession {
         }
 
         let mut stdout = io::stdout();
+        let write_result = if enabled {
+            stdout
+                .write_all(MOUSE_ENABLE_SEQ)
+                .and_then(|_| stdout.flush())
+        } else {
+            stdout
+                .write_all(MOUSE_DISABLE_SEQ)
+                .and_then(|_| stdout.flush())
+        };
+
+        if let Err(err) = write_result {
+            // A failed write may have partially toggled mouse reporting.
+            // Keep a conservative enabled state so cleanup always emits disable.
+            self.mouse_enabled = self.mouse_enabled || enabled;
+            self.options.mouse_capture = self.mouse_enabled;
+            return Err(err);
+        }
+
         if enabled {
-            stdout.write_all(MOUSE_ENABLE_SEQ)?;
-            stdout.flush()?;
             self.mouse_enabled = true;
             self.options.mouse_capture = true;
             #[cfg(feature = "tracing")]
             tracing::info!("mouse capture enabled (runtime toggle)");
         } else {
-            stdout.write_all(MOUSE_DISABLE_SEQ)?;
-            stdout.flush()?;
             self.mouse_enabled = false;
             self.options.mouse_capture = false;
             #[cfg(feature = "tracing")]
@@ -705,6 +715,11 @@ impl TerminalSession {
             if r.is_ok() {
                 self.mouse_enabled = true;
                 self.options.mouse_capture = true;
+            } else {
+                // Conservative fallback: if the write partially succeeded, keep
+                // mouse marked enabled so teardown still emits disable.
+                self.mouse_enabled = self.mouse_enabled || enabled;
+                self.options.mouse_capture = self.mouse_enabled;
             }
             r
         } else {
@@ -714,6 +729,10 @@ impl TerminalSession {
             if r.is_ok() {
                 self.mouse_enabled = false;
                 self.options.mouse_capture = false;
+            } else {
+                // Conservative fallback for partial disable writes.
+                self.mouse_enabled = true;
+                self.options.mouse_capture = true;
             }
             r
         };
@@ -912,11 +931,9 @@ pub fn best_effort_cleanup_for_exit() {
 fn best_effort_cleanup() {
     let mut stdout = io::stdout();
 
-    // End synchronized output first to ensure any buffered content (like panic messages)
-    // is flushed to the terminal.
-    if should_emit_sync_cleanup() {
-        let _ = stdout.write_all(SYNC_END);
-    }
+    // Avoid emitting standalone DEC ?2026l here. Panic/termination cleanup can
+    // run outside an active sync block, and muxed terminals may treat this
+    // sequence poorly.
     let _ = stdout.write_all(RESET_SCROLL_REGION);
 
     let _ = TerminalSession::disable_kitty_keyboard(&mut stdout);
@@ -1203,15 +1220,6 @@ mod tests {
         // Original unchanged
         assert!(opts.alternate_screen);
         assert!(!cloned.alternate_screen);
-    }
-
-    // -----------------------------------------------------------------------
-    // Escape sequence constants
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn sync_end_sequence_is_correct() {
-        assert_eq!(SYNC_END, b"\x1b[?2026l");
     }
 
     // -----------------------------------------------------------------------

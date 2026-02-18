@@ -1,18 +1,44 @@
 {
   "name": "remote_unicode_rendering",
-  "description": "Unicode rendering correctness: CJK, combining marks, emoji, RTL",
-  "initial_cols": 80,
-  "initial_rows": 24,
+  "description": "Unicode conformance fixtures: width classes, clusters, cursor movement, erasure, normalization",
+  "initial_cols": 100,
+  "initial_rows": 30,
+  "fixture_categories": [
+    "ambiguous_width",
+    "emoji_zwj",
+    "combining_marks",
+    "normalization",
+    "cursor_movement",
+    "erasure"
+  ],
   "steps": [
-    {"type": "send", "data": "printf '\\xe2\\x94\\x8c\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x90\\n'\n", "delay_ms": 200, "comment": "Box drawing: top"},
-    {"type": "send", "data": "printf '\\xe2\\x94\\x82 A \\xe2\\x94\\x82\\n'\n", "delay_ms": 100, "comment": "Box drawing: middle"},
-    {"type": "send", "data": "printf '\\xe2\\x94\\x94\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x98\\n'\n", "delay_ms": 100, "comment": "Box drawing: bottom"},
-    {"type": "send", "data": "printf 'CJK: \\xe4\\xb8\\xad\\xe6\\x96\\x87\\xe6\\xb5\\x8b\\xe8\\xaf\\x95\\n'\n", "delay_ms": 100, "comment": "Chinese characters"},
-    {"type": "send", "data": "printf 'Combining: e\\xcc\\x81 (e + acute)\\n'\n", "delay_ms": 100, "comment": "Combining accent"},
-    {"type": "send", "data": "printf 'Fullwidth: \\xef\\xbc\\xa1\\xef\\xbc\\xa2\\xef\\xbc\\xa3\\n'\n", "delay_ms": 100, "comment": "Fullwidth ABC"},
-    {"type": "send", "data": "printf 'Mixed: abc\\xe4\\xb8\\xad123\\n'\n", "delay_ms": 100, "comment": "Mixed width"},
-    {"type": "send", "data": "printf 'Emoji: \\xf0\\x9f\\x98\\x80\\xf0\\x9f\\x8e\\x89\\xf0\\x9f\\x9a\\x80\\n'\n", "delay_ms": 100, "comment": "Emoji"},
+    {"type": "send", "data": "printf 'UNICODE_FIXTURE_START\\n'\n", "delay_ms": 120, "comment": "Fixture sentinel"},
+    {"type": "send", "data": "printf 'BOX: \\xe2\\x94\\x8c\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x90\\n'\n", "delay_ms": 120, "comment": "Box drawing: top"},
+    {"type": "send", "data": "printf 'BOX: \\xe2\\x94\\x82 A \\xe2\\x94\\x82\\n'\n", "delay_ms": 90, "comment": "Box drawing: middle"},
+    {"type": "send", "data": "printf 'BOX: \\xe2\\x94\\x94\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x80\\xe2\\x94\\x98\\n'\n", "delay_ms": 90, "comment": "Box drawing: bottom"},
+    {"type": "send", "data": "printf 'CJK: \\xe4\\xb8\\xad\\xe6\\x96\\x87\\xe6\\xb5\\x8b\\xe8\\xaf\\x95\\n'\n", "delay_ms": 120, "comment": "Wide CJK glyphs"},
+    {"type": "send", "data": "printf 'FULLWIDTH: \\xef\\xbc\\xa1\\xef\\xbc\\xa2\\xef\\xbc\\xa3\\n'\n", "delay_ms": 120, "comment": "Fullwidth ASCII forms"},
+    {"type": "send", "data": "printf 'AMBIGUOUS: \\xc2\\xb7 \\xce\\xa9 \\xc3\\x9f \\xc2\\xa1\\n'\n", "delay_ms": 120, "comment": "Ambiguous width fixtures"},
+    {"type": "send", "data": "printf 'ZWJ: \\xf0\\x9f\\x91\\xa8\\xe2\\x80\\x8d\\xf0\\x9f\\x9a\\x80 \\xf0\\x9f\\x91\\xa9\\xe2\\x80\\x8d\\xf0\\x9f\\x94\\xac\\n'\n", "delay_ms": 120, "comment": "Emoji ZWJ clusters"},
+    {"type": "send", "data": "printf 'COMBINING: e\\xcc\\x81 n\\xcc\\x83\\n'\n", "delay_ms": 120, "comment": "Combining marks"},
+    {"type": "send", "data": "printf 'NORMALIZATION: \\xc3\\xa9 | e\\xcc\\x81\\n'\n", "delay_ms": 120, "comment": "NFC vs NFD"},
+    {"type": "send", "data": "printf 'CURSOR: A\\xf0\\x9f\\x98\\x80B\\rCURSOR: A#B\\n'\n", "delay_ms": 120, "comment": "Cursor return overwrite case"},
+    {"type": "send", "data": "printf 'ERASE: 12345\\rERASE: 12\\033[K\\n'\n", "delay_ms": 120, "comment": "Erasure to end of line"},
+    {"type": "send", "data": "printf 'UNICODE_FIXTURE_END\\n'\n", "delay_ms": 120, "comment": "Fixture sentinel"},
     {"type": "drain"}
   ],
-  "timeout_s": 15
+  "assertions": [
+    {"id": "unicode_start_marker", "category": "fixture", "kind": "contains", "pattern": "UNICODE_FIXTURE_START"},
+    {"id": "unicode_end_marker", "category": "fixture", "kind": "contains", "pattern": "UNICODE_FIXTURE_END"},
+    {"id": "unicode_box_rows", "category": "box_drawing", "kind": "regex", "pattern": "BOX:\\s+.*", "min_count": 3},
+    {"id": "unicode_cjk", "category": "wide", "kind": "contains", "pattern": "CJK:"},
+    {"id": "unicode_fullwidth", "category": "wide", "kind": "contains", "pattern": "FULLWIDTH:"},
+    {"id": "unicode_ambiguous", "category": "ambiguous_width", "kind": "contains", "pattern": "AMBIGUOUS:"},
+    {"id": "unicode_zwj", "category": "emoji_zwj", "kind": "contains", "pattern": "ZWJ:"},
+    {"id": "unicode_combining_nfc", "category": "combining_marks", "kind": "contains", "pattern": "COMBINING: \u00e9", "normalization": "nfc"},
+    {"id": "unicode_normalization_marker", "category": "normalization", "kind": "contains", "pattern": "NORMALIZATION:"},
+    {"id": "unicode_cursor_overwrite", "category": "cursor_movement", "kind": "regex", "pattern": "CURSOR:\\s+A#B"},
+    {"id": "unicode_erase_escape", "category": "erasure", "kind": "regex", "pattern": "ERASE:\\s+12\u001b\\[K"}
+  ],
+  "timeout_s": 20
 }

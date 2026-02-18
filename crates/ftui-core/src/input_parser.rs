@@ -717,9 +717,11 @@ impl InputParser {
         let s = std::str::from_utf8(params).ok()?;
         let mut parts = s.split(';');
 
-        let button_code: u16 = parts.next()?.parse().ok()?;
-        let x: u16 = parts.next()?.parse().ok()?;
-        let y: u16 = parts.next()?.parse().ok()?;
+        // Accept numeric prefixes in each token so sequences with sub-params
+        // (e.g. `10:0`) still decode to their base coordinate/button values.
+        let button_code = Self::parse_u16_prefix(parts.next()?)?;
+        let x = Self::parse_u16_prefix(parts.next()?)?;
+        let y = Self::parse_u16_prefix(parts.next()?)?;
 
         // Decode button and modifiers
         let (button, mods) = self.decode_mouse_button(button_code);
@@ -742,6 +744,10 @@ impl InputParser {
                 } else {
                     MouseEventKind::Drag(button)
                 }
+            } else if (button_code & 3) == 3 {
+                // Compatibility: some terminals emit release as uppercase 'M'
+                // with button code 3 instead of lowercase 'm'.
+                MouseEventKind::Up(MouseButton::Left)
             } else {
                 MouseEventKind::Down(button)
             }
@@ -755,6 +761,19 @@ impl InputParser {
             y: y.saturating_sub(1),
             modifiers: mods,
         }))
+    }
+
+    #[inline]
+    fn parse_u16_prefix(token: &str) -> Option<u16> {
+        let digits = token
+            .as_bytes()
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if digits == 0 {
+            return None;
+        }
+        token[..digits].parse().ok()
     }
 
     /// Parse legacy xterm/rxvt 1015 mouse events: `CSI Cb;Cx;Cy M`.
@@ -1501,6 +1520,21 @@ mod tests {
     }
 
     #[test]
+    fn mouse_sgr_protocol_with_subparams() {
+        let mut parser = InputParser::new();
+
+        // Accept numeric prefixes when terminals include sub-params.
+        let events = parser.parse(b"\x1b[<0:0;10:0;20:0M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m))
+                if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                    && m.x == 9
+                    && m.y == 19
+        ));
+    }
+
+    #[test]
     fn mouse_sgr_modifiers() {
         let mut parser = InputParser::new();
 
@@ -1953,6 +1987,21 @@ mod tests {
         assert!(matches!(
             events.first(),
             Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Up(MouseButton::Left))
+        ));
+    }
+
+    #[test]
+    fn mouse_sgr_button_release_uppercase_m_compat() {
+        let mut parser = InputParser::new();
+        // Compatibility release encoding used by some terminals:
+        // final byte 'M' with low bits == 3.
+        let events = parser.parse(b"\x1b[<3;10;20M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m))
+                if matches!(m.kind, MouseEventKind::Up(MouseButton::Left))
+                    && m.x == 9
+                    && m.y == 19
         ));
     }
 

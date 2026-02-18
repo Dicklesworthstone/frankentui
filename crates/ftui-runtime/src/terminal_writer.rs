@@ -1578,8 +1578,12 @@ impl<W: Write> TerminalWriter<W> {
 
             // Begin sync output if available
             if sync_output_enabled && !self.in_sync_block {
-                self.writer().write_all(SYNC_BEGIN)?;
+                // Mark active before write so cleanup paths conservatively emit
+                // SYNC_END even if the begin write fails after partial bytes.
                 self.in_sync_block = true;
+                if let Err(err) = self.writer().write_all(SYNC_BEGIN) {
+                    return Err(err);
+                }
             }
 
             // Save cursor (DEC save)
@@ -1766,8 +1770,17 @@ impl<W: Write> TerminalWriter<W> {
         // Begin sync if available. Track state so we can reliably close the
         // block even on early-return error paths.
         if sync_output_enabled && !self.in_sync_block {
-            self.writer().write_all(SYNC_BEGIN)?;
+            // Mark active before write so partial begin writes are treated as
+            // an open block for best-effort close.
             self.in_sync_block = true;
+            if let Err(err) = self.writer().write_all(SYNC_BEGIN) {
+                // Attempt immediate close to avoid leaving the terminal in a
+                // potentially open synchronized-output state.
+                let _ = self.writer().write_all(SYNC_END);
+                self.in_sync_block = false;
+                let _ = self.writer().flush();
+                return Err(err);
+            }
         }
 
         let operation_result = (|| -> io::Result<FrameEmitStats> {

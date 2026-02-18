@@ -1128,12 +1128,36 @@ impl Shape3DState {
 
         if thickness >= 2 {
             // Draw parallel lines for thickness
-            painter.line_colored(x0 + 1, y0, x1 + 1, y1, Some(color));
-            painter.line_colored(x0, y0 + 1, x1, y1 + 1, Some(color));
+            painter.line_colored(
+                x0.saturating_add(1),
+                y0,
+                x1.saturating_add(1),
+                y1,
+                Some(color),
+            );
+            painter.line_colored(
+                x0,
+                y0.saturating_add(1),
+                x1,
+                y1.saturating_add(1),
+                Some(color),
+            );
         }
         if thickness >= 3 {
-            painter.line_colored(x0 - 1, y0, x1 - 1, y1, Some(color));
-            painter.line_colored(x0, y0 - 1, x1, y1 - 1, Some(color));
+            painter.line_colored(
+                x0.saturating_sub(1),
+                y0,
+                x1.saturating_sub(1),
+                y1,
+                Some(color),
+            );
+            painter.line_colored(
+                x0,
+                y0.saturating_sub(1),
+                x1,
+                y1.saturating_sub(1),
+                Some(color),
+            );
         }
     }
 
@@ -1550,10 +1574,10 @@ impl ParticleState {
                 let glow_v = brightness * 0.45;
                 let (gr, gg, gb) = hsv_to_rgb(p.hue * 360.0, 0.3, glow_v);
                 let glow = PackedRgba::rgb(gr, gg, gb);
-                painter.point_colored(px + 1, py, glow);
-                painter.point_colored(px - 1, py, glow);
-                painter.point_colored(px, py + 1, glow);
-                painter.point_colored(px, py - 1, glow);
+                painter.point_colored(px.saturating_add(1), py, glow);
+                painter.point_colored(px.saturating_sub(1), py, glow);
+                painter.point_colored(px, py.saturating_add(1), glow);
+                painter.point_colored(px, py.saturating_sub(1), glow);
             }
         }
     }
@@ -5067,5 +5091,40 @@ mod tests {
             "Particles should have trails of 12+ points, got {}",
             max_trail
         );
+    }
+
+    #[test]
+    fn shape3d_thick_line_handles_extreme_coordinates() {
+        let mut painter = Painter::new(32, 16, Mode::Braille);
+        let state = Shape3DState::default();
+
+        state.draw_thick_line(
+            &mut painter,
+            i32::MAX,
+            i32::MIN,
+            i32::MIN,
+            i32::MAX,
+            -1.0,
+            PackedRgba::rgb(255, 255, 255),
+        );
+    }
+
+    #[test]
+    fn particles_glow_handles_extreme_projected_coordinates() {
+        let mut painter = Painter::new(32, 16, Mode::Braille);
+        let mut state = ParticleState::default();
+        state.particles.push(Particle {
+            x: 1.0e30,
+            y: -1.0e30,
+            vx: 0.0,
+            vy: 0.0,
+            life: 1.0,
+            max_life: 1.0,
+            hue: 0.3,
+            is_rocket: false,
+            trail: Vec::new(),
+        });
+
+        state.render(&mut painter, u16::MAX, u16::MAX);
     }
 }

@@ -5,14 +5,29 @@ functions = 86.0
 
 [group.orchestration]
 # command-heavy modules where branch complexity is highest
-files = ["src/capture.rs", "src/doctor.rs", "src/report.rs", "src/seed.rs", "src/suite.rs"]
+files = [
+  "crates/doctor_franktentui/src/capture.rs",
+  "crates/doctor_franktentui/src/doctor.rs",
+  "crates/doctor_franktentui/src/report.rs",
+  "crates/doctor_franktentui/src/seed.rs",
+  "crates/doctor_franktentui/src/suite.rs",
+]
 lines = 88.0
 branches = 66.0
 functions = 81.0
 
 [group.foundations]
 # lower-level parsing/format/helpers expected to stay highly covered
-files = ["src/cli.rs", "src/error.rs", "src/keyseq.rs", "src/main.rs", "src/profile.rs", "src/runmeta.rs", "src/tape.rs", "src/util.rs"]
+files = [
+  "crates/doctor_franktentui/src/cli.rs",
+  "crates/doctor_franktentui/src/error.rs",
+  "crates/doctor_franktentui/src/keyseq.rs",
+  "crates/doctor_franktentui/src/main.rs",
+  "crates/doctor_franktentui/src/profile.rs",
+  "crates/doctor_franktentui/src/runmeta.rs",
+  "crates/doctor_franktentui/src/tape.rs",
+  "crates/doctor_franktentui/src/util.rs",
+]
 lines = 93.0
 branches = 80.0
 functions = 92.0

@@ -1,0 +1,20 @@
+{
+  "name": "remote_unicode_rendering_failure_injection",
+  "description": "Deliberate assertion miss to validate deterministic failure diagnostics",
+  "initial_cols": 80,
+  "initial_rows": 24,
+  "fixture_categories": [
+    "failure_injection"
+  ],
+  "steps": [
+    {"type": "send", "data": "printf 'UNICODE_FAILURE_INJECTION_START\\n'\n", "delay_ms": 120, "comment": "Failure fixture sentinel"},
+    {"type": "send", "data": "printf 'KNOWN_MARKER: unicode failure injection probe\\n'\n", "delay_ms": 120, "comment": "Known marker"},
+    {"type": "send", "data": "printf 'UNICODE_FAILURE_INJECTION_END\\n'\n", "delay_ms": 120, "comment": "Failure fixture sentinel"},
+    {"type": "drain"}
+  ],
+  "assertions": [
+    {"id": "failure_known_marker_present", "category": "failure_injection", "kind": "contains", "pattern": "KNOWN_MARKER:"},
+    {"id": "failure_intentional_missing_marker", "category": "failure_injection", "kind": "contains", "pattern": "THIS_MARKER_SHOULD_NEVER_EXIST"}
+  ],
+  "timeout_s": 12
+}

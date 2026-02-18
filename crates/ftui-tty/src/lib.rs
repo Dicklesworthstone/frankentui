@@ -9,7 +9,7 @@
 //! | Feature           | Enable                    | Disable                   |
 //! |-------------------|---------------------------|---------------------------|
 //! | Alternate screen  | `CSI ? 1049 h`            | `CSI ? 1049 l`            |
-//! | Mouse (SGR)       | `CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h` | `CSI ? 1000 l` + `CSI ? 1002 l` + `CSI ? 1006 l` |
+//! | Mouse (SGR)       | `CSI ? 1000;1002;1003;1006 h` (+ split compatibility) | `CSI ? 1000;1002;1006 l` (+ split compatibility) |
 //! | Bracketed paste   | `CSI ? 2004 h`            | `CSI ? 2004 l`            |
 //! | Focus events      | `CSI ? 1004 h`            | `CSI ? 1004 l`            |
 //! | Kitty keyboard    | `CSI > 15 u`              | `CSI < u`                 |
@@ -39,15 +39,12 @@ use signal_hook::iterator::Signals;
 const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
 
-// Use split DECSET/DECRST for mouse modes.
-// We intentionally avoid the combined `?1000;1002;1006h/l` form because some
-// mux/emulator stacks parse split mode toggles more reliably.
-//
-// Keep both 1000 (normal tracking) and 1002 (button-event tracking) enabled:
-// Ghostty compatibility is stronger with 1000 present, while 1002 retains drag
-// reporting when available.
-const MOUSE_ENABLE: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
-const MOUSE_DISABLE: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
+// Mouse mode hygiene:
+// 1) Reset legacy/alternate encodings that can linger across sessions.
+// 2) Enable canonical SGR mouse (1000 + 1002 + 1006) using both combined and
+//    split forms for emulator/mux compatibility.
+const MOUSE_ENABLE: &[u8] = b"\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?1000;1002;1003;1006h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+const MOUSE_DISABLE: &[u8] = b"\x1b[?1000;1002;1006l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1001l\x1b[?1003l\x1b[?1005l\x1b[?1015l\x1b[?1016l";
 
 const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
 const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
@@ -63,6 +60,37 @@ const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
 const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
 
 const SYNC_END: &[u8] = b"\x1b[?2026l";
+
+#[inline]
+const fn sanitize_feature_request(
+    requested: BackendFeatures,
+    capabilities: TerminalCapabilities,
+) -> BackendFeatures {
+    // Conservative policy for terminal mode toggles:
+    // - Never request unsupported modes.
+    // - Keep kitty keyboard off in all mux environments.
+    // - Keep focus events off where passthrough is known-unreliable.
+    let focus_events_supported =
+        capabilities.focus_events && !capabilities.in_screen && !capabilities.in_wezterm_mux;
+    let kitty_keyboard_supported = capabilities.kitty_keyboard && !capabilities.in_any_mux();
+
+    BackendFeatures {
+        mouse_capture: requested.mouse_capture && capabilities.mouse_sgr,
+        bracketed_paste: requested.bracketed_paste && capabilities.bracketed_paste,
+        focus_events: requested.focus_events && focus_events_supported,
+        kitty_keyboard: requested.kitty_keyboard && kitty_keyboard_supported,
+    }
+}
+
+#[inline]
+const fn conservative_feature_union(a: BackendFeatures, b: BackendFeatures) -> BackendFeatures {
+    BackendFeatures {
+        mouse_capture: a.mouse_capture || b.mouse_capture,
+        bracketed_paste: a.bracketed_paste || b.bracketed_paste,
+        focus_events: a.focus_events || b.focus_events,
+        kitty_keyboard: a.kitty_keyboard || b.kitty_keyboard,
+    }
+}
 
 const CLEAR_SCREEN: &[u8] = b"\x1b[2J";
 const CURSOR_HOME: &[u8] = b"\x1b[H";
@@ -119,9 +147,9 @@ fn all_cleanup_features_on() -> BackendFeatures {
 #[cfg(unix)]
 fn best_effort_termination_cleanup() {
     let mut stdout = io::stdout();
-    let emit_sync_end = TerminalCapabilities::detect().use_sync_output();
-    let _ =
-        write_cleanup_sequence_policy(&all_cleanup_features_on(), true, emit_sync_end, &mut stdout);
+    // Panic-abort cleanup can run without a known matching DEC 2026 begin; avoid
+    // standalone sync-end emission on this path.
+    let _ = write_cleanup_sequence_policy(&all_cleanup_features_on(), true, false, &mut stdout);
     let _ = stdout.flush();
     restore_raw_mode_snapshot();
 }
@@ -286,6 +314,7 @@ impl Drop for ResizeSignalGuard {
 /// `InputParser`, and serves parsed events via `poll_event`/`read_event`.
 pub struct TtyEventSource {
     features: BackendFeatures,
+    capabilities: TerminalCapabilities,
     width: u16,
     height: u16,
     /// When true, escape sequences are actually written to stdout.
@@ -313,6 +342,7 @@ impl TtyEventSource {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
             features: BackendFeatures::default(),
+            capabilities: TerminalCapabilities::basic(),
             width,
             height,
             live: false,
@@ -329,7 +359,7 @@ impl TtyEventSource {
 
     /// Create an event source in live mode (reads from /dev/tty, writes
     /// escape sequences to stdout).
-    fn live(width: u16, height: u16) -> io::Result<Self> {
+    fn live(width: u16, height: u16, capabilities: TerminalCapabilities) -> io::Result<Self> {
         let tty_reader = std::fs::File::open("/dev/tty")?;
         let reader_nonblocking = Self::try_enable_nonblocking(&tty_reader);
         let mut w = width;
@@ -354,6 +384,7 @@ impl TtyEventSource {
 
         Ok(Self {
             features: BackendFeatures::default(),
+            capabilities,
             width: w,
             height: h,
             live: true,
@@ -377,6 +408,7 @@ impl TtyEventSource {
         let reader_nonblocking = Self::try_enable_nonblocking(&reader);
         Self {
             features: BackendFeatures::default(),
+            capabilities: TerminalCapabilities::basic(),
             width,
             height,
             live: false,
@@ -413,6 +445,14 @@ impl TtyEventSource {
     #[must_use]
     pub fn features(&self) -> BackendFeatures {
         self.features
+    }
+
+    #[inline]
+    fn sanitize_features(&self, requested: BackendFeatures) -> BackendFeatures {
+        if !self.live {
+            return requested;
+        }
+        sanitize_feature_request(requested, self.capabilities)
     }
 
     /// Apply feature state to internal parser/runtime flags without emitting
@@ -598,12 +638,24 @@ impl BackendEventSource for TtyEventSource {
     }
 
     fn set_features(&mut self, features: BackendFeatures) -> Result<(), Self::Error> {
+        let effective_features = self.sanitize_features(features);
         if self.live {
             let mut stdout = io::stdout();
-            Self::write_feature_delta(&self.features, &features, &mut stdout)?;
-            stdout.flush()?;
+            if let Err(err) =
+                Self::write_feature_delta(&self.features, &effective_features, &mut stdout)
+                    .and_then(|_| stdout.flush())
+            {
+                // A failed write can still partially apply terminal modes.
+                // Track a conservative superset so drop-time cleanup disables
+                // anything that might have been enabled before the error.
+                self.apply_feature_state(conservative_feature_union(
+                    self.features,
+                    effective_features,
+                ));
+                return Err(err);
+            }
         }
-        self.apply_feature_state(features);
+        self.apply_feature_state(effective_features);
         Ok(())
     }
 
@@ -817,12 +869,14 @@ impl TtyBackend {
         let raw_mode = RawModeGuard::enter()?;
         install_abort_panic_hook();
         let capabilities = TerminalCapabilities::detect();
+        let requested_features = options.features;
+        let effective_features = sanitize_feature_request(requested_features, capabilities);
 
         let mut stdout = io::stdout();
         let mut alt_screen_active = false;
 
         // Enable initial features.
-        let mut events = TtyEventSource::live(width, height)?;
+        let mut events = TtyEventSource::live(width, height, capabilities)?;
         let setup: io::Result<()> = (|| {
             // Enter alt screen if requested.
             if options.alternate_screen {
@@ -834,7 +888,7 @@ impl TtyBackend {
 
             TtyEventSource::write_feature_delta(
                 &BackendFeatures::default(),
-                &options.features,
+                &effective_features,
                 &mut stdout,
             )?;
 
@@ -848,7 +902,7 @@ impl TtyBackend {
             // No synchronized-output block has been opened during setup, so avoid
             // emitting a standalone DEC ?2026l on this path.
             let _ = write_cleanup_sequence_policy(
-                &options.features,
+                &effective_features,
                 options.alternate_screen,
                 false,
                 &mut stdout,
@@ -857,7 +911,7 @@ impl TtyBackend {
             return Err(err);
         }
 
-        events.apply_feature_state(options.features);
+        events.apply_feature_state(effective_features);
 
         Ok(Self {
             clock: TtyClock::new(),
@@ -1978,6 +2032,75 @@ mod tests {
             "other cleanup bytes must still be emitted"
         );
         assert!(buf.windows(CURSOR_SHOW.len()).any(|w| w == CURSOR_SHOW));
+    }
+
+    #[test]
+    fn conservative_feature_union_is_over_disabling_superset() {
+        let a = BackendFeatures {
+            mouse_capture: false,
+            bracketed_paste: true,
+            focus_events: false,
+            kitty_keyboard: true,
+        };
+        let b = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: false,
+            focus_events: true,
+            kitty_keyboard: false,
+        };
+
+        let merged = conservative_feature_union(a, b);
+        assert!(merged.mouse_capture);
+        assert!(merged.bracketed_paste);
+        assert!(merged.focus_events);
+        assert!(merged.kitty_keyboard);
+    }
+
+    #[test]
+    fn sanitize_feature_request_disables_unsupported_capabilities() {
+        let requested = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let sanitized = sanitize_feature_request(requested, TerminalCapabilities::basic());
+        assert_eq!(sanitized, BackendFeatures::default());
+    }
+
+    #[test]
+    fn sanitize_feature_request_is_conservative_in_wezterm_mux() {
+        let requested = BackendFeatures {
+            mouse_capture: true,
+            bracketed_paste: true,
+            focus_events: true,
+            kitty_keyboard: true,
+        };
+        let caps = TerminalCapabilities::builder()
+            .mouse_sgr(true)
+            .bracketed_paste(true)
+            .focus_events(true)
+            .kitty_keyboard(true)
+            .in_wezterm_mux(true)
+            .build();
+        let sanitized = sanitize_feature_request(requested, caps);
+
+        assert!(
+            sanitized.mouse_capture,
+            "mouse capture should remain available"
+        );
+        assert!(
+            sanitized.bracketed_paste,
+            "bracketed paste should remain available"
+        );
+        assert!(
+            !sanitized.focus_events,
+            "focus events should be disabled in wezterm mux"
+        );
+        assert!(
+            !sanitized.kitty_keyboard,
+            "kitty keyboard should be disabled in mux sessions"
+        );
     }
 
     #[test]

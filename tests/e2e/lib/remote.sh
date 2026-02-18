@@ -35,8 +35,23 @@ remote_build_bridge() {
         return 0
     fi
     echo "[remote] Building frankenterm_ws_bridge..." >&2
-    cargo build -p ftui-pty --bin frankenterm_ws_bridge --release \
-        --target-dir /data/tmp/cargo-target 2>&1 | tail -3 >&2
+    if cargo build -p ftui-pty --bin frankenterm_ws_bridge --release \
+        --target-dir /data/tmp/cargo-target 2>&1 | tail -3 >&2; then
+        return 0
+    fi
+
+    # Some environments have rustup configured without cargo for nightly.
+    # Fall back to stable so remote E2E fixtures can still run.
+    echo "[remote] cargo build failed; retrying with stable toolchain..." >&2
+    if cargo +stable build -p ftui-pty --bin frankenterm_ws_bridge --release \
+        --target-dir /data/tmp/cargo-target 2>&1 | tail -3 >&2; then
+        if [[ -x "$bin_path" ]]; then
+            return 0
+        fi
+    fi
+
+    echo "[remote] ERROR: bridge binary missing after build attempts: $bin_path" >&2
+    return 1
 }
 
 # Return path to the ws_bridge binary.
@@ -63,7 +78,9 @@ remote_start() {
         esac
     done
 
-    remote_build_bridge
+    if ! remote_build_bridge; then
+        return 1
+    fi
 
     mkdir -p "$telemetry_dir"
     REMOTE_TELEMETRY_FILE="$telemetry_dir/ws_bridge_telemetry.jsonl"
