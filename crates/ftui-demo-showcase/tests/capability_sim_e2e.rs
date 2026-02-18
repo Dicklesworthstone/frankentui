@@ -217,7 +217,7 @@ fn profile_accuracy_mux_profiles() {
     ] {
         let caps = TerminalCapabilities::from_profile(profile);
 
-        let in_mux = caps.in_tmux || caps.in_screen || caps.in_zellij;
+        let in_mux = caps.in_tmux || caps.in_screen || caps.in_zellij || caps.in_wezterm_mux;
         assert!(in_mux, "{profile:?} should set a mux flag");
         assert!(caps.in_any_mux(), "{profile:?} in_any_mux should be true");
 

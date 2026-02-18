@@ -48,16 +48,19 @@ mod pty_management {
 
     fn output_has_mouse_enable_sequences(output: &[u8]) -> bool {
         // Check for DECSET sequences that enable mouse reporting.
-        // ftui-tty uses a combined form: \x1b[?1000;1002;1006h
-        // Other backends may use individual sequences.
+        // ftui-tty uses split form:
+        // \x1b[?1000h\x1b[?1002h\x1b[?1006h.
+        // Other backends may use individual or combined sequences.
         [
-            b"\x1b[?1000h" as &[u8],  // normal tracking (individual)
-            b"\x1b[?1002h",           // button-event tracking (individual)
-            b"\x1b[?1003h",           // any-event tracking (individual)
-            b"\x1b[?1005h",           // UTF-8 mouse mode (individual)
-            b"\x1b[?1006h",           // SGR extended mouse mode (individual)
-            b"\x1b[?1015h",           // urxvt extended mouse mode (individual)
-            b"\x1b[?1000;1002;1006h", // combined DECSET (ftui-tty)
+            b"\x1b[?1000h" as &[u8],              // normal tracking (individual)
+            b"\x1b[?1002h",                       // button-event tracking (individual)
+            b"\x1b[?1003h",                       // any-event tracking (individual)
+            b"\x1b[?1005h",                       // UTF-8 mouse mode (individual)
+            b"\x1b[?1006h",                       // SGR extended mouse mode (individual)
+            b"\x1b[?1015h",                       // urxvt extended mouse mode (individual)
+            b"\x1b[?1000h\x1b[?1002h\x1b[?1006h", // split DECSET (ftui-tty)
+            b"\x1b[?1002h\x1b[?1006h",            // split DECSET (ftui-tty)
+            b"\x1b[?1000;1002;1006h",             // combined DECSET (ftui-tty)
         ]
         .into_iter()
         .any(|needle| output_contains(output, needle))

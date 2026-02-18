@@ -506,6 +506,16 @@ impl InputParser {
             _ if params.starts_with(b"<") && (final_byte == b'M' || final_byte == b'm') => {
                 return self.parse_sgr_mouse(params, final_byte);
             }
+            // Legacy mouse protocol fallback (xterm/rxvt 1015):
+            // CSI Cb ; Cx ; Cy M
+            //
+            // Gate this behind expect_x10_mouse so we don't reinterpret generic
+            // CSI ... M sequences as mouse input when mouse capture is off.
+            _ if self.expect_x10_mouse && final_byte == b'M' => {
+                if let Some(event) = self.parse_legacy_mouse(params) {
+                    return Some(event);
+                }
+            }
 
             _ => {}
         }
@@ -725,6 +735,56 @@ impl InputParser {
         Some(Event::Mouse(MouseEvent {
             kind,
             x: x.saturating_sub(1), // Convert to 0-indexed
+            y: y.saturating_sub(1),
+            modifiers: mods,
+        }))
+    }
+
+    /// Parse legacy xterm/rxvt 1015 mouse events: `CSI Cb;Cx;Cy M`.
+    ///
+    /// This acts as a compatibility fallback for terminals that don't emit SGR
+    /// mouse (`CSI < ... M/m`) despite mouse capture being enabled.
+    fn parse_legacy_mouse(&self, params: &[u8]) -> Option<Event> {
+        if params.is_empty() || params.starts_with(b"<") {
+            return None;
+        }
+
+        let s = std::str::from_utf8(params).ok()?;
+        let mut parts = s.split(';');
+        let button_code: u16 = parts.next()?.parse().ok()?;
+        let x: u16 = parts.next()?.parse().ok()?;
+        let y: u16 = parts.next()?.parse().ok()?;
+        // Reject if shape doesn't match exactly Cb;Cx;Cy.
+        if parts.next().is_some() {
+            return None;
+        }
+
+        let (button, mods) = self.decode_mouse_button(button_code);
+        let kind = if button_code & 64 != 0 {
+            // Scroll: bit 6 set, direction in low bits.
+            match button_code & 3 {
+                0 => MouseEventKind::ScrollUp,
+                1 => MouseEventKind::ScrollDown,
+                2 => MouseEventKind::ScrollLeft,
+                _ => MouseEventKind::ScrollRight,
+            }
+        } else if button_code & 32 != 0 {
+            // Motion: bit 5 set.
+            if button_code & 3 == 3 {
+                MouseEventKind::Moved
+            } else {
+                MouseEventKind::Drag(button)
+            }
+        } else if (button_code & 3) == 3 {
+            // Legacy release doesn't identify which button was released.
+            MouseEventKind::Up(MouseButton::Left)
+        } else {
+            MouseEventKind::Down(button)
+        };
+
+        Some(Event::Mouse(MouseEvent {
+            kind,
+            x: x.saturating_sub(1),
             y: y.saturating_sub(1),
             modifiers: mods,
         }))
@@ -1891,6 +1951,29 @@ mod tests {
             Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
                 && m.modifiers.contains(Modifiers::ALT)
         ));
+    }
+
+    #[test]
+    fn mouse_legacy_1015_when_enabled() {
+        let mut parser = InputParser::new();
+        parser.set_expect_x10_mouse(true);
+
+        let events = parser.parse(b"\x1b[0;10;20M");
+        assert!(matches!(
+            events.first(),
+            Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+                && m.x == 9 && m.y == 19
+        ));
+    }
+
+    #[test]
+    fn mouse_legacy_1015_ignored_when_disabled() {
+        let mut parser = InputParser::new();
+        let events = parser.parse(b"\x1b[0;10;20M");
+        assert!(
+            events.is_empty(),
+            "legacy mouse should require explicit opt-in"
+        );
     }
 
     // ── Kitty keyboard release events and special keys ───────────────

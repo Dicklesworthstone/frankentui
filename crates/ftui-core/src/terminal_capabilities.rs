@@ -60,13 +60,13 @@
 //! - `TERM`: terminal type (kitty, xterm-256color, etc.)
 //! - `TERM_PROGRAM`: specific terminal (iTerm.app, WezTerm, Alacritty, Ghostty)
 //! - `NO_COLOR`: de-facto standard for disabling color
-//! - `TMUX`, `STY`, `ZELLIJ`: multiplexer detection
+//! - `TMUX`, `STY`, `ZELLIJ`, `WEZTERM_UNIX_SOCKET`, `WEZTERM_PANE`: multiplexer detection
 //! - `KITTY_WINDOW_ID`: Kitty terminal detection
 //!
 //! # Invariants (bd-1rz0.6)
 //!
 //! 1. **Sync-output safety**: `use_sync_output()` returns `false` for any
-//!    multiplexer environment (tmux, screen, zellij) because CSI ?2026 h/l
+//!    multiplexer environment (tmux, screen, zellij, wezterm mux) because CSI ?2026 h/l
 //!    sequences are unreliable through passthrough.
 //!
 //! 2. **Scroll region safety**: `use_scroll_region()` returns `false` in
@@ -126,6 +126,7 @@ struct DetectInputs {
     in_screen: bool,
     in_zellij: bool,
     wezterm_unix_socket: bool,
+    wezterm_pane: bool,
     kitty_window_id: bool,
     wt_session: bool,
 }
@@ -141,6 +142,7 @@ impl DetectInputs {
             in_screen: env::var("STY").is_ok(),
             in_zellij: env::var("ZELLIJ").is_ok(),
             wezterm_unix_socket: env::var("WEZTERM_UNIX_SOCKET").is_ok(),
+            wezterm_pane: env::var("WEZTERM_PANE").is_ok(),
             kitty_window_id: env::var("KITTY_WINDOW_ID").is_ok(),
             wt_session: env::var("WT_SESSION").is_ok(),
         }
@@ -328,8 +330,8 @@ pub struct TerminalCapabilities {
     pub in_zellij: bool,
     /// Running inside a WezTerm mux-served session.
     ///
-    /// Detected via `WEZTERM_UNIX_SOCKET`, which WezTerm exports for
-    /// client sessions attached to its mux server.
+    /// Detected via `WEZTERM_UNIX_SOCKET` and `WEZTERM_PANE`, which WezTerm
+    /// exports for pane processes and mux-attached clients.
     pub in_wezterm_mux: bool,
 
     // Input features
@@ -839,6 +841,12 @@ impl CapabilityProfileBuilder {
         self
     }
 
+    /// Set whether running inside a WezTerm mux-served session.
+    pub const fn in_wezterm_mux(mut self, enabled: bool) -> Self {
+        self.caps.in_wezterm_mux = enabled;
+        self
+    }
+
     // ── Input Features ─────────────────────────────────────────────────
 
     /// Set Kitty keyboard protocol support.
@@ -902,10 +910,10 @@ impl TerminalCapabilities {
         let in_tmux = env.in_tmux;
         let in_screen = env.in_screen;
         let in_zellij = env.in_zellij;
-        let in_any_mux = in_tmux || in_screen || in_zellij;
         // WezTerm mux sessions may not always preserve TERM_PROGRAM in all
-        // shell-launch scenarios; the UNIX socket marker is the reliable signal.
-        let in_wezterm_mux = env.wezterm_unix_socket;
+        // shell-launch scenarios; use both socket and pane markers.
+        let in_wezterm_mux = env.wezterm_unix_socket || env.wezterm_pane;
+        let in_any_mux = in_tmux || in_screen || in_zellij || in_wezterm_mux;
 
         let term = env.term.as_str();
         let term_program = env.term_program.as_str();
@@ -1035,11 +1043,11 @@ impl TerminalCapabilities {
 
     /// Check if running inside any terminal multiplexer.
     ///
-    /// This includes tmux, GNU screen, and Zellij.
+    /// This includes tmux, GNU screen, Zellij, and WezTerm mux.
     #[must_use]
     #[inline]
     pub const fn in_any_mux(&self) -> bool {
-        self.in_tmux || self.in_screen || self.in_zellij
+        self.in_tmux || self.in_screen || self.in_zellij || self.in_wezterm_mux
     }
 
     /// Check if any color support is available.
@@ -1083,11 +1091,11 @@ impl TerminalCapabilities {
     /// Whether scroll-region optimization (DECSTBM) is safe to use.
     ///
     /// Disabled in multiplexers due to inconsistent scroll margin
-    /// handling across tmux, screen, and Zellij.
+    /// handling across tmux/screen/zellij and WezTerm mux sessions.
     #[must_use]
     #[inline]
     pub const fn use_scroll_region(&self) -> bool {
-        if self.in_tmux || self.in_screen || self.in_zellij {
+        if self.in_any_mux() {
             return false;
         }
         self.scroll_region
@@ -1095,13 +1103,12 @@ impl TerminalCapabilities {
 
     /// Whether OSC 8 hyperlinks should be emitted.
     ///
-    /// Disabled in tmux and screen because passthrough for OSC
-    /// sequences is fragile. Zellij (0.39+) has better passthrough
-    /// but is still disabled by default for safety.
+    /// Disabled in mux environments because passthrough for OSC
+    /// sequences is fragile and behavior varies by mux implementation.
     #[must_use]
     #[inline]
     pub const fn use_hyperlinks(&self) -> bool {
-        if self.in_tmux || self.in_screen || self.in_zellij {
+        if self.in_any_mux() {
             return false;
         }
         self.osc8_hyperlinks
@@ -1109,12 +1116,12 @@ impl TerminalCapabilities {
 
     /// Whether OSC 52 clipboard access should be used.
     ///
-    /// Already gated by mux detection in `detect()`, but this method
-    /// provides a consistent policy interface.
+    /// Gated by mux detection in `detect()`, and re-checked here to keep
+    /// policy behavior consistent for overridden/custom capability sets.
     #[must_use]
     #[inline]
     pub const fn use_clipboard(&self) -> bool {
-        if self.in_tmux || self.in_screen || self.in_zellij {
+        if self.in_any_mux() {
             return false;
         }
         self.osc52_clipboard
@@ -1232,6 +1239,10 @@ mod tests {
         caps.in_screen = false;
         caps.in_zellij = true;
         assert!(caps.in_any_mux());
+
+        caps.in_zellij = false;
+        caps.in_wezterm_mux = true;
+        assert!(caps.in_any_mux());
     }
 
     #[test]
@@ -1276,6 +1287,7 @@ mod tests {
             in_screen: false,
             in_zellij: false,
             wezterm_unix_socket: false,
+            wezterm_pane: false,
             kitty_window_id: false,
             wt_session: true,
         };
@@ -1316,6 +1328,7 @@ mod tests {
             in_screen: false,
             in_zellij: false,
             wezterm_unix_socket: false,
+            wezterm_pane: false,
             kitty_window_id: false,
             wt_session: false,
         };
@@ -1381,6 +1394,10 @@ mod tests {
         caps.in_screen = false;
         caps.in_zellij = true;
         assert!(!caps.use_scroll_region());
+
+        caps.in_zellij = false;
+        caps.in_wezterm_mux = true;
+        assert!(!caps.use_scroll_region());
     }
 
     #[test]
@@ -1391,6 +1408,10 @@ mod tests {
 
         caps.in_tmux = true;
         assert!(!caps.use_hyperlinks());
+
+        caps.in_tmux = false;
+        caps.in_wezterm_mux = true;
+        assert!(!caps.use_hyperlinks());
     }
 
     #[test]
@@ -1400,6 +1421,10 @@ mod tests {
         assert!(caps.use_clipboard());
 
         caps.in_screen = true;
+        assert!(!caps.use_clipboard());
+
+        caps.in_screen = false;
+        caps.in_wezterm_mux = true;
         assert!(!caps.use_clipboard());
     }
 
@@ -1443,6 +1468,7 @@ mod tests {
             in_screen: false,
             in_zellij: false,
             wezterm_unix_socket: false,
+            wezterm_pane: false,
             kitty_window_id: false,
             wt_session: false,
         }
@@ -1548,8 +1574,24 @@ mod tests {
         assert!(caps.sync_output, "raw capability remains detected");
         assert!(caps.in_wezterm_mux, "wezterm mux marker should be detected");
         assert!(
+            caps.in_any_mux(),
+            "wezterm mux must participate in in_any_mux()"
+        );
+        assert!(
             !caps.use_sync_output(),
             "policy must suppress sync output in wezterm mux sessions"
+        );
+        assert!(
+            !caps.use_scroll_region(),
+            "policy must suppress scroll region in wezterm mux sessions"
+        );
+        assert!(
+            !caps.use_hyperlinks(),
+            "policy must suppress hyperlinks in wezterm mux sessions"
+        );
+        assert!(
+            !caps.use_clipboard(),
+            "policy must suppress clipboard in wezterm mux sessions"
         );
     }
 
@@ -1561,6 +1603,10 @@ mod tests {
         assert!(
             caps.in_wezterm_mux,
             "socket marker alone must detect wezterm mux"
+        );
+        assert!(
+            caps.in_any_mux(),
+            "wezterm mux must participate in in_any_mux()"
         );
         assert!(
             !caps.use_sync_output(),
@@ -2201,7 +2247,7 @@ mod tests {
     /// Tests the complete mux × capability matrix to ensure fallbacks are correct.
     #[test]
     fn mux_compatibility_matrix() {
-        // Test matrix covers: baseline (no mux), tmux, screen, zellij
+        // Test matrix covers: baseline (no mux), tmux, screen, zellij, wezterm mux
         // Each verifies: use_sync_output, use_scroll_region, use_hyperlinks, needs_passthrough_wrap
 
         // Test baseline (no mux)
@@ -2251,6 +2297,26 @@ mod tests {
                 "zellij: no wrap needed (native passthrough)"
             );
         }
+
+        // Test wezterm mux session marker
+        {
+            let caps = TerminalCapabilities::builder()
+                .in_wezterm_mux(true)
+                .sync_output(true)
+                .scroll_region(true)
+                .osc8_hyperlinks(true)
+                .build();
+            assert!(!caps.use_sync_output(), "wezterm mux: sync_output disabled");
+            assert!(
+                !caps.use_scroll_region(),
+                "wezterm mux: scroll_region disabled"
+            );
+            assert!(!caps.use_hyperlinks(), "wezterm mux: hyperlinks disabled");
+            assert!(
+                !caps.needs_passthrough_wrap(),
+                "wezterm mux: no wrap needed"
+            );
+        }
     }
 
     /// Tests that modern terminal detection works correctly even inside muxes.
@@ -2259,15 +2325,17 @@ mod tests {
         // Modern terminal (WezTerm) detected inside each mux type
         // Feature detection should still work, but policies should disable
 
-        for (mux_name, in_tmux, in_screen, in_zellij) in [
-            ("tmux", true, false, false),
-            ("screen", false, true, false),
-            ("zellij", false, false, true),
+        for (mux_name, in_tmux, in_screen, in_zellij, in_wezterm_mux) in [
+            ("tmux", true, false, false, false),
+            ("screen", false, true, false, false),
+            ("zellij", false, false, true, false),
+            ("wezterm-mux", false, false, false, true),
         ] {
             let mut env = make_env("screen-256color", "WezTerm", "truecolor");
             env.in_tmux = in_tmux;
             env.in_screen = in_screen;
             env.in_zellij = in_zellij;
+            env.wezterm_unix_socket = in_wezterm_mux;
             let caps = TerminalCapabilities::detect_from_inputs(&env);
 
             // Feature DETECTION still works
@@ -2305,7 +2373,8 @@ mod tests {
             let name = profile.as_str();
 
             // Invariant 1: in_any_mux() is consistent with individual flags
-            let expected_mux = caps.in_tmux || caps.in_screen || caps.in_zellij;
+            let expected_mux =
+                caps.in_tmux || caps.in_screen || caps.in_zellij || caps.in_wezterm_mux;
             assert_eq!(
                 caps.in_any_mux(),
                 expected_mux,
@@ -2540,14 +2609,16 @@ mod proptests {
             in_tmux in any::<bool>(),
             in_screen in any::<bool>(),
             in_zellij in any::<bool>(),
+            in_wezterm_mux in any::<bool>(),
         ) {
             let caps = TerminalCapabilities::builder()
                 .in_tmux(in_tmux)
                 .in_screen(in_screen)
                 .in_zellij(in_zellij)
+                .in_wezterm_mux(in_wezterm_mux)
                 .build();
 
-            let expected = in_tmux || in_screen || in_zellij;
+            let expected = in_tmux || in_screen || in_zellij || in_wezterm_mux;
             prop_assert_eq!(caps.in_any_mux(), expected);
         }
 
@@ -2557,12 +2628,14 @@ mod proptests {
             in_tmux in any::<bool>(),
             in_screen in any::<bool>(),
             in_zellij in any::<bool>(),
+            in_wezterm_mux in any::<bool>(),
             sync_output in any::<bool>(),
         ) {
             let caps = TerminalCapabilities::builder()
                 .in_tmux(in_tmux)
                 .in_screen(in_screen)
                 .in_zellij(in_zellij)
+                .in_wezterm_mux(in_wezterm_mux)
                 .sync_output(sync_output)
                 .build();
 
@@ -2577,12 +2650,14 @@ mod proptests {
             in_tmux in any::<bool>(),
             in_screen in any::<bool>(),
             in_zellij in any::<bool>(),
+            in_wezterm_mux in any::<bool>(),
             scroll_region in any::<bool>(),
         ) {
             let caps = TerminalCapabilities::builder()
                 .in_tmux(in_tmux)
                 .in_screen(in_screen)
                 .in_zellij(in_zellij)
+                .in_wezterm_mux(in_wezterm_mux)
                 .scroll_region(scroll_region)
                 .build();
 
@@ -2597,12 +2672,14 @@ mod proptests {
             in_tmux in any::<bool>(),
             in_screen in any::<bool>(),
             in_zellij in any::<bool>(),
+            in_wezterm_mux in any::<bool>(),
             osc8_hyperlinks in any::<bool>(),
         ) {
             let caps = TerminalCapabilities::builder()
                 .in_tmux(in_tmux)
                 .in_screen(in_screen)
                 .in_zellij(in_zellij)
+                .in_wezterm_mux(in_wezterm_mux)
                 .osc8_hyperlinks(osc8_hyperlinks)
                 .build();
 
@@ -2617,11 +2694,13 @@ mod proptests {
             in_tmux in any::<bool>(),
             in_screen in any::<bool>(),
             in_zellij in any::<bool>(),
+            in_wezterm_mux in any::<bool>(),
         ) {
             let caps = TerminalCapabilities::builder()
                 .in_tmux(in_tmux)
                 .in_screen(in_screen)
                 .in_zellij(in_zellij)
+                .in_wezterm_mux(in_wezterm_mux)
                 .build();
 
             let expected = in_tmux || in_screen;  // NOT zellij
@@ -2634,11 +2713,13 @@ mod proptests {
             in_tmux in any::<bool>(),
             in_screen in any::<bool>(),
             in_zellij in any::<bool>(),
+            in_wezterm_mux in any::<bool>(),
         ) {
             let caps = TerminalCapabilities::builder()
                 .in_tmux(in_tmux)
                 .in_screen(in_screen)
                 .in_zellij(in_zellij)
+                .in_wezterm_mux(in_wezterm_mux)
                 .sync_output(false)
                 .scroll_region(false)
                 .osc8_hyperlinks(false)
@@ -2663,6 +2744,7 @@ mod proptests {
                 in_screen: false,
                 in_zellij: false,
                 wezterm_unix_socket: false,
+                wezterm_pane: false,
                 kitty_window_id: false,
                 wt_session: false,
             };

@@ -9,7 +9,7 @@
 //! | Feature           | Enable                    | Disable                   |
 //! |-------------------|---------------------------|---------------------------|
 //! | Alternate screen  | `CSI ? 1049 h`            | `CSI ? 1049 l`            |
-//! | Mouse (SGR)       | `CSI ? 1000;1002;1006 h`  | `CSI ? 1000;1002;1006 l`  |
+//! | Mouse (SGR)       | `CSI ? 1000 h` + `CSI ? 1002 h` + `CSI ? 1006 h` | `CSI ? 1000 l` + `CSI ? 1002 l` + `CSI ? 1006 l` |
 //! | Bracketed paste   | `CSI ? 2004 h`            | `CSI ? 2004 l`            |
 //! | Focus events      | `CSI ? 1004 h`            | `CSI ? 1004 l`            |
 //! | Kitty keyboard    | `CSI > 15 u`              | `CSI < u`                 |
@@ -19,7 +19,7 @@
 use core::time::Duration;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock, mpsc};
 
 use ftui_backend::{Backend, BackendClock, BackendEventSource, BackendFeatures, BackendPresenter};
 use ftui_core::event::Event;
@@ -39,8 +39,15 @@ use signal_hook::iterator::Signals;
 const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
 
-const MOUSE_ENABLE: &[u8] = b"\x1b[?1000;1002;1006h";
-const MOUSE_DISABLE: &[u8] = b"\x1b[?1000;1002;1006l";
+// Use split DECSET/DECRST for mouse modes.
+// We intentionally avoid the combined `?1000;1002;1006h/l` form because some
+// mux/emulator stacks parse split mode toggles more reliably.
+//
+// Keep both 1000 (normal tracking) and 1002 (button-event tracking) enabled:
+// Ghostty compatibility is stronger with 1000 present, while 1002 retains drag
+// reporting when available.
+const MOUSE_ENABLE: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_DISABLE: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
 
 const BRACKETED_PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
 const BRACKETED_PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
@@ -61,6 +68,78 @@ const CLEAR_SCREEN: &[u8] = b"\x1b[2J";
 const CURSOR_HOME: &[u8] = b"\x1b[H";
 const READ_BUFFER_BYTES: usize = 8192;
 const MAX_DRAIN_BYTES_PER_POLL: usize = READ_BUFFER_BYTES;
+
+#[cfg(unix)]
+fn raw_mode_snapshot_slot() -> &'static Mutex<Option<nix::sys::termios::Termios>> {
+    static SLOT: OnceLock<Mutex<Option<nix::sys::termios::Termios>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(unix)]
+fn store_raw_mode_snapshot(termios: &nix::sys::termios::Termios) {
+    let slot = raw_mode_snapshot_slot();
+    let mut guard = slot.lock().unwrap_or_else(|poison| poison.into_inner());
+    *guard = Some(termios.clone());
+}
+
+#[cfg(unix)]
+fn clear_raw_mode_snapshot() {
+    let slot = raw_mode_snapshot_slot();
+    let mut guard = slot.lock().unwrap_or_else(|poison| poison.into_inner());
+    *guard = None;
+}
+
+#[cfg(unix)]
+fn restore_raw_mode_snapshot() {
+    let slot = raw_mode_snapshot_slot();
+    let snapshot = {
+        let guard = slot.lock().unwrap_or_else(|poison| poison.into_inner());
+        guard.clone()
+    };
+
+    let Some(original) = snapshot else {
+        return;
+    };
+
+    let Ok(tty) = std::fs::File::open("/dev/tty") else {
+        return;
+    };
+    let _ = nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSAFLUSH, &original);
+}
+
+fn all_cleanup_features_on() -> BackendFeatures {
+    BackendFeatures {
+        mouse_capture: true,
+        bracketed_paste: true,
+        focus_events: true,
+        kitty_keyboard: true,
+    }
+}
+
+#[cfg(unix)]
+fn best_effort_termination_cleanup() {
+    let mut stdout = io::stdout();
+    let emit_sync_end = TerminalCapabilities::detect().use_sync_output();
+    let _ =
+        write_cleanup_sequence_policy(&all_cleanup_features_on(), true, emit_sync_end, &mut stdout);
+    let _ = stdout.flush();
+    restore_raw_mode_snapshot();
+}
+
+#[cfg(unix)]
+fn install_abort_panic_hook() {
+    if !cfg!(panic = "abort") {
+        return;
+    }
+    static HOOK: OnceLock<()> = OnceLock::new();
+    HOOK.get_or_init(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            best_effort_termination_cleanup();
+            previous(info);
+        }));
+    });
+}
 
 // ── Raw Mode Guard ───────────────────────────────────────────────────────
 
@@ -96,6 +175,8 @@ impl RawModeGuard {
         nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSAFLUSH, &raw)
             .map_err(io::Error::other)?;
 
+        store_raw_mode_snapshot(&original_termios);
+
         Ok(Self {
             original_termios,
             tty,
@@ -112,6 +193,7 @@ impl Drop for RawModeGuard {
             nix::sys::termios::SetArg::TCSAFLUSH,
             &self.original_termios,
         );
+        clear_raw_mode_snapshot();
     }
 }
 
@@ -333,6 +415,17 @@ impl TtyEventSource {
         self.features
     }
 
+    /// Apply feature state to internal parser/runtime flags without emitting
+    /// terminal escape sequences.
+    ///
+    /// We keep X10 parsing enabled whenever mouse capture is enabled so we can
+    /// still decode mouse input if a terminal falls back to X10 despite SGR
+    /// mouse enable requests (observed in some emulator/config combinations).
+    fn apply_feature_state(&mut self, features: BackendFeatures) {
+        self.features = features;
+        self.parser.set_expect_x10_mouse(features.mouse_capture);
+    }
+
     fn push_resize(&mut self, new_width: u16, new_height: u16) {
         if new_width == 0 || new_height == 0 {
             return;
@@ -488,7 +581,7 @@ impl TtyEventSource {
     fn disable_all(&mut self, writer: &mut impl Write) -> io::Result<()> {
         let off = BackendFeatures::default();
         Self::write_feature_delta(&self.features, &off, writer)?;
-        self.features = off;
+        self.apply_feature_state(off);
         Ok(())
     }
 }
@@ -510,7 +603,7 @@ impl BackendEventSource for TtyEventSource {
             Self::write_feature_delta(&self.features, &features, &mut stdout)?;
             stdout.flush()?;
         }
-        self.features = features;
+        self.apply_feature_state(features);
         Ok(())
     }
 
@@ -722,6 +815,7 @@ impl TtyBackend {
     pub fn open(width: u16, height: u16, options: TtySessionOptions) -> io::Result<Self> {
         // Enter raw mode first — if this fails, nothing to clean up.
         let raw_mode = RawModeGuard::enter()?;
+        install_abort_panic_hook();
         let capabilities = TerminalCapabilities::detect();
 
         let mut stdout = io::stdout();
@@ -760,7 +854,7 @@ impl TtyBackend {
             return Err(err);
         }
 
-        events.features = options.features;
+        events.apply_feature_state(options.features);
 
         Ok(Self {
             clock: TtyClock::new(),
@@ -1170,6 +1264,95 @@ mod tests {
                 modifiers: Modifiers::NONE,
             })
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_mouse_x10_click_when_mouse_capture_enabled() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (reader, mut writer) = pipe_pair();
+        let mut src = TtyEventSource::from_reader(80, 24, reader);
+        src.set_features(BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        })
+        .unwrap();
+
+        // X10 mouse: left click at (10, 20) in 1-indexed protocol coordinates.
+        // CSI M Cb Cx Cy, with each byte encoded as value + 32 (or +33 for x/y).
+        writer.write_all(&[0x1B, b'[', b'M', 32, 42, 52]).unwrap();
+        assert!(src.poll_event(Duration::from_millis(100)).unwrap());
+        let e = src.read_event().unwrap().unwrap();
+        assert_eq!(
+            e,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                x: 9,
+                y: 19,
+                modifiers: Modifiers::NONE,
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_mouse_x10_not_decoded_when_mouse_capture_disabled() {
+        use ftui_core::event::{KeyCode, KeyEvent};
+        let (reader, mut writer) = pipe_pair();
+        let mut src = TtyEventSource::from_reader(80, 24, reader);
+        src.set_features(BackendFeatures::default()).unwrap();
+
+        // Same X10 sequence as above; with mouse capture disabled, this should
+        // not be interpreted as a mouse event.
+        writer.write_all(&[0x1B, b'[', b'M', 32, 42, 52]).unwrap();
+        assert!(src.poll_event(Duration::from_millis(100)).unwrap());
+        let e = src.read_event().unwrap().unwrap();
+        assert!(matches!(
+            e,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(' '),
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_mouse_legacy_1015_click_when_mouse_capture_enabled() {
+        use ftui_core::event::{Modifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (reader, mut writer) = pipe_pair();
+        let mut src = TtyEventSource::from_reader(80, 24, reader);
+        src.set_features(BackendFeatures {
+            mouse_capture: true,
+            ..BackendFeatures::default()
+        })
+        .unwrap();
+
+        // Legacy xterm/rxvt 1015 mouse: CSI Cb;Cx;Cy M
+        writer.write_all(b"\x1b[0;10;20M").unwrap();
+        assert!(src.poll_event(Duration::from_millis(100)).unwrap());
+        let e = src.read_event().unwrap().unwrap();
+        assert_eq!(
+            e,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                x: 9,
+                y: 19,
+                modifiers: Modifiers::NONE,
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_mouse_legacy_1015_not_decoded_when_mouse_capture_disabled() {
+        let (reader, mut writer) = pipe_pair();
+        let mut src = TtyEventSource::from_reader(80, 24, reader);
+        src.set_features(BackendFeatures::default()).unwrap();
+
+        writer.write_all(b"\x1b[0;10;20M").unwrap();
+        assert!(!src.poll_event(Duration::from_millis(25)).unwrap());
+        assert!(src.read_event().unwrap().is_none());
     }
 
     #[cfg(unix)]

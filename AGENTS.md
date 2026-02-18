@@ -211,6 +211,39 @@ cargo insta review
 cargo run -p ftui-demo-showcase
 ```
 
+### `doctor_franktentui` Verification Stack
+
+Canonical local verification commands for the `doctor_franktentui` crate:
+
+Prerequisites:
+
+- `cargo`
+- `python3`
+- `jq`
+- `rg` (ripgrep)
+- `cargo-llvm-cov` (`cargo install cargo-llvm-cov`)
+- Python TOML parser support (`tomllib` in Python `3.11+`, or `python3 -m pip install tomli` for Python `<3.11`)
+
+```bash
+# Unit + integration
+cargo test -p doctor_franktentui --all-targets -- --nocapture
+
+# E2E workflow scripts
+./scripts/doctor_franktentui_happy_e2e.sh /tmp/doctor_franktentui_ci/happy
+./scripts/doctor_franktentui_failure_e2e.sh /tmp/doctor_franktentui_ci/failure
+
+# Coverage gate
+./scripts/doctor_franktentui_coverage.sh /tmp/doctor_franktentui_ci/coverage
+```
+
+CI runs the same contract in the `doctor-franktentui-verification` job and uploads
+artifacts under `/tmp/doctor_franktentui_ci/`:
+
+- `artifact_map.txt` (artifact index + paths)
+- `happy/meta/summary.json` and `happy/meta/artifact_manifest.json`
+- `failure/meta/summary.json` and `failure/meta/case_results.json`
+- `coverage/coverage_gate_report.json` and `coverage/coverage_gate_report.txt`
+
 ---
 
 ## Third-Party Library Usage

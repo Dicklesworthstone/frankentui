@@ -792,9 +792,13 @@ const SGR_RESET_SEQS: &[&[u8]] = &[b"\x1b[0m", b"\x1b[m"];
 const CURSOR_SHOW_SEQS: &[&[u8]] = &[b"\x1b[?25h"];
 const ALT_SCREEN_EXIT_SEQS: &[&[u8]] = &[b"\x1b[?1049l", b"\x1b[?1047l"];
 const MOUSE_DISABLE_SEQS: &[&[u8]] = &[
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1006l",
+    b"\x1b[?1002l\x1b[?1006l",
     b"\x1b[?1000;1002;1006l",
     b"\x1b[?1000;1002l",
     b"\x1b[?1000l",
+    b"\x1b[?1002l",
+    b"\x1b[?1006l",
 ];
 const BRACKETED_PASTE_DISABLE_SEQS: &[&[u8]] = &[b"\x1b[?2004l"];
 const FOCUS_DISABLE_SEQS: &[&[u8]] = &[b"\x1b[?1004l"];
