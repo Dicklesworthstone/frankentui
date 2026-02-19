@@ -190,6 +190,9 @@ impl FocusAwareModalStack {
     /// If the modal closes (via Escape, backdrop click, etc.), the focus
     /// trap is automatically popped and focus is restored.
     pub fn handle_event(&mut self, event: &Event) -> Option<ModalResult> {
+        if let Event::Focus(focused) = event {
+            self.focus_manager.apply_host_focus(*focused);
+        }
         let result = self.stack.handle_event(event)?;
         if result.focus_group_id.is_some() {
             self.focus_manager.pop_trap();
@@ -390,6 +393,53 @@ mod tests {
         let result = modals.handle_event(&escape);
         assert!(result.is_some());
         assert_eq!(modals.focus_manager().current(), Some(2));
+    }
+
+    #[test]
+    fn handle_event_focus_loss_blurs_current_focus() {
+        let mut modals = FocusAwareModalStack::new();
+        modals
+            .focus_manager_mut()
+            .graph_mut()
+            .insert(make_focus_node(1));
+        modals.focus_manager_mut().focus(1);
+        let _ = modals.focus_manager_mut().take_focus_event();
+
+        let result = modals.handle_event(&Event::Focus(false));
+        assert!(result.is_none());
+        assert_eq!(modals.focus_manager().current(), None);
+        assert_eq!(
+            modals.focus_manager_mut().take_focus_event(),
+            Some(crate::focus::FocusEvent::FocusLost { id: 1 })
+        );
+    }
+
+    #[test]
+    fn handle_event_focus_gain_restores_trapped_focus() {
+        let mut modals = FocusAwareModalStack::new();
+        modals
+            .focus_manager_mut()
+            .graph_mut()
+            .insert(make_focus_node(1));
+        modals
+            .focus_manager_mut()
+            .graph_mut()
+            .insert(make_focus_node(2));
+        modals
+            .focus_manager_mut()
+            .graph_mut()
+            .insert(make_focus_node(3));
+        modals.focus_manager_mut().focus(3);
+
+        modals.push_with_trap(Box::new(WidgetModalEntry::new(StubWidget)), vec![1, 2]);
+        assert_eq!(modals.focus_manager().current(), Some(1));
+
+        let _ = modals.handle_event(&Event::Focus(false));
+        assert_eq!(modals.focus_manager().current(), None);
+
+        let result = modals.handle_event(&Event::Focus(true));
+        assert!(result.is_none());
+        assert_eq!(modals.focus_manager().current(), Some(1));
     }
 
     #[test]

@@ -139,6 +139,33 @@ impl FocusManager {
         prev
     }
 
+    /// Apply host/window focus state to the widget focus graph.
+    ///
+    /// Deterministic policy:
+    /// - `focused = false` clears current focus.
+    /// - `focused = true` restores focus to the first allowed node when no
+    ///   valid current focus exists (respecting active traps).
+    ///
+    /// Returns `true` when focus state changed.
+    pub fn apply_host_focus(&mut self, focused: bool) -> bool {
+        if !focused {
+            return self.blur().is_some();
+        }
+
+        if let Some(current) = self.current
+            && self.can_focus(current)
+            && self.allowed_by_trap(current)
+        {
+            return false;
+        }
+
+        if let Some(group_id) = self.active_trap_group() {
+            return self.focus_first_in_group(group_id);
+        }
+
+        self.focus_first()
+    }
+
     /// Move focus in direction.
     pub fn navigate(&mut self, dir: NavDirection) -> bool {
         match dir {
@@ -528,6 +555,61 @@ mod tests {
 
         assert!(fm.focus_prev());
         assert_eq!(fm.current(), Some(1));
+    }
+
+    #[test]
+    fn apply_host_focus_loss_blurs_current() {
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(1, 0));
+        fm.focus(1);
+        let _ = fm.take_focus_event();
+
+        assert!(fm.apply_host_focus(false));
+        assert_eq!(fm.current(), None);
+        assert_eq!(fm.take_focus_event(), Some(FocusEvent::FocusLost { id: 1 }));
+    }
+
+    #[test]
+    fn apply_host_focus_gain_focuses_first_when_unfocused() {
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(10, 1));
+        fm.graph_mut().insert(node(5, 0));
+
+        assert!(fm.apply_host_focus(true));
+        assert_eq!(fm.current(), Some(5));
+        assert_eq!(
+            fm.take_focus_event(),
+            Some(FocusEvent::FocusGained { id: 5 })
+        );
+    }
+
+    #[test]
+    fn apply_host_focus_gain_preserves_valid_current() {
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(1, 0));
+        fm.graph_mut().insert(node(2, 1));
+        fm.focus(2);
+        let _ = fm.take_focus_event();
+
+        assert!(!fm.apply_host_focus(true));
+        assert_eq!(fm.current(), Some(2));
+        assert!(fm.take_focus_event().is_none());
+    }
+
+    #[test]
+    fn apply_host_focus_gain_respects_trap_order() {
+        let mut fm = FocusManager::new();
+        fm.graph_mut().insert(node(1, 0));
+        fm.graph_mut().insert(node(2, 1));
+        fm.graph_mut().insert(node(3, 2));
+        fm.create_group(42, vec![2, 3]);
+        fm.push_trap(42);
+        let _ = fm.take_focus_event();
+        fm.blur();
+        let _ = fm.take_focus_event();
+
+        assert!(fm.apply_host_focus(true));
+        assert_eq!(fm.current(), Some(2));
     }
 
     #[test]

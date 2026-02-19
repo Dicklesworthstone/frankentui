@@ -5,7 +5,7 @@
 //! A single-line text input field with cursor management, scrolling, selection,
 //! word-level operations, and styling. Grapheme-cluster aware for correct Unicode handling.
 
-use ftui_core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui_core::event::{Event, ImeEvent, ImePhase, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui_core::geometry::Rect;
 use ftui_render::cell::{Cell, CellContent};
 use ftui_render::frame::Frame;
@@ -253,6 +253,7 @@ impl TextInput {
             {
                 self.handle_key(key)
             }
+            Event::Ime(ime) => self.handle_ime_event(ime),
             Event::Paste(paste) => {
                 self.delete_selection();
                 self.insert_text(&paste.text);
@@ -267,6 +268,32 @@ impl TextInput {
         }
 
         changed
+    }
+
+    fn handle_ime_event(&mut self, ime: &ImeEvent) -> bool {
+        match ime.phase {
+            ImePhase::Start => {
+                self.ime_start_composition();
+                true
+            }
+            ImePhase::Update => {
+                self.ime_update_composition(&ime.text);
+                true
+            }
+            ImePhase::Commit => {
+                if self.ime_composition.is_some() {
+                    self.ime_update_composition(&ime.text);
+                    self.ime_commit_composition()
+                } else if !ime.text.is_empty() {
+                    self.delete_selection();
+                    self.insert_text(&ime.text);
+                    true
+                } else {
+                    false
+                }
+            }
+            ImePhase::Cancel => self.ime_cancel_composition(),
+        }
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> bool {
@@ -369,6 +396,12 @@ impl TextInput {
         match event {
             Event::Key(key) => Self::key_operation_name(key),
             Event::Paste(_) => "paste",
+            Event::Ime(ime) => match ime.phase {
+                ImePhase::Start => "ime_start",
+                ImePhase::Update => "ime_update",
+                ImePhase::Commit => "ime_commit",
+                ImePhase::Cancel => "ime_cancel",
+            },
             Event::Resize { .. } => "resize",
             Event::Focus(_) => "focus",
             Event::Mouse(_) => "mouse",
@@ -1467,6 +1500,32 @@ mod tests {
         assert!(!input.ime_commit_composition());
         assert_eq!(input.value(), "abc");
         assert_eq!(input.cursor(), 3);
+    }
+
+    #[test]
+    fn test_handle_event_ime_update_and_commit() {
+        let mut input = TextInput::new().with_value("ab");
+        input.cursor = 1;
+
+        assert!(input.handle_event(&Event::Ime(ImeEvent::start())));
+        assert!(input.handle_event(&Event::Ime(ImeEvent::update("漢"))));
+        assert_eq!(input.ime_composition(), Some("漢"));
+        assert!(input.handle_event(&Event::Ime(ImeEvent::commit("漢"))));
+        assert_eq!(input.ime_composition(), None);
+        assert_eq!(input.value(), "a漢b");
+        assert_eq!(input.cursor(), 2);
+    }
+
+    #[test]
+    fn test_handle_event_ime_cancel() {
+        let mut input = TextInput::new().with_value("hello");
+        input.cursor = 5;
+        assert!(input.handle_event(&Event::Ime(ImeEvent::start())));
+        assert!(input.handle_event(&Event::Ime(ImeEvent::update("👩‍💻"))));
+        assert!(input.handle_event(&Event::Ime(ImeEvent::cancel())));
+        assert_eq!(input.ime_composition(), None);
+        assert_eq!(input.value(), "hello");
+        assert_eq!(input.cursor(), 5);
     }
 
     #[test]
