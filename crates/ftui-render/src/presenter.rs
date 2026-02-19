@@ -110,6 +110,16 @@ mod cost_model {
         }
     }
 
+    /// Byte cost of CUB (cursor back): `\x1b[{n}D` or `\x1b[D` for n=1.
+    #[inline]
+    pub fn cub_cost(n: u16) -> usize {
+        match n {
+            0 => 0,
+            1 => 3, // \x1b[D
+            _ => 3 + digit_count(n),
+        }
+    }
+
     /// Cheapest cursor movement cost from (from_x, from_y) to (to_x, to_y).
     /// Returns 0 if already at the target position.
     pub fn cheapest_move_cost(
@@ -127,16 +137,16 @@ mod cost_model {
 
         match (from_x, from_y) {
             (Some(fx), Some(fy)) if fy == to_y => {
-                // Same row: compare CHA, CUF, and CUP
+                // Same row: compare CHA, CUF, CUB, and CUP
                 let cha = cha_cost(to_x);
                 if to_x > fx {
                     let cuf = cuf_cost(to_x - fx);
                     cup.min(cha).min(cuf)
-                } else if to_x == fx {
-                    0
+                } else if to_x < fx {
+                    let cub = cub_cost(fx - to_x);
+                    cup.min(cha).min(cub)
                 } else {
-                    // Moving backward: CHA or CUP
-                    cup.min(cha)
+                    0
                 }
             }
             _ => cup,
@@ -943,7 +953,7 @@ impl<W: Write> Presenter<W> {
 
     /// Move cursor using the cheapest available operation.
     ///
-    /// Compares CUP (absolute), CHA (column-only), and CUF (relative forward)
+    /// Compares CUP (absolute), CHA (column-only), and CUF/CUB (relative)
     /// to select the minimum-cost cursor movement.
     fn move_cursor_optimal(&mut self, x: u16, y: u16) -> io::Result<()> {
         // Skip if already at position
@@ -953,28 +963,43 @@ impl<W: Write> Presenter<W> {
 
         // Decide cheapest move
         let same_row = self.cursor_y == Some(y);
-        let forward = same_row && self.cursor_x.is_some_and(|cx| x > cx);
 
-        if same_row && forward {
-            let dx = x - self.cursor_x.expect("cursor_x guaranteed by forward check");
-            let cuf = cost_model::cuf_cost(dx);
-            let cha = cost_model::cha_cost(x);
-            let cup = cost_model::cup_cost(y, x);
+        if same_row {
+            if let Some(cx) = self.cursor_x {
+                if x > cx {
+                    // Forward
+                    let dx = x - cx;
+                    let cuf = cost_model::cuf_cost(dx);
+                    let cha = cost_model::cha_cost(x);
+                    let cup = cost_model::cup_cost(y, x);
 
-            if cuf <= cha && cuf <= cup {
-                ansi::cuf(&mut self.writer, dx)?;
-            } else if cha <= cup {
-                ansi::cha(&mut self.writer, x)?;
+                    if cuf <= cha && cuf <= cup {
+                        ansi::cuf(&mut self.writer, dx)?;
+                    } else if cha <= cup {
+                        ansi::cha(&mut self.writer, x)?;
+                    } else {
+                        ansi::cup(&mut self.writer, y, x)?;
+                    }
+                } else if x < cx {
+                    // Backward
+                    let dx = cx - x;
+                    let cub = cost_model::cub_cost(dx);
+                    let cha = cost_model::cha_cost(x);
+                    let cup = cost_model::cup_cost(y, x);
+
+                    if cub <= cha && cub <= cup {
+                        ansi::cub(&mut self.writer, dx)?;
+                    } else if cha <= cup {
+                        ansi::cha(&mut self.writer, x)?;
+                    } else {
+                        ansi::cup(&mut self.writer, y, x)?;
+                    }
+                } else {
+                    // Same column (should have been caught by early check, but for safety)
+                }
             } else {
-                ansi::cup(&mut self.writer, y, x)?;
-            }
-        } else if same_row {
-            // Same row, backward or same column
-            let cha = cost_model::cha_cost(x);
-            let cup = cost_model::cup_cost(y, x);
-            if cha <= cup {
-                ansi::cha(&mut self.writer, x)?;
-            } else {
+                // Unknown x, same row (unlikely but possible if we only tracked y?)
+                // Fallback to absolute
                 ansi::cup(&mut self.writer, y, x)?;
             }
         } else {

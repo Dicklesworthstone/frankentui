@@ -30,7 +30,7 @@ use ftui_extras::text_effects::{
     StyledText, TextEffect, TransitionState,
 };
 use ftui_extras::visual_fx::{
-    FxQuality, MetaballsCanvasAdapter, PlasmaCanvasAdapter, PlasmaPalette, ThemeInputs,
+    FxQuality, MetaballsCanvasAdapter, PlasmaCanvasAdapter, PlasmaPalette, ThemeInputs, Backdrop, DoomMeltFx, QuakeConsoleFx,
 };
 use ftui_layout::{Constraint, Flex};
 use ftui_render::cell::PackedRgba;
@@ -126,8 +126,12 @@ pub struct VisualEffectsScreen {
     spin_lattice: SpinLatticeState,
     /// Doom E1M1 braille automap state (lazy init).
     doom_e1m1: RefCell<Option<DoomE1M1State>>,
+    /// Doom Melt (Fire) effect state.
+    doom_melt: RefCell<Option<DoomMeltFx>>,
     /// Quake E1M1 braille rasterizer state (lazy init).
     quake_e1m1: RefCell<Option<QuakeE1M1State>>,
+    /// Quake Console effect state.
+    quake_console: RefCell<Option<QuakeConsoleFx>>,
     // FPS tracking
     /// Frame times for FPS calculation (microseconds).
     frame_times: VecDeque<u64>,
@@ -145,6 +149,8 @@ pub struct VisualEffectsScreen {
     transition: TransitionState,
     /// Cached painter buffer (grow-only) for canvas rendering.
     painter: RefCell<Painter>,
+    /// Cached cell buffer (grow-only) for cell-based effects (Doom/Quake).
+    cell_buffer: RefCell<Vec<PackedRgba>>,
     /// Last render quality (used to throttle updates).
     last_quality: Cell<FxQuality>,
     /// Last effect that panicked during render (handled on next tick).
@@ -3439,7 +3445,9 @@ impl Default for VisualEffectsScreen {
             spiral: SpiralState::default(),
             spin_lattice: SpinLatticeState::default(),
             doom_e1m1: RefCell::new(None),
+            doom_melt: RefCell::new(None),
             quake_e1m1: RefCell::new(None),
+            quake_console: RefCell::new(None),
             // FPS tracking
             frame_times: VecDeque::with_capacity(60),
             last_frame: None,
@@ -3566,6 +3574,28 @@ impl VisualEffectsScreen {
             *guard = Some(QuakeE1M1State::default());
         }
         f(guard.as_mut().expect("quake state should be initialized"))
+    }
+
+    fn with_doom_melt_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut DoomMeltFx) -> R,
+    {
+        let mut guard = self.doom_melt.borrow_mut();
+        if guard.is_none() {
+            *guard = Some(DoomMeltFx::new());
+        }
+        f(guard.as_mut().expect("doom melt state should be initialized"))
+    }
+
+    fn with_quake_console_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut QuakeConsoleFx) -> R,
+    {
+        let mut guard = self.quake_console.borrow_mut();
+        if guard.is_none() {
+            *guard = Some(QuakeConsoleFx::new());
+        }
+        f(guard.as_mut().expect("quake console state should be initialized"))
     }
 
     fn is_fps_effect(&self) -> bool {

@@ -992,7 +992,7 @@ impl StatefulWidget for LogViewer {
         let visible_count = area.height as usize;
 
         // Determine which lines to show
-        let (start_idx, end_idx, at_bottom) = if let Some(indices) = render_indices {
+        let (start_idx, end_idx, _at_bottom_ignored) = if let Some(indices) = render_indices {
             // Filtered mode: show lines matching the filter
             let filtered_total = indices.len();
             if filtered_total == 0 {
@@ -1014,6 +1014,7 @@ impl StatefulWidget for LogViewer {
 
         let mut y = area.y;
         let mut lines_rendered = 0;
+        let mut last_rendered_index = None;
 
         for display_idx in start_idx..end_idx {
             if y >= area.bottom() {
@@ -1046,9 +1047,26 @@ impl StatefulWidget for LogViewer {
 
             y = y.saturating_add(lines_used);
             lines_rendered += 1;
+            last_rendered_index = Some(display_idx);
         }
 
         state.last_visible_lines = lines_rendered;
+
+        // Correct visible count in Virtualized based on actual wrapped rendering
+        self.virt.set_visible_count(lines_rendered);
+
+        // Determine if we are truly at the bottom (rendered the last item)
+        let at_bottom = if let Some(indices) = render_indices {
+            if let Some(last) = last_rendered_index {
+                last >= indices.len().saturating_sub(1)
+            } else {
+                false
+            }
+        } else if let Some(last) = last_rendered_index {
+            last >= total_lines.saturating_sub(1)
+        } else {
+            false
+        };
 
         // Render scroll indicator if not at bottom
         if !at_bottom && area.width >= 4 {

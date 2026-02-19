@@ -32,25 +32,33 @@ pub enum ThemeId {
     LumenLight,
     /// Nordic-inspired low-contrast dark theme.
     NordicFrost,
+    /// Doom (1993) industrial/hell theme.
+    Doom,
+    /// Quake (1996) gothic/medieval theme.
+    Quake,
     /// High contrast accessibility theme.
     HighContrast,
 }
 
 impl ThemeId {
-    pub const ALL: [ThemeId; 5] = [
+    pub const ALL: [ThemeId; 7] = [
         ThemeId::CyberpunkAurora,
         ThemeId::Darcula,
         ThemeId::LumenLight,
         ThemeId::NordicFrost,
+        ThemeId::Doom,
+        ThemeId::Quake,
         ThemeId::HighContrast,
     ];
 
     /// Themes suitable for normal use (excludes accessibility-only themes).
-    pub const STANDARD: [ThemeId; 4] = [
+    pub const STANDARD: [ThemeId; 6] = [
         ThemeId::CyberpunkAurora,
         ThemeId::Darcula,
         ThemeId::LumenLight,
         ThemeId::NordicFrost,
+        ThemeId::Doom,
+        ThemeId::Quake,
     ];
 
     pub const fn index(self) -> usize {
@@ -59,7 +67,9 @@ impl ThemeId {
             ThemeId::Darcula => 1,
             ThemeId::LumenLight => 2,
             ThemeId::NordicFrost => 3,
-            ThemeId::HighContrast => 4,
+            ThemeId::Doom => 4,
+            ThemeId::Quake => 5,
+            ThemeId::HighContrast => 6,
         }
     }
 
@@ -69,6 +79,8 @@ impl ThemeId {
             ThemeId::Darcula => "Darcula",
             ThemeId::LumenLight => "Lumen Light",
             ThemeId::NordicFrost => "Nordic Frost",
+            ThemeId::Doom => "Doom",
+            ThemeId::Quake => "Quake",
             ThemeId::HighContrast => "High Contrast",
         }
     }
@@ -85,6 +97,8 @@ impl ThemeId {
             ThemeId::Darcula => 1,
             ThemeId::LumenLight => 2,
             ThemeId::NordicFrost => 3,
+            ThemeId::Doom => 4,
+            ThemeId::Quake => 5,
             ThemeId::HighContrast => 0, // HighContrast -> CyberpunkAurora
         };
         let next_idx = (current_standard_idx + 1) % Self::STANDARD.len();
@@ -126,7 +140,7 @@ pub struct ThemePalette {
     pub syntax_punctuation: PackedRgba,
 }
 
-const THEMES: [ThemePalette; 5] = [
+const THEMES: [ThemePalette; 7] = [
     ThemePalette {
         bg_deep: PackedRgba::rgb(10, 14, 20),
         bg_base: PackedRgba::rgb(26, 31, 41),
@@ -175,24 +189,24 @@ const THEMES: [ThemePalette; 5] = [
         bg_highlight: PackedRgba::rgb(90, 96, 98),
         fg_primary: PackedRgba::rgb(169, 183, 198),
         fg_secondary: PackedRgba::rgb(146, 161, 177),
-        fg_muted: PackedRgba::rgb(118, 132, 147), // Brightened for WCAG 3:1
+        fg_muted: PackedRgba::rgb(118, 132, 147),
         fg_disabled: PackedRgba::rgb(85, 90, 92),
         accent_primary: PackedRgba::rgb(104, 151, 187),
         accent_secondary: PackedRgba::rgb(152, 118, 170),
-        accent_success: PackedRgba::rgb(130, 180, 110), // Brightened for WCAG 4.5:1
+        accent_success: PackedRgba::rgb(130, 180, 110),
         accent_warning: PackedRgba::rgb(255, 198, 109),
-        accent_error: PackedRgba::rgb(255, 115, 115), // Brightened for WCAG 4.5:1
+        accent_error: PackedRgba::rgb(255, 115, 115),
         accent_info: PackedRgba::rgb(179, 212, 252),
         accent_link: PackedRgba::rgb(74, 136, 199),
         accent_slots: [
             PackedRgba::rgb(104, 151, 187),
             PackedRgba::rgb(152, 118, 170),
-            PackedRgba::rgb(130, 180, 110), // Updated to match accent_success
+            PackedRgba::rgb(130, 180, 110),
             PackedRgba::rgb(255, 198, 109),
             PackedRgba::rgb(204, 120, 50),
             PackedRgba::rgb(191, 97, 106),
             PackedRgba::rgb(187, 181, 41),
-            PackedRgba::rgb(100, 150, 180), // Brightened for WCAG 3:1 (LAYOUT_LAB)
+            PackedRgba::rgb(100, 150, 180),
             PackedRgba::rgb(149, 102, 71),
             PackedRgba::rgb(134, 138, 147),
             PackedRgba::rgb(161, 99, 158),
@@ -219,27 +233,27 @@ const THEMES: [ThemePalette; 5] = [
         fg_disabled: PackedRgba::rgb(160, 172, 181),
         accent_primary: PackedRgba::rgb(37, 99, 235),
         accent_secondary: PackedRgba::rgb(124, 58, 237),
-        accent_success: PackedRgba::rgb(15, 120, 55), // Darkened for WCAG 4.5:1 on light bg
-        accent_warning: PackedRgba::rgb(180, 83, 9),  // Darkened for WCAG 3:1 on light bg
-        accent_error: PackedRgba::rgb(185, 28, 28),   // Darkened for WCAG 4.5:1 on light bg
+        accent_success: PackedRgba::rgb(15, 120, 55),
+        accent_warning: PackedRgba::rgb(180, 83, 9),
+        accent_error: PackedRgba::rgb(185, 28, 28),
         accent_info: PackedRgba::rgb(2, 132, 199),
         accent_link: PackedRgba::rgb(37, 99, 235),
         accent_slots: [
             PackedRgba::rgb(37, 99, 235),
             PackedRgba::rgb(124, 58, 237),
-            PackedRgba::rgb(15, 120, 55), // Updated to match accent_success
-            PackedRgba::rgb(180, 83, 9),  // Updated to match accent_warning
-            PackedRgba::rgb(185, 28, 28), // Updated to match accent_error
+            PackedRgba::rgb(15, 120, 55),
+            PackedRgba::rgb(180, 83, 9),
+            PackedRgba::rgb(185, 28, 28),
             PackedRgba::rgb(2, 132, 199),
-            PackedRgba::rgb(13, 148, 136), // Darkened teal for WCAG
-            PackedRgba::rgb(190, 24, 93),  // Darkened pink for WCAG
-            PackedRgba::rgb(79, 70, 229),  // Darkened indigo for WCAG
-            PackedRgba::rgb(194, 65, 12),  // Darkened orange for WCAG
-            PackedRgba::rgb(13, 148, 136), // Darkened emerald for WCAG
-            PackedRgba::rgb(126, 34, 206), // Darkened purple for WCAG
+            PackedRgba::rgb(13, 148, 136),
+            PackedRgba::rgb(190, 24, 93),
+            PackedRgba::rgb(79, 70, 229),
+            PackedRgba::rgb(194, 65, 12),
+            PackedRgba::rgb(13, 148, 136),
+            PackedRgba::rgb(126, 34, 206),
         ],
         syntax_keyword: PackedRgba::rgb(124, 58, 237),
-        syntax_string: PackedRgba::rgb(15, 120, 55), // Updated to match accent_success
+        syntax_string: PackedRgba::rgb(15, 120, 55),
         syntax_number: PackedRgba::rgb(217, 119, 6),
         syntax_comment: PackedRgba::rgb(154, 165, 177),
         syntax_function: PackedRgba::rgb(37, 99, 235),
@@ -261,7 +275,7 @@ const THEMES: [ThemePalette; 5] = [
         accent_secondary: PackedRgba::rgb(129, 161, 193),
         accent_success: PackedRgba::rgb(163, 190, 140),
         accent_warning: PackedRgba::rgb(235, 203, 139),
-        accent_error: PackedRgba::rgb(240, 150, 160), // Brightened for WCAG 4.5:1
+        accent_error: PackedRgba::rgb(240, 150, 160),
         accent_info: PackedRgba::rgb(143, 188, 187),
         accent_link: PackedRgba::rgb(136, 192, 208),
         accent_slots: [
@@ -269,7 +283,7 @@ const THEMES: [ThemePalette; 5] = [
             PackedRgba::rgb(129, 161, 193),
             PackedRgba::rgb(163, 190, 140),
             PackedRgba::rgb(235, 203, 139),
-            PackedRgba::rgb(240, 150, 160), // Updated to match accent_error
+            PackedRgba::rgb(240, 150, 160),
             PackedRgba::rgb(143, 188, 187),
             PackedRgba::rgb(180, 142, 173),
             PackedRgba::rgb(94, 129, 172),
@@ -286,6 +300,88 @@ const THEMES: [ThemePalette; 5] = [
         syntax_type: PackedRgba::rgb(143, 188, 187),
         syntax_operator: PackedRgba::rgb(216, 222, 233),
         syntax_punctuation: PackedRgba::rgb(229, 233, 240),
+    },
+    // Doom (1993)
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(26, 26, 26),
+        bg_base: PackedRgba::rgb(38, 38, 38),
+        bg_surface: PackedRgba::rgb(47, 47, 47),
+        bg_overlay: PackedRgba::rgb(64, 64, 64),
+        bg_highlight: PackedRgba::rgb(79, 79, 79),
+        fg_primary: PackedRgba::rgb(211, 211, 211),
+        fg_secondary: PackedRgba::rgb(169, 169, 169),
+        fg_muted: PackedRgba::rgb(128, 128, 128),
+        fg_disabled: PackedRgba::rgb(80, 80, 80),
+        accent_primary: PackedRgba::rgb(178, 34, 34),
+        accent_secondary: PackedRgba::rgb(50, 205, 50),
+        accent_success: PackedRgba::rgb(50, 205, 50),
+        accent_warning: PackedRgba::rgb(255, 215, 0),
+        accent_error: PackedRgba::rgb(139, 0, 0),
+        accent_info: PackedRgba::rgb(65, 105, 225),
+        accent_link: PackedRgba::rgb(30, 144, 255),
+        accent_slots: [
+            PackedRgba::rgb(178, 34, 34),
+            PackedRgba::rgb(50, 205, 50),
+            PackedRgba::rgb(255, 255, 0),
+            PackedRgba::rgb(255, 215, 0),
+            PackedRgba::rgb(139, 0, 0),
+            PackedRgba::rgb(65, 105, 225),
+            PackedRgba::rgb(255, 69, 0),
+            PackedRgba::rgb(173, 255, 47),
+            PackedRgba::rgb(255, 105, 180),
+            PackedRgba::rgb(0, 206, 209),
+            PackedRgba::rgb(148, 0, 211),
+            PackedRgba::rgb(124, 252, 0),
+        ],
+        syntax_keyword: PackedRgba::rgb(255, 215, 0),
+        syntax_string: PackedRgba::rgb(50, 205, 50),
+        syntax_number: PackedRgba::rgb(255, 69, 0),
+        syntax_comment: PackedRgba::rgb(128, 128, 128),
+        syntax_function: PackedRgba::rgb(65, 105, 225),
+        syntax_type: PackedRgba::rgb(178, 34, 34),
+        syntax_operator: PackedRgba::rgb(211, 211, 211),
+        syntax_punctuation: PackedRgba::rgb(169, 169, 169),
+    },
+    // Quake (1996)
+    ThemePalette {
+        bg_deep: PackedRgba::rgb(28, 28, 28),
+        bg_base: PackedRgba::rgb(40, 40, 40),
+        bg_surface: PackedRgba::rgb(46, 39, 34),
+        bg_overlay: PackedRgba::rgb(62, 54, 48),
+        bg_highlight: PackedRgba::rgb(74, 64, 58),
+        fg_primary: PackedRgba::rgb(210, 180, 140),
+        fg_secondary: PackedRgba::rgb(195, 176, 145),
+        fg_muted: PackedRgba::rgb(139, 115, 85),
+        fg_disabled: PackedRgba::rgb(92, 64, 51),
+        accent_primary: PackedRgba::rgb(139, 69, 19),
+        accent_secondary: PackedRgba::rgb(85, 107, 47),
+        accent_success: PackedRgba::rgb(85, 107, 47),
+        accent_warning: PackedRgba::rgb(210, 105, 30),
+        accent_error: PackedRgba::rgb(128, 0, 0),
+        accent_info: PackedRgba::rgb(70, 130, 180),
+        accent_link: PackedRgba::rgb(135, 206, 235),
+        accent_slots: [
+            PackedRgba::rgb(139, 69, 19),
+            PackedRgba::rgb(85, 107, 47),
+            PackedRgba::rgb(205, 133, 63),
+            PackedRgba::rgb(210, 105, 30),
+            PackedRgba::rgb(128, 0, 0),
+            PackedRgba::rgb(70, 130, 180),
+            PackedRgba::rgb(160, 82, 45),
+            PackedRgba::rgb(107, 142, 35),
+            PackedRgba::rgb(222, 184, 135),
+            PackedRgba::rgb(95, 158, 160),
+            PackedRgba::rgb(139, 0, 139),
+            PackedRgba::rgb(189, 183, 107),
+        ],
+        syntax_keyword: PackedRgba::rgb(210, 105, 30),
+        syntax_string: PackedRgba::rgb(85, 107, 47),
+        syntax_number: PackedRgba::rgb(205, 133, 63),
+        syntax_comment: PackedRgba::rgb(139, 115, 85),
+        syntax_function: PackedRgba::rgb(139, 69, 19),
+        syntax_type: PackedRgba::rgb(160, 82, 45),
+        syntax_operator: PackedRgba::rgb(210, 180, 140),
+        syntax_punctuation: PackedRgba::rgb(195, 176, 145),
     },
     // High Contrast accessibility theme (WCAG AAA compliant)
     ThemePalette {

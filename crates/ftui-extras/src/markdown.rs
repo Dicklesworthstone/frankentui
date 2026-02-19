@@ -1626,10 +1626,11 @@ impl<'t> RenderState<'t> {
         }
 
         // Keyboard key styling
-        if html_trimmed.starts_with("<kbd>") {
+        if let Some(start_pos) = html_lower.find("<kbd>") {
             // Extract content between <kbd> and </kbd> if on same line
-            if let Some(end_pos) = html_lower.find("</kbd>") {
-                let content = &html[5..end_pos];
+            if let Some(end_rel) = html_lower[start_pos..].find("</kbd>") {
+                let end_pos = start_pos + end_rel;
+                let content = &html[start_pos + 5..end_pos];
                 let styled = format!("[{content}]");
                 self.current_spans
                     .push(Span::styled(styled, self.theme.code_inline));
@@ -1649,10 +1650,11 @@ impl<'t> RenderState<'t> {
             self.needs_blank = true;
             return;
         }
-        if html_trimmed.starts_with("<summary>") {
+        if let Some(start_pos) = html_lower.find("<summary>") {
             // Extract summary text if present
-            if let Some(end_pos) = html_lower.find("</summary>") {
-                let content = &html[9..end_pos];
+            if let Some(end_rel) = html_lower[start_pos..].find("</summary>") {
+                let end_pos = start_pos + end_rel;
+                let content = &html[start_pos + 9..end_pos];
                 self.current_spans
                     .push(Span::styled(content.trim().to_string(), self.theme.strong));
                 self.flush_line();
@@ -1684,22 +1686,24 @@ impl<'t> RenderState<'t> {
         }
 
         // Subscript - convert to Unicode subscript if possible
-        if html_trimmed.starts_with("<sub>")
-            && let Some(end_pos) = html_lower.find("</sub>")
-        {
-            let content = &html[5..end_pos];
-            let subscript = to_unicode_subscript(content);
-            self.current_spans.push(Span::raw(subscript));
-            return;
+        if let Some(start_pos) = html_lower.find("<sub>") {
+            if let Some(end_rel) = html_lower[start_pos..].find("</sub>") {
+                let end_pos = start_pos + end_rel;
+                let content = &html[start_pos + 5..end_pos];
+                let subscript = to_unicode_subscript(content);
+                self.current_spans.push(Span::raw(subscript));
+                return;
+            }
         }
 
         // Superscript - convert to Unicode superscript if possible
-        if html_trimmed.starts_with("<sup>")
-            && let Some(end_pos) = html_lower.find("</sup>")
-        {
-            let content = &html[5..end_pos];
-            let superscript = to_unicode_superscript(content);
-            self.current_spans.push(Span::raw(superscript));
+        if let Some(start_pos) = html_lower.find("<sup>") {
+            if let Some(end_rel) = html_lower[start_pos..].find("</sup>") {
+                let end_pos = start_pos + end_rel;
+                let content = &html[start_pos + 5..end_pos];
+                let superscript = to_unicode_superscript(content);
+                self.current_spans.push(Span::raw(superscript));
+            }
         }
 
         // Other HTML is ignored in terminal output

@@ -659,6 +659,13 @@ impl TtyEventSource {
         }
         self.width = new_width;
         self.height = new_height;
+        // Reset sticky pixel detection on resize.
+        // If we previously entered pixel mode due to a resize race (clicks appearing "outside"
+        // the old small bounds), we must give the terminal a chance to prove it's using
+        // cells again against the new bounds.
+        self.mouse_coords_pixels = false;
+        self.inferred_pixel_width = 0;
+        self.inferred_pixel_height = 0;
         self.event_queue.push_back(Event::Resize {
             width: new_width,
             height: new_height,
@@ -677,8 +684,14 @@ impl TtyEventSource {
         };
 
         let outside_grid = mouse.x >= self.width || mouse.y >= self.height;
-        let strongly_outside =
-            mouse.x >= self.width.saturating_mul(2) || mouse.y >= self.height.saturating_mul(2);
+        // Heuristic: Pixel coordinates are typically much larger than cell coordinates.
+        // We use `width * 2` to scale with window size, but also enforce a static minimum (600)
+        // to prevent false positives on wide terminals during resize races (e.g. clicking at
+        // col 170 when internal width is still 80).
+        let strongly_outside = (mouse.x >= self.width.saturating_mul(2)
+            || mouse.y >= self.height.saturating_mul(2))
+            && (mouse.x > 600 || mouse.y > 400);
+
         if !self.mouse_coords_pixels && strongly_outside {
             self.mouse_coords_pixels = true;
         }
