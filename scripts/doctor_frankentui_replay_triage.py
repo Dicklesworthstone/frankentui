@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay/triage helper for doctor_franktentui e2e failures."""
+"""Replay/triage helper for doctor_frankentui e2e failures."""
 
 from __future__ import annotations
 
@@ -39,12 +39,12 @@ class Signal:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate replay/triage summary from doctor_franktentui e2e artifacts",
+        description="Generate replay/triage summary from doctor_frankentui e2e artifacts",
     )
     parser.add_argument(
         "--run-root",
         required=True,
-        help="Path to a doctor_franktentui e2e run root (contains meta/)",
+        help="Path to a doctor_frankentui e2e run root (contains meta/)",
     )
     parser.add_argument(
         "--output-json",

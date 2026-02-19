@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_DIR="${1:-${ROOT_DIR}/target/doctor_franktentui_coverage}"
-THRESHOLDS_TOML="${ROOT_DIR}/crates/doctor_franktentui/coverage/thresholds.toml"
+OUT_DIR="${1:-${ROOT_DIR}/target/doctor_frankentui_coverage}"
+THRESHOLDS_TOML="${ROOT_DIR}/crates/doctor_frankentui/coverage/thresholds.toml"
 SUMMARY_JSON="${OUT_DIR}/coverage_summary.json"
 GATE_JSON="${OUT_DIR}/coverage_gate_report.json"
 GATE_TXT="${OUT_DIR}/coverage_gate_report.txt"
@@ -42,9 +42,9 @@ except ModuleNotFoundError:
     )
 PY
 
-echo "[coverage] generating branch+line+function coverage summary for doctor_franktentui"
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target/doctor_franktentui_cov}" \
-  cargo llvm-cov -p doctor_franktentui --all-targets --branch --summary-only --json --output-path "${SUMMARY_JSON}"
+echo "[coverage] generating branch+line+function coverage summary for doctor_frankentui"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target/doctor_frankentui_cov}" \
+  cargo llvm-cov -p doctor_frankentui --all-targets --branch --summary-only --json --output-path "${SUMMARY_JSON}"
 
 python3 - "${THRESHOLDS_TOML}" "${SUMMARY_JSON}" "${GATE_JSON}" "${GATE_TXT}" <<'PY'
 import json
@@ -113,7 +113,7 @@ def aggregate_group(group_files: list[str], metric: str) -> float:
             raise RuntimeError(
                 f"ambiguous group file pattern '{pattern}' matched multiple files: {matches}. "
                 "Use a more specific repo-relative path like "
-                "'crates/doctor_franktentui/src/<file>.rs'."
+                "'crates/doctor_frankentui/src/<file>.rs'."
             )
 
         selected_paths.update(matches)
@@ -130,7 +130,12 @@ def aggregate_group(group_files: list[str], metric: str) -> float:
         count += int(metric_summary["count"])
 
     if count == 0:
-        raise RuntimeError(f"group has zero tracked elements for metric={metric} files={group_files}")
+        if metric == "branches":
+            # Files with no branches should not fail per-module coverage floors.
+            return 100.0
+        raise RuntimeError(
+            f"group has zero tracked elements for metric={metric} files={group_files}"
+        )
 
     return covered * 100.0 / count
 

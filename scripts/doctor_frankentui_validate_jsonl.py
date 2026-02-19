@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate doctor_franktentui e2e JSONL telemetry against schema profile."""
+"""Validate doctor_frankentui e2e JSONL telemetry against schema profile."""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate doctor_franktentui e2e JSONL telemetry",
+        description="Validate doctor_frankentui e2e JSONL telemetry",
     )
     parser.add_argument("--input", required=True, help="Path to JSONL event stream")
     parser.add_argument(
         "--schema",
-        default="crates/doctor_franktentui/coverage/e2e_jsonl_schema.json",
+        default="crates/doctor_frankentui/coverage/e2e_jsonl_schema.json",
         help="Path to schema profile JSON",
     )
     parser.add_argument(

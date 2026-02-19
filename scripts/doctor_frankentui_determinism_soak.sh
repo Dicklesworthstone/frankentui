@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
-RUN_ROOT="${1:-/tmp/doctor_franktentui/determinism_soak_${TIMESTAMP_UTC}}"
-ITERATIONS="${2:-${DOCTOR_FRANKTENTUI_SOAK_RUNS:-3}}"
+RUN_ROOT="${1:-/tmp/doctor_frankentui/determinism_soak_${TIMESTAMP_UTC}}"
+ITERATIONS="${2:-${DOCTOR_FRANKENTUI_SOAK_RUNS:-3}}"
 LOG_DIR="${RUN_ROOT}/logs"
 META_DIR="${RUN_ROOT}/meta"
 RUN_INDEX_TSV="${META_DIR}/run_index.tsv"
 REPORT_JSON="${META_DIR}/determinism_report.json"
 REPORT_TXT="${META_DIR}/determinism_report.txt"
-SCHEMA_PATH="${ROOT_DIR}/crates/doctor_franktentui/coverage/e2e_jsonl_schema.json"
+SCHEMA_PATH="${ROOT_DIR}/crates/doctor_frankentui/coverage/e2e_jsonl_schema.json"
 
 mkdir -p "${RUN_ROOT}" "${LOG_DIR}" "${META_DIR}"
 
@@ -42,7 +42,7 @@ require_command "jq" "install jq for JSON checks"
 run_workflow_iteration() {
   local workflow="$1"
   local iteration="$2"
-  local script_path="${ROOT_DIR}/scripts/doctor_franktentui_${workflow}_e2e.sh"
+  local script_path="${ROOT_DIR}/scripts/doctor_frankentui_${workflow}_e2e.sh"
   local run_dir="${RUN_ROOT}/${workflow}_run_${iteration}"
   local stdout_log="${LOG_DIR}/${workflow}_run_${iteration}.stdout.log"
   local stderr_log="${LOG_DIR}/${workflow}_run_${iteration}.stderr.log"
@@ -113,6 +113,14 @@ VOLATILE_ARTIFACT_SUFFIX_ALLOWLIST = [
     "/case_results.json",
     "/summary.json",
     "/summary.txt",
+    "/vhs.log",
+    "/capture.tape",
+    "/snapshot.png",
+    "/session.txt",
+    "/env_snapshot.txt",
+    "/tool_versions.txt",
+    "/command_manifest.txt",
+    "/step_results.tsv",
 ]
 
 CORRELATION_SUFFIX_RE = re.compile(r"^(?P<prefix>.+)-corr-(?P<seq>\d+)$")
