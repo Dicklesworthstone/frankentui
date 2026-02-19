@@ -1356,6 +1356,7 @@ impl RenderItem for &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_new_virtualized() {
@@ -1397,7 +1398,8 @@ mod tests {
             virt.push(i);
         }
         let range = virt.visible_range(5);
-        assert_eq!(range, 0..1);
+        // Includes the partially visible second item.
+        assert_eq!(range, 0..2);
     }
 
     #[test]
@@ -1437,7 +1439,8 @@ mod tests {
         virt.push(3);
 
         let range = virt.visible_range(10);
-        assert_eq!(range, 0..1);
+        // Includes the partially visible second item.
+        assert_eq!(range, 0..2);
     }
 
     #[test]
@@ -1466,7 +1469,8 @@ mod tests {
 
         // Default height = 2, viewport 5 fits 2 items (2 + 2) but not the third.
         let range = virt.visible_range(5);
-        assert_eq!(range, 0..2);
+        // Includes the partially visible third item.
+        assert_eq!(range, 0..3);
     }
 
     #[test]
@@ -1562,7 +1566,8 @@ mod tests {
 
         virt.scroll_to(15);
         virt.page_up();
-        assert_eq!(virt.scroll_offset(), 10);
+        // Page navigation keeps 1 row of context (visible_count - 1).
+        assert_eq!(virt.scroll_offset(), 11);
 
         virt.page_down();
         assert_eq!(virt.scroll_offset(), 15);
@@ -1738,15 +1743,15 @@ mod tests {
 
         // Page down
         virt.page_down();
-        assert_eq!(virt.scroll_offset(), 10);
+        assert_eq!(virt.scroll_offset(), 9);
 
         // Page down again
         virt.page_down();
-        assert_eq!(virt.scroll_offset(), 20);
+        assert_eq!(virt.scroll_offset(), 18);
 
         // Page up
         virt.page_up();
-        assert_eq!(virt.scroll_offset(), 10);
+        assert_eq!(virt.scroll_offset(), 9);
 
         // Page up again
         virt.page_up();
@@ -2024,15 +2029,15 @@ mod tests {
 
         // Page down
         state.page_down(50);
-        assert_eq!(state.scroll_offset(), 10);
+        assert_eq!(state.scroll_offset(), 9);
 
         // Page down again
         state.page_down(50);
-        assert_eq!(state.scroll_offset(), 20);
+        assert_eq!(state.scroll_offset(), 18);
 
         // Page up
         state.page_up(50);
-        assert_eq!(state.scroll_offset(), 10);
+        assert_eq!(state.scroll_offset(), 9);
 
         // Page up again
         state.page_up(50);
@@ -2168,6 +2173,103 @@ mod tests {
         tracker.resize(2);
         assert_eq!(tracker.len(), 2);
         assert_eq!(tracker.total_height(), 4);
+    }
+
+    #[test]
+    fn test_variable_heights_fenwick_point_update_and_range_query() {
+        fn range_sum(tracker: &VariableHeightsFenwick, left: usize, right: usize) -> u32 {
+            tracker
+                .offset_of_item(right.saturating_add(1))
+                .saturating_sub(tracker.offset_of_item(left))
+        }
+
+        let mut tracker = VariableHeightsFenwick::from_heights(&[2, 4, 1, 3, 5, 2], 1);
+        let mut naive = [2_u32, 4, 1, 3, 5, 2];
+
+        tracker.set(2, 7);
+        naive[2] = 7;
+        tracker.set(5, 1);
+        naive[5] = 1;
+        tracker.set(0, 6);
+        naive[0] = 6;
+
+        let mut running = 0u32;
+        for (i, value) in naive.iter().enumerate() {
+            running = running.saturating_add(*value);
+            assert_eq!(tracker.offset_of_item(i + 1), running);
+        }
+
+        let naive_sum = |left: usize, right: usize| -> u32 { naive[left..=right].iter().sum() };
+        assert_eq!(range_sum(&tracker, 0, 0), naive_sum(0, 0));
+        assert_eq!(range_sum(&tracker, 1, 3), naive_sum(1, 3));
+        assert_eq!(range_sum(&tracker, 2, 5), naive_sum(2, 5));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn property_variable_heights_fenwick_prefix_sums_match_naive(
+            heights in proptest::collection::vec(1u16..=32u16, 1..160)
+        ) {
+            let tracker = VariableHeightsFenwick::from_heights(&heights, 1);
+
+            let mut naive_prefix = 0u32;
+            prop_assert_eq!(tracker.offset_of_item(0), 0);
+            for (i, height) in heights.iter().enumerate() {
+                naive_prefix = naive_prefix.saturating_add(u32::from(*height));
+                prop_assert_eq!(
+                    tracker.offset_of_item(i + 1),
+                    naive_prefix,
+                    "prefix mismatch at index {} for heights {:?}",
+                    i,
+                    heights
+                );
+            }
+        }
+
+        #[test]
+        fn property_variable_heights_fenwick_visible_count_matches_naive(
+            heights in proptest::collection::vec(1u16..=24u16, 1..128),
+            start_idx in 0usize..192usize,
+            viewport_height in 1u16..=120u16
+        ) {
+            fn naive_visible_count(heights: &[u16], start_idx: usize, viewport_height: u16) -> usize {
+                if heights.is_empty() || viewport_height == 0 {
+                    return 0;
+                }
+                let start = start_idx.min(heights.len());
+                if start >= heights.len() {
+                    return 0;
+                }
+
+                let start_offset: u32 = heights[..start].iter().map(|&h| u32::from(h)).sum();
+                let end_offset = start_offset.saturating_add(u32::from(viewport_height));
+                let mut count = 0usize;
+                let mut cursor = start_offset;
+                for &height in &heights[start..] {
+                    if cursor >= end_offset {
+                        break;
+                    }
+                    count = count.saturating_add(1);
+                    cursor = cursor.saturating_add(u32::from(height));
+                }
+
+                if count == 0 { 1 } else { count }
+            }
+
+            let tracker = VariableHeightsFenwick::from_heights(&heights, 1);
+            let expected = naive_visible_count(&heights, start_idx, viewport_height);
+            let actual = tracker.visible_count(start_idx, viewport_height);
+            prop_assert_eq!(
+                actual,
+                expected,
+                "visible_count mismatch for start={} viewport={} heights={:?}",
+                start_idx,
+                viewport_height,
+                heights
+            );
+        }
     }
 
     #[test]

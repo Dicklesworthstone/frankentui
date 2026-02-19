@@ -29,6 +29,8 @@ pub struct TextInput {
     scroll_cells: std::cell::Cell<usize>,
     /// Selection anchor (grapheme index). When set, selection spans from anchor to cursor.
     selection_anchor: Option<usize>,
+    /// Active IME composition text (preedit), if any.
+    ime_composition: Option<String>,
     /// Placeholder text.
     placeholder: String,
     /// Mask character for password mode.
@@ -186,13 +188,66 @@ impl TextInput {
         Some(&self.value[byte_start..byte_end])
     }
 
+    /// Start an IME composition session.
+    pub fn ime_start_composition(&mut self) {
+        self.ime_composition = Some(String::new());
+        #[cfg(feature = "tracing")]
+        self.trace_edit("ime_start");
+    }
+
+    /// Update active IME preedit text.
+    ///
+    /// Starts composition automatically if none is active.
+    pub fn ime_update_composition(&mut self, preedit: impl Into<String>) {
+        self.ime_composition = Some(preedit.into());
+        #[cfg(feature = "tracing")]
+        self.trace_edit("ime_update");
+    }
+
+    /// Commit active IME preedit text into the input value.
+    ///
+    /// Returns `true` if a composition session existed (even if empty).
+    pub fn ime_commit_composition(&mut self) -> bool {
+        let Some(preedit) = self.ime_composition.take() else {
+            return false;
+        };
+
+        if !preedit.is_empty() {
+            self.delete_selection();
+            self.insert_text(&preedit);
+        }
+
+        #[cfg(feature = "tracing")]
+        self.trace_edit("ime_commit");
+
+        true
+    }
+
+    /// Cancel the active IME composition session.
+    ///
+    /// Returns `true` if a composition session was active.
+    pub fn ime_cancel_composition(&mut self) -> bool {
+        let cancelled = self.ime_composition.take().is_some();
+        #[cfg(feature = "tracing")]
+        if cancelled {
+            self.trace_edit("ime_cancel");
+        }
+        cancelled
+    }
+
+    /// Get active IME preedit text, if any.
+    #[must_use]
+    pub fn ime_composition(&self) -> Option<&str> {
+        self.ime_composition.as_deref()
+    }
+
     // --- Event handling ---
 
     /// Handle a terminal event.
     ///
     /// Returns `true` if the state changed.
     pub fn handle_event(&mut self, event: &Event) -> bool {
-        match event {
+        let changed = match event {
             Event::Key(key)
                 if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
             {
@@ -204,7 +259,14 @@ impl TextInput {
                 true
             }
             _ => false,
+        };
+
+        #[cfg(feature = "tracing")]
+        if changed {
+            self.trace_edit(Self::event_operation_name(event));
         }
+
+        changed
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> bool {
@@ -287,6 +349,60 @@ impl TextInput {
                 true
             }
             _ => false,
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    fn trace_edit(&self, operation: &'static str) {
+        let _span = tracing::debug_span!(
+            "input.edit",
+            operation,
+            cursor_position = self.cursor,
+            grapheme_count = self.grapheme_count(),
+            has_selection = self.selection_anchor.is_some()
+        )
+        .entered();
+    }
+
+    #[cfg(feature = "tracing")]
+    fn event_operation_name(event: &Event) -> &'static str {
+        match event {
+            Event::Key(key) => Self::key_operation_name(key),
+            Event::Paste(_) => "paste",
+            Event::Resize { .. } => "resize",
+            Event::Focus(_) => "focus",
+            Event::Mouse(_) => "mouse",
+            Event::Clipboard(_) => "clipboard",
+            Event::Tick => "tick",
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    fn key_operation_name(key: &KeyEvent) -> &'static str {
+        let ctrl = key.modifiers.contains(Modifiers::CTRL);
+        let shift = key.modifiers.contains(Modifiers::SHIFT);
+
+        match key.code {
+            KeyCode::Char(_) if !ctrl => "insert_char",
+            KeyCode::Char('a') if ctrl => "select_all",
+            KeyCode::Char('w') if ctrl => "delete_word_back",
+            KeyCode::Backspace if ctrl => "delete_word_back",
+            KeyCode::Backspace => "delete_back",
+            KeyCode::Delete if ctrl => "delete_word_forward",
+            KeyCode::Delete => "delete_forward",
+            KeyCode::Left if ctrl && shift => "move_word_left_select",
+            KeyCode::Left if ctrl => "move_word_left",
+            KeyCode::Left if shift => "move_left_select",
+            KeyCode::Left => "move_left",
+            KeyCode::Right if ctrl && shift => "move_word_right_select",
+            KeyCode::Right if ctrl => "move_word_right",
+            KeyCode::Right if shift => "move_right_select",
+            KeyCode::Right => "move_right",
+            KeyCode::Home if shift => "move_home_select",
+            KeyCode::Home => "move_home",
+            KeyCode::End if shift => "move_end_select",
+            KeyCode::End => "move_end",
+            _ => "key_other",
         }
     }
 
@@ -962,6 +1078,15 @@ impl TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tracing")]
+    use std::sync::{Arc, Mutex};
+
+    #[cfg(feature = "tracing")]
+    use tracing::Subscriber;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::Layer;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::layer::{Context, SubscriberExt};
 
     #[allow(dead_code)]
     fn cell_at(frame: &Frame, x: u16, y: u16) -> Cell {
@@ -970,6 +1095,87 @@ mod tests {
             .get(x, y)
             .copied()
             .unwrap_or_else(|| panic!("test cell should exist at ({x},{y})"))
+    }
+
+    #[cfg(feature = "tracing")]
+    #[derive(Debug, Default)]
+    struct InputTraceState {
+        span_count: usize,
+        has_cursor_position_field: bool,
+        cursor_positions: Vec<usize>,
+        operations: Vec<String>,
+    }
+
+    #[cfg(feature = "tracing")]
+    struct InputTraceCapture {
+        state: Arc<Mutex<InputTraceState>>,
+    }
+
+    #[cfg(feature = "tracing")]
+    impl<S> Layer<S> for InputTraceCapture
+    where
+        S: Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            if attrs.metadata().name() != "input.edit" {
+                return;
+            }
+
+            #[derive(Default)]
+            struct InputEditVisitor {
+                cursor_position: Option<usize>,
+                operation: Option<String>,
+            }
+
+            impl tracing::field::Visit for InputEditVisitor {
+                fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+                    if field.name() == "cursor_position" {
+                        self.cursor_position = usize::try_from(value).ok();
+                    }
+                }
+
+                fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                    if field.name() == "cursor_position" {
+                        self.cursor_position = usize::try_from(value).ok();
+                    }
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "operation" {
+                        self.operation = Some(format!("{value:?}").trim_matches('"').to_owned());
+                    }
+                }
+
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "operation" {
+                        self.operation = Some(value.to_owned());
+                    }
+                }
+            }
+
+            let fields = attrs.metadata().fields();
+            let mut visitor = InputEditVisitor::default();
+            attrs.record(&mut visitor);
+
+            let mut state = self.state.lock().expect("trace state lock");
+            state.span_count += 1;
+            state.has_cursor_position_field |= fields.field("cursor_position").is_some();
+            if let Some(cursor) = visitor.cursor_position {
+                state.cursor_positions.push(cursor);
+            }
+            if let Some(operation) = visitor.operation {
+                state.operations.push(operation);
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -1224,6 +1430,87 @@ mod tests {
         assert_eq!(input.value(), "ab");
         assert_eq!(input.cursor(), 1);
         assert_eq!(input.grapheme_count(), 2);
+    }
+
+    #[test]
+    fn test_ime_composition_start_update_commit() {
+        let mut input = TextInput::new().with_value("ab");
+        input.cursor = 1;
+
+        input.ime_start_composition();
+        assert_eq!(input.ime_composition(), Some(""));
+
+        input.ime_update_composition("漢");
+        assert_eq!(input.ime_composition(), Some("漢"));
+
+        assert!(input.ime_commit_composition());
+        assert_eq!(input.ime_composition(), None);
+        assert_eq!(input.value(), "a漢b");
+        assert_eq!(input.cursor(), 2);
+    }
+
+    #[test]
+    fn test_ime_composition_cancel_keeps_value() {
+        let mut input = TextInput::new().with_value("hello");
+        input.ime_start_composition();
+        input.ime_update_composition("👩‍💻");
+        assert_eq!(input.ime_composition(), Some("👩‍💻"));
+        assert!(input.ime_cancel_composition());
+        assert_eq!(input.ime_composition(), None);
+        assert_eq!(input.value(), "hello");
+        assert_eq!(input.cursor(), 5);
+    }
+
+    #[test]
+    fn test_ime_commit_without_session_is_noop() {
+        let mut input = TextInput::new().with_value("abc");
+        assert!(!input.ime_commit_composition());
+        assert_eq!(input.value(), "abc");
+        assert_eq!(input.cursor(), 3);
+    }
+
+    #[test]
+    fn test_flag_emoji_grapheme_delete_and_cursor() {
+        let mut input = TextInput::new().with_value("a🇺🇸b");
+        assert_eq!(input.grapheme_count(), 3);
+        input.cursor = 2;
+        input.delete_char_back();
+        assert_eq!(input.value(), "ab");
+        assert_eq!(input.cursor(), 1);
+    }
+
+    #[test]
+    fn test_combining_grapheme_delete_and_cursor() {
+        let mut input = TextInput::new().with_value("a\u{0301}b");
+        assert_eq!(input.grapheme_count(), 2);
+        input.cursor = 1;
+        input.delete_char_back();
+        assert_eq!(input.value(), "b");
+        assert_eq!(input.cursor(), 0);
+    }
+
+    #[test]
+    fn test_bidi_logical_cursor_movement_over_graphemes() {
+        let mut input = TextInput::new().with_value("AאבB");
+        assert_eq!(input.grapheme_count(), 4);
+
+        input.move_cursor_left();
+        assert_eq!(input.cursor(), 3);
+        input.move_cursor_left();
+        assert_eq!(input.cursor(), 2);
+        input.move_cursor_left();
+        assert_eq!(input.cursor(), 1);
+        input.move_cursor_left();
+        assert_eq!(input.cursor(), 0);
+
+        input.move_cursor_right();
+        assert_eq!(input.cursor(), 1);
+        input.move_cursor_right();
+        assert_eq!(input.cursor(), 2);
+        input.move_cursor_right();
+        assert_eq!(input.cursor(), 3);
+        input.move_cursor_right();
+        assert_eq!(input.cursor(), 4);
     }
 
     #[test]
@@ -1576,5 +1863,47 @@ mod tests {
         let cell = cell_at(&frame, 0, 0);
         // If bug exists, this assertion will fail because cell is empty/default
         assert!(!cell.is_empty(), "Wide char should be visible");
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_input_edit_span_tracks_cursor_positions() {
+        let state = Arc::new(Mutex::new(InputTraceState::default()));
+        let subscriber = tracing_subscriber::registry().with(InputTraceCapture {
+            state: Arc::clone(&state),
+        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        let mut input = TextInput::new().with_value("ab");
+        assert!(input.handle_event(&Event::Key(KeyEvent::new(KeyCode::Char('c')))));
+        assert!(input.handle_event(&Event::Key(KeyEvent::new(KeyCode::Left))));
+        assert!(input.handle_event(&Event::Key(KeyEvent::new(KeyCode::Backspace))));
+
+        tracing::callsite::rebuild_interest_cache();
+        let snapshot = state.lock().expect("trace state lock");
+        assert!(
+            snapshot.span_count >= 3,
+            "expected at least 3 input.edit spans, got {}",
+            snapshot.span_count
+        );
+        assert!(
+            snapshot.has_cursor_position_field,
+            "input.edit span missing cursor_position field"
+        );
+        assert_eq!(
+            snapshot.cursor_positions,
+            vec![3, 2, 1],
+            "expected cursor positions after insert/left/backspace"
+        );
+        assert!(
+            snapshot.operations.starts_with(&[
+                "insert_char".to_string(),
+                "move_left".to_string(),
+                "delete_back".to_string()
+            ]),
+            "unexpected operations: {:?}",
+            snapshot.operations
+        );
     }
 }

@@ -717,12 +717,10 @@ mod tests {
         let para = Paragraph::new(Text::raw("Hi")).block(block);
         let constraints = para.measure(Size::MAX);
 
-        // "Hi" = 2 wide, 1 tall, plus 2 for borders on each axis
-        assert_eq!(constraints.preferred, Size::new(4, 3));
-        // Min width: "Hi" = 2 + 2 (borders) = 4
-        assert_eq!(constraints.min.width, 4);
-        // Min height: 1 + 2 (borders) = 3
-        assert_eq!(constraints.min.height, 3);
+        // "Hi" = 2 wide, 1 tall, plus chrome (borders + padding) = 4 on each axis.
+        assert_eq!(constraints.preferred, Size::new(6, 5));
+        assert_eq!(constraints.min.width, 6);
+        assert_eq!(constraints.min.height, 5);
     }
 
     #[test]

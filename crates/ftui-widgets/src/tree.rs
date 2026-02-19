@@ -22,12 +22,14 @@ use crate::mouse::MouseResult;
 use crate::stateful::Stateful;
 use crate::undo_support::{TreeUndoExt, UndoSupport, UndoWidgetId};
 use crate::{Widget, draw_text_span};
-use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+use ftui_core::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ftui_core::geometry::Rect;
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
 use std::any::Any;
 use std::collections::HashSet;
+#[cfg(feature = "tracing")]
+use std::time::Instant;
 
 /// Guide character styles for tree rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,8 +101,11 @@ impl TreeGuides {
 #[derive(Debug, Clone)]
 pub struct TreeNode {
     label: String,
+    icon: Option<String>,
     /// Child nodes (crate-visible for undo support).
     pub(crate) children: Vec<TreeNode>,
+    /// Lazily materialized children.
+    lazy_children: Option<Vec<TreeNode>>,
     /// Whether this node is expanded (crate-visible for undo support).
     pub(crate) expanded: bool,
 }
@@ -111,7 +116,9 @@ impl TreeNode {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            icon: None,
             children: Vec::new(),
+            lazy_children: None,
             expanded: true,
         }
     }
@@ -130,9 +137,29 @@ impl TreeNode {
         self
     }
 
+    /// Set an icon prefix rendered before the label.
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Configure lazily materialized children.
+    ///
+    /// The node starts collapsed and children are attached when first expanded.
+    #[must_use]
+    pub fn with_lazy_children(mut self, nodes: Vec<TreeNode>) -> Self {
+        self.lazy_children = Some(nodes);
+        self.expanded = false;
+        self
+    }
+
     /// Set whether this node is expanded.
     #[must_use]
     pub fn with_expanded(mut self, expanded: bool) -> Self {
+        if expanded {
+            self.materialize_lazy_children();
+        }
         self.expanded = expanded;
         self
     }
@@ -149,6 +176,22 @@ impl TreeNode {
         &self.children
     }
 
+    /// Optional icon rendered before label.
+    #[must_use]
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
+    }
+
+    /// Whether this node has loaded or lazy children.
+    #[must_use]
+    pub fn has_children(&self) -> bool {
+        !self.children.is_empty()
+            || self
+                .lazy_children
+                .as_ref()
+                .is_some_and(|children| !children.is_empty())
+    }
+
     /// Whether this node is expanded.
     #[must_use]
     pub fn is_expanded(&self) -> bool {
@@ -157,7 +200,44 @@ impl TreeNode {
 
     /// Toggle the expanded state.
     pub fn toggle_expanded(&mut self) {
+        if !self.expanded {
+            self.materialize_lazy_children();
+        }
         self.expanded = !self.expanded;
+    }
+
+    fn materialize_lazy_children(&mut self) {
+        if let Some(mut lazy) = self.lazy_children.take() {
+            self.children.append(&mut lazy);
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    fn total_count(&self) -> usize {
+        let mut count = 1usize;
+        for child in &self.children {
+            count = count.saturating_add(child.total_count());
+        }
+        if let Some(lazy) = &self.lazy_children {
+            for child in lazy {
+                count = count.saturating_add(child.total_count());
+            }
+        }
+        count
+    }
+
+    #[cfg(feature = "tracing")]
+    fn expanded_count(&self) -> usize {
+        let mut count = usize::from(self.expanded && self.has_children());
+        for child in &self.children {
+            count = count.saturating_add(child.expanded_count());
+        }
+        if let Some(lazy) = &self.lazy_children {
+            for child in lazy {
+                count = count.saturating_add(child.expanded_count());
+            }
+        }
+        count
     }
 
     /// Count all visible (expanded) nodes, including this one.
@@ -181,7 +261,7 @@ impl TreeNode {
             format!("{}/{}", prefix, self.label)
         };
 
-        if self.expanded && !self.children.is_empty() {
+        if self.expanded && self.has_children() {
             out.insert(path.clone());
         }
 
@@ -199,8 +279,11 @@ impl TreeNode {
             format!("{}/{}", prefix, self.label)
         };
 
-        if !self.children.is_empty() {
+        if self.has_children() {
             self.expanded = expanded_paths.contains(&path);
+            if self.expanded {
+                self.materialize_lazy_children();
+            }
         }
 
         for child in &mut self.children {
@@ -229,6 +312,8 @@ pub struct Tree {
     persistence_id: Option<String>,
     /// Optional hit ID for mouse interaction.
     hit_id: Option<HitId>,
+    /// Optional case-insensitive search query.
+    search_query: Option<String>,
 }
 
 impl Tree {
@@ -245,6 +330,7 @@ impl Tree {
             root_style: Style::default(),
             persistence_id: None,
             hit_id: None,
+            search_query: None,
         }
     }
 
@@ -301,6 +387,65 @@ impl Tree {
     pub fn hit_id(mut self, id: HitId) -> Self {
         self.hit_id = Some(id);
         self
+    }
+
+    /// Apply a case-insensitive search query filter.
+    #[must_use]
+    pub fn with_search_query(mut self, query: impl Into<String>) -> Self {
+        let query = query.into();
+        self.search_query = if query.trim().is_empty() {
+            None
+        } else {
+            Some(query)
+        };
+        self
+    }
+
+    /// Clear search filtering.
+    #[must_use]
+    pub fn without_search_query(mut self) -> Self {
+        self.search_query = None;
+        self
+    }
+
+    #[cfg(feature = "tracing")]
+    fn total_nodes(&self) -> usize {
+        if self.show_root {
+            self.root.total_count()
+        } else if self.root.expanded {
+            self.root
+                .children
+                .iter()
+                .fold(0usize, |acc, child| acc.saturating_add(child.total_count()))
+        } else {
+            0
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    fn visible_nodes(&self) -> usize {
+        if self.show_root {
+            self.root.visible_count()
+        } else if self.root.expanded {
+            self.root.children.iter().fold(0usize, |acc, child| {
+                acc.saturating_add(child.visible_count())
+            })
+        } else {
+            0
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    fn expanded_nodes(&self) -> usize {
+        if self.show_root {
+            self.root.expanded_count()
+        } else if self.root.expanded {
+            self.root.children.iter().fold(0usize, |acc, child| {
+                acc.saturating_add(child.expanded_count())
+            })
+        } else {
+            0
+        }
     }
 
     /// Get a reference to the root node.
@@ -372,6 +517,17 @@ impl Tree {
         } else {
             self.label_style
         };
+        if let Some(icon) = node.icon() {
+            let icon_style = if deg.apply_styling() {
+                style
+            } else {
+                Style::default()
+            };
+            x = draw_text_span(frame, x, y, icon, icon_style, max_x);
+            if x < max_x {
+                x = draw_text_span(frame, x, y, " ", icon_style, max_x);
+            }
+        }
 
         if deg.apply_styling() {
             draw_text_span(frame, x, y, &node.label, style, max_x);
@@ -400,32 +556,94 @@ impl Tree {
     }
 }
 
+fn filter_node(node: &TreeNode, query: &str) -> Option<TreeNode> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Some(node.clone());
+    }
+
+    let query_lower = query.to_lowercase();
+    let label_matches = node.label.to_lowercase().contains(&query_lower)
+        || node
+            .icon
+            .as_deref()
+            .is_some_and(|icon| icon.to_lowercase().contains(&query_lower));
+
+    let mut filtered_children = Vec::new();
+    for child in &node.children {
+        if let Some(filtered) = filter_node(child, query) {
+            filtered_children.push(filtered);
+        }
+    }
+
+    let mut filtered_lazy = Vec::new();
+    if let Some(lazy) = &node.lazy_children {
+        for child in lazy {
+            if let Some(filtered) = filter_node(child, query) {
+                filtered_lazy.push(filtered);
+            }
+        }
+    }
+
+    if !label_matches && filtered_children.is_empty() && filtered_lazy.is_empty() {
+        return None;
+    }
+
+    let mut filtered = node.clone();
+    if !label_matches {
+        // Materialize filtered lazy matches into `children` so render/flatten traversal,
+        // which walks `children`, includes lazy descendants that matched the query.
+        filtered.children = filtered_children;
+        filtered.children.extend(filtered_lazy);
+        filtered.lazy_children = None;
+        filtered.expanded = true;
+    }
+    Some(filtered)
+}
+
 impl Widget for Tree {
     fn render(&self, area: Rect, frame: &mut Frame) {
         if area.width == 0 || area.height == 0 {
             return;
         }
 
+        #[cfg(feature = "tracing")]
+        let render_start = Instant::now();
+        #[cfg(feature = "tracing")]
+        let total_nodes = self.total_nodes();
+        #[cfg(feature = "tracing")]
+        let visible_nodes = self.visible_nodes();
+        #[cfg(feature = "tracing")]
+        let expanded_count = self.expanded_nodes();
+        #[cfg(feature = "tracing")]
+        let render_span = tracing::debug_span!(
+            "tree.render",
+            total_nodes,
+            visible_nodes,
+            expanded_count,
+            render_duration_us = tracing::field::Empty,
+        );
+        #[cfg(feature = "tracing")]
+        let _render_guard = render_span.enter();
+
         let deg = frame.buffer.degradation;
         let mut current_row = 0;
         let mut is_last = Vec::with_capacity(8);
 
+        let filtered_root = self
+            .search_query
+            .as_deref()
+            .and_then(|query| filter_node(&self.root, query));
+        let root = filtered_root.as_ref().unwrap_or(&self.root);
+
         if self.show_root {
-            self.render_node(
-                &self.root,
-                0,
-                &mut is_last,
-                area,
-                frame,
-                &mut current_row,
-                deg,
-            );
-        } else if self.root.expanded {
+            self.render_node(root, 0, &mut is_last, area, frame, &mut current_row, deg);
+        } else if root.expanded {
             // If root is hidden but expanded, render children as top-level nodes.
             // We do NOT push to is_last for the root level, effectively shifting
             // the hierarchy up by one level.
-            let child_count = self.root.children.len();
-            for (i, child) in self.root.children.iter().enumerate() {
+            let child_count = root.children.len();
+            for (i, child) in root.children.iter().enumerate() {
                 is_last.push(i == child_count - 1);
                 self.render_node(
                     child,
@@ -438,6 +656,20 @@ impl Widget for Tree {
                 );
                 is_last.pop();
             }
+        }
+
+        #[cfg(feature = "tracing")]
+        {
+            let elapsed = render_start.elapsed();
+            let elapsed_us = elapsed.as_micros() as u64;
+            render_span.record("render_duration_us", elapsed_us);
+            tracing::debug!(
+                message = "tree.metrics",
+                tree_render_duration_us = elapsed_us,
+                total_nodes,
+                visible_nodes,
+                expanded_count
+            );
         }
     }
 
@@ -513,6 +745,7 @@ impl TreeUndoExt for Tree {
 
     fn expand_node(&mut self, path: &[usize]) {
         if let Some(node) = self.get_node_at_path_mut(path) {
+            node.materialize_lazy_children();
             node.expanded = true;
         }
     }
@@ -549,6 +782,52 @@ impl Tree {
         Some(current)
     }
 
+    #[cfg(feature = "tracing")]
+    fn log_expand_collapse(action: &str, source: &str, index: usize, label: &str) {
+        tracing::debug!(
+            message = "tree.toggle",
+            action,
+            source,
+            visible_index = index,
+            label
+        );
+    }
+
+    fn toggle_node_at_visible_index(&mut self, index: usize, source: &str) -> bool {
+        #[cfg(not(feature = "tracing"))]
+        let _ = source;
+        let Some(node) = self.node_at_visible_index_mut(index) else {
+            return false;
+        };
+        if !node.has_children() {
+            return false;
+        }
+        #[cfg(feature = "tracing")]
+        let action = if node.is_expanded() {
+            "collapse"
+        } else {
+            "expand"
+        };
+        #[cfg(feature = "tracing")]
+        let label = node.label().to_owned();
+        node.toggle_expanded();
+        #[cfg(feature = "tracing")]
+        Self::log_expand_collapse(action, source, index, &label);
+        true
+    }
+
+    /// Handle keyboard expand/collapse at the currently selected visible row.
+    ///
+    /// Returns `true` when an expand/collapse action was applied.
+    pub fn handle_key(&mut self, key: &KeyEvent, selected_visible_index: usize) -> bool {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.toggle_node_at_visible_index(selected_visible_index, "keyboard")
+            }
+            _ => false,
+        }
+    }
+
     /// Handle a mouse event for this tree.
     ///
     /// # Hit data convention
@@ -577,11 +856,12 @@ impl Tree {
                     && id == expected_id
                 {
                     let index = data as usize;
-                    if let Some(node) = self.node_at_visible_index_mut(index) {
-                        if node.children.is_empty() {
-                            return MouseResult::Selected(index);
-                        }
-                        node.toggle_expanded();
+                    if let Some(node) = self.node_at_visible_index_mut(index)
+                        && !node.has_children()
+                    {
+                        return MouseResult::Selected(index);
+                    }
+                    if self.toggle_node_at_visible_index(index, "mouse") {
                         return MouseResult::Activated(index);
                     }
                 }
@@ -624,6 +904,7 @@ impl Tree {
         }
         *counter += 1;
         if node.expanded {
+            node.materialize_lazy_children();
             for child in &mut node.children {
                 if let Some(found) = Self::walk_visible_mut(child, target, counter) {
                     return Some(found);
@@ -662,10 +943,15 @@ fn flatten_visible(node: &TreeNode, depth: usize, out: &mut Vec<FlatNode>) {
 impl Tree {
     fn flatten(&self) -> Vec<FlatNode> {
         let mut out = Vec::new();
+        let filtered_root = self
+            .search_query
+            .as_deref()
+            .and_then(|query| filter_node(&self.root, query));
+        let root = filtered_root.as_ref().unwrap_or(&self.root);
         if self.show_root {
-            flatten_visible(&self.root, 0, &mut out);
-        } else if self.root.expanded {
-            for child in &self.root.children {
+            flatten_visible(root, 0, &mut out);
+        } else if root.expanded {
+            for child in &root.children {
                 flatten_visible(child, 0, &mut out);
             }
         }
@@ -678,6 +964,14 @@ mod tests {
     use super::*;
     use ftui_render::frame::Frame;
     use ftui_render::grapheme_pool::GraphemePool;
+    #[cfg(feature = "tracing")]
+    use std::sync::{Arc, Mutex};
+    #[cfg(feature = "tracing")]
+    use tracing::Subscriber;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::Layer;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::layer::{Context, SubscriberExt};
 
     fn simple_tree() -> TreeNode {
         TreeNode::new("root")
@@ -687,6 +981,121 @@ mod tests {
                     .child(TreeNode::new("a2")),
             )
             .child(TreeNode::new("b"))
+    }
+
+    #[cfg(feature = "tracing")]
+    #[derive(Debug, Default)]
+    struct TreeTraceState {
+        tree_render_seen: bool,
+        has_total_nodes_field: bool,
+        has_visible_nodes_field: bool,
+        has_expanded_count_field: bool,
+        render_duration_recorded: bool,
+        toggle_events: usize,
+    }
+
+    #[cfg(feature = "tracing")]
+    struct TreeTraceCapture {
+        state: Arc<Mutex<TreeTraceState>>,
+    }
+
+    #[cfg(feature = "tracing")]
+    impl<S> Layer<S> for TreeTraceCapture
+    where
+        S: Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            if attrs.metadata().name() != "tree.render" {
+                return;
+            }
+            let fields = attrs.metadata().fields();
+            let mut state = self.state.lock().expect("tree trace state lock");
+            state.tree_render_seen = true;
+            state.has_total_nodes_field |= fields.field("total_nodes").is_some();
+            state.has_visible_nodes_field |= fields.field("visible_nodes").is_some();
+            state.has_expanded_count_field |= fields.field("expanded_count").is_some();
+        }
+
+        fn on_record(
+            &self,
+            id: &tracing::Id,
+            values: &tracing::span::Record<'_>,
+            ctx: Context<'_, S>,
+        ) {
+            let Some(span) = ctx.span(id) else {
+                return;
+            };
+            if span.metadata().name() != "tree.render" {
+                return;
+            }
+
+            struct DurationVisitor {
+                saw_duration: bool,
+            }
+            impl tracing::field::Visit for DurationVisitor {
+                fn record_u64(&mut self, field: &tracing::field::Field, _value: u64) {
+                    if field.name() == "render_duration_us" {
+                        self.saw_duration = true;
+                    }
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    _value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "render_duration_us" {
+                        self.saw_duration = true;
+                    }
+                }
+            }
+
+            let mut visitor = DurationVisitor {
+                saw_duration: false,
+            };
+            values.record(&mut visitor);
+            if visitor.saw_duration {
+                self.state
+                    .lock()
+                    .expect("tree trace state lock")
+                    .render_duration_recorded = true;
+            }
+        }
+
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            struct MessageVisitor {
+                message: Option<String>,
+            }
+            impl tracing::field::Visit for MessageVisitor {
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "message" {
+                        self.message = Some(value.to_owned());
+                    }
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.message = Some(format!("{value:?}").trim_matches('"').to_owned());
+                    }
+                }
+            }
+
+            let mut visitor = MessageVisitor { message: None };
+            event.record(&mut visitor);
+            if visitor.message.as_deref() == Some("tree.toggle") {
+                let mut state = self.state.lock().expect("tree trace state lock");
+                state.toggle_events = state.toggle_events.saturating_add(1);
+            }
+        }
     }
 
     #[test]
@@ -734,6 +1143,19 @@ mod tests {
         assert!(!node.is_expanded());
         node.toggle_expanded();
         assert!(node.is_expanded());
+    }
+
+    #[test]
+    fn tree_node_lazy_children_materialize_on_expand() {
+        let mut node = TreeNode::new("root")
+            .with_lazy_children(vec![TreeNode::new("child"), TreeNode::new("child2")]);
+        assert!(!node.is_expanded());
+        assert_eq!(node.children().len(), 0);
+        assert!(node.has_children());
+
+        node.toggle_expanded();
+        assert!(node.is_expanded());
+        assert_eq!(node.children().len(), 2);
     }
 
     #[test]
@@ -814,6 +1236,54 @@ mod tests {
         // Row 2: "`-- b" (last child)
         let cell = frame.buffer.get(0, 2).unwrap();
         assert_eq!(cell.content.as_char(), Some('`'));
+    }
+
+    #[test]
+    fn tree_render_icon_before_label() {
+        let tree = Tree::new(TreeNode::new("root").with_icon(">"));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(12, 2, &mut pool);
+        tree.render(Rect::new(0, 0, 12, 2), &mut frame);
+
+        assert_eq!(
+            frame.buffer.get(0, 0).and_then(|c| c.content.as_char()),
+            Some('>')
+        );
+        assert_eq!(
+            frame.buffer.get(2, 0).and_then(|c| c.content.as_char()),
+            Some('r')
+        );
+    }
+
+    #[test]
+    fn tree_search_query_filters_to_matching_branches() {
+        let tree = Tree::new(
+            TreeNode::new("root")
+                .child(TreeNode::new("alpha").child(TreeNode::new("target-file")))
+                .child(TreeNode::new("beta")),
+        )
+        .with_search_query("target");
+
+        let flat = tree.flatten();
+        assert_eq!(flat.len(), 3);
+        assert_eq!(flat[0].label, "root");
+        assert_eq!(flat[1].label, "alpha");
+        assert_eq!(flat[2].label, "target-file");
+    }
+
+    #[test]
+    fn tree_search_query_includes_lazy_matching_descendants() {
+        let tree =
+            Tree::new(TreeNode::new("root").child(
+                TreeNode::new("alpha").with_lazy_children(vec![TreeNode::new("target-file")]),
+            ))
+            .with_search_query("target");
+
+        let flat = tree.flatten();
+        assert_eq!(flat.len(), 3);
+        assert_eq!(flat[0].label, "root");
+        assert_eq!(flat[1].label, "alpha");
+        assert_eq!(flat[2].label, "target-file");
     }
 
     #[test]
@@ -1077,7 +1547,7 @@ mod tests {
     // --- Mouse handling tests ---
 
     use crate::mouse::MouseResult;
-    use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ftui_core::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
     #[test]
     fn tree_click_expands_parent() {
@@ -1265,5 +1735,66 @@ mod tests {
         let result = tree.handle_mouse(&event, hit, HitId::new(1));
         assert_eq!(result, MouseResult::Activated(1));
         assert!(tree.root().children()[0].is_expanded()); // now expanded
+    }
+
+    #[test]
+    fn tree_handle_key_enter_toggles_parent() {
+        let mut tree = Tree::new(
+            TreeNode::new("root")
+                .child(TreeNode::new("a").child(TreeNode::new("a1")))
+                .child(TreeNode::new("b")),
+        );
+
+        // root=0, a=1, a1=2, b=3
+        assert!(tree.root().children()[0].is_expanded());
+        assert!(tree.handle_key(&KeyEvent::new(KeyCode::Enter), 1));
+        assert!(!tree.root().children()[0].is_expanded());
+        assert!(tree.handle_key(&KeyEvent::new(KeyCode::Char(' ')), 1));
+        assert!(tree.root().children()[0].is_expanded());
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tree_tracing_span_and_toggle_events_are_emitted() {
+        let trace_state = Arc::new(Mutex::new(TreeTraceState::default()));
+        let subscriber = tracing_subscriber::registry().with(TreeTraceCapture {
+            state: Arc::clone(&trace_state),
+        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        let mut tree = Tree::new(
+            TreeNode::new("root")
+                .child(TreeNode::new("a").child(TreeNode::new("a1")))
+                .child(TreeNode::new("b")),
+        );
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(20, 6, &mut pool);
+        tree.render(Rect::new(0, 0, 20, 6), &mut frame);
+        assert!(tree.handle_key(&KeyEvent::new(KeyCode::Enter), 1));
+
+        tracing::callsite::rebuild_interest_cache();
+        let snapshot = trace_state.lock().expect("tree trace state lock");
+        assert!(snapshot.tree_render_seen, "expected tree.render span");
+        assert!(
+            snapshot.has_total_nodes_field,
+            "tree.render missing total_nodes"
+        );
+        assert!(
+            snapshot.has_visible_nodes_field,
+            "tree.render missing visible_nodes"
+        );
+        assert!(
+            snapshot.has_expanded_count_field,
+            "tree.render missing expanded_count"
+        );
+        assert!(
+            snapshot.render_duration_recorded,
+            "tree.render did not record render_duration_us"
+        );
+        assert!(
+            snapshot.toggle_events >= 1,
+            "expected tree.toggle debug event"
+        );
     }
 }

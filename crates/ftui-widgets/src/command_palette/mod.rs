@@ -410,6 +410,11 @@ impl CommandPalette {
         self
     }
 
+    /// Set the visual style.
+    pub fn set_style(&mut self, style: PaletteStyle) {
+        self.style = style;
+    }
+
     /// Set max visible results (builder).
     #[must_use]
     pub fn with_max_visible(mut self, n: usize) -> Self {
@@ -906,9 +911,24 @@ impl Widget for CommandPalette {
 }
 
 impl CommandPalette {
+    /// Resolve the palette surface background.
+    ///
+    /// Prefer explicit style backgrounds when provided so host apps can
+    /// theme the overlay; otherwise fall back to the historical dark surface.
+    fn palette_background(&self) -> PackedRgba {
+        self.style
+            .border
+            .bg
+            .or(self.style.input.bg)
+            .or(self.style.item.bg)
+            .or(self.style.hint.bg)
+            .or(self.style.item_selected.bg)
+            .unwrap_or(PackedRgba::rgb(30, 30, 40))
+    }
+
     /// Clear the palette area with a background color.
     fn clear_area(&self, area: Rect, frame: &mut Frame) {
-        let bg = PackedRgba::rgb(30, 30, 40);
+        let bg = self.palette_background();
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {
                 if let Some(cell) = frame.buffer.get_mut(x, y) {
@@ -919,18 +939,18 @@ impl CommandPalette {
         }
     }
 
-    /// Draw a simple border around the palette.
+    /// Draw a rounded border around the palette.
     fn draw_border(&self, area: Rect, frame: &mut Frame) {
         let border_fg = self
             .style
             .border
             .fg
             .unwrap_or(PackedRgba::rgb(100, 100, 120));
-        let bg = PackedRgba::rgb(30, 30, 40);
+        let bg = self.palette_background();
 
         // Top border with title.
         if let Some(cell) = frame.buffer.get_mut(area.x, area.y) {
-            cell.content = CellContent::from_char('┌');
+            cell.content = CellContent::from_char('╭');
             cell.fg = border_fg;
             cell.bg = bg;
         }
@@ -944,7 +964,7 @@ impl CommandPalette {
         if area.width > 1
             && let Some(cell) = frame.buffer.get_mut(area.right() - 1, area.y)
         {
-            cell.content = CellContent::from_char('┐');
+            cell.content = CellContent::from_char('╮');
             cell.fg = border_fg;
             cell.bg = bg;
         }
@@ -976,7 +996,7 @@ impl CommandPalette {
         if area.height > 1 {
             let by = area.bottom() - 1;
             if let Some(cell) = frame.buffer.get_mut(area.x, by) {
-                cell.content = CellContent::from_char('└');
+                cell.content = CellContent::from_char('╰');
                 cell.fg = border_fg;
                 cell.bg = bg;
             }
@@ -990,7 +1010,7 @@ impl CommandPalette {
             if area.width > 1
                 && let Some(cell) = frame.buffer.get_mut(area.right() - 1, by)
             {
-                cell.content = CellContent::from_char('┘');
+                cell.content = CellContent::from_char('╯');
                 cell.fg = border_fg;
                 cell.bg = bg;
             }
@@ -1004,7 +1024,7 @@ impl CommandPalette {
             .input
             .fg
             .unwrap_or(PackedRgba::rgb(220, 220, 230));
-        let bg = PackedRgba::rgb(30, 30, 40);
+        let bg = self.palette_background();
         let prompt_fg = PackedRgba::rgb(100, 180, 255);
 
         // Draw ">" prompt.
@@ -1072,7 +1092,7 @@ impl CommandPalette {
                 "No results"
             };
             let hint_fg = self.style.hint.fg.unwrap_or(PackedRgba::rgb(100, 100, 120));
-            let bg = PackedRgba::rgb(30, 30, 40);
+            let bg = self.palette_background();
             for (i, ch) in msg.chars().enumerate() {
                 let x = area.x + 1 + i as u16;
                 if x >= area.right() {
@@ -1113,7 +1133,7 @@ impl CommandPalette {
             .category
             .fg
             .unwrap_or(PackedRgba::rgb(100, 180, 255));
-        let bg = PackedRgba::rgb(30, 30, 40);
+        let bg = self.palette_background();
 
         let visible_end = (self.scroll_offset + area.height as usize).min(self.filtered.len());
 
@@ -2880,6 +2900,59 @@ mod widget_tests {
 
         assert!(frame.cursor_position.is_some());
         assert!(frame.cursor_visible);
+    }
+
+    #[test]
+    fn render_uses_rounded_corners_for_overlay_border() {
+        use ftui_render::grapheme_pool::GraphemePool;
+
+        let mut palette = CommandPalette::new();
+        palette.register("Alpha", None, &[]);
+        palette.open();
+
+        let area = Rect::from_size(60, 15);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(60, 15, &mut pool);
+        palette.render(area, &mut frame);
+
+        let palette_width = (area.width * 3 / 5).max(30).min(area.width - 2);
+        let result_rows = palette.result_count().min(palette.max_visible);
+        let palette_height = (result_rows as u16 + 3)
+            .max(5)
+            .min(area.height.saturating_sub(2));
+        let palette_x = area.x + (area.width.saturating_sub(palette_width)) / 2;
+        let palette_y = area.y + area.height / 6;
+        let right = palette_x + palette_width - 1;
+        let bottom = palette_y + palette_height - 1;
+
+        assert_eq!(
+            frame
+                .buffer
+                .get(palette_x, palette_y)
+                .and_then(|c| c.content.as_char()),
+            Some('╭')
+        );
+        assert_eq!(
+            frame
+                .buffer
+                .get(right, palette_y)
+                .and_then(|c| c.content.as_char()),
+            Some('╮')
+        );
+        assert_eq!(
+            frame
+                .buffer
+                .get(palette_x, bottom)
+                .and_then(|c| c.content.as_char()),
+            Some('╰')
+        );
+        assert_eq!(
+            frame
+                .buffer
+                .get(right, bottom)
+                .and_then(|c| c.content.as_char()),
+            Some('╯')
+        );
     }
 
     #[test]

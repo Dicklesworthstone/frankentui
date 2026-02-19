@@ -672,15 +672,17 @@ mod tests {
             .ratio(1.0)
             .gauge_style(Style::new().bg(PackedRgba::GREEN))
             .block(Block::bordered());
-        let area = Rect::new(0, 0, 10, 3);
+        // Block::bordered() includes 1 cell padding on each side, so we need
+        // at least 5 rows to have a 1-row inner content area.
+        let area = Rect::new(0, 0, 10, 5);
         let mut pool = GraphemePool::new();
-        let mut frame = Frame::new(10, 3, &mut pool);
+        let mut frame = Frame::new(10, 5, &mut pool);
         Widget::render(&pb, area, &mut frame);
 
-        // Inner area is 8x1 (border takes 1 on each side)
+        // Inner area is 6x1 (borders + padding take 2 on each side)
         // All inner cells should have gauge bg
-        for x in 1..9 {
-            let cell = cell_at(&frame, x, 1);
+        for x in 2..8 {
+            let cell = cell_at(&frame, x, 2);
             assert_eq!(
                 cell.bg,
                 PackedRgba::GREEN,
@@ -822,9 +824,9 @@ mod tests {
         let pb = ProgressBar::new().block(Block::bordered());
         let c = pb.measure(Size::MAX);
 
-        // Block adds 2 (border on each side)
-        assert_eq!(c.min.width, 3);
-        assert_eq!(c.min.height, 3);
+        // Block adds chrome (borders + padding) = 4 on each axis.
+        assert_eq!(c.min.width, 5);
+        assert_eq!(c.min.height, 5);
     }
 
     #[test]

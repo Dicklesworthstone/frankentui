@@ -47,6 +47,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::modal::{BackdropConfig, ModalSizeConstraints};
 use crate::set_style_area;
 
+#[cfg(feature = "tracing")]
+use web_time::Instant;
+
 /// Base z-index for modal layer.
 const BASE_MODAL_Z: u32 = 1000;
 
@@ -115,6 +118,13 @@ pub type ModalFocusId = u64;
 /// 3. Auto-focus the first focusable widget
 /// 4. Restore previous focus when the modal closes
 pub trait StackModal: Send {
+    /// A stable-ish label for this modal type, used for tracing/logging.
+    ///
+    /// Default: the Rust type name of the concrete modal implementation.
+    fn modal_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Render the modal content at the given area.
     fn render_content(&self, area: Rect, frame: &mut Frame);
 
@@ -247,6 +257,11 @@ impl ModalStack {
         modal: Box<dyn StackModal>,
         focus_group_id: Option<u32>,
     ) -> ModalId {
+        #[cfg(feature = "tracing")]
+        let modal_type = modal.modal_type();
+        #[cfg(feature = "tracing")]
+        let focus_trapped = focus_group_id.is_some() && modal.aria_modal();
+
         let id = ModalId::new();
         let z_index = BASE_MODAL_Z + self.next_z;
         self.next_z += Z_INCREMENT;
@@ -261,6 +276,15 @@ impl ModalStack {
             hit_id,
             focus_group_id,
         });
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            modal_id = id.id(),
+            modal_type,
+            focus_trapped,
+            depth = self.modals.len(),
+            "modal opened"
+        );
 
         id
     }
@@ -287,11 +311,25 @@ impl ModalStack {
     /// Returns the result if a modal was popped, or `None` if the stack is empty.
     /// If the modal had a focus group, the caller should call `FocusManager::pop_trap()`.
     pub fn pop(&mut self) -> Option<ModalResult> {
-        self.modals.pop().map(|m| ModalResult {
-            id: m.id,
+        let modal = self.modals.pop()?;
+        #[cfg(feature = "tracing")]
+        let modal_type = modal.modal.modal_type();
+
+        let result = ModalResult {
+            id: modal.id,
             data: None,
-            focus_group_id: m.focus_group_id,
-        })
+            focus_group_id: modal.focus_group_id,
+        };
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            modal_id = result.id.id(),
+            modal_type,
+            depth = self.modals.len(),
+            "modal closed"
+        );
+
+        Some(result)
     }
 
     /// Pop a specific modal by ID.
@@ -302,11 +340,24 @@ impl ModalStack {
     pub fn pop_id(&mut self, id: ModalId) -> Option<ModalResult> {
         let idx = self.modals.iter().position(|m| m.id == id)?;
         let modal = self.modals.remove(idx);
-        Some(ModalResult {
+        #[cfg(feature = "tracing")]
+        let modal_type = modal.modal.modal_type();
+
+        let result = ModalResult {
             id: modal.id,
             data: None,
             focus_group_id: modal.focus_group_id,
-        })
+        };
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            modal_id = result.id.id(),
+            modal_type,
+            depth = self.modals.len(),
+            "modal closed (pop_id)"
+        );
+
+        Some(result)
     }
 
     /// Pop all modals from the stack.
@@ -369,15 +420,28 @@ impl ModalStack {
         let hit_id = top.hit_id;
         let id = top.id;
         let focus_group_id = top.focus_group_id;
+        #[cfg(feature = "tracing")]
+        let modal_type = top.modal.modal_type();
 
         if let Some(data) = top.modal.handle_event(event, hit_id) {
             // Modal wants to close
             self.modals.pop();
-            return Some(ModalResult {
+            let result = ModalResult {
                 id,
                 data: Some(data),
                 focus_group_id,
-            });
+            };
+
+            #[cfg(feature = "tracing")]
+            tracing::debug!(
+                modal_id = result.id.id(),
+                modal_type,
+                result_data = ?result.data,
+                depth = self.modals.len(),
+                "modal closed (event)"
+            );
+
+            return Some(result);
         }
 
         None
@@ -408,6 +472,19 @@ impl ModalStack {
                 base_opacity * 0.5
             };
 
+            #[cfg(feature = "tracing")]
+            let render_start = Instant::now();
+            #[cfg(feature = "tracing")]
+            let render_span = tracing::debug_span!(
+                "modal.render",
+                modal_type = modal.modal.modal_type(),
+                focus_trapped = (modal.focus_group_id.is_some() && modal.modal.aria_modal()),
+                backdrop_active = (opacity > 0.0),
+                render_duration_us = tracing::field::Empty,
+            );
+            #[cfg(feature = "tracing")]
+            let _render_guard = render_span.enter();
+
             // Render backdrop
             if opacity > 0.0 {
                 let bg_color = modal.modal.backdrop_config().color.with_opacity(opacity);
@@ -430,6 +507,12 @@ impl ModalStack {
 
             // Render modal content
             modal.modal.render_content(content_area, frame);
+
+            #[cfg(feature = "tracing")]
+            {
+                let elapsed = render_start.elapsed();
+                render_span.record("render_duration_us", elapsed.as_micros() as u64);
+            }
         }
     }
 }
@@ -707,12 +790,148 @@ mod tests {
     use ftui_core::event::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
     use ftui_render::cell::PackedRgba;
     use ftui_render::grapheme_pool::GraphemePool;
+    #[cfg(feature = "tracing")]
+    use std::sync::{Arc, Mutex};
+
+    #[cfg(feature = "tracing")]
+    use tracing::Subscriber;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::Layer;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::layer::{Context, SubscriberExt};
 
     #[derive(Debug, Clone)]
     struct StubWidget;
 
     impl Widget for StubWidget {
         fn render(&self, _area: Rect, _frame: &mut Frame) {}
+    }
+
+    #[cfg(feature = "tracing")]
+    #[derive(Debug, Default)]
+    struct TraceState {
+        modal_render_seen: bool,
+        modal_render_has_modal_type: bool,
+        modal_render_has_focus_trapped: bool,
+        modal_render_has_backdrop_active: bool,
+        modal_render_duration_recorded: bool,
+        focus_change_count: usize,
+        trap_push_count: usize,
+        trap_pop_count: usize,
+    }
+
+    #[cfg(feature = "tracing")]
+    struct TraceCapture {
+        state: Arc<Mutex<TraceState>>,
+    }
+
+    #[cfg(feature = "tracing")]
+    impl<S> Layer<S> for TraceCapture
+    where
+        S: Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            if attrs.metadata().name() != "modal.render" {
+                return;
+            }
+            let fields = attrs.metadata().fields();
+            let mut state = self.state.lock().expect("trace state lock");
+            state.modal_render_seen = true;
+            state.modal_render_has_modal_type |= fields.field("modal_type").is_some();
+            state.modal_render_has_focus_trapped |= fields.field("focus_trapped").is_some();
+            state.modal_render_has_backdrop_active |= fields.field("backdrop_active").is_some();
+        }
+
+        fn on_record(
+            &self,
+            id: &tracing::Id,
+            values: &tracing::span::Record<'_>,
+            ctx: Context<'_, S>,
+        ) {
+            let Some(span) = ctx.span(id) else {
+                return;
+            };
+            if span.metadata().name() != "modal.render" {
+                return;
+            }
+
+            struct DurationVisitor {
+                saw_duration: bool,
+            }
+
+            impl tracing::field::Visit for DurationVisitor {
+                fn record_u64(&mut self, field: &tracing::field::Field, _value: u64) {
+                    if field.name() == "render_duration_us" {
+                        self.saw_duration = true;
+                    }
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    _value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "render_duration_us" {
+                        self.saw_duration = true;
+                    }
+                }
+            }
+
+            let mut visitor = DurationVisitor {
+                saw_duration: false,
+            };
+            values.record(&mut visitor);
+            if visitor.saw_duration {
+                self.state
+                    .lock()
+                    .expect("trace state lock")
+                    .modal_render_duration_recorded = true;
+            }
+        }
+
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            struct MessageVisitor {
+                message: Option<String>,
+            }
+
+            impl tracing::field::Visit for MessageVisitor {
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "message" {
+                        self.message = Some(value.to_owned());
+                    }
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.message = Some(format!("{value:?}").trim_matches('"').to_owned());
+                    }
+                }
+            }
+
+            let mut visitor = MessageVisitor { message: None };
+            event.record(&mut visitor);
+
+            let Some(message) = visitor.message else {
+                return;
+            };
+
+            let mut state = self.state.lock().expect("trace state lock");
+            match message.as_str() {
+                "focus.change" => state.focus_change_count += 1,
+                "focus.trap_push" => state.trap_push_count += 1,
+                "focus.trap_pop" => state.trap_pop_count += 1,
+                _ => {}
+            }
+        }
     }
 
     #[test]
@@ -1243,5 +1462,97 @@ mod tests {
             integrator.pop_with_focus();
             assert_eq!(integrator.focus().current(), Some(100));
         }
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_modal_render_span_has_required_fields() {
+        let state = Arc::new(Mutex::new(TraceState::default()));
+        let subscriber = tracing_subscriber::registry().with(TraceCapture {
+            state: Arc::clone(&state),
+        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        tracing::callsite::rebuild_interest_cache();
+        let mut stack = ModalStack::new();
+        stack.push(Box::new(WidgetModalEntry::new(StubWidget)));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(80, 24, &mut pool);
+        stack.render(&mut frame, Rect::new(0, 0, 80, 24));
+        tracing::callsite::rebuild_interest_cache();
+
+        let snapshot = state.lock().expect("trace state lock");
+        assert!(snapshot.modal_render_seen, "expected modal.render span");
+        assert!(
+            snapshot.modal_render_has_modal_type,
+            "modal.render missing modal_type field"
+        );
+        assert!(
+            snapshot.modal_render_has_focus_trapped,
+            "modal.render missing focus_trapped field"
+        );
+        assert!(
+            snapshot.modal_render_has_backdrop_active,
+            "modal.render missing backdrop_active field"
+        );
+        assert!(
+            snapshot.modal_render_duration_recorded,
+            "modal.render did not record render_duration_us"
+        );
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_focus_change_and_trap_events_emitted_for_modal_lifecycle() {
+        use crate::focus::{FocusManager, FocusNode};
+
+        let state = Arc::new(Mutex::new(TraceState::default()));
+        let subscriber = tracing_subscriber::registry().with(TraceCapture {
+            state: Arc::clone(&state),
+        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut stack = ModalStack::new();
+        let mut focus = FocusManager::new();
+        focus
+            .graph_mut()
+            .insert(FocusNode::new(1, Rect::new(0, 0, 10, 1)));
+        focus
+            .graph_mut()
+            .insert(FocusNode::new(2, Rect::new(0, 1, 10, 1)));
+        focus
+            .graph_mut()
+            .insert(FocusNode::new(100, Rect::new(0, 10, 10, 1)));
+        focus.focus(100);
+
+        tracing::callsite::rebuild_interest_cache();
+        {
+            let mut integrator = ModalFocusIntegration::new(&mut stack, &mut focus);
+            let modal = WidgetModalEntry::new(StubWidget).with_focusable_ids(vec![1, 2]);
+            integrator.push_with_focus(Box::new(modal));
+
+            let escape = Event::Key(KeyEvent {
+                code: KeyCode::Escape,
+                modifiers: Modifiers::empty(),
+                kind: KeyEventKind::Press,
+            });
+            let _ = integrator.handle_event(&escape);
+        }
+        tracing::callsite::rebuild_interest_cache();
+
+        let snapshot = state.lock().expect("trace state lock");
+        assert!(
+            snapshot.focus_change_count >= 2,
+            "expected focus.change events for trap lifecycle, got {}",
+            snapshot.focus_change_count
+        );
+        assert!(
+            snapshot.trap_push_count >= 1,
+            "expected focus.trap_push event"
+        );
+        assert!(
+            snapshot.trap_pop_count >= 1,
+            "expected focus.trap_pop event"
+        );
     }
 }

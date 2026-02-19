@@ -191,6 +191,7 @@ pub mod status_line;
 pub mod stopwatch;
 /// Table widget with rows, columns, and selection.
 pub mod table;
+pub mod tabs;
 pub mod textarea;
 pub mod timer;
 /// Toast widget for transient notifications.
@@ -223,6 +224,7 @@ pub use paginator::{Paginator, PaginatorMode};
 pub use panel::Panel;
 pub use sparkline::Sparkline;
 pub use status_line::{StatusItem, StatusLine};
+pub use tabs::{Tab, Tabs, TabsState};
 pub use virtualized::{
     HeightCache, ItemHeight, RenderItem, Virtualized, VirtualizedList, VirtualizedListState,
     VirtualizedStorage,

@@ -305,14 +305,16 @@ mod tests {
     fn render_with_block() {
         let frames: &[&str] = &["!"];
         let spinner = Spinner::new().frames(frames).block(Block::bordered());
-        let area = Rect::new(0, 0, 10, 3);
+        // Block::bordered() includes 1 cell padding on each side, so we need
+        // at least 5 rows to have a 1-row inner content area.
+        let area = Rect::new(0, 0, 10, 5);
         let mut pool = GraphemePool::new();
-        let mut frame = Frame::new(10, 3, &mut pool);
+        let mut frame = Frame::new(10, 5, &mut pool);
         let mut state = SpinnerState::default();
         StatefulWidget::render(&spinner, area, &mut frame, &mut state);
 
-        // Inside the border at (1, 1)
-        assert_eq!(cell_char(&frame.buffer, 1, 1), Some('!'));
+        // Inside the border + padding at (2, 2)
+        assert_eq!(cell_char(&frame.buffer, 2, 2), Some('!'));
     }
 
     #[test]

@@ -10,11 +10,14 @@ use crate::mouse::MouseResult;
 use crate::stateful::{StateKey, Stateful};
 use crate::undo_support::{ListUndoExt, UndoSupport, UndoWidgetId};
 use crate::{StatefulWidget, Widget, draw_text_span, draw_text_span_with_link, set_style_area};
-use ftui_core::event::{MouseButton, MouseEvent, MouseEventKind};
+use ftui_core::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use ftui_core::geometry::{Rect, Size};
 use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
 use ftui_text::{Text, display_width};
+use std::collections::BTreeSet;
+#[cfg(feature = "tracing")]
+use std::time::Instant;
 
 /// A single item in a list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +133,188 @@ impl<'a> List<'a> {
         self.hit_id = Some(id);
         self
     }
+
+    fn filtered_indices(&self, query: &str) -> Vec<usize> {
+        let query = query.trim();
+        if query.is_empty() {
+            return (0..self.items.len()).collect();
+        }
+        let query_lower = query.to_lowercase();
+        self.items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                let line = item
+                    .content
+                    .lines()
+                    .first()
+                    .map_or_else(String::new, |l| l.to_plain_text());
+                let marker_matches =
+                    !item.marker.is_empty() && item.marker.to_lowercase().contains(&query_lower);
+                if marker_matches || line.to_lowercase().contains(&query_lower) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn apply_filtered_selection_guard(
+        &self,
+        state: &mut ListState,
+        filtered: &[usize],
+        force_select_first: bool,
+    ) {
+        if filtered.is_empty() {
+            state.selected = None;
+            state.hovered = None;
+            state.offset = 0;
+            if state.multi_select_enabled {
+                state.multi_selected.clear();
+            }
+            return;
+        }
+
+        if let Some(selected) = state.selected {
+            if !filtered.contains(&selected) {
+                state.selected = filtered.first().copied();
+            }
+        } else if force_select_first {
+            state.selected = filtered.first().copied();
+        }
+
+        if state.multi_select_enabled {
+            state.multi_selected.retain(|idx| filtered.contains(idx));
+        }
+    }
+
+    fn move_selection_in_filtered(
+        &self,
+        state: &mut ListState,
+        filtered: &[usize],
+        direction: isize,
+    ) -> bool {
+        if filtered.is_empty() {
+            if state.selected.is_some() {
+                state.select(None);
+                return true;
+            }
+            return false;
+        }
+
+        let current_pos = state
+            .selected
+            .and_then(|sel| filtered.iter().position(|&idx| idx == sel))
+            .unwrap_or(0);
+
+        let max_pos = filtered.len().saturating_sub(1) as isize;
+        let next_pos = (current_pos as isize + direction).clamp(0, max_pos) as usize;
+        let next_index = filtered[next_pos];
+
+        if state.selected == Some(next_index) {
+            return false;
+        }
+
+        state.selected = Some(next_index);
+        if !state.multi_select_enabled {
+            state.multi_selected.clear();
+            state.multi_selected.insert(next_index);
+        }
+        state.scroll_into_view_requested = true;
+        #[cfg(feature = "tracing")]
+        state.log_selection_change("keyboard_move");
+        true
+    }
+
+    /// Handle keyboard navigation and incremental filtering for this list.
+    ///
+    /// Supported keys:
+    /// - Navigation: `Up`/`Down`, `k`/`j`
+    /// - Incremental filter input: printable chars
+    /// - Filter editing: `Backspace`, `Escape`
+    /// - Multi-select toggle (when enabled): `Space`
+    pub fn handle_key(&self, state: &mut ListState, key: &KeyEvent) -> bool {
+        let nav_modifiers = key
+            .modifiers
+            .intersects(Modifiers::CTRL | Modifiers::ALT | Modifiers::SUPER);
+        let filtered = self.filtered_indices(state.filter_query());
+
+        match key.code {
+            KeyCode::Up if !nav_modifiers => self.move_selection_in_filtered(state, &filtered, -1),
+            KeyCode::Down if !nav_modifiers => self.move_selection_in_filtered(state, &filtered, 1),
+            KeyCode::Char('k') if !nav_modifiers => {
+                self.move_selection_in_filtered(state, &filtered, -1)
+            }
+            KeyCode::Char('j') if !nav_modifiers => {
+                self.move_selection_in_filtered(state, &filtered, 1)
+            }
+            KeyCode::Char(' ') if state.multi_select_enabled() => {
+                if let Some(selected) = state.selected {
+                    state.toggle_multi_selected(selected);
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Backspace => {
+                if state.filter_query.is_empty() {
+                    return false;
+                }
+                state.filter_query.pop();
+                state.offset = 0;
+                state.scroll_into_view_requested = true;
+                let filtered = self.filtered_indices(state.filter_query());
+                self.apply_filtered_selection_guard(state, &filtered, true);
+                #[cfg(feature = "tracing")]
+                state.log_selection_change("filter_backspace");
+                true
+            }
+            KeyCode::Escape => {
+                if state.filter_query.is_empty() {
+                    return false;
+                }
+                state.filter_query.clear();
+                state.offset = 0;
+                state.scroll_into_view_requested = true;
+                let filtered = self.filtered_indices(state.filter_query());
+                self.apply_filtered_selection_guard(state, &filtered, false);
+                #[cfg(feature = "tracing")]
+                state.log_selection_change("filter_clear");
+                true
+            }
+            KeyCode::Char(ch)
+                if !ch.is_control()
+                    && !key.ctrl()
+                    && !key.alt()
+                    && !key.super_key()
+                    && !key.shift() =>
+            {
+                state.filter_query.push(ch);
+                state.offset = 0;
+                state.scroll_into_view_requested = true;
+                let filtered = self.filtered_indices(state.filter_query());
+                self.apply_filtered_selection_guard(state, &filtered, true);
+                #[cfg(feature = "tracing")]
+                state.log_selection_change("filter_append");
+                true
+            }
+            KeyCode::Char(ch)
+                if !ch.is_control() && !key.ctrl() && !key.alt() && !key.super_key() =>
+            {
+                // Preserve uppercase input when Shift is held.
+                state.filter_query.push(ch);
+                state.offset = 0;
+                state.scroll_into_view_requested = true;
+                let filtered = self.filtered_indices(state.filter_query());
+                self.apply_filtered_selection_guard(state, &filtered, true);
+                #[cfg(feature = "tracing")]
+                state.log_selection_change("filter_append");
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Mutable state for a [`List`] widget tracking selection and scroll offset.
@@ -147,6 +332,12 @@ pub struct ListState {
     persistence_id: Option<String>,
     /// Whether to force the selected item into view on next render.
     scroll_into_view_requested: bool,
+    /// Incremental filter query applied to items (case-insensitive).
+    filter_query: String,
+    /// Whether multi-select behavior is enabled.
+    multi_select_enabled: bool,
+    /// Set of selected indices when multi-select is enabled.
+    multi_selected: BTreeSet<usize>,
 }
 
 impl Default for ListState {
@@ -158,6 +349,9 @@ impl Default for ListState {
             offset: 0,
             persistence_id: None,
             scroll_into_view_requested: true,
+            filter_query: String::new(),
+            multi_select_enabled: false,
+            multi_selected: BTreeSet::new(),
         }
     }
 }
@@ -168,8 +362,16 @@ impl ListState {
         self.selected = index;
         if index.is_none() {
             self.offset = 0;
+            self.multi_selected.clear();
+        } else if !self.multi_select_enabled
+            && let Some(selected) = index
+        {
+            self.multi_selected.clear();
+            self.multi_selected.insert(selected);
         }
         self.scroll_into_view_requested = true;
+        #[cfg(feature = "tracing")]
+        self.log_selection_change("select");
     }
 
     /// Return the currently selected item index.
@@ -191,6 +393,89 @@ impl ListState {
     #[must_use = "use the persistence id (if any)"]
     pub fn persistence_id(&self) -> Option<&str> {
         self.persistence_id.as_deref()
+    }
+
+    /// Enable or disable multi-select mode.
+    pub fn set_multi_select(&mut self, enabled: bool) {
+        if self.multi_select_enabled == enabled {
+            return;
+        }
+        self.multi_select_enabled = enabled;
+        if !enabled {
+            self.multi_selected.clear();
+            if let Some(selected) = self.selected {
+                self.multi_selected.insert(selected);
+            }
+        }
+    }
+
+    /// Whether multi-select mode is enabled.
+    #[must_use]
+    pub const fn multi_select_enabled(&self) -> bool {
+        self.multi_select_enabled
+    }
+
+    /// Current incremental filter query.
+    #[must_use]
+    pub fn filter_query(&self) -> &str {
+        &self.filter_query
+    }
+
+    /// Replace the incremental filter query.
+    pub fn set_filter_query(&mut self, query: impl Into<String>) {
+        self.filter_query = query.into();
+        self.offset = 0;
+        self.scroll_into_view_requested = true;
+    }
+
+    /// Clear the current filter query.
+    pub fn clear_filter_query(&mut self) {
+        if !self.filter_query.is_empty() {
+            self.filter_query.clear();
+            self.offset = 0;
+            self.scroll_into_view_requested = true;
+        }
+    }
+
+    /// Number of selected rows (single or multi mode).
+    #[must_use]
+    pub fn selected_count(&self) -> usize {
+        if self.multi_select_enabled {
+            self.multi_selected.len()
+        } else {
+            usize::from(self.selected.is_some())
+        }
+    }
+
+    /// Selected indices in multi-select mode.
+    #[must_use]
+    pub fn selected_indices(&self) -> &BTreeSet<usize> {
+        &self.multi_selected
+    }
+
+    fn toggle_multi_selected(&mut self, index: usize) {
+        if !self.multi_select_enabled {
+            self.select(Some(index));
+            return;
+        }
+        if !self.multi_selected.insert(index) {
+            self.multi_selected.remove(&index);
+        }
+        self.selected = Some(index);
+        self.scroll_into_view_requested = true;
+        #[cfg(feature = "tracing")]
+        self.log_selection_change("toggle_multi");
+    }
+
+    #[cfg(feature = "tracing")]
+    fn log_selection_change(&self, action: &str) {
+        tracing::debug!(
+            message = "list.selection",
+            action,
+            selected = self.selected,
+            selected_count = self.selected_count(),
+            filter_active = !self.filter_query.trim().is_empty()
+        );
     }
 
     /// Handle a mouse event for this list.
@@ -221,8 +506,18 @@ impl ListState {
                 {
                     let index = data as usize;
                     if index < item_count {
+                        if self.multi_select_enabled && event.modifiers.contains(Modifiers::CTRL) {
+                            self.toggle_multi_selected(index);
+                            return MouseResult::Selected(index);
+                        }
+                        if self.multi_select_enabled {
+                            self.multi_selected.clear();
+                            self.multi_selected.insert(index);
+                        }
                         // Deterministic "double click": second click on the already-selected row activates.
-                        if self.selected == Some(index) {
+                        if !self.multi_select_enabled && self.selected == Some(index) {
+                            #[cfg(feature = "tracing")]
+                            self.log_selection_change("activate");
                             return MouseResult::Activated(index);
                         }
                         self.select(Some(index));
@@ -294,7 +589,13 @@ impl ListState {
             None => 0,
         };
         self.selected = Some(next);
+        if !self.multi_select_enabled {
+            self.multi_selected.clear();
+            self.multi_selected.insert(next);
+        }
         self.scroll_into_view_requested = true;
+        #[cfg(feature = "tracing")]
+        self.log_selection_change("select_next");
     }
 
     /// Move selection to the previous item.
@@ -306,7 +607,13 @@ impl ListState {
             None => 0,
         };
         self.selected = Some(prev);
+        if !self.multi_select_enabled {
+            self.multi_selected.clear();
+            self.multi_selected.insert(prev);
+        }
         self.scroll_into_view_requested = true;
+        #[cfg(feature = "tracing")]
+        self.log_selection_change("select_previous");
     }
 }
 
@@ -327,6 +634,12 @@ pub struct ListPersistState {
     pub selected: Option<usize>,
     /// Scroll offset (first visible item).
     pub offset: usize,
+    /// Incremental filter query.
+    pub filter_query: String,
+    /// Whether multi-select mode was enabled.
+    pub multi_select_enabled: bool,
+    /// Multi-selected indices when multi-select mode is enabled.
+    pub multi_selected: Vec<usize>,
 }
 
 impl Stateful for ListState {
@@ -340,6 +653,9 @@ impl Stateful for ListState {
         ListPersistState {
             selected: self.selected,
             offset: self.offset,
+            filter_query: self.filter_query.clone(),
+            multi_select_enabled: self.multi_select_enabled,
+            multi_selected: self.multi_selected.iter().copied().collect(),
         }
     }
 
@@ -347,6 +663,9 @@ impl Stateful for ListState {
         self.selected = state.selected;
         self.hovered = None;
         self.offset = state.offset;
+        self.filter_query = state.filter_query;
+        self.multi_select_enabled = state.multi_select_enabled;
+        self.multi_selected = state.multi_selected.into_iter().collect();
     }
 }
 
@@ -355,15 +674,23 @@ impl<'a> StatefulWidget for List<'a> {
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
-        let _span = tracing::debug_span!(
-            "widget_render",
-            widget = "List",
-            x = area.x,
-            y = area.y,
-            w = area.width,
-            h = area.height
-        )
-        .entered();
+        let render_start = Instant::now();
+        #[cfg(feature = "tracing")]
+        let total_items = self.items.len();
+        let filter_active = !state.filter_query.trim().is_empty();
+        #[cfg(feature = "tracing")]
+        let selected_count = state.selected_count();
+        #[cfg(feature = "tracing")]
+        let render_span = tracing::debug_span!(
+            "list.render",
+            total_items,
+            visible_items = tracing::field::Empty,
+            selected_count,
+            filter_active,
+            render_duration_us = tracing::field::Empty
+        );
+        #[cfg(feature = "tracing")]
+        let _render_guard = render_span.enter();
 
         let list_area = match &self.block {
             Some(b) => {
@@ -373,126 +700,194 @@ impl<'a> StatefulWidget for List<'a> {
             None => area,
         };
 
-        if list_area.is_empty() {
-            return;
-        }
+        let mut rendered_visible_items = 0usize;
 
-        // Apply base style
-        set_style_area(&mut frame.buffer, list_area, self.style);
+        if !list_area.is_empty() {
+            // Apply base style
+            set_style_area(&mut frame.buffer, list_area, self.style);
 
-        if self.items.is_empty() {
-            state.selected = None;
-            state.hovered = None;
-            state.offset = 0;
-            return;
-        }
-
-        let list_height = list_area.height as usize;
-
-        // Clamp offset so we don't render past the end, and so the viewport stays filled
-        // when height increases while scrolled near the bottom.
-        let max_offset = self.items.len().saturating_sub(list_height.max(1));
-        state.offset = state.offset.min(max_offset);
-
-        // Ensure selection is within bounds
-        if let Some(selected) = state.selected {
             if self.items.is_empty() {
                 state.selected = None;
-            } else if selected >= self.items.len() {
-                state.selected = Some(self.items.len() - 1);
-            }
-        }
-        if let Some(hovered) = state.hovered
-            && hovered >= self.items.len()
-        {
-            state.hovered = None;
-        }
-
-        // Ensure visible range includes selected item
-        if state.scroll_into_view_requested
-            && let Some(selected) = state.selected
-        {
-            if selected >= state.offset + list_height {
-                state.offset = selected - list_height + 1;
-            } else if selected < state.offset {
-                state.offset = selected;
-            }
-            state.scroll_into_view_requested = false;
-        }
-
-        // Iterate over visible items
-        for (i, item) in self
-            .items
-            .iter()
-            .enumerate()
-            .skip(state.offset)
-            .take(list_height)
-        {
-            let y = list_area.y.saturating_add((i - state.offset) as u16);
-            if y >= list_area.bottom() {
-                break;
-            }
-            let is_selected = state.selected == Some(i);
-            let is_hovered = state.hovered == Some(i);
-
-            // Determine style: merge highlight on top of item style so
-            // unset highlight properties inherit from the item.
-            let mut item_style = if is_hovered {
-                self.hover_style.merge(&item.style)
+                state.hovered = None;
+                state.offset = 0;
+                state.multi_selected.clear();
+                draw_text_span(
+                    frame,
+                    list_area.x,
+                    list_area.y,
+                    "No items",
+                    self.style,
+                    list_area.right(),
+                );
             } else {
-                item.style
-            };
-            if is_selected {
-                item_style = self.highlight_style.merge(&item_style);
-            }
+                // Clamp selection/hover to item bounds before applying filters.
+                if let Some(selected) = state.selected
+                    && selected >= self.items.len()
+                {
+                    state.selected = Some(self.items.len().saturating_sub(1));
+                }
+                if let Some(hovered) = state.hovered
+                    && hovered >= self.items.len()
+                {
+                    state.hovered = None;
+                }
 
-            // Apply item background style to the whole row
-            let row_area = Rect::new(list_area.x, y, list_area.width, 1);
-            set_style_area(&mut frame.buffer, row_area, item_style);
+                let filtered_indices = self.filtered_indices(state.filter_query());
+                self.apply_filtered_selection_guard(state, &filtered_indices, filter_active);
 
-            // Determine symbol
-            let symbol = if is_selected {
-                self.highlight_symbol.unwrap_or(item.marker)
-            } else {
-                item.marker
-            };
-
-            let mut x = list_area.x;
-
-            // Draw symbol if present
-            if !symbol.is_empty() {
-                x = draw_text_span(frame, x, y, symbol, item_style, list_area.right());
-                // Add a space after symbol
-                x = draw_text_span(frame, x, y, " ", item_style, list_area.right());
-            }
-
-            // Draw content
-            // Note: List items are currently single-line for simplicity in v1
-            if let Some(line) = item.content.lines().first() {
-                for span in line.spans() {
-                    let span_style = match span.style {
-                        Some(s) => s.merge(&item_style),
-                        None => item_style,
-                    };
-                    x = draw_text_span_with_link(
+                if filtered_indices.is_empty() {
+                    draw_text_span(
                         frame,
-                        x,
-                        y,
-                        &span.content,
-                        span_style,
+                        list_area.x,
+                        list_area.y,
+                        "No matches",
+                        self.style,
                         list_area.right(),
-                        span.link.as_deref(),
                     );
-                    if x >= list_area.right() {
-                        break;
+                } else {
+                    let list_height = list_area.height as usize;
+                    let max_offset = filtered_indices.len().saturating_sub(list_height.max(1));
+                    state.offset = state.offset.min(max_offset);
+
+                    if let Some(hovered) = state.hovered
+                        && !filtered_indices.contains(&hovered)
+                    {
+                        state.hovered = None;
+                    }
+
+                    // Ensure visible range includes selected item.
+                    if state.scroll_into_view_requested {
+                        if let Some(selected) = state.selected
+                            && let Some(selected_pos) =
+                                filtered_indices.iter().position(|&idx| idx == selected)
+                        {
+                            if selected_pos >= state.offset + list_height {
+                                state.offset = selected_pos - list_height + 1;
+                            } else if selected_pos < state.offset {
+                                state.offset = selected_pos;
+                            }
+                        }
+                        state.scroll_into_view_requested = false;
+                    }
+
+                    for (row, item_index) in filtered_indices
+                        .iter()
+                        .skip(state.offset)
+                        .take(list_height)
+                        .enumerate()
+                    {
+                        let i = *item_index;
+                        let item = &self.items[i];
+                        let y = list_area.y.saturating_add(row as u16);
+                        if y >= list_area.bottom() {
+                            break;
+                        }
+                        let is_selected = state.selected == Some(i)
+                            || (state.multi_select_enabled && state.multi_selected.contains(&i));
+                        let is_hovered = state.hovered == Some(i);
+
+                        // Determine style: merge highlight on top of item style so
+                        // unset highlight properties inherit from the item.
+                        let mut item_style = if is_hovered {
+                            self.hover_style.merge(&item.style)
+                        } else {
+                            item.style
+                        };
+                        if is_selected {
+                            item_style = self.highlight_style.merge(&item_style);
+                        }
+
+                        // Apply item background style to the whole row
+                        let row_area = Rect::new(list_area.x, y, list_area.width, 1);
+                        set_style_area(&mut frame.buffer, row_area, item_style);
+
+                        // Determine symbol
+                        let symbol = if is_selected {
+                            self.highlight_symbol.unwrap_or(item.marker)
+                        } else {
+                            item.marker
+                        };
+
+                        let mut x = list_area.x;
+
+                        // Draw symbol if present
+                        if !symbol.is_empty() {
+                            x = draw_text_span(frame, x, y, symbol, item_style, list_area.right());
+                            // Add a space after symbol
+                            x = draw_text_span(frame, x, y, " ", item_style, list_area.right());
+                        }
+
+                        // Draw content
+                        // Note: List items are currently single-line for simplicity in v1
+                        if let Some(line) = item.content.lines().first() {
+                            for span in line.spans() {
+                                let span_style = match span.style {
+                                    Some(s) => s.merge(&item_style),
+                                    None => item_style,
+                                };
+                                x = draw_text_span_with_link(
+                                    frame,
+                                    x,
+                                    y,
+                                    &span.content,
+                                    span_style,
+                                    list_area.right(),
+                                    span.link.as_deref(),
+                                );
+                                if x >= list_area.right() {
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Register hit region for this item (if hit testing enabled)
+                        if let Some(id) = self.hit_id {
+                            frame.register_hit(row_area, id, HitRegion::Content, i as u64);
+                        }
+
+                        rendered_visible_items = rendered_visible_items.saturating_add(1);
+                    }
+
+                    if filtered_indices.len() > list_height && list_area.width > 0 {
+                        let indicator_x = list_area.right().saturating_sub(1);
+                        if state.offset > 0 {
+                            draw_text_span(
+                                frame,
+                                indicator_x,
+                                list_area.y,
+                                "↑",
+                                self.style,
+                                list_area.right(),
+                            );
+                        }
+                        if state.offset + list_height < filtered_indices.len() {
+                            draw_text_span(
+                                frame,
+                                indicator_x,
+                                list_area.bottom().saturating_sub(1),
+                                "↓",
+                                self.style,
+                                list_area.right(),
+                            );
+                        }
                     }
                 }
             }
+        }
 
-            // Register hit region for this item (if hit testing enabled)
-            if let Some(id) = self.hit_id {
-                frame.register_hit(row_area, id, HitRegion::Content, i as u64);
-            }
+        #[cfg(feature = "tracing")]
+        {
+            let elapsed_us = render_start.elapsed().as_micros() as u64;
+            render_span.record("visible_items", rendered_visible_items);
+            render_span.record("render_duration_us", elapsed_us);
+            tracing::debug!(
+                message = "list.metrics",
+                total_items,
+                visible_items = rendered_visible_items,
+                selected_count = state.selected_count(),
+                filter_active,
+                list_render_duration_us = elapsed_us
+            );
         }
     }
 }
@@ -600,6 +995,9 @@ impl MeasurableWidget for List<'_> {
 pub struct ListStateSnapshot {
     selected: Option<usize>,
     offset: usize,
+    filter_query: String,
+    multi_select_enabled: bool,
+    multi_selected: Vec<usize>,
 }
 
 impl UndoSupport for ListState {
@@ -611,6 +1009,9 @@ impl UndoSupport for ListState {
         Box::new(ListStateSnapshot {
             selected: self.selected,
             offset: self.offset,
+            filter_query: self.filter_query.clone(),
+            multi_select_enabled: self.multi_select_enabled,
+            multi_selected: self.multi_selected.iter().copied().collect(),
         })
     }
 
@@ -619,6 +1020,9 @@ impl UndoSupport for ListState {
             self.selected = snap.selected;
             self.hovered = None;
             self.offset = snap.offset;
+            self.filter_query = snap.filter_query.clone();
+            self.multi_select_enabled = snap.multi_select_enabled;
+            self.multi_selected = snap.multi_selected.iter().copied().collect();
             true
         } else {
             false
@@ -635,6 +1039,12 @@ impl ListUndoExt for ListState {
         self.selected = index;
         if index.is_none() {
             self.offset = 0;
+            self.multi_selected.clear();
+        } else if !self.multi_select_enabled
+            && let Some(selected) = index
+        {
+            self.multi_selected.clear();
+            self.multi_selected.insert(selected);
         }
     }
 }
@@ -652,7 +1062,16 @@ impl ListState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ftui_core::event::{KeyCode, KeyEvent};
     use ftui_render::grapheme_pool::GraphemePool;
+    #[cfg(feature = "tracing")]
+    use std::sync::{Arc, Mutex};
+    #[cfg(feature = "tracing")]
+    use tracing::Subscriber;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::Layer;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::layer::{Context, SubscriberExt};
 
     fn row_text(frame: &Frame, y: u16) -> String {
         let width = frame.buffer.width();
@@ -666,6 +1085,120 @@ mod tests {
             actual.push(ch);
         }
         actual.trim().to_string()
+    }
+
+    #[cfg(feature = "tracing")]
+    #[derive(Debug, Default)]
+    struct ListTraceState {
+        list_render_seen: bool,
+        has_total_items_field: bool,
+        has_visible_items_field: bool,
+        has_selected_count_field: bool,
+        has_filter_active_field: bool,
+        render_duration_recorded: bool,
+        selection_events: usize,
+    }
+
+    #[cfg(feature = "tracing")]
+    struct ListTraceCapture {
+        state: Arc<Mutex<ListTraceState>>,
+    }
+
+    #[cfg(feature = "tracing")]
+    impl<S> Layer<S> for ListTraceCapture
+    where
+        S: Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            if attrs.metadata().name() != "list.render" {
+                return;
+            }
+            let fields = attrs.metadata().fields();
+            let mut state = self.state.lock().expect("list trace state lock");
+            state.list_render_seen = true;
+            state.has_total_items_field |= fields.field("total_items").is_some();
+            state.has_visible_items_field |= fields.field("visible_items").is_some();
+            state.has_selected_count_field |= fields.field("selected_count").is_some();
+            state.has_filter_active_field |= fields.field("filter_active").is_some();
+        }
+
+        fn on_record(
+            &self,
+            id: &tracing::Id,
+            values: &tracing::span::Record<'_>,
+            ctx: Context<'_, S>,
+        ) {
+            let Some(span) = ctx.span(id) else {
+                return;
+            };
+            if span.metadata().name() != "list.render" {
+                return;
+            }
+            struct DurationVisitor {
+                saw_duration: bool,
+            }
+            impl tracing::field::Visit for DurationVisitor {
+                fn record_u64(&mut self, field: &tracing::field::Field, _value: u64) {
+                    if field.name() == "render_duration_us" {
+                        self.saw_duration = true;
+                    }
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    _value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "render_duration_us" {
+                        self.saw_duration = true;
+                    }
+                }
+            }
+            let mut visitor = DurationVisitor {
+                saw_duration: false,
+            };
+            values.record(&mut visitor);
+            if visitor.saw_duration {
+                self.state
+                    .lock()
+                    .expect("list trace state lock")
+                    .render_duration_recorded = true;
+            }
+        }
+
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            struct MessageVisitor {
+                message: Option<String>,
+            }
+            impl tracing::field::Visit for MessageVisitor {
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "message" {
+                        self.message = Some(value.to_owned());
+                    }
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.message = Some(format!("{value:?}").trim_matches('"').to_owned());
+                    }
+                }
+            }
+            let mut visitor = MessageVisitor { message: None };
+            event.record(&mut visitor);
+            if visitor.message.as_deref() == Some("list.selection") {
+                let mut state = self.state.lock().expect("list trace state lock");
+                state.selection_events = state.selection_events.saturating_add(1);
+            }
+        }
     }
 
     #[test]
@@ -849,16 +1382,16 @@ mod tests {
         let mut frame_small = Frame::new(10, 3, &mut pool);
         StatefulWidget::render(&list, area_small, &mut frame_small, &mut state);
         assert_eq!(state.offset, 7);
-        assert_eq!(row_text(&frame_small, 0), "Item 7");
-        assert_eq!(row_text(&frame_small, 2), "Item 9");
+        assert!(row_text(&frame_small, 0).starts_with("Item 7"));
+        assert!(row_text(&frame_small, 2).starts_with("Item 9"));
 
         // Larger viewport: offset should pull back to fill the viewport (5..9).
         let area_large = Rect::new(0, 0, 10, 5);
         let mut frame_large = Frame::new(10, 5, &mut pool);
         StatefulWidget::render(&list, area_large, &mut frame_large, &mut state);
         assert_eq!(state.offset, 5);
-        assert_eq!(row_text(&frame_large, 0), "Item 5");
-        assert_eq!(row_text(&frame_large, 4), "Item 9");
+        assert!(row_text(&frame_large, 0).starts_with("Item 5"));
+        assert!(row_text(&frame_large, 4).starts_with("Item 9"));
     }
 
     #[test]
@@ -1004,14 +1537,14 @@ mod tests {
 
     #[test]
     fn list_measure_with_block() {
-        let block = crate::block::Block::bordered(); // 2x2 chrome
+        let block = crate::block::Block::bordered(); // 4x4 chrome (borders + padding)
         let items = vec![ListItem::new("Hi")]; // 2 chars, 1 line
         let list = List::new(items).block(block);
         let constraints = list.measure(Size::MAX);
 
-        // 2 (text) + 2 (chrome) = 4 width
-        // 1 (line) + 2 (chrome) = 3 height
-        assert_eq!(constraints.preferred, Size::new(4, 3));
+        // 2 (text) + 4 (chrome) = 6 width
+        // 1 (line) + 4 (chrome) = 5 height
+        assert_eq!(constraints.preferred, Size::new(6, 5));
     }
 
     #[test]
@@ -1316,6 +1849,158 @@ mod tests {
         let mut state = ListState::default();
         state.select_previous();
         assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn list_handle_key_navigation_supports_jk_and_arrows() {
+        let list = List::new(vec![
+            ListItem::new("a"),
+            ListItem::new("b"),
+            ListItem::new("c"),
+        ]);
+        let mut state = ListState::default();
+        state.select(Some(0));
+
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Down)));
+        assert_eq!(state.selected(), Some(1));
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Char('j'))));
+        assert_eq!(state.selected(), Some(2));
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Up)));
+        assert_eq!(state.selected(), Some(1));
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Char('k'))));
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn list_handle_key_filter_is_incremental_and_editable() {
+        let list = List::new(vec![
+            ListItem::new("alpha"),
+            ListItem::new("banana"),
+            ListItem::new("beta"),
+        ]);
+        let mut state = ListState::default();
+
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Char('b'))));
+        assert_eq!(state.filter_query(), "b");
+        assert_eq!(state.selected(), Some(1));
+
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Char('e'))));
+        assert_eq!(state.filter_query(), "be");
+        assert_eq!(state.selected(), Some(2));
+
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Backspace)));
+        assert_eq!(state.filter_query(), "b");
+
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Escape)));
+        assert_eq!(state.filter_query(), "");
+    }
+
+    #[test]
+    fn list_render_filter_no_matches_shows_empty_state() {
+        let list = List::new(vec![ListItem::new("alpha"), ListItem::new("beta")]);
+        let mut state = ListState::default();
+        state.set_filter_query("zzz");
+
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(14, 3, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 14, 3), &mut frame, &mut state);
+
+        assert_eq!(row_text(&frame, 0), "No matches");
+    }
+
+    #[test]
+    fn list_multi_select_toggle_with_space() {
+        let list = List::new(vec![
+            ListItem::new("alpha"),
+            ListItem::new("beta"),
+            ListItem::new("gamma"),
+        ]);
+        let mut state = ListState::default();
+        state.set_multi_select(true);
+        state.select(Some(0));
+
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Char(' '))));
+        assert!(state.selected_indices().contains(&0));
+
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Down)));
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Char(' '))));
+        assert!(state.selected_indices().contains(&1));
+        assert_eq!(state.selected_count(), 2);
+    }
+
+    #[test]
+    fn list_render_draws_scroll_indicators() {
+        let items: Vec<ListItem> = (0..8).map(|i| ListItem::new(format!("Item {i}"))).collect();
+        let list = List::new(items);
+        let mut state = ListState {
+            selected: Some(4),
+            offset: 2,
+            scroll_into_view_requested: false,
+            ..Default::default()
+        };
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(8, 3, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 8, 3), &mut frame, &mut state);
+
+        assert_eq!(
+            frame.buffer.get(7, 0).and_then(|c| c.content.as_char()),
+            Some('↑')
+        );
+        assert_eq!(
+            frame.buffer.get(7, 2).and_then(|c| c.content.as_char()),
+            Some('↓')
+        );
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn list_tracing_span_and_selection_events_are_emitted() {
+        let trace_state = Arc::new(Mutex::new(ListTraceState::default()));
+        let subscriber = tracing_subscriber::registry().with(ListTraceCapture {
+            state: Arc::clone(&trace_state),
+        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        let list = List::new(vec![
+            ListItem::new("a"),
+            ListItem::new("b"),
+            ListItem::new("c"),
+        ]);
+        let mut state = ListState::default();
+        state.select(Some(0));
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(10, 3, &mut pool);
+        StatefulWidget::render(&list, Rect::new(0, 0, 10, 3), &mut frame, &mut state);
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Down)));
+
+        tracing::callsite::rebuild_interest_cache();
+        let snapshot = trace_state.lock().expect("list trace state lock");
+        assert!(snapshot.list_render_seen, "expected list.render span");
+        assert!(
+            snapshot.has_total_items_field,
+            "list.render missing total_items"
+        );
+        assert!(
+            snapshot.has_visible_items_field,
+            "list.render missing visible_items"
+        );
+        assert!(
+            snapshot.has_selected_count_field,
+            "list.render missing selected_count"
+        );
+        assert!(
+            snapshot.has_filter_active_field,
+            "list.render missing filter_active"
+        );
+        assert!(
+            snapshot.render_duration_recorded,
+            "list.render did not record render_duration_us"
+        );
+        assert!(
+            snapshot.selection_events >= 1,
+            "expected list.selection debug event"
+        );
     }
 
     #[test]

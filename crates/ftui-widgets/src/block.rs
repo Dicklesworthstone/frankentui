@@ -910,7 +910,9 @@ mod tests {
     #[test]
     fn chrome_size_all_borders() {
         let block = Block::bordered();
-        assert_eq!(block.chrome_size(), (2, 2));
+        // Block::bordered() includes 1 cell padding on each side.
+        // Chrome = borders (2) + padding (2) = 4 on each axis.
+        assert_eq!(block.chrome_size(), (4, 4));
     }
 
     #[test]
@@ -943,8 +945,8 @@ mod tests {
     fn measure_all_borders() {
         let block = Block::bordered();
         let constraints = block.measure(Size::MAX);
-        assert_eq!(constraints.min, Size::new(2, 2));
-        assert_eq!(constraints.preferred, Size::new(2, 2));
+        assert_eq!(constraints.min, Size::new(4, 4));
+        assert_eq!(constraints.preferred, Size::new(4, 4));
         assert_eq!(constraints.max, None); // Unbounded
     }
 

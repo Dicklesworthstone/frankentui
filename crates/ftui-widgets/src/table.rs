@@ -510,7 +510,7 @@ impl<'a> StatefulWidget for Table<'a> {
 
     fn render(&self, area: Rect, frame: &mut Frame, state: &mut Self::State) {
         #[cfg(feature = "tracing")]
-        let _span = tracing::debug_span!(
+        let _widget_span = tracing::debug_span!(
             "widget_render",
             widget = "Table",
             x = area.x,
@@ -576,12 +576,12 @@ impl<'a> StatefulWidget for Table<'a> {
         let rows_top = table_area.y.saturating_add(header_height);
         let rows_max_y = table_area.bottom();
         let rows_height = rows_max_y.saturating_sub(rows_top);
+        let row_count = self.rows.len();
 
         // Clamp offset to valid range
-        if self.rows.is_empty() {
+        if row_count == 0 {
             state.offset = 0;
         } else {
-            let row_count = self.rows.len();
             state.offset = state.offset.min(row_count.saturating_sub(1));
 
             // If we're scrolled near the end and the viewport grows, keep the bottom
@@ -680,6 +680,17 @@ impl<'a> StatefulWidget for Table<'a> {
             }
         }
 
+        #[cfg(feature = "tracing")]
+        let table_span = tracing::debug_span!(
+            "table.render",
+            total_rows = row_count,
+            offset = state.offset,
+            viewport_height = rows_height,
+            rendered_rows = tracing::field::Empty,
+        );
+        #[cfg(feature = "tracing")]
+        let _table_span_guard = table_span.clone().entered();
+
         // Calculate column widths
         let flex = Flex::horizontal()
             .constraints(self.widths.clone())
@@ -766,7 +777,9 @@ impl<'a> StatefulWidget for Table<'a> {
         }
 
         // Render rows
-        if self.rows.is_empty() {
+        if row_count == 0 {
+            #[cfg(feature = "tracing")]
+            table_span.record("rendered_rows", 0_u64);
             frame.buffer.pop_scissor();
             return;
         }
@@ -774,6 +787,7 @@ impl<'a> StatefulWidget for Table<'a> {
         // Handle scrolling/offset?
         // For v1 basic Table, we just render from state.offset
 
+        let mut rendered_rows = 0usize;
         for (i, row) in self.rows.iter().enumerate().skip(state.offset) {
             if y >= max_y {
                 break;
@@ -854,11 +868,14 @@ impl<'a> StatefulWidget for Table<'a> {
                 frame.register_hit(row_area, id, HitRegion::Content, i as u64);
             }
 
+            rendered_rows = rendered_rows.saturating_add(1);
             y = y
                 .saturating_add(row.height)
                 .saturating_add(row.bottom_margin);
         }
 
+        #[cfg(feature = "tracing")]
+        table_span.record("rendered_rows", rendered_rows as u64);
         frame.buffer.pop_scissor();
     }
 }
@@ -1099,6 +1116,14 @@ mod tests {
     use ftui_render::cell::PackedRgba;
     use ftui_render::grapheme_pool::GraphemePool;
     use ftui_text::{Line, Span};
+    #[cfg(feature = "tracing")]
+    use std::sync::{Arc, Mutex};
+    #[cfg(feature = "tracing")]
+    use tracing::Subscriber;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::Layer;
+    #[cfg(feature = "tracing")]
+    use tracing_subscriber::layer::{Context, SubscriberExt};
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> Option<char> {
         buf.get(x, y).and_then(|c| c.content.as_char())
@@ -1119,6 +1144,109 @@ mod tests {
             actual.push(ch);
         }
         actual.trim().to_string()
+    }
+
+    #[cfg(feature = "tracing")]
+    #[derive(Debug, Default)]
+    struct TableTraceState {
+        span_count: usize,
+        has_total_rows_field: bool,
+        has_rendered_rows_field: bool,
+        total_rows: Vec<u64>,
+        rendered_rows: Vec<u64>,
+    }
+
+    #[cfg(feature = "tracing")]
+    struct TableTraceCapture {
+        state: Arc<Mutex<TableTraceState>>,
+    }
+
+    #[cfg(feature = "tracing")]
+    #[derive(Default)]
+    struct TableRenderVisitor {
+        total_rows: Option<u64>,
+        rendered_rows: Option<u64>,
+    }
+
+    #[cfg(feature = "tracing")]
+    impl tracing::field::Visit for TableRenderVisitor {
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            match field.name() {
+                "total_rows" => self.total_rows = Some(value),
+                "rendered_rows" => self.rendered_rows = Some(value),
+                _ => {}
+            }
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            if let Ok(value) = u64::try_from(value) {
+                self.record_u64(field, value);
+            }
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            let value = format!("{value:?}");
+            if let Ok(parsed) = value.parse::<u64>() {
+                self.record_u64(field, parsed);
+            }
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    impl<S> Layer<S> for TableTraceCapture
+    where
+        S: Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            if attrs.metadata().name() != "table.render" {
+                return;
+            }
+
+            let mut visitor = TableRenderVisitor::default();
+            attrs.record(&mut visitor);
+            let fields = attrs.metadata().fields();
+
+            let mut state = self.state.lock().expect("table trace state lock");
+            state.span_count += 1;
+            state.has_total_rows_field |= fields.field("total_rows").is_some();
+            state.has_rendered_rows_field |= fields.field("rendered_rows").is_some();
+            if let Some(total_rows) = visitor.total_rows {
+                state.total_rows.push(total_rows);
+            }
+            if let Some(rendered_rows) = visitor.rendered_rows {
+                state.rendered_rows.push(rendered_rows);
+            }
+        }
+
+        fn on_record(
+            &self,
+            id: &tracing::Id,
+            values: &tracing::span::Record<'_>,
+            ctx: Context<'_, S>,
+        ) {
+            let Some(span_ref) = ctx.span(id) else {
+                return;
+            };
+            if span_ref.metadata().name() != "table.render" {
+                return;
+            }
+
+            let mut visitor = TableRenderVisitor::default();
+            values.record(&mut visitor);
+
+            let mut state = self.state.lock().expect("table trace state lock");
+            if let Some(total_rows) = visitor.total_rows {
+                state.total_rows.push(total_rows);
+            }
+            if let Some(rendered_rows) = visitor.rendered_rows {
+                state.rendered_rows.push(rendered_rows);
+            }
+        }
     }
 
     // --- Row builder tests ---
@@ -1264,9 +1392,8 @@ mod tests {
         let mut frame = Frame::new(10, 5, &mut pool);
         Widget::render(&table, area, &mut frame);
 
-        // Content should be inside the block border
-        // Border chars are at row 0, content starts at row 1
-        assert_eq!(cell_char(&frame.buffer, 1, 1), Some('X'));
+        // Content should be inside the block border + padding
+        assert_eq!(cell_char(&frame.buffer, 2, 2), Some('X'));
     }
 
     #[test]
@@ -2349,23 +2476,23 @@ mod tests {
 
     #[test]
     fn block_plus_header_fill_entire_area() {
-        // Block takes 2 rows (top/bottom border), header takes 1 row — 3 rows total.
-        // With area height=3, no data rows should render.
+        // Block chrome is 4 rows (borders + padding), header takes 1 row — 5 rows total.
+        // With area height=5, no data rows should render.
         let header = Row::new(["H"]);
         let table = Table::new([Row::new(["X"])], [Constraint::Fixed(3)])
             .block(Block::bordered())
             .header(header);
 
-        let area = Rect::new(0, 0, 5, 3);
+        let area = Rect::new(0, 0, 5, 5);
         let mut pool = GraphemePool::new();
-        let mut frame = Frame::new(5, 3, &mut pool);
+        let mut frame = Frame::new(5, 5, &mut pool);
         Widget::render(&table, area, &mut frame);
 
-        // Header should render at (1,1) inside the border
-        assert_eq!(cell_char(&frame.buffer, 1, 1), Some('H'));
+        // Header should render inside the border + padding
+        assert_eq!(cell_char(&frame.buffer, 2, 2), Some('H'));
         // Data row "X" should NOT appear (no room)
         let data_rendered =
-            (0..5).any(|x| (0..3).any(|y| cell_char(&frame.buffer, x, y) == Some('X')));
+            (0..5).any(|x| (0..5).any(|y| cell_char(&frame.buffer, x, y) == Some('X')));
         assert!(!data_rendered);
     }
 
@@ -2415,9 +2542,9 @@ mod tests {
         let c_no = table_no_block.measure(Size::MAX);
         let c_with = table_with_block.measure(Size::MAX);
 
-        // Block border adds 2 to width and 2 to height
-        assert_eq!(c_with.preferred.width, c_no.preferred.width + 2);
-        assert_eq!(c_with.preferred.height, c_no.preferred.height + 2);
+        // Block chrome (borders + padding) adds 4 to width and 4 to height.
+        assert_eq!(c_with.preferred.width, c_no.preferred.width + 4);
+        assert_eq!(c_with.preferred.height, c_no.preferred.height + 4);
     }
 
     #[test]
@@ -2632,5 +2759,109 @@ mod tests {
 
         // Should not overflow — saturates at u16::MAX
         assert!(c.preferred.height > 0);
+    }
+
+    #[test]
+    fn variable_height_rows_respect_viewport_visible_range() {
+        let rows = vec![
+            Row::new(["R0"]),
+            Row::new(["R1"]).height(2),
+            Row::new(["R2"]),
+            Row::new(["R3"]),
+        ];
+        let table = Table::new(rows, [Constraint::Fixed(4)]);
+        let area = Rect::new(0, 0, 4, 3);
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(4, 3, &mut pool);
+        let mut state = TableState {
+            offset: 1,
+            ..Default::default()
+        };
+
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        assert_eq!(state.offset, 1);
+        assert_eq!(row_text(&frame.buffer, 0), "R1");
+        assert_eq!(row_text(&frame.buffer, 1), "");
+        assert_eq!(row_text(&frame.buffer, 2), "R2");
+    }
+
+    #[test]
+    fn render_100k_rows_stays_within_8ms_frame_budget() {
+        use std::time::{Duration, Instant};
+
+        let rows: Vec<Row> = (0..100_000).map(|_| Row::new(["row"])).collect();
+        let table = Table::new(rows, [Constraint::Fixed(12)]);
+        let area = Rect::new(0, 0, 12, 24);
+        let mut state = TableState {
+            offset: 50_000,
+            ..Default::default()
+        };
+        let mut pool = GraphemePool::new();
+
+        // Warm up branch prediction and caches.
+        let mut warmup = Frame::new(12, 24, &mut pool);
+        StatefulWidget::render(&table, area, &mut warmup, &mut state);
+
+        let iterations = 20u32;
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let mut frame = Frame::new(12, 24, &mut pool);
+            StatefulWidget::render(&table, area, &mut frame, &mut state);
+        }
+        let per_frame = start.elapsed() / iterations;
+
+        assert!(
+            per_frame <= Duration::from_millis(8),
+            "100k-row table render exceeded 8ms budget: {per_frame:?}"
+        );
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_table_render_span_reports_row_counts() {
+        let trace_state = Arc::new(Mutex::new(TableTraceState::default()));
+        let subscriber = tracing_subscriber::registry().with(TableTraceCapture {
+            state: Arc::clone(&trace_state),
+        });
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        let rows: Vec<Row> = (0..20).map(|i| Row::new([format!("R{i}")])).collect();
+        let table = Table::new(rows, [Constraint::Fixed(6)]);
+        let area = Rect::new(0, 0, 6, 4);
+        let mut state = TableState {
+            offset: 3,
+            ..Default::default()
+        };
+        let mut pool = GraphemePool::new();
+        let mut frame = Frame::new(6, 4, &mut pool);
+        StatefulWidget::render(&table, area, &mut frame, &mut state);
+
+        tracing::callsite::rebuild_interest_cache();
+        let snapshot = trace_state.lock().expect("table trace state lock");
+        assert!(
+            snapshot.span_count >= 1,
+            "expected at least one table.render span, got {}",
+            snapshot.span_count
+        );
+        assert!(
+            snapshot.has_total_rows_field,
+            "table.render span missing total_rows field"
+        );
+        assert!(
+            snapshot.has_rendered_rows_field,
+            "table.render span missing rendered_rows field"
+        );
+        assert!(
+            snapshot.total_rows.contains(&20),
+            "expected total_rows=20 in span fields, got {:?}",
+            snapshot.total_rows
+        );
+        assert!(
+            snapshot.rendered_rows.iter().any(|&n| n > 0 && n <= 4),
+            "expected rendered_rows between 1 and 4, got {:?}",
+            snapshot.rendered_rows
+        );
     }
 }
