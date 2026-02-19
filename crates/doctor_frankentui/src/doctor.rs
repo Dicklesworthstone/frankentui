@@ -47,6 +47,8 @@ struct AppSmokeResult {
     exit_code: Option<i32>,
 }
 
+const DOCTOR_FULL_SMOKE_TIMEOUT_CAP_SECONDS: u64 = 15;
+
 fn check_command(name: &str, ui: &CliOutput) -> Result<()> {
     if command_exists(name) {
         ui.success(&format!("command available: {name}"));
@@ -99,6 +101,9 @@ fn build_capture_smoke_command(
     if dry_run {
         command.arg("--dry-run");
     } else {
+        let smoke_timeout_seconds = args
+            .capture_timeout_seconds
+            .min(DOCTOR_FULL_SMOKE_TIMEOUT_CAP_SECONDS);
         command
             .arg("--boot-sleep")
             .arg("2")
@@ -106,7 +111,7 @@ fn build_capture_smoke_command(
             .arg("1,sleep:2,?,sleep:2,q")
             .arg("--no-snapshot")
             .arg("--capture-timeout-seconds")
-            .arg(args.capture_timeout_seconds.to_string())
+            .arg(smoke_timeout_seconds.to_string())
             .arg("--snapshot-second")
             .arg("4");
     }
@@ -466,7 +471,7 @@ exit 1
         assert!(values.contains(&"--keys".to_string()));
         assert!(values.contains(&"--no-snapshot".to_string()));
         assert!(values.contains(&"--capture-timeout-seconds".to_string()));
-        assert!(values.contains(&"37".to_string()));
+        assert!(values.contains(&"15".to_string()));
         assert!(values.contains(&"--snapshot-second".to_string()));
         assert!(!values.contains(&"--dry-run".to_string()));
     }

@@ -1,9 +1,10 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use clap::Args;
@@ -582,6 +583,98 @@ exec \"$real_ttyd\" \"${{args[@]}}\"
     Ok(Some(shim_dir))
 }
 
+const VHS_FATAL_OPEN_TTYD_EOF: &str = "could not open ttyd: EOF";
+const VHS_FATAL_RECORDING_FAILED: &str = "recording failed";
+
+fn infer_vhs_fatal_reason(line: &str) -> Option<String> {
+    if line.contains(VHS_FATAL_OPEN_TTYD_EOF) {
+        return Some("vhs could not open ttyd (EOF)".to_string());
+    }
+    if line.contains(VHS_FATAL_RECORDING_FAILED) {
+        return Some("vhs reported recording failed".to_string());
+    }
+    None
+}
+
+fn detect_vhs_fatal_reason(vhs_log: &Path) -> Option<String> {
+    let contents = fs::read_to_string(vhs_log).ok()?;
+    for line in contents.lines() {
+        if let Some(reason) = infer_vhs_fatal_reason(line) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+fn spawn_vhs_log_pump<R>(
+    reader: R,
+    mut sink: File,
+    fatal_reason: Arc<Mutex<Option<String>>>,
+) -> thread::JoinHandle<()>
+where
+    R: std::io::Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buffered = BufReader::new(reader);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read_result = buffered.read_line(&mut line);
+            let bytes = match read_result {
+                Ok(bytes) => bytes,
+                Err(_) => break,
+            };
+            if bytes == 0 {
+                break;
+            }
+
+            let _ = sink.write_all(line.as_bytes());
+            if let Some(reason) = infer_vhs_fatal_reason(&line)
+                && let Ok(mut guard) = fatal_reason.lock()
+                && guard.is_none()
+            {
+                *guard = Some(reason);
+            }
+        }
+        let _ = sink.flush();
+    })
+}
+
+fn parse_defunct_ttyd_from_ps(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout).lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        let stat = parts.next().unwrap_or_default();
+        let comm = parts.next().unwrap_or_default();
+        comm == "ttyd" && stat.contains('Z')
+    })
+}
+
+#[cfg(unix)]
+fn has_defunct_ttyd_child(vhs_pid: u32) -> bool {
+    let output = Command::new("ps")
+        .arg("-o")
+        .arg("stat=,comm=")
+        .arg("--ppid")
+        .arg(vhs_pid.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+
+    parse_defunct_ttyd_from_ps(&output.stdout)
+}
+
+#[cfg(not(unix))]
+fn has_defunct_ttyd_child(_vhs_pid: u32) -> bool {
+    false
+}
+
 #[cfg(unix)]
 fn terminate_process_group(group_leader_pid: u32) {
     if group_leader_pid == 0 {
@@ -1033,8 +1126,8 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
 
     let mut vhs = Command::new("vhs");
     vhs.arg(&tape_path)
-        .stdout(Stdio::from(vhs_log_file))
-        .stderr(Stdio::from(vhs_log_err));
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(unix)]
     vhs.process_group(0);
@@ -1051,18 +1144,80 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
     }
 
     let mut child = vhs.spawn()?;
+    let vhs_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| DoctorError::invalid("failed to capture VHS stdout pipe"))?;
+    let vhs_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| DoctorError::invalid("failed to capture VHS stderr pipe"))?;
+    let stream_fatal_reason = Arc::new(Mutex::new(None::<String>));
+    let stdout_pump =
+        spawn_vhs_log_pump(vhs_stdout, vhs_log_file, Arc::clone(&stream_fatal_reason));
+    let stderr_pump = spawn_vhs_log_pump(vhs_stderr, vhs_log_err, Arc::clone(&stream_fatal_reason));
 
     let timeout = std::time::Duration::from_secs(cfg.capture_timeout_seconds);
+    let deadline = std::time::Instant::now() + timeout;
+    let mut fatal_capture_reason: Option<String> = None;
     let mut timed_out = false;
-    let vhs_exit = match child.wait_timeout(timeout)? {
-        Some(status) => status.code().unwrap_or(1),
-        None => {
+    let child_pid = child.id();
+    let vhs_exit = loop {
+        if let Some(status) = child.try_wait()? {
+            break status.code().unwrap_or(1);
+        }
+
+        if fatal_capture_reason.is_none()
+            && let Ok(guard) = stream_fatal_reason.lock()
+            && let Some(reason) = guard.clone()
+        {
+            fatal_capture_reason = Some(reason);
+            terminate_process_group(child_pid);
+            let _ = child.kill();
+            let status = child.wait_timeout(std::time::Duration::from_secs(2))?;
+            break status.and_then(|value| value.code()).unwrap_or(125);
+        }
+
+        if fatal_capture_reason.is_none()
+            && let Some(reason) = detect_vhs_fatal_reason(&vhs_log)
+        {
+            fatal_capture_reason = Some(reason);
+            terminate_process_group(child_pid);
+            let _ = child.kill();
+            let status = child.wait_timeout(std::time::Duration::from_secs(2))?;
+            break status.and_then(|value| value.code()).unwrap_or(125);
+        }
+
+        if fatal_capture_reason.is_none() && has_defunct_ttyd_child(child_pid) {
+            fatal_capture_reason = Some("ttyd child exited unexpectedly (defunct)".to_string());
+            terminate_process_group(child_pid);
+            let _ = child.kill();
+            let status = child.wait_timeout(std::time::Duration::from_secs(2))?;
+            break status.and_then(|value| value.code()).unwrap_or(125);
+        }
+
+        if std::time::Instant::now() >= deadline {
             timed_out = true;
-            terminate_process_group(child.id());
+            terminate_process_group(child_pid);
             let _ = child.kill();
             let _ = child.wait();
-            124
+            break 124;
         }
+
+        thread::sleep(std::time::Duration::from_millis(200));
+    };
+    let _ = stdout_pump.join();
+    let _ = stderr_pump.join();
+
+    if vhs_exit != 0 {
+        if fatal_capture_reason.is_none() {
+            fatal_capture_reason = detect_vhs_fatal_reason(&vhs_log);
+        }
+        terminate_process_group(child_pid);
+    }
+
+    if let Some(reason) = &fatal_capture_reason {
+        ui.warning(&format!("capture aborted early: {reason}"));
     };
 
     let seed_exit = if let Some(handle) = seed_thread {
@@ -1157,6 +1312,17 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
     let fallback_active = finalization.fallback_active;
     let fallback_reason = finalization.fallback_reason.clone();
 
+    let mut finalize_evidence_terms = vec![
+        format!("vhs_exit={vhs_exit}"),
+        format!("seed_exit={}", seed_exit.unwrap_or(-1)),
+        format!("snapshot_status={snapshot_status}"),
+        format!("final_status={final_status}"),
+        format!("final_exit={final_exit}"),
+    ];
+    if let Some(reason) = &fatal_capture_reason {
+        finalize_evidence_terms.push(format!("capture_error_reason={reason}"));
+    }
+
     append_decision(
         cfg.evidence_ledger,
         &evidence_ledger_path,
@@ -1164,13 +1330,7 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
             trace_id: &trace_id,
             decision_id: "decision-0002",
             action: "capture_finalize",
-            evidence_terms: vec![
-                format!("vhs_exit={vhs_exit}"),
-                format!("seed_exit={}", seed_exit.unwrap_or(-1)),
-                format!("snapshot_status={snapshot_status}"),
-                format!("final_status={final_status}"),
-                format!("final_exit={final_exit}"),
-            ],
+            evidence_terms: finalize_evidence_terms,
             fallback_active,
             fallback_reason: fallback_reason.clone(),
         },
@@ -1922,5 +2082,41 @@ mod tests {
         });
         assert_eq!(result.final_status, "ok");
         assert_eq!(result.final_exit, 0);
+    }
+
+    #[test]
+    fn detect_vhs_fatal_reason_identifies_ttyd_eof_signature() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("vhs.log");
+        fs::write(
+            &log_path,
+            "File: /tmp/run/capture.tape\ncould not open ttyd: EOF\nrecording failed\n",
+        )
+        .expect("write vhs log");
+
+        let reason = super::detect_vhs_fatal_reason(&log_path);
+        assert_eq!(reason.as_deref(), Some("vhs could not open ttyd (EOF)"));
+    }
+
+    #[test]
+    fn detect_vhs_fatal_reason_returns_none_without_fatal_markers() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("vhs.log");
+        fs::write(&log_path, "File: /tmp/run/capture.tape\n").expect("write vhs log");
+
+        let reason = super::detect_vhs_fatal_reason(&log_path);
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn parse_defunct_ttyd_from_ps_detects_zombie_ttyd_rows() {
+        let ps = b"Sl chrome\nZ ttyd\nS bash\n";
+        assert!(super::parse_defunct_ttyd_from_ps(ps));
+    }
+
+    #[test]
+    fn parse_defunct_ttyd_from_ps_ignores_non_ttyd_or_non_zombie_rows() {
+        let ps = b"S ttyd\nZ bash\n";
+        assert!(!super::parse_defunct_ttyd_from_ps(ps));
     }
 }
