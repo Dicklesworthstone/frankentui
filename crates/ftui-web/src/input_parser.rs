@@ -15,8 +15,8 @@
 //! `serde_json` for robustness and is feature-gated behind `input-parser`.
 
 use ftui_core::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
-    PasteEvent,
+    Event, ImeEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent,
+    MouseEventKind, PasteEvent,
 };
 use serde::Deserialize;
 
@@ -83,7 +83,7 @@ struct RawInput {
 /// into an [`Event`].
 ///
 /// Returns `Ok(None)` for event kinds that have no `Event` equivalent
-/// (accessibility, touch, composition with non-end phase).
+/// (accessibility, touch).
 ///
 /// Returns `Err` for malformed JSON or missing required fields.
 pub fn parse_encoded_input_to_event(json: &str) -> Result<Option<Event>, InputParseError> {
@@ -307,19 +307,15 @@ fn parse_focus_event(raw: &RawInput) -> Result<Event, InputParseError> {
 
 fn parse_composition_event(raw: &RawInput) -> Result<Option<Event>, InputParseError> {
     let phase = raw.phase.as_deref().unwrap_or("");
-    // Only "end" phase commits text; others are intermediate IME state.
-    if phase != "end" {
-        return Ok(None);
-    }
-    let data = raw.data.as_deref().unwrap_or("");
-    if data.is_empty() {
-        return Ok(None);
-    }
-    // Synthesize a Paste event for the committed composition text.
-    Ok(Some(Event::Paste(PasteEvent {
-        text: data.to_string(),
-        bracketed: false,
-    })))
+    let text = raw.data.as_deref().unwrap_or("").to_string();
+    let ime = match phase {
+        "start" => ImeEvent::start(),
+        "update" => ImeEvent::update(text),
+        "end" | "commit" => ImeEvent::commit(text),
+        "cancel" => ImeEvent::cancel(),
+        other => return Err(InputParseError::UnknownPhase(other.to_string())),
+    };
+    Ok(Some(Event::Ime(ime)))
 }
 
 #[cfg(test)]
@@ -780,33 +776,44 @@ mod tests {
     }
 
     #[test]
-    fn composition_end_produces_paste() {
+    fn composition_end_produces_commit_ime_event() {
         let ev =
             parse_encoded_input_to_event(r#"{"kind":"composition","phase":"end","data":"你好"}"#)
                 .unwrap()
                 .unwrap();
-        assert_eq!(
-            ev,
-            Event::Paste(PasteEvent {
-                text: "你好".to_string(),
-                bracketed: false,
-            })
-        );
+        assert_eq!(ev, Event::Ime(ImeEvent::commit("你好")));
     }
 
     #[test]
-    fn composition_update_returns_none() {
+    fn composition_update_produces_update_ime_event() {
         let ev =
             parse_encoded_input_to_event(r#"{"kind":"composition","phase":"update","data":"你"}"#)
+                .unwrap()
                 .unwrap();
-        assert!(ev.is_none());
+        assert_eq!(ev, Event::Ime(ImeEvent::update("你")));
     }
 
     #[test]
-    fn composition_end_empty_returns_none() {
+    fn composition_end_empty_produces_empty_commit_ime_event() {
         let ev = parse_encoded_input_to_event(r#"{"kind":"composition","phase":"end","data":""}"#)
+            .unwrap()
             .unwrap();
-        assert!(ev.is_none());
+        assert_eq!(ev, Event::Ime(ImeEvent::commit("")));
+    }
+
+    #[test]
+    fn composition_start_produces_start_ime_event() {
+        let ev = parse_encoded_input_to_event(r#"{"kind":"composition","phase":"start"}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ev, Event::Ime(ImeEvent::start()));
+    }
+
+    #[test]
+    fn composition_cancel_produces_cancel_ime_event() {
+        let ev =
+            parse_encoded_input_to_event(r#"{"kind":"composition","phase":"cancel"}"#).unwrap();
+        assert_eq!(ev, Some(Event::Ime(ImeEvent::cancel())));
     }
 
     #[test]

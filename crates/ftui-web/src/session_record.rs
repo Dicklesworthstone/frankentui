@@ -47,8 +47,8 @@
 use core::time::Duration;
 
 use ftui_core::event::{
-    ClipboardEvent, ClipboardSource, Event, KeyCode, KeyEvent, KeyEventKind, Modifiers,
-    MouseButton, MouseEvent, MouseEventKind, PasteEvent,
+    ClipboardEvent, ClipboardSource, Event, ImeEvent, ImePhase, KeyCode, KeyEvent, KeyEventKind,
+    Modifiers, MouseButton, MouseEvent, MouseEventKind, PasteEvent,
 };
 use ftui_runtime::render_trace::checksum_buffer;
 
@@ -592,6 +592,13 @@ fn event_to_json(event: &Event) -> String {
                 p.bracketed
             )
         }
+        Event::Ime(ime) => {
+            format!(
+                r#"{{"kind":"ime","phase":"{}","text":"{}"}}"#,
+                ime_phase_to_str(ime.phase),
+                json_escape(&ime.text)
+            )
+        }
         Event::Focus(gained) => {
             format!(r#"{{"kind":"focus","gained":{}}}"#, gained)
         }
@@ -665,6 +672,15 @@ fn clipboard_source_to_str(source: ClipboardSource) -> &'static str {
     match source {
         ClipboardSource::Osc52 => "osc52",
         ClipboardSource::Unknown => "unknown",
+    }
+}
+
+fn ime_phase_to_str(phase: ImePhase) -> &'static str {
+    match phase {
+        ImePhase::Start => "start",
+        ImePhase::Update => "update",
+        ImePhase::Commit => "commit",
+        ImePhase::Cancel => "cancel",
     }
 }
 
@@ -1205,6 +1221,21 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
             let bracketed = extract_bool(data, "bracketed").unwrap_or(true);
             Ok(Event::Paste(PasteEvent::new(text, bracketed)))
         }
+        "ime" | "composition" => {
+            let phase_raw = extract_str(data, "phase").unwrap_or("update");
+            let phase = parse_ime_phase(phase_raw)?;
+            let text = extract_str(data, "text")
+                .or(extract_str(data, "data"))
+                .map(json_unescape)
+                .unwrap_or_default();
+            let ime = match phase {
+                ImePhase::Start => ImeEvent::start(),
+                ImePhase::Update => ImeEvent::update(text),
+                ImePhase::Commit => ImeEvent::commit(text),
+                ImePhase::Cancel => ImeEvent::cancel(),
+            };
+            Ok(Event::Ime(ime))
+        }
         "focus" => {
             let gained = extract_bool(data, "gained")
                 .or(extract_bool(data, "focused"))
@@ -1224,6 +1255,16 @@ fn parse_event_json(data: &str) -> Result<Event, String> {
         }
         "tick" => Ok(Event::Tick),
         other => Err(format!("unknown event kind: {other}")),
+    }
+}
+
+fn parse_ime_phase(phase: &str) -> Result<ImePhase, String> {
+    match phase {
+        "start" => Ok(ImePhase::Start),
+        "update" => Ok(ImePhase::Update),
+        "end" | "commit" => Ok(ImePhase::Commit),
+        "cancel" => Ok(ImePhase::Cancel),
+        other => Err(format!("unknown ime/composition phase: {other}")),
     }
 }
 
@@ -2101,6 +2142,21 @@ mod tests {
         assert!(result.ok());
     }
 
+    #[test]
+    fn ime_event_record_replay() {
+        let mut rec = SessionRecorder::new(new_counter(0), 20, 1, 0);
+        rec.init().unwrap();
+
+        rec.push_event(1_000_000, Event::Ime(ImeEvent::start()));
+        rec.push_event(2_000_000, Event::Ime(ImeEvent::update("你")));
+        rec.push_event(3_000_000, Event::Ime(ImeEvent::commit("你好")));
+        rec.step().unwrap();
+
+        let trace = rec.finish();
+        let result = replay(new_counter(0), &trace).unwrap();
+        assert!(result.ok());
+    }
+
     // ---- Checksum chain integrity ----
 
     #[test]
@@ -2598,12 +2654,26 @@ mod tests {
     }
 
     #[test]
-    fn from_jsonl_parses_frankenterm_paste_and_focus_aliases() {
+    fn from_jsonl_parses_frankenterm_paste_focus_and_composition_aliases() {
         let paste = parse_single_input_event(r#"{"kind":"paste","data":"hello\nworld"}"#);
         assert_eq!(paste, Event::Paste(PasteEvent::new("hello\nworld", true)));
 
         let focus = parse_single_input_event(r#"{"kind":"focus","focused":false}"#);
         assert_eq!(focus, Event::Focus(false));
+
+        let composition_update =
+            parse_single_input_event(r#"{"kind":"composition","phase":"update","data":"你"}"#);
+        assert_eq!(
+            composition_update,
+            Event::Ime(ImeEvent::new(ImePhase::Update, "你"))
+        );
+
+        let composition_end =
+            parse_single_input_event(r#"{"kind":"composition","phase":"end","data":"你好"}"#);
+        assert_eq!(
+            composition_end,
+            Event::Ime(ImeEvent::new(ImePhase::Commit, "你好"))
+        );
     }
 
     // ---- Golden Gate API ----
