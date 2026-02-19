@@ -60,6 +60,14 @@ pub struct StepResult {
     pub frame_idx: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GeometryTransition {
+    from_cols: u16,
+    from_rows: u16,
+    to_cols: u16,
+    to_rows: u16,
+}
+
 /// Host-driven, non-blocking program runner for WASM.
 ///
 /// Wraps a [`Model`] and a [`WebBackend`], providing a step-based execution
@@ -86,6 +94,8 @@ pub struct StepProgram<M: Model> {
     height: u16,
     /// Double-buffered render target: O(1) swap instead of O(w*h) clone.
     dbl_buf: Option<DoubleBuffer>,
+    /// Pending geometry transition that must force a baseline reset + full repaint marker.
+    pending_geometry_transition: Option<GeometryTransition>,
 }
 
 impl<M: Model> StepProgram<M> {
@@ -105,6 +115,7 @@ impl<M: Model> StepProgram<M> {
             width,
             height,
             dbl_buf: None,
+            pending_geometry_transition: None,
         }
     }
 
@@ -125,6 +136,7 @@ impl<M: Model> StepProgram<M> {
             width,
             height,
             dbl_buf: None,
+            pending_geometry_transition: None,
         }
     }
 
@@ -216,10 +228,9 @@ impl<M: Model> StepProgram<M> {
     ///
     /// Events are processed on the next [`step`](Self::step) call.
     pub fn push_event(&mut self, event: Event) {
-        // Handle resize events immediately to update internal size tracking.
+        // Keep backend size in sync immediately so host-side reads stay current.
+        // The model and render baseline update when the event is processed in `step()`.
         if let Event::Resize { width, height } = &event {
-            self.width = *width;
-            self.height = *height;
             self.backend.events_mut().set_size(*width, *height);
         }
         self.backend.events_mut().push_event(event);
@@ -307,10 +318,19 @@ impl<M: Model> StepProgram<M> {
 
     fn handle_event(&mut self, event: Event) {
         if let Event::Resize { width, height } = &event {
+            let (prev_width, prev_height) = (self.width, self.height);
             self.width = *width;
             self.height = *height;
-            // Invalidate diff baseline — sizes may differ.
+            // Invalidate diff baseline for every resize signal.
+            // Host-side fit/DPR/zoom transitions can require a repaint boundary
+            // even when cols/rows remain numerically unchanged.
             self.dbl_buf = None;
+            self.pending_geometry_transition = Some(GeometryTransition {
+                from_cols: prev_width,
+                from_rows: prev_height,
+                to_cols: *width,
+                to_rows: *height,
+            });
         }
         let msg = M::Message::from(event);
         let cmd = self.model.update(msg);
@@ -321,6 +341,11 @@ impl<M: Model> StepProgram<M> {
     fn render_frame(&mut self) -> Result<(), WebBackendError> {
         // Ensure double buffer exists; first frame triggers allocation.
         let full_repaint = self.dbl_buf.is_none();
+        let geometry_transition = if full_repaint {
+            self.pending_geometry_transition.take()
+        } else {
+            None
+        };
         if self.dbl_buf.is_none() {
             self.dbl_buf = Some(DoubleBuffer::new(self.width, self.height));
         }
@@ -357,6 +382,10 @@ impl<M: Model> StepProgram<M> {
             .presenter_mut()
             .present_ui_owned(buf, diff.as_ref(), full_repaint);
 
+        if let Some(transition) = geometry_transition {
+            self.emit_geometry_transition_markers(transition);
+        }
+
         self.dirty = false;
         self.frame_idx += 1;
 
@@ -368,6 +397,28 @@ impl<M: Model> StepProgram<M> {
             pool.gc(&[dbl.current(), dbl.previous()]);
         }
         Ok(())
+    }
+
+    fn emit_geometry_transition_markers(&mut self, transition: GeometryTransition) {
+        let reset_marker = format!(
+            r#"{{"event":"diff_baseline_reset","reason":"geometry_transition","from_cols":{},"from_rows":{},"to_cols":{},"to_rows":{},"frame_idx":{}}}"#,
+            transition.from_cols,
+            transition.from_rows,
+            transition.to_cols,
+            transition.to_rows,
+            self.frame_idx
+        );
+        let repaint_marker = format!(
+            r#"{{"event":"full_repaint_boundary","reason":"geometry_transition","from_cols":{},"from_rows":{},"to_cols":{},"to_rows":{},"frame_idx":{},"full_repaint":true}}"#,
+            transition.from_cols,
+            transition.from_rows,
+            transition.to_cols,
+            transition.to_rows,
+            self.frame_idx
+        );
+        let presenter = self.backend.presenter_mut();
+        let _ = presenter.write_log(&reset_marker);
+        let _ = presenter.write_log(&repaint_marker);
     }
 
     fn execute_cmd(&mut self, cmd: Cmd<M::Message>) {
@@ -684,6 +735,108 @@ mod tests {
         let buf = outputs.last_buffer.as_ref().unwrap();
         assert_eq!(buf.width(), 40);
         assert_eq!(buf.height(), 10);
+    }
+
+    #[test]
+    fn resize_emits_baseline_reset_and_full_repaint_markers() {
+        let mut prog = StepProgram::new(new_counter(0), 80, 24);
+        prog.init().unwrap();
+        let _ = prog.take_outputs(); // discard init frame
+
+        prog.resize(120, 40);
+        prog.step().unwrap();
+
+        let outputs = prog.outputs();
+        assert!(
+            outputs
+                .logs
+                .iter()
+                .any(|line| line.contains(r#""event":"diff_baseline_reset""#))
+        );
+        assert!(
+            outputs
+                .logs
+                .iter()
+                .any(|line| line.contains(r#""event":"full_repaint_boundary""#))
+        );
+        assert!(
+            outputs
+                .logs
+                .iter()
+                .any(|line| line.contains(r#""from_cols":80"#) && line.contains(r#""to_cols":120"#))
+        );
+    }
+
+    #[test]
+    fn same_size_resize_still_forces_repaint_boundary() {
+        let mut prog = StepProgram::new(new_counter(0), 80, 24);
+        prog.init().unwrap();
+        let _ = prog.take_outputs(); // discard init frame
+
+        prog.resize(80, 24);
+        prog.step().unwrap();
+
+        let outputs = prog.take_outputs();
+        assert!(outputs.last_full_repaint_hint);
+        assert_eq!(outputs.last_patches.len(), 1);
+        assert_eq!(outputs.last_patches[0].offset, 0);
+        assert_eq!(outputs.last_patches[0].cells.len(), 80usize * 24usize);
+        assert!(outputs.logs.iter().any(|line| {
+            line.contains(r#""event":"diff_baseline_reset""#)
+                && line.contains(r#""from_cols":80"#)
+                && line.contains(r#""to_cols":80"#)
+        }));
+        assert!(outputs.logs.iter().any(|line| {
+            line.contains(r#""event":"full_repaint_boundary""#)
+                && line.contains(r#""from_rows":24"#)
+                && line.contains(r#""to_rows":24"#)
+        }));
+    }
+
+    #[test]
+    fn resize_oscillation_forces_full_repaint_without_stale_patch_offsets() {
+        let mut prog = StepProgram::new(new_counter(0), 80, 24);
+        prog.init().unwrap();
+        let _ = prog.take_outputs();
+
+        for (w, h) in [(120, 40), (80, 24), (120, 40), (80, 24)] {
+            prog.resize(w, h);
+            prog.step().unwrap();
+
+            let outputs = prog.take_outputs();
+            assert!(outputs.last_full_repaint_hint);
+
+            let buf = outputs
+                .last_buffer
+                .expect("resize render should produce a buffer");
+            assert_eq!(buf.width(), w);
+            assert_eq!(buf.height(), h);
+
+            let max_cells = usize::from(w) * usize::from(h);
+            assert_eq!(outputs.last_patches.len(), 1);
+            let run = &outputs.last_patches[0];
+            assert_eq!(run.offset, 0);
+            assert_eq!(run.cells.len(), max_cells);
+            assert!(run.offset as usize + run.cells.len() <= max_cells);
+        }
+    }
+
+    #[test]
+    fn resize_boundary_full_repaint_then_incremental_diff_resume() {
+        let mut prog = StepProgram::new(new_counter(0), 80, 24);
+        prog.init().unwrap();
+        let _ = prog.take_outputs();
+
+        prog.resize(100, 30);
+        prog.step().unwrap();
+        let after_resize = prog.take_outputs();
+        assert!(after_resize.last_full_repaint_hint);
+
+        prog.push_event(key_event('+'));
+        prog.step().unwrap();
+        let after_increment = prog.take_outputs();
+        assert!(!after_increment.last_full_repaint_hint);
+        assert!(!after_increment.last_patches.is_empty());
     }
 
     // ---- Tick handling ----
