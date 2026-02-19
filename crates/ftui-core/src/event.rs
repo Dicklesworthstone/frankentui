@@ -40,6 +40,9 @@ pub enum Event {
     /// Paste event (from bracketed paste mode).
     Paste(PasteEvent),
 
+    /// IME composition event (preedit lifecycle).
+    Ime(ImeEvent),
+
     /// Focus gained or lost.
     ///
     /// `true` = focus gained, `false` = focus lost.
@@ -72,6 +75,7 @@ impl Event {
             Event::Mouse(_) => "mouse",
             Event::Resize { .. } => "resize",
             Event::Paste(_) => "paste",
+            Event::Ime(_) => "ime",
             Event::Focus(_) => "focus",
             Event::Clipboard(_) => "clipboard",
             Event::Tick => "tick",
@@ -369,6 +373,63 @@ impl PasteEvent {
     }
 }
 
+/// IME composition lifecycle phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImePhase {
+    /// Composition started; preedit is active.
+    Start,
+    /// Preedit text changed.
+    Update,
+    /// Composition committed text to the input stream.
+    Commit,
+    /// Composition was canceled.
+    Cancel,
+}
+
+/// IME composition event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImeEvent {
+    /// IME lifecycle phase.
+    pub phase: ImePhase,
+    /// Associated text payload (preedit or committed text).
+    pub text: String,
+}
+
+impl ImeEvent {
+    /// Create a new IME event.
+    #[must_use]
+    pub fn new(phase: ImePhase, text: impl Into<String>) -> Self {
+        Self {
+            phase,
+            text: text.into(),
+        }
+    }
+
+    /// Create a composition-start event.
+    #[must_use]
+    pub fn start() -> Self {
+        Self::new(ImePhase::Start, "")
+    }
+
+    /// Create a composition-update event.
+    #[must_use]
+    pub fn update(preedit: impl Into<String>) -> Self {
+        Self::new(ImePhase::Update, preedit)
+    }
+
+    /// Create a composition-commit event.
+    #[must_use]
+    pub fn commit(text: impl Into<String>) -> Self {
+        Self::new(ImePhase::Commit, text)
+    }
+
+    /// Create a composition-cancel event.
+    #[must_use]
+    pub fn cancel() -> Self {
+        Self::new(ImePhase::Cancel, "")
+    }
+}
+
 /// A clipboard event from OSC 52 response.
 ///
 /// This is optional and may not be supported by all terminals.
@@ -625,9 +686,18 @@ mod tests {
             height: 24,
         };
         let _paste = Event::Paste(PasteEvent::bracketed("test"));
+        let _ime = Event::Ime(ImeEvent::update("漢"));
         let _focus = Event::Focus(true);
         let _clipboard = Event::Clipboard(ClipboardEvent::new("test", ClipboardSource::Unknown));
         let _tick = Event::Tick;
+    }
+
+    #[test]
+    fn ime_event_constructors() {
+        assert_eq!(ImeEvent::start().phase, ImePhase::Start);
+        assert_eq!(ImeEvent::update("x"), ImeEvent::new(ImePhase::Update, "x"));
+        assert_eq!(ImeEvent::commit("漢").phase, ImePhase::Commit);
+        assert_eq!(ImeEvent::cancel().phase, ImePhase::Cancel);
     }
 
     #[test]
