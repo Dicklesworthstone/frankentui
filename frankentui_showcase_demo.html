@@ -416,19 +416,8 @@ function applyZoom() {
   if (typeof term.setZoom === "function") {
     term.setZoom(userZoom);
   }
-  const newDpr = window.devicePixelRatio || 1.0;
-  const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
-  if (geo.cols !== currentCols || geo.rows !== currentRows) {
-    currentCols = geo.cols;
-    currentRows = geo.rows;
-    runner.resize(currentCols, currentRows);
-  }
-  // Always update status to reflect current zoom (even if grid size didn't change).
-  if (Math.abs(userZoom - 1.0) > 0.01) {
-    status.textContent = `${currentCols}\u00d7${currentRows} \u2014 zoom ${Math.round(userZoom * 100)}%`;
-  } else {
-    status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
-  }
+  queueGeometrySync("user_zoom");
+  setRunningStatusText();
   syncPaneOverlayFromRunner();
   storageSet("ftui-zoom", String(userZoom));
   // Update URL without reload.
@@ -462,6 +451,7 @@ const container = document.getElementById("container");
 const geo = term.fitToContainer(container.clientWidth, container.clientHeight, dpr);
 let currentCols = geo.cols;
 let currentRows = geo.rows;
+let lastGeometrySignature = "";
 
 const runner = new ShowcaseRunner(currentCols, currentRows);
 runner.init();
@@ -902,7 +892,7 @@ term.render();
 // Hide loading overlay, show status.
 setProgress(100, "Ready");
 loadingOverlay.classList.add("hidden");
-status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
+setRunningStatusText();
 syncPaneOverlayFromRunner();
 
 // Inject large text assets after first frame so startup work is not blocked.
@@ -930,42 +920,100 @@ function jsonl(obj) {
 
 jsonl({ event: "init", cols: currentCols, rows: currentRows, dpr, zoom: userZoom, ts: Date.now() });
 
+function geometrySignature(cols, rows, dprValue, zoomValue) {
+  return `${cols}x${rows}@${dprValue.toFixed(4)}:z${Math.round(zoomValue * 1000)}`;
+}
+
+function setRunningStatusText() {
+  if (Math.abs(userZoom - 1.0) > 0.01) {
+    status.textContent = `${currentCols}\u00d7${currentRows} \u2014 zoom ${Math.round(userZoom * 100)}%`;
+  } else {
+    status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
+  }
+}
+
+let pendingGeometrySync = false;
+const pendingGeometryReasons = new Set();
+
+function queueGeometrySync(reason) {
+  pendingGeometrySync = true;
+  if (typeof reason === "string" && reason.length > 0) {
+    pendingGeometryReasons.add(reason);
+  } else {
+    pendingGeometryReasons.add("unspecified");
+  }
+}
+
+function applyQueuedGeometrySync(trigger = "frame_tick") {
+  if (!pendingGeometrySync) return;
+  pendingGeometrySync = false;
+  pendingGeometryReasons.add(trigger);
+  const reasons = Array.from(pendingGeometryReasons).sort();
+  pendingGeometryReasons.clear();
+
+  const widthCss = container.clientWidth;
+  const heightCss = container.clientHeight;
+  if (widthCss <= 0 || heightCss <= 0) {
+    return;
+  }
+
+  const newDpr = window.devicePixelRatio || 1.0;
+  const prevCols = currentCols;
+  const prevRows = currentRows;
+  const geo = term.fitToContainer(widthCss, heightCss, newDpr);
+  currentCols = geo.cols;
+  currentRows = geo.rows;
+
+  const nextSignature = geometrySignature(currentCols, currentRows, newDpr, userZoom);
+  const signatureChanged = nextSignature !== lastGeometrySignature;
+  const sizeChanged = currentCols !== prevCols || currentRows !== prevRows;
+  if (signatureChanged) {
+    // Force a resize signal to the runner whenever host geometry semantics changed.
+    // The runner now treats every resize signal as a repaint boundary, even if
+    // cols/rows are numerically unchanged (e.g. DPR/zoom transitions).
+    runner.resize(currentCols, currentRows);
+    lastGeometrySignature = nextSignature;
+  }
+
+  if (signatureChanged || reasons.length > 0) {
+    jsonl({
+      event: "resize",
+      reason: reasons.join("+"),
+      changed: signatureChanged,
+      size_changed: sizeChanged,
+      prev_cols: prevCols,
+      prev_rows: prevRows,
+      cols: currentCols,
+      rows: currentRows,
+      dpr: newDpr,
+      zoom: userZoom,
+      width_css: widthCss,
+      height_css: heightCss,
+      ts: Date.now(),
+    });
+  }
+
+  setRunningStatusText();
+  syncPaneOverlayFromRunner();
+}
+
+lastGeometrySignature = geometrySignature(currentCols, currentRows, dpr, userZoom);
+
 // ── Resize handling ────────────────────────────────────────────────────
 const resizeObserver = new ResizeObserver(() => {
-  const newDpr = window.devicePixelRatio || 1.0;
-  const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
-  if (geo.cols !== currentCols || geo.rows !== currentRows) {
-    currentCols = geo.cols;
-    currentRows = geo.rows;
-    runner.resize(currentCols, currentRows);
-    jsonl({ event: "resize", cols: currentCols, rows: currentRows, ts: Date.now() });
-    status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
-    syncPaneOverlayFromRunner();
-  }
+  queueGeometrySync("resize_observer");
 });
 resizeObserver.observe(container);
 
 // Handle DPR changes via visualViewport API (more reliable than matchMedia).
 if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
   window.visualViewport.addEventListener("resize", () => {
-    const newDpr = window.devicePixelRatio || 1.0;
-    const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
-    if (geo.cols !== currentCols || geo.rows !== currentRows) {
-      currentCols = geo.cols;
-      currentRows = geo.rows;
-      runner.resize(currentCols, currentRows);
-    }
+    queueGeometrySync("visual_viewport_resize");
   });
 } else {
   // Fallback: matchMedia for DPR changes (only fires once per threshold).
   addMediaQueryChangeListener(`(resolution: ${dpr}dppx)`, () => {
-    const newDpr = window.devicePixelRatio || 1.0;
-    const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
-    if (geo.cols !== currentCols || geo.rows !== currentRows) {
-      currentCols = geo.cols;
-      currentRows = geo.rows;
-      runner.resize(currentCols, currentRows);
-    }
+    queueGeometrySync("match_media_dpr_change");
   });
 }
 
@@ -1336,28 +1384,37 @@ window.addEventListener("keyup", (e) => {
 let mouseButtonsDown = 0;
 let dragButton = 0;
 if ("PointerEvent" in window) {
-  canvas.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    focusTerminalInputTarget(e.pointerType !== "mouse");
-    const pointerId = panePointerIdFromEvent(e);
-    mouseButtonsDown = e.pointerType === "mouse" ? e.buttons : mouseButtonsDown;
-    dragButton = e.pointerType === "mouse" ? e.button : dragButton;
-    const dispatch = paneDispatchPointerDown(e);
-    if (!dispatch || dispatch.accepted !== false) {
-      paneActivePointers.add(pointerId);
-    }
-    if (e.pointerType !== "mouse") {
-      if (!dispatch || dispatch.accepted !== false) {
-        paneTouchPointers.add(pointerId);
-      } else {
-        paneTouchPointers.delete(pointerId);
-      }
-    }
-    syncPaneOverlayFromRunner();
-    if (e.pointerType === "mouse") {
-      safeTermInput(domMouseToInput(e, "down"));
-    }
-  });
+	  canvas.addEventListener("pointerdown", (e) => {
+	    e.preventDefault();
+	    focusTerminalInputTarget(e.pointerType !== "mouse");
+	    const pointerId = panePointerIdFromEvent(e);
+	    mouseButtonsDown = e.pointerType === "mouse" ? e.buttons : mouseButtonsDown;
+	    dragButton = e.pointerType === "mouse" ? e.button : dragButton;
+	    const dispatch = paneDispatchPointerDown(e);
+	    if (!dispatch || dispatch.accepted !== false) {
+	      paneActivePointers.add(pointerId);
+	    }
+	    if (e.pointerType !== "mouse") {
+	      if (!dispatch || dispatch.accepted !== false) {
+	        paneTouchPointers.add(pointerId);
+	      } else {
+	        paneTouchPointers.delete(pointerId);
+	      }
+	    }
+	    if (e.pointerType !== "mouse" && (!dispatch || dispatch.accepted !== false)) {
+	      // A touch pointer that was accepted by the pane layer must suppress the
+	      // touch-to-wheel gesture layer (ordering differs across browsers).
+	      touchGestureSuppressedByPane = true;
+	      touchState = TOUCH_IDLE;
+	      touchScrollAccX = 0;
+	      touchScrollAccY = 0;
+	      pinchStartDist = 0;
+	    }
+	    syncPaneOverlayFromRunner();
+	    if (e.pointerType === "mouse") {
+	      safeTermInput(domMouseToInput(e, "down"));
+	    }
+	  });
 
   canvas.addEventListener("pointerup", (e) => {
     e.preventDefault();
@@ -1501,12 +1558,69 @@ window.addEventListener("blur", () => {
   paneActivePointers.clear();
   paneTouchPointers.clear();
 });
-// Suppress context menu on canvas (right-click is forwarded to terminal).
-canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); });
-canvas.addEventListener("wheel", (e) => {
-  e.preventDefault();
-  safeTermInput(domWheelToInput(e));
-}, { passive: false });
+	// Suppress context menu on canvas (right-click is forwarded to terminal).
+	canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); });
+
+	// Wheel input is normalized to discrete steps because the Rust web parser
+	// maps wheel events to directional `Scroll*` kinds (no delta magnitude).
+	let wheelAccX = 0;
+	let wheelAccY = 0;
+	const MAX_WHEEL_STEPS_PER_EVENT = 24;
+
+	function handleWheel(e) {
+	  const scrollStep = touchScrollStepsPx();
+	  const cell = touchCellCoords(e.clientX, e.clientY);
+	  const mods = paneModsFromDomEvent(e);
+
+	  let dx = Number.isFinite(e.deltaX) ? e.deltaX : 0;
+	  let dy = Number.isFinite(e.deltaY) ? e.deltaY : 0;
+	  const mode = Number.isFinite(e.deltaMode) ? e.deltaMode : 0;
+	  if (mode === 1) {
+	    // Lines → approximate pixel deltas using cell size.
+	    dx *= scrollStep.x;
+	    dy *= scrollStep.y;
+	  } else if (mode === 2) {
+	    // Pages → approximate as a viewport worth of cells.
+	    dx *= scrollStep.x * Math.max(1, currentCols | 0);
+	    dy *= scrollStep.y * Math.max(1, currentRows | 0);
+	  }
+
+	  wheelAccX += dx;
+	  wheelAccY += dy;
+
+	  const rawYSteps = wheelAccY / scrollStep.y;
+	  let ySteps = rawYSteps > 0 ? Math.floor(rawYSteps) : Math.ceil(rawYSteps);
+	  ySteps = Math.max(-MAX_WHEEL_STEPS_PER_EVENT, Math.min(MAX_WHEEL_STEPS_PER_EVENT, ySteps));
+	  if (ySteps !== 0) {
+	    const stepDy = Math.sign(ySteps);
+	    for (let i = 0; i < Math.abs(ySteps); i++) {
+	      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: 0, dy: stepDy, mods });
+	    }
+	    wheelAccY -= ySteps * scrollStep.y;
+	    if (Math.abs(rawYSteps) > MAX_WHEEL_STEPS_PER_EVENT) {
+	      wheelAccY = Math.sign(wheelAccY) * Math.max(0, scrollStep.y - 1);
+	    }
+	  }
+
+	  const rawXSteps = wheelAccX / scrollStep.x;
+	  let xSteps = rawXSteps > 0 ? Math.floor(rawXSteps) : Math.ceil(rawXSteps);
+	  xSteps = Math.max(-MAX_WHEEL_STEPS_PER_EVENT, Math.min(MAX_WHEEL_STEPS_PER_EVENT, xSteps));
+	  if (xSteps !== 0) {
+	    const stepDx = Math.sign(xSteps);
+	    for (let i = 0; i < Math.abs(xSteps); i++) {
+	      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: stepDx, dy: 0, mods });
+	    }
+	    wheelAccX -= xSteps * scrollStep.x;
+	    if (Math.abs(rawXSteps) > MAX_WHEEL_STEPS_PER_EVENT) {
+	      wheelAccX = Math.sign(wheelAccX) * Math.max(0, scrollStep.x - 1);
+	    }
+	  }
+	}
+
+	canvas.addEventListener("wheel", (e) => {
+	  e.preventDefault();
+	  handleWheel(e);
+	}, { passive: false });
 window.addEventListener("paste", (e) => {
   if (!terminalDomHasFocus()) return;
   const text = (e.clipboardData || window.clipboardData).getData("text");
@@ -1596,15 +1710,7 @@ let orientationTimer = 0;
 window.addEventListener("orientationchange", () => {
   clearTimeout(orientationTimer);
   orientationTimer = setTimeout(() => {
-    const newDpr = window.devicePixelRatio || 1.0;
-    const geo = term.fitToContainer(container.clientWidth, container.clientHeight, newDpr);
-    if (geo.cols !== currentCols || geo.rows !== currentRows) {
-      currentCols = geo.cols;
-      currentRows = geo.rows;
-      runner.resize(currentCols, currentRows);
-      status.textContent = `${currentCols}\u00d7${currentRows} \u2014 running`;
-      syncPaneOverlayFromRunner();
-    }
+    queueGeometrySync("orientation_change");
   }, 150);
 });
 
@@ -1750,8 +1856,12 @@ canvas.addEventListener("touchmove", (e) => {
     let ySteps = rawYSteps > 0 ? Math.floor(rawYSteps) : Math.ceil(rawYSteps);
     ySteps = Math.max(-MAX_TOUCH_WHEEL_STEPS_PER_MOVE, Math.min(MAX_TOUCH_WHEEL_STEPS_PER_MOVE, ySteps));
     if (ySteps !== 0) {
-      // Natural scrolling: finger down means wheel-up (negative dy).
-      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: 0, dy: -ySteps, mods: 0 });
+      // `ftui-web` treats wheel events as discrete step directions (sign-only).
+      // Emit one event per step so large touch deltas scroll proportionally.
+      const stepDy = -Math.sign(ySteps); // natural scrolling
+      for (let i = 0; i < Math.abs(ySteps); i++) {
+        safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: 0, dy: stepDy, mods: 0 });
+      }
       touchScrollAccY -= ySteps * scrollStep.y;
       if (Math.abs(rawYSteps) > MAX_TOUCH_WHEEL_STEPS_PER_MOVE) {
         touchScrollAccY = Math.sign(touchScrollAccY) * Math.max(0, scrollStep.y - 1);
@@ -1763,7 +1873,10 @@ canvas.addEventListener("touchmove", (e) => {
     xSteps = Math.max(-MAX_TOUCH_WHEEL_STEPS_PER_MOVE, Math.min(MAX_TOUCH_WHEEL_STEPS_PER_MOVE, xSteps));
     if (xSteps !== 0) {
       // Match vertical direction convention for horizontal wheel.
-      safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: -xSteps, dy: 0, mods: 0 });
+      const stepDx = -Math.sign(xSteps); // natural scrolling
+      for (let i = 0; i < Math.abs(xSteps); i++) {
+        safeTermInput({ kind: "wheel", x: cell.x, y: cell.y, dx: stepDx, dy: 0, mods: 0 });
+      }
       touchScrollAccX -= xSteps * scrollStep.x;
       if (Math.abs(rawXSteps) > MAX_TOUCH_WHEEL_STEPS_PER_MOVE) {
         touchScrollAccX = Math.sign(touchScrollAccX) * Math.max(0, scrollStep.x - 1);
@@ -1844,19 +1957,22 @@ function frame(timestamp) {
   const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
   lastTs = timestamp;
 
-  // 1. Advance deterministic clock.
+  // 1. Coalesce and apply pending geometry/fit signals before stepping.
+  applyQueuedGeometrySync("frame_tick");
+
+  // 2. Advance deterministic clock.
   runner.advanceTime(dt);
 
-  // 2. Drain normalized inputs from FrankenTermWeb -> push to runner.
+  // 3. Drain normalized inputs from FrankenTermWeb -> push to runner.
   const inputs = term.drainEncodedInputs();
   for (let i = 0; i < inputs.length; i++) {
     runner.pushEncodedInput(inputs[i]);
   }
 
-  // 3. Step the application.
+  // 4. Step the application.
   const result = runner.step();
 
-  // 4. If a frame was rendered, apply patches and present.
+  // 5. If a frame was rendered, apply patches and present.
   if (result.rendered) {
     const patches = takeRunnerPatches();
     if (patches.cells.length > 0) {
@@ -1879,14 +1995,14 @@ function frame(timestamp) {
     }
   }
 
-  // 5. Drain logs.
+  // 6. Drain logs.
   const logs = runner.takeLogs();
   for (let i = 0; i < logs.length; i++) {
     jsonl({ event: "log", text: logs[i], frame_idx: result.frame_idx, ts: Date.now() });
   }
   syncPaneOverlayFromRunner();
 
-  // 6. Continue or stop.
+  // 7. Continue or stop.
   if (result.running) {
     requestAnimationFrame(frame);
   } else {
