@@ -6,11 +6,11 @@ Status key:
 - `partial`: implemented with known gaps
 - `planned`: specified but not yet implemented
 
-## Legacy-to-Rust Feature Matrix (`tui_inspector` -> `doctor_franktentui`)
+## Legacy-to-Rust Feature Matrix (`tui_inspector` -> `doctor_frankentui`)
 
 | Capability | Legacy Source | Rust Status | Notes |
 |---|---|---|---|
-| Profile-driven capture runner | `capture_mcp_agent_mail_tui.sh` | complete | `doctor_franktentui capture` supports profile merge, tape generation, metadata, dry-run/full run |
+| Profile-driven capture runner | `capture_mcp_agent_mail_tui.sh` | complete | `doctor_frankentui capture` supports profile merge, tape generation, metadata, dry-run/full run |
 | `--list-profiles` behavior | capture script | complete | `capture --list-profiles` and top-level `list-profiles` |
 | Key token parser (`sleep`, `tab`, `text:*`, etc.) | capture script `emit_token` | complete | parity translation implemented in `keyseq.rs` with unit tests |
 | Tape generation with runtime command wiring | capture script | complete | generated in `tape.rs`; supports generic runtime command (`--app-command`) plus legacy env wiring fallback |
@@ -32,7 +32,7 @@ Status key:
 |---|---|---|
 | Structured evidence ledger for decisions | complete | `evidence_ledger.jsonl` captures decision records with policy/trace linkage |
 | Explicit budgeted mode with fallback triggers | complete | `--capture-timeout-seconds` + timeout-triggered fallback metadata |
-| Deterministic conservative mode toggle | complete | `--conservative` and `DOCTOR_FRANKTENTUI_CONSERVATIVE=1` force safe behavior |
+| Deterministic conservative mode toggle | complete | `--conservative` and `DOCTOR_FRANKENTUI_CONSERVATIVE=1` force safe behavior |
 | Decision record IDs (`trace_id`, `decision_id`) | complete | trace-scoped IDs emitted in run metadata and ledger |
 
 ## Extreme-Optimization Upgrades (Intentional Improvements)
@@ -55,7 +55,7 @@ Status key:
 - [x] `cargo check --workspace --all-targets`
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`
 - [x] `cargo fmt --check`
-- [x] Dry-run capture smoke for `doctor_franktentui`
+- [x] Dry-run capture smoke for `doctor_frankentui`
 - [ ] Seed-demo smoke against reachable MCP server (when available)
 
 ## Known Remaining Work

@@ -369,9 +369,9 @@ cargo clippy --all-targets -- -D warnings
 ./tests/e2e/check_pane_traceability.sh
 ```
 
-### doctor_franktentui Verification
+### doctor_frankentui Verification
 
-Run the full `doctor_franktentui` verification stack locally:
+Run the full `doctor_frankentui` verification stack locally:
 
 Prerequisites:
 
@@ -386,14 +386,14 @@ Prerequisites:
 
 ```bash
 # Unit + integration tests
-cargo test -p doctor_franktentui --all-targets -- --nocapture
+cargo test -p doctor_frankentui --all-targets -- --nocapture
 
 # Workflow-level E2E
-./scripts/doctor_franktentui_happy_e2e.sh /tmp/doctor_franktentui_ci/happy
-./scripts/doctor_franktentui_failure_e2e.sh /tmp/doctor_franktentui_ci/failure
+./scripts/doctor_frankentui_happy_e2e.sh /tmp/doctor_frankentui_ci/happy
+./scripts/doctor_frankentui_failure_e2e.sh /tmp/doctor_frankentui_ci/failure
 
 # Coverage gate
-./scripts/doctor_franktentui_coverage.sh /tmp/doctor_franktentui_ci/coverage
+./scripts/doctor_frankentui_coverage.sh /tmp/doctor_frankentui_ci/coverage
 ```
 
 Artifact contract (CI and local):

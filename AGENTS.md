@@ -211,9 +211,9 @@ cargo insta review
 cargo run -p ftui-demo-showcase
 ```
 
-### `doctor_franktentui` Verification Stack
+### `doctor_frankentui` Verification Stack
 
-Canonical local verification commands for the `doctor_franktentui` crate:
+Canonical local verification commands for the `doctor_frankentui` crate:
 
 Prerequisites:
 
@@ -226,24 +226,24 @@ Prerequisites:
 
 ```bash
 # Unit + integration
-cargo test -p doctor_franktentui --all-targets -- --nocapture
+cargo test -p doctor_frankentui --all-targets -- --nocapture
 
 # E2E workflow scripts
-./scripts/doctor_franktentui_happy_e2e.sh /tmp/doctor_franktentui_ci/happy
-./scripts/doctor_franktentui_failure_e2e.sh /tmp/doctor_franktentui_ci/failure
+./scripts/doctor_frankentui_happy_e2e.sh /tmp/doctor_frankentui_ci/happy
+./scripts/doctor_frankentui_failure_e2e.sh /tmp/doctor_frankentui_ci/failure
 
 # Determinism soak (fails on non-volatile divergence)
-./scripts/doctor_franktentui_determinism_soak.sh /tmp/doctor_franktentui_ci/determinism 3
+./scripts/doctor_frankentui_determinism_soak.sh /tmp/doctor_frankentui_ci/determinism 3
 
 # Replay/triage helper for failure artifacts
-./scripts/doctor_franktentui_replay_triage.py --run-root /tmp/doctor_franktentui_ci/failure --max-signals 8
+./scripts/doctor_frankentui_replay_triage.py --run-root /tmp/doctor_frankentui_ci/failure --max-signals 8
 
 # Coverage gate
-./scripts/doctor_franktentui_coverage.sh /tmp/doctor_franktentui_ci/coverage
+./scripts/doctor_frankentui_coverage.sh /tmp/doctor_frankentui_ci/coverage
 ```
 
-CI runs the same contract in the `doctor-franktentui-verification` job and uploads
-artifacts under `/tmp/doctor_franktentui_ci/`:
+CI runs the same contract in the `doctor-frankentui-verification` job and uploads
+artifacts under `/tmp/doctor_frankentui_ci/`:
 
 - `artifact_map.txt` (artifact index + paths)
 - `happy/meta/summary.json` and `happy/meta/artifact_manifest.json`

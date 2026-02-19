@@ -14,7 +14,7 @@ Porting to Rust inside FrankenTUI will:
 
 ## Scope
 
-The new crate will be named `doctor_franktentui` and will be added under `crates/doctor_franktentui`.
+The new crate will be named `doctor_frankentui` and will be added under `crates/doctor_frankentui`.
 
 Target parity with `/dp/tui_inspector` includes:
 
@@ -63,7 +63,7 @@ Non-goal exclusions (implementation-level):
 - create feature parity tracker.
 
 2. Crate bootstrap
-- add `crates/doctor_franktentui` workspace member,
+- add `crates/doctor_frankentui` workspace member,
 - create `Cargo.toml`, `src/lib.rs`, `src/main.rs`, module layout,
 - enforce Rust 2024 and `#![forbid(unsafe_code)]`.
 
@@ -89,7 +89,7 @@ Non-goal exclusions (implementation-level):
 
 ## Success Criteria
 
-- `doctor_franktentui` can produce a capture run with equivalent artifacts and status handling,
+- `doctor_frankentui` can produce a capture run with equivalent artifacts and status handling,
 - all legacy profile workflows are representable,
 - suite mode aggregates run results and emits JSON/HTML reports,
 - seeding flow hits the same JSON-RPC methods with equivalent semantics,

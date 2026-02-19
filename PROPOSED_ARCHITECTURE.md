@@ -2,8 +2,8 @@
 
 ## Target Crate
 
-- Name: `doctor_franktentui`
-- Location: `crates/doctor_franktentui`
+- Name: `doctor_frankentui`
+- Location: `crates/doctor_frankentui`
 - Rust edition: 2024
 - Unsafe policy: `#![forbid(unsafe_code)]`
 
@@ -17,7 +17,7 @@
 ## Module Layout
 
 ```
-crates/doctor_franktentui/
+crates/doctor_frankentui/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs
