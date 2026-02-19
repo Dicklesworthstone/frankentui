@@ -197,6 +197,35 @@ Other useful suites:
 - `tests/e2e/scripts/test_paste.sh`
 - `tests/e2e/scripts/test_kitty_keyboard.sh`
 
+## Remote Resize-Storm Cross-Browser Differential
+
+Use this suite to compare deterministic resize-storm traces across browser targets
+and fail on unexplained divergence classes.
+
+```bash
+# Local default (warn on unknown divergences)
+tests/e2e/scripts/test_remote_resize_storm_cross_browser_diff.sh
+
+# CI-style strict mode
+E2E_DIFF_MODE=strict tests/e2e/scripts/test_remote_resize_storm_cross_browser_diff.sh
+
+# Select browser labels
+E2E_DIFF_BROWSERS=chromium,webkit,firefox \
+  tests/e2e/scripts/test_remote_resize_storm_cross_browser_diff.sh
+```
+
+Controls:
+
+- `E2E_DIFF_BROWSERS` — comma-separated browser labels (minimum 2)
+- `E2E_DIFF_MODE` — `warn` (default local) or `strict` (default in CI)
+- `E2E_DIFF_USE_EXISTING_ARTIFACTS=1` — reuse existing per-browser JSONL traces
+- `E2E_DIFF_KNOWN_DIVERGENCES` — path to approved divergence TSV
+- `E2E_DIFF_REPORT_OUT` — output JSON report path
+
+Known divergence policy file:
+
+- `tests/e2e/fixtures/remote_resize_storm_known_divergences.tsv`
+
 ## Troubleshooting
 
 - **Missing python**: ensure `python3` is available.
