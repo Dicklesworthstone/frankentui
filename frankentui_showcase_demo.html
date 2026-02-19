@@ -226,7 +226,7 @@ const URL_ZOOM        = parseFloat(params.get("zoom")) || 0;
 const LOG_JSONL       = params.get("jsonl") === "1";
 const LOG_PERF        = false;  // Per-frame timing in console
 // Bump when deploying to bypass Cloudflare/browser caches for JS/WASM artifacts.
-const ASSET_VERSION = "2026-02-10.7";
+const ASSET_VERSION = "2026-02-19.1";
 
 // ── DOM refs ───────────────────────────────────────────────────────────
 const canvas         = document.getElementById("terminal-canvas");
@@ -898,19 +898,22 @@ syncPaneOverlayFromRunner();
 // Inject large text assets after first frame so startup work is not blocked.
 largeAssetsPromise.then((assets) => {
   if (!assets) return;
-  try {
-    const okA = runner.setShakespeareText(assets.shakespeare);
-    const okB = runner.setSqliteSource(assets.sqlite);
-    jsonl({
-      event: "assets_loaded",
-      shakespeare_bytes: assets.shakespeare.length,
-      sqlite_bytes: assets.sqlite.length,
-      ok: Boolean(okA && okB),
-      ts: Date.now(),
-    });
-  } catch (e) {
-    console.warn("[ShowcaseDemo] Failed to inject large assets into WASM runner.", e);
-  }
+  // Defer one frame so injection cannot interleave with startup frame calls.
+  requestAnimationFrame(() => {
+    try {
+      const okA = runner.setShakespeareText(assets.shakespeare);
+      const okB = runner.setSqliteSource(assets.sqlite);
+      jsonl({
+        event: "assets_loaded",
+        shakespeare_bytes: assets.shakespeare.length,
+        sqlite_bytes: assets.sqlite.length,
+        ok: Boolean(okA && okB),
+        ts: Date.now(),
+      });
+    } catch (e) {
+      console.warn("[ShowcaseDemo] Failed to inject large assets into WASM runner.", e);
+    }
+  });
 });
 
 // ── JSONL logger ───────────────────────────────────────────────────────
@@ -1954,61 +1957,70 @@ let lastTs = 0;
 let totalFrames = 0;
 
 function frame(timestamp) {
-  const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
-  lastTs = timestamp;
+  try {
+    const dt = lastTs === 0 ? 16.0 : timestamp - lastTs;
+    lastTs = timestamp;
 
-  // 1. Coalesce and apply pending geometry/fit signals before stepping.
-  applyQueuedGeometrySync("frame_tick");
+    // 1. Coalesce and apply pending geometry/fit signals before stepping.
+    applyQueuedGeometrySync("frame_tick");
 
-  // 2. Advance deterministic clock.
-  runner.advanceTime(dt);
+    // 2. Advance deterministic clock.
+    runner.advanceTime(dt);
 
-  // 3. Drain normalized inputs from FrankenTermWeb -> push to runner.
-  const inputs = term.drainEncodedInputs();
-  for (let i = 0; i < inputs.length; i++) {
-    runner.pushEncodedInput(inputs[i]);
-  }
-
-  // 4. Step the application.
-  const result = runner.step();
-
-  // 5. If a frame was rendered, apply patches and present.
-  if (result.rendered) {
-    const patches = takeRunnerPatches();
-    if (patches.cells.length > 0) {
-      term.applyPatchBatchFlat(patches.spans, patches.cells);
+    // 3. Drain normalized inputs from FrankenTermWeb -> push to runner.
+    const inputs = term.drainEncodedInputs();
+    for (let i = 0; i < inputs.length; i++) {
+      runner.pushEncodedInput(inputs[i]);
     }
-    term.render();
-    totalFrames++;
 
-    if (LOG_JSONL) {
-      const stats = runner.patchStats();
-      jsonl({
-        event: "frame",
-        frame_idx: result.frame_idx,
-        events_processed: result.events_processed,
-        patch_hash: runner.patchHash(),
-        dirty_cells: stats ? stats.dirty_cells : 0,
-        patch_count: stats ? stats.patch_count : 0,
-        ts: Date.now(),
-      });
+    // 4. Step the application.
+    const result = runner.step();
+
+    // 5. If a frame was rendered, apply patches and present.
+    if (result.rendered) {
+      const patches = takeRunnerPatches();
+      if (patches.cells.length > 0) {
+        term.applyPatchBatchFlat(patches.spans, patches.cells);
+      }
+      term.render();
+      totalFrames++;
+
+      if (LOG_JSONL) {
+        const stats = runner.patchStats();
+        jsonl({
+          event: "frame",
+          frame_idx: result.frame_idx,
+          events_processed: result.events_processed,
+          patch_hash: runner.patchHash(),
+          dirty_cells: stats ? stats.dirty_cells : 0,
+          patch_count: stats ? stats.patch_count : 0,
+          ts: Date.now(),
+        });
+      }
     }
-  }
 
-  // 6. Drain logs.
-  const logs = runner.takeLogs();
-  for (let i = 0; i < logs.length; i++) {
-    jsonl({ event: "log", text: logs[i], frame_idx: result.frame_idx, ts: Date.now() });
-  }
-  syncPaneOverlayFromRunner();
+    // 6. Drain logs.
+    const logs = runner.takeLogs();
+    for (let i = 0; i < logs.length; i++) {
+      jsonl({ event: "log", text: logs[i], frame_idx: result.frame_idx, ts: Date.now() });
+    }
+    syncPaneOverlayFromRunner();
 
-  // 7. Continue or stop.
-  if (result.running) {
-    requestAnimationFrame(frame);
-  } else {
-    status.textContent = `${currentCols}\u00d7${currentRows} \u2014 stopped (${totalFrames} frames)`;
-    jsonl({ event: "quit", total_frames: totalFrames, ts: Date.now() });
-    runner.destroy();
+    // 7. Continue or stop.
+    if (result.running) {
+      requestAnimationFrame(frame);
+    } else {
+      status.textContent = `${currentCols}\u00d7${currentRows} \u2014 stopped (${totalFrames} frames)`;
+      jsonl({ event: "quit", total_frames: totalFrames, ts: Date.now() });
+      runner.destroy();
+    }
+  } catch (e) {
+    const errorText = e && typeof e === "object" && "stack" in e ? String(e.stack) : String(e);
+    jsonl({ event: "runtime_error", error: errorText, ts: Date.now() });
+    showError(`Runtime error in frame loop:\n${errorText}`);
+    try {
+      runner.destroy();
+    } catch (_) {}
   }
 }
 

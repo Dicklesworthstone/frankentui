@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -31,8 +31,12 @@ pub struct DoctorArgs {
     #[arg(long)]
     pub full: bool,
 
-    #[arg(long = "capture-timeout-seconds", default_value_t = 20)]
+    #[arg(long = "capture-timeout-seconds", default_value_t = 45)]
     pub capture_timeout_seconds: u64,
+
+    /// Allow success exit when capture subsystem is degraded.
+    #[arg(long)]
+    pub allow_degraded: bool,
 
     #[arg(long = "run-root", default_value = "/tmp/doctor_frankentui/doctor")]
     pub run_root: PathBuf,
@@ -47,7 +51,40 @@ struct AppSmokeResult {
     exit_code: Option<i32>,
 }
 
-const DOCTOR_FULL_SMOKE_TIMEOUT_CAP_SECONDS: u64 = 15;
+const DEGRADED_CAPTURE_EXIT_CODE: i32 = 30;
+
+fn classify_capture_failure(
+    status: Option<&str>,
+    vhs_exit: Option<i64>,
+    capture_error_reason: Option<&str>,
+    fallback_reason: Option<&str>,
+) -> Option<(&'static str, &'static str)> {
+    if capture_error_reason
+        .or(fallback_reason)
+        .is_some_and(|reason| reason.contains("ttyd"))
+    {
+        return Some((
+            "vhs_ttyd_handshake_failed",
+            "host has unstable VHS↔ttyd interop; pin a known-good pair or upgrade both",
+        ));
+    }
+
+    if status == Some("failed") && vhs_exit == Some(124) {
+        return Some((
+            "vhs_capture_timeout",
+            "VHS process stalled before producing media; verify host browser/runtime dependencies",
+        ));
+    }
+
+    if status == Some("failed") {
+        return Some((
+            "capture_failed_unknown",
+            "capture failed without a stable signature; inspect vhs.log and ttyd runtime logs",
+        ));
+    }
+
+    None
+}
 
 fn check_command(name: &str, ui: &CliOutput) -> Result<()> {
     if command_exists(name) {
@@ -78,6 +115,108 @@ fn run_help_check(exe: &PathBuf, command: &str) -> Result<()> {
     }
 }
 
+fn describe_capture_smoke_failure(run_root: &Path, run_name: &str) -> Option<String> {
+    let run_dir = run_root.join(run_name);
+    let meta_path = run_dir.join("run_meta.json");
+    let vhs_log = run_dir.join("vhs.log");
+    let mut facts = Vec::new();
+    let mut status: Option<String> = None;
+    let mut vhs_exit: Option<i64> = None;
+    let mut fallback_reason: Option<String> = None;
+    let mut capture_error_reason: Option<String> = None;
+
+    if let Ok(content) = std::fs::read_to_string(&meta_path)
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&content)
+    {
+        if let Some(meta_status) = value.get("status").and_then(serde_json::Value::as_str) {
+            status = Some(meta_status.to_string());
+            facts.push(format!("status={meta_status}"));
+        }
+        if let Some(meta_vhs_exit) = value
+            .get("vhs_exit_code")
+            .and_then(serde_json::Value::as_i64)
+        {
+            vhs_exit = Some(meta_vhs_exit);
+            facts.push(format!("vhs_exit={meta_vhs_exit}"));
+        }
+        if let Some(meta_host_vhs_exit) = value
+            .get("host_vhs_exit_code")
+            .and_then(serde_json::Value::as_i64)
+        {
+            facts.push(format!("host_vhs_exit={meta_host_vhs_exit}"));
+        }
+        if let Some(driver) = value
+            .get("vhs_driver_used")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            facts.push(format!("vhs_driver_used={driver}"));
+        }
+        if let Some(reason) = value
+            .get("fallback_reason")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            fallback_reason = Some(reason.to_string());
+            facts.push(format!("fallback_reason={reason}"));
+        }
+        if let Some(reason) = value
+            .get("capture_error_reason")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            capture_error_reason = Some(reason.to_string());
+            facts.push(format!("capture_error_reason={reason}"));
+        }
+        if let Some(path) = value
+            .get("ttyd_shim_log")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            facts.push(format!("ttyd_shim_log={path}"));
+        }
+        if let Some(path) = value
+            .get("ttyd_runtime_log")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            facts.push(format!("ttyd_runtime_log={path}"));
+        }
+        if let Some(path) = value
+            .get("vhs_docker_log")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            facts.push(format!("vhs_docker_log={path}"));
+        }
+    }
+
+    if let Some((diagnosis, remediation)) = classify_capture_failure(
+        status.as_deref(),
+        vhs_exit,
+        capture_error_reason.as_deref(),
+        fallback_reason.as_deref(),
+    ) {
+        facts.push(format!("diagnosis={diagnosis}"));
+        facts.push(format!("remediation={remediation}"));
+    }
+
+    if facts.is_empty()
+        && let Ok(content) = std::fs::read_to_string(&vhs_log)
+        && let Some(line) = content
+            .lines()
+            .find(|line| line.contains("could not open ttyd") || line.contains("recording failed"))
+    {
+        facts.push(format!("vhs_log={line}"));
+    }
+
+    if facts.is_empty() {
+        None
+    } else {
+        Some(format!("{} ({})", run_dir.display(), facts.join(", ")))
+    }
+}
+
 fn build_capture_smoke_command(
     current_exe: &PathBuf,
     args: &DoctorArgs,
@@ -101,9 +240,6 @@ fn build_capture_smoke_command(
     if dry_run {
         command.arg("--dry-run");
     } else {
-        let smoke_timeout_seconds = args
-            .capture_timeout_seconds
-            .min(DOCTOR_FULL_SMOKE_TIMEOUT_CAP_SECONDS);
         command
             .arg("--boot-sleep")
             .arg("2")
@@ -111,7 +247,7 @@ fn build_capture_smoke_command(
             .arg("1,sleep:2,?,sleep:2,q")
             .arg("--no-snapshot")
             .arg("--capture-timeout-seconds")
-            .arg(smoke_timeout_seconds.to_string())
+            .arg(args.capture_timeout_seconds.to_string())
             .arg("--snapshot-second")
             .arg("4");
     }
@@ -153,7 +289,7 @@ fn build_app_smoke_command(
 }
 
 fn run_app_smoke_fallback(args: &DoctorArgs, ui: &CliOutput) -> Result<AppSmokeResult> {
-    const APP_SMOKE_TIMEOUT_SECONDS: u64 = 12;
+    const APP_SMOKE_TIMEOUT_SECONDS: u64 = 20;
 
     let run_dir = args.run_root.join("doctor_app_smoke");
     ensure_dir(&run_dir)?;
@@ -249,6 +385,7 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
 
     check_command("bash", &ui)?;
     check_command("vhs", &ui)?;
+    check_command("ttyd", &ui)?;
 
     if command_exists("ffmpeg") {
         ui.success("command available: ffmpeg");
@@ -304,11 +441,14 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
 
         if !full_status.success() {
             degraded_capture = true;
-            degraded_reason = Some(format!(
-                "full capture smoke failed with exit={}",
-                full_status.code().unwrap_or(1)
-            ));
+            let exit_code = full_status.code().unwrap_or(1);
+            degraded_reason = describe_capture_smoke_failure(&args.run_root, "doctor_full_run")
+                .map(|detail| format!("full capture smoke failed with exit={exit_code}; {detail}"))
+                .or_else(|| Some(format!("full capture smoke failed with exit={exit_code}")));
             ui.warning("full capture smoke failed; attempting app launch fallback");
+            if let Some(reason) = &degraded_reason {
+                ui.warning(reason);
+            }
 
             let smoke = run_app_smoke_fallback(&args, &ui)?;
             app_smoke_summary = Some(smoke.summary_path.display().to_string());
@@ -329,23 +469,46 @@ pub fn run_doctor(args: DoctorArgs) -> Result<()> {
         }
     }
 
-    ui.success("doctor completed successfully");
+    let status = if degraded_capture { "degraded" } else { "ok" };
+    let capture_stack_health = if degraded_capture {
+        "unhealthy"
+    } else {
+        "healthy"
+    };
 
     if integration.should_emit_json() {
         println!(
             "{}",
             json!({
                 "command": "doctor",
-                "status": "ok",
+                "status": status,
                 "project_dir": args.project_dir.display().to_string(),
                 "run_root": args.run_root.display().to_string(),
+                "capture_stack_health": capture_stack_health,
                 "degraded_capture": degraded_capture,
                 "degraded_reason": degraded_reason,
                 "app_smoke_summary": app_smoke_summary,
+                "allow_degraded": args.allow_degraded,
                 "integration": integration,
             })
         );
     }
+
+    if degraded_capture {
+        let summary = degraded_reason
+            .clone()
+            .unwrap_or_else(|| "capture stack degraded".to_string());
+        ui.warning(&format!("capture stack health: {capture_stack_health}"));
+        if !args.allow_degraded {
+            return Err(DoctorError::exit(
+                DEGRADED_CAPTURE_EXIT_CODE,
+                format!("{summary}; rerun with --allow-degraded to permit degraded success"),
+            ));
+        }
+        ui.warning("--allow-degraded set; returning success despite degraded capture stack");
+    }
+
+    ui.success("doctor completed successfully");
     Ok(())
 }
 
@@ -378,6 +541,7 @@ mod tests {
             project_dir: PathBuf::from("/tmp/project"),
             full: false,
             capture_timeout_seconds: 37,
+            allow_degraded: false,
             run_root: PathBuf::from("/tmp/run-root"),
         }
     }
@@ -471,7 +635,7 @@ exit 1
         assert!(values.contains(&"--keys".to_string()));
         assert!(values.contains(&"--no-snapshot".to_string()));
         assert!(values.contains(&"--capture-timeout-seconds".to_string()));
-        assert!(values.contains(&"15".to_string()));
+        assert!(values.contains(&"37".to_string()));
         assert!(values.contains(&"--snapshot-second".to_string()));
         assert!(!values.contains(&"--dry-run".to_string()));
     }
@@ -506,6 +670,7 @@ exit 1
             project_dir,
             full: true,
             capture_timeout_seconds: 20,
+            allow_degraded: false,
             run_root,
         };
         let ui = CliOutput::new(false);
@@ -531,6 +696,7 @@ exit 1
             project_dir,
             full: true,
             capture_timeout_seconds: 20,
+            allow_degraded: false,
             run_root,
         };
         let ui = CliOutput::new(false);

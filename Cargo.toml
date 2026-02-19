@@ -1,27 +1,34 @@
 [workspace]
 resolver = "2"
-exclude = ["fuzz"]
 members = [
-  "crates/ftui",
-  "crates/ftui-core",
-  "crates/ftui-render",
-  "crates/ftui-style",
-  "crates/ftui-text",
-  "crates/ftui-layout",
-  "crates/ftui-runtime",
-  "crates/ftui-widgets",
-  "crates/ftui-extras",
-  "crates/ftui-harness",
-  "crates/ftui-i18n",
-  "crates/ftui-pty",
-  "crates/ftui-simd",
-  "crates/ftui-demo-showcase",
-  "crates/ftui-backend",
-  "crates/ftui-tty",
-  "crates/ftui-web",
-  "crates/ftui-showcase-wasm",
-  "crates/doctor_frankentui",
+    "crates/doctor_frankentui",
+    "crates/frankenterm-web",
+    "crates/ftui",
+    "crates/ftui-backend",
+    "crates/ftui-core",
+    "crates/ftui-demo-showcase",
+    "crates/ftui-extras",
+    "crates/ftui-harness",
+    "crates/ftui-i18n",
+    "crates/ftui-layout",
+    "crates/ftui-pty",
+    "crates/ftui-render",
+    "crates/ftui-runtime",
+    "crates/ftui-showcase-wasm",
+    "crates/ftui-simd",
+    "crates/ftui-style",
+    "crates/ftui-text",
+    "crates/ftui-tty",
+    "crates/ftui-web",
+    "crates/ftui-widgets",
 ]
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.2.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Dicklesworthstone/frankentui"
 
 [profile.release]
 opt-level = "z"
@@ -30,7 +37,5 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# VFX-heavy crate: prefer speed over binary size so the rasterizer
-# inner loops benefit from SIMD, loop unrolling, and aggressive inlining.
 [profile.release.package.ftui-extras]
 opt-level = 3

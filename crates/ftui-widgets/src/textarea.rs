@@ -50,8 +50,11 @@ pub struct TextArea {
     soft_wrap: bool,
     /// Maximum height in lines (0 = unlimited / fill area).
     max_height: usize,
-    /// Viewport scroll offset (first visible line).
-    scroll_top: std::cell::Cell<usize>,
+    /// Viewport scroll anchor (logical_line_idx, visual_wrap_offset).
+    ///
+    /// In soft-wrap mode, this tracks the first visible visual line.
+    /// In no-wrap mode, the second element is ignored (always 0).
+    scroll_anchor: std::cell::Cell<(usize, usize)>,
     /// Horizontal scroll offset (visual columns).
     scroll_left: std::cell::Cell<usize>,
     /// Last viewport height for page movement and visibility checks.
@@ -100,7 +103,7 @@ impl TextArea {
             line_number_style: Style::new().dim(),
             soft_wrap: false,
             max_height: 0,
-            scroll_top: std::cell::Cell::new(usize::MAX), // sentinel: will be set on first render
+            scroll_anchor: std::cell::Cell::new((usize::MAX, 0)), // sentinel
             scroll_left: std::cell::Cell::new(0),
             last_viewport_height: std::cell::Cell::new(0),
             last_viewport_width: std::cell::Cell::new(0),
@@ -198,17 +201,25 @@ impl TextArea {
                 true
             }
             KeyCode::PageUp => {
-                let page = self.last_viewport_height.get().max(1);
-                for _ in 0..page {
-                    self.editor.move_up();
+                let page = self.last_viewport_height.get().max(1) as usize;
+                if self.soft_wrap {
+                    self.move_cursor_visual_up(page);
+                } else {
+                    for _ in 0..page {
+                        self.editor.move_up();
+                    }
                 }
                 self.ensure_cursor_visible();
                 true
             }
             KeyCode::PageDown => {
-                let page = self.last_viewport_height.get().max(1);
-                for _ in 0..page {
-                    self.editor.move_down();
+                let page = self.last_viewport_height.get().max(1) as usize;
+                if self.soft_wrap {
+                    self.move_cursor_visual_down(page);
+                } else {
+                    for _ in 0..page {
+                        self.editor.move_down();
+                    }
                 }
                 self.ensure_cursor_visible();
                 true
@@ -313,7 +324,7 @@ impl TextArea {
     /// Set the full text content (resets cursor and undo history).
     pub fn set_text(&mut self, text: &str) {
         self.editor.set_text(text);
-        self.scroll_top.set(0);
+        self.scroll_anchor.set((0, 0));
         self.scroll_left.set(0);
     }
 
@@ -489,10 +500,182 @@ impl TextArea {
         self.ensure_cursor_visible();
     }
 
-    /// Move to end of document.
+    /// Move cursor to end of document.
     pub fn move_to_document_end(&mut self) {
         self.editor.move_to_document_end();
         self.ensure_cursor_visible();
+    }
+
+    fn move_cursor_visual_down(&mut self, count: usize) {
+        let width = self.last_viewport_width.get();
+        if width == 0 {
+            for _ in 0..count {
+                self.editor.move_down();
+            }
+            return;
+        }
+
+        let rope = self.editor.rope();
+        let mut cursor = self.editor.cursor();
+        let mut remaining = count;
+
+        let line_text = rope
+            .line(cursor.line)
+            .unwrap_or(std::borrow::Cow::Borrowed(""));
+        let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+        let (mut current_v_row, _) =
+            Self::cursor_wrap_position(line_text, width, cursor.visual_col);
+
+        // Calculate target screen X (relative to slice start) to preserve column
+        let initial_slices = Self::wrap_line_slices(line_text, width);
+        let initial_slice_start = initial_slices
+            .get(current_v_row)
+            .map(|s| s.start_col)
+            .unwrap_or(0);
+        let target_screen_x = cursor.visual_col.saturating_sub(initial_slice_start);
+
+        while remaining > 0 {
+            let line_text = rope
+                .line(cursor.line)
+                .unwrap_or(std::borrow::Cow::Borrowed(""));
+            let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+            let wrap_count = Self::measure_wrap_count(line_text, width);
+
+            let available_in_line = wrap_count - 1 - current_v_row;
+
+            if remaining <= available_in_line {
+                current_v_row += remaining;
+                remaining = 0;
+
+                let slices = Self::wrap_line_slices(line_text, width);
+                if let Some(slice) = slices.get(current_v_row) {
+                    let target_in_slice = target_screen_x.min(slice.width);
+
+                    let mut g_idx = 0;
+                    let mut v_w = 0;
+                    for g in slice.text.graphemes(true) {
+                        let w = display_width(g);
+                        if v_w + w > target_in_slice {
+                            break;
+                        }
+                        v_w += w;
+                        g_idx += 1;
+                    }
+
+                    let nav = CursorNavigator::new(rope);
+                    let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(cursor.line, 0));
+                    let slice_byte_offset: usize = slice
+                        .text
+                        .graphemes(true)
+                        .take(g_idx)
+                        .map(|g| g.len())
+                        .sum();
+                    let final_byte = line_start_byte + slice.start_byte + slice_byte_offset;
+                    cursor = nav.from_byte_index(final_byte);
+                }
+            } else {
+                remaining -= available_in_line + 1;
+                if cursor.line + 1 < self.editor.line_count() {
+                    cursor.line += 1;
+                    cursor.grapheme = 0;
+                    current_v_row = 0;
+                    let nav = CursorNavigator::new(rope);
+                    cursor = nav.from_line_grapheme(cursor.line, 0);
+                } else {
+                    let nav = CursorNavigator::new(rope);
+                    cursor = nav.document_end();
+                    remaining = 0;
+                }
+            }
+        }
+        self.editor.set_cursor(cursor);
+    }
+
+    fn move_cursor_visual_up(&mut self, count: usize) {
+        let width = self.last_viewport_width.get();
+        if width == 0 {
+            for _ in 0..count {
+                self.editor.move_up();
+            }
+            return;
+        }
+
+        let rope = self.editor.rope();
+        let mut cursor = self.editor.cursor();
+        let mut remaining = count;
+
+        let line_text = rope
+            .line(cursor.line)
+            .unwrap_or(std::borrow::Cow::Borrowed(""));
+        let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+        let (mut current_v_row, _) =
+            Self::cursor_wrap_position(line_text, width, cursor.visual_col);
+
+        // Calculate target screen X (relative to slice start) to preserve column
+        let initial_slices = Self::wrap_line_slices(line_text, width);
+        let initial_slice_start = initial_slices
+            .get(current_v_row)
+            .map(|s| s.start_col)
+            .unwrap_or(0);
+        let target_screen_x = cursor.visual_col.saturating_sub(initial_slice_start);
+
+        while remaining > 0 {
+            if remaining <= current_v_row {
+                current_v_row -= remaining;
+                remaining = 0;
+
+                let line_text = rope
+                    .line(cursor.line)
+                    .unwrap_or(std::borrow::Cow::Borrowed(""));
+                let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+                let slices = Self::wrap_line_slices(line_text, width);
+
+                if let Some(slice) = slices.get(current_v_row) {
+                    let target_in_slice = target_screen_x.min(slice.width);
+
+                    let mut g_idx = 0;
+                    let mut v_w = 0;
+                    for g in slice.text.graphemes(true) {
+                        let w = display_width(g);
+                        if v_w + w > target_in_slice {
+                            break;
+                        }
+                        v_w += w;
+                        g_idx += 1;
+                    }
+
+                    let nav = CursorNavigator::new(rope);
+                    let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(cursor.line, 0));
+                    let slice_byte_offset: usize = slice
+                        .text
+                        .graphemes(true)
+                        .take(g_idx)
+                        .map(|g| g.len())
+                        .sum();
+                    let final_byte = line_start_byte + slice.start_byte + slice_byte_offset;
+                    cursor = nav.from_byte_index(final_byte);
+                }
+            } else {
+                remaining -= current_v_row + 1;
+                if cursor.line > 0 {
+                    cursor.line -= 1;
+                    let line_text = rope
+                        .line(cursor.line)
+                        .unwrap_or(std::borrow::Cow::Borrowed(""));
+                    let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+                    let wrap_count = Self::measure_wrap_count(line_text, width);
+                    current_v_row = wrap_count.saturating_sub(1);
+
+                    let nav = CursorNavigator::new(rope);
+                    cursor = nav.from_line_grapheme(cursor.line, 0);
+                } else {
+                    let nav = CursorNavigator::new(rope);
+                    cursor = nav.document_start();
+                    remaining = 0;
+                }
+            }
+        }
+        self.editor.set_cursor(cursor);
     }
 
     // ── Selection ──────────────────────────────────────────────────
@@ -790,17 +973,13 @@ impl TextArea {
         let cursor = self.editor.cursor();
 
         let last_height = self.last_viewport_height.get();
-
-        // Use a default viewport of 20 lines if we haven't rendered yet (height is 0)
-
         let vp_height = if last_height == 0 { 20 } else { last_height };
 
         let last_width = self.last_viewport_width.get();
-
         let vp_width = if last_width == 0 { 80 } else { last_width };
 
-        if self.scroll_top.get() == usize::MAX {
-            self.scroll_top.set(0);
+        if self.scroll_anchor.get().0 == usize::MAX {
+            self.scroll_anchor.set((0, 0));
         }
 
         self.ensure_cursor_visible_internal(vp_height, vp_width, cursor);
@@ -808,42 +987,28 @@ impl TextArea {
 
     fn ensure_cursor_visible_internal(
         &mut self,
-
         vp_height: usize,
-
         vp_width: usize,
-
         cursor: CursorPosition,
     ) {
-        let current_top = self.scroll_top.get();
-
-        // Vertical scroll
-
-        if cursor.line < current_top {
-            self.scroll_top.set(cursor.line);
-        } else if vp_height > 0 && cursor.line >= current_top + vp_height {
-            self.scroll_top
-                .set(cursor.line.saturating_sub(vp_height - 1));
-        }
-
-        // Horizontal scroll
+        let (anchor_line, anchor_vrow) = self.scroll_anchor.get();
 
         if !self.soft_wrap {
+            // Vertical scroll (logical lines)
+            if cursor.line < anchor_line {
+                self.scroll_anchor.set((cursor.line, 0));
+            } else if vp_height > 0 && cursor.line >= anchor_line + vp_height {
+                self.scroll_anchor
+                    .set((cursor.line.saturating_sub(vp_height - 1), 0));
+            }
+
+            // Horizontal scroll
             let current_left = self.scroll_left.get();
-
             let visual_col = cursor.visual_col;
-
-            // Scroll left if cursor is before viewport
 
             if visual_col < current_left {
                 self.scroll_left.set(visual_col);
-            }
-            // Scroll right if cursor is past viewport
-            // Need space for gutter if we had access to it, but this is a best effort
-            // approximation using the last known width.
-            // Effective text width approx vp_width - gutter (assume ~4 for gutter if unknown)
-            // But we use raw vp_width here.
-            else if vp_width > 0 && visual_col >= current_left + vp_width {
+            } else if vp_width > 0 && visual_col >= current_left + vp_width {
                 let candidate_scroll = visual_col.saturating_sub(vp_width - 1);
                 let prev_width = self.get_prev_char_width();
                 let max_scroll_for_prev = visual_col.saturating_sub(prev_width);
@@ -851,7 +1016,123 @@ impl TextArea {
                 self.scroll_left
                     .set(candidate_scroll.min(max_scroll_for_prev));
             }
+            return;
         }
+
+        // Soft wrap logic
+        let rope = self.editor.rope();
+
+        // 1. Is cursor before anchor?
+        if cursor.line < anchor_line {
+            let line_text = rope
+                .line(cursor.line)
+                .unwrap_or(std::borrow::Cow::Borrowed(""));
+            let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+            let (v_row, _) = Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+            self.scroll_anchor.set((cursor.line, v_row));
+            return;
+        }
+
+        if cursor.line == anchor_line {
+            let line_text = rope
+                .line(cursor.line)
+                .unwrap_or(std::borrow::Cow::Borrowed(""));
+            let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+            let (v_row, _) = Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+            if v_row < anchor_vrow {
+                self.scroll_anchor.set((cursor.line, v_row));
+                return;
+            }
+        }
+
+        // 2. Is cursor after viewport? Trace forward from anchor.
+        let mut visual_rows_capacity = vp_height;
+        let mut current_line = anchor_line;
+        let mut current_v_start = anchor_vrow;
+
+        loop {
+            if current_line > cursor.line {
+                // Reached past cursor line without exhausting capacity -> Visible.
+                return;
+            }
+
+            let line_text = rope
+                .line(current_line)
+                .unwrap_or(std::borrow::Cow::Borrowed(""));
+            let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+            let wrap_count = Self::measure_wrap_count(line_text, vp_width);
+
+            if current_line == cursor.line {
+                let (cursor_v_row, _) =
+                    Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+                if cursor_v_row >= current_v_start {
+                    let displayed_row_index = cursor_v_row - current_v_start;
+                    if displayed_row_index < visual_rows_capacity {
+                        // Visible.
+                        return;
+                    } else {
+                        // Not visible (below).
+                        break;
+                    }
+                } else {
+                    // Cursor is before the anchor start? Handled by step 1.
+                    return;
+                }
+            }
+
+            let rows_remaining_in_line = wrap_count.saturating_sub(current_v_start);
+            if rows_remaining_in_line >= visual_rows_capacity {
+                break;
+            }
+
+            visual_rows_capacity -= rows_remaining_in_line;
+            current_line += 1;
+            current_v_start = 0;
+
+            if current_line >= self.editor.line_count() {
+                break;
+            }
+        }
+
+        // 3. Scroll Down (Backwards Scan)
+        let mut needed = vp_height;
+        let mut scan_line = cursor.line;
+
+        // For the cursor line itself
+        let line_text = rope
+            .line(scan_line)
+            .unwrap_or(std::borrow::Cow::Borrowed(""));
+        let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+        let (cursor_v, _) = Self::cursor_wrap_position(line_text, vp_width, cursor.visual_col);
+
+        let rows_above = cursor_v + 1;
+        if rows_above >= needed {
+            let new_v_start = cursor_v + 1 - needed;
+            self.scroll_anchor.set((scan_line, new_v_start));
+            return;
+        }
+
+        needed -= rows_above;
+
+        // Scan previous lines
+        while scan_line > 0 {
+            scan_line -= 1;
+            let line_text = rope
+                .line(scan_line)
+                .unwrap_or(std::borrow::Cow::Borrowed(""));
+            let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
+            let wrap_count = Self::measure_wrap_count(line_text, vp_width);
+
+            if wrap_count >= needed {
+                let new_v_start = wrap_count - needed;
+                self.scroll_anchor.set((scan_line, new_v_start));
+                return;
+            }
+            needed -= wrap_count;
+        }
+
+        // Reached top
+        self.scroll_anchor.set((0, 0));
     }
 }
 
@@ -878,23 +1159,27 @@ impl Widget for TextArea {
         let cursor = self.editor.cursor();
 
         // Initialize scroll_top from state, handling sentinel
-        let mut scroll_top = if self.scroll_top.get() == usize::MAX {
-            0
+        let (anchor_line, anchor_vrow) = if self.scroll_anchor.get().0 == usize::MAX {
+            (0, 0)
         } else {
-            self.scroll_top.get()
+            self.scroll_anchor.get()
         };
 
-        // If NOT soft wrapping, scroll_top is a logical line index.
-        // Ensure cursor is visible by adjusting scroll_top.
-        // (If soft wrapping, this adjustment is done in virtual space inside the soft_wrap block)
+        // If NOT soft wrapping, scroll_anchor.0 is the logical line index.
+        // Ensure cursor is visible by adjusting scroll_anchor.
         if !self.soft_wrap && vp_height > 0 {
-            if cursor.line < scroll_top {
-                scroll_top = cursor.line;
-            } else if cursor.line >= scroll_top + vp_height {
-                scroll_top = cursor.line.saturating_sub(vp_height - 1);
+            let mut new_line = anchor_line;
+            if cursor.line < new_line {
+                new_line = cursor.line;
+            } else if cursor.line >= new_line + vp_height {
+                new_line = cursor.line.saturating_sub(vp_height - 1);
             }
-            self.scroll_top.set(scroll_top);
+            if new_line != anchor_line {
+                self.scroll_anchor.set((new_line, 0));
+            }
         }
+        // Re-fetch potentially updated anchor
+        let (scroll_top_line, scroll_top_vrow) = self.scroll_anchor.get();
 
         let mut scroll_left = self.scroll_left.get();
         if !self.soft_wrap && text_area_w > 0 {
@@ -948,16 +1233,7 @@ impl Widget for TextArea {
         if self.soft_wrap {
             self.scroll_left.set(0);
 
-            // Compute cursor virtual position (wrapped lines)
-            let mut cursor_virtual = 0;
-            for line_idx in 0..cursor.line {
-                let line_text = rope
-                    .line(line_idx)
-                    .unwrap_or(std::borrow::Cow::Borrowed(""));
-                let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
-                cursor_virtual += Self::measure_wrap_count(line_text, text_area_w);
-            }
-
+            // Pre-calculate cursor wrap position
             let cursor_line_text = rope
                 .line(cursor.line)
                 .unwrap_or(std::borrow::Cow::Borrowed(""));
@@ -966,21 +1242,14 @@ impl Widget for TextArea {
                 .unwrap_or(&cursor_line_text);
             let (cursor_wrap_idx, cursor_col_in_wrap) =
                 Self::cursor_wrap_position(cursor_line_text, text_area_w, cursor.visual_col);
-            cursor_virtual = cursor_virtual.saturating_add(cursor_wrap_idx);
 
-            // Adjust scroll to keep cursor visible
-            let mut scroll_virtual = self.scroll_top.get();
-            if cursor_virtual < scroll_virtual {
-                scroll_virtual = cursor_virtual;
-            } else if cursor_virtual >= scroll_virtual + vp_height {
-                scroll_virtual = cursor_virtual.saturating_sub(vp_height - 1);
-            }
-            self.scroll_top.set(scroll_virtual);
+            // Render wrapped lines starting from anchor
+            let mut current_y = area.y;
+            let bottom_y = area.bottom();
+            let line_count = self.editor.line_count();
 
-            // Render wrapped lines in virtual space
-            let mut virtual_index = 0usize;
-            for line_idx in 0..self.editor.line_count() {
-                if virtual_index >= scroll_virtual + vp_height {
+            for line_idx in scroll_top_line..line_count {
+                if current_y >= bottom_y {
                     break;
                 }
 
@@ -989,30 +1258,22 @@ impl Widget for TextArea {
                     .unwrap_or(std::borrow::Cow::Borrowed(""));
                 let line_text = line_text.strip_suffix('\n').unwrap_or(&line_text);
 
-                // Fast path: check if this whole physical line is skipped
-                let wrap_count = Self::measure_wrap_count(line_text, text_area_w);
-                if virtual_index + wrap_count <= scroll_virtual {
-                    virtual_index += wrap_count;
-                    continue;
-                }
-
                 let line_start_byte = nav.to_byte_index(nav.from_line_grapheme(line_idx, 0));
                 let slices = Self::wrap_line_slices(line_text, text_area_w);
 
-                for (slice_idx, slice) in slices.iter().enumerate() {
-                    if virtual_index < scroll_virtual {
-                        virtual_index += 1;
-                        continue;
-                    }
+                // If this is the start line, skip slices before anchor_vrow
+                let start_slice = if line_idx == scroll_top_line {
+                    scroll_top_vrow
+                } else {
+                    0
+                };
 
-                    let row = virtual_index.saturating_sub(scroll_virtual);
-                    if row >= vp_height {
+                for (slice_idx, slice) in slices.iter().enumerate().skip(start_slice) {
+                    if current_y >= bottom_y {
                         break;
                     }
 
-                    let y = area.y.saturating_add(row as u16);
-
-                    // Line number gutter (only for first wrapped slice)
+                    // Line number gutter (only for first wrapped slice of the line)
                     if self.show_line_numbers && slice_idx == 0 {
                         let style = if deg.apply_styling() {
                             self.line_number_style
@@ -1021,17 +1282,24 @@ impl Widget for TextArea {
                         };
                         let num_str =
                             format!("{:>width$} ", line_idx + 1, width = (gutter_w - 2) as usize);
-                        draw_text_span(frame, area.x, y, &num_str, style, text_area_x);
+                        draw_text_span(
+                            frame,
+                            area.x,
+                            current_y,
+                            &num_str,
+                            style,
+                            text_area_x,
+                        );
                     }
 
-                    // Cursor line highlight (only for the active wrapped slice)
+                    // Cursor line highlight
                     if line_idx == cursor.line
                         && slice_idx == cursor_wrap_idx
                         && let Some(cl_style) = self.cursor_line_style
                         && deg.apply_styling()
                     {
                         for cx in text_area_x..area.right() {
-                            if let Some(cell) = frame.buffer.get_mut(cx, y) {
+                            if let Some(cell) = frame.buffer.get_mut(cx, current_y) {
                                 apply_style(cell, cl_style);
                             }
                         }
@@ -1062,26 +1330,26 @@ impl Widget for TextArea {
                         }
 
                         if g_width > 0 {
-                            draw_text_span(frame, px, y, g, g_style, area.right());
+                            draw_text_span(frame, px, current_y, g, g_style, area.right());
                         }
 
                         visual_x += g_width;
                         grapheme_byte_offset += g_byte_len;
                     }
 
-                    virtual_index += 1;
-                }
-            }
-
-            // Set cursor position if focused
-            if self.focused && cursor_virtual >= scroll_virtual {
-                let row = cursor_virtual.saturating_sub(scroll_virtual);
-                if row < vp_height {
-                    let cursor_screen_x = text_area_x.saturating_add(cursor_col_in_wrap as u16);
-                    let cursor_screen_y = area.y.saturating_add(row as u16);
-                    if cursor_screen_x < area.right() && cursor_screen_y < area.bottom() {
-                        frame.set_cursor(Some((cursor_screen_x, cursor_screen_y)));
+                    // Set cursor position if focused
+                    if self.focused
+                        && line_idx == cursor.line
+                        && slice_idx == cursor_wrap_idx
+                    {
+                        let cursor_screen_x =
+                            text_area_x.saturating_add(cursor_col_in_wrap as u16);
+                        if cursor_screen_x < area.right() {
+                            frame.set_cursor(Some((cursor_screen_x, current_y)));
+                        }
                     }
+
+                    current_y += 1;
                 }
             }
 
@@ -1090,7 +1358,7 @@ impl Widget for TextArea {
 
         // Render visible lines (no soft wrap)
         for row in 0..vp_height {
-            let line_idx = scroll_top + row;
+            let line_idx = scroll_top_line + row;
             let y = area.y.saturating_add(row as u16);
 
             if line_idx >= self.editor.line_count() {
@@ -1182,7 +1450,7 @@ impl Widget for TextArea {
 
         // Set cursor position if focused
         if self.focused {
-            let cursor_row = cursor.line.saturating_sub(scroll_top);
+            let cursor_row = cursor.line.saturating_sub(scroll_top_line);
             if cursor_row < vp_height {
                 let cursor_screen_x = (cursor.visual_col.saturating_sub(scroll_left) as u16)
                     .saturating_add(text_area_x);

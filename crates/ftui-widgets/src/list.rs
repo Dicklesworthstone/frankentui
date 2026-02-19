@@ -17,7 +17,7 @@ use ftui_style::Style;
 use ftui_text::{Text, display_width};
 use std::collections::BTreeSet;
 #[cfg(feature = "tracing")]
-use std::time::Instant;
+use web_time::Instant;
 
 /// A single item in a list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,14 +144,23 @@ impl<'a> List<'a> {
             .iter()
             .enumerate()
             .filter_map(|(idx, item)| {
-                let line = item
-                    .content
-                    .lines()
-                    .first()
-                    .map_or_else(String::new, |l| l.to_plain_text());
+                // Optimization: check single-span content directly to avoid allocation
+                // from to_plain_text().
+                let line_text_cow;
+                let line_text_ref = if let Some(line) = item.content.lines().first() {
+                    if line.spans().len() == 1 {
+                        &line.spans()[0].content
+                    } else {
+                        line_text_cow = std::borrow::Cow::Owned(line.to_plain_text());
+                        &line_text_cow
+                    }
+                } else {
+                    ""
+                };
+
                 let marker_matches =
                     !item.marker.is_empty() && item.marker.to_lowercase().contains(&query_lower);
-                if marker_matches || line.to_lowercase().contains(&query_lower) {
+                if marker_matches || line_text_ref.to_lowercase().contains(&query_lower) {
                     Some(idx)
                 } else {
                     None
@@ -203,13 +212,20 @@ impl<'a> List<'a> {
             return false;
         }
 
-        let current_pos = state
-            .selected
-            .and_then(|sel| filtered.iter().position(|&idx| idx == sel))
-            .unwrap_or(0);
-
         let max_pos = filtered.len().saturating_sub(1) as isize;
-        let next_pos = (current_pos as isize + direction).clamp(0, max_pos) as usize;
+
+        let next_pos = if let Some(selected) = state.selected {
+            let current_pos = filtered
+                .iter()
+                .position(|&idx| idx == selected)
+                .unwrap_or(0);
+            (current_pos as isize + direction).clamp(0, max_pos) as usize
+        } else if direction > 0 {
+            0
+        } else {
+            max_pos as usize
+        };
+
         let next_index = filtered[next_pos];
 
         if state.selected == Some(next_index) {
@@ -238,15 +254,22 @@ impl<'a> List<'a> {
         let nav_modifiers = key
             .modifiers
             .intersects(Modifiers::CTRL | Modifiers::ALT | Modifiers::SUPER);
-        let filtered = self.filtered_indices(state.filter_query());
 
         match key.code {
-            KeyCode::Up if !nav_modifiers => self.move_selection_in_filtered(state, &filtered, -1),
-            KeyCode::Down if !nav_modifiers => self.move_selection_in_filtered(state, &filtered, 1),
+            KeyCode::Up if !nav_modifiers => {
+                let filtered = self.filtered_indices(state.filter_query());
+                self.move_selection_in_filtered(state, &filtered, -1)
+            }
+            KeyCode::Down if !nav_modifiers => {
+                let filtered = self.filtered_indices(state.filter_query());
+                self.move_selection_in_filtered(state, &filtered, 1)
+            }
             KeyCode::Char('k') if !nav_modifiers => {
+                let filtered = self.filtered_indices(state.filter_query());
                 self.move_selection_in_filtered(state, &filtered, -1)
             }
             KeyCode::Char('j') if !nav_modifiers => {
+                let filtered = self.filtered_indices(state.filter_query());
                 self.move_selection_in_filtered(state, &filtered, 1)
             }
             KeyCode::Char(' ') if state.multi_select_enabled() => {
@@ -1849,6 +1872,38 @@ mod tests {
         let mut state = ListState::default();
         state.select_previous();
         assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn list_handle_key_down_from_none_selects_first() {
+        let list = List::new(vec![
+            ListItem::new("a"),
+            ListItem::new("b"),
+            ListItem::new("c"),
+        ]);
+        let mut state = ListState::default();
+        assert_eq!(state.selected(), None);
+
+        // Press Down
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Down)));
+        // Should select "a" (index 0)
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn list_handle_key_up_from_none_selects_last() {
+        let list = List::new(vec![
+            ListItem::new("a"),
+            ListItem::new("b"),
+            ListItem::new("c"),
+        ]);
+        let mut state = ListState::default();
+        assert_eq!(state.selected(), None);
+
+        // Press Up
+        assert!(list.handle_key(&mut state, &KeyEvent::new(KeyCode::Up)));
+        // Should select "c" (index 2)
+        assert_eq!(state.selected(), Some(2));
     }
 
     #[test]

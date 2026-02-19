@@ -337,7 +337,7 @@ impl MetaballsFx {
             let y = ping_pong(ball.y + ball.vy * t_scaled, bounds_min, bounds_max);
             let pulse = 1.0 + pulse_amount * (time * pulse_speed + ball.phase).sin();
             let radius = ball.radius.clamp(radius_min, radius_max).max(0.001) * pulse;
-            let hue = (ball.hue + time * hue_speed).rem_euclid(1.0);
+            let hue = (ball.hue + time * hue_speed).fract();
 
             *slot = BallSample {
                 x,

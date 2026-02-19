@@ -1129,9 +1129,15 @@ impl InputParser {
         if new_collected == expected {
             // Complete - decode and emit
             self.state = ParserState::Ground;
-            let s = std::str::from_utf8(&self.utf8_buffer[..expected as usize]).ok()?;
-            let c = s.chars().next()?;
-            Some(Event::Key(KeyEvent::new(KeyCode::Char(c))))
+            match std::str::from_utf8(&self.utf8_buffer[..expected as usize]) {
+                Ok(s) => {
+                    let c = s.chars().next()?;
+                    Some(Event::Key(KeyEvent::new(KeyCode::Char(c))))
+                }
+                Err(_) => Some(Event::Key(KeyEvent::new(KeyCode::Char(
+                    std::char::REPLACEMENT_CHARACTER,
+                )))),
+            }
         } else {
             // Need more bytes
             self.state = ParserState::Utf8 {
@@ -1243,6 +1249,7 @@ impl InputParser {
             let tail_len = self.buffer.len();
             let paste_len = self.paste_buffer.len();
 
+            // Only proceed if we have enough total bytes to form the end sequence
             if tail_len + paste_len >= 6 {
                 // Fill from buffer (reverse order)
                 for i in 0..tail_len {

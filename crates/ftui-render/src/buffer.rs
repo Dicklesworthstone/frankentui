@@ -1033,7 +1033,11 @@ impl Buffer {
                             self.cells[row_start + hx] = Cell::default();
                             dirty_left = hx as u16;
                         } else {
-                            if c.content.width() > 1 {
+                            // Only clear the head if it actually overlaps the fill region.
+                            // If it doesn't overlap, x_start was an orphan continuation,
+                            // and we shouldn't destroy the valid wide char to its left.
+                            let width = c.content.width();
+                            if width > 1 && hx + width as usize > x_start {
                                 self.cells[row_start + hx] = Cell::default();
                                 dirty_left = hx as u16;
                             }

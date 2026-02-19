@@ -803,7 +803,7 @@ fn split_span_words(span: &Span<'static>) -> Vec<Span<'static>> {
     let mut in_whitespace = false;
 
     for grapheme in span.as_str().graphemes(true) {
-        let is_ws = grapheme.chars().all(|c| c.is_whitespace());
+        let is_ws = grapheme.chars().all(crate::wrap::is_breaking_whitespace);
 
         if is_ws != in_whitespace && !current.is_empty() {
             segments.push(Span {

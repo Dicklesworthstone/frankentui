@@ -899,6 +899,31 @@ mod tests {
     }
 
     #[test]
+    fn blur_before_capture_ack_clears_state_without_release() {
+        let mut adapter = adapter();
+        adapter.pointer_down(
+            target(),
+            61,
+            PanePointerButton::Primary,
+            pos(0, 0),
+            PaneModifierSnapshot::default(),
+        );
+        let dispatch = adapter.blur();
+        assert_eq!(dispatch.log.phase, PanePointerLifecyclePhase::Blur);
+        assert!(matches!(
+            dispatch
+                .semantic_event
+                .as_ref()
+                .expect("semantic event expected")
+                .kind,
+            PaneSemanticInputEventKind::Blur { .. }
+        ));
+        assert_eq!(dispatch.capture_command, None);
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert_eq!(adapter.machine_state(), PaneDragResizeState::Idle);
+    }
+
+    #[test]
     fn visibility_hidden_emits_focus_lost_cancel() {
         let mut adapter = adapter();
         adapter.pointer_down(
@@ -927,6 +952,33 @@ mod tests {
             Some(PanePointerCaptureCommand::Release { pointer_id: 8 })
         );
         assert_eq!(adapter.active_pointer_id(), None);
+    }
+
+    #[test]
+    fn visibility_hidden_before_capture_ack_cancels_without_release() {
+        let mut adapter = adapter();
+        adapter.pointer_down(
+            target(),
+            81,
+            PanePointerButton::Primary,
+            pos(5, 2),
+            PaneModifierSnapshot::default(),
+        );
+        let dispatch = adapter.visibility_hidden();
+        assert!(matches!(
+            dispatch
+                .semantic_event
+                .as_ref()
+                .expect("semantic event expected")
+                .kind,
+            PaneSemanticInputEventKind::Cancel {
+                reason: PaneCancelReason::FocusLost,
+                ..
+            }
+        ));
+        assert_eq!(dispatch.capture_command, None);
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert_eq!(adapter.machine_state(), PaneDragResizeState::Idle);
     }
 
     #[test]
@@ -983,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn pointer_leave_after_capture_ack_releases_and_cancels() {
+    fn pointer_cancel_after_capture_ack_releases_and_cancels() {
         let mut adapter = adapter();
         adapter.pointer_down(
             target(),
@@ -1012,6 +1064,38 @@ mod tests {
             Some(PanePointerCaptureCommand::Release { pointer_id: 39 })
         );
         assert_eq!(adapter.active_pointer_id(), None);
+    }
+
+    #[test]
+    fn pointer_cancel_without_pointer_id_releases_active_capture() {
+        let mut adapter = adapter();
+        adapter.pointer_down(
+            target(),
+            74,
+            PanePointerButton::Primary,
+            pos(2, 3),
+            PaneModifierSnapshot::default(),
+        );
+        let ack = adapter.capture_acquired(74);
+        assert_eq!(ack.log.outcome, PanePointerLogOutcome::CaptureStateUpdated);
+        let dispatch = adapter.pointer_cancel(None);
+        assert!(matches!(
+            dispatch
+                .semantic_event
+                .as_ref()
+                .expect("semantic event expected")
+                .kind,
+            PaneSemanticInputEventKind::Cancel {
+                reason: PaneCancelReason::PointerCancel,
+                ..
+            }
+        ));
+        assert_eq!(
+            dispatch.capture_command,
+            Some(PanePointerCaptureCommand::Release { pointer_id: 74 })
+        );
+        assert_eq!(adapter.active_pointer_id(), None);
+        assert_eq!(adapter.machine_state(), PaneDragResizeState::Idle);
     }
 
     #[test]

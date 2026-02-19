@@ -329,8 +329,24 @@ impl<'a> StatefulWidget for Scrollbar<'a> {
         }
 
         // Calculate layout
-        let start_offset = if self.begin_symbol.is_some() { 1 } else { 0 };
-        let end_offset = if self.end_symbol.is_some() { 1 } else { 0 };
+        let start_offset = if let Some(s) = self.begin_symbol {
+            if is_vertical {
+                1
+            } else {
+                display_width(s)
+            }
+        } else {
+            0
+        };
+        let end_offset = if let Some(s) = self.end_symbol {
+            if is_vertical {
+                1
+            } else {
+                display_width(s)
+            }
+        } else {
+            0
+        };
 
         // Effective track excludes buttons
         let track_len = length.saturating_sub(start_offset + end_offset);

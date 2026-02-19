@@ -357,6 +357,7 @@ fi
 if $RUN_WEB; then
     run_cargo_test_step "pane_web_pointer_smoke" -p ftui-web pointer_move_axis_lock_ignores_orthogonal_jitter -- --nocapture || true
     run_cargo_test_step "pane_web_runner_core_smoke" -p ftui-showcase-wasm runner_core_pane_pointer_lifecycle_emits_capture_commands -- --nocapture || true
+    run_cargo_test_step "pane_web_runner_core_interruptions_smoke" -p ftui-showcase-wasm runner_core_pane_blur_releases_active_capture -- --nocapture || true
 
     if [[ "$MODE" != "smoke" ]]; then
         run_cargo_test_step "pane_web_pointer_full" -p ftui-web pointer_ -- --nocapture || true

@@ -640,6 +640,70 @@ pub mod themes {
             scrollbar_thumb: AdaptiveColor::fixed(Color::rgb(60, 61, 54)),
         }
     }
+
+    /// Doom color scheme (High contrast, Industrial).
+    #[must_use]
+    pub fn doom() -> Theme {
+        Theme {
+            primary: AdaptiveColor::fixed(Color::rgb(178, 34, 34)), // Firebrick
+            secondary: AdaptiveColor::fixed(Color::rgb(50, 205, 50)), // LimeGreen
+            accent: AdaptiveColor::fixed(Color::rgb(255, 255, 0)), // Yellow (Ammo)
+
+            background: AdaptiveColor::fixed(Color::rgb(26, 26, 26)), // Dark Grey
+            surface: AdaptiveColor::fixed(Color::rgb(47, 47, 47)),    // Gunmetal
+            overlay: AdaptiveColor::fixed(Color::rgb(64, 64, 64)),    // Dim Grey
+
+            text: AdaptiveColor::fixed(Color::rgb(211, 211, 211)), // Light Grey
+            text_muted: AdaptiveColor::fixed(Color::rgb(128, 128, 128)), // Grey
+            text_subtle: AdaptiveColor::fixed(Color::rgb(105, 105, 105)), // Dim Grey
+
+            success: AdaptiveColor::fixed(Color::rgb(50, 205, 50)), // Green
+            warning: AdaptiveColor::fixed(Color::rgb(255, 215, 0)), // Gold
+            error: AdaptiveColor::fixed(Color::rgb(139, 0, 0)),     // Dark Red
+            info: AdaptiveColor::fixed(Color::rgb(65, 105, 225)),   // Royal Blue
+
+            border: AdaptiveColor::fixed(Color::rgb(105, 105, 105)), // Dim Grey
+            border_focused: AdaptiveColor::fixed(Color::rgb(178, 34, 34)), // Firebrick
+
+            selection_bg: AdaptiveColor::fixed(Color::rgb(139, 0, 0)), // Dark Red
+            selection_fg: AdaptiveColor::fixed(Color::rgb(255, 255, 255)), // White
+
+            scrollbar_track: AdaptiveColor::fixed(Color::rgb(26, 26, 26)),
+            scrollbar_thumb: AdaptiveColor::fixed(Color::rgb(178, 34, 34)),
+        }
+    }
+
+    /// Quake color scheme (Earth tones, Medieval).
+    #[must_use]
+    pub fn quake() -> Theme {
+        Theme {
+            primary: AdaptiveColor::fixed(Color::rgb(139, 69, 19)), // SaddleBrown
+            secondary: AdaptiveColor::fixed(Color::rgb(85, 107, 47)), // DarkOliveGreen
+            accent: AdaptiveColor::fixed(Color::rgb(205, 133, 63)),   // Peru
+
+            background: AdaptiveColor::fixed(Color::rgb(28, 28, 28)), // Very Dark Grey
+            surface: AdaptiveColor::fixed(Color::rgb(46, 39, 34)),    // Deep Brown/Grey
+            overlay: AdaptiveColor::fixed(Color::rgb(62, 54, 48)),    // Lighter Brown/Grey
+
+            text: AdaptiveColor::fixed(Color::rgb(210, 180, 140)), // Tan
+            text_muted: AdaptiveColor::fixed(Color::rgb(139, 115, 85)), // Dark Tan
+            text_subtle: AdaptiveColor::fixed(Color::rgb(101, 84, 61)), // Deep Tan
+
+            success: AdaptiveColor::fixed(Color::rgb(85, 107, 47)), // Olive
+            warning: AdaptiveColor::fixed(Color::rgb(210, 105, 30)), // Chocolate
+            error: AdaptiveColor::fixed(Color::rgb(128, 0, 0)),     // Maroon
+            info: AdaptiveColor::fixed(Color::rgb(70, 130, 180)),   // SteelBlue
+
+            border: AdaptiveColor::fixed(Color::rgb(93, 64, 55)), // Rusty Brown
+            border_focused: AdaptiveColor::fixed(Color::rgb(205, 133, 63)), // Peru
+
+            selection_bg: AdaptiveColor::fixed(Color::rgb(139, 69, 19)), // SaddleBrown
+            selection_fg: AdaptiveColor::fixed(Color::rgb(255, 222, 173)), // NavajoWhite
+
+            scrollbar_track: AdaptiveColor::fixed(Color::rgb(28, 28, 28)),
+            scrollbar_thumb: AdaptiveColor::fixed(Color::rgb(139, 69, 19)),
+        }
+    }
 }
 
 // ============================================================================

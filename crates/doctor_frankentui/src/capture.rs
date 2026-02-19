@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 use wait_timeout::ChildExt;
 
 use crate::error::{DoctorError, Result};
@@ -16,12 +17,20 @@ use crate::runmeta::{DecisionRecord, RunMeta};
 use crate::seed::SeedDemoConfig;
 use crate::tape::{TapeSpec, build_capture_tape};
 use crate::util::{
-    OutputIntegration, bool_to_u8, command_exists, ensure_dir, ensure_executable, ensure_exists,
-    normalize_http_path, now_compact_timestamp, now_utc_iso, output_for, parse_duration_value,
-    require_command, shell_single_quote, write_string,
+    CliOutput, OutputIntegration, bool_to_u8, command_exists, ensure_dir, ensure_executable,
+    ensure_exists, normalize_http_path, now_compact_timestamp, now_utc_iso, output_for,
+    parse_duration_value, require_command, shell_single_quote, write_string,
 };
 
 const POLICY_ID: &str = "doctor_frankentui/v1";
+const VHS_DOCKER_IMAGE: &str = "ghcr.io/charmbracelet/vhs:v0.10.1-devel";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum VhsDriver {
+    Auto,
+    Host,
+    Docker,
+}
 
 #[derive(Debug, Clone, Args)]
 pub struct CaptureArgs {
@@ -145,6 +154,9 @@ pub struct CaptureArgs {
     #[arg(long = "capture-timeout-seconds")]
     pub capture_timeout_seconds: Option<u64>,
 
+    #[arg(long = "vhs-driver", value_enum, default_value_t = VhsDriver::Auto)]
+    pub vhs_driver: VhsDriver,
+
     #[arg(long)]
     pub no_evidence_ledger: bool,
 }
@@ -190,6 +202,7 @@ struct ResolvedCaptureConfig {
     dry_run: bool,
     conservative: bool,
     capture_timeout_seconds: u64,
+    vhs_driver: VhsDriver,
     evidence_ledger: bool,
 }
 
@@ -235,6 +248,7 @@ impl ResolvedCaptureConfig {
             dry_run: false,
             conservative: false,
             capture_timeout_seconds: 300,
+            vhs_driver: VhsDriver::Auto,
             evidence_ledger: true,
         }
     }
@@ -415,6 +429,7 @@ impl ResolvedCaptureConfig {
         if let Some(value) = args.capture_timeout_seconds {
             self.capture_timeout_seconds = value;
         }
+        self.vhs_driver = args.vhs_driver;
         if args.no_evidence_ledger {
             self.evidence_ledger = false;
         }
@@ -532,7 +547,15 @@ fn resolve_ttyd_path() -> Option<PathBuf> {
     }
 }
 
-fn install_ttyd_compat_shim(run_dir: &Path) -> Result<Option<PathBuf>> {
+#[derive(Debug, Clone)]
+struct TtydCompatShim {
+    shim_dir: PathBuf,
+    shim_log: PathBuf,
+    runtime_log: PathBuf,
+    real_ttyd: PathBuf,
+}
+
+fn install_ttyd_compat_shim(run_dir: &Path) -> Result<Option<TtydCompatShim>> {
     let Some(real_ttyd) = resolve_ttyd_path() else {
         return Ok(None);
     };
@@ -540,34 +563,85 @@ fn install_ttyd_compat_shim(run_dir: &Path) -> Result<Option<PathBuf>> {
     let shim_dir = run_dir.join("shim_bin");
     ensure_dir(&shim_dir)?;
     let shim_path = shim_dir.join("ttyd");
+    let shim_log = run_dir.join("ttyd_shim.log");
+    let runtime_log = run_dir.join("ttyd_runtime.log");
     let shim_body = format!(
         "#!/usr/bin/env bash
 set -euo pipefail
 
 real_ttyd={}
+shim_log={}
+runtime_log={}
 args=()
+compat_notes=()
+
+{{
+  printf 'ts=%s' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+  for arg in \"$@\"; do
+    printf ' arg=%q' \"$arg\"
+  done
+  printf '\\n'
+}} >> \"$shim_log\"
+
+if [[ \"${{1:-}}\" == \"--version\" ]]; then
+  raw_version=\"$(\"$real_ttyd\" --version 2>/dev/null || true)\"
+  if [[ \"$raw_version\" =~ ([0-9]+\\.[0-9]+\\.[0-9]+) ]]; then
+    printf 'ttyd %s\\n' \"${{BASH_REMATCH[1]}}\"
+    exit 0
+  fi
+  printf '%s\\n' \"$raw_version\"
+  exit 0
+fi
 
 while (($#)); do
+  if [[ \"$1\" == \"--once\" ]]; then
+    compat_notes+=(\"drop:--once\")
+    shift
+    continue
+  fi
+
   if [[ \"$1\" == \"-t\" ]]; then
+    client_opt=\"\"
     if [[ $# -ge 2 && \"$2\" == *=* ]]; then
-      args+=(\"-t\" \"$2\")
+      client_opt=\"$2\"
       shift 2
-      continue
-    fi
-    if [[ $# -ge 3 ]]; then
-      args+=(\"-t\" \"$2=$3\")
+    elif [[ $# -ge 3 ]]; then
+      client_opt=\"$2=$3\"
       shift 3
+    else
+      args+=(\"$1\")
+      shift
       continue
     fi
+
+    case \"$client_opt\" in
+      *)
+        compat_notes+=(\"drop:-t:$client_opt\")
+      ;;
+    esac
+
+    continue
   fi
 
   args+=(\"$1\")
   shift
 done
 
-exec \"$real_ttyd\" \"${{args[@]}}\"
+if [[ \"${{#compat_notes[@]}}\" -gt 0 ]]; then
+  {{
+    printf 'ts=%s compat=' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+    printf '%s;' \"${{compat_notes[@]}}\"
+    printf '\\n'
+  }} >> \"$shim_log\"
+fi
+
+args=(\"--debug\" \"9\" \"${{args[@]}}\")
+
+exec \"$real_ttyd\" \"${{args[@]}}\" >> \"$runtime_log\" 2>&1
 ",
-        shell_single_quote(&real_ttyd.display().to_string())
+        shell_single_quote(&real_ttyd.display().to_string()),
+        shell_single_quote(&shim_log.display().to_string()),
+        shell_single_quote(&runtime_log.display().to_string()),
     );
     write_string(&shim_path, &shim_body)?;
 
@@ -580,15 +654,25 @@ exec \"$real_ttyd\" \"${{args[@]}}\"
         fs::set_permissions(&shim_path, permissions)?;
     }
 
-    Ok(Some(shim_dir))
+    Ok(Some(TtydCompatShim {
+        shim_dir,
+        shim_log,
+        runtime_log,
+        real_ttyd,
+    }))
 }
 
 const VHS_FATAL_OPEN_TTYD_EOF: &str = "could not open ttyd: EOF";
 const VHS_FATAL_RECORDING_FAILED: &str = "recording failed";
+const VHS_FATAL_TTYD_VERSION_REJECTED: &str = "ttyd version";
+const VHS_FATAL_OUT_OF_DATE: &str = "out of date";
 
 fn infer_vhs_fatal_reason(line: &str) -> Option<String> {
     if line.contains(VHS_FATAL_OPEN_TTYD_EOF) {
         return Some("vhs could not open ttyd (EOF)".to_string());
+    }
+    if line.contains(VHS_FATAL_TTYD_VERSION_REJECTED) && line.contains(VHS_FATAL_OUT_OF_DATE) {
+        return Some("vhs rejected ttyd version string".to_string());
     }
     if line.contains(VHS_FATAL_RECORDING_FAILED) {
         return Some("vhs reported recording failed".to_string());
@@ -604,6 +688,120 @@ fn detect_vhs_fatal_reason(vhs_log: &Path) -> Option<String> {
         }
     }
     None
+}
+
+#[derive(Debug, Clone)]
+struct DockerVhsOutcome {
+    exit_code: i32,
+    timed_out: bool,
+    log_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct VhsRunOutcome {
+    vhs_exit: i32,
+    host_vhs_exit: Option<i32>,
+    timed_out: bool,
+    fatal_capture_reason: Option<String>,
+    ttyd_shim_log: Option<PathBuf>,
+    ttyd_runtime_log: Option<PathBuf>,
+    vhs_no_sandbox_forced: bool,
+    vhs_driver_used: String,
+    vhs_docker_log: Option<PathBuf>,
+}
+
+fn build_docker_mounts(cfg: &ResolvedCaptureConfig, run_dir: &Path) -> Vec<PathBuf> {
+    let mut mounts = Vec::new();
+    let mut push_unique = |path: PathBuf| {
+        if !mounts.iter().any(|existing| existing == &path) {
+            mounts.push(path);
+        }
+    };
+
+    push_unique(run_dir.to_path_buf());
+    push_unique(cfg.project_dir.clone());
+
+    if using_legacy_binary(cfg)
+        && let Some(parent) = cfg.binary.parent()
+    {
+        push_unique(parent.to_path_buf());
+    }
+
+    mounts
+}
+
+fn run_vhs_with_docker(
+    cfg: &ResolvedCaptureConfig,
+    run_dir: &Path,
+    tape_path: &Path,
+    ui: &CliOutput,
+) -> Result<DockerVhsOutcome> {
+    require_command("docker")?;
+
+    let docker_log = run_dir.join("vhs_docker.log");
+    let docker_log_out = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&docker_log)?;
+    let docker_log_err = docker_log_out.try_clone()?;
+
+    let mut docker = Command::new("docker");
+    docker.arg("run").arg("--rm");
+    for mount in build_docker_mounts(cfg, run_dir) {
+        docker
+            .arg("-v")
+            .arg(format!("{}:{}", mount.display(), mount.display()));
+    }
+    docker
+        .arg(VHS_DOCKER_IMAGE)
+        .arg(tape_path)
+        .stdout(Stdio::from(docker_log_out))
+        .stderr(Stdio::from(docker_log_err));
+
+    ui.info(&format!(
+        "running Docker VHS fallback via image {}",
+        VHS_DOCKER_IMAGE
+    ));
+
+    let mut child = docker.spawn()?;
+    let timeout = Duration::from_secs(cfg.capture_timeout_seconds);
+    let status = child.wait_timeout(timeout)?;
+
+    let mut timed_out = false;
+    let exit_code = match status {
+        Some(status) => status.code().unwrap_or(1),
+        None => {
+            timed_out = true;
+            let _ = child.kill();
+            let _ = child.wait();
+            124
+        }
+    };
+
+    Ok(DockerVhsOutcome {
+        exit_code,
+        timed_out,
+        log_path: docker_log,
+    })
+}
+
+fn should_try_docker_fallback(
+    vhs_exit: i32,
+    timed_out: bool,
+    fatal_capture_reason: Option<&str>,
+) -> bool {
+    if timed_out || vhs_exit == 124 {
+        return true;
+    }
+
+    fatal_capture_reason.is_some_and(|reason| {
+        let lowered = reason.to_ascii_lowercase();
+        lowered.contains("ttyd")
+            || lowered.contains("eof")
+            || lowered.contains("recording failed")
+            || lowered.contains("handshake")
+    })
 }
 
 fn spawn_vhs_log_pump<R>(
@@ -759,6 +957,209 @@ fn terminate_process_group(group_leader_pid: u32) {
 #[cfg(not(unix))]
 fn terminate_process_group(_group_leader_pid: u32) {}
 
+fn run_vhs_with_driver(
+    cfg: &ResolvedCaptureConfig,
+    run_dir: &Path,
+    tape_path: &Path,
+    vhs_log: &Path,
+    ui: &CliOutput,
+) -> Result<VhsRunOutcome> {
+    if cfg.vhs_driver == VhsDriver::Docker {
+        let docker_outcome = run_vhs_with_docker(cfg, run_dir, tape_path, ui)?;
+        let fatal_capture_reason = if docker_outcome.exit_code == 0 {
+            None
+        } else if docker_outcome.timed_out {
+            Some("docker VHS capture timed out".to_string())
+        } else {
+            Some(format!(
+                "docker VHS capture failed with exit={}",
+                docker_outcome.exit_code
+            ))
+        };
+
+        if let Some(reason) = &fatal_capture_reason {
+            ui.warning(&format!("capture aborted early: {reason}"));
+        }
+
+        return Ok(VhsRunOutcome {
+            vhs_exit: docker_outcome.exit_code,
+            host_vhs_exit: None,
+            timed_out: docker_outcome.timed_out,
+            fatal_capture_reason,
+            ttyd_shim_log: None,
+            ttyd_runtime_log: None,
+            vhs_no_sandbox_forced: false,
+            vhs_driver_used: "docker".to_string(),
+            vhs_docker_log: Some(docker_outcome.log_path),
+        });
+    }
+
+    let vhs_log_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(vhs_log)?;
+    let vhs_log_err = vhs_log_file.try_clone()?;
+
+    let mut vhs = Command::new("vhs");
+    vhs.arg(tape_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    vhs.process_group(0);
+
+    let mut ttyd_shim_log: Option<PathBuf> = None;
+    let mut ttyd_runtime_log: Option<PathBuf> = None;
+    if let Some(shim) = install_ttyd_compat_shim(run_dir)? {
+        let mut path_entries = vec![shim.shim_dir.clone()];
+        if let Some(current_path) = std::env::var_os("PATH") {
+            path_entries.extend(std::env::split_paths(&current_path));
+        }
+        let path = std::env::join_paths(path_entries).map_err(|error| {
+            DoctorError::invalid(format!("failed to build PATH with ttyd shim: {error}"))
+        })?;
+        vhs.env("PATH", path);
+        ttyd_shim_log = Some(shim.shim_log.clone());
+        ttyd_runtime_log = Some(shim.runtime_log.clone());
+        ui.info(&format!(
+            "ttyd compat shim enabled: real={} log={} runtime_log={}",
+            shim.real_ttyd.display(),
+            shim.shim_log.display(),
+            shim.runtime_log.display()
+        ));
+    }
+
+    let mut vhs_no_sandbox_forced = false;
+    if std::env::var_os("VHS_NO_SANDBOX").is_none() {
+        vhs_no_sandbox_forced = true;
+        vhs.env("VHS_NO_SANDBOX", "1");
+        ui.info("VHS_NO_SANDBOX not set; forcing VHS_NO_SANDBOX=1 for headless stability");
+    }
+
+    let mut child = vhs.spawn()?;
+    let vhs_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| DoctorError::invalid("failed to capture VHS stdout pipe"))?;
+    let vhs_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| DoctorError::invalid("failed to capture VHS stderr pipe"))?;
+    let stream_fatal_reason = Arc::new(Mutex::new(None::<String>));
+    let stdout_pump =
+        spawn_vhs_log_pump(vhs_stdout, vhs_log_file, Arc::clone(&stream_fatal_reason));
+    let stderr_pump = spawn_vhs_log_pump(vhs_stderr, vhs_log_err, Arc::clone(&stream_fatal_reason));
+
+    let timeout = Duration::from_secs(cfg.capture_timeout_seconds);
+    let deadline = std::time::Instant::now() + timeout;
+    let mut fatal_capture_reason: Option<String> = None;
+    let mut timed_out = false;
+    let child_pid = child.id();
+    let mut vhs_exit = loop {
+        if let Some(status) = child.try_wait()? {
+            break status.code().unwrap_or(1);
+        }
+
+        if fatal_capture_reason.is_none()
+            && let Ok(guard) = stream_fatal_reason.lock()
+            && let Some(reason) = guard.clone()
+        {
+            fatal_capture_reason = Some(reason);
+            terminate_process_group(child_pid);
+            let _ = child.kill();
+            let status = child.wait_timeout(Duration::from_secs(2))?;
+            break status.and_then(|value| value.code()).unwrap_or(125);
+        }
+
+        if fatal_capture_reason.is_none()
+            && let Some(reason) = detect_vhs_fatal_reason(vhs_log)
+        {
+            fatal_capture_reason = Some(reason);
+            terminate_process_group(child_pid);
+            let _ = child.kill();
+            let status = child.wait_timeout(Duration::from_secs(2))?;
+            break status.and_then(|value| value.code()).unwrap_or(125);
+        }
+
+        if fatal_capture_reason.is_none() && has_defunct_ttyd_child(child_pid) {
+            fatal_capture_reason = Some("ttyd child exited unexpectedly (defunct)".to_string());
+            terminate_process_group(child_pid);
+            let _ = child.kill();
+            let status = child.wait_timeout(Duration::from_secs(2))?;
+            break status.and_then(|value| value.code()).unwrap_or(125);
+        }
+
+        if std::time::Instant::now() >= deadline {
+            timed_out = true;
+            terminate_process_group(child_pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            break 124;
+        }
+
+        thread::sleep(Duration::from_millis(200));
+    };
+    let _ = stdout_pump.join();
+    let _ = stderr_pump.join();
+
+    if vhs_exit != 0 {
+        if fatal_capture_reason.is_none() {
+            fatal_capture_reason = detect_vhs_fatal_reason(vhs_log);
+        }
+        terminate_process_group(child_pid);
+    }
+
+    let host_vhs_exit = Some(vhs_exit);
+    let mut vhs_driver_used = "host".to_string();
+    let mut vhs_docker_log: Option<PathBuf> = None;
+
+    if cfg.vhs_driver == VhsDriver::Auto
+        && vhs_exit != 0
+        && should_try_docker_fallback(vhs_exit, timed_out, fatal_capture_reason.as_deref())
+        && command_exists("docker")
+    {
+        ui.warning("host VHS capture failed; attempting Docker VHS fallback");
+        match run_vhs_with_docker(cfg, run_dir, tape_path, ui) {
+            Ok(docker_outcome) => {
+                vhs_docker_log = Some(docker_outcome.log_path.clone());
+                if docker_outcome.exit_code == 0 {
+                    vhs_driver_used = "docker-fallback".to_string();
+                    vhs_exit = 0;
+                    timed_out = docker_outcome.timed_out;
+                    fatal_capture_reason = None;
+                    ui.success("Docker VHS fallback succeeded");
+                } else {
+                    ui.warning(&format!(
+                        "Docker VHS fallback failed with exit={}; see {}",
+                        docker_outcome.exit_code,
+                        docker_outcome.log_path.display()
+                    ));
+                }
+            }
+            Err(error) => {
+                ui.warning(&format!("Docker VHS fallback could not run: {error}"));
+            }
+        }
+    }
+
+    if let Some(reason) = &fatal_capture_reason {
+        ui.warning(&format!("capture aborted early: {reason}"));
+    };
+
+    Ok(VhsRunOutcome {
+        vhs_exit,
+        host_vhs_exit,
+        timed_out,
+        fatal_capture_reason,
+        ttyd_shim_log,
+        ttyd_runtime_log,
+        vhs_no_sandbox_forced,
+        vhs_driver_used,
+        vhs_docker_log,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FinalizationResult {
     final_status: String,
@@ -775,6 +1176,7 @@ struct FinalizationInput {
     snapshot_required: bool,
     no_snapshot: bool,
     snapshot_status: String,
+    fatal_capture_reason: Option<String>,
     timed_out: bool,
     conservative: bool,
     capture_timeout_seconds: u64,
@@ -803,12 +1205,19 @@ fn resolve_finalization_result(input: &FinalizationInput) -> FinalizationResult 
         final_exit = 21;
     }
 
+    if let Some(reason) = &input.fatal_capture_reason {
+        fallback_active = true;
+        fallback_reason = Some(format!("capture aborted early: {reason}"));
+    }
+
     if input.timed_out {
         fallback_active = true;
-        fallback_reason = Some(format!(
-            "capture timeout exceeded {}s",
-            input.capture_timeout_seconds
-        ));
+        if fallback_reason.is_none() {
+            fallback_reason = Some(format!(
+                "capture timeout exceeded {}s",
+                input.capture_timeout_seconds
+            ));
+        }
     }
 
     FinalizationResult {
@@ -859,7 +1268,14 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
         ));
     }
 
-    require_command("vhs")?;
+    if cfg.vhs_driver == VhsDriver::Auto && !command_exists("vhs") {
+        ui.warning("vhs command not found; switching to --vhs-driver docker");
+        cfg.vhs_driver = VhsDriver::Docker;
+    }
+    match cfg.vhs_driver {
+        VhsDriver::Host | VhsDriver::Auto => require_command("vhs")?,
+        VhsDriver::Docker => require_command("docker")?,
+    }
 
     if using_legacy_binary(&cfg) {
         ensure_executable(&cfg.binary)?;
@@ -1116,109 +1532,16 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
     }
 
     ui.info("running VHS capture");
-
-    let vhs_log_file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&vhs_log)?;
-    let vhs_log_err = vhs_log_file.try_clone()?;
-
-    let mut vhs = Command::new("vhs");
-    vhs.arg(&tape_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(unix)]
-    vhs.process_group(0);
-
-    if let Some(shim_dir) = install_ttyd_compat_shim(&run_dir)? {
-        let mut path_entries = vec![shim_dir];
-        if let Some(current_path) = std::env::var_os("PATH") {
-            path_entries.extend(std::env::split_paths(&current_path));
-        }
-        let path = std::env::join_paths(path_entries).map_err(|error| {
-            DoctorError::invalid(format!("failed to build PATH with ttyd shim: {error}"))
-        })?;
-        vhs.env("PATH", path);
-    }
-
-    let mut child = vhs.spawn()?;
-    let vhs_stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| DoctorError::invalid("failed to capture VHS stdout pipe"))?;
-    let vhs_stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| DoctorError::invalid("failed to capture VHS stderr pipe"))?;
-    let stream_fatal_reason = Arc::new(Mutex::new(None::<String>));
-    let stdout_pump =
-        spawn_vhs_log_pump(vhs_stdout, vhs_log_file, Arc::clone(&stream_fatal_reason));
-    let stderr_pump = spawn_vhs_log_pump(vhs_stderr, vhs_log_err, Arc::clone(&stream_fatal_reason));
-
-    let timeout = std::time::Duration::from_secs(cfg.capture_timeout_seconds);
-    let deadline = std::time::Instant::now() + timeout;
-    let mut fatal_capture_reason: Option<String> = None;
-    let mut timed_out = false;
-    let child_pid = child.id();
-    let vhs_exit = loop {
-        if let Some(status) = child.try_wait()? {
-            break status.code().unwrap_or(1);
-        }
-
-        if fatal_capture_reason.is_none()
-            && let Ok(guard) = stream_fatal_reason.lock()
-            && let Some(reason) = guard.clone()
-        {
-            fatal_capture_reason = Some(reason);
-            terminate_process_group(child_pid);
-            let _ = child.kill();
-            let status = child.wait_timeout(std::time::Duration::from_secs(2))?;
-            break status.and_then(|value| value.code()).unwrap_or(125);
-        }
-
-        if fatal_capture_reason.is_none()
-            && let Some(reason) = detect_vhs_fatal_reason(&vhs_log)
-        {
-            fatal_capture_reason = Some(reason);
-            terminate_process_group(child_pid);
-            let _ = child.kill();
-            let status = child.wait_timeout(std::time::Duration::from_secs(2))?;
-            break status.and_then(|value| value.code()).unwrap_or(125);
-        }
-
-        if fatal_capture_reason.is_none() && has_defunct_ttyd_child(child_pid) {
-            fatal_capture_reason = Some("ttyd child exited unexpectedly (defunct)".to_string());
-            terminate_process_group(child_pid);
-            let _ = child.kill();
-            let status = child.wait_timeout(std::time::Duration::from_secs(2))?;
-            break status.and_then(|value| value.code()).unwrap_or(125);
-        }
-
-        if std::time::Instant::now() >= deadline {
-            timed_out = true;
-            terminate_process_group(child_pid);
-            let _ = child.kill();
-            let _ = child.wait();
-            break 124;
-        }
-
-        thread::sleep(std::time::Duration::from_millis(200));
-    };
-    let _ = stdout_pump.join();
-    let _ = stderr_pump.join();
-
-    if vhs_exit != 0 {
-        if fatal_capture_reason.is_none() {
-            fatal_capture_reason = detect_vhs_fatal_reason(&vhs_log);
-        }
-        terminate_process_group(child_pid);
-    }
-
-    if let Some(reason) = &fatal_capture_reason {
-        ui.warning(&format!("capture aborted early: {reason}"));
-    };
+    let vhs_outcome = run_vhs_with_driver(&cfg, &run_dir, &tape_path, &vhs_log, &ui)?;
+    let vhs_exit = vhs_outcome.vhs_exit;
+    let host_vhs_exit = vhs_outcome.host_vhs_exit;
+    let timed_out = vhs_outcome.timed_out;
+    let fatal_capture_reason = vhs_outcome.fatal_capture_reason;
+    let ttyd_shim_log = vhs_outcome.ttyd_shim_log;
+    let ttyd_runtime_log = vhs_outcome.ttyd_runtime_log;
+    let vhs_no_sandbox_forced = vhs_outcome.vhs_no_sandbox_forced;
+    let vhs_driver_used = vhs_outcome.vhs_driver_used;
+    let vhs_docker_log = vhs_outcome.vhs_docker_log;
 
     let seed_exit = if let Some(handle) = seed_thread {
         match handle.join() {
@@ -1303,6 +1626,7 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
         snapshot_required: cfg.snapshot_required,
         no_snapshot: cfg.no_snapshot,
         snapshot_status: snapshot_status.clone(),
+        fatal_capture_reason: fatal_capture_reason.clone(),
         timed_out,
         conservative: cfg.conservative,
         capture_timeout_seconds: cfg.capture_timeout_seconds,
@@ -1314,13 +1638,29 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
 
     let mut finalize_evidence_terms = vec![
         format!("vhs_exit={vhs_exit}"),
+        format!("vhs_driver_used={vhs_driver_used}"),
         format!("seed_exit={}", seed_exit.unwrap_or(-1)),
         format!("snapshot_status={snapshot_status}"),
         format!("final_status={final_status}"),
         format!("final_exit={final_exit}"),
     ];
+    if let Some(host_exit) = host_vhs_exit {
+        finalize_evidence_terms.push(format!("host_vhs_exit={host_exit}"));
+    }
     if let Some(reason) = &fatal_capture_reason {
         finalize_evidence_terms.push(format!("capture_error_reason={reason}"));
+    }
+    if let Some(log_path) = &ttyd_shim_log {
+        finalize_evidence_terms.push(format!("ttyd_shim_log={}", log_path.display()));
+    }
+    if let Some(log_path) = &ttyd_runtime_log {
+        finalize_evidence_terms.push(format!("ttyd_runtime_log={}", log_path.display()));
+    }
+    if vhs_no_sandbox_forced {
+        finalize_evidence_terms.push("vhs_no_sandbox_forced=1".to_string());
+    }
+    if let Some(docker_log) = &vhs_docker_log {
+        finalize_evidence_terms.push(format!("vhs_docker_log={}", docker_log.display()));
     }
 
     append_decision(
@@ -1356,6 +1696,11 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
         snapshot_status: Some(snapshot_status.clone()),
         snapshot_exit_code,
         vhs_exit_code: Some(vhs_exit),
+        host_vhs_exit_code: host_vhs_exit,
+        vhs_driver_used: Some(vhs_driver_used.clone()),
+        vhs_docker_log: vhs_docker_log
+            .as_ref()
+            .map(|path| path.display().to_string()),
         video_exists: Some(video_exists),
         snapshot_exists: Some(snapshot_exists),
         video_duration_seconds,
@@ -1367,6 +1712,14 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
         trace_id: Some(trace_id),
         fallback_active: Some(fallback_active),
         fallback_reason,
+        capture_error_reason: fatal_capture_reason.clone(),
+        ttyd_shim_log: ttyd_shim_log
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        ttyd_runtime_log: ttyd_runtime_log
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        vhs_no_sandbox_forced: Some(vhs_no_sandbox_forced),
         policy_id: Some(POLICY_ID.to_string()),
         evidence_ledger: cfg
             .evidence_ledger
@@ -1379,18 +1732,34 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
     final_meta.write_to_path(&meta_path)?;
 
     let final_summary = format!(
-        "finished_at={}\nduration_seconds={}\nfinal_status={}\nfinal_exit={}\nvhs_exit={}\nseed_exit={}\nsnapshot_status={}\nsnapshot_exit={}\nvideo_exists={}\nsnapshot_exists={}\nvideo_duration_seconds={}\n",
+        "finished_at={}\nduration_seconds={}\nfinal_status={}\nfinal_exit={}\nvhs_exit={}\nhost_vhs_exit={}\nvhs_driver_used={}\nvhs_docker_log={}\nseed_exit={}\nsnapshot_status={}\nsnapshot_exit={}\nvideo_exists={}\nsnapshot_exists={}\nvideo_duration_seconds={}\ncapture_error_reason={}\nttyd_shim_log={}\nttyd_runtime_log={}\nvhs_no_sandbox_forced={}\n",
         end_iso,
         duration_seconds,
         final_status,
         final_exit,
         vhs_exit,
+        host_vhs_exit.map_or_else(|| "null".to_string(), |v| v.to_string()),
+        vhs_driver_used,
+        vhs_docker_log
+            .as_ref()
+            .map_or_else(|| "null".to_string(), |path| path.display().to_string()),
         seed_exit.map_or_else(|| "null".to_string(), |v| v.to_string()),
         snapshot_status,
         snapshot_exit_code.map_or_else(|| "null".to_string(), |v| v.to_string()),
         video_exists,
         snapshot_exists,
         video_duration_seconds.map_or_else(|| "null".to_string(), |v| v.to_string()),
+        fatal_capture_reason
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| "null".to_string()),
+        ttyd_shim_log
+            .as_ref()
+            .map_or_else(|| "null".to_string(), |path| path.display().to_string()),
+        ttyd_runtime_log
+            .as_ref()
+            .map_or_else(|| "null".to_string(), |path| path.display().to_string()),
+        vhs_no_sandbox_forced,
     );
 
     let mut summary_file = OpenOptions::new().append(true).open(&summary_path)?;
@@ -1409,6 +1778,11 @@ pub fn run_capture(args: CaptureArgs) -> Result<()> {
                 "run_dir": run_dir.display().to_string(),
                 "video": output.display().to_string(),
                 "meta": meta_path.display().to_string(),
+                "vhs_driver_used": vhs_driver_used,
+                "host_vhs_exit_code": host_vhs_exit,
+                "vhs_docker_log": vhs_docker_log
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
                 "integration": integration,
             })
         );
@@ -1433,7 +1807,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CaptureArgs, FinalizationInput, ResolvedCaptureConfig, resolve_finalization_result,
+        CaptureArgs, FinalizationInput, ResolvedCaptureConfig, VhsDriver,
+        resolve_finalization_result,
     };
 
     fn minimal_args() -> CaptureArgs {
@@ -1478,6 +1853,7 @@ mod tests {
             dry_run: false,
             conservative: false,
             capture_timeout_seconds: None,
+            vhs_driver: VhsDriver::Auto,
             no_evidence_ledger: false,
         }
     }
@@ -1538,6 +1914,7 @@ mod tests {
             dry_run: false,
             conservative: false,
             capture_timeout_seconds: None,
+            vhs_driver: VhsDriver::Auto,
             no_evidence_ledger: true,
         });
 
@@ -1701,6 +2078,7 @@ mod tests {
             dry_run: false,
             conservative: false,
             capture_timeout_seconds: None,
+            vhs_driver: VhsDriver::Auto,
             no_evidence_ledger: false,
         };
 
@@ -1751,6 +2129,7 @@ mod tests {
             dry_run: false,
             conservative: false,
             capture_timeout_seconds: None,
+            vhs_driver: VhsDriver::Auto,
             no_evidence_ledger: false,
         });
 
@@ -1895,6 +2274,7 @@ mod tests {
             dry_run: false,
             conservative: false,
             capture_timeout_seconds: None,
+            vhs_driver: VhsDriver::Auto,
             no_evidence_ledger: false,
         });
 
@@ -1949,6 +2329,7 @@ mod tests {
             dry_run: false,
             conservative: false,
             capture_timeout_seconds: None,
+            vhs_driver: VhsDriver::Auto,
             no_evidence_ledger: false,
         });
 
@@ -1969,6 +2350,7 @@ mod tests {
             snapshot_required: false,
             no_snapshot: false,
             snapshot_status: "ok".to_string(),
+            fatal_capture_reason: None,
             timed_out: false,
             conservative: false,
             capture_timeout_seconds: 300,
@@ -1983,6 +2365,7 @@ mod tests {
             snapshot_required: true,
             no_snapshot: false,
             snapshot_status: "failed".to_string(),
+            fatal_capture_reason: None,
             timed_out: false,
             conservative: false,
             capture_timeout_seconds: 300,
@@ -2000,6 +2383,7 @@ mod tests {
             snapshot_required: false,
             no_snapshot: false,
             snapshot_status: "ok".to_string(),
+            fatal_capture_reason: None,
             timed_out: true,
             conservative: false,
             capture_timeout_seconds: 42,
@@ -2012,6 +2396,27 @@ mod tests {
     }
 
     #[test]
+    fn finalization_prefers_fatal_capture_reason_over_timeout_reason() {
+        let timed_out = resolve_finalization_result(&FinalizationInput {
+            vhs_exit: 124,
+            seed_required: false,
+            seed_exit: None,
+            snapshot_required: false,
+            no_snapshot: false,
+            snapshot_status: "ok".to_string(),
+            fatal_capture_reason: Some("vhs could not open ttyd (EOF)".to_string()),
+            timed_out: true,
+            conservative: false,
+            capture_timeout_seconds: 42,
+        });
+        assert!(timed_out.fallback_active);
+        assert_eq!(
+            timed_out.fallback_reason.as_deref(),
+            Some("capture aborted early: vhs could not open ttyd (EOF)")
+        );
+    }
+
+    #[test]
     fn finalization_nonzero_vhs_exit_is_propagated() {
         let result = resolve_finalization_result(&FinalizationInput {
             vhs_exit: 7,
@@ -2020,6 +2425,7 @@ mod tests {
             snapshot_required: false,
             no_snapshot: false,
             snapshot_status: "ok".to_string(),
+            fatal_capture_reason: None,
             timed_out: false,
             conservative: false,
             capture_timeout_seconds: 42,
@@ -2039,6 +2445,7 @@ mod tests {
             snapshot_required: false,
             no_snapshot: false,
             snapshot_status: "ok".to_string(),
+            fatal_capture_reason: None,
             timed_out: false,
             conservative: true,
             capture_timeout_seconds: 42,
@@ -2059,6 +2466,7 @@ mod tests {
             snapshot_required: false,
             no_snapshot: false,
             snapshot_status: "ok".to_string(),
+            fatal_capture_reason: None,
             timed_out: false,
             conservative: false,
             capture_timeout_seconds: 120,
@@ -2076,6 +2484,7 @@ mod tests {
             snapshot_required: true,
             no_snapshot: true,
             snapshot_status: "failed".to_string(),
+            fatal_capture_reason: None,
             timed_out: false,
             conservative: false,
             capture_timeout_seconds: 120,

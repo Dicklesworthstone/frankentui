@@ -210,23 +210,27 @@ impl Rope {
     /// Return all graphemes as owned strings.
     #[must_use]
     pub fn graphemes(&self) -> Vec<String> {
-        self.to_string()
-            .graphemes(true)
-            .map(str::to_string)
-            .collect()
+        let mut result = Vec::with_capacity(self.len_chars());
+        for line in self.lines() {
+            result.extend(line.graphemes(true).map(String::from));
+        }
+        result
     }
 
     /// Count grapheme clusters.
     #[must_use]
     pub fn grapheme_count(&self) -> usize {
-        self.to_string().graphemes(true).count()
+        self.lines()
+            .map(|line| line.graphemes(true).count())
+            .sum()
     }
 
     fn grapheme_to_char_idx(&self, grapheme_idx: usize) -> usize {
         let mut g_count = 0;
         let mut char_count = 0;
 
-        for line in self.lines() {
+        for line_slice in self.rope.lines() {
+            let line = cow_from_slice(line_slice);
             let line_g_count = line.graphemes(true).count();
             if g_count + line_g_count > grapheme_idx {
                 let offset = grapheme_idx - g_count;
@@ -238,7 +242,7 @@ impl Rope {
                 }
             }
             g_count += line_g_count;
-            char_count += line.chars().count();
+            char_count += line_slice.len_chars();
         }
         self.len_chars()
     }

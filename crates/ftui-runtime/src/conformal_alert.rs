@@ -363,10 +363,13 @@ impl ConformalAlert {
     ///
     /// Call this during the baseline/training phase to build the null distribution.
     pub fn calibrate(&mut self, value: f64) {
+        // Compute residual BEFORE updating stats to maintain exchangeability
+        // and avoid shrinking the residual by including the point itself in the mean.
+        let residual = (value - self.stats.mean).abs();
+
         self.stats.update(value);
 
         // Store residual for quantile computation
-        let residual = (value - self.stats.mean).abs();
         self.calibration.push_back(residual);
 
         // Enforce max calibration size

@@ -692,13 +692,16 @@ impl TextInput {
             pos -= 1;
         }
 
-        // 2. Skip trailing punctuation
-        while pos > 0 && Self::get_grapheme_class(graphemes[pos - 1]) == 2 {
-            pos -= 1;
+        if pos == 0 {
+            self.cursor = 0;
+            return;
         }
 
-        // 3. Skip the previous word
-        while pos > 0 && Self::get_grapheme_class(graphemes[pos - 1]) == 1 {
+        // 2. Determine class of the token (Word or Punctuation)
+        let target_class = Self::get_grapheme_class(graphemes[pos - 1]);
+
+        // 3. Skip the token
+        while pos > 0 && Self::get_grapheme_class(graphemes[pos - 1]) == target_class {
             pos -= 1;
         }
 
@@ -721,13 +724,16 @@ impl TextInput {
 
         let mut pos = self.cursor;
 
-        // 1. Skip current word
-        while pos < max && Self::get_grapheme_class(graphemes[pos]) == 1 {
+        // 1. Determine class of current token
+        let target_class = Self::get_grapheme_class(graphemes[pos]);
+
+        // 2. Skip the token
+        while pos < max && Self::get_grapheme_class(graphemes[pos]) == target_class {
             pos += 1;
         }
 
-        // 2. Skip whitespace and punctuation
-        while pos < max && Self::get_grapheme_class(graphemes[pos]) != 1 {
+        // 3. Skip trailing whitespace
+        while pos < max && Self::get_grapheme_class(graphemes[pos]) == 0 {
             pos += 1;
         }
 
@@ -795,7 +801,41 @@ impl TextInput {
 
             scroll = candidate_scroll.min(max_scroll_for_prev);
         }
+
+        // Sanitize: ensure scroll aligns with grapheme boundaries
+        scroll = self.snap_scroll_to_grapheme_boundary(scroll, viewport_width);
+
         self.scroll_cells.set(scroll);
+        scroll
+    }
+
+    fn snap_scroll_to_grapheme_boundary(&self, scroll: usize, viewport_width: usize) -> usize {
+        let mut pos = 0;
+        let cursor_visual = self.cursor_visual_pos();
+
+        for g in self.value.graphemes(true) {
+            let w = self.grapheme_width(g);
+            let next_pos = pos + w;
+
+            // If scroll is in the middle of this grapheme: [pos < scroll < next_pos]
+            if pos < scroll && scroll < next_pos {
+                // Try snapping to the start of the character to keep it visible.
+                // Only allowed if the cursor remains visible on the right.
+                // Cursor visibility condition: cursor_visual < new_scroll + viewport_width
+                if cursor_visual < pos + viewport_width {
+                    return pos;
+                } else {
+                    // Cannot snap left without hiding cursor. Snap right (hide the character).
+                    return next_pos;
+                }
+            }
+
+            if next_pos > scroll {
+                // Passed the scroll point, no split found.
+                break;
+            }
+            pos = next_pos;
+        }
         scroll
     }
 }

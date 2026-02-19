@@ -189,14 +189,28 @@ impl<'a> Table<'a> {
 
         if let Some(header) = header {
             for (i, cell) in header.cells.iter().enumerate().take(col_count) {
-                let cell_width = cell.width().min(u16::MAX as usize) as u16;
+                let cell_width = cell
+                    .lines()
+                    .iter()
+                    .take(header.height as usize)
+                    .map(|l| l.width())
+                    .max()
+                    .unwrap_or(0)
+                    .min(u16::MAX as usize) as u16;
                 col_widths[i] = col_widths[i].max(cell_width);
             }
         }
 
         for row in rows {
             for (i, cell) in row.cells.iter().enumerate().take(col_count) {
-                let cell_width = cell.width().min(u16::MAX as usize) as u16;
+                let cell_width = cell
+                    .lines()
+                    .iter()
+                    .take(row.height as usize)
+                    .map(|l| l.width())
+                    .max()
+                    .unwrap_or(0)
+                    .min(u16::MAX as usize) as u16;
                 col_widths[i] = col_widths[i].max(cell_width);
             }
         }
@@ -723,9 +737,17 @@ impl<'a> StatefulWidget for Table<'a> {
                 return;
             }
             let row_area = Rect::new(table_area.x, y, table_area.width, header.height);
+            // Include bottom margin for dividers to avoid gaps
+            let divider_area = Rect::new(
+                table_area.x,
+                y,
+                table_area.width,
+                header.height.saturating_add(header.bottom_margin),
+            );
+
             let header_style = if apply_styling {
-                let mut style = theme.header;
-                style = self.style.merge(&style);
+                let mut style = self.style;
+                style = theme.header.merge(&style);
                 header.style.merge(&style)
             } else {
                 Style::default()
@@ -754,7 +776,7 @@ impl<'a> StatefulWidget for Table<'a> {
             };
             draw_vertical_dividers(
                 &mut frame.buffer,
-                row_area,
+                divider_area,
                 &column_rects,
                 divider_char,
                 divider_style,
@@ -796,16 +818,31 @@ impl<'a> StatefulWidget for Table<'a> {
             let is_selected = state.selected == Some(i);
             let is_hovered = state.hovered == Some(i);
             let row_area = Rect::new(table_area.x, y, table_area.width, row.height);
+            // Include bottom margin for dividers
+            let divider_area = Rect::new(
+                table_area.x,
+                y,
+                table_area.width,
+                row.height.saturating_add(row.bottom_margin),
+            );
+
             let row_style = if apply_styling {
-                let mut style = if i % 2 == 0 { theme.row } else { theme.row_alt };
+                // 1. Base: Table style
+                let mut style = self.style;
+                // 2. Theme Stripe
+                let stripe = if i % 2 == 0 { theme.row } else { theme.row_alt };
+                style = stripe.merge(&style);
+                // 3. Row Specific
+                style = row.style.merge(&style);
+                // 4. Theme Selection
                 if is_selected {
                     style = theme.row_selected.merge(&style);
                 }
+                // 5. Theme Hover
                 if is_hovered {
                     style = theme.row_hover.merge(&style);
                 }
-                style = self.style.merge(&style);
-                style = row.style.merge(&style);
+                // 6. Manual Highlight
                 if is_selected {
                     style = self.highlight_style.merge(&style);
                 }
@@ -845,7 +882,7 @@ impl<'a> StatefulWidget for Table<'a> {
             };
             draw_vertical_dividers(
                 &mut frame.buffer,
-                row_area,
+                divider_area,
                 &column_rects,
                 divider_char,
                 divider_style,

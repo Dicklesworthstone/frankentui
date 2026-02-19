@@ -163,6 +163,7 @@ const MODERN_TERMINALS: &[&str] = &[
     "Hyper",
     "Contour",
     "vscode",
+    "Black Box",
 ];
 
 /// Terminals known to implement the Kitty keyboard protocol.
@@ -174,6 +175,7 @@ const KITTY_KEYBOARD_TERMINALS: &[&str] = &[
     "Rio",
     "kitty",
     "foot",
+    "Black Box",
 ];
 
 /// Terminal programs that support synchronized output (DEC 2026).

@@ -218,52 +218,56 @@ impl ExplainabilityCockpit {
     }
 
     fn refresh(&mut self, force: bool) {
-        let Some(path) = self.evidence_path.as_ref() else {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = force;
             self.data = empty_data(SourceStatus {
-                label: "source: (disabled)".to_string(),
-                status: "Evidence source disabled".to_string(),
-                hint_lines: default_hint_lines(None),
+                label: "source: (unavailable on wasm32)".to_string(),
+                status: "Explainability evidence file refresh is disabled in web builds"
+                    .to_string(),
+                hint_lines: vec![
+                    "This screen reads local JSONL files via std::fs in native mode.".to_string(),
+                    "Use a native build to inspect explainability evidence logs.".to_string(),
+                ],
             });
+            self.last_modified = None;
+            self.last_size = None;
             return;
-        };
-
-        let metadata = match fs::metadata(path) {
-            Ok(meta) => meta,
-            Err(_) => {
-                self.data = empty_data(SourceStatus {
-                    label: format!("source: {}", path.display()),
-                    status: "Evidence file not found".to_string(),
-                    hint_lines: default_hint_lines(Some(path)),
-                });
-                return;
-            }
-        };
-
-        if !force {
-            let modified = metadata.modified().ok();
-            let size = Some(metadata.len());
-            if modified.is_some() && modified == self.last_modified && size == self.last_size {
-                return;
-            }
         }
 
-        let file = match fs::File::open(path) {
-            Ok(file) => file,
-            Err(err) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(path) = self.evidence_path.as_ref() else {
                 self.data = empty_data(SourceStatus {
-                    label: format!("source: {}", path.display()),
-                    status: format!("Failed to read evidence: {err}"),
-                    hint_lines: default_hint_lines(Some(path)),
+                    label: "source: (disabled)".to_string(),
+                    status: "Evidence source disabled".to_string(),
+                    hint_lines: default_hint_lines(None),
                 });
                 return;
-            }
-        };
+            };
 
-        let reader = io::BufReader::new(file);
-        let mut ring: VecDeque<String> = VecDeque::new();
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
+            let metadata = match fs::metadata(path) {
+                Ok(meta) => meta,
+                Err(_) => {
+                    self.data = empty_data(SourceStatus {
+                        label: format!("source: {}", path.display()),
+                        status: "Evidence file not found".to_string(),
+                        hint_lines: default_hint_lines(Some(path)),
+                    });
+                    return;
+                }
+            };
+
+            if !force {
+                let modified = metadata.modified().ok();
+                let size = Some(metadata.len());
+                if modified.is_some() && modified == self.last_modified && size == self.last_size {
+                    return;
+                }
+            }
+
+            let file = match fs::File::open(path) {
+                Ok(file) => file,
                 Err(err) => {
                     self.data = empty_data(SourceStatus {
                         label: format!("source: {}", path.display()),
@@ -273,46 +277,62 @@ impl ExplainabilityCockpit {
                     return;
                 }
             };
-            if ring.len() == MAX_EVIDENCE_LINES {
-                ring.pop_front();
+
+            let reader = io::BufReader::new(file);
+            let mut ring: VecDeque<String> = VecDeque::new();
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(line) => line,
+                    Err(err) => {
+                        self.data = empty_data(SourceStatus {
+                            label: format!("source: {}", path.display()),
+                            status: format!("Failed to read evidence: {err}"),
+                            hint_lines: default_hint_lines(Some(path)),
+                        });
+                        return;
+                    }
+                };
+                if ring.len() == MAX_EVIDENCE_LINES {
+                    ring.pop_front();
+                }
+                ring.push_back(line);
             }
-            ring.push_back(line);
-        }
-        let lines: Vec<&str> = ring.iter().map(|line| line.as_str()).collect();
-        let parsed = parse_evidence_lines(&lines);
+            let lines: Vec<&str> = ring.iter().map(|line| line.as_str()).collect();
+            let parsed = parse_evidence_lines(&lines);
 
-        self.last_modified = metadata.modified().ok();
-        self.last_size = Some(metadata.len());
+            self.last_modified = metadata.modified().ok();
+            self.last_size = Some(metadata.len());
 
-        let status = if parsed.parsed_count == 0 {
-            "No evidence entries parsed".to_string()
-        } else {
-            format!(
-                "Loaded {} entries ({} lines)",
-                parsed.parsed_count, parsed.line_count
-            )
-        };
+            let status = if parsed.parsed_count == 0 {
+                "No evidence entries parsed".to_string()
+            } else {
+                format!(
+                    "Loaded {} entries ({} lines)",
+                    parsed.parsed_count, parsed.line_count
+                )
+            };
 
-        let data = ExplainabilityData {
-            source: SourceStatus {
-                label: format!("source: {}", path.display()),
-                status,
-                hint_lines: Vec::new(),
-            },
-            diff: parsed.diff,
-            resize: parsed.resize,
-            budget: parsed.budget,
-            timeline: parsed.timeline,
-        };
+            let data = ExplainabilityData {
+                source: SourceStatus {
+                    label: format!("source: {}", path.display()),
+                    status,
+                    hint_lines: Vec::new(),
+                },
+                diff: parsed.diff,
+                resize: parsed.resize,
+                budget: parsed.budget,
+                timeline: parsed.timeline,
+            };
 
-        if data.is_empty() {
-            self.data = empty_data(SourceStatus {
-                label: format!("source: {}", path.display()),
-                status: "Evidence log is empty".to_string(),
-                hint_lines: default_hint_lines(Some(path)),
-            });
-        } else {
-            self.data = data;
+            if data.is_empty() {
+                self.data = empty_data(SourceStatus {
+                    label: format!("source: {}", path.display()),
+                    status: "Evidence log is empty".to_string(),
+                    hint_lines: default_hint_lines(Some(path)),
+                });
+            } else {
+                self.data = data;
+            }
         }
     }
 

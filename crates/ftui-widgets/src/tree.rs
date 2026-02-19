@@ -29,7 +29,7 @@ use ftui_style::Style;
 use std::any::Any;
 use std::collections::HashSet;
 #[cfg(feature = "tracing")]
-use std::time::Instant;
+use web_time::Instant;
 
 /// Guide character styles for tree rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -549,6 +549,9 @@ impl Tree {
 
         let child_count = node.children.len();
         for (i, child) in node.children.iter().enumerate() {
+            if *current_row >= area.height as usize {
+                break;
+            }
             is_last.push(i == child_count - 1);
             self.render_node(child, depth + 1, is_last, area, frame, current_row, deg);
             is_last.pop();
@@ -556,22 +559,16 @@ impl Tree {
     }
 }
 
-fn filter_node(node: &TreeNode, query: &str) -> Option<TreeNode> {
-    let query = query.trim();
-    if query.is_empty() {
-        return Some(node.clone());
-    }
-
-    let query_lower = query.to_lowercase();
-    let label_matches = node.label.to_lowercase().contains(&query_lower)
+fn filter_node(node: &TreeNode, query: &str, query_lower: &str) -> Option<TreeNode> {
+    let label_matches = node.label.to_lowercase().contains(query_lower)
         || node
             .icon
             .as_deref()
-            .is_some_and(|icon| icon.to_lowercase().contains(&query_lower));
+            .is_some_and(|icon| icon.to_lowercase().contains(query_lower));
 
     let mut filtered_children = Vec::new();
     for child in &node.children {
-        if let Some(filtered) = filter_node(child, query) {
+        if let Some(filtered) = filter_node(child, query, query_lower) {
             filtered_children.push(filtered);
         }
     }
@@ -579,7 +576,7 @@ fn filter_node(node: &TreeNode, query: &str) -> Option<TreeNode> {
     let mut filtered_lazy = Vec::new();
     if let Some(lazy) = &node.lazy_children {
         for child in lazy {
-            if let Some(filtered) = filter_node(child, query) {
+            if let Some(filtered) = filter_node(child, query, query_lower) {
                 filtered_lazy.push(filtered);
             }
         }
@@ -630,10 +627,14 @@ impl Widget for Tree {
         let mut current_row = 0;
         let mut is_last = Vec::with_capacity(8);
 
-        let filtered_root = self
-            .search_query
-            .as_deref()
-            .and_then(|query| filter_node(&self.root, query));
+        let filtered_root = self.search_query.as_deref().and_then(|query| {
+            let query = query.trim();
+            if query.is_empty() {
+                return Some(self.root.clone());
+            }
+            let query_lower = query.to_lowercase();
+            filter_node(&self.root, query, &query_lower)
+        });
         let root = filtered_root.as_ref().unwrap_or(&self.root);
 
         if self.show_root {
@@ -943,10 +944,14 @@ fn flatten_visible(node: &TreeNode, depth: usize, out: &mut Vec<FlatNode>) {
 impl Tree {
     fn flatten(&self) -> Vec<FlatNode> {
         let mut out = Vec::new();
-        let filtered_root = self
-            .search_query
-            .as_deref()
-            .and_then(|query| filter_node(&self.root, query));
+        let filtered_root = self.search_query.as_deref().and_then(|query| {
+            let query = query.trim();
+            if query.is_empty() {
+                return Some(self.root.clone());
+            }
+            let query_lower = query.to_lowercase();
+            filter_node(&self.root, query, &query_lower)
+        });
         let root = filtered_root.as_ref().unwrap_or(&self.root);
         if self.show_root {
             flatten_visible(root, 0, &mut out);

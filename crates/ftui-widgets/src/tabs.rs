@@ -13,7 +13,7 @@ use ftui_render::frame::{Frame, HitId, HitRegion};
 use ftui_style::Style;
 use ftui_text::display_width;
 #[cfg(feature = "tracing")]
-use std::time::Instant;
+use web_time::Instant;
 
 /// A single tab entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,13 +304,47 @@ impl<'a> Tabs<'a> {
             state.offset = state.active;
         }
 
-        let mut start = state.offset;
-        let mut end = self.visible_end(state, area_width);
+        let left_marker_w = display_width(self.overflow_left_marker);
+        let right_marker_w = display_width(self.overflow_right_marker);
 
+        let mut available_width = area_width;
+        let mut start = state.offset;
+        let mut end = self.visible_end(state, available_width);
+
+        // If active is out of view (e.g. initial render with small width), jump to it
         if state.active >= end {
             start = state.active;
             state.offset = start;
-            end = self.visible_end(state, area_width);
+            end = self.visible_end(state, available_width);
+        }
+
+        // Iteratively refine width based on overflow markers
+        for _ in 0..3 {
+            let overflow_left = start > 0;
+            let overflow_right = end < self.tabs.len();
+
+            let mut next_width = area_width;
+            if overflow_left {
+                next_width = next_width.saturating_sub(left_marker_w);
+            }
+            if overflow_right {
+                next_width = next_width.saturating_sub(right_marker_w);
+            }
+
+            if next_width == available_width {
+                break;
+            }
+            available_width = next_width;
+
+            // Re-calculate with new width
+            end = self.visible_end(state, available_width);
+
+            // Ensure active is still visible
+            if state.active >= end {
+                start = state.active;
+                state.offset = start;
+                end = self.visible_end(state, available_width);
+            }
         }
 
         let overflow_left = start > 0;

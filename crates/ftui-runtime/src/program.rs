@@ -2568,7 +2568,16 @@ impl BudgetDecisionEvidence {
 
     fn opt_str(value: Option<&str>) -> String {
         value
-            .map(|v| format!("\"{}\"", v.replace('"', "\\\"")))
+            .map(|v| {
+                format!(
+                    "\"{}\"",
+                    v.replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r")
+                        .replace('\t', "\\t")
+                )
+            })
             .unwrap_or_else(|| "null".to_string())
     }
 }
@@ -3990,7 +3999,6 @@ impl<M: Model, E: BackendEventSource<Error = io::Error>, W: Write + Send> Progra
                 degradation = self.budget.degradation().as_str(),
                 "frame skipped: budget exhausted before render"
             );
-            self.dirty = false;
             return Ok(());
         }
 

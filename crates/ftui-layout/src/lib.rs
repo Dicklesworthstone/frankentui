@@ -197,7 +197,7 @@ impl LayoutSizeHint {
     #[inline]
     pub fn clamp(&self, value: u16) -> u16 {
         let max = self.max.unwrap_or(u16::MAX);
-        value.max(self.min).min(max)
+        value.min(max).max(self.min)
     }
 }
 
@@ -1011,17 +1011,18 @@ pub fn round_layout_stable(targets: &[f64], total: u16, prev: PreviousAllocation
         .map(|&r| (r.max(0.0).floor() as u64).min(u16::MAX as u64) as u16)
         .collect();
 
-    let floor_sum: u16 = floors.iter().copied().sum();
+    let floor_sum: u64 = floors.iter().map(|&x| u64::from(x)).sum();
+    let total_u64 = u64::from(total);
 
     // Step 2: Compute deficit (extra cells to distribute)
-    let deficit = total.saturating_sub(floor_sum);
+    if floor_sum > total_u64 {
+        return redistribute_overflow(&floors, total);
+    }
+
+    let deficit = (total_u64 - floor_sum) as u16;
 
     if deficit == 0 {
         // Exact fit — no rounding needed
-        // But we may need to adjust if floor_sum > total (overflow case)
-        if floor_sum > total {
-            return redistribute_overflow(&floors, total);
-        }
         return floors;
     }
 
@@ -1070,10 +1071,11 @@ pub fn round_layout_stable(targets: &[f64], total: u16, prev: PreviousAllocation
 /// reduce the largest items by 1 until the sum matches.
 fn redistribute_overflow(floors: &[u16], total: u16) -> Vec<u16> {
     let mut result = floors.to_vec();
-    let mut current_sum: u16 = result.iter().copied().sum();
+    let mut current_sum: u64 = result.iter().map(|&x| u64::from(x)).sum();
+    let total_u64 = u64::from(total);
 
     // Build a max-heap of (value, index) to reduce largest first
-    while current_sum > total {
+    while current_sum > total_u64 {
         // Find the largest element
         if let Some((idx, _)) = result
             .iter()
@@ -1791,6 +1793,19 @@ mod tests {
         let h = LayoutSizeHint::at_least(5, 10);
         assert_eq!(h.clamp(3), 5); // Below min
         assert_eq!(h.clamp(1000), 1000); // No max, stays as-is
+    }
+
+    #[test]
+    fn layout_size_hint_clamp_min_greater_than_max() {
+        // When min > max, min should win (strict lower bound)
+        let h = LayoutSizeHint {
+            min: 20,
+            preferred: 20,
+            max: Some(10),
+        };
+        assert_eq!(h.clamp(5), 20); // 20 > 5, clamped to min
+        assert_eq!(h.clamp(15), 20); // 20 > 15, clamped to min
+        assert_eq!(h.clamp(25), 20); // 20 > 10, clamped to min
     }
 
     // --- Integration: FitContent with other constraints ---

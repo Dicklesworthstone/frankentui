@@ -286,7 +286,7 @@ fn split_words(text: &str) -> Vec<String> {
     let mut in_whitespace = false;
 
     for grapheme in text.graphemes(true) {
-        let is_ws = grapheme.chars().all(|c| c.is_whitespace());
+        let is_ws = grapheme.chars().all(is_breaking_whitespace);
 
         if is_ws != in_whitespace && !current.is_empty() {
             words.push(std::mem::take(&mut current));
@@ -551,7 +551,7 @@ pub fn truncate_to_width_with_info(text: &str, max_width: usize) -> (&str, usize
 pub fn word_boundaries(text: &str) -> impl Iterator<Item = usize> + '_ {
     text.split_word_bound_indices().filter_map(|(idx, word)| {
         // Return index at end of whitespace sequences (good break points)
-        if word.chars().all(|c| c.is_whitespace()) {
+        if word.chars().all(is_breaking_whitespace) {
             Some(idx + word.len())
         } else {
             None
@@ -660,6 +660,14 @@ fn knuth_plass_badness(slack: i64, width: usize, is_last_line: bool) -> u64 {
     s3.saturating_mul(BADNESS_SCALE) / w3
 }
 
+/// Check if a character is a breaking whitespace (candidate for wrapping).
+///
+/// Returns true for standard whitespace (space, tab, newline) but false for
+/// Non-Breaking Space (U+00A0) and Narrow No-Break Space (U+202F).
+pub(crate) fn is_breaking_whitespace(c: char) -> bool {
+    c.is_whitespace() && c != '\u{00A0}' && c != '\u{202F}'
+}
+
 /// A word token with its measured cell width.
 #[derive(Debug, Clone)]
 struct KpWord {
@@ -676,15 +684,24 @@ fn kp_tokenize(text: &str) -> Vec<KpWord> {
     let mut words = Vec::new();
     let raw_segments: Vec<&str> = text.split_word_bounds().collect();
 
-    let mut i = 0;
-    while i < raw_segments.len() {
-        let seg = raw_segments[i];
-        if seg.chars().all(|c| c.is_whitespace()) {
-            // Standalone whitespace — attach to previous word as trailing space
-            if let Some(last) = words.last_mut() {
-                let w: &mut KpWord = last;
-                w.text.push_str(seg);
-                w.space_width += display_width(seg);
+    let mut current_text = String::new();
+    let mut current_width = 0;
+
+    for seg in raw_segments {
+        if seg.chars().all(is_breaking_whitespace) {
+            // This is a break point (space).
+            // Finish current word if any.
+            if !current_text.is_empty() {
+                words.push(KpWord {
+                    text: std::mem::take(&mut current_text),
+                    content_width: current_width,
+                    space_width: display_width(seg), // attach space to it
+                });
+                current_width = 0;
+            } else if let Some(last) = words.last_mut() {
+                // Attach space to previous word
+                last.text.push_str(seg);
+                last.space_width += display_width(seg);
             } else {
                 // Handle leading whitespace as a word with 0 content width
                 words.push(KpWord {
@@ -693,16 +710,21 @@ fn kp_tokenize(text: &str) -> Vec<KpWord> {
                     space_width: display_width(seg),
                 });
             }
-            i += 1;
         } else {
-            let content_width = display_width(seg);
-            words.push(KpWord {
-                text: seg.to_string(),
-                content_width,
-                space_width: 0,
-            });
-            i += 1;
+            // Content (word or NBSP).
+            // Append to current accumulator.
+            current_text.push_str(seg);
+            current_width += display_width(seg);
         }
+    }
+
+    // Push remaining content
+    if !current_text.is_empty() {
+        words.push(KpWord {
+            text: current_text,
+            content_width: current_width,
+            space_width: 0,
+        });
     }
 
     words

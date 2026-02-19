@@ -1993,22 +1993,12 @@ impl<W: Write> TerminalWriter<W> {
                 // Emit content
                 if is_zero_width_content {
                     writer.write_all(b"\xEF\xBF\xBD")?;
-                } else if let Some(ch) = effective_cell.content.as_char() {
-                    let safe_ch = if ch.is_control() { ' ' } else { ch };
-                    let mut buf = [0u8; 4];
-                    let encoded = safe_ch.encode_utf8(&mut buf);
-                    writer.write_all(encoded.as_bytes())?;
-                } else if let Some(gid) = effective_cell.content.grapheme_id() {
+                } else if let Some(grapheme_id) = effective_cell.content.grapheme_id() {
                     // Use pool directly with writer (no clone needed)
-                    if let Some(text) = self.pool.get(gid) {
+                    if let Some(text) = self.pool.get(grapheme_id) {
                         let safe = sanitize(text);
                         if !safe.is_empty() {
                             writer.write_all(safe.as_bytes())?;
-                        } else {
-                            // Fallback: emit placeholder cells to preserve width.
-                            for _ in 0..raw_width.max(1) {
-                                writer.write_all(b"?")?;
-                            }
                         }
                     } else {
                         // Fallback: emit placeholder cells to preserve width.
@@ -2016,28 +2006,28 @@ impl<W: Write> TerminalWriter<W> {
                             writer.write_all(b"?")?;
                         }
                     }
+                } else if let Some(ch) = effective_cell.content.as_char() {
+                    let safe_ch = if ch.is_control() { ' ' } else { ch };
+                    let mut buf = [0u8; 4];
+                    let encoded = safe_ch.encode_utf8(&mut buf);
+                    writer.write_all(encoded.as_bytes())?;
                 } else {
                     writer.write_all(b" ")?;
                 }
 
-                let advance = if effective_cell.is_empty() || is_zero_width_content {
+                let advance = if is_zero_width_content {
                     1
                 } else {
-                    raw_width.max(1)
+                    let w = raw_width;
+                    if w == 0 {
+                        1
+                    } else {
+                        w
+                    }
                 };
                 cursor_x = cursor_x.saturating_add(advance as u16);
             }
         }
-
-        // Reset style
-        writer.write_all(b"\x1b[0m")?;
-
-        // Close any open link
-        if current_link.is_some() {
-            writer.write_all(b"\x1b]8;;\x1b\\")?;
-        }
-
-        trace!("emit_diff complete");
         Ok(EmitStats {
             diff_cells,
             diff_runs,

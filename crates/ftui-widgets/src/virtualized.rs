@@ -389,7 +389,7 @@ impl<T> Virtualized<T> {
     }
 
     /// Update visible count (called during render).
-    pub fn set_visible_count(&mut self, count: usize) {
+    pub fn set_visible_count(&self, count: usize) {
         self.visible_count.set(count);
     }
 }
@@ -783,7 +783,15 @@ impl VariableHeightsFenwick {
 /// Implement this trait for item types that should render in a `VirtualizedList`.
 pub trait RenderItem {
     /// Render the item into the frame at the given area.
-    fn render(&self, area: Rect, frame: &mut Frame, selected: bool);
+    ///
+    /// # Arguments
+    ///
+    /// * `area` - The area to render into.
+    /// * `frame` - The frame to render into.
+    /// * `selected` - Whether the item is selected.
+    /// * `skip_rows` - Number of rows to skip from the top of the item content.
+    ///   This is non-zero when the item partially overlaps the top of the viewport.
+    fn render(&self, area: Rect, frame: &mut Frame, selected: bool, skip_rows: u16);
 
     /// Height of this item in terminal rows.
     fn height(&self) -> u16 {
@@ -1251,14 +1259,23 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
         // Render visible items
         for idx in render_start..render_end {
             // Calculate Y position relative to viewport
-            // Use saturating casts to prevent overflow with large item counts.
-            let idx_i32 = i32::try_from(idx).unwrap_or(i32::MAX);
-            let offset_i32 = i32::try_from(state.scroll_offset).unwrap_or(i32::MAX);
-            let relative_idx = idx_i32.saturating_sub(offset_i32);
+            // Use relative arithmetic to prevent overflow when indices exceed i32::MAX.
+            let relative_idx = if idx >= state.scroll_offset {
+                i32::try_from(idx - state.scroll_offset).unwrap_or(i32::MAX)
+            } else {
+                // Handle overscan items before the scroll offset
+                -(i32::try_from(state.scroll_offset - idx).unwrap_or(i32::MAX))
+            };
+
             let height_i32 = i32::from(self.fixed_height);
             let y_offset = relative_idx.saturating_mul(height_i32);
 
             // Skip items above viewport
+            // We use area.y as the viewport top.
+            // Absolute top of item = area.y + y_offset.
+            // Absolute bottom of item = area.y + y_offset + height.
+            // If absolute_bottom <= area.y, it is fully above.
+            // i.e. y_offset + height <= 0
             if y_offset.saturating_add(height_i32) <= 0 {
                 continue;
             }
@@ -1268,23 +1285,29 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
                 break;
             }
 
-            // Check if item starts off-screen top (terminal y < 0)
-            // We cannot render at negative coordinates, and clamping to 0 causes artifacts
-            // (drawing top of item instead of bottom). Skip such items.
-            if i32::from(area.y).saturating_add(y_offset) < 0 {
-                continue;
-            }
+            // Check if item starts off-screen top.
+            // If so, we must render partially by skipping the top rows.
+            let skip_rows = if y_offset < 0 {
+                y_offset.unsigned_abs() as u16
+            } else {
+                0
+            };
 
             // Calculate actual render area
             // Use i32 arithmetic to avoid overflow when casting y_offset to i16
             let y = i32::from(area.y)
                 .saturating_add(y_offset)
-                .clamp(0, i32::from(u16::MAX)) as u16;
+                .clamp(i32::from(area.y), i32::from(u16::MAX)) as u16;
+            
             if y >= area.bottom() {
                 break;
             }
 
-            let visible_height = self.fixed_height.min(area.bottom().saturating_sub(y));
+            let visible_height = self
+                .fixed_height
+                .saturating_sub(skip_rows)
+                .min(area.bottom().saturating_sub(y));
+            
             if visible_height == 0 {
                 continue;
             }
@@ -1299,7 +1322,7 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
             }
 
             // Render the item
-            self.items[idx].render(row_area, frame, is_selected);
+            self.items[idx].render(row_area, frame, is_selected, skip_rows);
         }
 
         // Render scrollbar
@@ -1326,11 +1349,18 @@ impl<T: RenderItem> StatefulWidget for VirtualizedList<'_, T> {
 // ============================================================================
 
 impl RenderItem for String {
-    fn render(&self, area: Rect, frame: &mut Frame, _selected: bool) {
+    fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, skip_rows: u16) {
         if area.is_empty() {
             return;
         }
         let max_chars = area.width as usize;
+        // String is assumed to be single-line in this implementation, so skip_rows > 0
+        // implies the whole item is skipped. However, for robustness we check bounds.
+        // If a String *did* contain newlines and we rendered it multiline, skip_rows would apply.
+        // Here we just render the first line.
+        if skip_rows > 0 {
+            return;
+        }
         for (i, ch) in self.chars().take(max_chars).enumerate() {
             frame
                 .buffer
@@ -1340,8 +1370,11 @@ impl RenderItem for String {
 }
 
 impl RenderItem for &str {
-    fn render(&self, area: Rect, frame: &mut Frame, _selected: bool) {
+    fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, skip_rows: u16) {
         if area.is_empty() {
+            return;
+        }
+        if skip_rows > 0 {
             return;
         }
         let max_chars = area.width as usize;
@@ -1862,7 +1895,7 @@ mod tests {
         // Items with height 2, each rendering its index as a character
         struct IndexedItem(usize);
         impl RenderItem for IndexedItem {
-            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool) {
+            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, _skip_rows: u16) {
                 let ch = char::from_digit(self.0 as u32, 10).unwrap();
                 for y in area.y..area.bottom() {
                     frame.buffer.set(area.x, y, Cell::from_char(ch));
@@ -1910,7 +1943,7 @@ mod tests {
 
         struct IndexedItem(u16);
         impl RenderItem for IndexedItem {
-            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool) {
+            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, _skip_rows: u16) {
                 let ch = char::from_digit(self.0 as u32, 10).unwrap();
                 for y in area.y..area.bottom() {
                     frame.buffer.set(area.x, y, Cell::from_char(ch));
@@ -1946,7 +1979,7 @@ mod tests {
 
         struct IndexedItem(u16);
         impl RenderItem for IndexedItem {
-            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool) {
+            fn render(&self, area: Rect, frame: &mut Frame, _selected: bool, _skip_rows: u16) {
                 let ch = char::from_digit(self.0 as u32, 10).unwrap();
                 for y in area.y..area.bottom() {
                     frame.buffer.set(area.x, y, Cell::from_char(ch));

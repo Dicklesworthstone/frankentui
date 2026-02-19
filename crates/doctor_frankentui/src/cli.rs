@@ -126,6 +126,7 @@ mod tests {
                 dry_run: false,
                 conservative: false,
                 capture_timeout_seconds: None,
+                vhs_driver: crate::capture::VhsDriver::Auto,
                 no_evidence_ledger: false,
             }),
         });

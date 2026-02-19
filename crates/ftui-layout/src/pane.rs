@@ -1994,12 +1994,9 @@ fn div_round(
         .checked_mul(2)
         .ok_or(PaneCoordinateNormalizationError::CoordinateOverflow)?;
     if twice_remainder > denominator {
-        if value >= 0 {
-            return floor
-                .checked_add(1)
-                .ok_or(PaneCoordinateNormalizationError::CoordinateOverflow);
-        }
-        return Ok(floor);
+        return floor
+            .checked_add(1)
+            .ok_or(PaneCoordinateNormalizationError::CoordinateOverflow);
     }
     Ok(floor)
 }
